@@ -29,11 +29,14 @@ thiserror = "1"
 memmap2 = { version = "0.9", optional = true }
 # CRC-32 implementation matching Java's `java.util.zip.CRC32`.
 crc32fast = "1.4"
+# Cross-platform advisory file locks for NativeFSLockFactory.
+fslock = "0.2"
 
 [dev-dependencies]
 tokio-test = "0.4"
 proptest = "1"
 criterion = { version = "0.5", features = ["async_tokio"] }
+tempfile = "3"
 
 [profile.release]
 lto = true

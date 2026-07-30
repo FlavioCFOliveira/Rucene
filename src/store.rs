@@ -9,13 +9,16 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
+    path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
+    time::SystemTime,
 };
 
 use crc32fast;
+use fslock::LockFile;
 
 use crate::{
     error::{LuceneError, Result},
@@ -2359,7 +2362,8 @@ pub trait Lock: Send + Sync {
 /// A lock that never rejects acquisition and performs no actual locking.
 ///
 /// Used by in-memory directories where cross-process locking is unnecessary.
-#[derive(Debug)]
+/// Equivalent to `org.apache.lucene.store.NoLock`.
+#[derive(Debug, Clone, Copy)]
 pub struct NoOpLock;
 
 impl Lock for NoOpLock {
@@ -2368,6 +2372,460 @@ impl Lock for NoOpLock {
     }
 
     fn ensure_valid(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Alias for [`NoOpLock`], matching the Lucene `NoLock` name.
+pub type NoLock = NoOpLock;
+
+impl Lock for Arc<NoLock> {
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn ensure_valid(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Factory that creates [`Lock`] instances for a [`Directory`].
+///
+/// Equivalent to `org.apache.lucene.store.LockFactory`.
+pub trait LockFactory: Send + Sync {
+    /// Obtains a lock with the given name in the supplied directory.
+    ///
+    /// Returns a new, already-held [`Lock`] instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::LockObtainFailed`] if the lock cannot be acquired.
+    fn obtain_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>>;
+}
+
+/// Abstract base for filesystem-based lock factories.
+///
+/// Equivalent to `org.apache.lucene.store.FSLockFactory`. Concrete subclasses
+/// implement [`obtain_fs_lock`](FSLockFactory::obtain_fs_lock); the blanket
+/// [`LockFactory`] implementation validates that the directory is an
+/// `FSDirectory` subclass (i.e. it has a filesystem path) before delegating.
+pub trait FSLockFactory: LockFactory {
+    /// Returns the default filesystem lock factory, which is
+    /// [`NativeFSLockFactory`].
+    ///
+    /// Equivalent to `FSLockFactory.getDefault()` in Lucene 10.5.0.
+    fn get_default() -> Box<dyn FSLockFactory>
+    where
+        Self: Sized,
+    {
+        Box::new(NativeFSLockFactory)
+    }
+
+    /// Obtains a filesystem lock for the given lock name.
+    ///
+    /// Implementations should use `dir.fs_directory_path()` to locate the lock
+    /// file.
+    fn obtain_fs_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>>;
+}
+
+impl<T: FSLockFactory + ?Sized> LockFactory for T {
+    fn obtain_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>> {
+        let _ = dir.fs_directory_path().ok_or_else(|| {
+            let full_name = std::any::type_name::<T>();
+            let simple_name = full_name.split("::").last().unwrap_or("FSLockFactory");
+            LuceneError::UnsupportedOperation(format!(
+                "{simple_name} can only be used with FSDirectory subclasses, got: {}",
+                dir.directory_type_name()
+            ))
+        })?;
+        self.obtain_fs_lock(dir, lock_name)
+    }
+}
+
+/// A lock factory that returns a shared no-op lock for every request.
+///
+/// Equivalent to `org.apache.lucene.store.NoLockFactory`.
+#[derive(Debug, Clone, Copy)]
+pub struct NoLockFactory;
+
+impl NoLockFactory {
+    /// Returns the singleton instance.
+    pub fn instance() -> &'static NoLockFactory {
+        static INSTANCE: std::sync::LazyLock<NoLockFactory> =
+            std::sync::LazyLock::new(|| NoLockFactory);
+        &INSTANCE
+    }
+}
+
+impl LockFactory for NoLockFactory {
+    fn obtain_lock(&self, _dir: &dyn Directory, _lock_name: &str) -> Result<Box<dyn Lock>> {
+        static SHARED_NO_LOCK: std::sync::LazyLock<Arc<NoLock>> =
+            std::sync::LazyLock::new(|| Arc::new(NoOpLock));
+        Ok(Box::new(Arc::clone(&SHARED_NO_LOCK)))
+    }
+}
+
+/// In-process lock factory that rejects double acquisition within the same
+/// process.
+///
+/// Equivalent to `org.apache.lucene.store.SingleInstanceLockFactory`.
+#[derive(Debug)]
+pub struct SingleInstanceLockFactory {
+    locks: Arc<Mutex<HashSet<String>>>,
+}
+
+impl Default for SingleInstanceLockFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SingleInstanceLockFactory {
+    /// Creates a new in-process lock factory.
+    pub fn new() -> Self {
+        Self {
+            locks: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+}
+
+impl LockFactory for SingleInstanceLockFactory {
+    fn obtain_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>> {
+        let mut locks = self
+            .locks
+            .lock()
+            .expect("single-instance locks mutex poisoned");
+        if !locks.insert(lock_name.to_string()) {
+            return Err(LuceneError::lock_obtain_failed(format!(
+                "lock instance already obtained: (dir={}, lockName={lock_name})",
+                dir.directory_type_name()
+            )));
+        }
+        Ok(Box::new(SingleInstanceLock {
+            lock_name: lock_name.to_string(),
+            locks: Arc::clone(&self.locks),
+            closed: AtomicBool::new(false),
+        }))
+    }
+}
+
+/// A lock held only in-process by a [`SingleInstanceLockFactory`].
+#[derive(Debug)]
+struct SingleInstanceLock {
+    lock_name: String,
+    locks: Arc<Mutex<HashSet<String>>>,
+    closed: AtomicBool,
+}
+
+impl Lock for SingleInstanceLock {
+    fn close(&mut self) -> Result<()> {
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        let mut locks = self
+            .locks
+            .lock()
+            .expect("single-instance locks mutex poisoned");
+        if !locks.remove(&self.lock_name) {
+            return Err(LuceneError::AlreadyClosed(format!(
+                "Lock instance was invalidated from map: {:?}",
+                self
+            )));
+        }
+        Ok(())
+    }
+
+    fn ensure_valid(&self) -> Result<()> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(LuceneError::AlreadyClosed(format!(
+                "Lock was already released: {:?}",
+                self
+            )));
+        }
+        let locks = self
+            .locks
+            .lock()
+            .expect("single-instance locks mutex poisoned");
+        if !locks.contains(&self.lock_name) {
+            return Err(LuceneError::AlreadyClosed(format!(
+                "Lock instance was invalidated from map: {:?}",
+                self
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Native OS-level filesystem lock factory.
+///
+/// Equivalent to `org.apache.lucene.store.NativeFSLockFactory`. Uses the
+/// `fslock` crate to acquire advisory locks on a file inside the directory.
+#[derive(Debug, Clone, Copy)]
+pub struct NativeFSLockFactory;
+
+impl NativeFSLockFactory {
+    /// Returns the singleton instance.
+    pub fn instance() -> &'static NativeFSLockFactory {
+        static INSTANCE: std::sync::LazyLock<NativeFSLockFactory> =
+            std::sync::LazyLock::new(|| NativeFSLockFactory);
+        &INSTANCE
+    }
+}
+
+impl FSLockFactory for NativeFSLockFactory {
+    fn obtain_fs_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>> {
+        let lock_dir = dir
+            .fs_directory_path()
+            .expect("FSLockFactory validated directory path");
+
+        std::fs::create_dir_all(lock_dir)?;
+        let lock_file = lock_dir.join(lock_name);
+
+        // Create the lock file if it does not already exist, matching Lucene's
+        // Files.createFile with FileAlreadyExistsException ignored.
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_file)?;
+
+        let real_path = lock_file.canonicalize()?;
+        let real_path_str = real_path.to_string_lossy().to_string();
+
+        let mut held = NATIVE_HELD_LOCKS
+            .lock()
+            .expect("native held locks mutex poisoned");
+        if held.contains(&real_path_str) {
+            return Err(LuceneError::lock_obtain_failed(format!(
+                "Lock held by this virtual machine: {real_path_str}"
+            )));
+        }
+
+        let mut lock_file = LockFile::open(&real_path)?;
+        if !lock_file.try_lock()? {
+            return Err(LuceneError::lock_obtain_failed(format!(
+                "Lock held by another program: {real_path_str}"
+            )));
+        }
+
+        held.insert(real_path_str.clone());
+        drop(held);
+
+        let metadata = std::fs::metadata(&real_path)?;
+        let creation_time = metadata.created().unwrap_or(SystemTime::UNIX_EPOCH);
+
+        Ok(Box::new(NativeFSLock {
+            lock: Mutex::new(lock_file),
+            path: real_path,
+            path_str: real_path_str,
+            creation_time,
+            closed: AtomicBool::new(false),
+        }))
+    }
+}
+
+/// Per-process set of canonical paths currently held by
+/// [`NativeFSLockFactory`].
+///
+/// Equivalent to the static synchronized `HashSet` in Lucene's
+/// `NativeFSLockFactory`.
+static NATIVE_HELD_LOCKS: std::sync::LazyLock<Mutex<HashSet<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// A native OS-level filesystem lock.
+///
+/// Equivalent to the private `NativeFSLock` inner class of
+/// `org.apache.lucene.store.NativeFSLockFactory`.
+#[derive(Debug)]
+struct NativeFSLock {
+    lock: Mutex<LockFile>,
+    path: PathBuf,
+    path_str: String,
+    creation_time: SystemTime,
+    closed: AtomicBool,
+}
+
+impl std::fmt::Display for NativeFSLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NativeFSLock(path={})", self.path.display())
+    }
+}
+
+impl Lock for NativeFSLock {
+    fn close(&mut self) -> Result<()> {
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        let mut lock = self.lock.lock().expect("native lock mutex poisoned");
+        let unlock_result = lock.unlock();
+        drop(lock);
+
+        let mut held = NATIVE_HELD_LOCKS
+            .lock()
+            .expect("native held locks mutex poisoned");
+        held.remove(&self.path_str);
+        drop(held);
+
+        unlock_result.map_err(|e| {
+            LuceneError::Io(std::io::Error::other(format!(
+                "failed to release native lock {}: {e}",
+                self.path.display()
+            )))
+        })?;
+
+        Ok(())
+    }
+
+    fn ensure_valid(&self) -> Result<()> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(LuceneError::AlreadyClosed(format!(
+                "Lock instance already released: {self}"
+            )));
+        }
+
+        let held = NATIVE_HELD_LOCKS
+            .lock()
+            .expect("native held locks mutex poisoned");
+        if !held.contains(&self.path_str) {
+            return Err(LuceneError::AlreadyClosed(format!(
+                "Lock path unexpectedly cleared from map: {self}"
+            )));
+        }
+        drop(held);
+
+        let lock = self.lock.lock().expect("native lock mutex poisoned");
+        if !lock.owns_lock() {
+            return Err(LuceneError::AlreadyClosed(format!(
+                "FileLock invalidated by an external force: {self}"
+            )));
+        }
+        drop(lock);
+
+        let metadata = std::fs::metadata(&self.path)?;
+        let size = metadata.len() as i64;
+        if size != 0 {
+            return Err(LuceneError::AlreadyClosed(format!(
+                "Unexpected lock file size: {size}, (lock={self})"
+            )));
+        }
+
+        let ctime = metadata.created().unwrap_or(SystemTime::UNIX_EPOCH);
+        if ctime != self.creation_time {
+            return Err(LuceneError::AlreadyClosed(format!(
+                "Underlying file changed by an external force at {ctime:?}, (lock={self})"
+            )));
+        }
+
+        Ok(())
+    }
+}
+
+/// Simple lock factory that relies on the atomic creation of an empty lock
+/// file.
+///
+/// Equivalent to `org.apache.lucene.store.SimpleFSLockFactory`.
+#[derive(Debug, Clone, Copy)]
+pub struct SimpleFSLockFactory;
+
+impl SimpleFSLockFactory {
+    /// Returns the singleton instance.
+    pub fn instance() -> &'static SimpleFSLockFactory {
+        static INSTANCE: std::sync::LazyLock<SimpleFSLockFactory> =
+            std::sync::LazyLock::new(|| SimpleFSLockFactory);
+        &INSTANCE
+    }
+}
+
+impl FSLockFactory for SimpleFSLockFactory {
+    fn obtain_fs_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>> {
+        let lock_dir = dir
+            .fs_directory_path()
+            .expect("FSLockFactory validated directory path");
+
+        std::fs::create_dir_all(lock_dir)?;
+        let lock_file = lock_dir.join(lock_name);
+
+        match std::fs::File::create_new(&lock_file) {
+            Ok(_) => {}
+            Err(e)
+                if e.kind() == std::io::ErrorKind::AlreadyExists
+                    || e.kind() == std::io::ErrorKind::PermissionDenied =>
+            {
+                return Err(LuceneError::lock_obtain_failed_with_source(
+                    format!("Lock held elsewhere: {}", lock_file.display()),
+                    e,
+                ));
+            }
+            Err(e) => return Err(LuceneError::from(e)),
+        }
+
+        let metadata = std::fs::metadata(&lock_file)?;
+        let creation_time = metadata.created().unwrap_or(SystemTime::UNIX_EPOCH);
+
+        Ok(Box::new(SimpleFSLock {
+            path: lock_file,
+            creation_time,
+            closed: AtomicBool::new(false),
+        }))
+    }
+}
+
+/// A lock represented by the existence of an empty file.
+///
+/// Equivalent to the private `SimpleFSLock` inner class of
+/// `org.apache.lucene.store.SimpleFSLockFactory`.
+#[derive(Debug)]
+struct SimpleFSLock {
+    path: PathBuf,
+    creation_time: SystemTime,
+    closed: AtomicBool,
+}
+
+impl std::fmt::Display for SimpleFSLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SimpleFSLock(path={})", self.path.display())
+    }
+}
+
+impl Lock for SimpleFSLock {
+    fn close(&mut self) -> Result<()> {
+        // Validate the lock *before* marking it closed, matching Lucene's
+        // SimpleFSLock.close() contract.
+        if let Err(exc) = self.ensure_valid() {
+            return Err(LuceneError::lock_release_failed_with_source(
+                "Lock file cannot be safely removed. Manual intervention is recommended.",
+                std::io::Error::other(exc.to_string()),
+            ));
+        }
+
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        std::fs::remove_file(&self.path).map_err(|e| {
+            LuceneError::lock_release_failed_with_source(
+                "Unable to remove lock file. Manual intervention is recommended",
+                e,
+            )
+        })
+    }
+
+    fn ensure_valid(&self) -> Result<()> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(LuceneError::AlreadyClosed(format!(
+                "Lock was already released: {self}"
+            )));
+        }
+
+        let metadata = std::fs::metadata(&self.path)?;
+        let ctime = metadata.created().unwrap_or(SystemTime::UNIX_EPOCH);
+        if ctime != self.creation_time {
+            return Err(LuceneError::AlreadyClosed(format!(
+                "Underlying file changed by an external force at {ctime:?}, (lock={self})"
+            )));
+        }
+
         Ok(())
     }
 }
@@ -2613,6 +3071,23 @@ pub trait Directory: Send + Sync {
         Self: Sized,
     {
         format!("{}_{}_{}.tmp", prefix, suffix, radix_36(counter))
+    }
+
+    /// Returns the filesystem path backing this directory, if it is an
+    /// `FSDirectory` subclass.
+    ///
+    /// Equivalent to `FSDirectory.getDirectory` in Lucene 10.5.0. In-memory
+    /// directories return `None`.
+    fn fs_directory_path(&self) -> Option<&Path> {
+        None
+    }
+
+    /// Returns the concrete type name of this directory implementation.
+    ///
+    /// Useful for diagnostic messages; the default implementation reports
+    /// `std::any::type_name::<Self>()`.
+    fn directory_type_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
     }
 
     /// Default validation that this directory is still open.
@@ -5140,5 +5615,221 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(ok.hints().len(), 2);
+    }
+
+    // -------------------------------------------------------------------------
+    // Lock factory tests
+    // -------------------------------------------------------------------------
+
+    /// A mock filesystem-backed directory that delegates file operations to an
+    /// in-memory directory but reports a real filesystem path.
+    #[derive(Debug)]
+    struct MockFSDirectory {
+        path: PathBuf,
+        inner: RamDirectory,
+    }
+
+    impl MockFSDirectory {
+        fn new(path: PathBuf) -> Self {
+            Self {
+                path,
+                inner: RamDirectory::new(),
+            }
+        }
+    }
+
+    impl Directory for MockFSDirectory {
+        fn list_all(&self) -> Result<Vec<String>> {
+            self.inner.list_all()
+        }
+
+        fn delete_file(&self, name: &str) -> Result<()> {
+            self.inner.delete_file(name)
+        }
+
+        fn file_length(&self, name: &str) -> Result<i64> {
+            self.inner.file_length(name)
+        }
+
+        fn create_output(
+            &self,
+            name: &str,
+            context: &dyn IOContext,
+        ) -> Result<Box<dyn IndexOutput>> {
+            self.inner.create_output(name, context)
+        }
+
+        fn create_temp_output(
+            &self,
+            prefix: &str,
+            suffix: &str,
+            context: &dyn IOContext,
+        ) -> Result<Box<dyn IndexOutput>> {
+            self.inner.create_temp_output(prefix, suffix, context)
+        }
+
+        fn sync(&self, names: &[String]) -> Result<()> {
+            self.inner.sync(names)
+        }
+
+        fn sync_metadata(&self) -> Result<()> {
+            self.inner.sync_metadata()
+        }
+
+        fn rename(&self, source: &str, dest: &str) -> Result<()> {
+            self.inner.rename(source, dest)
+        }
+
+        fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+            self.inner.open_input(name, context)
+        }
+
+        fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+            self.inner.obtain_lock(name)
+        }
+
+        fn close(&mut self) -> Result<()> {
+            self.inner.close()
+        }
+
+        fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+            self.inner.get_pending_deletions()
+        }
+
+        fn fs_directory_path(&self) -> Option<&Path> {
+            Some(&self.path)
+        }
+    }
+
+    /// Verifies that [`NoLockFactory`] returns a shared no-op lock that never
+    /// fails validation or release.
+    #[test]
+    fn no_lock_factory_returns_shared_no_op_lock() {
+        let factory = NoLockFactory::instance();
+        let dir = RamDirectory::new();
+        let mut lock1 = factory.obtain_lock(&dir, "any.lock").unwrap();
+        let mut lock2 = factory.obtain_lock(&dir, "any.lock").unwrap();
+        lock1.ensure_valid().unwrap();
+        lock2.ensure_valid().unwrap();
+        lock1.close().unwrap();
+        lock2.close().unwrap();
+    }
+
+    /// Verifies that [`SingleInstanceLockFactory`] rejects double acquisition
+    /// and allows re-acquisition after release.
+    #[test]
+    fn single_instance_lock_factory_rejects_double_acquisition() {
+        let factory = SingleInstanceLockFactory::new();
+        let dir = RamDirectory::new();
+
+        let mut lock = factory.obtain_lock(&dir, "test.lock").unwrap();
+        lock.ensure_valid().unwrap();
+
+        let err = match factory.obtain_lock(&dir, "test.lock") {
+            Err(e) => e,
+            Ok(_) => panic!("expected double acquisition to fail"),
+        };
+        assert!(err.to_string().contains("lock instance already obtained"));
+
+        lock.close().unwrap();
+
+        // After release, the same lock name can be acquired again.
+        let mut lock2 = factory.obtain_lock(&dir, "test.lock").unwrap();
+        lock2.ensure_valid().unwrap();
+        lock2.close().unwrap();
+    }
+
+    /// Verifies that [`NativeFSLockFactory`] acquires and releases native locks,
+    /// rejects in-process double acquisition, and validates the lock.
+    #[test]
+    fn native_fs_lock_factory_acquires_and_releases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = MockFSDirectory::new(tmp.path().to_path_buf());
+        let factory = NativeFSLockFactory::instance();
+
+        let mut lock = factory.obtain_lock(&dir, "test.lock").unwrap();
+        lock.ensure_valid().unwrap();
+
+        // Double acquisition from the same process fails cleanly.
+        let err = match factory.obtain_lock(&dir, "test.lock") {
+            Err(e) => e,
+            Ok(_) => panic!("expected double acquisition to fail"),
+        };
+        assert!(err
+            .to_string()
+            .contains("Lock held by this virtual machine"));
+
+        lock.close().unwrap();
+
+        // After release, the lock can be re-acquired.
+        let mut lock2 = factory.obtain_lock(&dir, "test.lock").unwrap();
+        lock2.ensure_valid().unwrap();
+        lock2.close().unwrap();
+    }
+
+    /// Verifies that [`SimpleFSLockFactory`] acquires and releases locks by
+    /// creating an empty lock file, rejects double acquisition, and validates.
+    #[test]
+    fn simple_fs_lock_factory_acquires_and_releases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = MockFSDirectory::new(tmp.path().to_path_buf());
+        let factory = SimpleFSLockFactory::instance();
+
+        let mut lock = factory.obtain_lock(&dir, "test.lock").unwrap();
+        lock.ensure_valid().unwrap();
+
+        let err = match factory.obtain_lock(&dir, "test.lock") {
+            Err(e) => e,
+            Ok(_) => panic!("expected double acquisition to fail"),
+        };
+        assert!(err.to_string().contains("Lock held elsewhere"));
+
+        lock.close().unwrap();
+
+        // After release, the lock can be re-acquired.
+        let mut lock2 = factory.obtain_lock(&dir, "test.lock").unwrap();
+        lock2.ensure_valid().unwrap();
+        lock2.close().unwrap();
+    }
+
+    /// Verifies that [`FSLockFactory::get_default`] returns the native
+    /// filesystem lock factory.
+    #[test]
+    fn fs_lock_factory_get_default_returns_native() {
+        let factory = <NativeFSLockFactory as FSLockFactory>::get_default();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = MockFSDirectory::new(tmp.path().to_path_buf());
+
+        let mut lock = factory.obtain_lock(&dir, "default.lock").unwrap();
+        lock.ensure_valid().unwrap();
+
+        // The default factory behaves like NativeFSLockFactory: a second
+        // acquisition in the same process is rejected by the held-set check.
+        let native = NativeFSLockFactory::instance();
+        let err = match native.obtain_lock(&dir, "default.lock") {
+            Err(e) => e,
+            Ok(_) => panic!("expected double acquisition to fail"),
+        };
+        assert!(err
+            .to_string()
+            .contains("Lock held by this virtual machine"));
+
+        lock.close().unwrap();
+    }
+
+    /// Verifies that using an [`FSLockFactory`] with a non-FSDirectory returns
+    /// an error with the expected message.
+    #[test]
+    fn fs_lock_factory_rejects_non_fs_directory() {
+        let factory = NativeFSLockFactory::instance();
+        let dir = RamDirectory::new();
+        let err = match factory.obtain_lock(&dir, "test.lock") {
+            Err(e) => e,
+            Ok(_) => panic!("expected non-FSDirectory to be rejected"),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("NativeFSLockFactory can only be used with FSDirectory subclasses, got:")
+        );
     }
 }
