@@ -242,6 +242,21 @@ The canonical source code for Apache Lucene 10.5.0:
 
 Use the release tag/branch for the exact 10.5.0 sources. Use the `main` branch only when explicitly comparing against future development, never as the primary reference for the 10.5.0 target.
 
+#### Local reference clone
+
+For all porting and verification work, prefer reading the Lucene Core 10.5.0 sources directly from a local clone instead of issuing web requests. When the clone is not present, obtain it with:
+
+```bash
+git clone --branch releases/lucene/10.5.0 --single-branch https://github.com/apache/lucene.git /tmp/lucene1050
+```
+
+The canonical local paths are:
+
+- Lucene Core source tree: `/tmp/lucene1050/lucene/core/src/java/org/apache/lucene/`
+- Demo source tree: `/tmp/lucene1050/lucene/demo/src/java/org/apache/lucene/demo/`
+
+Consult files directly from this local repository. Do not use `WebFetch` or `WebSearch` for Lucene source lookups when the local clone is available; reading the exact Java files on disk is faster, works offline, and avoids stale or mismatched content.
+
 ### 14.2 Official documentation
 
 The canonical documentation and API reference for Apache Lucene 10.5.0:
