@@ -2401,6 +2401,14 @@ pub trait LockFactory: Send + Sync {
     ///
     /// Returns [`LuceneError::LockObtainFailed`] if the lock cannot be acquired.
     fn obtain_lock(&self, dir: &dyn Directory, lock_name: &str) -> Result<Box<dyn Lock>>;
+
+    /// Returns the concrete type name of this lock factory implementation.
+    ///
+    /// Useful for diagnostic messages; the default implementation reports
+    /// `std::any::type_name::<Self>()`, matching [`Directory::directory_type_name`].
+    fn directory_type_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
 }
 
 /// Abstract base for filesystem-based lock factories.
@@ -3114,6 +3122,129 @@ fn radix_36(value: u64) -> String {
         }
         chars.reverse();
         chars.into_iter().collect()
+    }
+}
+
+/// Base implementation of a [`Directory`] that owns a [`LockFactory`] and an
+/// open/closed flag.
+///
+/// Equivalent to `org.apache.lucene.store.BaseDirectory`. Concrete directory
+/// implementations can wrap their storage backend with this type to inherit the
+/// standard lock acquisition and lifecycle behavior without re-implementing it.
+pub struct BaseDirectory<D: Directory> {
+    inner: D,
+    lock_factory: Box<dyn LockFactory>,
+    lock_factory_type_name: &'static str,
+    is_open: AtomicBool,
+}
+
+impl<D: Directory> BaseDirectory<D> {
+    /// Creates a new base directory around `inner` using the given lock factory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if `lock_factory` is `None`,
+    /// matching Lucene's `NullPointerException("LockFactory must not be null,
+    /// use an explicit instance!")`.
+    pub fn new(inner: D, lock_factory: Option<Box<dyn LockFactory>>) -> Result<Self> {
+        let lock_factory = lock_factory.ok_or_else(|| {
+            LuceneError::IllegalArgument(
+                "LockFactory must not be null, use an explicit instance!".to_string(),
+            )
+        })?;
+        let lock_factory_type_name = lock_factory.directory_type_name();
+        Ok(Self {
+            inner,
+            lock_factory,
+            lock_factory_type_name,
+            is_open: AtomicBool::new(true),
+        })
+    }
+
+    /// Returns the configured lock factory.
+    pub fn lock_factory(&self) -> &dyn LockFactory {
+        self.lock_factory.as_ref()
+    }
+
+    /// Returns `true` if this directory is still open.
+    pub fn is_open(&self) -> bool {
+        self.is_open.load(Ordering::Acquire)
+    }
+}
+
+impl<D: Directory> Directory for BaseDirectory<D> {
+    fn list_all(&self) -> Result<Vec<String>> {
+        self.inner.list_all()
+    }
+
+    fn delete_file(&self, name: &str) -> Result<()> {
+        self.inner.delete_file(name)
+    }
+
+    fn file_length(&self, name: &str) -> Result<i64> {
+        self.inner.file_length(name)
+    }
+
+    fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
+        self.inner.create_output(name, context)
+    }
+
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexOutput>> {
+        self.inner.create_temp_output(prefix, suffix, context)
+    }
+
+    fn sync(&self, names: &[String]) -> Result<()> {
+        self.inner.sync(names)
+    }
+
+    fn sync_metadata(&self) -> Result<()> {
+        self.inner.sync_metadata()
+    }
+
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        self.inner.rename(source, dest)
+    }
+
+    fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+        self.inner.open_input(name, context)
+    }
+
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+        self.lock_factory.obtain_lock(self, name)
+    }
+
+    fn close(&mut self) -> Result<()> {
+        self.is_open.store(false, Ordering::Release);
+        self.inner.close()
+    }
+
+    fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+        self.inner.get_pending_deletions()
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        if !self.is_open() {
+            return Err(LuceneError::AlreadyClosed(
+                "this Directory is closed".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<D: Directory> std::fmt::Display for BaseDirectory<D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}, lockFactory={}",
+            self.inner.directory_type_name(),
+            self.lock_factory_type_name
+        )
     }
 }
 
@@ -5615,6 +5746,80 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(ok.hints().len(), 2);
+    }
+
+    // -------------------------------------------------------------------------
+    // BaseDirectory tests
+    // -------------------------------------------------------------------------
+
+    /// Verifies that [`BaseDirectory`] rejects a `None` lock factory with the
+    /// same message Lucene uses for a `null` lock factory.
+    #[test]
+    fn base_directory_rejects_null_lock_factory() {
+        let result = BaseDirectory::new(RamDirectory::new(), None);
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected null lock factory to be rejected"),
+        };
+        assert!(err
+            .to_string()
+            .contains("LockFactory must not be null, use an explicit instance!"));
+    }
+
+    /// Verifies that [`BaseDirectory::obtain_lock`] delegates to the configured
+    /// lock factory.
+    #[test]
+    fn base_directory_obtain_lock_delegates_to_factory() {
+        let factory = SingleInstanceLockFactory::new();
+        let dir = BaseDirectory::new(RamDirectory::new(), Some(Box::new(factory))).unwrap();
+
+        let mut lock = dir.obtain_lock("test.lock").unwrap();
+        lock.ensure_valid().unwrap();
+
+        // The same factory rejects double acquisition in-process.
+        let result = dir.obtain_lock("test.lock");
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected double acquisition to fail"),
+        };
+        assert!(err.to_string().contains("lock instance already obtained"));
+
+        lock.close().unwrap();
+
+        // After release the lock name can be acquired again.
+        let mut lock2 = dir.obtain_lock("test.lock").unwrap();
+        lock2.ensure_valid().unwrap();
+        lock2.close().unwrap();
+    }
+
+    /// Verifies that [`BaseDirectory::ensure_open`] succeeds while open and
+    /// returns [`LuceneError::AlreadyClosed`] after [`Directory::close`].
+    #[test]
+    fn base_directory_ensure_open_throws_after_close() {
+        let mut dir =
+            BaseDirectory::new(RamDirectory::new(), Some(Box::new(NoLockFactory))).unwrap();
+        assert!(dir.ensure_open().is_ok());
+        assert!(dir.is_open());
+
+        dir.close().unwrap();
+        assert!(!dir.is_open());
+
+        let result = dir.ensure_open();
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected AlreadyClosed after close"),
+        };
+        assert!(err.to_string().contains("this Directory is closed"));
+    }
+
+    /// Verifies that the [`Display`] representation includes the configured
+    /// lock factory, matching Lucene's `BaseDirectory.toString()`.
+    #[test]
+    fn base_directory_display_includes_lock_factory() {
+        let dir = BaseDirectory::new(RamDirectory::new(), Some(Box::new(NoLockFactory))).unwrap();
+        let repr = dir.to_string();
+        assert!(repr.contains("lockFactory="));
+        assert!(repr.contains("NoLockFactory"));
     }
 
     // -------------------------------------------------------------------------
