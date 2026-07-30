@@ -59,15 +59,17 @@ Java type declarations (and Rust types when the local crate is populated).
 | `gitCommit` | Last confirmed commit hash. |
 | `gitDate` | ISO date of `gitCommit`. |
 
-### `Method` *(target tier — populated selectively for key public/protected APIs)*
-A method, constructor, or function.
+### `Method`
+A method, constructor, or field member.
 
 | Property | Purpose |
 |----------|---------|
-| `name` | Method name. |
-| `signature` | Method signature (simplified). |
-| `kind` | `"method"`, `"constructor"`, `"static"`, `"function"`. |
-| `file` | Source file path or URL. |
+| `name` | Member name. |
+| `signature` | Simplified signature (return type + name + parameter list). |
+| `kind` | `"method"`, `"constructor"`, `"field"`. |
+| `modifiers` | Access and other modifiers (`public`, `protected`, `static`, `final`, etc.). |
+| `returnType` | Return/field type string (when available). |
+| `parentQualifiedName` | Enclosing class qualified name. |
 | `gitCommit` | Last confirmed commit hash. |
 | `gitDate` | ISO date of `gitCommit`. |
 

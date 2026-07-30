@@ -330,6 +330,8 @@ def scan_external_supertypes():
                     continue
                 path = Path(dp) / f
                 text = path.read_text(encoding='utf-8', errors='ignore')
+                # strip text blocks so they are not parsed as declarations
+                text = re.sub(r'"""\s*\n[\s\S]*?\n\s*"""', '""', text)
                 m_pkg = re.search(r'\n?\s*package\s+([a-zA-Z0-9_.]+)\s*;', text)
                 if not m_pkg:
                     continue
@@ -396,15 +398,18 @@ def extract_inner_classes():
     )
 
     def clean_text(text):
-        # very conservative: strip strings and comments so brace counting works
-        t = re.sub(r'"(?:\\.|[^"\\])*"', '""', text)
-        t = re.sub(r"'(?:\\.|[^'\\])*'", "''", t)
-        t = re.sub(r'/\*.*?\*/', '', t, flags=re.S)
+        # Order matters: remove text blocks/strings first (they can contain comment-like
+        # tokens), then comments, then char literals (so an apostrophe inside a removed
+        # comment does not start a multi-line char match).
+        t = re.sub(r'"""\s*\n[\s\S]*?\n\s*"""', '""', text)
+        t = re.sub(r'"(?:\\.|[^"\\])*"', '""', t)
         t = re.sub(r'//.*?$', '', t, flags=re.M)
+        t = re.sub(r'/\*.*?\*/', '', t, flags=re.S)
+        t = re.sub(r"'(?:\\.|[^'\\\n])*'", "''", t)
         return t
 
-    def make_qualified(stack, name):
-        return '$'.join(stack + [name])
+    def parent_qualified(pkg, stack):
+        return pkg + '.' + '$'.join(stack)
 
     inners = []
     for root in [CORE_ROOT_JAVA, CORE_ROOT_JAVA21]:
@@ -421,7 +426,7 @@ def extract_inner_classes():
                 pkg = m_pkg.group(1)
                 clean = clean_text(text)
 
-                stack = []  # stack of type names currently open
+                stack = []  # stack of simple type names currently open
                 for m in decl_re.finditer(clean):
                     prefix = clean[:m.start()]
                     depth = prefix.count('{') - prefix.count('}')
@@ -435,10 +440,10 @@ def extract_inner_classes():
                         stack.pop()
 
                     if depth == 0:
-                        stack = [pkg + '.' + name]
+                        stack = [name]
                     elif stack:
-                        parent = stack[-1]
-                        qualified = make_qualified(stack, name)
+                        parent = parent_qualified(pkg, stack)
+                        qualified = parent + '$' + name
                         inners.append({
                             'qualifiedName': qualified,
                             'name': name,
@@ -447,7 +452,7 @@ def extract_inner_classes():
                             'package': pkg,
                             'parentQualifiedName': parent,
                         })
-                        stack.append(qualified)
+                        stack.append(name)
                     else:
                         # Should not happen unless a declaration appears at depth >0
                         # without a top-level type (e.g. local scope); skip.
@@ -475,6 +480,321 @@ def generate_inner_class_cypher(inners):
             f"c.file='{escape(inn['file'])}', c.package='{escape(inn['package'])}', "
             f"c.parentQualifiedName='{escape(inn['parentQualifiedName'])}', "
             f"c.gitCommit='{COMMIT}', c.gitDate='{GDATE}'"
+        )
+    return create_lines, update_lines
+
+
+def extract_members():
+    """
+    Extract public/protected methods, constructors, and fields from all
+    top-level and inner type declarations in src/java and src/java21.
+
+    Returns a dict with keys 'methods', 'constructors', 'fields'. Each value is
+    a list of dicts with: qualifiedName, name, signature, kind, file, package,
+    parentQualifiedName, modifiers, returnType (for methods/fields).
+    """
+    decl_re = re.compile(
+        r'^\s*(?:(?:public|protected|private|abstract|final|static|strictfp|sealed|non-sealed)\s+)*'
+        r'(class|interface|enum|record|@interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
+        r'(?:\s*<[^;{}]*>)?'
+        r'(?:\s+extends\s+[^{<]+)?'
+        r'(?:\s+implements\s+[^{<]+)?'
+        r'\s*[{<]',
+        re.MULTILINE,
+    )
+
+    # Method/constructor/field regex
+    # Group 1: modifiers, Group 2: return type (optional), Group 3: name, Group 4: params
+    member_re = re.compile(
+        r'^\s*(?P<mods>(?:public\s+|protected\s+|private\s+|static\s+|final\s+|abstract\s+|synchronized\s+|native\s+|default\s+|volatile\s+|transient\s+)+)'
+        r'(?:(?P<annots>@[A-Za-z_$][A-Za-z0-9_$\.]*(?:\([^\)]*\))?\s+)*)'
+        r'(?P<type>[<>\?\[\]A-Za-z0-9_.,\s]*?)?\s*'
+        r'(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*'
+        r'(?P<params>\([^\)]*\))?\s*'
+        r'(?P<throws>throws\s+[^{;]+)?\s*'
+        r'(?P<end>[;{])',
+        re.MULTILINE,
+    )
+
+    def clean_text(text):
+        # Order matters: remove text blocks/strings first, then comments, then chars.
+        t = re.sub(r'"""\s*\n[\s\S]*?\n\s*"""', '""', text)
+        t = re.sub(r'"(?:\\.|[^"\\])*"', '""', t)
+        t = re.sub(r'//.*?$', '', t, flags=re.M)
+        t = re.sub(r'/\*.*?\*/', '', t, flags=re.S)
+        t = re.sub(r"'(?:\\.|[^'\\\n])*'", "''", t)
+        return t
+
+    methods = []
+    constructors = []
+    fields = []
+
+    def is_type_like(s):
+        # Heuristic for recognising a Java type token. It covers primitives, known
+        # types, generic/array types, package-qualified types, and simple class
+        # names that follow the UpperCamelCase convention.
+        s = s.strip()
+        if not s:
+            return False
+        if s in ('void', 'boolean', 'byte', 'char', 'short', 'int', 'long', 'float', 'double',
+                 'String', 'Object', 'Class'):
+            return True
+        # generic or array type
+        if '<' in s or '[' in s:
+            return True
+        # package-qualified type (e.g. org.apache.lucene.index.IndexWriter)
+        if '.' in s:
+            return True
+        # simple class type by convention (starts with uppercase letter)
+        if s[0].isupper():
+            return True
+        return False
+
+    def normalize_ws(s):
+        return ' '.join(s.split()) if s else ''
+
+    def split_top_level_commas(s):
+        """Split a comma-separated declaration list, ignoring commas inside
+        generic brackets, parentheses or square brackets."""
+        depth = 0
+        parts = []
+        cur = []
+        for ch in s:
+            if ch in '<([':
+                depth += 1
+            elif ch in '>)]':
+                depth -= 1
+            elif ch == ',' and depth == 0:
+                parts.append(''.join(cur))
+                cur = []
+                continue
+            cur.append(ch)
+        parts.append(''.join(cur))
+        return parts
+
+    def extract_from_body(clean, body_start, body_end, parent_qualified):
+        # body_start/body_end are indices in the already-cleaned text, so slice
+        # from clean directly; using original text indices would be misaligned.
+        clean_body = clean[body_start:body_end]
+        for m in member_re.finditer(clean_body):
+            # Only keep members declared directly in this type body. Declarations
+            # nested inside methods/blocks (local variables, anonymous classes, etc.)
+            # are at a positive brace depth and must be ignored.
+            prefix = clean_body[:m.start()]
+            member_depth = prefix.count('{') - prefix.count('}')
+            if member_depth != 0:
+                continue
+
+            name = m.group('name')
+            if name in ('if', 'while', 'for', 'switch', 'catch', 'synchronized', 'try', 'finally'):
+                continue
+            mods = normalize_ws(m.group('mods'))
+            params = m.group('params')
+            end = m.group('end')
+            type_str = normalize_ws(m.group('type')) if m.group('type') else ''
+
+            # skip enum constant blocks that look like methods
+            if parent_qualified.endswith(')') or not name:
+                continue
+
+            params_norm = normalize_ws(params) if params else None
+            if params_norm is not None:
+                # constructor: name equals last segment of parent (before $ if inner)
+                parent_name = parent_qualified.split('$')[-1].split('.')[-1]
+                params_body = params_norm[1:-1]
+                qualified = f"{parent_qualified}#{name}({params_body})"
+                sig = f"{name}({params_body})"
+                if name == parent_name:
+                    constructors.append({
+                        'qualifiedName': qualified,
+                        'name': name,
+                        'signature': sig,
+                        'kind': 'constructor',
+                        'modifiers': mods,
+                        'parentQualifiedName': parent_qualified,
+                    })
+                else:
+                    if not is_type_like(type_str):
+                        continue
+                    methods.append({
+                        'qualifiedName': qualified,
+                        'name': name,
+                        'signature': f"{type_str} {sig}" if type_str else sig,
+                        'kind': 'method',
+                        'modifiers': mods,
+                        'returnType': type_str,
+                        'parentQualifiedName': parent_qualified,
+                    })
+            elif end == ';':
+                # The regex may have matched the LAST variable in a multi-variable
+                # field declaration (e.g. "long a, b, c;"). Reconstruct the full
+                # declaration and split on top-level commas to capture every field.
+                decl_start = m.start()
+                decl_end = clean_body.find(';', decl_start)
+                if decl_end == -1:
+                    decl_end = len(clean_body)
+                full_decl = clean_body[decl_start:decl_end]
+                # strip leading modifiers/annotations portion is already captured; keep it
+                # Remove annotations so the type part is easier to parse.
+                decl_no_annot = re.sub(r'@[A-Za-z_$][A-Za-z0-9_$\.]*(?:\([^)]*\))?\s*', '', full_decl)
+                # Drop the modifier keywords to leave "Type var1, var2, ..."
+                decl_no_mods = re.sub(
+                    r'^\s*(?:public\s+|protected\s+|private\s+|static\s+|final\s+|abstract\s+|synchronized\s+|native\s+|default\s+|volatile\s+|transient\s+)+',
+                    '',
+                    decl_no_annot,
+                )
+                # If there is an initializer (= ...), drop it for naming purposes.
+                decl_no_init = re.sub(r'\s*=\s*[^,;]+', '', decl_no_mods)
+                parts = split_top_level_commas(decl_no_init)
+                if not parts:
+                    continue
+                # First part contains the type plus the first variable name.
+                first = parts[0].strip()
+                m_first = re.match(r'^(.*?)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*$', first)
+                if not m_first:
+                    continue
+                base_type = normalize_ws(m_first.group(1))
+                if not is_type_like(base_type):
+                    continue
+                var_names = [normalize_ws(m_first.group(2))]
+                for part in parts[1:]:
+                    part = part.strip().rstrip(';').strip()
+                    if not part:
+                        continue
+                    m_var = re.match(r'^([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:=.*)?$', part)
+                    if m_var:
+                        var_names.append(m_var.group(1))
+                for var_name in var_names:
+                    fields.append({
+                        'qualifiedName': f"{parent_qualified}#{var_name}",
+                        'name': var_name,
+                        'signature': f"{base_type} {var_name}",
+                        'kind': 'field',
+                        'modifiers': mods,
+                        'returnType': base_type,
+                        'parentQualifiedName': parent_qualified,
+                    })
+
+    for root in [CORE_ROOT_JAVA, CORE_ROOT_JAVA21]:
+        for dp, _, fs in os.walk(root):
+            for f in fs:
+                if not f.endswith('.java'):
+                    continue
+                path = Path(dp) / f
+                rel_path = str(path.relative_to(BASE_ROOT))
+                text = path.read_text(encoding='utf-8', errors='ignore')
+                m_pkg = re.search(r'\n?\s*package\s+([a-zA-Z0-9_.]+)\s*;', text)
+                if not m_pkg:
+                    continue
+                pkg = m_pkg.group(1)
+                clean = clean_text(text)
+
+                # Track type bodies so we can extract members within each.
+                # We find each type declaration start and the matching closing brace.
+                stack = []  # list of (qualifiedName, brace_start)
+                for m in decl_re.finditer(clean):
+                    prefix = clean[:m.start()]
+                    depth = prefix.count('{') - prefix.count('}')
+                    name = m.group(2)
+
+                    # Determine the start of this declaration's body.
+                    # The decl_re match ends at the character after the opening '{'
+                    # (or '<' for generics), so m.end()-1 is the brace itself.
+                    body_start = m.end() - 1
+                    if clean[body_start] != '{':
+                        body_start = clean.find('{', m.end())
+                    if body_start == -1:
+                        # no body (e.g. annotation method without default)
+                        body_start = None
+                    else:
+                        body_start += 1  # after the opening brace
+
+                    # Close types that have ended before this new declaration
+                    while stack and len(stack) > max(depth, 0):
+                        prev_qualified, prev_body_start = stack.pop()
+                        if prev_body_start is not None:
+                            # find matching close brace starting from prev_body_start
+                            i = prev_body_start
+                            d = 1
+                            n = len(clean)
+                            while i < n and d > 0:
+                                if clean[i] == '{':
+                                    d += 1
+                                elif clean[i] == '}':
+                                    d -= 1
+                                i += 1
+                            prev_body_end = i
+                            extract_from_body(clean, prev_body_start, prev_body_end, prev_qualified)
+
+                    if depth == 0:
+                        stack = [(pkg + '.' + name, body_start)]
+                    elif stack:
+                        parent = stack[-1][0]
+                        qualified = f"{parent}${name}"
+                        stack.append((qualified, body_start))
+
+                # Finalise remaining types at end of file
+                while stack:
+                    prev_qualified, prev_body_start = stack.pop()
+                    if prev_body_start is not None:
+                        i = prev_body_start
+                        d = 1
+                        n = len(clean)
+                        while i < n and d > 0:
+                            if clean[i] == '{':
+                                d += 1
+                            elif clean[i] == '}':
+                                d -= 1
+                            i += 1
+                        prev_body_end = i
+                        extract_from_body(clean, prev_body_start, prev_body_end, prev_qualified)
+
+    def dedupe_by_qn(items):
+        seen = set()
+        out = []
+        for item in items:
+            qn = item['qualifiedName']
+            if qn in seen:
+                continue
+            seen.add(qn)
+            out.append(item)
+        return out
+
+    return {
+        'methods': dedupe_by_qn(methods),
+        'constructors': dedupe_by_qn(constructors),
+        'fields': dedupe_by_qn(fields),
+    }
+
+
+def generate_member_cypher(members):
+    """Generate Cypher to create Method/Constructor/Field nodes and DECLARES edges."""
+    create_lines = []
+    update_lines = []
+    for m in members:
+        qn = escape(m['qualifiedName'])
+        create_lines.append(
+            f"MERGE (m:Method {{qualifiedName:'{qn}'}})"
+        )
+        create_lines.append(
+            f"MATCH (c:Class {{qualifiedName:'{escape(m['parentQualifiedName'])}'}}), "
+            f"(m:Method {{qualifiedName:'{qn}'}}) "
+            f"MERGE (c)-[:DECLARES]->(m)"
+        )
+        props = {
+            'name': m['name'],
+            'kind': m['kind'],
+            'signature': m['signature'],
+            'modifiers': m.get('modifiers', ''),
+            'parentQualifiedName': m['parentQualifiedName'],
+            'gitCommit': COMMIT,
+            'gitDate': GDATE,
+        }
+        if m.get('returnType'):
+            props['returnType'] = m['returnType']
+        set_clause = ', '.join(f"m.{k}='{escape(str(v))}'" for k, v in props.items())
+        update_lines.append(
+            f"MATCH (m:Method {{qualifiedName:'{qn}'}}) SET {set_clause}"
         )
     return create_lines, update_lines
 
@@ -522,12 +842,29 @@ def main():
     inner_create, inner_update = generate_inner_class_cypher(inners)
     print(f"Found {len(inners)} inner/nested type declarations.", file=sys.stderr)
 
+    print('Extracting members (methods, constructors, fields)...', file=sys.stderr)
+    members = extract_members()
+    method_create, method_update = generate_member_cypher(members['methods'])
+    constructor_create, constructor_update = generate_member_cypher(members['constructors'])
+    field_create, field_update = generate_member_cypher(members['fields'])
+    print(
+        f"Found {len(members['methods'])} methods, {len(members['constructors'])} constructors, "
+        f"{len(members['fields'])} fields.",
+        file=sys.stderr,
+    )
+
     module_create_file = out_dir / 'module_info_create.cypher'
     module_update_file = out_dir / 'module_info_update.cypher'
     missing_file = out_dir / 'missing_edges.cypher'
     external_file = out_dir / 'external_types.cypher'
     inner_create_file = out_dir / 'inner_classes_create.cypher'
     inner_update_file = out_dir / 'inner_classes_update.cypher'
+    method_create_file = out_dir / 'methods_create.cypher'
+    method_update_file = out_dir / 'methods_update.cypher'
+    constructor_create_file = out_dir / 'constructors_create.cypher'
+    constructor_update_file = out_dir / 'constructors_update.cypher'
+    field_create_file = out_dir / 'fields_create.cypher'
+    field_update_file = out_dir / 'fields_update.cypher'
 
     module_create_file.write_text('\n'.join(module_create), encoding='utf-8')
     module_update_file.write_text('\n'.join(module_update), encoding='utf-8')
@@ -535,6 +872,12 @@ def main():
     external_file.write_text('\n'.join(external_cypher), encoding='utf-8')
     inner_create_file.write_text('\n'.join(inner_create), encoding='utf-8')
     inner_update_file.write_text('\n'.join(inner_update), encoding='utf-8')
+    method_create_file.write_text('\n'.join(method_create), encoding='utf-8')
+    method_update_file.write_text('\n'.join(method_update), encoding='utf-8')
+    constructor_create_file.write_text('\n'.join(constructor_create), encoding='utf-8')
+    constructor_update_file.write_text('\n'.join(constructor_update), encoding='utf-8')
+    field_create_file.write_text('\n'.join(field_create), encoding='utf-8')
+    field_update_file.write_text('\n'.join(field_update), encoding='utf-8')
 
     print(f"Wrote {module_create_file} ({len(module_create)} statements)", file=sys.stderr)
     print(f"Wrote {module_update_file} ({len(module_update)} statements)", file=sys.stderr)
@@ -542,6 +885,12 @@ def main():
     print(f"Wrote {external_file} ({len(external_cypher)} statements)", file=sys.stderr)
     print(f"Wrote {inner_create_file} ({len(inner_create)} statements)", file=sys.stderr)
     print(f"Wrote {inner_update_file} ({len(inner_update)} statements)", file=sys.stderr)
+    print(f"Wrote {method_create_file} ({len(method_create)} statements)", file=sys.stderr)
+    print(f"Wrote {method_update_file} ({len(method_update)} statements)", file=sys.stderr)
+    print(f"Wrote {constructor_create_file} ({len(constructor_create)} statements)", file=sys.stderr)
+    print(f"Wrote {constructor_update_file} ({len(constructor_update)} statements)", file=sys.stderr)
+    print(f"Wrote {field_create_file} ({len(field_create)} statements)", file=sys.stderr)
+    print(f"Wrote {field_update_file} ({len(field_update)} statements)", file=sys.stderr)
 
     if args.run:
         print('Running module-info CREATE Cypher...', file=sys.stderr)
@@ -556,6 +905,18 @@ def main():
         run_rmp('create', str(inner_create_file))
         print('Running inner-class UPDATE Cypher...', file=sys.stderr)
         run_rmp('update', str(inner_update_file))
+        print('Running method CREATE Cypher...', file=sys.stderr)
+        run_rmp('create', str(method_create_file))
+        print('Running method UPDATE Cypher...', file=sys.stderr)
+        run_rmp('update', str(method_update_file))
+        print('Running constructor CREATE Cypher...', file=sys.stderr)
+        run_rmp('create', str(constructor_create_file))
+        print('Running constructor UPDATE Cypher...', file=sys.stderr)
+        run_rmp('update', str(constructor_update_file))
+        print('Running field CREATE Cypher...', file=sys.stderr)
+        run_rmp('create', str(field_create_file))
+        print('Running field UPDATE Cypher...', file=sys.stderr)
+        run_rmp('update', str(field_update_file))
         print('Enrichment complete.', file=sys.stderr)
 
 
