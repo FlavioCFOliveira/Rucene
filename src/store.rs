@@ -7,8 +7,12 @@
 #![deny(unsafe_code)]
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     io,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use crc32fast;
@@ -1929,6 +1933,928 @@ impl IndexOutput for MockIndexOutput {
 
     fn resource_description(&self) -> &str {
         &self.resource_description
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+// -----------------------------------------------------------------------------
+// IOContext, hints, and directory metadata
+// -----------------------------------------------------------------------------
+
+/// Context in which a [`Directory`] operation is being performed.
+///
+/// Equivalent to `org.apache.lucene.store.IOContext.Context`. Lucene 10.5.0
+/// distinguishes merge, flush, and default contexts; read/write hints are
+/// expressed separately via [`FileOpenHint`] values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Context {
+    /// Default context for ordinary reads and writes.
+    Default,
+    /// Context associated with a segment merge.
+    Merge,
+    /// Context associated with a segment flush.
+    Flush,
+}
+
+/// Advice regarding the likely read access pattern for a file.
+///
+/// Equivalent to `org.apache.lucene.store.ReadAdvice`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ReadAdvice {
+    /// Normal, mostly sequential access with caching of hot pages.
+    Normal,
+    /// Random access with frequent seeking or short reads.
+    Random,
+    /// Strictly sequential access; aggressive read-ahead is appropriate.
+    Sequential,
+}
+
+/// Helper used by [`FileOpenHint`] implementations to enable `dyn Any`
+/// downcasting without exposing `Any` in the public API.
+pub trait AsAny: 'static {
+    /// Returns this hint as `&dyn Any`.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+impl<T: 'static + Send + Sync + std::fmt::Debug> AsAny for T {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Marker trait for hints that influence how a file is opened.
+///
+/// Equivalent to `org.apache.lucene.store.IOContext.FileOpenHint`.
+pub trait FileOpenHint: AsAny + std::fmt::Debug + Send + Sync {
+    /// Returns `true` if `other` is the same concrete hint type as `self`.
+    ///
+    /// This is used to enforce that a context contains at most one hint of
+    /// each type, matching `DefaultIOContext`'s validation in Lucene 10.5.0.
+    fn same_type(&self, other: &dyn FileOpenHint) -> bool;
+}
+
+macro_rules! impl_singleton_hint {
+    ($name:ident) => {
+        impl FileOpenHint for $name {
+            fn same_type(&self, other: &dyn FileOpenHint) -> bool {
+                other.as_any().downcast_ref::<$name>().is_some()
+            }
+        }
+    };
+}
+
+/// Hint that the file access pattern is completely random.
+///
+/// Equivalent to `org.apache.lucene.store.DataAccessHint.RANDOM`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct RandomHint;
+
+impl_singleton_hint!(RandomHint);
+
+impl RandomHint {
+    /// Returns the singleton instance.
+    pub fn instance() -> Self {
+        Self
+    }
+}
+
+/// Hint that the file access pattern is only sequential.
+///
+/// Equivalent to `org.apache.lucene.store.DataAccessHint.SEQUENTIAL`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SequentialHint;
+
+impl_singleton_hint!(SequentialHint);
+
+impl SequentialHint {
+    /// Returns the singleton instance.
+    pub fn instance() -> Self {
+        Self
+    }
+}
+
+/// Hint that the file will only be read once, sequentially.
+///
+/// Equivalent to `org.apache.lucene.store.ReadOnceHint.INSTANCE`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ReadOnceHint;
+
+impl_singleton_hint!(ReadOnceHint);
+
+impl ReadOnceHint {
+    /// Returns the singleton instance.
+    pub fn instance() -> Self {
+        Self
+    }
+}
+
+/// Hint that the file should be preloaded into memory.
+///
+/// Equivalent to `org.apache.lucene.store.PreloadHint.INSTANCE`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct PreloadHint;
+
+impl_singleton_hint!(PreloadHint);
+
+impl PreloadHint {
+    /// Returns the singleton instance.
+    pub fn instance() -> Self {
+        Self
+    }
+}
+
+/// Hint that the file contains index data.
+///
+/// Equivalent to `org.apache.lucene.store.FileTypeHint.INDEX`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct IndexFileHint;
+
+impl_singleton_hint!(IndexFileHint);
+
+impl IndexFileHint {
+    /// Returns the singleton instance.
+    pub fn instance() -> Self {
+        Self
+    }
+}
+
+/// Hint that the file contains field data.
+///
+/// Equivalent to `org.apache.lucene.store.FileTypeHint.DATA`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct DataFileHint;
+
+impl_singleton_hint!(DataFileHint);
+
+impl DataFileHint {
+    /// Returns the singleton instance.
+    pub fn instance() -> Self {
+        Self
+    }
+}
+
+/// Hint that the file contains postings data.
+///
+/// Equivalent to `org.apache.lucene.store.FileDataHint.POSTINGS`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct PostingsHint;
+
+impl_singleton_hint!(PostingsHint);
+
+impl PostingsHint {
+    /// Returns the singleton instance.
+    pub fn instance() -> Self {
+        Self
+    }
+}
+
+/// Hint that the file contains vector data for kNN search.
+///
+/// Equivalent to `org.apache.lucene.store.FileDataHint.KNN_VECTORS`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct KnnVectorsHint;
+
+impl_singleton_hint!(KnnVectorsHint);
+
+impl KnnVectorsHint {
+    /// Returns the singleton instance.
+    pub fn instance() -> Self {
+        Self
+    }
+}
+
+/// Metadata associated with a merge [`Context`].
+///
+/// Equivalent to `org.apache.lucene.store.MergeInfo`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MergeInfo {
+    /// Total maximum document count across segments being merged.
+    pub total_max_doc: i32,
+    /// Estimated number of bytes in the merged segment.
+    pub estimated_merge_bytes: i64,
+    /// Whether this is an external merge.
+    pub is_external: bool,
+    /// Maximum number of segments to merge down to.
+    pub merge_max_num_segments: i32,
+}
+
+impl MergeInfo {
+    /// Creates a new merge descriptor.
+    pub fn new(
+        total_max_doc: i32,
+        estimated_merge_bytes: i64,
+        is_external: bool,
+        merge_max_num_segments: i32,
+    ) -> Self {
+        Self {
+            total_max_doc,
+            estimated_merge_bytes,
+            is_external,
+            merge_max_num_segments,
+        }
+    }
+}
+
+/// Metadata associated with a flush [`Context`].
+///
+/// Equivalent to `org.apache.lucene.store.FlushInfo`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlushInfo {
+    /// Number of documents being flushed.
+    pub num_docs: i32,
+    /// Estimated segment size in bytes.
+    pub estimated_segment_size: i64,
+}
+
+impl FlushInfo {
+    /// Creates a new flush descriptor.
+    pub fn new(num_docs: i32, estimated_segment_size: i64) -> Self {
+        Self {
+            num_docs,
+            estimated_segment_size,
+        }
+    }
+}
+
+/// Additional details describing the purpose of a [`Directory`] operation.
+///
+/// Equivalent to `org.apache.lucene.store.IOContext`. Implementations are
+/// immutable and thread-safe.
+pub trait IOContext: std::fmt::Debug + Send + Sync {
+    /// Returns the operation [`Context`].
+    fn context(&self) -> Context;
+
+    /// Returns merge metadata if [`context`](Self::context) is [`Context::Merge`].
+    fn merge_info(&self) -> Option<MergeInfo>;
+
+    /// Returns flush metadata if [`context`](Self::context) is [`Context::Flush`].
+    fn flush_info(&self) -> Option<FlushInfo>;
+
+    /// Returns the file-open hints attached to this context.
+    fn hints(&self) -> &[Arc<dyn FileOpenHint>];
+
+    /// Returns an [`IOContext`] with the given hints replaced.
+    ///
+    /// Merge/flush contexts ignore hints and return themselves, matching
+    /// Lucene 10.5.0 behavior.
+    fn with_hints(&self, hints: &[Arc<dyn FileOpenHint>]) -> Box<dyn IOContext>;
+}
+
+/// Default [`IOContext`] used for ordinary reads and writes.
+///
+/// Equivalent to `org.apache.lucene.store.DefaultIOContext`.
+#[derive(Clone, Debug, Default)]
+pub struct DefaultIOContext {
+    hints: Vec<Arc<dyn FileOpenHint>>,
+}
+
+impl DefaultIOContext {
+    /// Creates a context with the given hints.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if more than one hint of the
+    /// same concrete type is supplied.
+    pub fn new(hints: Vec<Arc<dyn FileOpenHint>>) -> Result<Self> {
+        for i in 0..hints.len() {
+            for j in (i + 1)..hints.len() {
+                if hints[i].same_type(hints[j].as_ref()) {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "multiple hints of type {:?} specified",
+                        hints[i]
+                    )));
+                }
+            }
+        }
+        Ok(Self { hints })
+    }
+
+    /// Creates a context from a slice of hints, copying them into the context.
+    pub fn with_hints_slice(hints: &[Arc<dyn FileOpenHint>]) -> Result<Self> {
+        Self::new(hints.to_vec())
+    }
+}
+
+impl IOContext for DefaultIOContext {
+    fn context(&self) -> Context {
+        Context::Default
+    }
+
+    fn merge_info(&self) -> Option<MergeInfo> {
+        None
+    }
+
+    fn flush_info(&self) -> Option<FlushInfo> {
+        None
+    }
+
+    fn hints(&self) -> &[Arc<dyn FileOpenHint>] {
+        &self.hints
+    }
+
+    fn with_hints(&self, hints: &[Arc<dyn FileOpenHint>]) -> Box<dyn IOContext> {
+        // Unwrap is safe: validation can only fail if hints contain duplicates,
+        // which would already have failed for the source context.
+        Box::new(Self::with_hints_slice(hints).expect("duplicate hints in with_hints"))
+    }
+}
+
+/// Default context for ordinary reads and writes.
+///
+/// Equivalent to `IOContext.DEFAULT` in Lucene 10.5.0.
+pub static DEFAULT_IO_CONTEXT: std::sync::LazyLock<DefaultIOContext> =
+    std::sync::LazyLock::new(DefaultIOContext::default);
+
+/// Default context for reads with a sequential-once access pattern.
+///
+/// Equivalent to `IOContext.READONCE` in Lucene 10.5.0.
+pub static READONCE_IO_CONTEXT: std::sync::LazyLock<DefaultIOContext> =
+    std::sync::LazyLock::new(|| {
+        DefaultIOContext::new(vec![
+            Arc::new(SequentialHint::instance()),
+            Arc::new(ReadOnceHint::instance()),
+        ])
+        .expect("READONCE hints are unique")
+    });
+
+/// Returns an [`IOContext`] for merging with the supplied metadata.
+///
+/// Equivalent to `IOContext.merge(MergeInfo)` in Lucene 10.5.0.
+pub fn merge_io_context(merge_info: MergeInfo) -> Box<dyn IOContext> {
+    #[derive(Debug)]
+    struct MergeIOContext {
+        info: MergeInfo,
+    }
+    impl IOContext for MergeIOContext {
+        fn context(&self) -> Context {
+            Context::Merge
+        }
+        fn merge_info(&self) -> Option<MergeInfo> {
+            Some(self.info)
+        }
+        fn flush_info(&self) -> Option<FlushInfo> {
+            None
+        }
+        fn hints(&self) -> &[Arc<dyn FileOpenHint>] {
+            &[]
+        }
+        fn with_hints(&self, _hints: &[Arc<dyn FileOpenHint>]) -> Box<dyn IOContext> {
+            Box::new(Self { info: self.info })
+        }
+    }
+    Box::new(MergeIOContext { info: merge_info })
+}
+
+/// Returns an [`IOContext`] for flushing with the supplied metadata.
+///
+/// Equivalent to `IOContext.flush(FlushInfo)` in Lucene 10.5.0.
+pub fn flush_io_context(flush_info: FlushInfo) -> Box<dyn IOContext> {
+    #[derive(Debug)]
+    struct FlushIOContext {
+        info: FlushInfo,
+    }
+    impl IOContext for FlushIOContext {
+        fn context(&self) -> Context {
+            Context::Flush
+        }
+        fn merge_info(&self) -> Option<MergeInfo> {
+            None
+        }
+        fn flush_info(&self) -> Option<FlushInfo> {
+            Some(self.info)
+        }
+        fn hints(&self) -> &[Arc<dyn FileOpenHint>] {
+            &[]
+        }
+        fn with_hints(&self, _hints: &[Arc<dyn FileOpenHint>]) -> Box<dyn IOContext> {
+            Box::new(Self { info: self.info })
+        }
+    }
+    Box::new(FlushIOContext { info: flush_info })
+}
+
+/// Interprocess mutex lock acquired from a [`Directory`].
+///
+/// Equivalent to `org.apache.lucene.store.Lock`. The lock is released when
+/// [`close`](Lock::close) is called.
+pub trait Lock: Send + Sync {
+    /// Releases exclusive access.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] if the lock could not be released cleanly.
+    fn close(&mut self) -> Result<()>;
+
+    /// Best-effort check that this lock is still valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] if the lock is no longer valid.
+    fn ensure_valid(&self) -> Result<()>;
+}
+
+/// A lock that never rejects acquisition and performs no actual locking.
+///
+/// Used by in-memory directories where cross-process locking is unnecessary.
+#[derive(Debug)]
+pub struct NoOpLock;
+
+impl Lock for NoOpLock {
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn ensure_valid(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// An [`IndexInput`] that computes a CRC-32 checksum as it reads.
+///
+/// Equivalent to `org.apache.lucene.store.BufferedChecksumIndexInput`. The
+/// checksum matches Java's `java.util.zip.CRC32` because `crc32fast` uses the
+/// same polynomial.
+pub struct BufferedChecksumIndexInput {
+    main: Box<dyn IndexInput>,
+    digest: crc32fast::Hasher,
+    resource_description: String,
+}
+
+impl std::fmt::Debug for BufferedChecksumIndexInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BufferedChecksumIndexInput")
+            .field("resource_description", &self.resource_description)
+            .field("file_pointer", &self.file_pointer())
+            .field("length", &self.length())
+            .finish()
+    }
+}
+
+impl BufferedChecksumIndexInput {
+    /// Wraps `main` so that all bytes read update an internal CRC-32.
+    pub fn new(main: Box<dyn IndexInput>) -> Self {
+        let resource_description = format!(
+            "BufferedChecksumIndexInput({})",
+            main.resource_description()
+        );
+        Self {
+            main,
+            digest: crc32fast::Hasher::new(),
+            resource_description,
+        }
+    }
+
+    /// Returns the checksum of all bytes read so far.
+    pub fn get_checksum(&self) -> i64 {
+        self.digest.clone().finalize() as i64
+    }
+}
+
+impl DataInput for BufferedChecksumIndexInput {
+    fn read_byte(&mut self) -> Result<u8> {
+        let b = self.main.read_byte()?;
+        self.digest.update(&[b]);
+        Ok(b)
+    }
+
+    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        self.main.read_bytes(b, offset, len)?;
+        self.digest.update(&b[offset..offset + len]);
+        Ok(())
+    }
+
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        if num_bytes < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "numBytes must be non-negative (got: {num_bytes})"
+            )));
+        }
+        let target = self.file_pointer() + num_bytes;
+        self.seek(target)
+    }
+}
+
+impl IndexInput for BufferedChecksumIndexInput {
+    fn close(&mut self) -> Result<()> {
+        self.main.close()
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.main.file_pointer()
+    }
+
+    fn length(&self) -> i64 {
+        self.main.length()
+    }
+
+    fn seek(&mut self, pos: i64) -> Result<()> {
+        let cur = self.file_pointer();
+        if pos < cur {
+            return Err(LuceneError::IllegalState(format!(
+                "{} cannot seek backwards (pos={pos}, file_pointer={cur})",
+                std::any::type_name::<Self>()
+            )));
+        }
+        let skip = pos - cur;
+        if skip > 0 {
+            // Checksum inputs must read skipped bytes to keep the digest correct.
+            const SKIP_BUFFER_SIZE: usize = 1024;
+            let mut skipped = 0i64;
+            let mut buf = [0u8; SKIP_BUFFER_SIZE];
+            while skipped < skip {
+                let step = ((skip - skipped) as usize).min(SKIP_BUFFER_SIZE);
+                self.read_bytes(&mut buf, 0, step)?;
+                skipped += step as i64;
+            }
+        }
+        Ok(())
+    }
+
+    fn slice(
+        &self,
+        _slice_description: &str,
+        _offset: i64,
+        _length: i64,
+    ) -> Result<Box<dyn IndexInput>> {
+        Err(LuceneError::IllegalState(
+            "BufferedChecksumIndexInput does not support slicing".to_string(),
+        ))
+    }
+
+    fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+        Err(LuceneError::IllegalState(
+            "BufferedChecksumIndexInput does not support cloning".to_string(),
+        ))
+    }
+
+    fn resource_description(&self) -> &str {
+        &self.resource_description
+    }
+}
+
+/// Abstraction for a flat file store.
+///
+/// Equivalent to `org.apache.lucene.store.Directory`. Implementations must be
+/// thread-safe for concurrent readers but, like Lucene, each open stream is
+/// intended for use by a single thread.
+pub trait Directory: Send + Sync {
+    /// Returns the names of all files in this directory in sorted order.
+    ///
+    /// In Lucene the order is Java's UTF-16 `String.compareTo`; Rucene uses
+    /// Rust's lexicographic `String` ordering, which is equivalent for ASCII
+    /// file names.
+    fn list_all(&self) -> Result<Vec<String>>;
+
+    /// Deletes the named file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] with `NotFound` if the file does not exist.
+    fn delete_file(&self, name: &str) -> Result<()>;
+
+    /// Returns the byte length of the named file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] with `NotFound` if the file does not exist.
+    fn file_length(&self, name: &str) -> Result<i64>;
+
+    /// Creates a new file and returns an output stream for appending to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] with `AlreadyExists` if the file exists.
+    fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>>;
+
+    /// Creates a new temporary file and returns an output stream for it.
+    ///
+    /// The generated file name starts with `prefix`, ends with `suffix`, and has
+    /// the reserved extension `.tmp`.
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexOutput>>;
+
+    /// Ensures the named files are durably stored.
+    fn sync(&self, names: &[String]) -> Result<()>;
+
+    /// Ensures directory metadata (renames, etc.) are durably stored.
+    fn sync_metadata(&self) -> Result<()>;
+
+    /// Renames `source` to `dest`. `dest` must not already exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] with `AlreadyExists` if `dest` exists.
+    fn rename(&self, source: &str, dest: &str) -> Result<()>;
+
+    /// Opens an existing file for reading.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] with `NotFound` if the file does not exist.
+    fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>>;
+
+    /// Opens a checksum-computing input for an existing file.
+    ///
+    /// Default implementation opens the file once sequentially and wraps it in
+    /// a [`BufferedChecksumIndexInput`].
+    fn open_checksum_input(&self, name: &str) -> Result<Box<BufferedChecksumIndexInput>> {
+        Ok(Box::new(BufferedChecksumIndexInput::new(
+            self.open_input(name, &*READONCE_IO_CONTEXT)?,
+        )))
+    }
+
+    /// Acquires a lock with the given name.
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>>;
+
+    /// Closes the directory and releases any resources.
+    fn close(&mut self) -> Result<()>;
+
+    /// Copies `src` from `from` into a new file `dest` in this directory.
+    ///
+    /// The supplied `context` is used only for opening the destination file.
+    fn copy_from(
+        &self,
+        from: &dyn Directory,
+        src: &str,
+        dest: &str,
+        context: &dyn IOContext,
+    ) -> Result<()> {
+        let result: Result<()> = (|| {
+            let mut src_input = from.open_input(src, &*READONCE_IO_CONTEXT)?;
+            let len = src_input.length();
+            let mut dest_output = self.create_output(dest, context)?;
+            dest_output.copy_bytes(&mut *src_input, len)?;
+            drop(src_input);
+            dest_output.close()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            // Best-effort cleanup of a partial destination file on failure.
+            let _ = self.delete_file(dest);
+        }
+        result
+    }
+
+    /// Returns the set of files currently pending deletion.
+    fn get_pending_deletions(&self) -> Result<HashSet<String>>;
+
+    /// Creates a temporary file name from prefix, suffix, and counter.
+    ///
+    /// Equivalent to `Directory.getTempFileName` in Lucene 10.5.0.
+    fn get_temp_file_name(prefix: &str, suffix: &str, counter: u64) -> String
+    where
+        Self: Sized,
+    {
+        format!("{}_{}_{}.tmp", prefix, suffix, radix_36(counter))
+    }
+
+    /// Default validation that this directory is still open.
+    ///
+    /// Concrete directories may override this to throw
+    /// [`LuceneError::IllegalState`] when closed.
+    fn ensure_open(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Formats a non-negative integer in base-36, matching Java's
+/// `Long.toString(value, Character.MAX_RADIX)`.
+fn radix_36(value: u64) -> String {
+    if value == 0 {
+        "0".to_string()
+    } else {
+        let mut chars: Vec<char> = Vec::new();
+        let mut v = value;
+        while v > 0 {
+            let digit = (v % 36) as u32;
+            chars.push(std::char::from_digit(digit, 36).expect("radix 36 digits are always valid"));
+            v /= 36;
+        }
+        chars.reverse();
+        chars.into_iter().collect()
+    }
+}
+
+/// A minimal in-memory [`Directory`] implementation used for tests.
+///
+/// This is not a full `ByteBuffersDirectory`; that is the subject of task #5.
+/// `RamDirectory` proves that the [`Directory`] trait compiles and behaves
+/// correctly for the operations required by task #18.
+#[derive(Debug)]
+pub struct RamDirectory {
+    files: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    temp_counter: AtomicU64,
+    closed: Mutex<bool>,
+}
+
+impl Default for RamDirectory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RamDirectory {
+    /// Creates a new empty in-memory directory.
+    pub fn new() -> Self {
+        Self {
+            files: Arc::new(Mutex::new(BTreeMap::new())),
+            temp_counter: AtomicU64::new(0),
+            closed: Mutex::new(false),
+        }
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        if *self.closed.lock().expect("closed mutex poisoned") {
+            return Err(LuceneError::IllegalState(
+                "this Directory is closed".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn not_found(name: &str) -> LuceneError {
+        LuceneError::Io(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("file not found: {name}"),
+        ))
+    }
+
+    fn already_exists(name: &str) -> LuceneError {
+        LuceneError::Io(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("file already exists: {name}"),
+        ))
+    }
+}
+
+impl Directory for RamDirectory {
+    fn list_all(&self) -> Result<Vec<String>> {
+        self.ensure_open()?;
+        let files = self.files.lock().expect("files mutex poisoned");
+        Ok(files.keys().cloned().collect())
+    }
+
+    fn delete_file(&self, name: &str) -> Result<()> {
+        self.ensure_open()?;
+        let mut files = self.files.lock().expect("files mutex poisoned");
+        if files.remove(name).is_none() {
+            return Err(Self::not_found(name));
+        }
+        Ok(())
+    }
+
+    fn file_length(&self, name: &str) -> Result<i64> {
+        self.ensure_open()?;
+        let files = self.files.lock().expect("files mutex poisoned");
+        files
+            .get(name)
+            .map(|v| v.len() as i64)
+            .ok_or_else(|| Self::not_found(name))
+    }
+
+    fn create_output(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
+        self.ensure_open()?;
+        let files = self.files.lock().expect("files mutex poisoned");
+        if files.contains_key(name) {
+            return Err(Self::already_exists(name));
+        }
+        let name_owned = name.to_string();
+        let files_clone = Arc::clone(&self.files);
+        Ok(Box::new(RamIndexOutput::new(name_owned, files_clone)))
+    }
+
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexOutput>> {
+        self.ensure_open()?;
+        let counter = self.temp_counter.fetch_add(1, Ordering::Relaxed);
+        let name = Self::get_temp_file_name(prefix, suffix, counter);
+        self.create_output(&name, context)
+    }
+
+    fn sync(&self, _names: &[String]) -> Result<()> {
+        self.ensure_open()?;
+        // In-memory store is already durable.
+        Ok(())
+    }
+
+    fn sync_metadata(&self) -> Result<()> {
+        self.ensure_open()?;
+        Ok(())
+    }
+
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        self.ensure_open()?;
+        let mut files = self.files.lock().expect("files mutex poisoned");
+        if files.contains_key(dest) {
+            return Err(Self::already_exists(dest));
+        }
+        let data = files
+            .remove(source)
+            .ok_or_else(|| Self::not_found(source))?;
+        files.insert(dest.to_string(), data);
+        Ok(())
+    }
+
+    fn open_input(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+        self.ensure_open()?;
+        let files = self.files.lock().expect("files mutex poisoned");
+        let data = files.get(name).ok_or_else(|| Self::not_found(name))?;
+        Ok(Box::new(MockIndexInput::new(
+            data.clone(),
+            format!("RamDirectory({})", name),
+        )))
+    }
+
+    fn obtain_lock(&self, _name: &str) -> Result<Box<dyn Lock>> {
+        self.ensure_open()?;
+        Ok(Box::new(NoOpLock))
+    }
+
+    fn close(&mut self) -> Result<()> {
+        let mut closed = self.closed.lock().expect("closed mutex poisoned");
+        *closed = true;
+        Ok(())
+    }
+
+    fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+        self.ensure_open()?;
+        Ok(HashSet::new())
+    }
+}
+
+/// An in-memory [`IndexOutput`] that publishes its bytes to a shared map on
+/// close.
+#[derive(Debug)]
+struct RamIndexOutput {
+    name: String,
+    data: ByteArrayDataOutput,
+    closed: bool,
+    files: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+}
+
+impl RamIndexOutput {
+    fn new(name: String, files: Arc<Mutex<BTreeMap<String, Vec<u8>>>>) -> Self {
+        Self {
+            name,
+            data: ByteArrayDataOutput::new(),
+            closed: false,
+            files,
+        }
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        if self.closed {
+            return Err(LuceneError::IllegalState("Already closed".to_string()));
+        }
+        Ok(())
+    }
+}
+
+impl DataOutput for RamIndexOutput {
+    fn write_byte(&mut self, b: u8) -> Result<()> {
+        self.ensure_open()?;
+        self.data.write_byte(b)
+    }
+
+    fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
+        self.ensure_open()?;
+        self.data.write_bytes(b, offset, len)
+    }
+}
+
+impl IndexOutput for RamIndexOutput {
+    fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        self.closed = true;
+        let mut files = self.files.lock().expect("files mutex poisoned");
+        files.insert(self.name.clone(), self.data.as_inner().to_vec());
+        Ok(())
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.data.len() as i64
+    }
+
+    fn checksum(&self) -> Result<i64> {
+        self.ensure_open()?;
+        Ok(crc32fast::hash(self.data.as_inner()) as i64)
+    }
+
+    fn resource_description(&self) -> &str {
+        &self.name
     }
 
     fn name(&self) -> &str {
@@ -4065,5 +4991,154 @@ mod tests {
         assert_eq!(ra.length(), 16);
         assert_eq!(ra.read_int_at(0).unwrap(), 64);
         assert_eq!(ra.read_int_at(12).unwrap(), 67);
+    }
+
+    // -------------------------------------------------------------------------
+    // Directory and IOContext tests
+    // -------------------------------------------------------------------------
+
+    /// Verifies that a concrete [`Directory`] implementation supports the full
+    /// lifecycle of create, open, read, write, rename, delete, list and close.
+    #[test]
+    fn directory_basic_operations() {
+        let mut dir = RamDirectory::new();
+        let ctx: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
+
+        // Empty directory.
+        assert!(dir.list_all().unwrap().is_empty());
+        assert!(dir.file_length("missing").is_err());
+        assert!(dir.delete_file("missing").is_err());
+
+        // Create and write a file.
+        {
+            let mut out = dir.create_output("test.bin", ctx).unwrap();
+            out.write_int(0x12345678).unwrap();
+            out.write_string("hello").unwrap();
+            out.close().unwrap();
+        }
+        assert_eq!(dir.file_length("test.bin").unwrap(), 10);
+        assert_eq!(dir.list_all().unwrap(), vec!["test.bin"]);
+
+        // Read it back.
+        {
+            let mut input = dir.open_input("test.bin", ctx).unwrap();
+            assert_eq!(input.read_int().unwrap(), 0x12345678);
+            assert_eq!(input.read_string().unwrap(), "hello");
+        }
+
+        // Duplicate creation is rejected.
+        assert!(dir.create_output("test.bin", ctx).is_err());
+
+        // Rename preserves content.
+        dir.rename("test.bin", "renamed.bin").unwrap();
+        assert!(dir.file_length("test.bin").is_err());
+        assert_eq!(dir.file_length("renamed.bin").unwrap(), 10);
+        assert_eq!(dir.list_all().unwrap(), vec!["renamed.bin"]);
+
+        // Rename to an existing name is rejected.
+        {
+            let mut out = dir.create_output("other.bin", ctx).unwrap();
+            out.write_byte(0x42).unwrap();
+            out.close().unwrap();
+        }
+        assert!(dir.rename("renamed.bin", "other.bin").is_err());
+
+        // Temporary file naming follows the expected pattern.
+        let mut out = dir.create_temp_output("seg", "gen", ctx).unwrap();
+        let name = out.name().to_string();
+        assert!(name.starts_with("seg_gen_") && name.ends_with(".tmp"));
+        out.write_int(0xAABBCCDDu32 as i32).unwrap();
+        out.close().unwrap();
+        assert!(dir.file_length(&name).unwrap() > 0);
+
+        // Lock acquisition succeeds for in-memory directory.
+        let lock = dir.obtain_lock("test.lock").unwrap();
+        lock.ensure_valid().unwrap();
+        drop(lock);
+
+        // Pending deletions are empty.
+        assert!(dir.get_pending_deletions().unwrap().is_empty());
+
+        // Sync and syncMetadata are no-ops for in-memory store.
+        dir.sync(&["renamed.bin".to_string()]).unwrap();
+        dir.sync_metadata().unwrap();
+
+        // Close makes the directory unusable.
+        dir.close().unwrap();
+        assert!(dir.list_all().is_err());
+    }
+
+    /// Verifies that [`Directory::copy_from`] copies bytes between directories.
+    #[test]
+    fn directory_copy_from() {
+        let src = RamDirectory::new();
+        let dst = RamDirectory::new();
+        let ctx: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
+
+        {
+            let mut out = src.create_output("source.bin", ctx).unwrap();
+            out.write_int(0xDEADBEEFu32 as i32).unwrap();
+            out.write_bytes(&[1, 2, 3, 4, 5], 0, 5).unwrap();
+            out.close().unwrap();
+        }
+
+        dst.copy_from(&src, "source.bin", "dest.bin", ctx).unwrap();
+        assert_eq!(dst.file_length("dest.bin").unwrap(), 9);
+
+        let mut input = dst.open_input("dest.bin", ctx).unwrap();
+        assert_eq!(input.read_int().unwrap(), 0xDEADBEEFu32 as i32);
+        let mut buf = [0u8; 5];
+        input.read_bytes(&mut buf, 0, 5).unwrap();
+        assert_eq!(buf, [1, 2, 3, 4, 5]);
+    }
+
+    /// Verifies the IOContext factory functions and hint semantics.
+    #[test]
+    fn io_context_factories() {
+        let default: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
+        assert_eq!(default.context(), Context::Default);
+        assert!(default.merge_info().is_none());
+        assert!(default.flush_info().is_none());
+        assert!(default.hints().is_empty());
+
+        let read_once: &dyn IOContext = &*READONCE_IO_CONTEXT;
+        assert_eq!(read_once.context(), Context::Default);
+        assert_eq!(read_once.hints().len(), 2);
+
+        let merge = merge_io_context(MergeInfo::new(100, 1024, false, 1));
+        assert_eq!(merge.context(), Context::Merge);
+        assert_eq!(merge.merge_info().unwrap().total_max_doc, 100);
+        assert!(merge.flush_info().is_none());
+        assert!(merge.hints().is_empty());
+        // Merge context ignores hint changes.
+        let merge_with_hint = merge.with_hints(&[Arc::new(RandomHint::instance())]);
+        assert_eq!(merge_with_hint.context(), Context::Merge);
+        assert!(merge_with_hint.hints().is_empty());
+
+        let flush = flush_io_context(FlushInfo::new(10, 512));
+        assert_eq!(flush.context(), Context::Flush);
+        assert_eq!(flush.flush_info().unwrap().num_docs, 10);
+        assert!(flush.merge_info().is_none());
+        // Flush context ignores hint changes too.
+        let flush_with_hint = flush.with_hints(&[Arc::new(SequentialHint::instance())]);
+        assert_eq!(flush_with_hint.context(), Context::Flush);
+        assert!(flush_with_hint.hints().is_empty());
+    }
+
+    /// Verifies that [`DefaultIOContext`] rejects duplicate hints.
+    #[test]
+    fn default_io_context_rejects_duplicate_hints() {
+        let hints: Vec<Arc<dyn FileOpenHint>> = vec![
+            Arc::new(RandomHint::instance()),
+            Arc::new(RandomHint::instance()),
+        ];
+        assert!(DefaultIOContext::new(hints).is_err());
+
+        let ok = DefaultIOContext::new(vec![
+            Arc::new(RandomHint::instance()),
+            Arc::new(SequentialHint::instance()),
+        ])
+        .unwrap();
+        assert_eq!(ok.hints().len(), 2);
     }
 }
