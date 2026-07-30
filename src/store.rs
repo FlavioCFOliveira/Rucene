@@ -11,6 +11,8 @@ use std::{
     io,
 };
 
+use crc32fast;
+
 use crate::{
     error::{LuceneError, Result},
     util::BitUtil,
@@ -399,6 +401,71 @@ pub trait DataOutput {
     }
 }
 
+/// Abstract base trait for random-access input from a file in a Lucene
+/// `Directory`.
+///
+/// Equivalent to `org.apache.lucene.store.IndexInput`. Implementations are not
+/// thread-safe; each thread must use its own instance, obtained by cloning.
+pub trait IndexInput: DataInput {
+    /// Closes this stream to further operations.
+    fn close(&mut self) -> Result<()>;
+
+    /// Returns the current position in this file, where the next read will
+    /// occur.
+    fn file_pointer(&self) -> i64;
+
+    /// Returns the total number of bytes in this file.
+    fn length(&self) -> i64;
+
+    /// Sets the current position in this file, where the next read will occur.
+    ///
+    /// Seeking past the end of the file is an error.
+    fn seek(&mut self, pos: i64) -> Result<()>;
+
+    /// Creates a slice of this input, with the given description, offset, and
+    /// length. The slice is positioned at its beginning.
+    ///
+    /// The returned input operates on the same underlying data but maintains
+    /// an independent position.
+    fn slice(
+        &self,
+        slice_description: &str,
+        offset: i64,
+        length: i64,
+    ) -> Result<Box<dyn IndexInput>>;
+
+    /// Returns an independent clone of this input, positioned at the same
+    /// location.
+    ///
+    /// This is the Rust equivalent of Java's `IndexInput.clone()`.
+    fn clone_input(&self) -> Result<Box<dyn IndexInput>>;
+
+    /// Returns the opaque resource description for this input.
+    fn resource_description(&self) -> &str;
+}
+
+/// Abstract base trait for appending data to a file in a Lucene `Directory`.
+///
+/// Equivalent to `org.apache.lucene.store.IndexOutput`. Implementations are not
+/// thread-safe; each thread must use its own instance.
+pub trait IndexOutput: DataOutput {
+    /// Closes this stream to further operations.
+    fn close(&mut self) -> Result<()>;
+
+    /// Returns the current position in this file, where the next write will
+    /// occur.
+    fn file_pointer(&self) -> i64;
+
+    /// Returns the current checksum of the bytes written so far.
+    fn checksum(&self) -> Result<i64>;
+
+    /// Returns the opaque resource description for this output.
+    fn resource_description(&self) -> &str;
+
+    /// Returns the name used to create this output.
+    fn name(&self) -> &str;
+}
+
 /// Validates that `offset` and `length` describe a valid sub-slice of an
 /// array of `len` elements.
 fn check_from_index_size(offset: usize, length: usize, len: usize) -> Result<()> {
@@ -447,6 +514,31 @@ impl ByteArrayDataInput {
     /// Returns the remaining bytes from the current position to the end.
     pub fn remaining(&self) -> usize {
         self.bytes.len().saturating_sub(self.pos)
+    }
+
+    /// Returns a reference to the full underlying byte buffer.
+    pub fn as_inner(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Repositions the input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if `position` exceeds
+    /// the stream length.
+    pub fn seek(&mut self, position: usize) -> Result<()> {
+        if position > self.bytes.len() {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "seek past EOF: position={position}, length={}",
+                    self.bytes.len()
+                ),
+            )));
+        }
+        self.pos = position;
+        Ok(())
     }
 }
 
@@ -568,6 +660,1091 @@ impl DataOutput for ByteArrayDataOutput {
         self.bytes.extend_from_slice(&b[offset..end]);
         Ok(())
     }
+}
+
+/// A mock [`IndexInput`] backed by an in-memory byte buffer.
+///
+/// This is intended for tests and utilities. Reads, seeks, slices, and clones
+/// behave like a real file-based input, and the input becomes unreadable after
+/// it is closed.
+#[derive(Clone, Debug)]
+pub struct MockIndexInput {
+    resource_description: String,
+    data: ByteArrayDataInput,
+    closed: bool,
+}
+
+impl MockIndexInput {
+    /// Creates a new input positioned at the start of `data`.
+    pub fn new(data: Vec<u8>, resource_description: impl Into<String>) -> Self {
+        Self {
+            resource_description: resource_description.into(),
+            data: ByteArrayDataInput::new(data),
+            closed: false,
+        }
+    }
+
+    /// Creates a new input over a copy of `slice`.
+    pub fn from_slice(slice: &[u8], resource_description: impl Into<String>) -> Self {
+        Self::new(slice.to_vec(), resource_description)
+    }
+
+    /// Returns `true` if this input has been closed.
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        if self.closed {
+            return Err(LuceneError::IllegalState(format!(
+                "Already closed: {}",
+                self.resource_description
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl DataInput for MockIndexInput {
+    fn read_byte(&mut self) -> Result<u8> {
+        self.ensure_open()?;
+        self.data.read_byte()
+    }
+
+    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        self.ensure_open()?;
+        self.data.read_bytes(b, offset, len)
+    }
+
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        self.ensure_open()?;
+        self.data.skip_bytes(num_bytes)
+    }
+}
+
+impl IndexInput for MockIndexInput {
+    fn close(&mut self) -> Result<()> {
+        self.closed = true;
+        Ok(())
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.data.position() as i64
+    }
+
+    fn length(&self) -> i64 {
+        self.data.length() as i64
+    }
+
+    fn seek(&mut self, pos: i64) -> Result<()> {
+        self.ensure_open()?;
+        if pos < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "position must be non-negative (got: {pos})"
+            )));
+        }
+        let pos = pos as usize;
+        self.data.seek(pos)
+    }
+
+    fn slice(
+        &self,
+        slice_description: &str,
+        offset: i64,
+        length: i64,
+    ) -> Result<Box<dyn IndexInput>> {
+        if offset < 0 || length < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "slice offset ({offset}) and length ({length}) must be non-negative"
+            )));
+        }
+        let offset = offset as usize;
+        let length = length as usize;
+        let end = offset.checked_add(length).ok_or_else(|| {
+            LuceneError::IllegalArgument("slice offset + length overflowed".to_string())
+        })?;
+        if end > self.data.length() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "slice(offset={offset}, length={length}) out of bounds, input length={}",
+                self.data.length()
+            )));
+        }
+        let bytes = self.data.as_inner()[offset..end].to_vec();
+        let desc = format!("{} [slice={slice_description}]", self.resource_description);
+        Ok(Box::new(MockIndexInput::new(bytes, desc)))
+    }
+
+    fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+        Ok(Box::new(self.clone()))
+    }
+
+    fn resource_description(&self) -> &str {
+        &self.resource_description
+    }
+}
+
+/// A mock [`IndexOutput`] backed by an in-memory byte buffer.
+///
+/// This is intended for tests and utilities. Writes are tracked with a CRC-32
+/// checksum matching Java's `java.util.zip.CRC32`, and the output becomes
+/// unwritable after it is closed.
+#[derive(Clone, Debug)]
+pub struct MockIndexOutput {
+    resource_description: String,
+    name: String,
+    data: ByteArrayDataOutput,
+    closed: bool,
+}
+
+impl MockIndexOutput {
+    /// Creates a new empty output.
+    pub fn new(resource_description: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            resource_description: resource_description.into(),
+            name: name.into(),
+            data: ByteArrayDataOutput::new(),
+            closed: false,
+        }
+    }
+
+    /// Creates a new empty output with the given initial capacity.
+    pub fn with_capacity(
+        resource_description: impl Into<String>,
+        name: impl Into<String>,
+        capacity: usize,
+    ) -> Self {
+        Self {
+            resource_description: resource_description.into(),
+            name: name.into(),
+            data: ByteArrayDataOutput::with_capacity(capacity),
+            closed: false,
+        }
+    }
+
+    /// Consumes the output and returns the written bytes.
+    pub fn into_inner(self) -> Vec<u8> {
+        self.data.into_inner()
+    }
+
+    /// Returns a reference to the written bytes.
+    pub fn as_inner(&self) -> &[u8] {
+        self.data.as_inner()
+    }
+
+    /// Returns the number of bytes written so far.
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Returns `true` if no bytes have been written yet.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    /// Returns `true` if this output has been closed.
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        if self.closed {
+            return Err(LuceneError::IllegalState(format!(
+                "Already closed: {}",
+                self.resource_description
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl DataOutput for MockIndexOutput {
+    fn write_byte(&mut self, b: u8) -> Result<()> {
+        self.ensure_open()?;
+        self.data.write_byte(b)
+    }
+
+    fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
+        self.ensure_open()?;
+        self.data.write_bytes(b, offset, len)
+    }
+}
+
+impl IndexOutput for MockIndexOutput {
+    fn close(&mut self) -> Result<()> {
+        self.closed = true;
+        Ok(())
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.data.len() as i64
+    }
+
+    fn checksum(&self) -> Result<i64> {
+        self.ensure_open()?;
+        Ok(crc32fast::hash(self.data.as_inner()) as i64)
+    }
+
+    fn resource_description(&self) -> &str {
+        &self.resource_description
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+// -----------------------------------------------------------------------------
+// ByteBuffersDataInput / ByteBuffersDataOutput
+// -----------------------------------------------------------------------------
+
+/// Default minimum block size bits for [`ByteBuffersDataOutput`].
+const DEFAULT_MIN_BITS_PER_BLOCK: usize = 10; // 1024 bytes
+
+/// Default maximum block size bits for [`ByteBuffersDataOutput`].
+const DEFAULT_MAX_BITS_PER_BLOCK: usize = 26; // 64 MiB
+
+/// Smallest allowed `min_bits_per_block`.
+const LIMIT_MIN_BITS_PER_BLOCK: usize = 1;
+
+/// Largest allowed `max_bits_per_block`.
+const LIMIT_MAX_BITS_PER_BLOCK: usize = 31;
+
+/// Number of blocks at the current size before expanding.
+const MAX_BLOCKS_BEFORE_BLOCK_EXPANSION: usize = 100;
+
+/// A [`DataInput`] reading from a list of in-memory byte buffers.
+///
+/// Equivalent to `org.apache.lucene.store.ByteBuffersDataInput`. All buffers
+/// except the last must share an identical power-of-two length; the last may be
+/// shorter.
+#[derive(Clone, Debug)]
+pub struct ByteBuffersDataInput {
+    blocks: Vec<Vec<u8>>,
+    block_bits: usize,
+    block_mask: usize,
+    length: usize,
+    pos: usize,
+}
+
+impl ByteBuffersDataInput {
+    /// Creates an input over a set of contiguous byte buffers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if the buffer layout assumptions
+    /// are violated.
+    pub fn new(buffers: Vec<Vec<u8>>) -> Result<Self> {
+        ensure_assumptions(&buffers)?;
+        let length = buffers.iter().map(Vec::len).sum();
+        let (block_bits, block_mask) = if buffers.len() == 1 {
+            // Sentinel values for the single-block case; indexing is handled
+            // explicitly in `block_index` / `block_offset`.
+            (0, 0)
+        } else {
+            let block_bytes = buffers[0].len();
+            let block_bits = block_bytes.trailing_zeros() as usize;
+            let block_mask = block_bytes - 1;
+            (block_bits, block_mask)
+        };
+        Ok(Self {
+            blocks: buffers,
+            block_bits,
+            block_mask,
+            length,
+            pos: 0,
+        })
+    }
+
+    /// Returns the current read position.
+    pub fn position(&self) -> usize {
+        self.pos
+    }
+
+    /// Returns the total number of bytes available.
+    pub fn length(&self) -> usize {
+        self.length
+    }
+
+    /// Repositions the input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if `position` exceeds
+    /// the stream length.
+    pub fn seek(&mut self, position: usize) -> Result<()> {
+        if position > self.length {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("seek past EOF: position={position}, length={}", self.length),
+            )));
+        }
+        self.pos = position;
+        Ok(())
+    }
+
+    /// Reads a single byte at the given absolute position without advancing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if `pos` is out of
+    /// bounds.
+    pub fn read_byte_at(&self, pos: usize) -> Result<u8> {
+        if pos >= self.length {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("readByte pos={pos} past EOF (length={})", self.length),
+            )));
+        }
+        let idx = self.block_index(pos);
+        let off = self.block_offset(pos);
+        Ok(self.blocks[idx][off])
+    }
+
+    /// Reads a little-endian `i16` at the given absolute position without
+    /// advancing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if the read would
+    /// extend past the stream length.
+    pub fn read_short_at(&self, pos: usize) -> Result<i16> {
+        if pos + 2 > self.length {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("readShort pos={pos} past EOF (length={})", self.length),
+            )));
+        }
+        let idx = self.block_index(pos);
+        let off = self.block_offset(pos);
+        let block_len = self.blocks[idx].len();
+        if off + 2 <= block_len {
+            Ok(BitUtil::read_le_short(&self.blocks[idx], off))
+        } else {
+            let b1 = self.read_byte_at(pos)? as u16;
+            let b2 = self.read_byte_at(pos + 1)? as u16;
+            Ok(((b2 << 8) | b1) as i16)
+        }
+    }
+
+    /// Reads a little-endian `i32` at the given absolute position without
+    /// advancing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if the read would
+    /// extend past the stream length.
+    pub fn read_int_at(&self, pos: usize) -> Result<i32> {
+        if pos + 4 > self.length {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("readInt pos={pos} past EOF (length={})", self.length),
+            )));
+        }
+        let idx = self.block_index(pos);
+        let off = self.block_offset(pos);
+        let block_len = self.blocks[idx].len();
+        if off + 4 <= block_len {
+            Ok(BitUtil::read_le_int(&self.blocks[idx], off))
+        } else {
+            let b1 = self.read_byte_at(pos)? as u32;
+            let b2 = self.read_byte_at(pos + 1)? as u32;
+            let b3 = self.read_byte_at(pos + 2)? as u32;
+            let b4 = self.read_byte_at(pos + 3)? as u32;
+            Ok(((b4 << 24) | (b3 << 16) | (b2 << 8) | b1) as i32)
+        }
+    }
+
+    /// Reads a little-endian `i64` at the given absolute position without
+    /// advancing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if the read would
+    /// extend past the stream length.
+    pub fn read_long_at(&self, pos: usize) -> Result<i64> {
+        if pos + 8 > self.length {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("readLong pos={pos} past EOF (length={})", self.length),
+            )));
+        }
+        let idx = self.block_index(pos);
+        let off = self.block_offset(pos);
+        let block_len = self.blocks[idx].len();
+        if off + 8 <= block_len {
+            Ok(BitUtil::read_le_long(&self.blocks[idx], off))
+        } else {
+            let low = self.read_int_at(pos)? as u32 as i64;
+            let high = self.read_int_at(pos + 4)? as i64;
+            Ok((high << 32) | low)
+        }
+    }
+
+    /// Reads `len` bytes into `bytes[offset..]` starting at the given absolute
+    /// position without advancing the stream position.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if the destination slice is too
+    /// small, or [`LuceneError::Io`] with `UnexpectedEof` if the read would
+    /// extend past the stream length.
+    pub fn read_bytes_at(
+        &self,
+        pos: usize,
+        bytes: &mut [u8],
+        offset: usize,
+        len: usize,
+    ) -> Result<()> {
+        let dst_end = offset
+            .checked_add(len)
+            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+        if dst_end > bytes.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
+                bytes.len()
+            )));
+        }
+        if pos + len > self.length {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "readBytes pos={pos} len={len} past EOF (length={})",
+                    self.length
+                ),
+            )));
+        }
+        let mut src_pos = pos;
+        let mut dst_pos = offset;
+        let mut remaining = len;
+        while remaining > 0 {
+            let idx = self.block_index(src_pos);
+            let off = self.block_offset(src_pos);
+            let available = self.blocks[idx].len() - off;
+            let chunk = remaining.min(available);
+            bytes[dst_pos..dst_pos + chunk].copy_from_slice(&self.blocks[idx][off..off + chunk]);
+            src_pos += chunk;
+            dst_pos += chunk;
+            remaining -= chunk;
+        }
+        Ok(())
+    }
+
+    /// Returns a new input over `length` bytes starting at `offset`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if the slice is out of bounds.
+    pub fn slice(&self, offset: usize, length: usize) -> Result<Self> {
+        let end = offset.checked_add(length).ok_or_else(|| {
+            LuceneError::IllegalArgument("offset + length overflowed".to_string())
+        })?;
+        if end > self.length {
+            return Err(LuceneError::IllegalArgument(format!(
+                "slice(offset={offset}, length={length}) out of bounds, input length={}",
+                self.length
+            )));
+        }
+        let mut data = vec![0u8; length];
+        self.read_bytes_at(offset, &mut data, 0, length)?;
+        Self::new(vec![data])
+    }
+
+    fn block_index(&self, pos: usize) -> usize {
+        if self.blocks.len() == 1 {
+            0
+        } else {
+            pos >> self.block_bits
+        }
+    }
+
+    fn block_offset(&self, pos: usize) -> usize {
+        if self.blocks.len() == 1 {
+            pos
+        } else {
+            pos & self.block_mask
+        }
+    }
+}
+
+/// Reads a little-endian `i16` one byte at a time via the provided input.
+fn read_short_byte_by_byte(input: &mut dyn DataInput) -> Result<i16> {
+    let b1 = input.read_byte()? as u16;
+    let b2 = input.read_byte()? as u16;
+    Ok(((b2 << 8) | b1) as i16)
+}
+
+/// Reads a little-endian `i32` one byte at a time via the provided input.
+fn read_int_byte_by_byte(input: &mut dyn DataInput) -> Result<i32> {
+    let b1 = input.read_byte()? as u32;
+    let b2 = input.read_byte()? as u32;
+    let b3 = input.read_byte()? as u32;
+    let b4 = input.read_byte()? as u32;
+    Ok(((b4 << 24) | (b3 << 16) | (b2 << 8) | b1) as i32)
+}
+
+/// Reads a little-endian `i64` one byte at a time via the provided input.
+fn read_long_byte_by_byte(input: &mut dyn DataInput) -> Result<i64> {
+    let low = read_int_byte_by_byte(input)? as u32 as i64;
+    let high = read_int_byte_by_byte(input)? as i64;
+    Ok((high << 32) | low)
+}
+
+impl DataInput for ByteBuffersDataInput {
+    fn read_byte(&mut self) -> Result<u8> {
+        if self.pos >= self.length {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "unexpected EOF reading byte",
+            )));
+        }
+        let idx = self.block_index(self.pos);
+        let off = self.block_offset(self.pos);
+        let b = self.blocks[idx][off];
+        self.pos += 1;
+        Ok(b)
+    }
+
+    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        let dst_end = offset
+            .checked_add(len)
+            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+        if dst_end > b.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
+                b.len()
+            )));
+        }
+        let mut dst_pos = offset;
+        let mut remaining = len;
+        while remaining > 0 {
+            if self.pos >= self.length {
+                return Err(LuceneError::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "unexpected EOF reading {len} bytes at pos {} (length {})",
+                        self.pos, self.length
+                    ),
+                )));
+            }
+            let idx = self.block_index(self.pos);
+            let off = self.block_offset(self.pos);
+            let available = self.blocks[idx].len() - off;
+            if available == 0 {
+                return Err(LuceneError::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "unexpected EOF reading bytes",
+                )));
+            }
+            let chunk = remaining.min(available);
+            b[dst_pos..dst_pos + chunk].copy_from_slice(&self.blocks[idx][off..off + chunk]);
+            self.pos += chunk;
+            dst_pos += chunk;
+            remaining -= chunk;
+        }
+        Ok(())
+    }
+
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        if num_bytes < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "numBytes must be non-negative (got: {num_bytes})"
+            )));
+        }
+        let num_bytes = num_bytes as usize;
+        let target = self.pos + num_bytes;
+        if target > self.length {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "skip past EOF",
+            )));
+        }
+        self.pos = target;
+        Ok(())
+    }
+
+    fn read_short(&mut self) -> Result<i16> {
+        if self.pos + 2 > self.length {
+            return read_short_byte_by_byte(self);
+        }
+        let idx = self.block_index(self.pos);
+        let off = self.block_offset(self.pos);
+        let block_len = self.blocks[idx].len();
+        if off + 2 <= block_len {
+            let v = BitUtil::read_le_short(&self.blocks[idx], off);
+            self.pos += 2;
+            Ok(v)
+        } else {
+            read_short_byte_by_byte(self)
+        }
+    }
+
+    fn read_int(&mut self) -> Result<i32> {
+        if self.pos + 4 > self.length {
+            return read_int_byte_by_byte(self);
+        }
+        let idx = self.block_index(self.pos);
+        let off = self.block_offset(self.pos);
+        let block_len = self.blocks[idx].len();
+        if off + 4 <= block_len {
+            let v = BitUtil::read_le_int(&self.blocks[idx], off);
+            self.pos += 4;
+            Ok(v)
+        } else {
+            read_int_byte_by_byte(self)
+        }
+    }
+
+    fn read_long(&mut self) -> Result<i64> {
+        if self.pos + 8 > self.length {
+            return read_long_byte_by_byte(self);
+        }
+        let idx = self.block_index(self.pos);
+        let off = self.block_offset(self.pos);
+        let block_len = self.blocks[idx].len();
+        if off + 8 <= block_len {
+            let v = BitUtil::read_le_long(&self.blocks[idx], off);
+            self.pos += 8;
+            Ok(v)
+        } else {
+            read_long_byte_by_byte(self)
+        }
+    }
+
+    fn read_floats(&mut self, floats: &mut [f32], offset: usize, length: usize) -> Result<()> {
+        check_from_index_size(offset, length, floats.len())?;
+        let mut off = offset;
+        let mut remaining = length;
+        while remaining > 0 {
+            if self.pos + 4 > self.length {
+                floats[off] = self.read_float()?;
+                off += 1;
+                remaining -= 1;
+                continue;
+            }
+            let idx = self.block_index(self.pos);
+            let block_off = self.block_offset(self.pos);
+            let available_bytes = self.blocks[idx].len() - block_off;
+            if available_bytes < 4 {
+                floats[off] = self.read_float()?;
+                off += 1;
+                remaining -= 1;
+                continue;
+            }
+            let available_floats = available_bytes / 4;
+            let chunk = remaining.min(available_floats);
+            for i in 0..chunk {
+                let byte_off = block_off + i * 4;
+                let bits = BitUtil::read_le_int(&self.blocks[idx], byte_off) as u32;
+                floats[off + i] = f32::from_bits(bits);
+            }
+            self.pos += chunk * 4;
+            off += chunk;
+            remaining -= chunk;
+        }
+        Ok(())
+    }
+
+    fn read_longs(&mut self, longs: &mut [i64], offset: usize, length: usize) -> Result<()> {
+        check_from_index_size(offset, length, longs.len())?;
+        let mut off = offset;
+        let mut remaining = length;
+        while remaining > 0 {
+            if self.pos + 8 > self.length {
+                longs[off] = self.read_long()?;
+                off += 1;
+                remaining -= 1;
+                continue;
+            }
+            let idx = self.block_index(self.pos);
+            let block_off = self.block_offset(self.pos);
+            let available_bytes = self.blocks[idx].len() - block_off;
+            if available_bytes < 8 {
+                longs[off] = self.read_long()?;
+                off += 1;
+                remaining -= 1;
+                continue;
+            }
+            let available_longs = available_bytes / 8;
+            let chunk = remaining.min(available_longs);
+            for i in 0..chunk {
+                let byte_off = block_off + i * 8;
+                longs[off + i] = BitUtil::read_le_long(&self.blocks[idx], byte_off);
+            }
+            self.pos += chunk * 8;
+            off += chunk;
+            remaining -= chunk;
+        }
+        Ok(())
+    }
+}
+
+/// Validates the assumptions required by [`ByteBuffersDataInput`].
+fn ensure_assumptions(buffers: &[Vec<u8>]) -> Result<()> {
+    if buffers.is_empty() {
+        return Err(LuceneError::IllegalArgument(
+            "Buffer list must not be empty.".to_string(),
+        ));
+    }
+    if buffers.len() == 1 {
+        return Ok(());
+    }
+    let block_page = buffers[0].len();
+    if !BitUtil::is_zero_or_power_of_two(block_page as i32) {
+        return Err(LuceneError::IllegalArgument(format!(
+            "The first buffer must have a power-of-two length: {block_page}"
+        )));
+    }
+    for (i, buffer) in buffers.iter().enumerate().skip(1) {
+        if i != buffers.len() - 1 && buffer.len() != block_page {
+            return Err(LuceneError::IllegalArgument(format!(
+                "Intermediate buffers must share an identical power-of-two block size: {block_page}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Buffer recycler used by resettable [`ByteBuffersDataOutput`] instances.
+///
+/// Equivalent to the inner `ByteBufferRecycler` class in Lucene's
+/// `ByteBuffersDataOutput`.
+#[derive(Clone, Debug, Default)]
+pub struct ByteBufferRecycler {
+    reuse: Vec<Vec<u8>>,
+}
+
+impl ByteBufferRecycler {
+    /// Creates an empty recycler.
+    pub fn new() -> Self {
+        Self { reuse: Vec::new() }
+    }
+
+    /// Allocates a buffer of exactly `size` bytes, reusing a cached buffer if
+    /// one of the same capacity is available.
+    pub fn allocate(&mut self, size: usize) -> Vec<u8> {
+        while let Some(buf) = self.reuse.pop() {
+            if buf.capacity() == size {
+                return buf;
+            }
+        }
+        Vec::with_capacity(size)
+    }
+
+    /// Returns a buffer to the recycler.
+    pub fn reuse(&mut self, mut buffer: Vec<u8>) {
+        buffer.clear();
+        self.reuse.push(buffer);
+    }
+}
+
+/// A [`DataOutput`] storing data in a list of in-memory byte buffers.
+///
+/// Equivalent to `org.apache.lucene.store.ByteBuffersDataOutput`. Blocks are
+/// heap-allocated and grow from a small initial size up to a configured
+/// maximum.
+#[derive(Clone, Debug)]
+pub struct ByteBuffersDataOutput {
+    min_bits: usize,
+    max_bits: usize,
+    block_bits: usize,
+    completed: Vec<Vec<u8>>,
+    current: Vec<u8>,
+    recycler: Option<ByteBufferRecycler>,
+}
+
+impl ByteBuffersDataOutput {
+    /// Creates a new output with default parameters.
+    pub fn new() -> Self {
+        Self::with_config(
+            DEFAULT_MIN_BITS_PER_BLOCK,
+            DEFAULT_MAX_BITS_PER_BLOCK,
+            false,
+        )
+        .expect("default bits are within limits")
+    }
+
+    /// Creates a new output, suitable for writing around `expected_size` bytes.
+    ///
+    /// Memory allocation is optimized based on the expected size hint.
+    pub fn with_expected_size(expected_size: usize) -> Self {
+        let block_bits = compute_block_size_bits_for(expected_size);
+        Self::with_config(block_bits, DEFAULT_MAX_BITS_PER_BLOCK, false)
+            .expect("computed bits are within limits")
+    }
+
+    /// Expert: creates a new output with custom parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if the bit parameters are
+    /// inconsistent or out of range.
+    pub fn with_config(min_bits: usize, max_bits: usize, reuse: bool) -> Result<Self> {
+        if min_bits < LIMIT_MIN_BITS_PER_BLOCK {
+            return Err(LuceneError::IllegalArgument(format!(
+                "minBitsPerBlock ({min_bits}) too small, must be at least {LIMIT_MIN_BITS_PER_BLOCK}"
+            )));
+        }
+        if max_bits > LIMIT_MAX_BITS_PER_BLOCK {
+            return Err(LuceneError::IllegalArgument(format!(
+                "maxBitsPerBlock ({max_bits}) too large, must not exceed {LIMIT_MAX_BITS_PER_BLOCK}"
+            )));
+        }
+        if min_bits > max_bits {
+            return Err(LuceneError::IllegalArgument(format!(
+                "minBitsPerBlock ({min_bits}) cannot exceed maxBitsPerBlock ({max_bits})"
+            )));
+        }
+        Ok(Self {
+            min_bits,
+            max_bits,
+            block_bits: min_bits,
+            completed: Vec::new(),
+            current: Vec::new(),
+            recycler: if reuse {
+                Some(ByteBufferRecycler::new())
+            } else {
+                None
+            },
+        })
+    }
+
+    /// Returns a resettable instance backed by an internal recycler.
+    pub fn new_resettable_instance() -> Self {
+        Self::with_config(DEFAULT_MIN_BITS_PER_BLOCK, DEFAULT_MAX_BITS_PER_BLOCK, true)
+            .expect("default bits are within limits")
+    }
+
+    /// Returns the number of bytes written so far.
+    pub fn size(&self) -> usize {
+        let completed_size: usize = self.completed.iter().map(Vec::len).sum();
+        completed_size + self.current.len()
+    }
+
+    /// Returns the current block size in bytes.
+    pub fn block_size(&self) -> usize {
+        1usize << self.block_bits
+    }
+
+    /// Returns a list of read-only views over the current content.
+    pub fn to_buffer_list(&self) -> Vec<&[u8]> {
+        let mut result: Vec<&[u8]> = self.completed.iter().map(Vec::as_slice).collect();
+        if !self.current.is_empty() {
+            result.push(&self.current);
+        } else if result.is_empty() {
+            result.push(&[]);
+        }
+        result
+    }
+
+    /// Returns a [`ByteBuffersDataInput`] over the current content.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if the resulting buffer layout
+    /// violates the input assumptions (should not happen for normal output).
+    pub fn to_data_input(&self) -> Result<ByteBuffersDataInput> {
+        let mut buffers: Vec<Vec<u8>> = self.completed.to_vec();
+        if !self.current.is_empty() {
+            buffers.push(self.current.clone());
+        }
+        if buffers.is_empty() {
+            buffers.push(Vec::new());
+        }
+        ByteBuffersDataInput::new(buffers)
+    }
+
+    /// Returns a contiguous copy of the current content.
+    pub fn to_array_copy(&self) -> Vec<u8> {
+        let size = self.size();
+        let mut result = Vec::with_capacity(size);
+        for block in &self.completed {
+            result.extend_from_slice(block);
+        }
+        result.extend_from_slice(&self.current);
+        result
+    }
+
+    /// Resets this output to a clean (zero-size) state, publishing buffers to
+    /// the recycler if one was configured.
+    pub fn reset(&mut self) {
+        if let Some(recycler) = &mut self.recycler {
+            for block in self.completed.drain(..) {
+                recycler.reuse(block);
+            }
+            recycler.reuse(std::mem::take(&mut self.current));
+        } else {
+            self.completed.clear();
+            self.current.clear();
+        }
+        self.block_bits = self.min_bits;
+    }
+
+    fn allocate(&mut self, size: usize) -> Vec<u8> {
+        if let Some(recycler) = &mut self.recycler {
+            recycler.allocate(size)
+        } else {
+            Vec::with_capacity(size)
+        }
+    }
+
+    fn append_block(&mut self) {
+        if !self.current.is_empty() {
+            let full = std::mem::take(&mut self.current);
+            self.completed.push(full);
+        }
+
+        if self.completed.len() >= MAX_BLOCKS_BEFORE_BLOCK_EXPANSION
+            && self.block_bits < self.max_bits
+        {
+            self.rewrite_to_block_size(self.block_bits + 1);
+            if self.current.capacity() > self.current.len() {
+                return;
+            }
+            if !self.current.is_empty() && self.current.len() == self.current.capacity() {
+                let full = std::mem::take(&mut self.current);
+                self.completed.push(full);
+            }
+        }
+
+        let required_size = 1usize << self.block_bits;
+        self.current = self.allocate(required_size);
+    }
+
+    fn rewrite_to_block_size(&mut self, target_bits: usize) {
+        assert!(target_bits <= self.max_bits);
+        let mut cloned =
+            Self::with_config(target_bits, target_bits, false).expect("target bits valid");
+        for block in &self.completed {
+            cloned.write_bytes(block, 0, block.len()).unwrap();
+        }
+        if !self.current.is_empty() {
+            cloned
+                .write_bytes(&self.current, 0, self.current.len())
+                .unwrap();
+        }
+        if let Some(recycler) = &mut self.recycler {
+            for block in self.completed.drain(..) {
+                recycler.reuse(block);
+            }
+            recycler.reuse(std::mem::take(&mut self.current));
+        } else {
+            self.completed.clear();
+            self.current.clear();
+        }
+        self.block_bits = target_bits;
+        self.completed = cloned.completed;
+        self.current = cloned.current;
+    }
+}
+
+impl Default for ByteBuffersDataOutput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DataOutput for ByteBuffersDataOutput {
+    fn write_byte(&mut self, b: u8) -> Result<()> {
+        if self.current.len() == self.current.capacity() {
+            self.append_block();
+        }
+        self.current.push(b);
+        Ok(())
+    }
+
+    fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+        if end > b.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "source buffer too small: offset={offset}, len={len}, buf.len()={}",
+                b.len()
+            )));
+        }
+        let mut src_pos = offset;
+        let mut remaining = len;
+        while remaining > 0 {
+            if self.current.len() == self.current.capacity() {
+                self.append_block();
+            }
+            let space = self.current.capacity() - self.current.len();
+            let chunk = remaining.min(space);
+            self.current.extend_from_slice(&b[src_pos..src_pos + chunk]);
+            src_pos += chunk;
+            remaining -= chunk;
+        }
+        Ok(())
+    }
+
+    fn write_short(&mut self, i: i16) -> Result<()> {
+        if self.current.capacity() - self.current.len() >= 2 {
+            self.current.extend_from_slice(&i.to_le_bytes());
+            Ok(())
+        } else {
+            self.write_byte(i as u8)?;
+            self.write_byte((i >> 8) as u8)?;
+            Ok(())
+        }
+    }
+
+    fn write_int(&mut self, i: i32) -> Result<()> {
+        if self.current.capacity() - self.current.len() >= 4 {
+            self.current.extend_from_slice(&i.to_le_bytes());
+            Ok(())
+        } else {
+            self.write_byte(i as u8)?;
+            self.write_byte((i >> 8) as u8)?;
+            self.write_byte((i >> 16) as u8)?;
+            self.write_byte((i >> 24) as u8)?;
+            Ok(())
+        }
+    }
+
+    fn write_long(&mut self, i: i64) -> Result<()> {
+        if self.current.capacity() - self.current.len() >= 8 {
+            self.current.extend_from_slice(&i.to_le_bytes());
+            Ok(())
+        } else {
+            self.write_int(i as i32)?;
+            self.write_int((i >> 32) as i32)?;
+            Ok(())
+        }
+    }
+
+    fn copy_bytes(&mut self, input: &mut dyn DataInput, mut num_bytes: i64) -> Result<()> {
+        if num_bytes < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "numBytes must be non-negative (got: {num_bytes})"
+            )));
+        }
+        while num_bytes > 0 {
+            if self.current.len() == self.current.capacity() {
+                self.append_block();
+            }
+            let space = self.current.capacity() - self.current.len();
+            let chunk = (num_bytes as usize).min(space);
+            let off = self.current.len();
+            self.current.resize(off + chunk, 0);
+            input.read_bytes(&mut self.current, off, chunk)?;
+            num_bytes -= chunk as i64;
+        }
+        Ok(())
+    }
+}
+
+fn compute_block_size_bits_for(bytes: usize) -> usize {
+    let threshold = bytes / MAX_BLOCKS_BEFORE_BLOCK_EXPANSION;
+    let power_of_two = if threshold == 0 {
+        0
+    } else {
+        BitUtil::next_highest_power_of_two_long(threshold as i64) as usize
+    };
+    if power_of_two == 0 {
+        return DEFAULT_MIN_BITS_PER_BLOCK;
+    }
+    let block_bits = power_of_two.trailing_zeros() as usize;
+    block_bits.clamp(DEFAULT_MIN_BITS_PER_BLOCK, DEFAULT_MAX_BITS_PER_BLOCK)
 }
 
 #[cfg(test)]
@@ -973,5 +2150,626 @@ mod tests {
                 "ZInt encoding mismatch for {value}"
             );
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // ByteBuffersDataInput / ByteBuffersDataOutput tests
+    // -------------------------------------------------------------------------
+
+    /// Writes all primitive encodings to a [`ByteBuffersDataOutput`] and reads
+    /// them back via a [`ByteBuffersDataInput`], asserting exact round-trip.
+    #[test]
+    fn byte_buffers_round_trip_primitives() {
+        let mut out = ByteBuffersDataOutput::new();
+
+        out.write_byte(0x42).unwrap();
+        out.write_short(i16::MIN).unwrap();
+        out.write_short(-1).unwrap();
+        out.write_short(0).unwrap();
+        out.write_short(1).unwrap();
+        out.write_short(i16::MAX).unwrap();
+        out.write_int(i32::MIN).unwrap();
+        out.write_int(-1).unwrap();
+        out.write_int(0).unwrap();
+        out.write_int(1).unwrap();
+        out.write_int(i32::MAX).unwrap();
+        out.write_long(i64::MIN).unwrap();
+        out.write_long(-1).unwrap();
+        out.write_long(0).unwrap();
+        out.write_long(1).unwrap();
+        out.write_long(i64::MAX).unwrap();
+        out.write_float(f32::MIN).unwrap();
+        out.write_float(-1.0).unwrap();
+        out.write_float(-0.0).unwrap();
+        out.write_float(0.0).unwrap();
+        out.write_float(1.0).unwrap();
+        out.write_float(f32::MAX).unwrap();
+        out.write_float(f32::NAN).unwrap();
+        out.write_float(f32::INFINITY).unwrap();
+        out.write_float(f32::NEG_INFINITY).unwrap();
+        out.write_double(f64::MIN).unwrap();
+        out.write_double(-1.0).unwrap();
+        out.write_double(-0.0).unwrap();
+        out.write_double(0.0).unwrap();
+        out.write_double(1.0).unwrap();
+        out.write_double(f64::MAX).unwrap();
+        out.write_double(f64::NAN).unwrap();
+        out.write_double(f64::INFINITY).unwrap();
+        out.write_double(f64::NEG_INFINITY).unwrap();
+
+        let mut input = out.to_data_input().unwrap();
+
+        assert_eq!(input.read_byte().unwrap(), 0x42);
+        assert_eq!(input.read_short().unwrap(), i16::MIN);
+        assert_eq!(input.read_short().unwrap(), -1);
+        assert_eq!(input.read_short().unwrap(), 0);
+        assert_eq!(input.read_short().unwrap(), 1);
+        assert_eq!(input.read_short().unwrap(), i16::MAX);
+        assert_eq!(input.read_int().unwrap(), i32::MIN);
+        assert_eq!(input.read_int().unwrap(), -1);
+        assert_eq!(input.read_int().unwrap(), 0);
+        assert_eq!(input.read_int().unwrap(), 1);
+        assert_eq!(input.read_int().unwrap(), i32::MAX);
+        assert_eq!(input.read_long().unwrap(), i64::MIN);
+        assert_eq!(input.read_long().unwrap(), -1);
+        assert_eq!(input.read_long().unwrap(), 0);
+        assert_eq!(input.read_long().unwrap(), 1);
+        assert_eq!(input.read_long().unwrap(), i64::MAX);
+        assert_eq!(input.read_float().unwrap(), f32::MIN);
+        assert_eq!(input.read_float().unwrap(), -1.0);
+        assert_eq!(input.read_float().unwrap().to_bits(), (-0.0f32).to_bits());
+        assert_eq!(input.read_float().unwrap(), 0.0);
+        assert_eq!(input.read_float().unwrap(), 1.0);
+        assert_eq!(input.read_float().unwrap(), f32::MAX);
+        assert!(input.read_float().unwrap().is_nan());
+        assert_eq!(input.read_float().unwrap(), f32::INFINITY);
+        assert_eq!(input.read_float().unwrap(), f32::NEG_INFINITY);
+        assert_eq!(input.read_double().unwrap(), f64::MIN);
+        assert_eq!(input.read_double().unwrap(), -1.0);
+        assert_eq!(input.read_double().unwrap().to_bits(), (-0.0f64).to_bits());
+        assert_eq!(input.read_double().unwrap(), 0.0);
+        assert_eq!(input.read_double().unwrap(), 1.0);
+        assert_eq!(input.read_double().unwrap(), f64::MAX);
+        assert!(input.read_double().unwrap().is_nan());
+        assert_eq!(input.read_double().unwrap(), f64::INFINITY);
+        assert_eq!(input.read_double().unwrap(), f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn byte_buffers_variable_length_integers_round_trip() {
+        let values = [
+            0i32,
+            1,
+            -1,
+            127,
+            128,
+            -128,
+            16383,
+            16384,
+            -16384,
+            i32::MAX,
+            i32::MIN,
+            123456789,
+            -123456789,
+        ];
+
+        let mut out = ByteBuffersDataOutput::new();
+        for &v in &values {
+            out.write_v_int(v).unwrap();
+        }
+        for &v in &values {
+            out.write_z_int(v).unwrap();
+        }
+
+        let mut input = out.to_data_input().unwrap();
+        for &v in &values {
+            assert_eq!(
+                input.read_v_int().unwrap(),
+                v,
+                "VInt round-trip failed for {v}"
+            );
+        }
+        for &v in &values {
+            assert_eq!(
+                input.read_z_int().unwrap(),
+                v,
+                "ZInt round-trip failed for {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn byte_buffers_variable_length_longs_round_trip() {
+        let values = [
+            0i64,
+            1,
+            127,
+            128,
+            16383,
+            16384,
+            i64::MAX,
+            1234567890123456789,
+        ];
+        let signed = [
+            0i64,
+            1,
+            -1,
+            127,
+            128,
+            -128,
+            16383,
+            16384,
+            -16384,
+            i64::MAX,
+            i64::MIN,
+            1234567890123456789,
+            -1234567890123456789,
+        ];
+
+        let mut out = ByteBuffersDataOutput::new();
+        for &v in &values {
+            out.write_v_long(v).unwrap();
+        }
+        for &v in &signed {
+            out.write_z_long(v).unwrap();
+        }
+
+        let mut input = out.to_data_input().unwrap();
+        for &v in &values {
+            assert_eq!(
+                input.read_v_long().unwrap(),
+                v,
+                "VLong round-trip failed for {v}"
+            );
+        }
+        for &v in &signed {
+            assert_eq!(
+                input.read_z_long().unwrap(),
+                v,
+                "ZLong round-trip failed for {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn byte_buffers_strings_round_trip() {
+        let strings = ["", "hello", "Hello, 世界!", "\u{0000}\u{00FF}", "αβγδε"];
+        let mut out = ByteBuffersDataOutput::new();
+        for &s in &strings {
+            out.write_string(s).unwrap();
+        }
+
+        let mut input = out.to_data_input().unwrap();
+        for &s in &strings {
+            assert_eq!(input.read_string().unwrap(), s);
+        }
+    }
+
+    #[test]
+    fn byte_buffers_map_and_set_of_strings_round_trip() {
+        let mut map = HashMap::new();
+        map.insert("key1".to_string(), "value1".to_string());
+        map.insert("key2".to_string(), "value2".to_string());
+        map.insert("empty".to_string(), "".to_string());
+
+        let mut set = HashSet::new();
+        set.insert("alpha".to_string());
+        set.insert("beta".to_string());
+        set.insert("gamma".to_string());
+
+        let mut out = ByteBuffersDataOutput::new();
+        out.write_map_of_strings(&map).unwrap();
+        out.write_set_of_strings(&set).unwrap();
+
+        let mut input = out.to_data_input().unwrap();
+        assert_eq!(input.read_map_of_strings().unwrap(), map);
+        assert_eq!(input.read_set_of_strings().unwrap(), set);
+    }
+
+    #[test]
+    fn byte_buffers_bulk_byte_array_round_trip() {
+        let data: Vec<u8> = (0..=255).collect();
+        let mut out = ByteBuffersDataOutput::new();
+        out.write_bytes(&data, 0, data.len()).unwrap();
+
+        let mut input = out.to_data_input().unwrap();
+        let mut decoded = vec![0u8; data.len()];
+        let len = decoded.len();
+        input.read_bytes(&mut decoded, 0, len).unwrap();
+        assert_eq!(decoded, data);
+    }
+
+    #[test]
+    fn byte_buffers_bulk_numeric_arrays_round_trip() {
+        let ints: Vec<i32> = (-100..100).collect();
+        let longs: Vec<i64> = (-100..100).map(|i| i as i64 * 1_000_000).collect();
+        let floats: Vec<f32> = (0..100).map(|i| i as f32 * 0.5).collect();
+        let doubles: Vec<f64> = (0..100).map(|i| i as f64 * 0.25).collect();
+
+        let mut out = ByteBuffersDataOutput::new();
+        out.write_ints(&ints, 0, ints.len()).unwrap();
+        out.write_longs(&longs, 0, longs.len()).unwrap();
+        out.write_floats(&floats, 0, floats.len()).unwrap();
+        out.write_doubles(&doubles, 0, doubles.len()).unwrap();
+
+        let mut input = out.to_data_input().unwrap();
+        let mut decoded_ints = vec![0i32; ints.len()];
+        let mut decoded_longs = vec![0i64; longs.len()];
+        let mut decoded_floats = vec![0f32; floats.len()];
+        let mut decoded_doubles = vec![0f64; doubles.len()];
+        input.read_ints(&mut decoded_ints, 0, ints.len()).unwrap();
+        input
+            .read_longs(&mut decoded_longs, 0, longs.len())
+            .unwrap();
+        input
+            .read_floats(&mut decoded_floats, 0, floats.len())
+            .unwrap();
+        input
+            .read_doubles(&mut decoded_doubles, 0, doubles.len())
+            .unwrap();
+
+        assert_eq!(decoded_ints, ints);
+        assert_eq!(decoded_longs, longs);
+        assert_eq!(decoded_floats, floats);
+        assert_eq!(decoded_doubles, doubles);
+    }
+
+    #[test]
+    fn byte_buffers_skip_bytes_and_seek() {
+        let mut out = ByteBuffersDataOutput::new();
+        out.write_int(0x11111111).unwrap();
+        out.write_int(0x22222222).unwrap();
+        out.write_int(0x33333333).unwrap();
+
+        let mut input = out.to_data_input().unwrap();
+        assert_eq!(input.read_int().unwrap(), 0x11111111);
+        input.skip_bytes(4).unwrap();
+        assert_eq!(input.read_int().unwrap(), 0x33333333);
+
+        input.seek(0).unwrap();
+        assert_eq!(input.position(), 0);
+        assert_eq!(input.read_int().unwrap(), 0x11111111);
+
+        input.seek(8).unwrap();
+        assert_eq!(input.read_int().unwrap(), 0x33333333);
+    }
+
+    #[test]
+    fn byte_buffers_random_access_reads() {
+        let mut out = ByteBuffersDataOutput::new();
+        out.write_short(0x1234).unwrap();
+        out.write_int(0x12345678).unwrap();
+        out.write_long(0x123456789ABCDEF0i64).unwrap();
+
+        let input = out.to_data_input().unwrap();
+        assert_eq!(input.read_short_at(0).unwrap(), 0x1234);
+        assert_eq!(input.read_int_at(2).unwrap(), 0x12345678);
+        assert_eq!(input.read_long_at(6).unwrap(), 0x123456789ABCDEF0i64);
+        assert_eq!(input.read_byte_at(6).unwrap(), 0xF0);
+
+        let mut buf = [0u8; 6];
+        input.read_bytes_at(2, &mut buf, 0, 6).unwrap();
+        assert_eq!(buf, [0x78, 0x56, 0x34, 0x12, 0xF0, 0xDE]);
+    }
+
+    #[test]
+    fn byte_buffers_slice_round_trip() {
+        let mut out = ByteBuffersDataOutput::new();
+        out.write_int(0x11111111).unwrap();
+        out.write_int(0x22222222).unwrap();
+        out.write_int(0x33333333).unwrap();
+        out.write_int(0x44444444).unwrap();
+
+        let input = out.to_data_input().unwrap();
+        let sliced = input.slice(4, 8).unwrap();
+        let mut sub = vec![0u8; 8];
+        let mut reader = sliced;
+        reader.read_bytes(&mut sub, 0, 8).unwrap();
+        assert_eq!(
+            sub,
+            0x22222222u32
+                .to_le_bytes()
+                .into_iter()
+                .chain(0x33333333u32.to_le_bytes())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn byte_buffers_to_array_copy_matches_content() {
+        let mut out = ByteBuffersDataOutput::new();
+        out.write_int(0xAABBCCDDu32 as i32).unwrap();
+        out.write_long(0x1122334455667788u64 as i64).unwrap();
+        out.write_string("copied").unwrap();
+
+        let bytes = out.to_array_copy();
+        let mut input = ByteArrayDataInput::new(bytes.clone());
+        assert_eq!(input.read_int().unwrap(), 0xAABBCCDDu32 as i32);
+        assert_eq!(input.read_long().unwrap(), 0x1122334455667788u64 as i64);
+        assert_eq!(input.read_string().unwrap(), "copied");
+    }
+
+    #[test]
+    fn byte_buffers_copy_bytes_transfers_data() {
+        let mut out = ByteBuffersDataOutput::new();
+        out.write_int(0xAABBCCDDu32 as i32).unwrap();
+        out.write_long(0x1122334455667788u64 as i64).unwrap();
+        out.write_string("copied").unwrap();
+
+        let source_bytes = out.to_array_copy();
+        let mut source = ByteArrayDataInput::new(source_bytes.clone());
+        let mut destination = ByteBuffersDataOutput::new();
+        destination
+            .copy_bytes(&mut source, source_bytes.len() as i64)
+            .unwrap();
+
+        assert_eq!(destination.to_array_copy(), source_bytes);
+    }
+
+    #[test]
+    fn byte_buffers_copy_bytes_rejects_negative() {
+        let mut out = ByteBuffersDataOutput::new();
+        let mut input = ByteBuffersDataInput::new(vec![Vec::new()]).unwrap();
+        assert!(out.copy_bytes(&mut input, -1).is_err());
+    }
+
+    #[test]
+    fn byte_buffers_empty_output_to_input() {
+        let out = ByteBuffersDataOutput::new();
+        assert_eq!(out.size(), 0);
+        let mut input = out.to_data_input().unwrap();
+        assert_eq!(input.length(), 0);
+        assert!(input.read_byte().is_err());
+    }
+
+    #[test]
+    fn byte_buffers_size_and_reset() {
+        let mut out = ByteBuffersDataOutput::new();
+        out.write_int(0x12345678).unwrap();
+        assert_eq!(out.size(), 4);
+        out.write_int(0x9ABCDEF0u32 as i32).unwrap();
+        assert_eq!(out.size(), 8);
+
+        out.reset();
+        assert_eq!(out.size(), 0);
+
+        out.write_byte(0x42).unwrap();
+        assert_eq!(out.size(), 1);
+    }
+
+    #[test]
+    fn byte_buffers_resettable_instance_recycles() {
+        let mut out = ByteBuffersDataOutput::new_resettable_instance();
+        // Write enough to force allocation.
+        for _ in 0..2048 {
+            out.write_byte(0xAA).unwrap();
+        }
+        assert!(out.size() >= 2048);
+
+        out.reset();
+        assert_eq!(out.size(), 0);
+
+        // Re-writing should reuse buffers without issue.
+        for _ in 0..2048 {
+            out.write_byte(0xBB).unwrap();
+        }
+        assert_eq!(out.size(), 2048);
+    }
+
+    #[test]
+    fn byte_buffers_block_boundary_values() {
+        // Default block size starts at 1024 bytes. Write data that straddles
+        // block boundaries to exercise the slow path in read/write primitives.
+        let mut out = ByteBuffersDataOutput::new();
+        out.write_byte(0xAA).unwrap();
+        out.write_bytes(&[0u8; 1021], 0, 1021).unwrap();
+        out.write_short(0x1234).unwrap(); // spans offsets 1022 and 1023
+        out.write_int(0x12345678).unwrap();
+
+        let mut input = out.to_data_input().unwrap();
+        assert_eq!(input.read_byte().unwrap(), 0xAA);
+        let mut prefix = vec![0u8; 1021];
+        let len = prefix.len();
+        input.read_bytes(&mut prefix, 0, len).unwrap();
+        assert!(prefix.iter().all(|&b| b == 0));
+        assert_eq!(input.read_short().unwrap(), 0x1234);
+        assert_eq!(input.read_int().unwrap(), 0x12345678);
+    }
+
+    #[test]
+    fn byte_buffers_input_validation_rejects_invalid_layout() {
+        // Empty buffer list rejected.
+        assert!(ByteBuffersDataInput::new(vec![]).is_err());
+        // Non-power-of-two first buffer rejected when multiple blocks.
+        assert!(ByteBuffersDataInput::new(vec![vec![0u8; 100], vec![0u8; 100]]).is_err());
+        // Mismatched intermediate block rejected.
+        assert!(
+            ByteBuffersDataInput::new(vec![vec![0u8; 1024], vec![0u8; 512], vec![0u8; 1024]])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn byte_buffers_expected_size_uses_larger_initial_block() {
+        let out = ByteBuffersDataOutput::with_expected_size(1024 * 1024);
+        assert!(out.block_size() > 1024);
+    }
+
+    #[test]
+    fn byte_buffers_config_validation() {
+        assert!(ByteBuffersDataOutput::with_config(0, 10, false).is_err());
+        assert!(ByteBuffersDataOutput::with_config(10, 32, false).is_err());
+        assert!(ByteBuffersDataOutput::with_config(20, 10, false).is_err());
+        assert!(ByteBuffersDataOutput::with_config(10, 20, false).is_ok());
+    }
+
+    // -------------------------------------------------------------------------
+    // MockIndexInput / MockIndexOutput tests
+    // -------------------------------------------------------------------------
+
+    /// Builds a `MockIndexInput` over the bytes written by `ByteArrayDataOutput`.
+    fn input_from_output(out: ByteArrayDataOutput, desc: &str) -> MockIndexInput {
+        MockIndexInput::new(out.into_inner(), desc)
+    }
+
+    #[test]
+    fn mock_index_input_round_trips_bytes() {
+        let mut out = ByteArrayDataOutput::new();
+        out.write_int(0xDEAD_BEEFu32 as i32).unwrap();
+        out.write_string("Rucene").unwrap();
+        out.write_v_long(123456789).unwrap();
+
+        let mut input = input_from_output(out, "round-trip");
+        assert_eq!(input.resource_description(), "round-trip");
+        assert_eq!(input.length(), 15);
+        assert_eq!(input.file_pointer(), 0);
+
+        assert_eq!(input.read_int().unwrap(), 0xDEAD_BEEFu32 as i32);
+        assert_eq!(input.file_pointer(), 4);
+
+        input.seek(4).unwrap();
+        assert_eq!(input.read_string().unwrap(), "Rucene");
+        assert_eq!(input.read_v_long().unwrap(), 123456789);
+        assert_eq!(input.file_pointer(), input.length());
+    }
+
+    #[test]
+    fn mock_index_input_seek_and_skip() {
+        let mut out = ByteArrayDataOutput::new();
+        out.write_int(0x11111111).unwrap();
+        out.write_int(0x22222222).unwrap();
+        out.write_int(0x33333333).unwrap();
+
+        let mut input = input_from_output(out, "seek-skip");
+        assert_eq!(input.read_int().unwrap(), 0x11111111);
+        input.seek(8).unwrap();
+        assert_eq!(input.read_int().unwrap(), 0x33333333);
+
+        input.seek(0).unwrap();
+        input.skip_bytes(4).unwrap();
+        assert_eq!(input.read_int().unwrap(), 0x22222222);
+
+        assert!(input.seek(-1).is_err());
+        assert!(input.seek(input.length() + 1).is_err());
+        assert!(input.skip_bytes(10).is_err());
+    }
+
+    #[test]
+    fn mock_index_input_slice_is_independent() {
+        let mut out = ByteArrayDataOutput::new();
+        out.write_int(0xAABB_CCDDu32 as i32).unwrap();
+        out.write_int(0x1122_3344u32 as i32).unwrap();
+        out.write_int(0x5566_7788u32 as i32).unwrap();
+
+        let input = input_from_output(out, "slice-source");
+        let mut slice = input.slice("middle", 4, 8).unwrap();
+        assert_eq!(slice.resource_description(), "slice-source [slice=middle]");
+        assert_eq!(slice.length(), 8);
+        assert_eq!(slice.file_pointer(), 0);
+        assert_eq!(slice.read_int().unwrap(), 0x1122_3344u32 as i32);
+        assert_eq!(slice.read_int().unwrap(), 0x5566_7788u32 as i32);
+
+        // Original input is untouched.
+        assert_eq!(input.file_pointer(), 0);
+        assert_eq!(input.length(), 12);
+
+        // Out-of-bounds slice is rejected.
+        assert!(input.slice("bad", 0, 13).is_err());
+        assert!(input.slice("bad", -1, 4).is_err());
+    }
+
+    #[test]
+    fn mock_index_input_clone_is_independent() {
+        let mut out = ByteArrayDataOutput::new();
+        out.write_int(0x0102_0304u32 as i32).unwrap();
+        out.write_int(0x0506_0708u32 as i32).unwrap();
+
+        let mut input = input_from_output(out, "clone-source");
+        let mut clone = input.clone_input().unwrap();
+
+        // Both start at the same position.
+        assert_eq!(clone.file_pointer(), input.file_pointer());
+        assert_eq!(clone.read_int().unwrap(), input.read_int().unwrap());
+
+        // Advancing the original does not affect the clone.
+        input.read_int().unwrap();
+        assert_eq!(input.file_pointer(), 8);
+        assert_eq!(clone.file_pointer(), 4);
+        assert_eq!(clone.read_int().unwrap(), 0x0506_0708u32 as i32);
+    }
+
+    #[test]
+    fn mock_index_input_close_rejects_reads() {
+        let mut input = MockIndexInput::new(vec![0xAB, 0xCD, 0xEF], "closed-input");
+        assert_eq!(input.read_byte().unwrap(), 0xAB);
+
+        input.close().unwrap();
+        assert!(input.is_closed());
+        assert!(input.read_byte().is_err());
+        assert!(input.read_int().is_err());
+        assert!(input.seek(0).is_err());
+    }
+
+    #[test]
+    fn mock_index_output_round_trips_bytes_and_checksum() {
+        let mut out = MockIndexOutput::new("mock output", "test.bin");
+        assert_eq!(out.resource_description(), "mock output");
+        assert_eq!(out.name(), "test.bin");
+        assert!(out.is_empty());
+
+        out.write_int(0xCAFE_BABEu32 as i32).unwrap();
+        out.write_string("Rucene").unwrap();
+        out.write_v_long(987654321).unwrap();
+
+        let expected_bytes = out.as_inner().to_vec();
+        let expected_checksum = crc32fast::hash(&expected_bytes) as i64;
+        assert_eq!(out.file_pointer(), expected_bytes.len() as i64);
+        assert_eq!(out.checksum().unwrap(), expected_checksum);
+
+        // Re-reading the checksum gives the same value before close.
+        assert_eq!(out.checksum().unwrap(), expected_checksum);
+
+        // Close and confirm further writes are rejected.
+        out.close().unwrap();
+        assert!(out.is_closed());
+        assert!(out.write_byte(0).is_err());
+        assert!(out.checksum().is_err());
+
+        // Verify the bytes round-trip through an independent input.
+        let mut input = ByteArrayDataInput::new(out.into_inner());
+        assert_eq!(input.read_int().unwrap(), 0xCAFE_BABEu32 as i32);
+        assert_eq!(input.read_string().unwrap(), "Rucene");
+        assert_eq!(input.read_v_long().unwrap(), 987654321);
+    }
+
+    #[test]
+    fn mock_index_output_primitives_update_checksum() {
+        let mut out = MockIndexOutput::new("primitives", "primitives.bin");
+        out.write_short(0x1234).unwrap();
+        out.write_int(0xDEAD_BEEFu32 as i32).unwrap();
+        out.write_long(0x0102_0304_0506_0708u64 as i64).unwrap();
+        out.write_double(std::f64::consts::PI).unwrap();
+
+        let bytes = out.as_inner().to_vec();
+        assert_eq!(out.checksum().unwrap(), crc32fast::hash(&bytes) as i64);
+    }
+
+    #[test]
+    fn mock_index_output_copy_bytes_from_data_input() {
+        let mut source = ByteArrayDataOutput::new();
+        source.write_int(0xAABB_CCDDu32 as i32).unwrap();
+        source.write_string("copied").unwrap();
+        let source_bytes = source.into_inner();
+
+        let mut input = ByteArrayDataInput::new(source_bytes.clone());
+        let mut out = MockIndexOutput::new("copy target", "copy.bin");
+        out.copy_bytes(&mut input, source_bytes.len() as i64)
+            .unwrap();
+
+        assert_eq!(out.as_inner(), source_bytes.as_slice());
+        assert_eq!(
+            out.checksum().unwrap(),
+            crc32fast::hash(&source_bytes) as i64
+        );
     }
 }

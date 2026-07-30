@@ -27,6 +27,8 @@ log = "0.4"
 tokio = { version = "1", features = ["full"] }
 thiserror = "1"
 memmap2 = { version = "0.9", optional = true }
+# CRC-32 implementation matching Java's `java.util.zip.CRC32`.
+crc32fast = "1.4"
 
 [dev-dependencies]
 tokio-test = "0.4"
