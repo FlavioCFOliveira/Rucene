@@ -52,7 +52,7 @@ Java type declarations (and Rust types when the local crate is populated).
 |----------|---------|
 | `name` | Simple type name. |
 | `qualifiedName` | Fully qualified name, e.g. `"org.apache.lucene.index.IndexWriter"`. |
-| `kind` | `"class"`, `"interface"`, `"enum"`, `"exception"`, `"annotation"`, `"struct"`, `"trait"`. |
+| `kind` | `"class"`, `"interface"`, `"enum"`, `"record"`, `"exception"`, `"annotation"`, `"struct"`, `"trait"`. |
 | `file` | Source file path or URL. |
 | `gitCommit` | Last confirmed commit hash. |
 | `gitDate` | ISO date of `gitCommit`. |
@@ -118,9 +118,9 @@ Every node and edge carries `gitCommit` (full 40-char hash) and `gitDate` (`YYYY
 | `Project` | populated (Rucene, Apache Lucene Core 10.5.0) |
 | `Module` | populated (`lucene/core`) |
 | `Package` | populated (39 packages under `org.apache.lucene` in `lucene/core`) |
-| `Class`/`Interface`/`Enum`/`Exception`/`Annotation` | populated (1,162 top-level types from `lucene/core`); inner classes are not yet modelled |
+| `Class`/`Interface`/`Enum`/`Exception`/`Annotation` | populated (1,196 top-level types from `lucene/core`, including `src/java` and `src/java21` sources); inner classes are not yet modelled |
 | `Method` | target — populated selectively for key APIs |
-| `File` | populated (1,212 source files from `lucene/core` plus local project files) |
+| `File` | populated (1,232 source files from `lucene/core` — `src/java`, `src/java21` and `module-info.java` — plus local project files) |
 | `Feature` | target — to be created as needed for Rucene features |
 | `CONTAINS` | populated (project→module, module→package, package→file) |
 | `DECLARES` | populated (file→top-level type) |
