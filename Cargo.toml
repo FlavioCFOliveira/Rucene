@@ -1,0 +1,38 @@
+[package]
+name = "rucene"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+authors = ["Flavio CF Oliveira"]
+license = "Apache-2.0"
+description = "A Rust port of Apache Lucene Core 10.5.0 with functional parity and index-file compatibility."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+keywords = ["lucene", "search", "index", "information-retrieval", "rust"]
+categories = ["database-implementations", "data-structures", "algorithms"]
+
+[features]
+default = ["std", "mmap"]
+std = []
+mmap = ["memmap2"]
+store = []
+util = []
+document = ["analysis"]
+analysis = ["util"]
+codecs = ["store", "document", "analysis", "util"]
+index = ["codecs", "document", "analysis", "store", "util"]
+search = ["index", "codecs", "document", "analysis", "store", "util"]
+
+[dependencies]
+log = "0.4"
+tokio = { version = "1", features = ["full"] }
+thiserror = "1"
+memmap2 = { version = "0.9", optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+proptest = "1"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
