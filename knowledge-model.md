@@ -116,10 +116,15 @@ Every node and edge carries `gitCommit` (full 40-char hash) and `gitDate` (`YYYY
 | Label / Edge | Status |
 |--------------|--------|
 | `Project` | populated (Rucene, Apache Lucene Core 10.5.0) |
-| `Module` | target — to be populated for Lucene modules |
-| `Package` | target — to be populated for Lucene packages |
-| `Class`/`Interface`/`Enum`/`Exception`/`Annotation` | target — to be populated for Lucene types |
+| `Module` | populated (`lucene/core`) |
+| `Package` | populated (39 packages under `org.apache.lucene` in `lucene/core`) |
+| `Class`/`Interface`/`Enum`/`Exception`/`Annotation` | populated (1,162 top-level types from `lucene/core`); inner classes are not yet modelled |
 | `Method` | target — populated selectively for key APIs |
-| `File` | target — to be populated for Lucene source files |
+| `File` | populated (1,212 source files from `lucene/core` plus local project files) |
 | `Feature` | target — to be created as needed for Rucene features |
-| All edge types | target — to be populated as structure is discovered |
+| `CONTAINS` | populated (project→module, module→package, package→file) |
+| `DECLARES` | populated (file→top-level type) |
+| `DEPENDS_ON` | populated (package→package dependencies derived from imports) |
+| `EXTENDS` / `IMPLEMENTS` | populated (type→type relationships) |
+| `REFERENCES` | populated (Rucene → Apache Lucene Core 10.5.0) |
+| `TESTS` / `SPECIFIED_IN` | target — to be populated as specifications and tests are authored |
