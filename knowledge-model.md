@@ -54,6 +54,8 @@ Java type declarations (and Rust types when the local crate is populated).
 | `qualifiedName` | Fully qualified name, e.g. `"org.apache.lucene.index.IndexWriter"`. |
 | `kind` | `"class"`, `"interface"`, `"enum"`, `"record"`, `"exception"`, `"annotation"`, `"struct"`, `"trait"`. |
 | `file` | Source file path or URL. |
+| `extendsExternal` | List of external (`java.*`, `javax.*`, inner-class) super-types not yet modelled as nodes. |
+| `implementsExternal` | List of external interfaces not yet modelled as nodes. |
 | `gitCommit` | Last confirmed commit hash. |
 | `gitDate` | ISO date of `gitCommit`. |
 
@@ -76,7 +78,9 @@ A source, build, documentation, or configuration file.
 |----------|---------|
 | `path` | Relative path in the repository. |
 | `name` | File name. |
-| `kind` | `"source"`, `"test"`, `"build"`, `"doc"`, `"config"`. |
+| `kind` | `"source"`, `"test"`, `"build"`, `"doc"`, `"config"`, `"module-descriptor"`. |
+| `role` | Additional discriminator, e.g. `"module-descriptor"`. |
+| `moduleName` | For `module-info.java`, the JPMS module name. |
 | `gitCommit` | Last confirmed commit hash. |
 | `gitDate` | ISO date of `gitCommit`. |
 
@@ -99,6 +103,12 @@ A high-level functional capability, used to link packages/types to what they imp
 | `DEPENDS_ON` | `Package` → `Package`, `Class` → `Class`, `Module` → `Module`. |
 | `EXTENDS` | `Class` → `Class` / `Class` → `Interface`. |
 | `IMPLEMENTS` | `Class` → `Interface`. |
+| `EXPORTS` | `Feature` (`module-info`) → `Package` (JPMS exported package). |
+| `OPENS` | `Feature` (`module-info`) → `Package` (JPMS opened package). |
+| `REQUIRES` | `Feature` (`module-info`) → `Feature` (required module). |
+| `USES` | `Feature` (`module-info`) → `Class` (SPI service interface). |
+| `PROVIDES` | `Feature` (`module-info`) → `Class` (SPI service interface). |
+| `PROVIDED_BY` | `Class` (SPI interface) → `Class` (implementation). |
 | `TESTS` | `File` / `Class` → `Feature` / `Class`. |
 | `SPECIFIED_IN` | `Feature` → `File` (specification document). |
 | `REFERENCES` | `Project` → `Project` (Rucene references Apache Lucene Core 10.5.0). |

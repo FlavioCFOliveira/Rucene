@@ -16,10 +16,11 @@ parser.add_argument('--source-root', default='/tmp/lucene-10.5.0/lucene/core/src
 parser.add_argument('--output-dir', default='/tmp/lucene_kg')
 parser.add_argument('--commit', default='UNKNOWN')
 parser.add_argument('--date', default='UNKNOWN')
-args = parser.parse_args()
 
-ROOT = Path(args.source_root)
+ROOT = Path('/tmp/lucene-10.5.0/lucene/core/src/java/org/apache/lucene')
 CORE_PREFIX = 'org.apache.lucene'
+
+args = None
 
 def clean_for_brace_count(text):
     """Return a copy of text with strings and comments replaced by spaces,
@@ -332,6 +333,8 @@ def emit_cypher(data, commit, gdate):
 
 
 if __name__ == '__main__':
+    args = parser.parse_args()
+    ROOT = Path(args.source_root)
     data = discover()
     print(f"// packages={len(data['packages'])} files={len(data['files'])} types={len(data['types'])} pkg_deps={sum(len(v) for v in data['pkg_deps'].values())} extends={len(data['type_extends'])} implements={len(data['type_implements'])}", file=sys.stderr)
     if '--json' in sys.argv:
@@ -339,8 +342,8 @@ if __name__ == '__main__':
         json.dump(data, sys.stdout, indent=2)
     else:
         import pathlib
-        commit = args.commit if hasattr(args, 'commit') else 'UNKNOWN'
-        gdate = args.date if hasattr(args, 'date') else 'UNKNOWN'
+        commit = args.commit
+        gdate = args.date
         out_dir = pathlib.Path(args.output_dir)
         out_dir.mkdir(exist_ok=True)
         sections, updates = emit_cypher(data, commit, gdate)

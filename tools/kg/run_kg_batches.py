@@ -35,9 +35,8 @@ def main():
     subcmd = 'create' if args.mode == 'create' else 'update'
     base_cmd = ['rmp', 'graph', subcmd, '-r', args.roadmap]
 
-    if args.mode == 'update':
-        # rmp graph update only accepts one Cypher statement per invocation.
-        args.batch_size = 1
+    # rmp graph create/update only accept one Cypher statement per invocation.
+    args.batch_size = 1
 
     batches = [lines[i:i + args.batch_size] for i in range(0, len(lines), args.batch_size)]
     total = len(batches)
