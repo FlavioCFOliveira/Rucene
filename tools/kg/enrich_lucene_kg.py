@@ -377,6 +377,108 @@ def generate_external_type_cypher(data):
     return lines
 
 
+def extract_inner_classes():
+    """
+    Extract all nested type declarations from src/java and src/java21,
+    including multi-level nesting.
+
+    Returns a list of dicts with keys: qualifiedName, name, kind, file, package,
+    parentQualifiedName.
+    """
+    decl_re = re.compile(
+        r'^\s*(?:(?:public|protected|private|abstract|final|static|strictfp|sealed|non-sealed)\s+)*'
+        r'(class|interface|enum|record|@interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
+        r'(?:\s*<[^;{}]*>)?'
+        r'(?:\s+extends\s+[^{<]+)?'
+        r'(?:\s+implements\s+[^{<]+)?'
+        r'\s*[{<]',
+        re.MULTILINE,
+    )
+
+    def clean_text(text):
+        # very conservative: strip strings and comments so brace counting works
+        t = re.sub(r'"(?:\\.|[^"\\])*"', '""', text)
+        t = re.sub(r"'(?:\\.|[^'\\])*'", "''", t)
+        t = re.sub(r'/\*.*?\*/', '', t, flags=re.S)
+        t = re.sub(r'//.*?$', '', t, flags=re.M)
+        return t
+
+    def make_qualified(stack, name):
+        return '$'.join(stack + [name])
+
+    inners = []
+    for root in [CORE_ROOT_JAVA, CORE_ROOT_JAVA21]:
+        for dp, _, fs in os.walk(root):
+            for f in fs:
+                if not f.endswith('.java'):
+                    continue
+                path = Path(dp) / f
+                rel_path = str(path.relative_to(BASE_ROOT))
+                text = path.read_text(encoding='utf-8', errors='ignore')
+                m_pkg = re.search(r'\n?\s*package\s+([a-zA-Z0-9_.]+)\s*;', text)
+                if not m_pkg:
+                    continue
+                pkg = m_pkg.group(1)
+                clean = clean_text(text)
+
+                stack = []  # stack of type names currently open
+                for m in decl_re.finditer(clean):
+                    prefix = clean[:m.start()]
+                    depth = prefix.count('{') - prefix.count('}')
+                    name = m.group(2)
+                    kind_raw = m.group(1)
+                    kind = {'class': 'class', 'interface': 'interface', 'enum': 'enum',
+                            'record': 'record', '@interface': 'annotation'}[kind_raw]
+
+                    # Pop stack to the current depth. Depth 0 = file scope.
+                    while stack and len(stack) > max(depth, 0):
+                        stack.pop()
+
+                    if depth == 0:
+                        stack = [pkg + '.' + name]
+                    elif stack:
+                        parent = stack[-1]
+                        qualified = make_qualified(stack, name)
+                        inners.append({
+                            'qualifiedName': qualified,
+                            'name': name,
+                            'kind': kind,
+                            'file': rel_path,
+                            'package': pkg,
+                            'parentQualifiedName': parent,
+                        })
+                        stack.append(qualified)
+                    else:
+                        # Should not happen unless a declaration appears at depth >0
+                        # without a top-level type (e.g. local scope); skip.
+                        pass
+    return inners
+
+
+def generate_inner_class_cypher(inners):
+    """Generate Cypher to create inner Class nodes and NESTED_IN edges."""
+    create_lines = []
+    for inn in inners:
+        create_lines.append(
+            f"MERGE (c:Class {{qualifiedName:'{escape(inn['qualifiedName'])}'}})"
+        )
+        create_lines.append(
+            f"MATCH (c:Class {{qualifiedName:'{escape(inn['qualifiedName'])}'}}), "
+            f"(p:Class {{qualifiedName:'{escape(inn['parentQualifiedName'])}'}}) "
+            f"MERGE (c)-[:NESTED_IN]->(p)"
+        )
+    update_lines = []
+    for inn in inners:
+        update_lines.append(
+            f"MATCH (c:Class {{qualifiedName:'{escape(inn['qualifiedName'])}'}}) "
+            f"SET c.name='{escape(inn['name'])}', c.kind='{escape(inn['kind'])}', "
+            f"c.file='{escape(inn['file'])}', c.package='{escape(inn['package'])}', "
+            f"c.parentQualifiedName='{escape(inn['parentQualifiedName'])}', "
+            f"c.gitCommit='{COMMIT}', c.gitDate='{GDATE}'"
+        )
+    return create_lines, update_lines
+
+
 def run_rmp(mode, filepath):
     subprocess.run(
         [sys.executable, str(Path(__file__).parent / 'run_kg_batches.py'),
@@ -415,20 +517,31 @@ def main():
     missing_cypher = generate_missing_edges_cypher(data)
     external_cypher = generate_external_type_cypher(data)
 
+    print('Extracting inner classes...', file=sys.stderr)
+    inners = extract_inner_classes()
+    inner_create, inner_update = generate_inner_class_cypher(inners)
+    print(f"Found {len(inners)} inner/nested type declarations.", file=sys.stderr)
+
     module_create_file = out_dir / 'module_info_create.cypher'
     module_update_file = out_dir / 'module_info_update.cypher'
     missing_file = out_dir / 'missing_edges.cypher'
     external_file = out_dir / 'external_types.cypher'
+    inner_create_file = out_dir / 'inner_classes_create.cypher'
+    inner_update_file = out_dir / 'inner_classes_update.cypher'
 
     module_create_file.write_text('\n'.join(module_create), encoding='utf-8')
     module_update_file.write_text('\n'.join(module_update), encoding='utf-8')
     missing_file.write_text('\n'.join(missing_cypher), encoding='utf-8')
     external_file.write_text('\n'.join(external_cypher), encoding='utf-8')
+    inner_create_file.write_text('\n'.join(inner_create), encoding='utf-8')
+    inner_update_file.write_text('\n'.join(inner_update), encoding='utf-8')
 
     print(f"Wrote {module_create_file} ({len(module_create)} statements)", file=sys.stderr)
     print(f"Wrote {module_update_file} ({len(module_update)} statements)", file=sys.stderr)
     print(f"Wrote {missing_file} ({len(missing_cypher)} statements)", file=sys.stderr)
     print(f"Wrote {external_file} ({len(external_cypher)} statements)", file=sys.stderr)
+    print(f"Wrote {inner_create_file} ({len(inner_create)} statements)", file=sys.stderr)
+    print(f"Wrote {inner_update_file} ({len(inner_update)} statements)", file=sys.stderr)
 
     if args.run:
         print('Running module-info CREATE Cypher...', file=sys.stderr)
@@ -439,6 +552,10 @@ def main():
         run_rmp('create', str(missing_file))
         print('Running external type Cypher...', file=sys.stderr)
         run_rmp('update', str(external_file))
+        print('Running inner-class CREATE Cypher...', file=sys.stderr)
+        run_rmp('create', str(inner_create_file))
+        print('Running inner-class UPDATE Cypher...', file=sys.stderr)
+        run_rmp('update', str(inner_update_file))
         print('Enrichment complete.', file=sys.stderr)
 
 

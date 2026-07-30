@@ -100,6 +100,7 @@ A high-level functional capability, used to link packages/types to what they imp
 |------|---------|
 | `CONTAINS` | `Project` → `Module`, `Module` → `Package`, `Package` → `Package`, `Package` → `Class`/`Interface`/`Enum`/`Exception`/`Annotation`, `Class` → `Method`. |
 | `DECLARES` | `File` → `Class`/`Interface`/`Enum`/`Exception`/`Annotation`/`Method`. |
+| `NESTED_IN` | `Class` (inner type) → `Class` (enclosing top-level type). |
 | `DEPENDS_ON` | `Package` → `Package`, `Class` → `Class`, `Module` → `Module`. |
 | `EXTENDS` | `Class` → `Class` / `Class` → `Interface`. |
 | `IMPLEMENTS` | `Class` → `Interface`. |
