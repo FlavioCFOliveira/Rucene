@@ -401,6 +401,44 @@ pub trait DataOutput {
     }
 }
 
+/// Random-access input API.
+///
+/// Equivalent to `org.apache.lucene.store.RandomAccessInput`. All reads are
+/// absolute; there is no file pointer. Like `IndexInput`, implementations are
+/// intended for use by a single thread.
+///
+/// This is a subtrait of [`IndexInput`]: every `RandomAccessInput` can also be
+/// used as a sequential input. The `_at` suffix on the absolute read methods
+/// avoids name collisions with the sequential [`DataInput`] methods, which
+/// Rust does not overload by parameter list.
+pub trait RandomAccessInput: IndexInput {
+    /// Reads a single byte at the given absolute position.
+    fn read_byte_at(&mut self, pos: i64) -> Result<u8>;
+
+    /// Reads `len` bytes starting at `pos` into `bytes[offset..offset + len]`.
+    fn read_bytes_at(
+        &mut self,
+        pos: i64,
+        bytes: &mut [u8],
+        offset: usize,
+        len: usize,
+    ) -> Result<()> {
+        for i in 0..len {
+            bytes[offset + i] = self.read_byte_at(pos + i as i64)?;
+        }
+        Ok(())
+    }
+
+    /// Reads a little-endian `i16` at the given absolute position.
+    fn read_short_at(&mut self, pos: i64) -> Result<i16>;
+
+    /// Reads a little-endian `i32` at the given absolute position.
+    fn read_int_at(&mut self, pos: i64) -> Result<i32>;
+
+    /// Reads a little-endian `i64` at the given absolute position.
+    fn read_long_at(&mut self, pos: i64) -> Result<i64>;
+}
+
 /// Abstract base trait for random-access input from a file in a Lucene
 /// `Directory`.
 ///
@@ -442,6 +480,1011 @@ pub trait IndexInput: DataInput {
 
     /// Returns the opaque resource description for this input.
     fn resource_description(&self) -> &str;
+
+    /// Hints that bytes in `[offset, offset + length)` will be read soon.
+    ///
+    /// The default implementation does nothing.
+    fn prefetch(&self, _offset: i64, _length: i64) -> Result<()> {
+        Ok(())
+    }
+
+    /// Returns a hint whether the entire input is resident in physical memory.
+    ///
+    /// `Some(true)` suggests it is likely resident. `Some(false)` and `None`
+    /// carry no guarantee. The default returns `None`.
+    fn is_loaded(&self) -> Option<bool> {
+        None
+    }
+
+    /// Returns a random-access view over a slice of this input.
+    ///
+    /// Equivalent to `IndexInput.randomAccessSlice` in Lucene. The default
+    /// implementation creates a regular slice and wraps it in a seek+read
+    /// adapter.
+    fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
+        let slice = self.slice("randomaccess", offset, length)?;
+        Ok(Box::new(RandomAccessInputAdapter::new(slice)))
+    }
+
+    /// Builds the resource description for a slice of this input.
+    fn full_slice_description(&self, slice_description: &str) -> String {
+        if slice_description.is_empty() {
+            self.resource_description().to_string()
+        } else {
+            format!(
+                "{} [slice={slice_description}]",
+                self.resource_description()
+            )
+        }
+    }
+}
+
+/// Default seek+read adapter used by [`IndexInput::random_access_slice`].
+///
+/// This is equivalent to the anonymous `RandomAccessInput` implementation
+/// returned by `IndexInput.randomAccessSlice` in Lucene when the concrete
+/// slice does not already support random access.
+struct RandomAccessInputAdapter {
+    input: Box<dyn IndexInput>,
+}
+
+impl RandomAccessInputAdapter {
+    fn new(input: Box<dyn IndexInput>) -> Self {
+        Self { input }
+    }
+}
+
+impl DataInput for RandomAccessInputAdapter {
+    fn read_byte(&mut self) -> Result<u8> {
+        self.input.read_byte()
+    }
+
+    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        self.input.read_bytes(b, offset, len)
+    }
+
+    fn read_bytes_buffered(
+        &mut self,
+        b: &mut [u8],
+        offset: usize,
+        len: usize,
+        use_buffer: bool,
+    ) -> Result<()> {
+        self.input.read_bytes_buffered(b, offset, len, use_buffer)
+    }
+
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        self.input.skip_bytes(num_bytes)
+    }
+
+    fn read_short(&mut self) -> Result<i16> {
+        self.input.read_short()
+    }
+
+    fn read_int(&mut self) -> Result<i32> {
+        self.input.read_int()
+    }
+
+    fn read_long(&mut self) -> Result<i64> {
+        self.input.read_long()
+    }
+}
+
+impl IndexInput for RandomAccessInputAdapter {
+    fn close(&mut self) -> Result<()> {
+        self.input.close()
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.input.file_pointer()
+    }
+
+    fn length(&self) -> i64 {
+        self.input.length()
+    }
+
+    fn seek(&mut self, pos: i64) -> Result<()> {
+        self.input.seek(pos)
+    }
+
+    fn slice(
+        &self,
+        slice_description: &str,
+        offset: i64,
+        length: i64,
+    ) -> Result<Box<dyn IndexInput>> {
+        self.input.slice(slice_description, offset, length)
+    }
+
+    fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+        self.input.clone_input()
+    }
+
+    fn resource_description(&self) -> &str {
+        self.input.resource_description()
+    }
+
+    fn prefetch(&self, offset: i64, length: i64) -> Result<()> {
+        self.input.prefetch(offset, length)
+    }
+
+    fn is_loaded(&self) -> Option<bool> {
+        self.input.is_loaded()
+    }
+
+    fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
+        self.input.random_access_slice(offset, length)
+    }
+}
+
+impl RandomAccessInput for RandomAccessInputAdapter {
+    fn read_byte_at(&mut self, pos: i64) -> Result<u8> {
+        self.input.seek(pos)?;
+        self.input.read_byte()
+    }
+
+    fn read_bytes_at(
+        &mut self,
+        pos: i64,
+        bytes: &mut [u8],
+        offset: usize,
+        len: usize,
+    ) -> Result<()> {
+        self.input.seek(pos)?;
+        self.input.read_bytes(bytes, offset, len)
+    }
+
+    fn read_short_at(&mut self, pos: i64) -> Result<i16> {
+        self.input.seek(pos)?;
+        self.input.read_short()
+    }
+
+    fn read_int_at(&mut self, pos: i64) -> Result<i32> {
+        self.input.seek(pos)?;
+        self.input.read_int()
+    }
+
+    fn read_long_at(&mut self, pos: i64) -> Result<i64> {
+        self.input.seek(pos)?;
+        self.input.read_long()
+    }
+}
+
+/// Default buffer size for [`BufferedIndexInput`].
+pub const BUFFER_SIZE: usize = 1024;
+
+/// Minimum buffer size allowed for [`BufferedIndexInput`].
+pub const MIN_BUFFER_SIZE: usize = 8;
+
+/// Buffer size used for merge operations.
+pub const MERGE_BUFFER_SIZE: usize = 4096;
+
+/// Base implementation of a buffered [`IndexInput`].
+///
+/// Equivalent to `org.apache.lucene.store.BufferedIndexInput`. This wrapper
+/// adds read buffering, efficient multi-byte primitive reads, absolute
+/// random-access reads, and slicing on top of any unbuffered [`IndexInput`].
+pub struct BufferedIndexInput {
+    source: Box<dyn IndexInput>,
+    buffer: Vec<u8>,
+    buffer_start: i64,
+    buffer_position: usize,
+    buffer_limit: usize,
+    buffer_size: usize,
+    resource_description: String,
+}
+
+impl BufferedIndexInput {
+    /// Creates a buffered input over `source` using the given buffer size.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if `buffer_size` is smaller
+    /// than [`MIN_BUFFER_SIZE`].
+    pub fn new(source: Box<dyn IndexInput>, buffer_size: usize) -> Result<Self> {
+        if buffer_size < MIN_BUFFER_SIZE {
+            return Err(LuceneError::IllegalArgument(format!(
+                "bufferSize must be at least MIN_BUFFER_SIZE (got {buffer_size})"
+            )));
+        }
+        let resource_description = source.resource_description().to_string();
+        Ok(Self {
+            source,
+            buffer: vec![0u8; buffer_size],
+            buffer_start: 0,
+            buffer_position: 0,
+            buffer_limit: 0,
+            buffer_size,
+            resource_description,
+        })
+    }
+
+    /// Creates a buffered input over `source` with the default buffer size.
+    pub fn with_default_size(source: Box<dyn IndexInput>) -> Result<Self> {
+        Self::new(source, BUFFER_SIZE)
+    }
+
+    /// Returns the configured buffer size.
+    pub fn buffer_size(&self) -> usize {
+        self.buffer_size
+    }
+
+    fn remaining_in_buffer(&self) -> usize {
+        self.buffer_limit.saturating_sub(self.buffer_position)
+    }
+
+    fn refill(&mut self) -> Result<()> {
+        let start = self.buffer_start + self.buffer_position as i64;
+        let end = (start + self.buffer_size as i64).min(self.source.length());
+        let new_length = (end - start) as usize;
+        if new_length == 0 {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "read past EOF",
+            )));
+        }
+        if self.buffer.capacity() < self.buffer_size {
+            self.buffer
+                .reserve(self.buffer_size - self.buffer.capacity());
+        }
+        self.source.seek(start)?;
+        self.source.read_bytes(&mut self.buffer, 0, new_length)?;
+        self.buffer_start = start;
+        self.buffer_position = 0;
+        self.buffer_limit = new_length;
+        Ok(())
+    }
+
+    fn resolve_position_in_buffer(&mut self, pos: i64, width: usize) -> Result<usize> {
+        let width_i64 = width as i64;
+        let index = pos - self.buffer_start;
+        if index >= 0 && index + width_i64 <= self.buffer_limit as i64 {
+            return Ok(index as usize);
+        }
+        let new_start = if index < 0 {
+            let mut s = self.buffer_start - self.buffer_size as i64;
+            s = s.max(pos + width_i64 - self.buffer_size as i64);
+            s = s.max(0);
+            s.min(pos)
+        } else {
+            pos
+        };
+        self.buffer_start = new_start;
+        self.buffer_position = 0;
+        self.buffer_limit = 0;
+        self.refill()?;
+        let result = pos - self.buffer_start;
+        if result < 0 || result + width_i64 > self.buffer_limit as i64 {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "read past EOF",
+            )));
+        }
+        Ok(result as usize)
+    }
+}
+
+impl DataInput for BufferedIndexInput {
+    fn read_byte(&mut self) -> Result<u8> {
+        if self.buffer_position >= self.buffer_limit {
+            self.refill()?;
+        }
+        let b = self.buffer[self.buffer_position];
+        self.buffer_position += 1;
+        Ok(b)
+    }
+
+    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        self.read_bytes_buffered(b, offset, len, true)
+    }
+
+    fn read_bytes_buffered(
+        &mut self,
+        b: &mut [u8],
+        offset: usize,
+        len: usize,
+        use_buffer: bool,
+    ) -> Result<()> {
+        let available = self.remaining_in_buffer();
+        if len <= available {
+            if len > 0 {
+                b[offset..offset + len].copy_from_slice(
+                    &self.buffer[self.buffer_position..self.buffer_position + len],
+                );
+                self.buffer_position += len;
+            }
+        } else {
+            let mut offset = offset;
+            let mut len = len;
+            if available > 0 {
+                b[offset..offset + available]
+                    .copy_from_slice(&self.buffer[self.buffer_position..self.buffer_limit]);
+                offset += available;
+                len -= available;
+                self.buffer_position = self.buffer_limit;
+            }
+            if use_buffer && len < self.buffer_size {
+                self.refill()?;
+                let remaining = self.remaining_in_buffer();
+                if remaining < len {
+                    b[offset..offset + remaining].copy_from_slice(
+                        &self.buffer[self.buffer_position..self.buffer_position + remaining],
+                    );
+                    return Err(LuceneError::Io(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "read past EOF",
+                    )));
+                } else {
+                    b[offset..offset + len].copy_from_slice(
+                        &self.buffer[self.buffer_position..self.buffer_position + len],
+                    );
+                    self.buffer_position += len;
+                }
+            } else {
+                let after = self.file_pointer() + len as i64;
+                if after > self.source.length() {
+                    return Err(LuceneError::Io(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "read past EOF",
+                    )));
+                }
+                self.source.seek(self.file_pointer())?;
+                self.source.read_bytes(b, offset, len)?;
+                self.buffer_start = after;
+                self.buffer_position = 0;
+                self.buffer_limit = 0;
+            }
+        }
+        Ok(())
+    }
+
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        if num_bytes < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "numBytes must be non-negative (got: {num_bytes})"
+            )));
+        }
+        let target = self.file_pointer() + num_bytes;
+        self.seek(target)
+    }
+
+    fn read_short(&mut self) -> Result<i16> {
+        if self.remaining_in_buffer() >= 2 {
+            let v = BitUtil::read_le_short(&self.buffer, self.buffer_position);
+            self.buffer_position += 2;
+            Ok(v)
+        } else {
+            let b1 = self.read_byte()? as u16;
+            let b2 = self.read_byte()? as u16;
+            Ok(((b2 << 8) | b1) as i16)
+        }
+    }
+
+    fn read_int(&mut self) -> Result<i32> {
+        if self.remaining_in_buffer() >= 4 {
+            let v = BitUtil::read_le_int(&self.buffer, self.buffer_position);
+            self.buffer_position += 4;
+            Ok(v)
+        } else {
+            let b1 = self.read_byte()? as u32;
+            let b2 = self.read_byte()? as u32;
+            let b3 = self.read_byte()? as u32;
+            let b4 = self.read_byte()? as u32;
+            Ok(((b4 << 24) | (b3 << 16) | (b2 << 8) | b1) as i32)
+        }
+    }
+
+    fn read_long(&mut self) -> Result<i64> {
+        if self.remaining_in_buffer() >= 8 {
+            let v = BitUtil::read_le_long(&self.buffer, self.buffer_position);
+            self.buffer_position += 8;
+            Ok(v)
+        } else {
+            let low = self.read_int()? as u32 as i64;
+            let high = self.read_int()? as i64;
+            Ok((high << 32) | low)
+        }
+    }
+
+    fn read_floats(&mut self, floats: &mut [f32], offset: usize, length: usize) -> Result<()> {
+        check_from_index_size(offset, length, floats.len())?;
+        let mut remaining = length;
+        while remaining > 0 {
+            let available_floats = self.remaining_in_buffer() / 4;
+            let cnt = available_floats.min(remaining);
+            if cnt > 0 {
+                for i in 0..cnt {
+                    let byte_off = self.buffer_position + i * 4;
+                    let bits = BitUtil::read_le_int(&self.buffer, byte_off) as u32;
+                    floats[offset + length - remaining + i] = f32::from_bits(bits);
+                }
+                self.buffer_position += cnt * 4;
+                remaining -= cnt;
+            }
+            if remaining > 0 {
+                if self.remaining_in_buffer() > 0 {
+                    floats[offset + length - remaining] = self.read_float()?;
+                    remaining -= 1;
+                } else {
+                    self.refill()?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn read_longs(&mut self, longs: &mut [i64], offset: usize, length: usize) -> Result<()> {
+        check_from_index_size(offset, length, longs.len())?;
+        let mut remaining = length;
+        while remaining > 0 {
+            let available_longs = self.remaining_in_buffer() / 8;
+            let cnt = available_longs.min(remaining);
+            if cnt > 0 {
+                for i in 0..cnt {
+                    let byte_off = self.buffer_position + i * 8;
+                    longs[offset + length - remaining + i] =
+                        BitUtil::read_le_long(&self.buffer, byte_off);
+                }
+                self.buffer_position += cnt * 8;
+                remaining -= cnt;
+            }
+            if remaining > 0 {
+                if self.remaining_in_buffer() > 0 {
+                    longs[offset + length - remaining] = self.read_long()?;
+                    remaining -= 1;
+                } else {
+                    self.refill()?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn read_ints(&mut self, ints: &mut [i32], offset: usize, length: usize) -> Result<()> {
+        check_from_index_size(offset, length, ints.len())?;
+        let mut remaining = length;
+        while remaining > 0 {
+            let available_ints = self.remaining_in_buffer() / 4;
+            let cnt = available_ints.min(remaining);
+            if cnt > 0 {
+                for i in 0..cnt {
+                    let byte_off = self.buffer_position + i * 4;
+                    ints[offset + length - remaining + i] =
+                        BitUtil::read_le_int(&self.buffer, byte_off);
+                }
+                self.buffer_position += cnt * 4;
+                remaining -= cnt;
+            }
+            if remaining > 0 {
+                if self.remaining_in_buffer() > 0 {
+                    ints[offset + length - remaining] = self.read_int()?;
+                    remaining -= 1;
+                } else {
+                    self.refill()?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl IndexInput for BufferedIndexInput {
+    fn close(&mut self) -> Result<()> {
+        self.source.close()
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.buffer_start + self.buffer_position as i64
+    }
+
+    fn length(&self) -> i64 {
+        self.source.length()
+    }
+
+    fn seek(&mut self, pos: i64) -> Result<()> {
+        if pos < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "position must be non-negative (got: {pos})"
+            )));
+        }
+        if pos > self.source.length() {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "seek past EOF",
+            )));
+        }
+        let end = self.buffer_start + self.buffer_limit as i64;
+        if pos >= self.buffer_start && pos < end {
+            self.buffer_position = (pos - self.buffer_start) as usize;
+        } else {
+            self.buffer_start = pos;
+            self.buffer_position = 0;
+            self.buffer_limit = 0;
+        }
+        Ok(())
+    }
+
+    fn slice(
+        &self,
+        slice_description: &str,
+        offset: i64,
+        length: i64,
+    ) -> Result<Box<dyn IndexInput>> {
+        let base = self.source.clone_input()?;
+        Ok(Box::new(SlicedIndexInput::new(
+            slice_description,
+            base,
+            offset,
+            length,
+        )?))
+    }
+
+    fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+        let mut source_clone = self.source.clone_input()?;
+        source_clone.seek(self.file_pointer())?;
+        Ok(Box::new(Self {
+            source: source_clone,
+            buffer: vec![0u8; self.buffer_size],
+            buffer_start: self.file_pointer(),
+            buffer_position: 0,
+            buffer_limit: 0,
+            buffer_size: self.buffer_size,
+            resource_description: self.resource_description.clone(),
+        }))
+    }
+
+    fn resource_description(&self) -> &str {
+        &self.resource_description
+    }
+
+    fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
+        let base = self.source.clone_input()?;
+        Ok(Box::new(SlicedIndexInput::new(
+            "randomaccess",
+            base,
+            offset,
+            length,
+        )?))
+    }
+}
+
+impl RandomAccessInput for BufferedIndexInput {
+    fn read_byte_at(&mut self, pos: i64) -> Result<u8> {
+        let index = self.resolve_position_in_buffer(pos, 1)?;
+        Ok(self.buffer[index])
+    }
+
+    fn read_bytes_at(
+        &mut self,
+        pos: i64,
+        bytes: &mut [u8],
+        offset: usize,
+        len: usize,
+    ) -> Result<()> {
+        let dst_end = offset
+            .checked_add(len)
+            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+        if dst_end > bytes.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
+                bytes.len()
+            )));
+        }
+        if len <= self.buffer_size {
+            if len > 0 {
+                let index = self.resolve_position_in_buffer(pos, len)?;
+                bytes[offset..offset + len].copy_from_slice(&self.buffer[index..index + len]);
+            }
+        } else {
+            let mut pos = pos;
+            let mut offset = offset;
+            let mut len = len;
+            while len > self.buffer_size {
+                let index = self.resolve_position_in_buffer(pos, self.buffer_size)?;
+                bytes[offset..offset + self.buffer_size]
+                    .copy_from_slice(&self.buffer[index..index + self.buffer_size]);
+                len -= self.buffer_size;
+                offset += self.buffer_size;
+                pos += self.buffer_size as i64;
+            }
+            let index = self.resolve_position_in_buffer(pos, len)?;
+            bytes[offset..offset + len].copy_from_slice(&self.buffer[index..index + len]);
+        }
+        Ok(())
+    }
+
+    fn read_short_at(&mut self, pos: i64) -> Result<i16> {
+        let index = self.resolve_position_in_buffer(pos, 2)?;
+        Ok(BitUtil::read_le_short(&self.buffer, index))
+    }
+
+    fn read_int_at(&mut self, pos: i64) -> Result<i32> {
+        let index = self.resolve_position_in_buffer(pos, 4)?;
+        Ok(BitUtil::read_le_int(&self.buffer, index))
+    }
+
+    fn read_long_at(&mut self, pos: i64) -> Result<i64> {
+        let index = self.resolve_position_in_buffer(pos, 8)?;
+        Ok(BitUtil::read_le_long(&self.buffer, index))
+    }
+}
+
+/// A buffered input that presents a slice of another [`IndexInput`].
+///
+/// Equivalent to the private `SlicedIndexInput` inner class of
+/// `org.apache.lucene.store.BufferedIndexInput`.
+pub struct SlicedIndexInput {
+    base: Box<dyn IndexInput>,
+    file_offset: i64,
+    length: i64,
+    buffer: Vec<u8>,
+    buffer_start: i64,
+    buffer_position: usize,
+    buffer_limit: usize,
+    buffer_size: usize,
+    resource_description: String,
+}
+
+impl SlicedIndexInput {
+    /// Creates a slice of `base` starting at `offset` with the given `length`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if the slice is out of bounds.
+    pub fn new(
+        slice_description: &str,
+        base: Box<dyn IndexInput>,
+        offset: i64,
+        length: i64,
+    ) -> Result<Self> {
+        if offset < 0 || length < 0 || length > base.length() - offset {
+            return Err(LuceneError::IllegalArgument(format!(
+                "slice() {slice_description} out of bounds: {}",
+                base.resource_description()
+            )));
+        }
+        let resource_description = if slice_description.is_empty() {
+            base.resource_description().to_string()
+        } else {
+            format!(
+                "{} [slice={slice_description}]",
+                base.resource_description()
+            )
+        };
+        let mut base = base.clone_input()?;
+        base.seek(offset)?;
+        Ok(Self {
+            base,
+            file_offset: offset,
+            length,
+            buffer: vec![0u8; BUFFER_SIZE],
+            buffer_start: 0,
+            buffer_position: 0,
+            buffer_limit: 0,
+            buffer_size: BUFFER_SIZE,
+            resource_description,
+        })
+    }
+
+    fn remaining_in_buffer(&self) -> usize {
+        self.buffer_limit.saturating_sub(self.buffer_position)
+    }
+
+    fn refill(&mut self) -> Result<()> {
+        let start = self.buffer_start + self.buffer_position as i64;
+        let end = (start + self.buffer_size as i64).min(self.length);
+        let new_length = (end - start) as usize;
+        if new_length == 0 {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "read past EOF",
+            )));
+        }
+        if self.buffer.capacity() < self.buffer_size {
+            self.buffer
+                .reserve(self.buffer_size - self.buffer.capacity());
+        }
+        self.base.seek(self.file_offset + start)?;
+        self.base.read_bytes(&mut self.buffer, 0, new_length)?;
+        self.buffer_start = start;
+        self.buffer_position = 0;
+        self.buffer_limit = new_length;
+        Ok(())
+    }
+
+    fn resolve_position_in_buffer(&mut self, pos: i64, width: usize) -> Result<usize> {
+        let width_i64 = width as i64;
+        let index = pos - self.buffer_start;
+        if index >= 0 && index + width_i64 <= self.buffer_limit as i64 {
+            return Ok(index as usize);
+        }
+        let new_start = if index < 0 {
+            let mut s = self.buffer_start - self.buffer_size as i64;
+            s = s.max(pos + width_i64 - self.buffer_size as i64);
+            s = s.max(0);
+            s.min(pos)
+        } else {
+            pos
+        };
+        self.buffer_start = new_start;
+        self.buffer_position = 0;
+        self.buffer_limit = 0;
+        self.refill()?;
+        let result = pos - self.buffer_start;
+        if result < 0 || result + width_i64 > self.buffer_limit as i64 {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "read past EOF",
+            )));
+        }
+        Ok(result as usize)
+    }
+}
+
+impl DataInput for SlicedIndexInput {
+    fn read_byte(&mut self) -> Result<u8> {
+        if self.buffer_position >= self.buffer_limit {
+            self.refill()?;
+        }
+        let b = self.buffer[self.buffer_position];
+        self.buffer_position += 1;
+        Ok(b)
+    }
+
+    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        self.read_bytes_buffered(b, offset, len, true)
+    }
+
+    fn read_bytes_buffered(
+        &mut self,
+        b: &mut [u8],
+        offset: usize,
+        len: usize,
+        use_buffer: bool,
+    ) -> Result<()> {
+        let available = self.remaining_in_buffer();
+        if len <= available {
+            if len > 0 {
+                b[offset..offset + len].copy_from_slice(
+                    &self.buffer[self.buffer_position..self.buffer_position + len],
+                );
+                self.buffer_position += len;
+            }
+        } else {
+            let mut offset = offset;
+            let mut len = len;
+            if available > 0 {
+                b[offset..offset + available]
+                    .copy_from_slice(&self.buffer[self.buffer_position..self.buffer_limit]);
+                offset += available;
+                len -= available;
+                self.buffer_position = self.buffer_limit;
+            }
+            if use_buffer && len < self.buffer_size {
+                self.refill()?;
+                let remaining = self.remaining_in_buffer();
+                if remaining < len {
+                    b[offset..offset + remaining].copy_from_slice(
+                        &self.buffer[self.buffer_position..self.buffer_position + remaining],
+                    );
+                    return Err(LuceneError::Io(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "read past EOF",
+                    )));
+                } else {
+                    b[offset..offset + len].copy_from_slice(
+                        &self.buffer[self.buffer_position..self.buffer_position + len],
+                    );
+                    self.buffer_position += len;
+                }
+            } else {
+                let after = self.file_pointer() + len as i64;
+                if after > self.length {
+                    return Err(LuceneError::Io(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "read past EOF",
+                    )));
+                }
+                self.base.seek(self.file_offset + self.file_pointer())?;
+                self.base.read_bytes(b, offset, len)?;
+                self.buffer_start = after;
+                self.buffer_position = 0;
+                self.buffer_limit = 0;
+            }
+        }
+        Ok(())
+    }
+
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        if num_bytes < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "numBytes must be non-negative (got: {num_bytes})"
+            )));
+        }
+        let target = self.file_pointer() + num_bytes;
+        self.seek(target)
+    }
+
+    fn read_short(&mut self) -> Result<i16> {
+        if self.remaining_in_buffer() >= 2 {
+            let v = BitUtil::read_le_short(&self.buffer, self.buffer_position);
+            self.buffer_position += 2;
+            Ok(v)
+        } else {
+            let b1 = self.read_byte()? as u16;
+            let b2 = self.read_byte()? as u16;
+            Ok(((b2 << 8) | b1) as i16)
+        }
+    }
+
+    fn read_int(&mut self) -> Result<i32> {
+        if self.remaining_in_buffer() >= 4 {
+            let v = BitUtil::read_le_int(&self.buffer, self.buffer_position);
+            self.buffer_position += 4;
+            Ok(v)
+        } else {
+            let b1 = self.read_byte()? as u32;
+            let b2 = self.read_byte()? as u32;
+            let b3 = self.read_byte()? as u32;
+            let b4 = self.read_byte()? as u32;
+            Ok(((b4 << 24) | (b3 << 16) | (b2 << 8) | b1) as i32)
+        }
+    }
+
+    fn read_long(&mut self) -> Result<i64> {
+        if self.remaining_in_buffer() >= 8 {
+            let v = BitUtil::read_le_long(&self.buffer, self.buffer_position);
+            self.buffer_position += 8;
+            Ok(v)
+        } else {
+            let low = self.read_int()? as u32 as i64;
+            let high = self.read_int()? as i64;
+            Ok((high << 32) | low)
+        }
+    }
+}
+
+impl IndexInput for SlicedIndexInput {
+    fn close(&mut self) -> Result<()> {
+        self.base.close()
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.buffer_start + self.buffer_position as i64
+    }
+
+    fn length(&self) -> i64 {
+        self.length
+    }
+
+    fn seek(&mut self, pos: i64) -> Result<()> {
+        if pos < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "position must be non-negative (got: {pos})"
+            )));
+        }
+        if pos > self.length {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "seek past EOF",
+            )));
+        }
+        let end = self.buffer_start + self.buffer_limit as i64;
+        if pos >= self.buffer_start && pos < end {
+            self.buffer_position = (pos - self.buffer_start) as usize;
+        } else {
+            self.buffer_start = pos;
+            self.buffer_position = 0;
+            self.buffer_limit = 0;
+        }
+        Ok(())
+    }
+
+    fn slice(
+        &self,
+        slice_description: &str,
+        offset: i64,
+        length: i64,
+    ) -> Result<Box<dyn IndexInput>> {
+        let base = self.clone_input()?;
+        Ok(Box::new(SlicedIndexInput::new(
+            slice_description,
+            base,
+            offset,
+            length,
+        )?))
+    }
+
+    fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+        let mut base_clone = self.base.clone_input()?;
+        base_clone.seek(self.file_offset + self.file_pointer())?;
+        Ok(Box::new(Self {
+            base: base_clone,
+            file_offset: self.file_offset,
+            length: self.length,
+            buffer: vec![0u8; self.buffer_size],
+            buffer_start: self.file_pointer(),
+            buffer_position: 0,
+            buffer_limit: 0,
+            buffer_size: self.buffer_size,
+            resource_description: self.resource_description.clone(),
+        }))
+    }
+
+    fn resource_description(&self) -> &str {
+        &self.resource_description
+    }
+
+    fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
+        let base = self.clone_input()?;
+        Ok(Box::new(SlicedIndexInput::new(
+            "randomaccess",
+            base,
+            offset,
+            length,
+        )?))
+    }
+}
+
+impl RandomAccessInput for SlicedIndexInput {
+    fn read_byte_at(&mut self, pos: i64) -> Result<u8> {
+        let index = self.resolve_position_in_buffer(pos, 1)?;
+        Ok(self.buffer[index])
+    }
+
+    fn read_bytes_at(
+        &mut self,
+        pos: i64,
+        bytes: &mut [u8],
+        offset: usize,
+        len: usize,
+    ) -> Result<()> {
+        let dst_end = offset
+            .checked_add(len)
+            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+        if dst_end > bytes.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "destination buffer too small: offset={offset}, len={len}, buf.len()={}",
+                bytes.len()
+            )));
+        }
+        if len <= self.buffer_size {
+            if len > 0 {
+                let index = self.resolve_position_in_buffer(pos, len)?;
+                bytes[offset..offset + len].copy_from_slice(&self.buffer[index..index + len]);
+            }
+        } else {
+            let mut pos = pos;
+            let mut offset = offset;
+            let mut len = len;
+            while len > self.buffer_size {
+                let index = self.resolve_position_in_buffer(pos, self.buffer_size)?;
+                bytes[offset..offset + self.buffer_size]
+                    .copy_from_slice(&self.buffer[index..index + self.buffer_size]);
+                len -= self.buffer_size;
+                offset += self.buffer_size;
+                pos += self.buffer_size as i64;
+            }
+            let index = self.resolve_position_in_buffer(pos, len)?;
+            bytes[offset..offset + len].copy_from_slice(&self.buffer[index..index + len]);
+        }
+        Ok(())
+    }
+
+    fn read_short_at(&mut self, pos: i64) -> Result<i16> {
+        let index = self.resolve_position_in_buffer(pos, 2)?;
+        Ok(BitUtil::read_le_short(&self.buffer, index))
+    }
+
+    fn read_int_at(&mut self, pos: i64) -> Result<i32> {
+        let index = self.resolve_position_in_buffer(pos, 4)?;
+        Ok(BitUtil::read_le_int(&self.buffer, index))
+    }
+
+    fn read_long_at(&mut self, pos: i64) -> Result<i64> {
+        let index = self.resolve_position_in_buffer(pos, 8)?;
+        Ok(BitUtil::read_le_long(&self.buffer, index))
+    }
 }
 
 /// Abstract base trait for appending data to a file in a Lucene `Directory`.
@@ -2771,5 +3814,256 @@ mod tests {
             out.checksum().unwrap(),
             crc32fast::hash(&source_bytes) as i64
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // BufferedIndexInput / SlicedIndexInput / RandomAccessInput tests
+    // -------------------------------------------------------------------------
+
+    fn build_test_bytes() -> Vec<u8> {
+        let mut out = ByteArrayDataOutput::new();
+        for i in 0i32..=255 {
+            out.write_int(i).unwrap();
+        }
+        out.into_inner()
+    }
+
+    #[test]
+    fn buffered_index_input_basic_reads() {
+        let data = build_test_bytes();
+        let mut input = BufferedIndexInput::with_default_size(Box::new(MockIndexInput::new(
+            data,
+            "buffered-basic",
+        )))
+        .unwrap();
+
+        assert_eq!(input.resource_description(), "buffered-basic");
+        assert_eq!(input.length(), 1024);
+        assert_eq!(input.file_pointer(), 0);
+
+        for i in 0i32..=255 {
+            assert_eq!(input.read_int().unwrap(), i);
+        }
+        assert_eq!(input.file_pointer(), input.length());
+    }
+
+    #[test]
+    fn buffered_index_input_buffered_short_int_long() {
+        let mut out = ByteArrayDataOutput::new();
+        out.write_short(0x1234).unwrap();
+        out.write_int(0x12345678).unwrap();
+        out.write_long(0x123456789ABCDEF0i64).unwrap();
+
+        let mut input = BufferedIndexInput::with_default_size(Box::new(MockIndexInput::new(
+            out.into_inner(),
+            "buffered-primitives",
+        )))
+        .unwrap();
+
+        assert_eq!(input.read_short().unwrap(), 0x1234);
+        assert_eq!(input.read_int().unwrap(), 0x12345678);
+        assert_eq!(input.read_long().unwrap(), 0x123456789ABCDEF0i64);
+    }
+
+    #[test]
+    fn buffered_index_input_seek_and_skip() {
+        let data = build_test_bytes();
+        let mut input = BufferedIndexInput::with_default_size(Box::new(MockIndexInput::new(
+            data,
+            "buffered-seek",
+        )))
+        .unwrap();
+
+        input.seek(512).unwrap(); // 128 ints in
+        assert_eq!(input.read_int().unwrap(), 128);
+        input.skip_bytes(4).unwrap();
+        assert_eq!(input.read_int().unwrap(), 130);
+
+        input.seek(0).unwrap();
+        assert_eq!(input.read_int().unwrap(), 0);
+
+        assert!(input.seek(-1).is_err());
+        assert!(input.seek(input.length() + 1).is_err());
+    }
+
+    #[test]
+    fn buffered_index_input_slice_is_independent() {
+        let data = build_test_bytes();
+        let input = BufferedIndexInput::with_default_size(Box::new(MockIndexInput::new(
+            data,
+            "buffered-slice-source",
+        )))
+        .unwrap();
+
+        let mut slice = input.slice("middle", 256, 512).unwrap();
+        assert_eq!(
+            slice.resource_description(),
+            "buffered-slice-source [slice=middle]"
+        );
+        assert_eq!(slice.length(), 512);
+        assert_eq!(slice.file_pointer(), 0);
+
+        // Slice starts at int 64.
+        assert_eq!(slice.read_int().unwrap(), 64);
+        assert_eq!(slice.file_pointer(), 4);
+
+        // Original is untouched.
+        assert_eq!(input.file_pointer(), 0);
+
+        assert!(input.slice("bad", 0, 2000).is_err());
+    }
+
+    #[test]
+    fn buffered_index_input_random_access() {
+        let data = build_test_bytes();
+        let mut input = BufferedIndexInput::with_default_size(Box::new(MockIndexInput::new(
+            data,
+            "buffered-random",
+        )))
+        .unwrap();
+
+        // Read backwards to exercise resolve_position_in_buffer.
+        for i in (0i32..=255).rev() {
+            assert_eq!(input.read_int_at(i as i64 * 4).unwrap(), i);
+        }
+
+        let mut buf = [0u8; 8];
+        input.read_bytes_at(16, &mut buf, 0, 8).unwrap();
+        assert_eq!(BitUtil::read_le_int(&buf, 0), 4);
+        assert_eq!(BitUtil::read_le_int(&buf, 4), 5);
+
+        assert!(input.read_int_at(1024).is_err());
+    }
+
+    #[test]
+    fn buffered_index_input_random_access_slice_view() {
+        let data = build_test_bytes();
+        let input = BufferedIndexInput::with_default_size(Box::new(MockIndexInput::new(
+            data,
+            "buffered-ra-slice",
+        )))
+        .unwrap();
+
+        let mut ra = input.random_access_slice(128, 64).unwrap();
+        assert_eq!(ra.length(), 64);
+        assert_eq!(ra.read_int_at(0).unwrap(), 32);
+        assert_eq!(ra.read_int_at(60).unwrap(), 47);
+
+        // Original is untouched.
+        assert_eq!(input.file_pointer(), 0);
+    }
+
+    #[test]
+    fn buffered_index_input_crosses_buffer_boundary() {
+        // Use a tiny buffer so every few reads trigger refill.
+        let data: Vec<u8> = (0u8..=255).collect();
+        let mut input = BufferedIndexInput::new(
+            Box::new(MockIndexInput::new(data.clone(), "buffered-boundary")),
+            MIN_BUFFER_SIZE,
+        )
+        .unwrap();
+
+        let mut all = vec![0u8; 256];
+        input.read_bytes(&mut all, 0, 256).unwrap();
+        assert_eq!(all, data);
+
+        // Reset and read via small chunks that straddle refill boundaries.
+        input.seek(0).unwrap();
+        let mut piece = [0u8; 3];
+        input.read_bytes(&mut piece, 0, 3).unwrap(); // bytes 0..2
+        assert_eq!(piece, [0, 1, 2]);
+        input.seek(6).unwrap();
+        input.read_bytes(&mut piece, 0, 3).unwrap(); // bytes 6..8
+        assert_eq!(piece, [6, 7, 8]);
+    }
+
+    #[test]
+    fn buffered_index_input_clone_is_independent() {
+        let data = build_test_bytes();
+        let mut input = BufferedIndexInput::with_default_size(Box::new(MockIndexInput::new(
+            data,
+            "buffered-clone-source",
+        )))
+        .unwrap();
+
+        input.read_int().unwrap(); // position 4
+        let mut clone = input.clone_input().unwrap();
+        assert_eq!(clone.file_pointer(), 4);
+
+        input.read_int().unwrap(); // position 8
+        assert_eq!(input.file_pointer(), 8);
+        assert_eq!(clone.file_pointer(), 4);
+
+        assert_eq!(clone.read_int().unwrap(), 1);
+        assert_eq!(clone.file_pointer(), 8);
+    }
+
+    #[test]
+    fn buffered_index_input_close_delegates() {
+        let mut input = BufferedIndexInput::with_default_size(Box::new(MockIndexInput::new(
+            vec![0xAB, 0xCD, 0xEF],
+            "buffered-close",
+        )))
+        .unwrap();
+
+        assert_eq!(input.read_byte().unwrap(), 0xAB);
+        input.close().unwrap();
+        // Once the local buffer is exhausted, further reads hit the closed source.
+        assert_eq!(input.read_byte().unwrap(), 0xCD);
+        assert_eq!(input.read_byte().unwrap(), 0xEF);
+        assert!(input.read_byte().is_err());
+    }
+
+    #[test]
+    fn sliced_index_input_bounds() {
+        let data = build_test_bytes();
+        let base = Box::new(MockIndexInput::new(data, "sliced-bounds"));
+        assert!(SlicedIndexInput::new("ok", base.clone_input().unwrap(), 0, 1024).is_ok());
+        assert!(SlicedIndexInput::new("bad-offset", base.clone_input().unwrap(), -1, 4).is_err());
+        assert!(SlicedIndexInput::new("bad-len", base.clone_input().unwrap(), 0, 1025).is_err());
+        assert!(SlicedIndexInput::new("bad-both", base.clone_input().unwrap(), 512, 1024).is_err());
+    }
+
+    #[test]
+    fn sliced_index_input_reads_and_seeks() {
+        let data = build_test_bytes();
+        let base = Box::new(MockIndexInput::new(data, "sliced-reads"));
+        let mut slice = SlicedIndexInput::new("sub", base, 256, 512).unwrap();
+
+        assert_eq!(slice.length(), 512);
+        assert_eq!(slice.read_int().unwrap(), 64);
+        slice.seek(256).unwrap();
+        assert_eq!(slice.read_int().unwrap(), 128);
+        assert_eq!(slice.file_pointer(), 260);
+
+        // Random access within slice.
+        assert_eq!(slice.read_int_at(128).unwrap(), 96);
+    }
+
+    #[test]
+    fn sliced_index_input_nested_slice() {
+        let data = build_test_bytes();
+        let input = BufferedIndexInput::with_default_size(Box::new(MockIndexInput::new(
+            data,
+            "nested-slice-source",
+        )))
+        .unwrap();
+
+        let slice1 = input.slice("first", 128, 512).unwrap();
+        let mut slice2 = slice1.slice("second", 64, 128).unwrap();
+
+        assert_eq!(slice2.length(), 128);
+        assert_eq!(slice2.read_int().unwrap(), 48); // (128+64)/4
+    }
+
+    #[test]
+    fn random_access_input_default_adapter() {
+        let data = build_test_bytes();
+        let input = MockIndexInput::new(data, "ra-adapter-source");
+        let mut ra = input.random_access_slice(256, 16).unwrap();
+
+        assert_eq!(ra.length(), 16);
+        assert_eq!(ra.read_int_at(0).unwrap(), 64);
+        assert_eq!(ra.read_int_at(12).unwrap(), 67);
     }
 }
