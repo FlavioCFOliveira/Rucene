@@ -11,7 +11,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::SystemTime,
@@ -4471,6 +4471,820 @@ fn compute_block_size_bits_for(bytes: usize) -> usize {
     block_bits.clamp(DEFAULT_MIN_BITS_PER_BLOCK, DEFAULT_MAX_BITS_PER_BLOCK)
 }
 
+// -----------------------------------------------------------------------------
+// ByteBuffersDirectory, ByteBuffersIndexInput, ByteBuffersIndexOutput
+// -----------------------------------------------------------------------------
+
+/// A function that converts a [`ByteBuffersDataOutput`] into an [`IndexInput`]
+/// for a given file name.
+///
+/// This is the Rust equivalent of Lucene's
+/// `BiFunction<String, ByteBuffersDataOutput, IndexInput>` output-to-input
+/// strategy used by [`ByteBuffersDirectory`].
+pub type OutputToInputFn =
+    Arc<dyn Fn(&str, &ByteBuffersDataOutput) -> Result<Box<dyn IndexInput + Send>> + Send + Sync>;
+
+/// A function that supplies fresh [`ByteBuffersDataOutput`] instances.
+///
+/// Equivalent to `Supplier<ByteBuffersDataOutput>` in Lucene's
+/// `ByteBuffersDirectory`.
+pub type BbOutputSupplierFn = Arc<dyn Fn() -> ByteBuffersDataOutput + Send + Sync>;
+
+/// In-memory heap directory that stores files as lists of byte buffers.
+///
+/// Equivalent to `org.apache.lucene.store.ByteBuffersDirectory`. Files are
+/// written through [`ByteBuffersIndexOutput`] and read back through
+/// [`ByteBuffersIndexInput`].
+pub struct ByteBuffersDirectory {
+    files: Mutex<HashMap<String, Arc<FileEntry>>>,
+    lock_factory: Box<dyn LockFactory>,
+    is_open: AtomicBool,
+    temp_counter: AtomicU64,
+    output_to_input: OutputToInputFn,
+    bb_output_supplier: BbOutputSupplierFn,
+}
+
+/// An entry describing a single file stored in a [`ByteBuffersDirectory`].
+struct FileEntry {
+    file_name: String,
+    content: Mutex<Option<Box<dyn IndexInput + Send>>>,
+    cached_length: AtomicI64,
+}
+
+impl FileEntry {
+    fn new(file_name: String) -> Self {
+        Self {
+            file_name,
+            content: Mutex::new(None),
+            cached_length: AtomicI64::new(0),
+        }
+    }
+
+    fn create_output(
+        self_arc: Arc<Self>,
+        output_to_input: &OutputToInputFn,
+        bb_output_supplier: &BbOutputSupplierFn,
+    ) -> Result<ByteBuffersIndexOutput> {
+        let delegate = bb_output_supplier();
+        let resource_description =
+            format!("ByteBuffersDirectory output (file={})", self_arc.file_name);
+        let file_name = self_arc.file_name.clone();
+        let output_to_input = Arc::clone(output_to_input);
+        let entry_for_close = Arc::clone(&self_arc);
+        let on_close: Option<Box<dyn FnOnce(ByteBuffersDataOutput) + Send>> =
+            Some(Box::new(move |output: ByteBuffersDataOutput| {
+                let input = output_to_input(&file_name, &output)
+                    .expect("output-to-input conversion must not fail");
+                let mut content = entry_for_close
+                    .content
+                    .lock()
+                    .expect("content mutex poisoned");
+                *content = Some(input);
+                entry_for_close
+                    .cached_length
+                    .store(output.size() as i64, Ordering::Release);
+            }));
+        Ok(ByteBuffersIndexOutput::with_checksum(
+            delegate,
+            resource_description,
+            self_arc.file_name.clone(),
+            Some(crc32fast::Hasher::new()),
+            on_close,
+        ))
+    }
+
+    fn length(&self) -> i64 {
+        self.cached_length.load(Ordering::Acquire)
+    }
+
+    fn open_input(&self) -> Result<Box<dyn IndexInput>> {
+        let content = self.content.lock().expect("content mutex poisoned");
+        let input = content.as_ref().ok_or_else(|| {
+            LuceneError::Io(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "Can't open a file still open for writing: {}",
+                    self.file_name
+                ),
+            ))
+        })?;
+        input.clone_input()
+    }
+}
+
+impl ByteBuffersDirectory {
+    /// Creates a new directory using a [`SingleInstanceLockFactory`].
+    pub fn new() -> Self {
+        Self::with_lock_factory(Box::new(SingleInstanceLockFactory::new()))
+    }
+
+    /// Creates a new directory using the given lock factory and the default
+    /// many-buffer output-to-input strategy.
+    pub fn with_lock_factory(lock_factory: Box<dyn LockFactory>) -> Self {
+        Self::with_config(
+            lock_factory,
+            Arc::new(ByteBuffersDataOutput::new),
+            output_as_many_buffers(),
+        )
+    }
+
+    /// Creates a new directory with full control over output buffering and the
+    /// output-to-input conversion strategy.
+    pub fn with_config(
+        lock_factory: Box<dyn LockFactory>,
+        bb_output_supplier: BbOutputSupplierFn,
+        output_to_input: OutputToInputFn,
+    ) -> Self {
+        Self {
+            files: Mutex::new(HashMap::new()),
+            lock_factory,
+            is_open: AtomicBool::new(true),
+            temp_counter: AtomicU64::new(0),
+            output_to_input,
+            bb_output_supplier,
+        }
+    }
+
+    /// Returns `true` if the named file exists in this directory.
+    pub fn file_exists(&self, name: &str) -> Result<bool> {
+        self.ensure_open()?;
+        let files = self.files.lock().expect("files mutex poisoned");
+        Ok(files.contains_key(name))
+    }
+
+    /// Returns the lock factory configured for this directory.
+    pub fn lock_factory(&self) -> &dyn LockFactory {
+        self.lock_factory.as_ref()
+    }
+}
+
+impl Default for ByteBuffersDirectory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Directory for ByteBuffersDirectory {
+    fn list_all(&self) -> Result<Vec<String>> {
+        self.ensure_open()?;
+        let files = self.files.lock().expect("files mutex poisoned");
+        let mut names: Vec<String> = files.keys().cloned().collect();
+        names.sort();
+        Ok(names)
+    }
+
+    fn delete_file(&self, name: &str) -> Result<()> {
+        self.ensure_open()?;
+        let mut files = self.files.lock().expect("files mutex poisoned");
+        if files.remove(name).is_none() {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                name,
+            )));
+        }
+        Ok(())
+    }
+
+    fn file_length(&self, name: &str) -> Result<i64> {
+        self.ensure_open()?;
+        let files = self.files.lock().expect("files mutex poisoned");
+        let entry = files
+            .get(name)
+            .ok_or_else(|| LuceneError::Io(io::Error::new(io::ErrorKind::NotFound, name)))?;
+        Ok(entry.length())
+    }
+
+    fn create_output(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
+        self.ensure_open()?;
+        let entry = Arc::new(FileEntry::new(name.to_string()));
+        {
+            let mut files = self.files.lock().expect("files mutex poisoned");
+            if files.contains_key(name) {
+                return Err(LuceneError::Io(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("File already exists: {name}"),
+                )));
+            }
+            files.insert(name.to_string(), Arc::clone(&entry));
+        }
+        Ok(Box::new(FileEntry::create_output(
+            entry,
+            &self.output_to_input,
+            &self.bb_output_supplier,
+        )?))
+    }
+
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        _context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexOutput>> {
+        self.ensure_open()?;
+        loop {
+            let counter = self.temp_counter.fetch_add(1, Ordering::SeqCst);
+            let name = Self::get_temp_file_name(prefix, suffix, counter);
+            let entry = Arc::new(FileEntry::new(name.clone()));
+            let mut files = self.files.lock().expect("files mutex poisoned");
+            if files.insert(name.clone(), Arc::clone(&entry)).is_none() {
+                return Ok(Box::new(FileEntry::create_output(
+                    entry,
+                    &self.output_to_input,
+                    &self.bb_output_supplier,
+                )?));
+            }
+        }
+    }
+
+    fn sync(&self, _names: &[String]) -> Result<()> {
+        self.ensure_open()?;
+        Ok(())
+    }
+
+    fn sync_metadata(&self) -> Result<()> {
+        self.ensure_open()?;
+        Ok(())
+    }
+
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        self.ensure_open()?;
+        let mut files = self.files.lock().expect("files mutex poisoned");
+        let source_entry = files
+            .get(source)
+            .cloned()
+            .ok_or_else(|| LuceneError::Io(io::Error::new(io::ErrorKind::NotFound, source)))?;
+        if files.contains_key(dest) {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                dest,
+            )));
+        }
+        files.insert(dest.to_string(), source_entry);
+        if files.remove(source).is_none() {
+            return Err(LuceneError::IllegalState(format!(
+                "File was unexpectedly replaced: {source}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn open_input(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+        self.ensure_open()?;
+        let files = self.files.lock().expect("files mutex poisoned");
+        let entry = files
+            .get(name)
+            .ok_or_else(|| LuceneError::Io(io::Error::new(io::ErrorKind::NotFound, name)))?;
+        entry.open_input()
+    }
+
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+        self.ensure_open()?;
+        self.lock_factory.obtain_lock(self, name)
+    }
+
+    fn close(&mut self) -> Result<()> {
+        self.is_open.store(false, Ordering::Release);
+        let mut files = self.files.lock().expect("files mutex poisoned");
+        files.clear();
+        Ok(())
+    }
+
+    fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+        self.ensure_open()?;
+        Ok(HashSet::new())
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        if !self.is_open.load(Ordering::Acquire) {
+            return Err(LuceneError::AlreadyClosed(
+                "this Directory is closed".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for ByteBuffersDirectory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ByteBuffersDirectory")
+            .field("is_open", &self.is_open.load(Ordering::Acquire))
+            .finish()
+    }
+}
+
+impl std::fmt::Display for ByteBuffersDirectory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ByteBuffersDirectory, lockFactory={}",
+            self.lock_factory.directory_type_name()
+        )
+    }
+}
+
+/// Default output-to-input strategy that keeps the multi-buffer layout produced
+/// by [`ByteBuffersDataOutput::to_data_input`].
+///
+/// Equivalent to `ByteBuffersDirectory.OUTPUT_AS_MANY_BUFFERS`.
+pub fn output_as_many_buffers() -> OutputToInputFn {
+    Arc::new(|file_name: &str, output: &ByteBuffersDataOutput| {
+        let data_input = output.to_data_input()?;
+        let desc = format!(
+            "ByteBuffersIndexInput (file={}, buffers={:?})",
+            file_name, data_input
+        );
+        Ok(Box::new(ByteBuffersIndexInput::new(data_input, desc)) as Box<dyn IndexInput + Send>)
+    })
+}
+
+/// Output-to-input strategy that copies the output into one contiguous buffer.
+///
+/// Equivalent to `ByteBuffersDirectory.OUTPUT_AS_ONE_BUFFER`.
+pub fn output_as_one_buffer() -> OutputToInputFn {
+    Arc::new(|file_name: &str, output: &ByteBuffersDataOutput| {
+        let bytes = output.to_array_copy();
+        let data_input = ByteBuffersDataInput::new(vec![bytes])?;
+        let desc = format!(
+            "ByteBuffersIndexInput (file={}, buffers={:?})",
+            file_name, data_input
+        );
+        Ok(Box::new(ByteBuffersIndexInput::new(data_input, desc)) as Box<dyn IndexInput + Send>)
+    })
+}
+
+/// Alias for [`output_as_one_buffer`], matching Lucene's
+/// `OUTPUT_AS_BYTE_ARRAY` name.
+pub fn output_as_byte_array() -> OutputToInputFn {
+    output_as_one_buffer()
+}
+
+/// An [`IndexInput`] (and [`RandomAccessInput`]) backed by a
+/// [`ByteBuffersDataInput`].
+///
+/// Equivalent to `org.apache.lucene.store.ByteBuffersIndexInput`.
+pub struct ByteBuffersIndexInput {
+    input: Option<ByteBuffersDataInput>,
+    resource_description: String,
+}
+
+impl ByteBuffersIndexInput {
+    /// Creates a new input wrapping `input` with the given resource description.
+    pub fn new(input: ByteBuffersDataInput, resource_description: impl Into<String>) -> Self {
+        Self {
+            input: Some(input),
+            resource_description: resource_description.into(),
+        }
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        if self.input.is_none() {
+            return Err(LuceneError::AlreadyClosed("Already closed.".to_string()));
+        }
+        Ok(())
+    }
+
+    fn input(&self) -> Result<&ByteBuffersDataInput> {
+        self.ensure_open()?;
+        Ok(self.input.as_ref().expect("ensure_open validated input"))
+    }
+
+    fn input_mut(&mut self) -> Result<&mut ByteBuffersDataInput> {
+        self.ensure_open()?;
+        Ok(self.input.as_mut().expect("ensure_open validated input"))
+    }
+}
+
+impl DataInput for ByteBuffersIndexInput {
+    fn read_byte(&mut self) -> Result<u8> {
+        self.input_mut()?.read_byte()
+    }
+
+    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        self.input_mut()?.read_bytes(b, offset, len)
+    }
+
+    fn read_bytes_buffered(
+        &mut self,
+        b: &mut [u8],
+        offset: usize,
+        len: usize,
+        use_buffer: bool,
+    ) -> Result<()> {
+        self.input_mut()?
+            .read_bytes_buffered(b, offset, len, use_buffer)
+    }
+
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        self.input_mut()?.skip_bytes(num_bytes)
+    }
+
+    fn read_short(&mut self) -> Result<i16> {
+        self.input_mut()?.read_short()
+    }
+
+    fn read_int(&mut self) -> Result<i32> {
+        self.input_mut()?.read_int()
+    }
+
+    fn read_v_int(&mut self) -> Result<i32> {
+        self.input_mut()?.read_v_int()
+    }
+
+    fn read_z_int(&mut self) -> Result<i32> {
+        self.input_mut()?.read_z_int()
+    }
+
+    fn read_long(&mut self) -> Result<i64> {
+        self.input_mut()?.read_long()
+    }
+
+    fn read_v_long(&mut self) -> Result<i64> {
+        self.input_mut()?.read_v_long()
+    }
+
+    fn read_z_long(&mut self) -> Result<i64> {
+        self.input_mut()?.read_z_long()
+    }
+
+    fn read_string(&mut self) -> Result<String> {
+        self.input_mut()?.read_string()
+    }
+
+    fn read_map_of_strings(&mut self) -> Result<HashMap<String, String>> {
+        self.input_mut()?.read_map_of_strings()
+    }
+
+    fn read_set_of_strings(&mut self) -> Result<HashSet<String>> {
+        self.input_mut()?.read_set_of_strings()
+    }
+
+    fn read_ints(&mut self, dst: &mut [i32], offset: usize, length: usize) -> Result<()> {
+        self.input_mut()?.read_ints(dst, offset, length)
+    }
+
+    fn read_longs(&mut self, dst: &mut [i64], offset: usize, length: usize) -> Result<()> {
+        self.input_mut()?.read_longs(dst, offset, length)
+    }
+
+    fn read_floats(&mut self, dst: &mut [f32], offset: usize, length: usize) -> Result<()> {
+        self.input_mut()?.read_floats(dst, offset, length)
+    }
+
+    fn read_doubles(&mut self, dst: &mut [f64], offset: usize, length: usize) -> Result<()> {
+        self.input_mut()?.read_doubles(dst, offset, length)
+    }
+}
+
+impl IndexInput for ByteBuffersIndexInput {
+    fn close(&mut self) -> Result<()> {
+        self.input = None;
+        Ok(())
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.input.as_ref().map_or(0, |i| i.position() as i64)
+    }
+
+    fn length(&self) -> i64 {
+        self.input.as_ref().map_or(0, |i| i.length() as i64)
+    }
+
+    fn seek(&mut self, pos: i64) -> Result<()> {
+        if pos < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "position must be non-negative (got: {pos})"
+            )));
+        }
+        let pos = pos as usize;
+        self.input_mut()?.seek(pos)
+    }
+
+    fn slice(
+        &self,
+        slice_description: &str,
+        offset: i64,
+        length: i64,
+    ) -> Result<Box<dyn IndexInput>> {
+        self.ensure_open()?;
+        if offset < 0 || length < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "slice offset ({offset}) and length ({length}) must be non-negative"
+            )));
+        }
+        let input = self.input.as_ref().expect("ensure_open validated input");
+        let sliced = input.slice(offset as usize, length as usize)?;
+        let desc = format!(
+            "(sliced) offset={}, length={} {} [slice={}]",
+            offset, length, self.resource_description, slice_description
+        );
+        Ok(Box::new(ByteBuffersIndexInput::new(sliced, desc)))
+    }
+
+    fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+        self.ensure_open()?;
+        let input = self.input.as_ref().expect("ensure_open validated input");
+        let cloned_input = input.slice(0, input.length())?;
+        let mut cloned = ByteBuffersIndexInput::new(
+            cloned_input,
+            format!("(clone of) {}", self.resource_description),
+        );
+        cloned.seek(self.file_pointer())?;
+        Ok(Box::new(cloned))
+    }
+
+    fn resource_description(&self) -> &str {
+        &self.resource_description
+    }
+
+    fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
+        self.ensure_open()?;
+        if offset < 0 || length < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "slice offset ({offset}) and length ({length}) must be non-negative"
+            )));
+        }
+        let input = self.input.as_ref().expect("ensure_open validated input");
+        let sliced = input.slice(offset as usize, length as usize)?;
+        let desc = format!(
+            "(sliced) offset={}, length={} {} [slice={}]",
+            offset, length, self.resource_description, "randomaccess"
+        );
+        Ok(Box::new(ByteBuffersIndexInput::new(sliced, desc)))
+    }
+}
+
+impl RandomAccessInput for ByteBuffersIndexInput {
+    fn read_byte_at(&mut self, pos: i64) -> Result<u8> {
+        if pos < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "position must be non-negative (got: {pos})"
+            )));
+        }
+        self.input()?.read_byte_at(pos as usize)
+    }
+
+    fn read_bytes_at(
+        &mut self,
+        pos: i64,
+        bytes: &mut [u8],
+        offset: usize,
+        len: usize,
+    ) -> Result<()> {
+        if pos < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "position must be non-negative (got: {pos})"
+            )));
+        }
+        self.input()?
+            .read_bytes_at(pos as usize, bytes, offset, len)
+    }
+
+    fn read_short_at(&mut self, pos: i64) -> Result<i16> {
+        if pos < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "position must be non-negative (got: {pos})"
+            )));
+        }
+        self.input()?.read_short_at(pos as usize)
+    }
+
+    fn read_int_at(&mut self, pos: i64) -> Result<i32> {
+        if pos < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "position must be non-negative (got: {pos})"
+            )));
+        }
+        self.input()?.read_int_at(pos as usize)
+    }
+
+    fn read_long_at(&mut self, pos: i64) -> Result<i64> {
+        if pos < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "position must be non-negative (got: {pos})"
+            )));
+        }
+        self.input()?.read_long_at(pos as usize)
+    }
+}
+
+impl std::fmt::Debug for ByteBuffersIndexInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ByteBuffersIndexInput")
+            .field("resource_description", &self.resource_description)
+            .field("closed", &self.input.is_none())
+            .finish()
+    }
+}
+
+/// An [`IndexOutput`] writing to a [`ByteBuffersDataOutput`].
+///
+/// Equivalent to `org.apache.lucene.store.ByteBuffersIndexOutput`.
+pub struct ByteBuffersIndexOutput {
+    delegate: Option<ByteBuffersDataOutput>,
+    checksum: Option<crc32fast::Hasher>,
+    last_checksum_position: AtomicI64,
+    last_checksum: AtomicI64,
+    on_close: Option<Box<dyn FnOnce(ByteBuffersDataOutput) + Send>>,
+    resource_description: String,
+    name: String,
+}
+
+impl ByteBuffersIndexOutput {
+    /// Creates a new output with the default CRC-32 checksum and no close callback.
+    pub fn new(
+        delegate: ByteBuffersDataOutput,
+        resource_description: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self::with_checksum(
+            delegate,
+            resource_description,
+            name,
+            Some(crc32fast::Hasher::new()),
+            None,
+        )
+    }
+
+    /// Creates a new output with an optional checksum and close callback.
+    pub fn with_checksum(
+        delegate: ByteBuffersDataOutput,
+        resource_description: impl Into<String>,
+        name: impl Into<String>,
+        checksum: Option<crc32fast::Hasher>,
+        on_close: Option<Box<dyn FnOnce(ByteBuffersDataOutput) + Send>>,
+    ) -> Self {
+        Self {
+            delegate: Some(delegate),
+            checksum,
+            last_checksum_position: AtomicI64::new(0),
+            last_checksum: AtomicI64::new(0),
+            on_close,
+            resource_description: resource_description.into(),
+            name: name.into(),
+        }
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        if self.delegate.is_none() {
+            return Err(LuceneError::AlreadyClosed("Already closed.".to_string()));
+        }
+        Ok(())
+    }
+
+    fn delegate(&self) -> Result<&ByteBuffersDataOutput> {
+        self.ensure_open()?;
+        Ok(self
+            .delegate
+            .as_ref()
+            .expect("ensure_open validated delegate"))
+    }
+
+    fn delegate_mut(&mut self) -> Result<&mut ByteBuffersDataOutput> {
+        self.ensure_open()?;
+        Ok(self
+            .delegate
+            .as_mut()
+            .expect("ensure_open validated delegate"))
+    }
+
+    /// Returns a contiguous copy of the bytes written so far.
+    pub fn to_array_copy(&self) -> Result<Vec<u8>> {
+        Ok(self.delegate()?.to_array_copy())
+    }
+}
+
+impl DataOutput for ByteBuffersIndexOutput {
+    fn write_byte(&mut self, b: u8) -> Result<()> {
+        self.delegate_mut()?.write_byte(b)
+    }
+
+    fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
+        self.delegate_mut()?.write_bytes(b, offset, len)
+    }
+
+    fn write_short(&mut self, i: i16) -> Result<()> {
+        self.delegate_mut()?.write_short(i)
+    }
+
+    fn write_int(&mut self, i: i32) -> Result<()> {
+        self.delegate_mut()?.write_int(i)
+    }
+
+    fn write_v_int(&mut self, i: i32) -> Result<()> {
+        self.delegate_mut()?.write_v_int(i)
+    }
+
+    fn write_z_int(&mut self, i: i32) -> Result<()> {
+        self.delegate_mut()?.write_z_int(i)
+    }
+
+    fn write_long(&mut self, i: i64) -> Result<()> {
+        self.delegate_mut()?.write_long(i)
+    }
+
+    fn write_v_long(&mut self, i: i64) -> Result<()> {
+        self.delegate_mut()?.write_v_long(i)
+    }
+
+    fn write_z_long(&mut self, i: i64) -> Result<()> {
+        self.delegate_mut()?.write_z_long(i)
+    }
+
+    fn write_float(&mut self, v: f32) -> Result<()> {
+        self.delegate_mut()?.write_float(v)
+    }
+
+    fn write_double(&mut self, v: f64) -> Result<()> {
+        self.delegate_mut()?.write_double(v)
+    }
+
+    fn write_string(&mut self, s: &str) -> Result<()> {
+        self.delegate_mut()?.write_string(s)
+    }
+
+    fn write_map_of_strings(&mut self, map: &HashMap<String, String>) -> Result<()> {
+        self.delegate_mut()?.write_map_of_strings(map)
+    }
+
+    fn write_set_of_strings(&mut self, set: &HashSet<String>) -> Result<()> {
+        self.delegate_mut()?.write_set_of_strings(set)
+    }
+
+    fn write_ints(&mut self, src: &[i32], offset: usize, length: usize) -> Result<()> {
+        self.delegate_mut()?.write_ints(src, offset, length)
+    }
+
+    fn write_longs(&mut self, src: &[i64], offset: usize, length: usize) -> Result<()> {
+        self.delegate_mut()?.write_longs(src, offset, length)
+    }
+
+    fn write_floats(&mut self, src: &[f32], offset: usize, length: usize) -> Result<()> {
+        self.delegate_mut()?.write_floats(src, offset, length)
+    }
+
+    fn write_doubles(&mut self, src: &[f64], offset: usize, length: usize) -> Result<()> {
+        self.delegate_mut()?.write_doubles(src, offset, length)
+    }
+
+    fn copy_bytes(&mut self, input: &mut dyn DataInput, num_bytes: i64) -> Result<()> {
+        self.delegate_mut()?.copy_bytes(input, num_bytes)
+    }
+}
+
+impl IndexOutput for ByteBuffersIndexOutput {
+    fn close(&mut self) -> Result<()> {
+        let delegate = self.delegate.take();
+        if let (Some(local), Some(on_close)) = (delegate, self.on_close.take()) {
+            on_close(local);
+        }
+        Ok(())
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.delegate().map_or(0, |d| d.size() as i64)
+    }
+
+    fn checksum(&self) -> Result<i64> {
+        let hasher = self.checksum.as_ref().ok_or_else(|| {
+            LuceneError::Io(io::Error::other(
+                "This index output has no checksum computing ability",
+            ))
+        })?;
+        let delegate = self.delegate()?;
+        let current_size = delegate.size() as i64;
+        let last_pos = self.last_checksum_position.load(Ordering::Relaxed);
+        if last_pos != current_size {
+            let mut digest = hasher.clone();
+            digest.reset();
+            for block in delegate.to_buffer_list() {
+                digest.update(block);
+            }
+            let checksum = digest.finalize() as i64;
+            self.last_checksum_position
+                .store(current_size, Ordering::Relaxed);
+            self.last_checksum.store(checksum, Ordering::Relaxed);
+        }
+        Ok(self.last_checksum.load(Ordering::Relaxed))
+    }
+
+    fn resource_description(&self) -> &str {
+        &self.resource_description
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl std::fmt::Debug for ByteBuffersIndexOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ByteBuffersIndexOutput")
+            .field("resource_description", &self.resource_description)
+            .field("closed", &self.delegate.is_none())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6336,5 +7150,203 @@ mod tests {
             Ok(_) => panic!("expected slice to be unsupported"),
         };
         assert!(matches!(err, LuceneError::IllegalState(_)));
+    }
+
+    // -------------------------------------------------------------------------
+    // ByteBuffersDirectory / ByteBuffersIndexInput / ByteBuffersIndexOutput
+    // -------------------------------------------------------------------------
+
+    /// Creates a file, writes primitives, closes, opens, and reads everything
+    /// back.
+    #[test]
+    fn byte_buffers_directory_round_trip() {
+        let dir = ByteBuffersDirectory::new();
+        let context = &*DEFAULT_IO_CONTEXT;
+        {
+            let mut out = dir.create_output("test.bin", context).unwrap();
+            out.write_int(0xDEAD_BEEFu32 as i32).unwrap();
+            out.write_string("Rucene").unwrap();
+            out.write_v_long(123_456_789).unwrap();
+            out.close().unwrap();
+        }
+        assert_eq!(dir.file_length("test.bin").unwrap(), 15);
+        let mut input = dir.open_input("test.bin", context).unwrap();
+        assert_eq!(input.read_int().unwrap(), 0xDEAD_BEEFu32 as i32);
+        assert_eq!(input.read_string().unwrap(), "Rucene");
+        assert_eq!(input.read_v_long().unwrap(), 123_456_789);
+        assert_eq!(input.file_pointer(), input.length());
+    }
+
+    /// Exercises file listing, existence, length, rename, and delete.
+    #[test]
+    fn byte_buffers_directory_file_ops() {
+        let dir = ByteBuffersDirectory::new();
+        let context = &*DEFAULT_IO_CONTEXT;
+        for (name, byte) in [("a.bin", 1u8), ("b.bin", 2u8)] {
+            let mut out = dir.create_output(name, context).unwrap();
+            out.write_byte(byte).unwrap();
+            out.close().unwrap();
+        }
+
+        assert!(dir.file_exists("a.bin").unwrap());
+        assert!(!dir.file_exists("missing.bin").unwrap());
+        assert_eq!(dir.list_all().unwrap(), vec!["a.bin", "b.bin"]);
+        assert_eq!(dir.file_length("a.bin").unwrap(), 1);
+
+        dir.rename("a.bin", "c.bin").unwrap();
+        assert_eq!(dir.list_all().unwrap(), vec!["b.bin", "c.bin"]);
+        assert!(dir.file_exists("c.bin").unwrap());
+        assert!(!dir.file_exists("a.bin").unwrap());
+
+        assert!(dir.rename("c.bin", "b.bin").is_err());
+        assert!(dir.rename("missing.bin", "d.bin").is_err());
+
+        dir.delete_file("b.bin").unwrap();
+        assert_eq!(dir.list_all().unwrap(), vec!["c.bin"]);
+        assert!(dir.delete_file("b.bin").is_err());
+    }
+
+    /// Verifies that `create_temp_output` generates unique file names.
+    #[test]
+    fn byte_buffers_directory_create_temp_output_unique() {
+        let dir = ByteBuffersDirectory::new();
+        let context = &*DEFAULT_IO_CONTEXT;
+        let mut names = HashSet::new();
+        for _ in 0..10 {
+            let mut out = dir.create_temp_output("prefix", "suffix", context).unwrap();
+            names.insert(out.name().to_string());
+            out.write_byte(0).unwrap();
+            out.close().unwrap();
+        }
+        assert_eq!(names.len(), 10);
+        assert!(names
+            .iter()
+            .all(|n| n.starts_with("prefix_suffix_") && n.ends_with(".tmp")));
+    }
+
+    /// `file_length` reports 0 while a file is still open for writing and the
+    /// real length after close.
+    #[test]
+    fn byte_buffers_directory_file_length_while_writing() {
+        let dir = ByteBuffersDirectory::new();
+        let context = &*DEFAULT_IO_CONTEXT;
+        let mut out = dir.create_output("write.bin", context).unwrap();
+        out.write_byte(1).unwrap();
+        assert_eq!(dir.file_length("write.bin").unwrap(), 0);
+        out.close().unwrap();
+        assert_eq!(dir.file_length("write.bin").unwrap(), 1);
+    }
+
+    /// Opening an output while it is still being written is rejected.
+    #[test]
+    fn byte_buffers_directory_open_while_writing_rejected() {
+        let dir = ByteBuffersDirectory::new();
+        let context = &*DEFAULT_IO_CONTEXT;
+        let mut out = dir.create_output("write.bin", context).unwrap();
+        out.write_byte(1).unwrap();
+        assert!(dir.open_input("write.bin", context).is_err());
+        out.close().unwrap();
+        assert!(dir.open_input("write.bin", context).is_ok());
+    }
+
+    /// Verifies seek, slice, clone independence, and random-access reads on
+    /// [`ByteBuffersIndexInput`].
+    #[test]
+    fn byte_buffers_index_input_seek_slice_clone() {
+        let mut out = ByteBuffersDataOutput::new();
+        out.write_int(0x0102_0304u32 as i32).unwrap();
+        out.write_int(0x0506_0708u32 as i32).unwrap();
+        out.write_int(0x090A_0B0Cu32 as i32).unwrap();
+        let mut input = ByteBuffersIndexInput::new(out.to_data_input().unwrap(), "source");
+
+        // Seek to an offset and read a middle value.
+        let mut seeker = input.clone_input().unwrap();
+        seeker.seek(4).unwrap();
+        assert_eq!(seeker.read_int().unwrap(), 0x0506_0708u32 as i32);
+
+        // Slice reads a sub-range without affecting the original input.
+        let mut slice = input.slice("middle", 4, 8).unwrap();
+        assert_eq!(slice.length(), 8);
+        assert_eq!(slice.read_int().unwrap(), 0x0506_0708u32 as i32);
+        assert_eq!(slice.read_int().unwrap(), 0x090A_0B0Cu32 as i32);
+        assert_eq!(input.file_pointer(), 0);
+
+        // Clone is independent of the original.
+        let mut clone = input.clone_input().unwrap();
+        input.seek(8).unwrap();
+        assert_eq!(clone.file_pointer(), 0);
+        assert_eq!(clone.read_int().unwrap(), 0x0102_0304u32 as i32);
+        assert_eq!(input.file_pointer(), 8);
+
+        // Random-access view over the last 8 bytes.
+        let mut random = input.random_access_slice(4, 8).unwrap();
+        assert_eq!(random.read_int_at(0).unwrap(), 0x0506_0708u32 as i32);
+        assert_eq!(random.read_int_at(4).unwrap(), 0x090A_0B0Cu32 as i32);
+    }
+
+    /// Verifies that the CRC-32 checksum tracks the delegate content and is
+    /// recomputed when the output grows.
+    #[test]
+    fn byte_buffers_index_output_checksum() {
+        let mut out =
+            ByteBuffersIndexOutput::new(ByteBuffersDataOutput::new(), "output", "test.bin");
+        let payload = b"hello world";
+        out.write_bytes(payload, 0, payload.len()).unwrap();
+        let checksum = out.checksum().unwrap();
+        assert_eq!(checksum, crc32fast::hash(payload) as i64);
+
+        out.write_byte(b'!').unwrap();
+        let checksum2 = out.checksum().unwrap();
+        assert_eq!(checksum2, crc32fast::hash(b"hello world!") as i64);
+        assert_ne!(checksum, checksum2);
+
+        out.close().unwrap();
+        assert!(out.checksum().is_err());
+        assert!(out.write_byte(0).is_err());
+    }
+
+    /// Creating a file that already exists is rejected.
+    #[test]
+    fn byte_buffers_directory_duplicate_create_output_rejected() {
+        let dir = ByteBuffersDirectory::new();
+        let context = &*DEFAULT_IO_CONTEXT;
+        let mut out = dir.create_output("dup.bin", context).unwrap();
+        out.write_byte(1).unwrap();
+        out.close().unwrap();
+        assert!(dir.create_output("dup.bin", context).is_err());
+    }
+
+    /// Closing the directory renders it unusable.
+    #[test]
+    fn byte_buffers_directory_close_unusable() {
+        let mut dir = ByteBuffersDirectory::new();
+        let context = &*DEFAULT_IO_CONTEXT;
+        {
+            let mut out = dir.create_output("x.bin", context).unwrap();
+            out.write_byte(1).unwrap();
+            out.close().unwrap();
+        }
+        dir.close().unwrap();
+        assert!(dir.list_all().is_err());
+        assert!(dir.open_input("x.bin", context).is_err());
+        assert!(dir.create_output("y.bin", context).is_err());
+    }
+
+    /// The one-buffer output-to-input strategy works end-to-end.
+    #[test]
+    fn byte_buffers_directory_one_buffer_strategy() {
+        let dir = ByteBuffersDirectory::with_config(
+            Box::new(SingleInstanceLockFactory::new()),
+            Arc::new(ByteBuffersDataOutput::new),
+            output_as_one_buffer(),
+        );
+        let context = &*DEFAULT_IO_CONTEXT;
+        {
+            let mut out = dir.create_output("one.bin", context).unwrap();
+            out.write_int(42).unwrap();
+            out.close().unwrap();
+        }
+        let mut input = dir.open_input("one.bin", context).unwrap();
+        assert_eq!(input.read_int().unwrap(), 42);
     }
 }
