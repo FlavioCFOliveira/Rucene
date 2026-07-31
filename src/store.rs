@@ -7,8 +7,10 @@
 #![deny(unsafe_code)]
 
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
-    io,
+    fs,
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
@@ -5285,9 +5287,828 @@ impl std::fmt::Debug for ByteBuffersIndexOutput {
     }
 }
 
+// -----------------------------------------------------------------------------
+// OutputStreamIndexOutput and FSIndexOutput
+// -----------------------------------------------------------------------------
+
+/// Maximum chunk size for [`FSIndexOutput`].
+///
+/// Equivalent to `org.apache.lucene.store.FSIndexOutput.CHUNK_SIZE` in Lucene
+/// 10.5.0. Writes to the underlying file are broken into chunks of this size.
+const FS_INDEX_OUTPUT_CHUNK_SIZE: usize = 8192;
+
+/// Minimum buffer size for [`OutputStreamIndexOutput`].
+///
+/// Equivalent to `org.apache.lucene.store.OutputStreamIndexOutput`'s constructor
+/// validation (`bufferSize >= Long.BYTES`).
+const OUTPUT_STREAM_MIN_BUFFER_SIZE: usize = 8;
+
+/// A [`Write`] adapter that breaks every write into chunks of at most
+/// `chunk_size` bytes.
+///
+/// Equivalent to the anonymous `FilterOutputStream` used by
+/// `org.apache.lucene.store.FSIndexOutput` in Lucene 10.5.0. This avoids
+/// issues with very large single writes on some platforms/filesystems.
+struct ChunkedOutput<W: Write> {
+    inner: W,
+    chunk_size: usize,
+}
+
+impl<W: Write> ChunkedOutput<W> {
+    /// Creates a chunked writer over `inner` using the given chunk size.
+    fn new(inner: W, chunk_size: usize) -> Self {
+        Self { inner, chunk_size }
+    }
+}
+
+impl<W: Write> Write for ChunkedOutput<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let end = buf.len().min(self.chunk_size);
+        self.inner.write(&buf[..end])
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        for chunk in buf.chunks(self.chunk_size) {
+            self.inner.write_all(chunk)?;
+        }
+        Ok(())
+    }
+}
+
+/// Buffered [`IndexOutput`] that writes to any [`Write`] stream.
+///
+/// Equivalent to `org.apache.lucene.store.OutputStreamIndexOutput`. Writes are
+/// buffered and a CRC-32 checksum is computed over all bytes written.
+pub struct OutputStreamIndexOutput<W: Write> {
+    name: String,
+    resource_description: String,
+    out: RefCell<io::BufWriter<W>>,
+    crc: BufferedChecksum,
+    bytes_written: i64,
+    flushed_on_close: bool,
+}
+
+impl<W: Write> OutputStreamIndexOutput<W> {
+    /// Creates a new output over `out` with the given buffer size.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if `buffer_size` is smaller than
+    /// [`OUTPUT_STREAM_MIN_BUFFER_SIZE`].
+    pub fn new(
+        resource_description: impl Into<String>,
+        name: impl Into<String>,
+        out: W,
+        buffer_size: usize,
+    ) -> Result<Self> {
+        if buffer_size < OUTPUT_STREAM_MIN_BUFFER_SIZE {
+            return Err(LuceneError::IllegalArgument(format!(
+                "Buffer size too small, need: {OUTPUT_STREAM_MIN_BUFFER_SIZE}"
+            )));
+        }
+        Ok(Self {
+            name: name.into(),
+            resource_description: resource_description.into(),
+            out: RefCell::new(io::BufWriter::with_capacity(buffer_size, out)),
+            crc: BufferedChecksum::new(),
+            bytes_written: 0,
+            flushed_on_close: false,
+        })
+    }
+}
+
+impl<W: Write> DataOutput for OutputStreamIndexOutput<W> {
+    fn write_byte(&mut self, b: u8) -> Result<()> {
+        self.crc.update(b);
+        self.out
+            .borrow_mut()
+            .write_all(&[b])
+            .map_err(LuceneError::from)?;
+        self.bytes_written += 1;
+        Ok(())
+    }
+
+    fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+        if end > b.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "source buffer too small: offset={offset}, len={len}, buf.len={}",
+                b.len()
+            )));
+        }
+        self.crc.update_bytes(b, offset, len)?;
+        self.out
+            .borrow_mut()
+            .write_all(&b[offset..end])
+            .map_err(LuceneError::from)?;
+        self.bytes_written += len as i64;
+        Ok(())
+    }
+
+    fn write_short(&mut self, i: i16) -> Result<()> {
+        let mut buf = [0u8; 2];
+        buf[0] = i as u8;
+        buf[1] = (i >> 8) as u8;
+        self.crc.update_bytes(&buf, 0, 2)?;
+        self.out
+            .borrow_mut()
+            .write_all(&buf)
+            .map_err(LuceneError::from)?;
+        self.bytes_written += 2;
+        Ok(())
+    }
+
+    fn write_int(&mut self, i: i32) -> Result<()> {
+        let mut buf = [0u8; 4];
+        buf[0] = i as u8;
+        buf[1] = (i >> 8) as u8;
+        buf[2] = (i >> 16) as u8;
+        buf[3] = (i >> 24) as u8;
+        self.crc.update_bytes(&buf, 0, 4)?;
+        self.out
+            .borrow_mut()
+            .write_all(&buf)
+            .map_err(LuceneError::from)?;
+        self.bytes_written += 4;
+        Ok(())
+    }
+
+    fn write_long(&mut self, i: i64) -> Result<()> {
+        let mut buf = [0u8; 8];
+        buf[0] = i as u8;
+        buf[1] = (i >> 8) as u8;
+        buf[2] = (i >> 16) as u8;
+        buf[3] = (i >> 24) as u8;
+        buf[4] = (i >> 32) as u8;
+        buf[5] = (i >> 40) as u8;
+        buf[6] = (i >> 48) as u8;
+        buf[7] = (i >> 56) as u8;
+        self.crc.update_bytes(&buf, 0, 8)?;
+        self.out
+            .borrow_mut()
+            .write_all(&buf)
+            .map_err(LuceneError::from)?;
+        self.bytes_written += 8;
+        Ok(())
+    }
+}
+
+impl<W: Write> IndexOutput for OutputStreamIndexOutput<W> {
+    fn close(&mut self) -> Result<()> {
+        if !self.flushed_on_close {
+            self.flushed_on_close = true;
+            self.out.borrow_mut().flush().map_err(LuceneError::from)?;
+        }
+        Ok(())
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.bytes_written
+    }
+
+    fn checksum(&self) -> Result<i64> {
+        self.out.borrow_mut().flush().map_err(LuceneError::from)?;
+        Ok(self.crc.get_value())
+    }
+
+    fn resource_description(&self) -> &str {
+        &self.resource_description
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl<W: Write> std::fmt::Debug for OutputStreamIndexOutput<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutputStreamIndexOutput")
+            .field("resource_description", &self.resource_description)
+            .field("bytes_written", &self.bytes_written)
+            .field("flushed_on_close", &self.flushed_on_close)
+            .finish()
+    }
+}
+
+/// File-based [`IndexOutput`] used by [`FSDirectory`].
+///
+/// Equivalent to the private `FSIndexOutput` inner class of
+/// `org.apache.lucene.store.FSDirectory`. Writes are broken into 8192-byte
+/// chunks, buffered, and checksummed.
+pub struct FSIndexOutput(OutputStreamIndexOutput<ChunkedOutput<fs::File>>);
+
+impl FSIndexOutput {
+    /// Maximum chunk size for file writes.
+    ///
+    /// Equivalent to `org.apache.lucene.store.FSIndexOutput.CHUNK_SIZE`.
+    pub const CHUNK_SIZE: usize = FS_INDEX_OUTPUT_CHUNK_SIZE;
+
+    /// Creates a new output for `name` inside `directory`.
+    ///
+    /// The file is opened with `WRITE | CREATE_NEW` semantics; if the file
+    /// already exists, this returns an I/O error.
+    pub fn new(name: impl Into<String>, directory: &Path) -> Result<Self> {
+        let name = name.into();
+        let path = directory.join(&name);
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        let resource_description = format!("FSIndexOutput(path=\"{}\")", path.display());
+        let chunked = ChunkedOutput::new(file, Self::CHUNK_SIZE);
+        Ok(Self(OutputStreamIndexOutput::new(
+            resource_description,
+            name,
+            chunked,
+            Self::CHUNK_SIZE,
+        )?))
+    }
+}
+
+impl DataOutput for FSIndexOutput {
+    fn write_byte(&mut self, b: u8) -> Result<()> {
+        self.0.write_byte(b)
+    }
+
+    fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
+        self.0.write_bytes(b, offset, len)
+    }
+
+    fn write_short(&mut self, i: i16) -> Result<()> {
+        self.0.write_short(i)
+    }
+
+    fn write_int(&mut self, i: i32) -> Result<()> {
+        self.0.write_int(i)
+    }
+
+    fn write_long(&mut self, i: i64) -> Result<()> {
+        self.0.write_long(i)
+    }
+}
+
+impl IndexOutput for FSIndexOutput {
+    fn close(&mut self) -> Result<()> {
+        self.0.close()
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.0.file_pointer()
+    }
+
+    fn checksum(&self) -> Result<i64> {
+        self.0.checksum()
+    }
+
+    fn resource_description(&self) -> &str {
+        self.0.resource_description()
+    }
+
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// FSDirectory
+// -----------------------------------------------------------------------------
+
+/// Filesystem-based [`Directory`] implementation.
+///
+/// Equivalent to `org.apache.lucene.store.FSDirectory`. In Lucene this is an
+/// abstract base class with concrete subclasses `MMapDirectory` and
+/// `NIOFSDirectory`; in Rucene it is currently a concrete struct. The
+/// `open_input` implementation provided here is a minimal placeholder that uses
+/// `std::fs::File` + [`BufferedIndexInput`]. It will be superseded by the
+/// platform-specific implementations in tasks #7 (`MMapDirectory`) and #8
+/// (`NIOFSDirectory`).
+pub struct FSDirectory {
+    directory: PathBuf,
+    pending_deletes: Mutex<HashSet<String>>,
+    ops_since_last_delete: AtomicU64,
+    next_temp_file_counter: AtomicU64,
+    is_open: AtomicBool,
+    lock_factory: Box<dyn LockFactory>,
+}
+
+impl std::fmt::Debug for FSDirectory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FSDirectory")
+            .field("directory", &self.directory)
+            .field("is_open", &self.is_open.load(Ordering::Acquire))
+            .finish()
+    }
+}
+
+impl FSDirectory {
+    /// Opens an FSDirectory at `path` using the default lock factory.
+    ///
+    /// Equivalent to `FSDirectory.open(Path)` in Lucene 10.5.0.
+    ///
+    /// # Note
+    ///
+    /// Lucene 10.5.0 returns an `MMapDirectory` on 64-bit JREs and an
+    /// `NIOFSDirectory` otherwise. Rucene currently returns a plain
+    /// `FSDirectory`; the subclass selection will be completed in tasks #7 and
+    /// #8.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::with_lock_factory(path, None)
+    }
+
+    /// Opens an FSDirectory at `path` with the supplied lock factory.
+    ///
+    /// Equivalent to `FSDirectory.open(Path, LockFactory)` in Lucene 10.5.0.
+    ///
+    /// # Note
+    ///
+    /// See [`FSDirectory::open`] for the current subclass-selection status.
+    pub fn with_lock_factory(
+        path: impl AsRef<Path>,
+        lock_factory: Option<Box<dyn LockFactory>>,
+    ) -> Result<Self> {
+        let lock_factory = lock_factory.unwrap_or_else(|| Box::new(NativeFSLockFactory));
+        let path = path.as_ref();
+        if !path.is_dir() {
+            fs::create_dir_all(path)?;
+        }
+        let directory = path.canonicalize()?;
+        Ok(Self {
+            directory,
+            pending_deletes: Mutex::new(HashSet::new()),
+            ops_since_last_delete: AtomicU64::new(0),
+            next_temp_file_counter: AtomicU64::new(0),
+            is_open: AtomicBool::new(true),
+            lock_factory,
+        })
+    }
+
+    /// Returns the canonical filesystem path backing this directory.
+    ///
+    /// Equivalent to `FSDirectory.getDirectory()` in Lucene 10.5.0.
+    pub fn directory_path(&self) -> &Path {
+        &self.directory
+    }
+
+    fn check_open(&self) -> Result<()> {
+        if !self.is_open.load(Ordering::Acquire) {
+            return Err(LuceneError::AlreadyClosed(
+                "this Directory is closed".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_can_read(&self, name: &str) -> Result<()> {
+        let pending = self
+            .pending_deletes
+            .lock()
+            .expect("pending deletes mutex poisoned");
+        if pending.contains(name) {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("file \"{name}\" is pending delete and cannot be opened for read"),
+            )));
+        }
+        Ok(())
+    }
+
+    fn file_path(&self, name: &str) -> PathBuf {
+        self.directory.join(name)
+    }
+
+    fn fsync_file(&self, name: &str) -> Result<()> {
+        let path = self.file_path(name);
+        let file = fs::OpenOptions::new().read(true).open(&path)?;
+        file.sync_data()?;
+        Ok(())
+    }
+
+    fn fsync_directory(&self) -> Result<()> {
+        match fs::OpenOptions::new().read(true).open(&self.directory) {
+            Ok(file) => {
+                file.sync_all()?;
+                Ok(())
+            }
+            Err(_) if cfg!(windows) => {
+                // Windows cannot open directories as files; fsync metadata is
+                // best-effort there.
+                Ok(())
+            }
+            Err(e) => Err(LuceneError::from(e)),
+        }
+    }
+
+    fn private_delete_file(&self, name: &str, is_pending_delete: bool) -> Result<()> {
+        let path = self.file_path(name);
+        let mut pending = self
+            .pending_deletes
+            .lock()
+            .expect("pending deletes mutex poisoned");
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                pending.remove(name);
+                Ok(())
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                pending.remove(name);
+                if is_pending_delete && cfg!(windows) {
+                    // Windows-specific leniency copied from Lucene 10.5.0.
+                    Ok(())
+                } else {
+                    Err(LuceneError::Io(e))
+                }
+            }
+            Err(e) => {
+                pending.insert(name.to_string());
+                Err(LuceneError::Io(e))
+            }
+        }
+    }
+
+    fn delete_pending_files(&self) -> Result<()> {
+        let pending = {
+            let pending = self
+                .pending_deletes
+                .lock()
+                .expect("pending deletes mutex poisoned");
+            if pending.is_empty() {
+                return Ok(());
+            }
+            pending.clone()
+        };
+        for name in pending {
+            self.private_delete_file(&name, true)?;
+        }
+        Ok(())
+    }
+
+    fn maybe_delete_pending_files(&self) -> Result<()> {
+        let should_delete = {
+            let pending = self
+                .pending_deletes
+                .lock()
+                .expect("pending deletes mutex poisoned");
+            if pending.is_empty() {
+                false
+            } else {
+                let count = self.ops_since_last_delete.fetch_add(1, Ordering::Relaxed) + 1;
+                if count >= pending.len() as u64 {
+                    self.ops_since_last_delete
+                        .fetch_sub(count, Ordering::Relaxed);
+                    true
+                } else {
+                    false
+                }
+            }
+        };
+        if should_delete {
+            self.delete_pending_files()?;
+        }
+        Ok(())
+    }
+}
+
+impl Directory for FSDirectory {
+    fn list_all(&self) -> Result<Vec<String>> {
+        self.check_open()?;
+        self.maybe_delete_pending_files()?;
+        let pending = self
+            .pending_deletes
+            .lock()
+            .expect("pending deletes mutex poisoned");
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&self.directory)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !pending.contains(&name) {
+                entries.push(name);
+            }
+        }
+        drop(pending);
+        entries.sort();
+        Ok(entries)
+    }
+
+    fn delete_file(&self, name: &str) -> Result<()> {
+        self.check_open()?;
+        {
+            let pending = self
+                .pending_deletes
+                .lock()
+                .expect("pending deletes mutex poisoned");
+            if pending.contains(name) {
+                return Err(LuceneError::Io(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("file \"{name}\" is already pending delete"),
+                )));
+            }
+        }
+        self.private_delete_file(name, false)?;
+        self.maybe_delete_pending_files()?;
+        Ok(())
+    }
+
+    fn file_length(&self, name: &str) -> Result<i64> {
+        self.check_open()?;
+        self.ensure_can_read(name)?;
+        let metadata = fs::metadata(self.file_path(name))?;
+        Ok(metadata.len() as i64)
+    }
+
+    fn create_output(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
+        self.check_open()?;
+        self.maybe_delete_pending_files()?;
+        {
+            let was_pending = {
+                let mut pending = self
+                    .pending_deletes
+                    .lock()
+                    .expect("pending deletes mutex poisoned");
+                pending.remove(name)
+            };
+            if was_pending {
+                // Best-effort: try to delete again before re-creating.
+                let _ = self.private_delete_file(name, true);
+                let mut pending = self
+                    .pending_deletes
+                    .lock()
+                    .expect("pending deletes mutex poisoned");
+                pending.remove(name);
+            }
+        }
+        Ok(Box::new(FSIndexOutput::new(name, &self.directory)?))
+    }
+
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        _context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexOutput>> {
+        self.check_open()?;
+        self.maybe_delete_pending_files()?;
+        loop {
+            let counter = self.next_temp_file_counter.fetch_add(1, Ordering::Relaxed);
+            let name = Self::get_temp_file_name(prefix, suffix, counter);
+            let pending = self
+                .pending_deletes
+                .lock()
+                .expect("pending deletes mutex poisoned");
+            if pending.contains(&name) {
+                continue;
+            }
+            drop(pending);
+            match FSIndexOutput::new(&name, &self.directory) {
+                Ok(out) => return Ok(Box::new(out)),
+                Err(LuceneError::Io(e)) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    // Retry with next counter.
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    fn sync(&self, names: &[String]) -> Result<()> {
+        self.check_open()?;
+        for name in names {
+            self.fsync_file(name)?;
+        }
+        self.maybe_delete_pending_files()?;
+        Ok(())
+    }
+
+    fn sync_metadata(&self) -> Result<()> {
+        self.check_open()?;
+        self.fsync_directory()?;
+        self.maybe_delete_pending_files()?;
+        Ok(())
+    }
+
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        self.check_open()?;
+        self.ensure_can_read(source)?;
+        self.maybe_delete_pending_files()?;
+        {
+            let was_pending = {
+                let mut pending = self
+                    .pending_deletes
+                    .lock()
+                    .expect("pending deletes mutex poisoned");
+                pending.remove(dest)
+            };
+            if was_pending {
+                let _ = self.private_delete_file(dest, true);
+                let mut pending = self
+                    .pending_deletes
+                    .lock()
+                    .expect("pending deletes mutex poisoned");
+                pending.remove(dest);
+            }
+        }
+        fs::rename(self.file_path(source), self.file_path(dest))?;
+        Ok(())
+    }
+
+    fn open_input(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+        self.check_open()?;
+        self.ensure_can_read(name)?;
+        let path = self.file_path(name);
+        let file = fs::OpenOptions::new().read(true).open(&path)?;
+        let metadata = file.metadata()?;
+        let len = metadata.len() as i64;
+        let input = FileIndexInput::new(file, path, len)?;
+        Ok(Box::new(BufferedIndexInput::with_default_size(Box::new(
+            input,
+        ))?))
+    }
+
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+        self.check_open()?;
+        self.lock_factory.obtain_lock(self, name)
+    }
+
+    fn close(&mut self) -> Result<()> {
+        self.is_open.store(false, Ordering::Release);
+        self.delete_pending_files()?;
+        Ok(())
+    }
+
+    fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+        self.check_open()?;
+        self.delete_pending_files()?;
+        let pending = self
+            .pending_deletes
+            .lock()
+            .expect("pending deletes mutex poisoned");
+        Ok(pending.clone())
+    }
+
+    fn fs_directory_path(&self) -> Option<&Path> {
+        Some(&self.directory)
+    }
+
+    fn directory_type_name(&self) -> &'static str {
+        "FSDirectory"
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        self.check_open()
+    }
+}
+
+impl std::fmt::Display for FSDirectory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "FSDirectory@{} lockFactory={}",
+            self.directory.display(),
+            self.lock_factory.directory_type_name()
+        )
+    }
+}
+
+/// Minimal file-based [`IndexInput`] used by [`FSDirectory::open_input`].
+///
+/// This is a placeholder implementation that will be superseded by the
+/// `MMapDirectory` and `NIOFSDirectory` input strategies in tasks #7 and #8.
+struct FileIndexInput {
+    file: fs::File,
+    path: PathBuf,
+    pos: u64,
+    len: i64,
+    resource_description: String,
+}
+
+impl FileIndexInput {
+    fn new(file: fs::File, path: PathBuf, len: i64) -> Result<Self> {
+        let resource_description = format!("FileIndexInput(path=\"{}\")", path.display());
+        Ok(Self {
+            file,
+            path,
+            pos: 0,
+            len,
+            resource_description,
+        })
+    }
+}
+
+impl DataInput for FileIndexInput {
+    fn read_byte(&mut self) -> Result<u8> {
+        let mut buf = [0u8; 1];
+        self.file.read_exact(&mut buf).map_err(LuceneError::from)?;
+        self.pos += 1;
+        Ok(buf[0])
+    }
+
+    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+        if end > b.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "destination buffer too small: offset={offset}, len={len}, buf.len={}",
+                b.len()
+            )));
+        }
+        self.file
+            .read_exact(&mut b[offset..end])
+            .map_err(LuceneError::from)?;
+        self.pos += len as u64;
+        Ok(())
+    }
+
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        if num_bytes < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "numBytes must be non-negative (got: {num_bytes})"
+            )));
+        }
+        let target = self.pos as i64 + num_bytes;
+        if target > self.len {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "skip past EOF",
+            )));
+        }
+        self.file.seek(SeekFrom::Start(target as u64))?;
+        self.pos = target as u64;
+        Ok(())
+    }
+}
+
+impl IndexInput for FileIndexInput {
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.pos as i64
+    }
+
+    fn length(&self) -> i64 {
+        self.len
+    }
+
+    fn seek(&mut self, pos: i64) -> Result<()> {
+        if pos < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "position must be non-negative (got: {pos})"
+            )));
+        }
+        if pos > self.len {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "seek past EOF",
+            )));
+        }
+        self.file.seek(SeekFrom::Start(pos as u64))?;
+        self.pos = pos as u64;
+        Ok(())
+    }
+
+    fn slice(
+        &self,
+        slice_description: &str,
+        offset: i64,
+        length: i64,
+    ) -> Result<Box<dyn IndexInput>> {
+        if offset < 0 || length < 0 || length > self.len - offset {
+            return Err(LuceneError::IllegalArgument(format!(
+                "slice({slice_description}) out of bounds"
+            )));
+        }
+        let clone = self.clone_input()?;
+        Ok(Box::new(SlicedIndexInput::new(
+            slice_description,
+            clone,
+            offset,
+            length,
+        )?))
+    }
+
+    fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+        let file = fs::OpenOptions::new().read(true).open(&self.path)?;
+        let mut clone = FileIndexInput::new(file, self.path.clone(), self.len)?;
+        clone.seek(self.pos as i64)?;
+        Ok(Box::new(clone))
+    }
+
+    fn resource_description(&self) -> &str {
+        &self.resource_description
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     /// Writes all primitive encodings to a [`ByteArrayDataOutput`] and reads
     /// them back from a [`ByteArrayDataInput`], asserting exact round-trip.
@@ -7348,5 +8169,151 @@ mod tests {
         }
         let mut input = dir.open_input("one.bin", context).unwrap();
         assert_eq!(input.read_int().unwrap(), 42);
+    }
+
+    // -------------------------------------------------------------------------
+    // FSDirectory tests
+    // -------------------------------------------------------------------------
+
+    /// `FSDirectory::open` creates the directory and returns a usable instance.
+    #[test]
+    fn fs_directory_open_creates_directory() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("index");
+        let dir = FSDirectory::open(&path).unwrap();
+        assert!(path.is_dir());
+        assert_eq!(dir.directory_path(), path.canonicalize().unwrap());
+    }
+
+    /// Writing through `create_output` and reading back with `open_input` round-trips
+    /// Lucene primitive encodings.
+    #[test]
+    fn fs_directory_write_read_round_trip() {
+        let temp = TempDir::new().unwrap();
+        let dir = FSDirectory::open(&temp).unwrap();
+        let context = &*DEFAULT_IO_CONTEXT;
+        {
+            let mut out = dir.create_output("test.bin", context).unwrap();
+            out.write_int(42).unwrap();
+            out.write_long(i64::MAX).unwrap();
+            out.write_string("hello").unwrap();
+            out.close().unwrap();
+        }
+        let mut input = dir.open_input("test.bin", context).unwrap();
+        assert_eq!(input.read_int().unwrap(), 42);
+        assert_eq!(input.read_long().unwrap(), i64::MAX);
+        assert_eq!(input.read_string().unwrap(), "hello");
+    }
+
+    /// `file_length`, `list_all`, `delete_file`, and `rename` behave as expected.
+    #[test]
+    fn fs_directory_file_length_list_delete_rename() {
+        let temp = TempDir::new().unwrap();
+        let dir = FSDirectory::open(&temp).unwrap();
+        let context = &*DEFAULT_IO_CONTEXT;
+        {
+            let mut out = dir.create_output("a.bin", context).unwrap();
+            out.write_bytes_full(&[1, 2, 3, 4, 5], 5).unwrap();
+            out.close().unwrap();
+        }
+        assert_eq!(dir.file_length("a.bin").unwrap(), 5);
+        let list = dir.list_all().unwrap();
+        assert!(list.contains(&"a.bin".to_string()));
+
+        dir.rename("a.bin", "b.bin").unwrap();
+        assert_eq!(dir.file_length("b.bin").unwrap(), 5);
+        assert!(dir.open_input("a.bin", context).is_err());
+
+        dir.delete_file("b.bin").unwrap();
+        assert!(dir.open_input("b.bin", context).is_err());
+        assert!(dir.list_all().unwrap().is_empty());
+    }
+
+    /// `create_temp_output` produces unique names for the same prefix/suffix.
+    #[test]
+    fn fs_directory_create_temp_output_unique() {
+        let temp = TempDir::new().unwrap();
+        let dir = FSDirectory::open(&temp).unwrap();
+        let context = &*DEFAULT_IO_CONTEXT;
+        let mut out1 = dir.create_temp_output("pre", "suf", context).unwrap();
+        let mut out2 = dir.create_temp_output("pre", "suf", context).unwrap();
+        let name1 = out1.name().to_string();
+        let name2 = out2.name().to_string();
+        out1.close().unwrap();
+        out2.close().unwrap();
+        assert_ne!(name1, name2);
+        assert!(name1.starts_with("pre_"));
+        assert!(name1.contains("_suf_"));
+        assert!(name1.ends_with(".tmp"));
+        assert!(name2.starts_with("pre_"));
+        assert!(name2.contains("_suf_"));
+        assert!(name2.ends_with(".tmp"));
+    }
+
+    /// `sync` and `sync_metadata` complete without error and the file remains
+    /// present and consistent.
+    #[test]
+    fn fs_directory_sync_and_sync_metadata() {
+        let temp = TempDir::new().unwrap();
+        let dir = FSDirectory::open(&temp).unwrap();
+        let context = &*DEFAULT_IO_CONTEXT;
+        {
+            let mut out = dir.create_output("x.bin", context).unwrap();
+            out.write_byte(1).unwrap();
+            out.close().unwrap();
+        }
+        dir.sync(&["x.bin".to_string()]).unwrap();
+        assert_eq!(dir.file_length("x.bin").unwrap(), 1);
+        dir.sync_metadata().unwrap();
+    }
+
+    /// Creating a file that already exists is rejected.
+    #[test]
+    fn fs_directory_duplicate_create_output_rejected() {
+        let temp = TempDir::new().unwrap();
+        let dir = FSDirectory::open(&temp).unwrap();
+        let context = &*DEFAULT_IO_CONTEXT;
+        let mut out = dir.create_output("dup.bin", context).unwrap();
+        out.write_byte(1).unwrap();
+        out.close().unwrap();
+        assert!(dir.create_output("dup.bin", context).is_err());
+    }
+
+    /// Closing the directory renders it unusable.
+    #[test]
+    fn fs_directory_close_unusable() {
+        let temp = TempDir::new().unwrap();
+        let mut dir = FSDirectory::open(&temp).unwrap();
+        let context = &*DEFAULT_IO_CONTEXT;
+        {
+            let mut out = dir.create_output("x.bin", context).unwrap();
+            out.write_byte(1).unwrap();
+            out.close().unwrap();
+        }
+        dir.close().unwrap();
+        assert!(dir.list_all().is_err());
+        assert!(dir.open_input("x.bin", context).is_err());
+        assert!(dir.create_output("y.bin", context).is_err());
+    }
+
+    /// `OutputStreamIndexOutput` checksum matches the CRC-32 of the bytes it wrote.
+    #[test]
+    fn output_stream_index_output_checksum_matches_crc32() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("out.bin");
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let mut out = OutputStreamIndexOutput::new("test", "out.bin", file, 16).unwrap();
+        out.write_int(12345).unwrap();
+        out.write_string("hello world").unwrap();
+        let checksum = out.checksum().unwrap();
+        out.close().unwrap();
+
+        let bytes = fs::read(&path).unwrap();
+        let expected = crc32fast::hash(&bytes) as i64;
+        assert_eq!(checksum, expected);
     }
 }
