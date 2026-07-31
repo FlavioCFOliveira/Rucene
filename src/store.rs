@@ -2838,6 +2838,167 @@ impl Lock for SimpleFSLock {
     }
 }
 
+/// Size of the skip buffer used by [`ChecksumIndexInput`] forward seeks.
+///
+/// Equivalent to `ChecksumIndexInput.SKIP_BUFFER_SIZE` in Lucene 10.5.0.
+pub const CHECKSUM_SKIP_BUFFER_SIZE: usize = 1024;
+
+/// Wraps a CRC-32 hasher with an internal buffer to speed up checksum
+/// calculations for small writes.
+///
+/// Equivalent to `org.apache.lucene.store.BufferedChecksum`. The wrapped
+/// hasher is `crc32fast::Hasher`, which matches Java's
+/// `java.util.zip.CRC32` polynomial.
+pub struct BufferedChecksum {
+    digest: crc32fast::Hasher,
+    buffer: Vec<u8>,
+    buffer_pos: usize,
+}
+
+impl BufferedChecksum {
+    /// Default buffer size: 1024 bytes.
+    ///
+    /// Equivalent to `BufferedChecksum.DEFAULT_BUFFERSIZE`.
+    pub const DEFAULT_BUFFER_SIZE: usize = 1024;
+
+    /// Creates a new checksum with the default buffer size.
+    pub fn new() -> Self {
+        Self::with_buffer_size(Self::DEFAULT_BUFFER_SIZE)
+    }
+
+    /// Creates a new checksum with the specified buffer size.
+    pub fn with_buffer_size(buffer_size: usize) -> Self {
+        Self {
+            digest: crc32fast::Hasher::new(),
+            buffer: vec![0u8; buffer_size],
+            buffer_pos: 0,
+        }
+    }
+
+    /// Updates the checksum with a single byte.
+    pub fn update(&mut self, byte: u8) {
+        if self.buffer_pos == self.buffer.len() {
+            self.flush();
+        }
+        self.buffer[self.buffer_pos] = byte;
+        self.buffer_pos += 1;
+    }
+
+    /// Updates the checksum with `bytes[offset..offset + len]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if `offset + len` exceeds
+    /// `bytes.len()`.
+    pub fn update_bytes(&mut self, bytes: &[u8], offset: usize, len: usize) -> Result<()> {
+        check_from_index_size(offset, len, bytes.len())?;
+        if len >= self.buffer.len() {
+            self.flush();
+            self.digest.update(&bytes[offset..offset + len]);
+        } else {
+            let space = self.buffer.len() - self.buffer_pos;
+            if len > space {
+                self.flush();
+            }
+            self.buffer[self.buffer_pos..self.buffer_pos + len]
+                .copy_from_slice(&bytes[offset..offset + len]);
+            self.buffer_pos += len;
+        }
+        Ok(())
+    }
+
+    /// Returns the current checksum value as if the internal buffer were flushed.
+    ///
+    /// This clones the inner hasher and feeds it the buffered bytes, so it does
+    /// not require mutable access and leaves the internal state unchanged.
+    pub fn get_value(&self) -> i64 {
+        let mut digest = self.digest.clone();
+        digest.update(&self.buffer[..self.buffer_pos]);
+        digest.finalize() as i64
+    }
+
+    /// Clears the buffer and resets the inner hasher.
+    pub fn reset(&mut self) {
+        self.buffer_pos = 0;
+        self.digest.reset();
+    }
+
+    fn flush(&mut self) {
+        if self.buffer_pos > 0 {
+            self.digest.update(&self.buffer[..self.buffer_pos]);
+            self.buffer_pos = 0;
+        }
+    }
+}
+
+impl Default for BufferedChecksum {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for BufferedChecksum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BufferedChecksum")
+            .field("buffer_size", &self.buffer.len())
+            .field("buffer_pos", &self.buffer_pos)
+            .finish()
+    }
+}
+
+/// Abstract base trait for checksum-computing inputs.
+///
+/// Equivalent to `org.apache.lucene.store.ChecksumIndexInput`. This trait extends
+/// [`IndexInput`]; instances compute a checksum as bytes are read and reject
+/// backward seeks because skipped bytes must still be fed to the digest.
+pub trait ChecksumIndexInput: IndexInput {
+    /// Returns the current checksum value of all bytes read so far.
+    fn get_checksum(&self) -> Result<i64>;
+
+    /// Returns the per-instance buffer used for forward-only seeks.
+    ///
+    /// Implementations must store a buffer of exactly
+    /// [`CHECKSUM_SKIP_BUFFER_SIZE`] bytes as a field. Reusing a single static
+    /// buffer across instances would allow concurrent seeks on different
+    /// instances to corrupt each other's checksums (see LUCENE-5583).
+    fn skip_buffer(&mut self) -> &mut [u8; CHECKSUM_SKIP_BUFFER_SIZE];
+
+    /// Forward-only seek that updates the checksum over skipped bytes.
+    ///
+    /// Equivalent to `ChecksumIndexInput.seek` in Lucene 10.5.0. Backward seeks
+    /// are rejected with [`LuceneError::IllegalState`]. Forward seeks advance the
+    /// file pointer by reading the skipped bytes through the per-instance skip
+    /// buffer, so the digest remains correct.
+    fn seek(&mut self, pos: i64) -> Result<()> {
+        let cur = self.file_pointer();
+        if pos < cur {
+            return Err(LuceneError::IllegalState(format!(
+                "{} cannot seek backwards (pos={pos}, file_pointer={cur})",
+                std::any::type_name::<Self>()
+            )));
+        }
+        let skip = pos - cur;
+        if skip == 0 {
+            return Ok(());
+        }
+        let mut skipped = 0i64;
+        // Temporarily move the per-instance buffer out of `self` so it can be
+        // passed to `read_bytes_buffered` without holding a borrow on `self`.
+        // The buffer is restored before returning, even if the read fails.
+        let mut buf = std::mem::replace(self.skip_buffer(), [0u8; CHECKSUM_SKIP_BUFFER_SIZE]);
+        let result = (|| -> Result<()> {
+            while skipped < skip {
+                let step = ((skip - skipped) as usize).min(buf.len());
+                self.read_bytes_buffered(&mut buf, 0, step, false)?;
+                skipped += step as i64;
+            }
+            Ok(())
+        })();
+        *self.skip_buffer() = buf;
+        result
+    }
+}
+
 /// An [`IndexInput`] that computes a CRC-32 checksum as it reads.
 ///
 /// Equivalent to `org.apache.lucene.store.BufferedChecksumIndexInput`. The
@@ -2845,7 +3006,8 @@ impl Lock for SimpleFSLock {
 /// same polynomial.
 pub struct BufferedChecksumIndexInput {
     main: Box<dyn IndexInput>,
-    digest: crc32fast::Hasher,
+    digest: BufferedChecksum,
+    skip_buffer: [u8; CHECKSUM_SKIP_BUFFER_SIZE],
     resource_description: String,
 }
 
@@ -2868,27 +3030,23 @@ impl BufferedChecksumIndexInput {
         );
         Self {
             main,
-            digest: crc32fast::Hasher::new(),
+            digest: BufferedChecksum::new(),
+            skip_buffer: [0u8; CHECKSUM_SKIP_BUFFER_SIZE],
             resource_description,
         }
-    }
-
-    /// Returns the checksum of all bytes read so far.
-    pub fn get_checksum(&self) -> i64 {
-        self.digest.clone().finalize() as i64
     }
 }
 
 impl DataInput for BufferedChecksumIndexInput {
     fn read_byte(&mut self) -> Result<u8> {
         let b = self.main.read_byte()?;
-        self.digest.update(&[b]);
+        self.digest.update(b);
         Ok(b)
     }
 
     fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
         self.main.read_bytes(b, offset, len)?;
-        self.digest.update(&b[offset..offset + len]);
+        self.digest.update_bytes(b, offset, len)?;
         Ok(())
     }
 
@@ -2899,7 +3057,7 @@ impl DataInput for BufferedChecksumIndexInput {
             )));
         }
         let target = self.file_pointer() + num_bytes;
-        self.seek(target)
+        ChecksumIndexInput::seek(self, target)
     }
 }
 
@@ -2917,26 +3075,7 @@ impl IndexInput for BufferedChecksumIndexInput {
     }
 
     fn seek(&mut self, pos: i64) -> Result<()> {
-        let cur = self.file_pointer();
-        if pos < cur {
-            return Err(LuceneError::IllegalState(format!(
-                "{} cannot seek backwards (pos={pos}, file_pointer={cur})",
-                std::any::type_name::<Self>()
-            )));
-        }
-        let skip = pos - cur;
-        if skip > 0 {
-            // Checksum inputs must read skipped bytes to keep the digest correct.
-            const SKIP_BUFFER_SIZE: usize = 1024;
-            let mut skipped = 0i64;
-            let mut buf = [0u8; SKIP_BUFFER_SIZE];
-            while skipped < skip {
-                let step = ((skip - skipped) as usize).min(SKIP_BUFFER_SIZE);
-                self.read_bytes(&mut buf, 0, step)?;
-                skipped += step as i64;
-            }
-        }
-        Ok(())
+        ChecksumIndexInput::seek(self, pos)
     }
 
     fn slice(
@@ -2958,6 +3097,16 @@ impl IndexInput for BufferedChecksumIndexInput {
 
     fn resource_description(&self) -> &str {
         &self.resource_description
+    }
+}
+
+impl ChecksumIndexInput for BufferedChecksumIndexInput {
+    fn get_checksum(&self) -> Result<i64> {
+        Ok(self.digest.get_value())
+    }
+
+    fn skip_buffer(&mut self) -> &mut [u8; CHECKSUM_SKIP_BUFFER_SIZE] {
+        &mut self.skip_buffer
     }
 }
 
@@ -6036,5 +6185,156 @@ mod tests {
         assert!(
             msg.contains("NativeFSLockFactory can only be used with FSDirectory subclasses, got:")
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // BufferedChecksum and BufferedChecksumIndexInput tests
+    // -------------------------------------------------------------------------
+
+    /// Verifies that `BufferedChecksum` exposes the default 1024-byte buffer
+    /// size and that a fresh instance has a zero checksum.
+    #[test]
+    fn buffered_checksum_default_size_and_initial_value() {
+        assert_eq!(BufferedChecksum::DEFAULT_BUFFER_SIZE, 1024);
+        let checksum = BufferedChecksum::new();
+        assert_eq!(checksum.get_value(), 0);
+    }
+
+    /// Verifies that `BufferedChecksum` matches the reference `crc32fast::hash`
+    /// for a mix of single-byte and slice updates, including a chunk larger than
+    /// the internal buffer.
+    #[test]
+    fn buffered_checksum_matches_crc32fast_hash() {
+        let payload: Vec<u8> = (0u8..=255).cycle().take(3000).collect();
+        let mut checksum = BufferedChecksum::new();
+
+        // Small slice buffered, single byte, large slice flushed directly, tail.
+        checksum.update_bytes(&payload, 0, 100).unwrap();
+        checksum.update(payload[100]);
+        checksum.update_bytes(&payload, 101, 1500).unwrap();
+        checksum.update_bytes(&payload, 1601, 1399).unwrap();
+
+        assert_eq!(checksum.get_value(), crc32fast::hash(&payload) as i64);
+    }
+
+    /// Verifies that `BufferedChecksum` flushes when the buffer fills and that
+    /// `reset` clears both the buffer and the inner digest.
+    #[test]
+    fn buffered_checksum_buffering_and_reset() {
+        let mut checksum = BufferedChecksum::with_buffer_size(8);
+
+        // Fill the buffer exactly.
+        checksum
+            .update_bytes(&[0, 1, 2, 3, 4, 5, 6, 7], 0, 8)
+            .unwrap();
+        let expected_after_full = crc32fast::hash(&[0, 1, 2, 3, 4, 5, 6, 7]) as i64;
+        assert_eq!(checksum.get_value(), expected_after_full);
+
+        // One more byte triggers a flush and leaves one byte buffered.
+        checksum.update(8);
+        let expected_after_one_more = crc32fast::hash(&[0, 1, 2, 3, 4, 5, 6, 7, 8]) as i64;
+        assert_eq!(checksum.get_value(), expected_after_one_more);
+
+        // Reset clears the digest.
+        checksum.reset();
+        assert_eq!(checksum.get_value(), 0);
+    }
+
+    /// Verifies that `BufferedChecksumIndexInput` implements `ChecksumIndexInput`
+    /// and produces the same checksum as `crc32fast::hash` over the full payload.
+    #[test]
+    fn buffered_checksum_index_input_matches_full_payload_crc32() {
+        let payload: Vec<u8> = (0u8..=255).collect();
+        let mut input = BufferedChecksumIndexInput::new(Box::new(MockIndexInput::new(
+            payload.clone(),
+            "checksum-input",
+        )));
+
+        let mut buf = vec![0u8; payload.len()];
+        input.read_bytes(&mut buf, 0, payload.len()).unwrap();
+        assert_eq!(buf, payload);
+
+        assert_eq!(
+            ChecksumIndexInput::get_checksum(&input).unwrap(),
+            crc32fast::hash(&payload) as i64
+        );
+    }
+
+    /// Verifies that forward seeks on a `BufferedChecksumIndexInput` read the
+    /// skipped bytes through the per-instance skip buffer so the checksum remains
+    /// correct, even when the skip spans multiple buffer iterations.
+    #[test]
+    fn buffered_checksum_index_input_forward_seek_keeps_checksum() {
+        let payload: Vec<u8> = (0..4096u16).map(|v| v as u8).collect();
+        let mut input = BufferedChecksumIndexInput::new(Box::new(MockIndexInput::new(
+            payload.clone(),
+            "checksum-seek-input",
+        )));
+
+        // Read the first 16 bytes.
+        let mut head = [0u8; 16];
+        input.read_bytes(&mut head, 0, 16).unwrap();
+        assert_eq!(head, payload[..16]);
+
+        // Seek forward far enough to require multiple skip-buffer iterations.
+        IndexInput::seek(&mut input, 3000).unwrap();
+        assert_eq!(input.file_pointer(), 3000);
+
+        // Read the rest.
+        let remaining = payload.len() - 3000;
+        let mut tail = vec![0u8; remaining];
+        input.read_bytes(&mut tail, 0, remaining).unwrap();
+        assert_eq!(tail, payload[3000..]);
+
+        // The checksum must match the full payload, including skipped bytes.
+        assert_eq!(
+            ChecksumIndexInput::get_checksum(&input).unwrap(),
+            crc32fast::hash(&payload) as i64
+        );
+    }
+
+    /// Verifies that `BufferedChecksumIndexInput` rejects backward seeks with
+    /// the Lucene-compatible message format.
+    #[test]
+    fn buffered_checksum_index_input_rejects_backward_seek() {
+        let payload: Vec<u8> = (0u8..=255).collect();
+        let mut input = BufferedChecksumIndexInput::new(Box::new(MockIndexInput::new(
+            payload,
+            "checksum-backward-input",
+        )));
+
+        IndexInput::seek(&mut input, 16).unwrap();
+        let err = IndexInput::seek(&mut input, 8).unwrap_err();
+        assert!(matches!(err, LuceneError::IllegalState(_)));
+        assert!(err.to_string().contains("cannot seek backwards"));
+        assert!(err.to_string().contains("BufferedChecksumIndexInput"));
+    }
+
+    /// Verifies that `BufferedChecksumIndexInput` does not support cloning.
+    #[test]
+    fn buffered_checksum_index_input_clone_unsupported() {
+        let input = BufferedChecksumIndexInput::new(Box::new(MockIndexInput::new(
+            vec![1, 2, 3],
+            "checksum-clone-input",
+        )));
+        let err = match input.clone_input() {
+            Err(e) => e,
+            Ok(_) => panic!("expected clone to be unsupported"),
+        };
+        assert!(matches!(err, LuceneError::IllegalState(_)));
+    }
+
+    /// Verifies that `BufferedChecksumIndexInput` does not support slicing.
+    #[test]
+    fn buffered_checksum_index_input_slice_unsupported() {
+        let input = BufferedChecksumIndexInput::new(Box::new(MockIndexInput::new(
+            vec![1, 2, 3],
+            "checksum-slice-input",
+        )));
+        let err = match input.slice("sub", 0, 2) {
+            Err(e) => e,
+            Ok(_) => panic!("expected slice to be unsupported"),
+        };
+        assert!(matches!(err, LuceneError::IllegalState(_)));
     }
 }
