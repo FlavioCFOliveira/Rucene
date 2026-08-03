@@ -1894,7 +1894,7 @@ mod tests {
         t.set_bytes_ref(BytesRef::new(vec![7, 8]));
         assert_eq!(t.get_bytes_ref().slice(), &[7, 8]);
         t.clear();
-        assert_eq!(t.get_bytes_ref().slice(), &[]);
+        assert_eq!(t.get_bytes_ref().slice(), &[] as &[u8]);
     }
 
     #[test]

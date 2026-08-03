@@ -173,6 +173,22 @@ impl DefaultAttributeFactory {
     pub fn register_self<I: AttributeImpl + Default + 'static>(&mut self) {
         self.register(TypeId::of::<I>(), I::default);
     }
+
+    /// Registers `I` under every interface it advertises, including its own
+    /// concrete [`TypeId`].
+    ///
+    /// This is the Rust equivalent of Lucene's
+    /// `AttributeFactory.getStaticImplementation(factory, implClass)`, which
+    /// installs a single implementation as the provider for all of the
+    /// attribute interfaces it implements.
+    pub fn register_attribute_impl<I: AttributeImpl + Default + Send + Sync + 'static>(&mut self) {
+        let instance = I::default();
+        let interfaces = instance.attribute_interfaces().to_vec();
+        let ctor = || I::default();
+        for interface_id in interfaces {
+            self.register(interface_id, ctor);
+        }
+    }
 }
 
 impl Debug for DefaultAttributeFactory {
@@ -585,14 +601,14 @@ impl Default for AttributeSource {
 /// Trait for wrappers that expose their underlying delegate.
 ///
 /// Equivalent to Lucene's `Unwrappable<T>`.
-pub trait Unwrappable<T> {
+pub trait Unwrappable<T: ?Sized> {
     /// Returns the wrapped object.
     fn unwrap(&self) -> &T;
 }
 
 /// Helper trait used by [`unwrap_all`] to attempt to treat a value as a
 /// wrapper.
-pub trait AsUnwrappable<T> {
+pub trait AsUnwrappable<T: ?Sized> {
     /// Returns `Some(wrapper)` if this value is a wrapper around `T`.
     fn as_unwrappable(&self) -> Option<&dyn Unwrappable<T>>;
 }
@@ -604,7 +620,7 @@ pub trait AsUnwrappable<T> {
 /// whether a value is wrapped.
 pub fn unwrap_all<T>(mut value: &T) -> &T
 where
-    T: AsUnwrappable<T>,
+    T: ?Sized + AsUnwrappable<T>,
 {
     while let Some(wrapper) = value.as_unwrappable() {
         value = wrapper.unwrap();
