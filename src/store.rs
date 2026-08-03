@@ -6,6 +6,9 @@
 
 #![deny(unsafe_code)]
 
+#[cfg(feature = "mmap")]
+pub mod mmap;
+
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
