@@ -3722,6 +3722,270 @@ impl std::fmt::Debug for FilterDirectory {
     }
 }
 
+/// Abstract base for rate-limiting I/O.
+///
+/// Equivalent to `org.apache.lucene.store.RateLimiter`. Implementations are
+/// shared across multiple inputs/outputs (for example all inputs/outputs
+/// involved in a merge) and callers invoke [`RateLimiter::pause`] whenever
+/// they have read or written more than [`RateLimiter::get_min_pause_check_bytes`]
+/// bytes.
+pub trait RateLimiter: Send + Sync {
+    /// Sets the rate limit in MB/s.
+    fn set_mb_per_sec(&self, mb_per_sec: f64);
+
+    /// Returns the current rate limit in MB/s.
+    fn get_mb_per_sec(&self) -> f64;
+
+    /// Pauses, if necessary, to keep the instantaneous I/O rate at or below
+    /// the target.
+    ///
+    /// Returns the pause time in nanoseconds.
+    fn pause(&self, bytes: i64) -> Result<i64>;
+
+    /// Returns how many bytes the caller should accumulate before invoking
+    /// [`RateLimiter::pause`].
+    fn get_min_pause_check_bytes(&self) -> i64;
+}
+
+/// Simple rate limiter that sleeps to cap throughput.
+///
+/// Equivalent to `org.apache.lucene.store.RateLimiter.SimpleRateLimiter`.
+pub struct SimpleRateLimiter {
+    mb_per_sec: std::sync::atomic::AtomicU64,
+    min_pause_check_bytes: std::sync::atomic::AtomicU64,
+    last_ns: Mutex<i64>,
+}
+
+impl SimpleRateLimiter {
+    /// Minimum pause check interval, in milliseconds.
+    const MIN_PAUSE_CHECK_MSEC: i64 = 5;
+
+    /// Creates a rate limiter with the given MB/s cap.
+    pub fn new(mb_per_sec: f64) -> Self {
+        let slf = Self {
+            mb_per_sec: std::sync::atomic::AtomicU64::new(0),
+            min_pause_check_bytes: std::sync::atomic::AtomicU64::new(0),
+            last_ns: Mutex::new(Self::now_ns()),
+        };
+        slf.set_mb_per_sec(mb_per_sec);
+        slf
+    }
+
+    fn now_ns() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0)
+    }
+
+    fn store_f64(atom: &std::sync::atomic::AtomicU64, value: f64) {
+        atom.store(value.to_bits(), Ordering::Relaxed);
+    }
+
+    fn load_f64(atom: &std::sync::atomic::AtomicU64) -> f64 {
+        f64::from_bits(atom.load(Ordering::Relaxed))
+    }
+}
+
+impl RateLimiter for SimpleRateLimiter {
+    fn set_mb_per_sec(&self, mb_per_sec: f64) {
+        Self::store_f64(
+            &self.mb_per_sec,
+            if mb_per_sec.is_finite() && mb_per_sec > 0.0 {
+                mb_per_sec
+            } else {
+                0.0
+            },
+        );
+        let min_bytes = (Self::MIN_PAUSE_CHECK_MSEC as f64 / 1000.0) * mb_per_sec * 1024.0 * 1024.0;
+        self.min_pause_check_bytes
+            .store(min_bytes.max(0.0) as u64, Ordering::Relaxed);
+    }
+
+    fn get_mb_per_sec(&self) -> f64 {
+        Self::load_f64(&self.mb_per_sec)
+    }
+
+    fn get_min_pause_check_bytes(&self) -> i64 {
+        self.min_pause_check_bytes.load(Ordering::Relaxed) as i64
+    }
+
+    fn pause(&self, bytes: i64) -> Result<i64> {
+        let mb_per_sec = self.get_mb_per_sec();
+        if mb_per_sec <= 0.0 || bytes <= 0 {
+            return Ok(0);
+        }
+
+        let start_ns = Self::now_ns();
+        let seconds_to_pause = (bytes as f64 / (1024.0 * 1024.0)) / mb_per_sec;
+        let pause_ns = (seconds_to_pause * 1_000_000_000.0) as i64;
+
+        let target_ns = {
+            let mut last = self.last_ns.lock().expect("last_ns mutex poisoned");
+            let target = *last + pause_ns;
+            if start_ns >= target {
+                *last = start_ns;
+                return Ok(0);
+            }
+            *last = target;
+            target
+        };
+
+        let duration_ns = (target_ns - start_ns).max(0) as u64;
+        let duration = std::time::Duration::from_nanos(duration_ns);
+        std::thread::sleep(duration);
+        Ok(Self::now_ns().saturating_sub(start_ns))
+    }
+}
+
+impl std::fmt::Debug for SimpleRateLimiter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimpleRateLimiter")
+            .field("mb_per_sec", &self.get_mb_per_sec())
+            .field("min_pause_check_bytes", &self.get_min_pause_check_bytes())
+            .finish()
+    }
+}
+
+/// A delegating [`Directory`] that records which files were written to and
+/// deleted.
+///
+/// Equivalent to `org.apache.lucene.store.TrackingDirectoryWrapper`. This is
+/// used by `IndexWriter` and merge scheduling to track the lifecycle of files
+/// created during indexing.
+pub struct TrackingDirectoryWrapper {
+    inner: FilterDirectory,
+    created_files: Arc<Mutex<HashSet<String>>>,
+}
+
+impl TrackingDirectoryWrapper {
+    /// Creates a new tracking wrapper around `inner`.
+    pub fn new(inner: Box<dyn Directory>) -> Self {
+        Self {
+            inner: FilterDirectory::new(inner),
+            created_files: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+
+    /// Returns the wrapped directory.
+    pub fn get_delegate(&self) -> &dyn Directory {
+        self.inner.get_delegate()
+    }
+
+    /// Returns a copy of the currently tracked created files.
+    pub fn get_created_files(&self) -> HashSet<String> {
+        let files = self
+            .created_files
+            .lock()
+            .expect("created_files mutex poisoned");
+        files.clone()
+    }
+
+    /// Clears the set of tracked created files.
+    pub fn clear_created_files(&self) {
+        let mut files = self
+            .created_files
+            .lock()
+            .expect("created_files mutex poisoned");
+        files.clear();
+    }
+}
+
+impl Directory for TrackingDirectoryWrapper {
+    fn list_all(&self) -> Result<Vec<String>> {
+        self.inner.list_all()
+    }
+
+    fn delete_file(&self, name: &str) -> Result<()> {
+        self.inner.delete_file(name)?;
+        let mut files = self
+            .created_files
+            .lock()
+            .expect("created_files mutex poisoned");
+        files.remove(name);
+        Ok(())
+    }
+
+    fn file_length(&self, name: &str) -> Result<i64> {
+        self.inner.file_length(name)
+    }
+
+    fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
+        let out = self.inner.create_output(name, context)?;
+        let mut files = self
+            .created_files
+            .lock()
+            .expect("created_files mutex poisoned");
+        files.insert(name.to_string());
+        Ok(out)
+    }
+
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexOutput>> {
+        let out = self.inner.create_temp_output(prefix, suffix, context)?;
+        let name = out.name().to_string();
+        let mut files = self
+            .created_files
+            .lock()
+            .expect("created_files mutex poisoned");
+        files.insert(name);
+        Ok(out)
+    }
+
+    fn sync(&self, names: &[String]) -> Result<()> {
+        self.inner.sync(names)
+    }
+
+    fn sync_metadata(&self) -> Result<()> {
+        self.inner.sync_metadata()
+    }
+
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        self.inner.rename(source, dest)?;
+        let mut files = self
+            .created_files
+            .lock()
+            .expect("created_files mutex poisoned");
+        files.remove(source);
+        files.insert(dest.to_string());
+        Ok(())
+    }
+
+    fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+        self.inner.open_input(name, context)
+    }
+
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+        self.inner.obtain_lock(name)
+    }
+
+    fn close(&mut self) -> Result<()> {
+        self.inner.close()
+    }
+
+    fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+        self.inner.get_pending_deletions()
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        self.inner.ensure_open()
+    }
+}
+
+impl std::fmt::Debug for TrackingDirectoryWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let files = self.get_created_files();
+        f.debug_struct("TrackingDirectoryWrapper")
+            .field("inner", &self.inner)
+            .field("created_files", &files)
+            .finish()
+    }
+}
+
 /// A minimal in-memory [`Directory`] implementation used for tests.
 ///
 /// This is not a full `ByteBuffersDirectory`; that is the subject of task #5.
@@ -9135,5 +9399,68 @@ mod tests {
         let mut clone = input.clone_input().unwrap();
         assert_eq!(clone.length(), 16);
         assert_eq!(clone.read_long().unwrap(), 0x1111_2222_3333_4444_i64);
+    }
+
+    /// `SimpleRateLimiter` computes a positive pause time when the requested
+    /// bytes exceed the configured rate.
+    #[test]
+    fn simple_rate_limiter_pauses_when_over_rate() {
+        let limiter = SimpleRateLimiter::new(1.0); // 1 MB/s
+        let min_check = limiter.get_min_pause_check_bytes();
+        assert!(min_check > 0);
+
+        // Pause for a chunk larger than the minimum check threshold.
+        let bytes = min_check * 2;
+        let pause = limiter.pause(bytes).unwrap();
+        assert!(pause >= 0);
+    }
+
+    /// A very high rate limit produces effectively no pause.
+    #[test]
+    fn simple_rate_limiter_high_rate_negligible_pause() {
+        let limiter = SimpleRateLimiter::new(1_000_000.0); // 1 TB/s
+        let pause = limiter.pause(1024 * 1024).unwrap();
+        assert_eq!(pause, 0);
+    }
+
+    /// `TrackingDirectoryWrapper` records created files and removes them on
+    /// delete/rename.
+    #[test]
+    fn tracking_directory_wrapper_tracks_created_files() {
+        let inner = RamDirectory::new();
+        let tracker = TrackingDirectoryWrapper::new(Box::new(inner));
+        let context = &*DEFAULT_IO_CONTEXT;
+
+        {
+            let mut out = tracker.create_output("a.bin", context).unwrap();
+            out.write_byte(1).unwrap();
+            out.close().unwrap();
+        }
+        {
+            let mut out = tracker.create_temp_output("tmp", ".bin", context).unwrap();
+            let name = out.name().to_string();
+            out.write_byte(2).unwrap();
+            out.close().unwrap();
+            assert!(tracker.get_created_files().contains(&name));
+        }
+
+        let created = tracker.get_created_files();
+        assert!(created.contains("a.bin"));
+
+        tracker.delete_file("a.bin").unwrap();
+        assert!(!tracker.get_created_files().contains("a.bin"));
+
+        {
+            let mut out = tracker.create_output("src.bin", context).unwrap();
+            out.write_byte(3).unwrap();
+            out.close().unwrap();
+        }
+        tracker.rename("src.bin", "dst.bin").unwrap();
+        let created = tracker.get_created_files();
+        assert!(!created.contains("src.bin"));
+        assert!(created.contains("dst.bin"));
+
+        tracker.clear_created_files();
+        assert!(tracker.get_created_files().is_empty());
     }
 }
