@@ -472,9 +472,7 @@ impl Field {
     /// Creates a field with a string value.
     pub fn new(name: &str, value: String, field_type: FieldType) -> Result<Self> {
         Self::validate_name_and_type(name, &field_type)?;
-        if value.is_empty()
-            && !field_type.stored
-            && field_type.index_options == IndexOptions::NONE
+        if value.is_empty() && !field_type.stored && field_type.index_options == IndexOptions::NONE
         {
             // Lucene allows empty strings; keep the check minimal.
         }
@@ -889,6 +887,548 @@ impl Document {
     }
 }
 
+impl<'a> IntoIterator for &'a Document {
+    type Item = &'a dyn IndexableField;
+    type IntoIter = std::vec::IntoIter<&'a dyn IndexableField>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.fields
+            .iter()
+            .map(|f| f.as_ref())
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Store
+// -----------------------------------------------------------------------------
+
+/// Whether and how a field should be stored.
+///
+/// Equivalent to `org.apache.lucene.document.Field.Store`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Store {
+    /// Store the original field value in the index.
+    YES,
+    /// Do not store the field value in the index.
+    NO,
+}
+
+// -----------------------------------------------------------------------------
+// StringField
+// -----------------------------------------------------------------------------
+
+fn string_field_type_not_stored() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new();
+        ft.set_omit_norms(true).unwrap();
+        ft.set_index_options(IndexOptions::DOCS).unwrap();
+        ft.set_tokenized(false).unwrap();
+        ft.freeze();
+        ft
+    })
+}
+
+fn string_field_type_stored() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new_from(string_field_type_not_stored());
+        ft.set_stored(true).unwrap();
+        ft.freeze();
+        ft
+    })
+}
+
+/// Field that indexes a value as a single token.
+///
+/// Equivalent to `org.apache.lucene.document.StringField`.
+#[derive(Debug)]
+pub struct StringField {
+    name: String,
+    field_type: FieldType,
+    fields_data: FieldData,
+    binary_value: Option<BytesRef>,
+    stored_value: Option<StoredValue>,
+}
+
+impl StringField {
+    /// Creates a new textual StringField.
+    pub fn new(name: &str, value: String, stored: Store) -> Result<Self> {
+        let field_type = if stored == Store::YES {
+            string_field_type_stored().clone()
+        } else {
+            string_field_type_not_stored().clone()
+        };
+        let binary_value = Some(BytesRef::new(value.as_bytes().to_vec()));
+        let stored_value = if stored == Store::YES {
+            Some(StoredValue)
+        } else {
+            None
+        };
+        let fields_data = FieldData::String(value);
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            fields_data,
+            binary_value,
+            stored_value,
+        })
+    }
+
+    /// Creates a new binary StringField.
+    pub fn new_with_bytes(name: &str, value: BytesRef, stored: Store) -> Result<Self> {
+        let field_type = if stored == Store::YES {
+            string_field_type_stored().clone()
+        } else {
+            string_field_type_not_stored().clone()
+        };
+        let stored_value = if stored == Store::YES {
+            Some(StoredValue)
+        } else {
+            None
+        };
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            fields_data: FieldData::Bytes(value.clone()),
+            binary_value: Some(value),
+            stored_value,
+        })
+    }
+}
+
+impl IndexableField for StringField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        let value = self
+            .binary_value
+            .clone()
+            .unwrap_or_else(|| BytesRef::new(Vec::new()));
+        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        self.binary_value.clone()
+    }
+
+    fn string_value(&self) -> Option<String> {
+        match &self.fields_data {
+            FieldData::String(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        self.stored_value.clone()
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// TextField
+// -----------------------------------------------------------------------------
+
+fn text_field_type_not_stored() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new();
+        ft.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
+            .unwrap();
+        ft.set_tokenized(true).unwrap();
+        ft.freeze();
+        ft
+    })
+}
+
+fn text_field_type_stored() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new_from(text_field_type_not_stored());
+        ft.set_stored(true).unwrap();
+        ft.freeze();
+        ft
+    })
+}
+
+/// Field that is indexed and tokenized, without term vectors.
+///
+/// Equivalent to `org.apache.lucene.document.TextField`.
+#[derive(Debug)]
+pub struct TextField {
+    name: String,
+    field_type: FieldType,
+    fields_data: FieldData,
+    stored_value: Option<StoredValue>,
+}
+
+impl TextField {
+    /// Creates a new un-stored TextField with a reader value.
+    pub fn new_with_reader(name: &str, reader: Box<dyn Read>) -> Result<Self> {
+        Ok(Self {
+            name: name.to_string(),
+            field_type: text_field_type_not_stored().clone(),
+            fields_data: FieldData::Reader(reader),
+            stored_value: None,
+        })
+    }
+
+    /// Creates a new TextField with a string value.
+    pub fn new(name: &str, value: String, stored: Store) -> Result<Self> {
+        let field_type = if stored == Store::YES {
+            text_field_type_stored().clone()
+        } else {
+            text_field_type_not_stored().clone()
+        };
+        let stored_value = if stored == Store::YES {
+            Some(StoredValue)
+        } else {
+            None
+        };
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            fields_data: FieldData::String(value),
+            stored_value,
+        })
+    }
+
+    /// Creates a new un-stored TextField with a token stream value.
+    pub fn new_with_token_stream(
+        name: &str,
+        token_stream: Rc<RefCell<dyn TokenStream>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            name: name.to_string(),
+            field_type: text_field_type_not_stored().clone(),
+            fields_data: FieldData::TokenStream(token_stream),
+            stored_value: None,
+        })
+    }
+}
+
+impl IndexableField for TextField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        match &self.fields_data {
+            FieldData::TokenStream(ts) => {
+                Box::new(crate::analysis::SharedTokenStream::new(Rc::clone(ts)))
+            }
+            FieldData::String(s) => {
+                let stream = analyzer
+                    .token_stream_from_str(&self.name, s)
+                    .expect("analyzer produced a token stream");
+                Box::new(crate::analysis::SharedTokenStream::new(stream))
+            }
+            _ => panic!("TextField must have a TokenStream, String or Reader value"),
+        }
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        None
+    }
+
+    fn string_value(&self) -> Option<String> {
+        match &self.fields_data {
+            FieldData::String(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        match &mut self.fields_data {
+            FieldData::Reader(r) => Some(r.as_mut()),
+            _ => None,
+        }
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        self.stored_value.clone()
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::TOKEN_STREAM)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// StoredField
+// -----------------------------------------------------------------------------
+
+fn stored_field_type() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new();
+        ft.set_stored(true).unwrap();
+        ft.freeze();
+        ft
+    })
+}
+
+/// Field whose value is stored but not indexed.
+///
+/// Equivalent to `org.apache.lucene.document.StoredField`.
+#[derive(Debug)]
+pub struct StoredField(Field);
+
+impl StoredField {
+    /// Creates a stored-only field with a string value.
+    pub fn new_string(name: &str, value: String) -> Result<Self> {
+        Ok(Self(Field::new(name, value, stored_field_type().clone())?))
+    }
+
+    /// Creates a stored-only field with a binary value.
+    pub fn new_bytes(name: &str, value: BytesRef) -> Result<Self> {
+        Ok(Self(Field::new_with_bytes(
+            name,
+            value,
+            stored_field_type().clone(),
+        )?))
+    }
+
+    /// Creates a stored-only field with a numeric value.
+    pub fn new_number(name: &str, value: NumericValue) -> Result<Self> {
+        Ok(Self(Field::new_with_number(
+            name,
+            value,
+            stored_field_type().clone(),
+        )?))
+    }
+
+    /// Creates a stored-only field with a stored-data input.
+    pub fn new_stored_input(name: &str, input: Box<dyn DataInput>, length: i32) -> Result<Self> {
+        Ok(Self(Field::new_with_stored_input(
+            name,
+            input,
+            length,
+            stored_field_type().clone(),
+        )?))
+    }
+
+    /// Expert: creates a stored field with a custom field type.
+    pub fn new_with_field_type(name: &str, value: String, field_type: FieldType) -> Result<Self> {
+        Ok(Self(Field::new(name, value, field_type)?))
+    }
+}
+
+impl IndexableField for StoredField {
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        self.0.field_type()
+    }
+
+    fn token_stream(
+        &self,
+        analyzer: &dyn Analyzer,
+        reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        self.0.token_stream(analyzer, reuse)
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        self.0.binary_value()
+    }
+
+    fn string_value(&self) -> Option<String> {
+        self.0.string_value()
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        self.0.reader_value()
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        self.0.numeric_value()
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        self.0.stored_value()
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        self.0.invertable_type()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// KeywordField
+// -----------------------------------------------------------------------------
+
+fn keyword_field_type() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new();
+        ft.set_index_options(IndexOptions::DOCS).unwrap();
+        ft.set_omit_norms(true).unwrap();
+        ft.set_tokenized(false).unwrap();
+        ft.set_doc_values_type(DocValuesType::SORTED_SET).unwrap();
+        ft.freeze();
+        ft
+    })
+}
+
+fn keyword_field_type_stored() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new_from(keyword_field_type());
+        ft.set_stored(true).unwrap();
+        ft.freeze();
+        ft
+    })
+}
+
+/// Field that indexes and stores doc values for a keyword, optionally storing
+/// the original value.
+///
+/// Equivalent to `org.apache.lucene.document.KeywordField`.
+#[derive(Debug)]
+pub struct KeywordField {
+    name: String,
+    field_type: FieldType,
+    fields_data: FieldData,
+    binary_value: Option<BytesRef>,
+    stored_value: Option<StoredValue>,
+}
+
+impl KeywordField {
+    /// Creates a new KeywordField from a binary value.
+    pub fn new_with_bytes(name: &str, value: BytesRef, stored: Store) -> Result<Self> {
+        let field_type = if stored == Store::YES {
+            keyword_field_type_stored().clone()
+        } else {
+            keyword_field_type().clone()
+        };
+        let stored_value = if stored == Store::YES {
+            Some(StoredValue)
+        } else {
+            None
+        };
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            fields_data: FieldData::Bytes(value.clone()),
+            binary_value: Some(value),
+            stored_value,
+        })
+    }
+
+    /// Creates a new KeywordField from a string value.
+    pub fn new(name: &str, value: String, stored: Store) -> Result<Self> {
+        let binary_value = BytesRef::new(value.as_bytes().to_vec());
+        Self::new_with_bytes(name, binary_value, stored)
+    }
+
+    /// Query stub: exact match on a binary value.
+    pub fn new_exact_query(_field: &str, _value: &BytesRef) -> ! {
+        todo!("KeywordField::new_exact_query requires the search module")
+    }
+
+    /// Query stub: exact match on a string value.
+    pub fn new_exact_query_string(_field: &str, _value: &str) -> ! {
+        todo!("KeywordField::new_exact_query_string requires the search module")
+    }
+
+    /// Query stub: set match.
+    pub fn new_set_query(_field: &str, _values: &[BytesRef]) -> ! {
+        todo!("KeywordField::new_set_query requires the search module")
+    }
+
+    /// Sort stub.
+    pub fn new_sort_field(_field: &str, _reverse: bool) -> ! {
+        todo!("KeywordField::new_sort_field requires the search module")
+    }
+}
+
+impl IndexableField for KeywordField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        let value = self
+            .binary_value
+            .clone()
+            .unwrap_or_else(|| BytesRef::new(Vec::new()));
+        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        self.binary_value.clone()
+    }
+
+    fn string_value(&self) -> Option<String> {
+        match &self.fields_data {
+            FieldData::Bytes(v) => String::from_utf8(v.slice().to_vec()).ok(),
+            _ => None,
+        }
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        self.stored_value.clone()
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1027,17 +1567,60 @@ mod tests {
             .set_vector_attributes(0, VectorEncoding::FLOAT32, VectorSimilarityFunction::COSINE)
             .is_err());
     }
-}
 
-impl<'a> IntoIterator for &'a Document {
-    type Item = &'a dyn IndexableField;
-    type IntoIter = std::vec::IntoIter<&'a dyn IndexableField>;
+    #[test]
+    fn string_field_not_stored_is_indexed_not_tokenized() {
+        let field = StringField::new("id", "abc".to_string(), Store::NO).unwrap();
+        assert!(field.field_type().index_options() != IndexOptions::NONE);
+        assert!(!field.field_type().tokenized());
+        assert!(!field.field_type().stored());
+        assert!(field.field_type().omit_norms());
+        assert_eq!(field.string_value(), Some("abc".to_string()));
+    }
 
-    fn into_iter(self) -> Self::IntoIter {
-        self.fields
-            .iter()
-            .map(|f| f.as_ref())
-            .collect::<Vec<_>>()
-            .into_iter()
+    #[test]
+    fn string_field_stored_keeps_value() {
+        let field = StringField::new("id", "abc".to_string(), Store::YES).unwrap();
+        assert!(field.field_type().stored());
+        assert!(field.stored_value().is_some());
+    }
+
+    #[test]
+    fn text_field_tokenized_and_indexed() {
+        let field = TextField::new("body", "hello world".to_string(), Store::NO).unwrap();
+        assert!(field.field_type().tokenized());
+        assert_eq!(
+            field.field_type().index_options(),
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS
+        );
+        assert!(!field.field_type().stored());
+    }
+
+    #[test]
+    fn text_field_stored_can_be_added() {
+        let field = TextField::new("body", "hello world".to_string(), Store::YES).unwrap();
+        assert!(field.field_type().stored());
+        let mut doc = Document::new();
+        doc.add(Box::new(field));
+        assert_eq!(doc.get_values("body"), vec!["hello world".to_string()]);
+    }
+
+    #[test]
+    fn stored_field_is_stored_only() {
+        let field = StoredField::new_string("title", "Hello".to_string()).unwrap();
+        assert!(field.field_type().stored());
+        assert_eq!(field.field_type().index_options(), IndexOptions::NONE);
+        assert_eq!(field.string_value(), Some("Hello".to_string()));
+    }
+
+    #[test]
+    fn keyword_field_has_sorted_set_doc_values() {
+        let field = KeywordField::new("tag", "urgent".to_string(), Store::NO).unwrap();
+        assert_eq!(
+            field.field_type().doc_values_type(),
+            DocValuesType::SORTED_SET
+        );
+        assert!(!field.field_type().tokenized());
+        assert_eq!(field.string_value(), Some("urgent".to_string()));
     }
 }
