@@ -1926,6 +1926,125 @@ impl DataOutput for ByteArrayDataOutput {
     }
 }
 
+/// A [`DataInput`] wrapping any [`std::io::Read`] stream.
+///
+/// Equivalent to `org.apache.lucene.store.InputStreamDataInput`.
+pub struct InputStreamDataInput<R: Read> {
+    input: R,
+}
+
+impl<R: Read> InputStreamDataInput<R> {
+    /// Creates a new input wrapping `input`.
+    pub fn new(input: R) -> Self {
+        Self { input }
+    }
+
+    /// Consumes this wrapper and returns the underlying stream.
+    pub fn into_inner(self) -> R {
+        self.input
+    }
+}
+
+impl<R: Read> DataInput for InputStreamDataInput<R> {
+    fn read_byte(&mut self) -> Result<u8> {
+        let mut buf = [0u8; 1];
+        self.input.read_exact(&mut buf).map_err(|e| {
+            LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("read past EOF: {e}"),
+            ))
+        })?;
+        Ok(buf[0])
+    }
+
+    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+        if end > b.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "destination buffer too small: offset={offset}, len={len}, buf.len={}",
+                b.len()
+            )));
+        }
+        self.input.read_exact(&mut b[offset..end]).map_err(|e| {
+            LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("read past EOF: {e}"),
+            ))
+        })?;
+        Ok(())
+    }
+
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        if num_bytes < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "numBytes must be non-negative (got: {num_bytes})"
+            )));
+        }
+        io::copy(
+            &mut self.input.by_ref().take(num_bytes as u64),
+            &mut io::sink(),
+        )
+        .map_err(LuceneError::from)?;
+        Ok(())
+    }
+}
+
+impl<R: Read> std::fmt::Debug for InputStreamDataInput<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InputStreamDataInput")
+            .finish_non_exhaustive()
+    }
+}
+
+/// A [`DataOutput`] wrapping any [`std::io::Write`] stream.
+///
+/// Equivalent to `org.apache.lucene.store.OutputStreamDataOutput`.
+pub struct OutputStreamDataOutput<W: Write> {
+    output: W,
+}
+
+impl<W: Write> OutputStreamDataOutput<W> {
+    /// Creates a new output wrapping `output`.
+    pub fn new(output: W) -> Self {
+        Self { output }
+    }
+
+    /// Consumes this wrapper and returns the underlying stream.
+    pub fn into_inner(self) -> W {
+        self.output
+    }
+}
+
+impl<W: Write> DataOutput for OutputStreamDataOutput<W> {
+    fn write_byte(&mut self, b: u8) -> Result<()> {
+        self.output.write_all(&[b]).map_err(LuceneError::from)
+    }
+
+    fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+        if end > b.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "source buffer too small: offset={offset}, len={len}, buf.len={}",
+                b.len()
+            )));
+        }
+        self.output
+            .write_all(&b[offset..end])
+            .map_err(LuceneError::from)
+    }
+}
+
+impl<W: Write> std::fmt::Debug for OutputStreamDataOutput<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutputStreamDataOutput")
+            .finish_non_exhaustive()
+    }
+}
+
 /// A mock [`IndexInput`] backed by an in-memory byte buffer.
 ///
 /// This is intended for tests and utilities. Reads, seeks, slices, and clones
@@ -9421,6 +9540,36 @@ mod tests {
         let limiter = SimpleRateLimiter::new(1_000_000.0); // 1 TB/s
         let pause = limiter.pause(1024 * 1024).unwrap();
         assert_eq!(pause, 0);
+    }
+
+    /// `InputStreamDataInput` and `OutputStreamDataOutput` round-trip all
+    /// primitive types over a `Cursor`/`BufWriter` pair.
+    #[test]
+    fn stream_data_input_output_round_trip_primitives() {
+        let mut buf = Vec::new();
+        {
+            let mut out = OutputStreamDataOutput::new(io::BufWriter::new(&mut buf));
+            out.write_byte(0x42).unwrap();
+            out.write_short(0x1234).unwrap();
+            out.write_int(0xDEADBEEF_u32 as i32).unwrap();
+            out.write_long(0x1234567890ABCDEF_i64).unwrap();
+            out.write_v_int(16384).unwrap();
+            out.write_v_long(1_000_000_000_000).unwrap();
+            out.write_string("stream test").unwrap();
+            out.write_bytes(&[0x0A, 0x0B, 0x0C, 0x0D], 0, 4).unwrap();
+        }
+
+        let mut input = InputStreamDataInput::new(io::Cursor::new(&buf));
+        assert_eq!(input.read_byte().unwrap(), 0x42);
+        assert_eq!(input.read_short().unwrap(), 0x1234);
+        assert_eq!(input.read_int().unwrap(), 0xDEADBEEF_u32 as i32);
+        assert_eq!(input.read_long().unwrap(), 0x1234567890ABCDEF_i64);
+        assert_eq!(input.read_v_int().unwrap(), 16384);
+        assert_eq!(input.read_v_long().unwrap(), 1_000_000_000_000);
+        assert_eq!(input.read_string().unwrap(), "stream test");
+        let mut tail = [0u8; 4];
+        input.read_bytes(&mut tail, 0, 4).unwrap();
+        assert_eq!(tail, [0x0A, 0x0B, 0x0C, 0x0D]);
     }
 
     /// `TrackingDirectoryWrapper` records created files and removes them on
