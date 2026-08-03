@@ -9,13 +9,30 @@
 
 pub mod char_array_map;
 pub mod char_array_set;
+pub mod character_utils;
+pub mod filtering_token_filter;
+pub mod lower_case_filter;
+pub mod reusable_string_reader;
+pub mod stop_filter;
 pub mod tokenattributes;
+pub mod wordlist_loader;
 
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
 pub use char_array_map::CharArrayMap;
 pub use char_array_set::CharArraySet;
+pub use character_utils::{
+    fill, fill_buffer, new_character_buffer, to_chars, to_code_points, to_lower_case,
+    to_upper_case, CharacterBuffer,
+};
+pub use filtering_token_filter::{
+    new_filtering_token_filter, FilteringTokenFilter, FilteringTokenFilterAdapter,
+    FilteringTokenFilterLogic,
+};
+pub use lower_case_filter::{new_lower_case_filter, LowerCaseFilter, LowerCaseFilterLogic};
+pub use reusable_string_reader::ReusableStringReader;
+pub use stop_filter::{make_stop_set, new_stop_filter, StopFilter, StopFilterLogic};
 pub use tokenattributes::{
     BytesTermAttribute, BytesTermAttributeImpl, CharTermAttribute, CharTermAttributeImpl,
     FlagsAttribute, FlagsAttributeImpl, KeywordAttribute, KeywordAttributeImpl, OffsetAttribute,
@@ -23,6 +40,10 @@ pub use tokenattributes::{
     PositionIncrementAttribute, PositionIncrementAttributeImpl, PositionLengthAttribute,
     PositionLengthAttributeImpl, SentenceAttribute, SentenceAttributeImpl, TermFrequencyAttribute,
     TermFrequencyAttributeImpl, TermToBytesRefAttribute, TypeAttribute, TypeAttributeImpl,
+};
+pub use wordlist_loader::{
+    get_snowball_word_set, get_word_set, get_word_set_ignoring_comments, get_word_set_into,
+    get_word_set_with_comment,
 };
 
 use crate::error::{LuceneError, Result};
@@ -708,5 +729,201 @@ mod tests {
 
         let impl_count = source.attribute_impls_iter().count();
         assert_eq!(impl_count, 1);
+    }
+
+    // -------------------------------------------------------------------------
+    // CharacterUtils and ReusableStringReader
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn character_utils_to_lower_case_ascii_and_unicode() {
+        let mut buf: Vec<char> = "HELLO Ω É".chars().collect();
+        let len = buf.len();
+        to_lower_case(&mut buf, 0, len);
+        assert_eq!(buf.iter().collect::<String>(), "hello ω é");
+    }
+
+    #[test]
+    fn character_utils_to_lower_case_preserves_tail() {
+        let mut buf: Vec<char> = "AbCdefG".chars().collect();
+        to_lower_case(&mut buf, 1, 4);
+        assert_eq!(buf.iter().collect::<String>(), "AbcdefG");
+    }
+
+    #[test]
+    fn reusable_string_reader_reset_with_new_value() {
+        let mut reader = ReusableStringReader::new();
+        reader.set_value("hello world");
+
+        let mut buf = ['\0'; 5];
+        assert_eq!(reader.read(&mut buf).unwrap(), 5);
+        assert_eq!(buf.iter().collect::<String>(), "hello");
+
+        reader.set_value("foo");
+        assert_eq!(reader.read(&mut buf).unwrap(), 3);
+        assert_eq!(buf[..3].iter().collect::<String>(), "foo");
+    }
+
+    // -------------------------------------------------------------------------
+    // LowerCaseFilter
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn lower_case_filter_ascii_and_unicode() -> Result<()> {
+        let mut tokenizer = Tokenizer::new(WhitespaceTokenizer::default());
+        tokenizer.set_reader(Box::new(StringCharReader::new("HELLO Ω É ß")))?;
+        let mut filter = new_lower_case_filter(Box::new(tokenizer));
+        filter.reset()?;
+
+        assert!(filter.increment_token()?);
+        assert_eq!(term_of(&filter), "hello");
+        assert!(filter.increment_token()?);
+        assert_eq!(term_of(&filter), "ω");
+        assert!(filter.increment_token()?);
+        assert_eq!(term_of(&filter), "é");
+        assert!(filter.increment_token()?);
+        assert_eq!(term_of(&filter), "ß");
+        assert!(!filter.increment_token()?);
+
+        filter.end()?;
+        filter.close()?;
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // FilteringTokenFilter
+    // -------------------------------------------------------------------------
+
+    #[derive(Debug)]
+    struct RejectShortLogic {
+        min_len: usize,
+    }
+
+    impl FilteringTokenFilterLogic for RejectShortLogic {
+        fn accept(&mut self, source: &AttributeSource) -> Result<bool> {
+            let len = source
+                .get_attribute::<PackedTokenAttributeImpl>()
+                .unwrap()
+                .length();
+            Ok(len >= self.min_len)
+        }
+    }
+
+    #[test]
+    fn filtering_token_filter_skips_rejected_tokens_and_adjusts_positions() -> Result<()> {
+        let mut tokenizer = Tokenizer::new(WhitespaceTokenizer::default());
+        tokenizer.set_reader(Box::new(StringCharReader::new("a big cat")))?;
+        let mut filter =
+            new_filtering_token_filter(Box::new(tokenizer), RejectShortLogic { min_len: 3 });
+        filter.reset()?;
+
+        // 'a' is rejected, 'big' is accepted with position increment 2.
+        assert!(filter.increment_token()?);
+        assert_eq!(term_of(&filter), "big");
+        assert_eq!(
+            filter
+                .attribute_source()
+                .get_attribute::<PackedTokenAttributeImpl>()
+                .unwrap()
+                .get_position_increment(),
+            2
+        );
+
+        assert!(filter.increment_token()?);
+        assert_eq!(term_of(&filter), "cat");
+        assert_eq!(
+            filter
+                .attribute_source()
+                .get_attribute::<PackedTokenAttributeImpl>()
+                .unwrap()
+                .get_position_increment(),
+            1
+        );
+
+        assert!(!filter.increment_token()?);
+        filter.end()?;
+        assert_eq!(
+            filter
+                .attribute_source()
+                .get_attribute::<PackedTokenAttributeImpl>()
+                .unwrap()
+                .get_position_increment(),
+            0
+        );
+        filter.close()?;
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // StopFilter
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn stop_filter_removes_configured_words() -> Result<()> {
+        let stop_words = make_stop_set(["is", "a", "the"], false);
+        let mut tokenizer = Tokenizer::new(WhitespaceTokenizer::default());
+        tokenizer.set_reader(Box::new(StringCharReader::new("the quick is a fox")))?;
+        let mut filter = new_stop_filter(Box::new(tokenizer), stop_words);
+        filter.reset()?;
+
+        assert!(filter.increment_token()?);
+        assert_eq!(term_of(&filter), "quick");
+        assert!(filter.increment_token()?);
+        assert_eq!(term_of(&filter), "fox");
+        assert!(!filter.increment_token()?);
+
+        filter.end()?;
+        filter.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn stop_filter_case_insensitive_stop_set() -> Result<()> {
+        let stop_words = make_stop_set(["The"], true);
+        let mut tokenizer = Tokenizer::new(WhitespaceTokenizer::default());
+        tokenizer.set_reader(Box::new(StringCharReader::new("the cat")))?;
+        let mut filter = new_stop_filter(Box::new(tokenizer), stop_words);
+        filter.reset()?;
+
+        assert!(filter.increment_token()?);
+        assert_eq!(term_of(&filter), "cat");
+        assert!(!filter.increment_token()?);
+
+        filter.end()?;
+        filter.close()?;
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // WordlistLoader
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn wordlist_loader_get_word_set_parses_lines() {
+        let text = "  hello  \n\nworld\n  \n";
+        let set = get_word_set(text.lines());
+        assert_eq!(set.size(), 2);
+        assert!(set.contains("hello"));
+        assert!(set.contains("world"));
+    }
+
+    #[test]
+    fn wordlist_loader_get_word_set_ignoring_comments() {
+        let text = "alpha\n# comment\nbeta\n# another\ngamma";
+        let set = get_word_set_ignoring_comments(text.lines(), "#");
+        assert_eq!(set.size(), 3);
+        assert!(set.contains("alpha"));
+        assert!(set.contains("beta"));
+        assert!(set.contains("gamma"));
+    }
+
+    #[test]
+    fn wordlist_loader_get_snowball_word_set_parses_snowball_format() {
+        let text = "a an the | English articles\nis are was were | verbs";
+        let set = get_snowball_word_set(text.lines());
+        assert_eq!(set.size(), 7);
+        for word in ["a", "an", "the", "is", "are", "was", "were"] {
+            assert!(set.contains(word));
+        }
     }
 }
