@@ -9,9 +9,18 @@
 
 pub mod char_array_map;
 pub mod char_array_set;
+pub mod tokenattributes;
 
 pub use char_array_map::CharArrayMap;
 pub use char_array_set::CharArraySet;
+pub use tokenattributes::{
+    BytesTermAttribute, BytesTermAttributeImpl, CharTermAttribute, CharTermAttributeImpl,
+    FlagsAttribute, FlagsAttributeImpl, KeywordAttribute, KeywordAttributeImpl, OffsetAttribute,
+    OffsetAttributeImpl, PayloadAttribute, PayloadAttributeImpl, PositionIncrementAttribute,
+    PositionIncrementAttributeImpl, PositionLengthAttribute, PositionLengthAttributeImpl,
+    SentenceAttribute, SentenceAttributeImpl, TermFrequencyAttribute, TermFrequencyAttributeImpl,
+    TermToBytesRefAttribute, TypeAttribute, TypeAttributeImpl,
+};
 
 /// A stream of tokens produced by an analyzer, equivalent to
 /// `org.apache.lucene.analysis.TokenStream`.
