@@ -11,7 +11,7 @@ pub mod mmap;
 
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -4334,6 +4334,203 @@ impl std::fmt::Debug for FileSwitchDirectory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileSwitchDirectory")
             .field("primary_extensions", &self.primary_extensions)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A RAM-resident cache wrapper over another [`Directory`], used for
+/// Near-Real-Time search.
+///
+/// Equivalent to `org.apache.lucene.store.NRTCachingDirectory`. Small newly
+/// flushed or merged segments are kept in a [`ByteBuffersDirectory`] cache; larger
+/// files and all files at `sync` time are written through to the delegate.
+pub struct NRTCachingDirectory {
+    inner: FilterDirectory,
+    cache: ByteBuffersDirectory,
+    max_merge_size_bytes: i64,
+    max_cached_bytes: i64,
+}
+
+impl NRTCachingDirectory {
+    /// Creates a new NRT caching directory.
+    ///
+    /// `max_merge_size_mb` is the maximum estimated merge/flush size that will
+    /// be cached; `max_cached_mb` is the total cache budget.
+    pub fn new(inner: Box<dyn Directory>, max_merge_size_mb: f64, max_cached_mb: f64) -> Self {
+        Self {
+            inner: FilterDirectory::new(inner),
+            cache: ByteBuffersDirectory::new(),
+            max_merge_size_bytes: (max_merge_size_mb * 1024.0 * 1024.0) as i64,
+            max_cached_bytes: (max_cached_mb * 1024.0 * 1024.0) as i64,
+        }
+    }
+
+    /// Returns the wrapped directory.
+    pub fn get_delegate(&self) -> &dyn Directory {
+        self.inner.get_delegate()
+    }
+
+    /// Returns the names of files currently held in the cache.
+    pub fn list_cached_files(&self) -> Result<Vec<String>> {
+        self.cache.list_all()
+    }
+
+    /// Returns the total number of bytes currently cached.
+    ///
+    /// This iterates the cached files to compute the current size.
+    pub fn ram_bytes_used(&self) -> Result<i64> {
+        let mut total = 0i64;
+        for name in self.cache.list_all()? {
+            total += self.cache.file_length(&name)?;
+        }
+        Ok(total)
+    }
+
+    fn do_cache_write(&self, _name: &str, context: &dyn IOContext) -> bool {
+        let estimated_bytes = context
+            .merge_info()
+            .map(|m| m.estimated_merge_bytes)
+            .or_else(|| context.flush_info().map(|f| f.estimated_segment_size))
+            .unwrap_or(0);
+
+        estimated_bytes <= self.max_merge_size_bytes
+            && estimated_bytes + self.ram_bytes_used().unwrap_or(0) <= self.max_cached_bytes
+    }
+
+    fn uncache(&self, name: &str, context: &dyn IOContext) -> Result<()> {
+        if !self.cache.file_exists(name)? {
+            return Ok(());
+        }
+        self.inner.copy_from(&self.cache, name, name, context)?;
+        self.cache.delete_file(name)?;
+        Ok(())
+    }
+
+    fn slow_file_exists(&self, dir: &dyn Directory, name: &str) -> bool {
+        dir.file_length(name).is_ok()
+    }
+}
+
+impl Directory for NRTCachingDirectory {
+    fn list_all(&self) -> Result<Vec<String>> {
+        let mut files: BTreeSet<String> = BTreeSet::new();
+        for name in self.cache.list_all()? {
+            files.insert(name);
+        }
+        for name in self.inner.list_all()? {
+            files.insert(name);
+        }
+        Ok(files.into_iter().collect())
+    }
+
+    fn delete_file(&self, name: &str) -> Result<()> {
+        if self.cache.file_exists(name)? {
+            self.cache.delete_file(name)?;
+            Ok(())
+        } else {
+            self.inner.delete_file(name)
+        }
+    }
+
+    fn file_length(&self, name: &str) -> Result<i64> {
+        if self.cache.file_exists(name)? {
+            self.cache.file_length(name)
+        } else {
+            self.inner.file_length(name)
+        }
+    }
+
+    fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
+        if self.do_cache_write(name, context) {
+            self.cache.create_output(name, context)
+        } else {
+            self.inner.create_output(name, context)
+        }
+    }
+
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexOutput>> {
+        let (first, second) = if self.do_cache_write(prefix, context) {
+            (&self.cache as &dyn Directory, self.inner.get_delegate())
+        } else {
+            (self.inner.get_delegate(), &self.cache as &dyn Directory)
+        };
+
+        loop {
+            let mut out = first.create_temp_output(prefix, suffix, context)?;
+            let name = out.name().to_string();
+            if self.slow_file_exists(second, &name) {
+                // Name collision with the other directory; close and retry.
+                let _ = out.close();
+            } else {
+                return Ok(out);
+            }
+        }
+    }
+
+    fn sync(&self, names: &[String]) -> Result<()> {
+        for name in names {
+            self.uncache(name, &*DEFAULT_IO_CONTEXT)?;
+        }
+        self.inner.sync(names)
+    }
+
+    fn sync_metadata(&self) -> Result<()> {
+        self.inner.sync_metadata()
+    }
+
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        self.uncache(source, &*DEFAULT_IO_CONTEXT)?;
+        if self.cache.file_exists(dest)? {
+            return Err(LuceneError::IllegalArgument(format!(
+                "target file {dest} already exists in cache"
+            )));
+        }
+        self.inner.rename(source, dest)
+    }
+
+    fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+        if self.cache.file_exists(name)? {
+            self.cache.open_input(name, context)
+        } else {
+            self.inner.open_input(name, context)
+        }
+    }
+
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+        self.inner.obtain_lock(name)
+    }
+
+    fn close(&mut self) -> Result<()> {
+        let cached = self.cache.list_all()?;
+        for name in &cached {
+            self.uncache(name, &*DEFAULT_IO_CONTEXT)?;
+        }
+        self.cache.close()?;
+        self.inner.close()
+    }
+
+    fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+        let mut pending = self.inner.get_pending_deletions()?;
+        pending.extend(self.cache.get_pending_deletions()?);
+        Ok(pending)
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        self.inner.ensure_open()
+    }
+}
+
+impl std::fmt::Debug for NRTCachingDirectory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NRTCachingDirectory")
+            .field("max_merge_size_bytes", &self.max_merge_size_bytes)
+            .field("max_cached_bytes", &self.max_cached_bytes)
+            .field("cache_size", &self.ram_bytes_used().unwrap_or(0))
             .finish_non_exhaustive()
     }
 }
@@ -9873,6 +10070,87 @@ mod tests {
             false,
         );
         assert!(result.is_err());
+    }
+
+    /// `NRTCachingDirectory` keeps small flush/merge outputs in RAM and writes
+    /// large ones through to the delegate.
+    #[test]
+    fn nrt_caching_directory_caches_small_writes() {
+        let inner = RamDirectory::new();
+        let cache = NRTCachingDirectory::new(Box::new(inner), 5.0, 60.0);
+        let context = &*DEFAULT_IO_CONTEXT;
+
+        // Small flush goes to cache.
+        let flush = flush_io_context(FlushInfo::new(1, 1024));
+        {
+            let mut out = cache.create_output("small.bin", flush.as_ref()).unwrap();
+            out.write_byte(1).unwrap();
+            out.close().unwrap();
+        }
+        assert!(cache
+            .list_cached_files()
+            .unwrap()
+            .iter()
+            .any(|n| n == "small.bin"));
+        assert!(cache.file_length("small.bin").unwrap() > 0);
+        assert_eq!(
+            cache.ram_bytes_used().unwrap(),
+            cache.file_length("small.bin").unwrap()
+        );
+
+        // Large flush bypasses cache.
+        let large_flush = flush_io_context(FlushInfo::new(1, 10 * 1024 * 1024));
+        {
+            let mut out = cache
+                .create_output("large.bin", large_flush.as_ref())
+                .unwrap();
+            out.write_byte(2).unwrap();
+            out.close().unwrap();
+        }
+        assert!(!cache
+            .list_cached_files()
+            .unwrap()
+            .iter()
+            .any(|n| n == "large.bin"));
+
+        // open_input reads from cache for small file.
+        {
+            let mut input = cache.open_input("small.bin", context).unwrap();
+            assert_eq!(input.read_byte().unwrap(), 1);
+        }
+
+        // sync flushes cached file to delegate and clears cache.
+        cache.sync(&["small.bin".to_string()]).unwrap();
+        assert!(!cache
+            .list_cached_files()
+            .unwrap()
+            .iter()
+            .any(|n| n == "small.bin"));
+        {
+            let mut input = cache.open_input("small.bin", context).unwrap();
+            assert_eq!(input.read_byte().unwrap(), 1);
+        }
+    }
+
+    /// `NRTCachingDirectory` deletes cached and delegated files correctly.
+    #[test]
+    fn nrt_caching_directory_deletes_files() {
+        let inner = RamDirectory::new();
+        let cache = NRTCachingDirectory::new(Box::new(inner), 5.0, 60.0);
+        let flush = flush_io_context(FlushInfo::new(1, 1024));
+
+        {
+            let mut out = cache.create_output("a.bin", flush.as_ref()).unwrap();
+            out.write_byte(1).unwrap();
+            out.close().unwrap();
+        }
+        cache.delete_file("a.bin").unwrap();
+        assert!(!cache
+            .list_cached_files()
+            .unwrap()
+            .iter()
+            .any(|n| n == "a.bin"));
+        assert!(cache.file_length("a.bin").is_err());
     }
 
     /// `TrackingDirectoryWrapper` records created files and removes them on
