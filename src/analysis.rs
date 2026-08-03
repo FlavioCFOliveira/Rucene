@@ -13,6 +13,7 @@ pub mod character_utils;
 pub mod filtering_token_filter;
 pub mod lower_case_filter;
 pub mod reusable_string_reader;
+pub mod standard;
 pub mod stop_filter;
 pub mod tokenattributes;
 pub mod wordlist_loader;
@@ -37,6 +38,11 @@ pub use filtering_token_filter::{
 };
 pub use lower_case_filter::{new_lower_case_filter, LowerCaseFilter, LowerCaseFilterLogic};
 pub use reusable_string_reader::ReusableStringReader;
+pub use standard::{
+    new_standard_tokenizer, StandardTokenizer, StandardTokenizerLogic, ALPHANUM,
+    DEFAULT_MAX_TOKEN_LENGTH, EMOJI, HANGUL, HIRAGANA, IDEOGRAPHIC, KATAKANA,
+    MAX_TOKEN_LENGTH_LIMIT, NUM, SOUTHEAST_ASIAN, TOKEN_TYPES,
+};
 pub use stop_filter::{make_stop_set, new_stop_filter, StopFilter, StopFilterLogic};
 pub use tokenattributes::{
     BytesTermAttribute, BytesTermAttributeImpl, CharTermAttribute, CharTermAttributeImpl,
@@ -340,6 +346,11 @@ impl<T: TokenizerLogic> Tokenizer<T> {
         }
         self.input_pending = Some(reader);
         Ok(())
+    }
+
+    /// Returns a mutable reference to the tokenizer logic.
+    pub fn logic_mut(&mut self) -> &mut T {
+        &mut self.logic
     }
 }
 
