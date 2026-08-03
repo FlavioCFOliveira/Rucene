@@ -757,6 +757,267 @@ impl AttributeImpl for TypeAttributeImpl {
 }
 
 // -----------------------------------------------------------------------------
+// PackedTokenAttributeImpl
+// -----------------------------------------------------------------------------
+
+/// A single reusable attribute implementation that combines
+/// [`CharTermAttribute`], [`OffsetAttribute`],
+/// [`PositionIncrementAttribute`], [`PositionLengthAttribute`] and
+/// [`TypeAttribute`].
+///
+/// Equivalent to `org.apache.lucene.analysis.tokenattributes.PackedTokenAttributeImpl`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackedTokenAttributeImpl {
+    term: CharTermAttributeImpl,
+    start_offset: i32,
+    end_offset: i32,
+    position_increment: i32,
+    position_length: i32,
+    type_value: String,
+}
+
+impl Default for PackedTokenAttributeImpl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PackedTokenAttributeImpl {
+    /// Creates a packed token attribute with all default values.
+    pub fn new() -> Self {
+        Self {
+            term: CharTermAttributeImpl::new(),
+            start_offset: 0,
+            end_offset: 0,
+            position_increment: 1,
+            position_length: 1,
+            type_value: DEFAULT_TYPE.to_string(),
+        }
+    }
+
+    /// Returns the current term text as a `String`.
+    pub fn term(&self) -> String {
+        self.buffer()[..self.length()].iter().collect()
+    }
+}
+
+impl Attribute for PackedTokenAttributeImpl {}
+
+impl CharTermAttribute for PackedTokenAttributeImpl {
+    fn copy_buffer(&mut self, buffer: &[char], offset: usize, length: usize) {
+        self.term.copy_buffer(buffer, offset, length);
+    }
+
+    fn buffer(&self) -> &[char] {
+        self.term.buffer()
+    }
+
+    fn buffer_mut(&mut self) -> &mut [char] {
+        self.term.buffer_mut()
+    }
+
+    fn resize_buffer(&mut self, new_size: usize) -> &mut [char] {
+        self.term.resize_buffer(new_size)
+    }
+
+    fn set_length(&mut self, length: usize) {
+        self.term.set_length(length);
+    }
+
+    fn set_empty(&mut self) {
+        self.term.set_empty();
+    }
+
+    fn length(&self) -> usize {
+        self.term.length()
+    }
+
+    fn char_at(&self, index: usize) -> char {
+        self.term.char_at(index)
+    }
+
+    fn sub_sequence(&self, start: usize, end: usize) -> String {
+        self.term.sub_sequence(start, end)
+    }
+
+    fn append_string(&mut self, s: &str) {
+        self.term.append_string(s);
+    }
+
+    fn append_string_range(&mut self, s: &str, start: usize, end: usize) {
+        self.term.append_string_range(s, start, end);
+    }
+
+    fn append_char(&mut self, c: char) {
+        self.term.append_char(c);
+    }
+
+    fn append_char_term_attribute(&mut self, term_att: &dyn CharTermAttribute) {
+        self.term.append_char_term_attribute(term_att);
+    }
+}
+
+impl TermToBytesRefAttribute for PackedTokenAttributeImpl {
+    fn get_bytes_ref(&self) -> BytesRef {
+        self.term.get_bytes_ref()
+    }
+}
+
+impl OffsetAttribute for PackedTokenAttributeImpl {
+    fn start_offset(&self) -> i32 {
+        self.start_offset
+    }
+
+    fn set_offset(&mut self, start_offset: i32, end_offset: i32) {
+        assert!(
+            start_offset >= 0 && end_offset >= start_offset,
+            "startOffset must be non-negative, and endOffset must be >= startOffset; got startOffset={start_offset}, endOffset={end_offset}"
+        );
+        self.start_offset = start_offset;
+        self.end_offset = end_offset;
+    }
+
+    fn end_offset(&self) -> i32 {
+        self.end_offset
+    }
+}
+
+impl PositionIncrementAttribute for PackedTokenAttributeImpl {
+    fn set_position_increment(&mut self, position_increment: i32) {
+        assert!(
+            position_increment >= 0,
+            "Position increment must be zero or greater; got {position_increment}"
+        );
+        self.position_increment = position_increment;
+    }
+
+    fn get_position_increment(&self) -> i32 {
+        self.position_increment
+    }
+}
+
+impl PositionLengthAttribute for PackedTokenAttributeImpl {
+    fn set_position_length(&mut self, position_length: i32) {
+        assert!(
+            position_length >= 1,
+            "Position length must be 1 or greater; got {position_length}"
+        );
+        self.position_length = position_length;
+    }
+
+    fn get_position_length(&self) -> i32 {
+        self.position_length
+    }
+}
+
+impl TypeAttribute for PackedTokenAttributeImpl {
+    fn type_value(&self) -> &str {
+        &self.type_value
+    }
+
+    fn set_type(&mut self, type_value: String) {
+        self.type_value = type_value;
+    }
+}
+
+impl Hash for PackedTokenAttributeImpl {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.term.hash(state);
+        self.start_offset.hash(state);
+        self.end_offset.hash(state);
+        self.position_increment.hash(state);
+        self.position_length.hash(state);
+        self.type_value.hash(state);
+    }
+}
+
+impl AttributeImpl for PackedTokenAttributeImpl {
+    fn clear(&mut self) {
+        self.term.clear();
+        self.start_offset = 0;
+        self.end_offset = 0;
+        self.position_increment = 1;
+        self.position_length = 1;
+        self.type_value = DEFAULT_TYPE.to_string();
+    }
+
+    fn end(&mut self) {
+        self.position_increment = 0;
+    }
+
+    fn copy_to(&self, target: &mut dyn AttributeImpl) {
+        if let Some(t) = target
+            .as_any_mut()
+            .downcast_mut::<PackedTokenAttributeImpl>()
+        {
+            self.term.copy_to(&mut t.term);
+            t.set_offset(self.start_offset, self.end_offset);
+            t.set_position_increment(self.position_increment);
+            t.set_position_length(self.position_length);
+            t.type_value.clone_from(&self.type_value);
+        }
+    }
+
+    fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
+        self.term.reflect_with(reflector);
+        reflector.reflect(
+            TypeId::of::<dyn OffsetAttribute>(),
+            std::any::type_name::<PackedTokenAttributeImpl>(),
+            "startOffset",
+            &self.start_offset,
+        );
+        reflector.reflect(
+            TypeId::of::<dyn OffsetAttribute>(),
+            std::any::type_name::<PackedTokenAttributeImpl>(),
+            "endOffset",
+            &self.end_offset,
+        );
+        reflector.reflect(
+            TypeId::of::<dyn PositionIncrementAttribute>(),
+            std::any::type_name::<PackedTokenAttributeImpl>(),
+            "positionIncrement",
+            &self.position_increment,
+        );
+        reflector.reflect(
+            TypeId::of::<dyn PositionLengthAttribute>(),
+            std::any::type_name::<PackedTokenAttributeImpl>(),
+            "positionLength",
+            &self.position_length,
+        );
+        reflector.reflect(
+            TypeId::of::<dyn TypeAttribute>(),
+            std::any::type_name::<PackedTokenAttributeImpl>(),
+            "type",
+            &self.type_value,
+        );
+    }
+
+    fn clone_box(&self) -> Box<dyn AttributeImpl> {
+        Box::new(self.clone())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn attribute_interfaces(&self) -> &'static [TypeId] {
+        static_type_ids![
+            PackedTokenAttributeImpl,
+            dyn CharTermAttribute,
+            dyn TermToBytesRefAttribute,
+            dyn OffsetAttribute,
+            dyn PositionIncrementAttribute,
+            dyn PositionLengthAttribute,
+            dyn TypeAttribute
+        ]
+    }
+}
+
+// -----------------------------------------------------------------------------
 // TermFrequencyAttribute
 // -----------------------------------------------------------------------------
 
@@ -1715,5 +1976,113 @@ mod tests {
             .append_string("token");
         let att = source.get_attribute::<CharTermAttributeImpl>().unwrap();
         assert_eq!(att.term(), "token");
+    }
+
+    #[test]
+    fn packed_token_attribute_defaults() {
+        let mut factory = DefaultAttributeFactory::new();
+        factory.register_self::<PackedTokenAttributeImpl>();
+        let mut source = AttributeSource::new_with_factory(Arc::new(factory));
+        source.add_attribute::<PackedTokenAttributeImpl>().unwrap();
+        {
+            let mut att = source
+                .get_attribute_mut::<PackedTokenAttributeImpl>()
+                .unwrap();
+            att.append_string("hello");
+            att.set_offset(0, 5);
+            att.set_position_increment(1);
+            att.set_position_length(1);
+            att.set_type("ALPHANUM".to_string());
+        }
+        let att = source.get_attribute::<PackedTokenAttributeImpl>().unwrap();
+        assert_eq!(att.term(), "hello");
+        assert_eq!(att.start_offset(), 0);
+        assert_eq!(att.end_offset(), 5);
+        assert_eq!(att.get_position_increment(), 1);
+        assert_eq!(att.get_position_length(), 1);
+        assert_eq!(att.type_value(), "ALPHANUM");
+    }
+
+    #[test]
+    fn packed_token_attribute_clear_and_end() {
+        let mut att = PackedTokenAttributeImpl::new();
+        att.append_string("hello");
+        att.set_offset(0, 5);
+        att.set_position_increment(2);
+        att.set_position_length(3);
+        att.set_type("NUM".to_string());
+
+        att.clear();
+        assert!(att.term().is_empty());
+        assert_eq!(att.start_offset(), 0);
+        assert_eq!(att.end_offset(), 0);
+        assert_eq!(att.get_position_increment(), 1);
+        assert_eq!(att.get_position_length(), 1);
+        assert_eq!(att.type_value(), DEFAULT_TYPE);
+
+        att.set_position_increment(5);
+        att.end();
+        assert_eq!(att.get_position_increment(), 0);
+    }
+
+    #[test]
+    fn packed_token_attribute_copy_to() {
+        let mut src = PackedTokenAttributeImpl::new();
+        src.append_string("hello");
+        src.set_offset(0, 5);
+        src.set_position_increment(2);
+        src.set_position_length(2);
+        src.set_type("ALPHANUM".to_string());
+
+        let mut dst = PackedTokenAttributeImpl::new();
+        src.copy_to(&mut dst);
+
+        assert_eq!(dst.term(), "hello");
+        assert_eq!(dst.start_offset(), 0);
+        assert_eq!(dst.end_offset(), 5);
+        assert_eq!(dst.get_position_increment(), 2);
+        assert_eq!(dst.get_position_length(), 2);
+        assert_eq!(dst.type_value(), "ALPHANUM");
+    }
+
+    #[test]
+    fn packed_token_attribute_capture_restore_state() {
+        let mut factory = DefaultAttributeFactory::new();
+        factory.register_self::<PackedTokenAttributeImpl>();
+        let mut source = AttributeSource::new_with_factory(Arc::new(factory));
+        source.add_attribute::<PackedTokenAttributeImpl>().unwrap();
+        {
+            let mut att = source
+                .get_attribute_mut::<PackedTokenAttributeImpl>()
+                .unwrap();
+            att.append_string("hello");
+            att.set_offset(0, 5);
+            att.set_position_increment(2);
+            att.set_position_length(2);
+            att.set_type("ALPHANUM".to_string());
+        }
+
+        let state = source.capture_state().expect("state captured");
+
+        {
+            let mut att = source
+                .get_attribute_mut::<PackedTokenAttributeImpl>()
+                .unwrap();
+            att.set_empty();
+            att.set_offset(0, 0);
+            att.set_position_increment(1);
+            att.set_position_length(1);
+            att.set_type(DEFAULT_TYPE.to_string());
+        }
+
+        source.restore_state(&state).expect("state restored");
+
+        let att = source.get_attribute::<PackedTokenAttributeImpl>().unwrap();
+        assert_eq!(att.term(), "hello");
+        assert_eq!(att.start_offset(), 0);
+        assert_eq!(att.end_offset(), 5);
+        assert_eq!(att.get_position_increment(), 2);
+        assert_eq!(att.get_position_length(), 2);
+        assert_eq!(att.type_value(), "ALPHANUM");
     }
 }
