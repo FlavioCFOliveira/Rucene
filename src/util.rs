@@ -10,12 +10,21 @@
 
 pub mod attribute;
 pub mod chars_ref;
+pub mod extra;
+pub mod small_float;
+pub mod string_helper;
 
 pub use attribute::{
     unwrap_all, AsUnwrappable, Attribute, AttributeFactory, AttributeImpl, AttributeReflector,
     AttributeSource, CapturedState, CloseableThreadLocal, DefaultAttributeFactory, Unwrappable,
 };
 pub use chars_ref::{CharsRef, EMPTY_CHARS};
+pub use extra::{
+    IdentityLongValues, IntoIter as PriorityQueueIntoIter, LongBitSet, LongValues, MergedIterator,
+    PriorityQueue, PriorityQueueComparator, Version, ZeroesLongValues,
+};
+pub use small_float::SmallFloat;
+pub use string_helper::{read_string, write_string, IntsRef, StringHelper, ID_LENGTH};
 
 use std::{
     cmp::Ordering,
