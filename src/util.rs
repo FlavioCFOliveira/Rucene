@@ -9,11 +9,13 @@
 #![deny(unsafe_code)]
 
 pub mod attribute;
+pub mod chars_ref;
 
 pub use attribute::{
     unwrap_all, AsUnwrappable, Attribute, AttributeFactory, AttributeImpl, AttributeReflector,
     AttributeSource, CapturedState, CloseableThreadLocal, DefaultAttributeFactory, Unwrappable,
 };
+pub use chars_ref::{CharsRef, EMPTY_CHARS};
 
 use std::{
     cmp::Ordering,
