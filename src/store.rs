@@ -5426,6 +5426,19 @@ impl ByteBuffersDataOutput {
         result
     }
 
+    /// Copies the current content of this output into another [`DataOutput`].
+    ///
+    /// Equivalent to `ByteBuffersDataOutput.copyTo` in Lucene 10.5.0.
+    pub fn copy_to(&self, output: &mut dyn DataOutput) -> Result<()> {
+        for block in &self.completed {
+            output.write_bytes(block, 0, block.len())?;
+        }
+        if !self.current.is_empty() {
+            output.write_bytes(&self.current, 0, self.current.len())?;
+        }
+        Ok(())
+    }
+
     /// Resets this output to a clean (zero-size) state, publishing buffers to
     /// the recycler if one was configured.
     pub fn reset(&mut self) {
@@ -10192,5 +10205,31 @@ mod tests {
 
         tracker.clear_created_files();
         assert!(tracker.get_created_files().is_empty());
+    }
+
+    /// `ByteBuffersDataOutput::copy_to` transfers all written bytes into another
+    /// [`DataOutput`] without consuming the source.
+    #[test]
+    fn byte_buffers_copy_to_transfers_all_bytes() {
+        let mut source = ByteBuffersDataOutput::new();
+        for i in 0..2000i32 {
+            source.write_int(i).unwrap();
+        }
+
+        let mut target = ByteArrayDataOutput::new();
+        source.copy_to(&mut target).unwrap();
+        assert_eq!(target.len(), source.size());
+
+        // Source must still be readable.
+        let mut input = source.to_data_input().unwrap();
+        for i in 0..2000i32 {
+            assert_eq!(input.read_int().unwrap(), i);
+        }
+
+        // Target must contain the same bytes.
+        let mut target_input = ByteArrayDataInput::new(target.into_inner());
+        for i in 0..2000i32 {
+            assert_eq!(target_input.read_int().unwrap(), i);
+        }
     }
 }
