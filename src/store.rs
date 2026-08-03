@@ -659,6 +659,127 @@ impl RandomAccessInput for RandomAccessInputAdapter {
     }
 }
 
+/// An [`IndexInput`] implementation that delegates every call to a wrapped
+/// input.
+///
+/// Equivalent to `org.apache.lucene.store.FilterIndexInput`. This wrapper is the
+/// standard Lucene mechanism for layering behavior (validation, tracking,
+/// accounting) on top of an existing input implementation.
+///
+/// The wrapped input is stored as a trait object; callers that need to unwrap
+/// can use [`FilterIndexInput::get_delegate`] or match on a concrete wrapper
+/// type.
+pub struct FilterIndexInput {
+    resource_description: String,
+    inner: Box<dyn IndexInput>,
+}
+
+impl FilterIndexInput {
+    /// Creates a new filter input delegating to `inner`.
+    pub fn new(resource_description: impl Into<String>, inner: Box<dyn IndexInput>) -> Self {
+        Self {
+            resource_description: resource_description.into(),
+            inner,
+        }
+    }
+
+    /// Returns the wrapped input.
+    pub fn get_delegate(&self) -> &dyn IndexInput {
+        self.inner.as_ref()
+    }
+
+    /// Unwraps nested `FilterIndexInput` wrappers and returns the first
+    /// non-filter input.
+    ///
+    /// Since Rust trait objects cannot be downcast without additional runtime
+    /// type information, this helper simply returns the provided input; callers
+    /// with a concrete `FilterIndexInput` value should inspect its delegate
+    /// directly.
+    pub fn unwrap(input: &dyn IndexInput) -> &dyn IndexInput {
+        input
+    }
+}
+
+impl DataInput for FilterIndexInput {
+    fn read_byte(&mut self) -> Result<u8> {
+        self.inner.read_byte()
+    }
+
+    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        self.inner.read_bytes(b, offset, len)
+    }
+
+    fn read_bytes_buffered(
+        &mut self,
+        b: &mut [u8],
+        offset: usize,
+        len: usize,
+        use_buffer: bool,
+    ) -> Result<()> {
+        self.inner.read_bytes_buffered(b, offset, len, use_buffer)
+    }
+
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        self.inner.skip_bytes(num_bytes)
+    }
+}
+
+impl IndexInput for FilterIndexInput {
+    fn close(&mut self) -> Result<()> {
+        self.inner.close()
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.inner.file_pointer()
+    }
+
+    fn length(&self) -> i64 {
+        self.inner.length()
+    }
+
+    fn seek(&mut self, pos: i64) -> Result<()> {
+        self.inner.seek(pos)
+    }
+
+    fn slice(
+        &self,
+        slice_description: &str,
+        offset: i64,
+        length: i64,
+    ) -> Result<Box<dyn IndexInput>> {
+        self.inner.slice(slice_description, offset, length)
+    }
+
+    fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+        self.inner.clone_input()
+    }
+
+    fn resource_description(&self) -> &str {
+        &self.resource_description
+    }
+
+    fn prefetch(&self, offset: i64, length: i64) -> Result<()> {
+        self.inner.prefetch(offset, length)
+    }
+
+    fn is_loaded(&self) -> Option<bool> {
+        self.inner.is_loaded()
+    }
+
+    fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
+        self.inner.random_access_slice(offset, length)
+    }
+}
+
+impl std::fmt::Debug for FilterIndexInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FilterIndexInput")
+            .field("resource_description", &self.resource_description)
+            .field("inner", &self.inner.resource_description())
+            .finish()
+    }
+}
+
 /// Default buffer size for [`BufferedIndexInput`].
 pub const BUFFER_SIZE: usize = 1024;
 
@@ -1516,6 +1637,94 @@ pub trait IndexOutput: DataOutput {
 
     /// Returns the name used to create this output.
     fn name(&self) -> &str;
+}
+
+/// An [`IndexOutput`] implementation that delegates every call to a wrapped
+/// output.
+///
+/// Equivalent to `org.apache.lucene.store.FilterIndexOutput`. This wrapper is
+/// the standard Lucene mechanism for layering behavior (validation, tracking,
+/// accounting) on top of an existing output implementation.
+///
+/// The wrapped output is stored as a trait object; callers that need to unwrap
+/// can use [`FilterIndexOutput::get_delegate`] or match on a concrete wrapper
+/// type.
+pub struct FilterIndexOutput {
+    resource_description: String,
+    name: String,
+    inner: Box<dyn IndexOutput>,
+}
+
+impl FilterIndexOutput {
+    /// Creates a new filter output delegating to `inner`.
+    pub fn new(
+        resource_description: impl Into<String>,
+        name: impl Into<String>,
+        inner: Box<dyn IndexOutput>,
+    ) -> Self {
+        Self {
+            resource_description: resource_description.into(),
+            name: name.into(),
+            inner,
+        }
+    }
+
+    /// Returns the wrapped output.
+    pub fn get_delegate(&self) -> &dyn IndexOutput {
+        self.inner.as_ref()
+    }
+
+    /// Unwraps nested `FilterIndexOutput` wrappers and returns the first
+    /// non-filter output.
+    ///
+    /// Since Rust trait objects cannot be downcast without additional runtime
+    /// type information, this helper simply returns the provided output; callers
+    /// with a concrete `FilterIndexOutput` value should inspect its delegate
+    /// directly.
+    pub fn unwrap(output: &dyn IndexOutput) -> &dyn IndexOutput {
+        output
+    }
+}
+
+impl DataOutput for FilterIndexOutput {
+    fn write_byte(&mut self, b: u8) -> Result<()> {
+        self.inner.write_byte(b)
+    }
+
+    fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
+        self.inner.write_bytes(b, offset, len)
+    }
+}
+
+impl IndexOutput for FilterIndexOutput {
+    fn close(&mut self) -> Result<()> {
+        self.inner.close()
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.inner.file_pointer()
+    }
+
+    fn checksum(&self) -> Result<i64> {
+        self.inner.checksum()
+    }
+
+    fn resource_description(&self) -> &str {
+        &self.resource_description
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl std::fmt::Debug for FilterIndexOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FilterIndexOutput")
+            .field("name", &self.name)
+            .field("resource_description", &self.resource_description)
+            .finish()
+    }
 }
 
 /// Validates that `offset` and `length` describe a valid sub-slice of an
@@ -3396,6 +3605,117 @@ impl<D: Directory> std::fmt::Display for BaseDirectory<D> {
             self.inner.directory_type_name(),
             self.lock_factory_type_name
         )
+    }
+}
+
+/// A [`Directory`] implementation that delegates every call to a wrapped
+/// directory.
+///
+/// Equivalent to `org.apache.lucene.store.FilterDirectory`. This is the standard
+/// mechanism in Lucene to layer behavior (rate limiting, caching, validation) over
+/// an existing directory implementation.
+///
+/// In Rust the wrapper owns a `Box<dyn Directory>`; concrete subclasses such as
+/// `TrackingDirectoryWrapper` can hold a `FilterDirectory` internally and
+/// re-implement [`Directory`] by delegating to it while overriding selected
+/// methods.
+pub struct FilterDirectory {
+    inner: Box<dyn Directory>,
+}
+
+impl FilterDirectory {
+    /// Creates a new filter directory delegating to `inner`.
+    pub fn new(inner: Box<dyn Directory>) -> Self {
+        Self { inner }
+    }
+
+    /// Returns the wrapped directory.
+    pub fn get_delegate(&self) -> &dyn Directory {
+        self.inner.as_ref()
+    }
+
+    /// Unwraps nested `FilterDirectory` wrappers and returns the first
+    /// non-filter directory.
+    ///
+    /// Because Rust trait objects cannot be safely downcast by default, callers
+    /// that own a concrete `FilterDirectory` value should inspect its delegate
+    /// directly. This helper exists to mirror Lucene's
+    /// `FilterDirectory.unwrap(Directory)` API shape.
+    pub fn unwrap(dir: &dyn Directory) -> &dyn Directory {
+        dir
+    }
+}
+
+impl Directory for FilterDirectory {
+    fn list_all(&self) -> Result<Vec<String>> {
+        self.inner.list_all()
+    }
+
+    fn delete_file(&self, name: &str) -> Result<()> {
+        self.inner.delete_file(name)
+    }
+
+    fn file_length(&self, name: &str) -> Result<i64> {
+        self.inner.file_length(name)
+    }
+
+    fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
+        self.inner.create_output(name, context)
+    }
+
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexOutput>> {
+        self.inner.create_temp_output(prefix, suffix, context)
+    }
+
+    fn sync(&self, names: &[String]) -> Result<()> {
+        self.inner.sync(names)
+    }
+
+    fn sync_metadata(&self) -> Result<()> {
+        self.inner.sync_metadata()
+    }
+
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        self.inner.rename(source, dest)
+    }
+
+    fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+        self.inner.open_input(name, context)
+    }
+
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+        self.inner.obtain_lock(name)
+    }
+
+    fn close(&mut self) -> Result<()> {
+        self.inner.close()
+    }
+
+    fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+        self.inner.get_pending_deletions()
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        self.inner.ensure_open()
+    }
+}
+
+impl std::fmt::Display for FilterDirectory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FilterDirectory({})", self.inner.directory_type_name())
+    }
+}
+
+impl std::fmt::Debug for FilterDirectory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FilterDirectory")
+            .field("inner", &self.inner.directory_type_name())
+            .finish()
     }
 }
 
@@ -8315,5 +8635,84 @@ mod tests {
         let bytes = fs::read(&path).unwrap();
         let expected = crc32fast::hash(&bytes) as i64;
         assert_eq!(checksum, expected);
+    }
+
+    /// `FilterDirectory` delegates all operations to its inner directory.
+    #[test]
+    fn filter_directory_delegates_directory_operations() {
+        let inner = RamDirectory::new();
+        let context = &*DEFAULT_IO_CONTEXT;
+
+        {
+            let mut out = inner.create_output("a.bin", context).unwrap();
+            out.write_byte(1).unwrap();
+            out.close().unwrap();
+        }
+
+        let filter = FilterDirectory::new(Box::new(inner));
+        assert_eq!(filter.list_all().unwrap(), vec!["a.bin".to_string()]);
+        assert_eq!(filter.file_length("a.bin").unwrap(), 1);
+
+        {
+            let mut input = filter.open_input("a.bin", context).unwrap();
+            assert_eq!(input.read_byte().unwrap(), 1);
+        }
+
+        filter.delete_file("a.bin").unwrap();
+        assert!(filter.list_all().unwrap().is_empty());
+    }
+
+    /// `FilterIndexInput` delegates reads, seeks and slices to the wrapped input.
+    #[test]
+    fn filter_index_input_delegates_reads() {
+        let data = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let inner = MockIndexInput::new(data, "inner");
+        let mut filter = FilterIndexInput::new("filter", Box::new(inner));
+
+        assert_eq!(filter.file_pointer(), 0);
+        assert_eq!(filter.length(), 8);
+        assert_eq!(filter.read_int().unwrap(), 0x0403_0201_i32);
+        filter.seek(0).unwrap();
+        let mut slice = filter.slice("slice", 2, 4).unwrap();
+        assert_eq!(slice.length(), 4);
+        assert_eq!(slice.read_short().unwrap(), 0x0403);
+    }
+
+    /// `FilterIndexOutput` delegates writes and checksums to the wrapped output.
+    #[test]
+    fn filter_index_output_delegates_writes() {
+        let inner = MockIndexOutput::new("inner", "inner.bin");
+        let mut filter = FilterIndexOutput::new("filter", "test.bin", Box::new(inner));
+        filter.write_int(0x12345678).unwrap();
+        filter.write_string("hi").unwrap();
+        let checksum = filter.checksum().unwrap();
+        filter.close().unwrap();
+
+        assert_eq!(filter.name(), "test.bin");
+        assert_eq!(filter.resource_description(), "filter");
+        assert_eq!(filter.file_pointer(), 7);
+
+        // Verify the checksum matches the Java-compatible CRC-32 of the bytes.
+        let expected = {
+            let mut out = MockIndexOutput::new("expected", "expected.bin");
+            out.write_int(0x12345678).unwrap();
+            out.write_string("hi").unwrap();
+            out.checksum().unwrap()
+        };
+        assert_eq!(checksum, expected);
+    }
+
+    /// `FilterDirectory::get_delegate` returns the wrapped directory.
+    #[test]
+    fn filter_directory_exposes_delegate() {
+        let inner = RamDirectory::new();
+        let filter = FilterDirectory::new(Box::new(inner));
+        assert!(
+            filter
+                .get_delegate()
+                .directory_type_name()
+                .contains("RamDirectory"),
+            "delegate type name should identify RamDirectory"
+        );
     }
 }
