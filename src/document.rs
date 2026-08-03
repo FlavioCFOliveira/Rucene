@@ -2761,6 +2761,637 @@ impl IndexableField for BinaryDocValuesField {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Combined numeric fields
+// -----------------------------------------------------------------------------
+
+fn int_combined_field_type(stored: bool) -> FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    static TYPE_STORED: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    if stored {
+        TYPE_STORED
+            .get_or_init(|| {
+                let base = int_combined_field_type(false);
+                let mut ft = FieldType::new_from(&base as &dyn IndexableFieldType);
+                ft.set_stored(true).unwrap();
+                ft.freeze();
+                ft
+            })
+            .clone()
+    } else {
+        TYPE.get_or_init(|| {
+            let mut ft = FieldType::new();
+            ft.set_dimensions(1, 4).unwrap();
+            ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
+                .unwrap();
+            ft.freeze();
+            ft
+        })
+        .clone()
+    }
+}
+
+fn long_combined_field_type(stored: bool) -> FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    static TYPE_STORED: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    if stored {
+        TYPE_STORED
+            .get_or_init(|| {
+                let base = long_combined_field_type(false);
+                let mut ft = FieldType::new_from(&base as &dyn IndexableFieldType);
+                ft.set_stored(true).unwrap();
+                ft.freeze();
+                ft
+            })
+            .clone()
+    } else {
+        TYPE.get_or_init(|| {
+            let mut ft = FieldType::new();
+            ft.set_dimensions(1, 8).unwrap();
+            ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
+                .unwrap();
+            ft.freeze();
+            ft
+        })
+        .clone()
+    }
+}
+
+fn float_combined_field_type(stored: bool) -> FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    static TYPE_STORED: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    if stored {
+        TYPE_STORED
+            .get_or_init(|| {
+                let base = float_combined_field_type(false);
+                let mut ft = FieldType::new_from(&base as &dyn IndexableFieldType);
+                ft.set_stored(true).unwrap();
+                ft.freeze();
+                ft
+            })
+            .clone()
+    } else {
+        TYPE.get_or_init(|| {
+            let mut ft = FieldType::new();
+            ft.set_dimensions(1, 4).unwrap();
+            ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
+                .unwrap();
+            ft.freeze();
+            ft
+        })
+        .clone()
+    }
+}
+
+fn double_combined_field_type(stored: bool) -> FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    static TYPE_STORED: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    if stored {
+        TYPE_STORED
+            .get_or_init(|| {
+                let base = double_combined_field_type(false);
+                let mut ft = FieldType::new_from(&base as &dyn IndexableFieldType);
+                ft.set_stored(true).unwrap();
+                ft.freeze();
+                ft
+            })
+            .clone()
+    } else {
+        TYPE.get_or_init(|| {
+            let mut ft = FieldType::new();
+            ft.set_dimensions(1, 8).unwrap();
+            ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
+                .unwrap();
+            ft.freeze();
+            ft
+        })
+        .clone()
+    }
+}
+
+/// Combined field that indexes an `i32` for range queries and stores it as
+/// sorted-numeric doc values.
+///
+/// Equivalent to `org.apache.lucene.document.IntField`.
+#[derive(Debug)]
+pub struct IntField {
+    name: String,
+    field_type: FieldType,
+    value: i32,
+    stored_value: Option<StoredValue>,
+}
+
+impl IntField {
+    /// Creates a new IntField.
+    pub fn new(name: &str, value: i32, stored: Store) -> Self {
+        let stored_value = if stored == Store::YES {
+            Some(StoredValue)
+        } else {
+            None
+        };
+        Self {
+            name: name.to_string(),
+            field_type: int_combined_field_type(stored == Store::YES),
+            value,
+            stored_value,
+        }
+    }
+
+    /// Sets a new value.
+    pub fn set_value(&mut self, value: i32) {
+        self.value = value;
+    }
+
+    /// Query stub: exact match.
+    pub fn new_exact_query(_field: &str, _value: i32) -> ! {
+        todo!("IntField::new_exact_query requires the search module")
+    }
+
+    /// Query stub: range match.
+    pub fn new_range_query(_field: &str, _lower: i32, _upper: i32) -> ! {
+        todo!("IntField::new_range_query requires the search module")
+    }
+
+    /// Query stub: set match.
+    pub fn new_set_query(_field: &str, _values: &[i32]) -> ! {
+        todo!("IntField::new_set_query requires the search module")
+    }
+}
+
+impl IndexableField for IntField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        let value = self
+            .binary_value()
+            .unwrap_or_else(|| BytesRef::new(Vec::new()));
+        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        let mut bytes = vec![0u8; 4];
+        IntPoint::encode_dimension(self.value, &mut bytes, 0);
+        Some(BytesRef::new(bytes))
+    }
+
+    fn string_value(&self) -> Option<String> {
+        Some(self.value.to_string())
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        Some(NumericValue::Int(self.value))
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        self.stored_value.clone()
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
+    }
+}
+
+/// Combined field that indexes an `i64` for range queries and stores it as
+/// sorted-numeric doc values.
+///
+/// Equivalent to `org.apache.lucene.document.LongField`.
+#[derive(Debug)]
+pub struct LongField {
+    name: String,
+    field_type: FieldType,
+    value: i64,
+    stored_value: Option<StoredValue>,
+}
+
+impl LongField {
+    /// Creates a new LongField.
+    pub fn new(name: &str, value: i64, stored: Store) -> Self {
+        let stored_value = if stored == Store::YES {
+            Some(StoredValue)
+        } else {
+            None
+        };
+        Self {
+            name: name.to_string(),
+            field_type: long_combined_field_type(stored == Store::YES),
+            value,
+            stored_value,
+        }
+    }
+
+    /// Sets a new value.
+    pub fn set_value(&mut self, value: i64) {
+        self.value = value;
+    }
+
+    /// Query stub: exact match.
+    pub fn new_exact_query(_field: &str, _value: i64) -> ! {
+        todo!("LongField::new_exact_query requires the search module")
+    }
+
+    /// Query stub: range match.
+    pub fn new_range_query(_field: &str, _lower: i64, _upper: i64) -> ! {
+        todo!("LongField::new_range_query requires the search module")
+    }
+
+    /// Query stub: set match.
+    pub fn new_set_query(_field: &str, _values: &[i64]) -> ! {
+        todo!("LongField::new_set_query requires the search module")
+    }
+}
+
+impl IndexableField for LongField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        let value = self
+            .binary_value()
+            .unwrap_or_else(|| BytesRef::new(Vec::new()));
+        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        let mut bytes = vec![0u8; 8];
+        LongPoint::encode_dimension(self.value, &mut bytes, 0);
+        Some(BytesRef::new(bytes))
+    }
+
+    fn string_value(&self) -> Option<String> {
+        Some(self.value.to_string())
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        Some(NumericValue::Long(self.value))
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        self.stored_value.clone()
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
+    }
+}
+
+/// Combined field that indexes a `f32` for range queries and stores it as
+/// sorted-numeric doc values.
+///
+/// Equivalent to `org.apache.lucene.document.FloatField`.
+#[derive(Debug)]
+pub struct FloatField {
+    name: String,
+    field_type: FieldType,
+    value: f32,
+    stored_value: Option<StoredValue>,
+}
+
+impl FloatField {
+    /// Creates a new FloatField.
+    pub fn new(name: &str, value: f32, stored: Store) -> Self {
+        let stored_value = if stored == Store::YES {
+            Some(StoredValue)
+        } else {
+            None
+        };
+        Self {
+            name: name.to_string(),
+            field_type: float_combined_field_type(stored == Store::YES),
+            value,
+            stored_value,
+        }
+    }
+
+    /// Sets a new value.
+    pub fn set_value(&mut self, value: f32) {
+        self.value = value;
+    }
+
+    fn value_as_sortable_bits(&self) -> i32 {
+        crate::util::NumericUtils::float_to_sortable_int(self.value)
+    }
+
+    /// Query stub: exact match.
+    pub fn new_exact_query(_field: &str, _value: f32) -> ! {
+        todo!("FloatField::new_exact_query requires the search module")
+    }
+
+    /// Query stub: range match.
+    pub fn new_range_query(_field: &str, _lower: f32, _upper: f32) -> ! {
+        todo!("FloatField::new_range_query requires the search module")
+    }
+
+    /// Query stub: set match.
+    pub fn new_set_query(_field: &str, _values: &[f32]) -> ! {
+        todo!("FloatField::new_set_query requires the search module")
+    }
+}
+
+impl IndexableField for FloatField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        let value = self
+            .binary_value()
+            .unwrap_or_else(|| BytesRef::new(Vec::new()));
+        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        let mut bytes = vec![0u8; 4];
+        FloatPoint::encode_dimension(self.value, &mut bytes, 0);
+        Some(BytesRef::new(bytes))
+    }
+
+    fn string_value(&self) -> Option<String> {
+        Some(self.value.to_string())
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        Some(NumericValue::Long(self.value_as_sortable_bits() as i64))
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        self.stored_value.clone()
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
+    }
+}
+
+/// Combined field that indexes a `f64` for range queries and stores it as
+/// sorted-numeric doc values.
+///
+/// Equivalent to `org.apache.lucene.document.DoubleField`.
+#[derive(Debug)]
+pub struct DoubleField {
+    name: String,
+    field_type: FieldType,
+    value: f64,
+    stored_value: Option<StoredValue>,
+}
+
+impl DoubleField {
+    /// Creates a new DoubleField.
+    pub fn new(name: &str, value: f64, stored: Store) -> Self {
+        let stored_value = if stored == Store::YES {
+            Some(StoredValue)
+        } else {
+            None
+        };
+        Self {
+            name: name.to_string(),
+            field_type: double_combined_field_type(stored == Store::YES),
+            value,
+            stored_value,
+        }
+    }
+
+    /// Sets a new value.
+    pub fn set_value(&mut self, value: f64) {
+        self.value = value;
+    }
+
+    fn value_as_sortable_bits(&self) -> i64 {
+        crate::util::NumericUtils::double_to_sortable_long(self.value)
+    }
+
+    /// Query stub: exact match.
+    pub fn new_exact_query(_field: &str, _value: f64) -> ! {
+        todo!("DoubleField::new_exact_query requires the search module")
+    }
+
+    /// Query stub: range match.
+    pub fn new_range_query(_field: &str, _lower: f64, _upper: f64) -> ! {
+        todo!("DoubleField::new_range_query requires the search module")
+    }
+
+    /// Query stub: set match.
+    pub fn new_set_query(_field: &str, _values: &[f64]) -> ! {
+        todo!("DoubleField::new_set_query requires the search module")
+    }
+}
+
+impl IndexableField for DoubleField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        let value = self
+            .binary_value()
+            .unwrap_or_else(|| BytesRef::new(Vec::new()));
+        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        let mut bytes = vec![0u8; 8];
+        DoublePoint::encode_dimension(self.value, &mut bytes, 0);
+        Some(BytesRef::new(bytes))
+    }
+
+    fn string_value(&self) -> Option<String> {
+        Some(self.value.to_string())
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        Some(NumericValue::Long(self.value_as_sortable_bits()))
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        self.stored_value.clone()
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// DateTools
+// -----------------------------------------------------------------------------
+
+use chrono::{Datelike, TimeZone, Timelike};
+
+/// Date conversion utilities matching Lucene's `DateTools`.
+///
+/// Equivalent to `org.apache.lucene.document.DateTools`.
+pub struct DateTools;
+
+/// Granularity used by [`DateTools`] when rounding or formatting dates.
+///
+/// Equivalent to `DateTools.Resolution`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum Resolution {
+    /// Year granularity (4 characters).
+    YEAR,
+    /// Month granularity (6 characters).
+    MONTH,
+    /// Day granularity (8 characters).
+    DAY,
+    /// Hour granularity (10 characters).
+    HOUR,
+    /// Minute granularity (12 characters).
+    MINUTE,
+    /// Second granularity (14 characters).
+    SECOND,
+    /// Millisecond granularity (17 characters).
+    MILLISECOND,
+}
+
+impl Resolution {
+    /// Returns the length of the formatted string for this resolution.
+    pub fn format_len(&self) -> usize {
+        match self {
+            Resolution::YEAR => 4,
+            Resolution::MONTH => 6,
+            Resolution::DAY => 8,
+            Resolution::HOUR => 10,
+            Resolution::MINUTE => 12,
+            Resolution::SECOND => 14,
+            Resolution::MILLISECOND => 17,
+        }
+    }
+}
+
+impl DateTools {
+    /// Rounds a timestamp to the given resolution in GMT.
+    pub fn round(time: i64, resolution: Resolution) -> i64 {
+        let dt = chrono::Utc
+            .timestamp_millis_opt(time)
+            .single()
+            .expect("valid timestamp");
+        let rounded = match resolution {
+            Resolution::YEAR => dt
+                .with_month(1)
+                .and_then(|d| d.with_day(1))
+                .and_then(|d| d.with_hour(0))
+                .and_then(|d| d.with_minute(0))
+                .and_then(|d| d.with_second(0))
+                .and_then(|d| d.with_nanosecond(0))
+                .unwrap(),
+            Resolution::MONTH => dt
+                .with_day(1)
+                .and_then(|d| d.with_hour(0))
+                .and_then(|d| d.with_minute(0))
+                .and_then(|d| d.with_second(0))
+                .and_then(|d| d.with_nanosecond(0))
+                .unwrap(),
+            Resolution::DAY => dt
+                .with_hour(0)
+                .and_then(|d| d.with_minute(0))
+                .and_then(|d| d.with_second(0))
+                .and_then(|d| d.with_nanosecond(0))
+                .unwrap(),
+            Resolution::HOUR => dt
+                .with_minute(0)
+                .and_then(|d| d.with_second(0))
+                .and_then(|d| d.with_nanosecond(0))
+                .unwrap(),
+            Resolution::MINUTE => dt
+                .with_second(0)
+                .and_then(|d| d.with_nanosecond(0))
+                .unwrap(),
+            Resolution::SECOND => dt.with_nanosecond(0).unwrap(),
+            Resolution::MILLISECOND => dt,
+        };
+        rounded.timestamp_millis()
+    }
+
+    /// Converts a timestamp to a GMT string with the given resolution.
+    pub fn time_to_string(time: i64, resolution: Resolution) -> String {
+        let rounded = Self::round(time, resolution);
+        let dt = chrono::Utc
+            .timestamp_millis_opt(rounded)
+            .single()
+            .expect("valid timestamp");
+        let full = format!(
+            "{}{:03}",
+            dt.format("%Y%m%d%H%M%S"),
+            dt.timestamp_subsec_millis()
+        );
+        full[..resolution.format_len()].to_string()
+    }
+
+    /// Converts a GMT date string back to a timestamp.
+    pub fn string_to_time(date_string: &str) -> Result<i64> {
+        let dt = chrono::NaiveDateTime::parse_from_str(
+            date_string,
+            Self::pattern_for_len(date_string.len()),
+        )
+        .map_err(|e| LuceneError::IllegalArgument(format!("invalid date string: {e}")))?;
+        Ok(chrono::Utc.from_utc_datetime(&dt).timestamp_millis())
+    }
+
+    fn pattern_for_len(len: usize) -> &'static str {
+        match len {
+            4 => "%Y",
+            6 => "%Y%m",
+            8 => "%Y%m%d",
+            10 => "%Y%m%d%H",
+            12 => "%Y%m%d%H%M",
+            14 => "%Y%m%d%H%M%S",
+            17 => "%Y%m%d%H%M%S%3f",
+            _ => "%Y%m%d%H%M%S%3f",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3057,5 +3688,88 @@ mod tests {
         let field = BinaryDocValuesField::new("payload", BytesRef::new(vec![1, 2, 3]));
         assert_eq!(field.field_type().doc_values_type(), DocValuesType::BINARY);
         assert_eq!(field.binary_value().unwrap().slice(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn int_field_has_point_and_doc_values() {
+        let field = IntField::new("count", 42, Store::NO);
+        assert_eq!(field.field_type().point_dimension_count(), 1);
+        assert_eq!(field.field_type().point_num_bytes(), 4);
+        assert_eq!(
+            field.field_type().doc_values_type(),
+            DocValuesType::SORTED_NUMERIC
+        );
+        assert_eq!(field.numeric_value(), Some(NumericValue::Int(42)));
+    }
+
+    #[test]
+    fn long_field_stored_variants_differ() {
+        let not_stored = LongField::new("ts", 123456789i64, Store::NO);
+        let stored = LongField::new("ts", 123456789i64, Store::YES);
+        assert!(!not_stored.field_type().stored());
+        assert!(stored.field_type().stored());
+    }
+
+    #[test]
+    fn float_field_encodes_binary_like_point() {
+        let field = FloatField::new("temp", 3.14f32, Store::NO);
+        let bytes = field.binary_value().unwrap();
+        assert_eq!(bytes.length, 4);
+        let decoded = FloatPoint::decode_dimension(bytes.slice(), 0);
+        assert!((decoded - 3.14f32).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn double_field_encodes_binary_like_point() {
+        let field = DoubleField::new("temp", 3.14f64, Store::NO);
+        let bytes = field.binary_value().unwrap();
+        assert_eq!(bytes.length, 8);
+        let decoded = DoublePoint::decode_dimension(bytes.slice(), 0);
+        assert!((decoded - 3.14f64).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn date_tools_time_to_string_matches_known_java_values() {
+        // 2024-09-21 13:50:11.123 GMT = 1726920611123 ms
+        let time = 1726926611123i64;
+        assert_eq!(
+            DateTools::time_to_string(time, Resolution::MILLISECOND),
+            "20240921135011123"
+        );
+        assert_eq!(
+            DateTools::time_to_string(time, Resolution::SECOND),
+            "20240921135011"
+        );
+        assert_eq!(
+            DateTools::time_to_string(time, Resolution::MINUTE),
+            "202409211350"
+        );
+        assert_eq!(
+            DateTools::time_to_string(time, Resolution::HOUR),
+            "2024092113"
+        );
+        assert_eq!(DateTools::time_to_string(time, Resolution::DAY), "20240921");
+        assert_eq!(DateTools::time_to_string(time, Resolution::MONTH), "202409");
+        assert_eq!(DateTools::time_to_string(time, Resolution::YEAR), "2024");
+    }
+
+    #[test]
+    fn date_tools_round_truncates_components() {
+        let time = 1726926611123i64;
+        let rounded = DateTools::round(time, Resolution::MONTH);
+        assert_eq!(
+            DateTools::time_to_string(rounded, Resolution::MILLISECOND),
+            "20240901000000000"
+        );
+    }
+
+    #[test]
+    fn date_tools_string_to_time_round_trips() {
+        let original = "20240921135011123";
+        let time = DateTools::string_to_time(original).unwrap();
+        assert_eq!(
+            DateTools::time_to_string(time, Resolution::MILLISECOND),
+            original
+        );
     }
 }

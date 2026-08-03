@@ -33,6 +33,8 @@ crc32fast = "1.4"
 fslock = "0.2"
 # Unicode word segmentation (UAX #29) for the standard tokenizer.
 unicode-segmentation = "1.12"
+# Date/time handling for DateTools, matching Java's GregorianCalendar in GMT.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
