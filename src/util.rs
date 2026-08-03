@@ -8,6 +8,13 @@
 
 #![deny(unsafe_code)]
 
+pub mod attribute;
+
+pub use attribute::{
+    unwrap_all, AsUnwrappable, Attribute, AttributeFactory, AttributeImpl, AttributeReflector,
+    AttributeSource, CapturedState, CloseableThreadLocal, DefaultAttributeFactory, Unwrappable,
+};
+
 use std::{
     cmp::Ordering,
     env,
