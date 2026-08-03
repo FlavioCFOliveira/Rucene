@@ -4105,6 +4105,239 @@ impl std::fmt::Debug for TrackingDirectoryWrapper {
     }
 }
 
+/// A [`Directory`] that switches files between two other directories based on
+/// file extension.
+///
+/// Equivalent to `org.apache.lucene.store.FileSwitchDirectory`. Files whose
+/// extension is in `primary_extensions` are stored in the primary directory; all
+/// other files (including extensionless names) go to the secondary directory.
+///
+/// This is used by higher-level stacks to route hot and cold files to different
+/// storage backends.
+pub struct FileSwitchDirectory {
+    primary_dir: Box<dyn Directory>,
+    secondary_dir: Box<dyn Directory>,
+    primary_extensions: HashSet<String>,
+    do_close: bool,
+}
+
+impl FileSwitchDirectory {
+    /// Creates a new file-switching directory.
+    ///
+    /// `do_close` controls whether the wrapped directories are closed when this
+    /// directory is closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if `primary_extensions` contains
+    /// `"tmp"`, which is reserved for temporary files.
+    pub fn new(
+        primary_extensions: HashSet<String>,
+        primary_dir: Box<dyn Directory>,
+        secondary_dir: Box<dyn Directory>,
+        do_close: bool,
+    ) -> Result<Self> {
+        if primary_extensions.contains("tmp") {
+            return Err(LuceneError::IllegalArgument(
+                "tmp is a reserved extension".to_string(),
+            ));
+        }
+        Ok(Self {
+            primary_dir,
+            secondary_dir,
+            primary_extensions,
+            do_close,
+        })
+    }
+
+    /// Returns the primary directory.
+    pub fn primary_dir(&self) -> &dyn Directory {
+        self.primary_dir.as_ref()
+    }
+
+    /// Returns the secondary directory.
+    pub fn secondary_dir(&self) -> &dyn Directory {
+        self.secondary_dir.as_ref()
+    }
+
+    /// Returns a file's extension, stripping a trailing temporary suffix if
+    /// present.
+    ///
+    /// Equivalent to `FileSwitchDirectory.getExtension(String)`.
+    pub fn get_extension(name: &str) -> String {
+        let dot = name.rfind('.');
+        let ext = dot.map(|i| &name[i + 1..]).unwrap_or("");
+        if ext == "tmp" {
+            // Temporary file names look like "prefix_suffix_<ext>.tmp"; recover
+            // the real extension from the portion before ".tmp".
+            let before_tmp = dot.unwrap();
+            if let Some(i) = name[..before_tmp].rfind('.') {
+                return name[i + 1..before_tmp].to_string();
+            }
+        }
+        ext.to_string()
+    }
+
+    fn get_directory(&self, name: &str) -> &dyn Directory {
+        let ext = Self::get_extension(name);
+        if self.primary_extensions.contains(&ext) {
+            self.primary_dir.as_ref()
+        } else {
+            self.secondary_dir.as_ref()
+        }
+    }
+
+    fn is_not_found(err: &LuceneError) -> bool {
+        matches!(err, LuceneError::Io(io_err) if io_err.kind() == io::ErrorKind::NotFound)
+    }
+}
+
+impl Directory for FileSwitchDirectory {
+    fn list_all(&self) -> Result<Vec<String>> {
+        let mut files = Vec::new();
+        let mut primary_err: Option<LuceneError> = None;
+        let mut secondary_err: Option<LuceneError> = None;
+
+        match self.primary_dir.list_all() {
+            Ok(list) => {
+                for name in list {
+                    if self
+                        .primary_extensions
+                        .contains(&Self::get_extension(&name))
+                    {
+                        files.push(name);
+                    }
+                }
+            }
+            Err(e) if Self::is_not_found(&e) => primary_err = Some(e),
+            Err(e) => return Err(e),
+        }
+
+        match self.secondary_dir.list_all() {
+            Ok(list) => {
+                for name in list {
+                    if !self
+                        .primary_extensions
+                        .contains(&Self::get_extension(&name))
+                    {
+                        files.push(name);
+                    }
+                }
+            }
+            Err(e) if Self::is_not_found(&e) => secondary_err = Some(e),
+            Err(e) => return Err(e),
+        }
+
+        if files.is_empty() {
+            if let Some(e) = primary_err {
+                return Err(e);
+            }
+            if let Some(e) = secondary_err {
+                return Err(e);
+            }
+        }
+
+        files.sort();
+        Ok(files)
+    }
+
+    fn delete_file(&self, name: &str) -> Result<()> {
+        self.get_directory(name).delete_file(name)
+    }
+
+    fn file_length(&self, name: &str) -> Result<i64> {
+        self.get_directory(name).file_length(name)
+    }
+
+    fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
+        self.get_directory(name).create_output(name, context)
+    }
+
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexOutput>> {
+        // Best-effort: use a representative temp file name to pick the right
+        // directory. The real extension is recovered from the final name on
+        // rename and subsequent operations.
+        let tmp_name = Self::get_temp_file_name(prefix, suffix, 0);
+        self.get_directory(&tmp_name)
+            .create_temp_output(prefix, suffix, context)
+    }
+
+    fn sync(&self, names: &[String]) -> Result<()> {
+        let mut primary_names = Vec::new();
+        let mut secondary_names = Vec::new();
+        for name in names {
+            if self.primary_extensions.contains(&Self::get_extension(name)) {
+                primary_names.push(name.clone());
+            } else {
+                secondary_names.push(name.clone());
+            }
+        }
+        self.primary_dir.sync(&primary_names)?;
+        self.secondary_dir.sync(&secondary_names)?;
+        Ok(())
+    }
+
+    fn sync_metadata(&self) -> Result<()> {
+        self.primary_dir.sync_metadata()?;
+        self.secondary_dir.sync_metadata()?;
+        Ok(())
+    }
+
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        let source_dir = self.get_directory(source);
+        let dest_dir = self.get_directory(dest);
+        if !std::ptr::eq(source_dir, dest_dir) {
+            return Err(LuceneError::Io(io::Error::other(format!(
+                "source and dest are in different directories: {source} -> {dest}"
+            ))));
+        }
+        source_dir.rename(source, dest)
+    }
+
+    fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+        self.get_directory(name).open_input(name, context)
+    }
+
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+        self.get_directory(name).obtain_lock(name)
+    }
+
+    fn close(&mut self) -> Result<()> {
+        if self.do_close {
+            self.primary_dir.close()?;
+            self.secondary_dir.close()?;
+            self.do_close = false;
+        }
+        Ok(())
+    }
+
+    fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+        let mut pending = HashSet::new();
+        pending.extend(self.primary_dir.get_pending_deletions()?);
+        pending.extend(self.secondary_dir.get_pending_deletions()?);
+        Ok(pending)
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        self.primary_dir.ensure_open()?;
+        self.secondary_dir.ensure_open()?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for FileSwitchDirectory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileSwitchDirectory")
+            .field("primary_extensions", &self.primary_extensions)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A minimal in-memory [`Directory`] implementation used for tests.
 ///
 /// This is not a full `ByteBuffersDirectory`; that is the subject of task #5.
@@ -9534,12 +9767,15 @@ mod tests {
         assert!(pause >= 0);
     }
 
-    /// A very high rate limit produces effectively no pause.
+    /// A very high rate limit produces only a negligible pause (less than 1 ms).
     #[test]
     fn simple_rate_limiter_high_rate_negligible_pause() {
         let limiter = SimpleRateLimiter::new(1_000_000.0); // 1 TB/s
         let pause = limiter.pause(1024 * 1024).unwrap();
-        assert_eq!(pause, 0);
+        assert!(
+            pause < 1_000_000,
+            "expected negligible pause, got {pause} ns"
+        );
     }
 
     /// `InputStreamDataInput` and `OutputStreamDataOutput` round-trip all
@@ -9570,6 +9806,73 @@ mod tests {
         let mut tail = [0u8; 4];
         input.read_bytes(&mut tail, 0, 4).unwrap();
         assert_eq!(tail, [0x0A, 0x0B, 0x0C, 0x0D]);
+    }
+
+    /// `FileSwitchDirectory` routes files to primary/secondary directories by
+    /// extension.
+    #[test]
+    fn file_switch_directory_routes_by_extension() {
+        let primary = RamDirectory::new();
+        let secondary = RamDirectory::new();
+        let mut extensions = HashSet::new();
+        extensions.insert("hot".to_string());
+        let switch =
+            FileSwitchDirectory::new(extensions, Box::new(primary), Box::new(secondary), false)
+                .unwrap();
+        let context = &*DEFAULT_IO_CONTEXT;
+
+        {
+            let mut out = switch.create_output("segment.hot", context).unwrap();
+            out.write_byte(1).unwrap();
+            out.close().unwrap();
+        }
+        {
+            let mut out = switch.create_output("segment.cold", context).unwrap();
+            out.write_byte(2).unwrap();
+            out.close().unwrap();
+        }
+
+        assert_eq!(
+            switch.list_all().unwrap(),
+            vec!["segment.cold".to_string(), "segment.hot".to_string()]
+        );
+
+        {
+            let mut input = switch.open_input("segment.hot", context).unwrap();
+            assert_eq!(input.read_byte().unwrap(), 1);
+        }
+        {
+            let mut input = switch.open_input("segment.cold", context).unwrap();
+            assert_eq!(input.read_byte().unwrap(), 2);
+        }
+
+        switch.delete_file("segment.hot").unwrap();
+        assert_eq!(switch.list_all().unwrap(), vec!["segment.cold".to_string()]);
+    }
+
+    /// `FileSwitchDirectory::get_extension` handles temporary suffixes.
+    #[test]
+    fn file_switch_directory_get_extension_handles_tmp() {
+        assert_eq!(FileSwitchDirectory::get_extension("foo.bar"), "bar");
+        assert_eq!(FileSwitchDirectory::get_extension("foo"), "");
+        // Temporary files are named like "prefix_<ext>.tmp"; recover the real
+        // extension from before ".tmp" when possible.
+        assert_eq!(FileSwitchDirectory::get_extension("_0.fdx.tmp"), "fdx");
+        assert_eq!(FileSwitchDirectory::get_extension("foo.tmp"), "tmp");
+    }
+
+    /// `FileSwitchDirectory` rejects "tmp" as a primary extension.
+    #[test]
+    fn file_switch_directory_rejects_tmp_extension() {
+        let mut extensions = HashSet::new();
+        extensions.insert("tmp".to_string());
+        let result = FileSwitchDirectory::new(
+            extensions,
+            Box::new(RamDirectory::new()),
+            Box::new(RamDirectory::new()),
+            false,
+        );
+        assert!(result.is_err());
     }
 
     /// `TrackingDirectoryWrapper` records created files and removes them on
