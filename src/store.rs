@@ -6425,6 +6425,375 @@ impl IndexInput for FileIndexInput {
     }
 }
 
+/// Filesystem-backed [`Directory`] that opens files with independent read
+/// descriptors and uses positioned reads.
+///
+/// Equivalent to `org.apache.lucene.store.NIOFSDirectory`. Writing reuses
+/// [`FSIndexOutput`]; only the read path is specialized.
+pub struct NIOFSDirectory {
+    inner: FSDirectory,
+}
+
+impl NIOFSDirectory {
+    /// Opens a new `NIOFSDirectory` at `path` using the default lock factory.
+    ///
+    /// Equivalent to `NIOFSDirectory(Path)` in Lucene 10.5.0.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let inner = FSDirectory::open(path)?;
+        Ok(Self { inner })
+    }
+
+    /// Opens a new `NIOFSDirectory` at `path` with the supplied lock factory.
+    ///
+    /// Equivalent to `NIOFSDirectory(Path, LockFactory)` in Lucene 10.5.0.
+    pub fn with_lock_factory(
+        path: impl AsRef<Path>,
+        lock_factory: Option<Box<dyn LockFactory>>,
+    ) -> Result<Self> {
+        let inner = FSDirectory::with_lock_factory(path, lock_factory)?;
+        Ok(Self { inner })
+    }
+
+    /// Returns the canonical filesystem path backing this directory.
+    pub fn directory_path(&self) -> &Path {
+        self.inner.directory_path()
+    }
+}
+
+impl Directory for NIOFSDirectory {
+    fn list_all(&self) -> Result<Vec<String>> {
+        self.inner.list_all()
+    }
+
+    fn delete_file(&self, name: &str) -> Result<()> {
+        self.inner.delete_file(name)
+    }
+
+    fn file_length(&self, name: &str) -> Result<i64> {
+        self.inner.file_length(name)
+    }
+
+    fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
+        self.inner.create_output(name, context)
+    }
+
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexOutput>> {
+        self.inner.create_temp_output(prefix, suffix, context)
+    }
+
+    fn sync(&self, names: &[String]) -> Result<()> {
+        self.inner.sync(names)
+    }
+
+    fn sync_metadata(&self) -> Result<()> {
+        self.inner.sync_metadata()
+    }
+
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        self.inner.rename(source, dest)
+    }
+
+    fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+        self.inner.ensure_open()?;
+        self.inner.ensure_can_read(name)?;
+        let path = self.inner.directory_path().join(name);
+        let file = fs::OpenOptions::new().read(true).open(&path)?;
+        let metadata = file.metadata()?;
+        let len = metadata.len() as i64;
+        let raw = RawNioFsIndexInput::new(file, path, len)?;
+        let buffered = BufferedIndexInput::new(Box::new(raw), Self::buffer_size(context))?;
+        Ok(Box::new(NIOFSIndexInput::new(buffered)))
+    }
+
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+        self.inner.obtain_lock(name)
+    }
+
+    fn close(&mut self) -> Result<()> {
+        self.inner.close()
+    }
+
+    fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+        self.inner.get_pending_deletions()
+    }
+
+    fn fs_directory_path(&self) -> Option<&Path> {
+        self.inner.fs_directory_path()
+    }
+
+    fn directory_type_name(&self) -> &'static str {
+        "NIOFSDirectory"
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        self.inner.ensure_open()
+    }
+}
+
+impl std::fmt::Display for NIOFSDirectory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "NIOFSDirectory@{}",
+            self.inner.directory_path().display()
+        )
+    }
+}
+
+impl std::fmt::Debug for NIOFSDirectory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NIOFSDirectory")
+            .field("directory", &self.inner.directory_path())
+            .finish()
+    }
+}
+
+impl NIOFSDirectory {
+    fn buffer_size(context: &dyn IOContext) -> usize {
+        let hint = context.merge_info().map(|m| m.total_max_doc as usize * 8);
+        match hint {
+            Some(size) if size > 0 => size.clamp(MIN_BUFFER_SIZE, 128 * 1024 * 1024),
+            _ => BUFFER_SIZE,
+        }
+    }
+}
+
+/// Raw unbuffered file input used by [`NIOFSDirectory`].
+///
+/// Each instance owns an independent file descriptor; clones open the file
+/// again so that concurrent reads do not interfere with each other's position.
+struct RawNioFsIndexInput {
+    file: fs::File,
+    path: PathBuf,
+    pos: u64,
+    len: i64,
+    resource_description: String,
+}
+
+impl RawNioFsIndexInput {
+    fn new(file: fs::File, path: PathBuf, len: i64) -> Result<Self> {
+        let resource_description = format!("NIOFSIndexInput(path=\"{}\")", path.display());
+        Ok(Self {
+            file,
+            path,
+            pos: 0,
+            len,
+            resource_description,
+        })
+    }
+}
+
+impl DataInput for RawNioFsIndexInput {
+    fn read_byte(&mut self) -> Result<u8> {
+        self.file.seek(SeekFrom::Start(self.pos))?;
+        let mut buf = [0u8; 1];
+        self.file.read_exact(&mut buf).map_err(LuceneError::from)?;
+        self.pos += 1;
+        Ok(buf[0])
+    }
+
+    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
+        if end > b.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "destination buffer too small: offset={offset}, len={len}, buf.len={}",
+                b.len()
+            )));
+        }
+        self.file.seek(SeekFrom::Start(self.pos))?;
+        self.file
+            .read_exact(&mut b[offset..end])
+            .map_err(LuceneError::from)?;
+        self.pos += len as u64;
+        Ok(())
+    }
+
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        if num_bytes < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "numBytes must be non-negative (got: {num_bytes})"
+            )));
+        }
+        let target = self.pos as i64 + num_bytes;
+        if target > self.len {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "skip past EOF",
+            )));
+        }
+        self.pos = target as u64;
+        Ok(())
+    }
+}
+
+impl IndexInput for RawNioFsIndexInput {
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.pos as i64
+    }
+
+    fn length(&self) -> i64 {
+        self.len
+    }
+
+    fn seek(&mut self, pos: i64) -> Result<()> {
+        if pos < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "position must be non-negative (got: {pos})"
+            )));
+        }
+        if pos > self.len {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "seek past EOF",
+            )));
+        }
+        self.pos = pos as u64;
+        Ok(())
+    }
+
+    fn slice(
+        &self,
+        slice_description: &str,
+        offset: i64,
+        length: i64,
+    ) -> Result<Box<dyn IndexInput>> {
+        if offset < 0 || length < 0 || length > self.len - offset {
+            return Err(LuceneError::IllegalArgument(format!(
+                "slice({slice_description}) out of bounds"
+            )));
+        }
+        let clone = self.clone_input()?;
+        Ok(Box::new(SlicedIndexInput::new(
+            slice_description,
+            clone,
+            offset,
+            length,
+        )?))
+    }
+
+    fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+        let file = fs::OpenOptions::new().read(true).open(&self.path)?;
+        let mut clone = RawNioFsIndexInput::new(file, self.path.clone(), self.len)?;
+        clone.pos = self.pos;
+        Ok(Box::new(clone))
+    }
+
+    fn resource_description(&self) -> &str {
+        &self.resource_description
+    }
+}
+
+/// Buffered [`IndexInput`] returned by [`NIOFSDirectory::open_input`].
+///
+/// Equivalent to the inner `NIOFSIndexInput` class of
+/// `org.apache.lucene.store.NIOFSDirectory`. It wraps a
+/// [`BufferedIndexInput`] over a raw file descriptor.
+pub struct NIOFSIndexInput {
+    inner: BufferedIndexInput,
+}
+
+impl NIOFSIndexInput {
+    /// Creates a new buffered NIO file input around `inner`.
+    pub fn new(inner: BufferedIndexInput) -> Self {
+        Self { inner }
+    }
+
+    /// Returns the wrapped buffered input.
+    pub fn get_delegate(&self) -> &BufferedIndexInput {
+        &self.inner
+    }
+}
+
+impl DataInput for NIOFSIndexInput {
+    fn read_byte(&mut self) -> Result<u8> {
+        self.inner.read_byte()
+    }
+
+    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        self.inner.read_bytes(b, offset, len)
+    }
+
+    fn read_bytes_buffered(
+        &mut self,
+        b: &mut [u8],
+        offset: usize,
+        len: usize,
+        use_buffer: bool,
+    ) -> Result<()> {
+        self.inner.read_bytes_buffered(b, offset, len, use_buffer)
+    }
+
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        self.inner.skip_bytes(num_bytes)
+    }
+}
+
+impl IndexInput for NIOFSIndexInput {
+    fn close(&mut self) -> Result<()> {
+        self.inner.close()
+    }
+
+    fn file_pointer(&self) -> i64 {
+        self.inner.file_pointer()
+    }
+
+    fn length(&self) -> i64 {
+        self.inner.length()
+    }
+
+    fn seek(&mut self, pos: i64) -> Result<()> {
+        self.inner.seek(pos)
+    }
+
+    fn slice(
+        &self,
+        slice_description: &str,
+        offset: i64,
+        length: i64,
+    ) -> Result<Box<dyn IndexInput>> {
+        self.inner.slice(slice_description, offset, length)
+    }
+
+    fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+        self.inner.clone_input()
+    }
+
+    fn resource_description(&self) -> &str {
+        self.inner.resource_description()
+    }
+
+    fn prefetch(&self, offset: i64, length: i64) -> Result<()> {
+        self.inner.prefetch(offset, length)
+    }
+
+    fn is_loaded(&self) -> Option<bool> {
+        self.inner.is_loaded()
+    }
+
+    fn random_access_slice(&self, offset: i64, length: i64) -> Result<Box<dyn RandomAccessInput>> {
+        self.inner.random_access_slice(offset, length)
+    }
+}
+
+impl std::fmt::Debug for NIOFSIndexInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NIOFSIndexInput")
+            .field("inner", &self.inner.resource_description())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8714,5 +9083,54 @@ mod tests {
                 .contains("RamDirectory"),
             "delegate type name should identify RamDirectory"
         );
+    }
+
+    /// `NIOFSDirectory` reads and writes files through the filesystem.
+    #[test]
+    fn niofs_directory_round_trip() {
+        let temp = TempDir::new().unwrap();
+        let dir = NIOFSDirectory::open(&temp).unwrap();
+        let context = &*DEFAULT_IO_CONTEXT;
+
+        {
+            let mut out = dir.create_output("data.bin", context).unwrap();
+            out.write_int(0x12345678).unwrap();
+            out.write_string("NIOFS round-trip").unwrap();
+            out.close().unwrap();
+        }
+
+        {
+            let mut input = dir.open_input("data.bin", context).unwrap();
+            assert_eq!(input.length(), 21);
+            assert_eq!(input.read_int().unwrap(), 0x12345678_i32);
+            assert_eq!(input.read_string().unwrap(), "NIOFS round-trip");
+        }
+
+        assert_eq!(dir.list_all().unwrap(), vec!["data.bin".to_string()]);
+        assert_eq!(dir.directory_type_name(), "NIOFSDirectory");
+    }
+
+    /// `NIOFSDirectory::open_input` supports slicing and cloning.
+    #[test]
+    fn niofs_index_input_slices_and_clones() {
+        let temp = TempDir::new().unwrap();
+        let dir = NIOFSDirectory::open(&temp).unwrap();
+        let context = &*DEFAULT_IO_CONTEXT;
+
+        {
+            let mut out = dir.create_output("data.bin", context).unwrap();
+            out.write_long(0x1111_2222_3333_4444).unwrap();
+            out.write_long(0x5555_6666_7777_8888).unwrap();
+            out.close().unwrap();
+        }
+
+        let input = dir.open_input("data.bin", context).unwrap();
+        let mut slice = input.slice("slice", 8, 8).unwrap();
+        assert_eq!(slice.length(), 8);
+        assert_eq!(slice.read_long().unwrap(), 0x5555_6666_7777_8888_i64);
+
+        let mut clone = input.clone_input().unwrap();
+        assert_eq!(clone.length(), 16);
+        assert_eq!(clone.read_long().unwrap(), 0x1111_2222_3333_4444_i64);
     }
 }
