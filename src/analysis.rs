@@ -545,7 +545,7 @@ impl TokenStream for SharedTokenStream {
 ///
 /// Equivalent to the private `Analyzer.StringTokenStream` in Lucene.
 #[derive(Debug)]
-struct StringTokenStream {
+pub struct StringTokenStream {
     source: AttributeSource,
     value: String,
     length: usize,
@@ -554,9 +554,11 @@ struct StringTokenStream {
 
 impl StringTokenStream {
     /// Creates a stream that will emit `value` as a single token.
-    fn new(factory: Arc<dyn AttributeFactory>, value: String, length: usize) -> Result<Self> {
+    pub fn new(value: String) -> Result<Self> {
+        let factory = default_token_attribute_factory();
         let mut source = AttributeSource::new_with_factory(factory);
         source.add_attribute::<PackedTokenAttributeImpl>()?;
+        let length = value.chars().count();
         Ok(Self {
             source,
             value,
@@ -594,6 +596,68 @@ impl TokenStream for StringTokenStream {
             .get_attribute_mut::<PackedTokenAttributeImpl>()
             .unwrap();
         term.set_offset(self.length as i32, self.length as i32);
+        Ok(())
+    }
+
+    fn attribute_source(&self) -> &AttributeSource {
+        &self.source
+    }
+
+    fn attribute_source_mut(&mut self) -> &mut AttributeSource {
+        &mut self.source
+    }
+}
+
+// -----------------------------------------------------------------------------
+// BinaryTokenStream
+// -----------------------------------------------------------------------------
+
+/// Emits a single token containing a fixed binary value.
+///
+/// Equivalent to the private `Field.BinaryTokenStream` in Lucene.
+#[derive(Debug)]
+pub struct BinaryTokenStream {
+    source: AttributeSource,
+    value: BytesRef,
+    used: bool,
+}
+
+impl BinaryTokenStream {
+    /// Creates a stream that will emit `value` as a single token.
+    pub fn new(value: BytesRef) -> Result<Self> {
+        let factory = default_token_attribute_factory();
+        let mut source = AttributeSource::new_with_factory(factory);
+        source.add_attribute::<BytesTermAttributeImpl>()?;
+        Ok(Self {
+            source,
+            value,
+            used: true,
+        })
+    }
+}
+
+impl TokenStream for BinaryTokenStream {
+    fn increment_token(&mut self) -> Result<bool> {
+        if self.used {
+            return Ok(false);
+        }
+        self.source.clear_attributes();
+        let mut att = self
+            .source
+            .get_attribute_mut::<BytesTermAttributeImpl>()
+            .unwrap();
+        att.set_bytes_ref(BytesRef::deep_copy_of(&self.value));
+        self.used = true;
+        Ok(true)
+    }
+
+    fn reset(&mut self) -> Result<()> {
+        self.used = false;
+        Ok(())
+    }
+
+    fn end(&mut self) -> Result<()> {
+        self.source.end_attributes();
         Ok(())
     }
 
@@ -1000,12 +1064,7 @@ pub trait Analyzer: Debug {
             builder
         };
 
-        let factory = self.attribute_factory(field_name);
-        let string_stream = Box::new(StringTokenStream::new(
-            factory,
-            filtered_text.clone(),
-            text.chars().count(),
-        )?);
+        let string_stream = Box::new(StringTokenStream::new(filtered_text.clone())?);
         let mut token_stream = self.normalize_token_stream(field_name, string_stream);
 
         token_stream.reset()?;

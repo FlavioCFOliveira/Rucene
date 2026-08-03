@@ -34,6 +34,16 @@ pub enum IndexOptions {
     DOCS_AND_CUSTOM_FREQS,
 }
 
+impl IndexOptions {
+    /// Returns `true` if this option records at least as much information as
+    /// `other`.
+    pub fn subsumes(&self, other: IndexOptions) -> bool {
+        let ord = *self as i32;
+        let other_ord = other as i32;
+        ord >= other_ord
+    }
+}
+
 /// DocValues types.
 ///
 /// Equivalent to `org.apache.lucene.index.DocValuesType`.
@@ -204,7 +214,7 @@ pub trait IndexableField {
     }
 
     /// Non-null if this field has a Reader value.
-    fn reader_value(&self) -> Option<Box<dyn std::io::Read>>;
+    fn reader_value(&mut self) -> Option<&mut dyn std::io::Read>;
 
     /// Non-null if this field has a numeric value.
     fn numeric_value(&self) -> Option<NumericValue>;

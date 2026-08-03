@@ -112,9 +112,7 @@ impl TokenStream for CachingTokenFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::{
-        new_standard_tokenizer, PackedTokenAttributeImpl, ReusableStringReader, Tokenizer,
-    };
+    use crate::analysis::{new_standard_tokenizer, PackedTokenAttributeImpl, ReusableStringReader};
 
     fn collect_terms(stream: &mut dyn TokenStream) -> Vec<String> {
         let mut terms = Vec::new();
