@@ -39,9 +39,9 @@ pub use filtering_token_filter::{
 pub use lower_case_filter::{new_lower_case_filter, LowerCaseFilter, LowerCaseFilterLogic};
 pub use reusable_string_reader::ReusableStringReader;
 pub use standard::{
-    new_standard_tokenizer, StandardTokenizer, StandardTokenizerLogic, ALPHANUM,
-    DEFAULT_MAX_TOKEN_LENGTH, EMOJI, HANGUL, HIRAGANA, IDEOGRAPHIC, KATAKANA,
-    MAX_TOKEN_LENGTH_LIMIT, NUM, SOUTHEAST_ASIAN, TOKEN_TYPES,
+    new_standard_tokenizer, StandardAnalyzer, StandardTokenizer, StandardTokenizerLogic,
+    StopwordAnalyzerBase, ALPHANUM, DEFAULT_MAX_TOKEN_LENGTH, EMOJI, HANGUL, HIRAGANA, IDEOGRAPHIC,
+    KATAKANA, MAX_TOKEN_LENGTH_LIMIT, NUM, SOUTHEAST_ASIAN, TOKEN_TYPES,
 };
 pub use stop_filter::{make_stop_set, new_stop_filter, StopFilter, StopFilterLogic};
 pub use tokenattributes::{

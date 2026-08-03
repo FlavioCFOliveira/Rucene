@@ -12,9 +12,14 @@ use std::fmt::Debug;
 
 use unicode_segmentation::UnicodeSegmentation;
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::analysis::{
-    CharReader, CharTermAttribute, OffsetAttribute, PositionIncrementAttribute, Tokenizer,
-    TokenizerLogic, TypeAttribute,
+    new_lower_case_filter, new_stop_filter, Analyzer, AnalyzerState, CharArraySet, CharReader,
+    CharTermAttribute, GlobalReuseStrategy, OffsetAttribute, PositionIncrementAttribute,
+    SharedTokenStream, TokenStream, TokenStreamComponents, Tokenizer, TokenizerLogic,
+    TypeAttribute,
 };
 use crate::error::{LuceneError, Result};
 use crate::util::attribute::{AttributeImpl, AttributeSource};
@@ -476,6 +481,130 @@ pub fn new_standard_tokenizer() -> StandardTokenizer {
     StandardTokenizer::new(StandardTokenizerLogic::new())
 }
 
+// -----------------------------------------------------------------------------
+// StopwordAnalyzerBase
+// -----------------------------------------------------------------------------
+
+/// Base class for analyzers that use a stop-word set.
+///
+/// Equivalent to `org.apache.lucene.analysis.core.StopwordAnalyzerBase`.
+#[derive(Debug)]
+pub struct StopwordAnalyzerBase {
+    stopwords: CharArraySet,
+}
+
+impl StopwordAnalyzerBase {
+    /// Creates a base analyzer using the supplied stop-word set.
+    pub fn new(stopwords: CharArraySet) -> Self {
+        Self { stopwords }
+    }
+
+    /// Returns the stop-word set used by this analyzer.
+    pub fn stopwords(&self) -> &CharArraySet {
+        &self.stopwords
+    }
+}
+
+// -----------------------------------------------------------------------------
+// StandardAnalyzer
+// -----------------------------------------------------------------------------
+
+/// Analyzer that tokenizes with the standard tokenizer, lowercases, and removes
+/// stop words.
+///
+/// Equivalent to `org.apache.lucene.analysis.standard.StandardAnalyzer`.
+#[derive(Debug)]
+pub struct StandardAnalyzer {
+    state: AnalyzerState,
+    stopwords: CharArraySet,
+    max_token_length: usize,
+}
+
+impl StandardAnalyzer {
+    /// Creates a `StandardAnalyzer` with the default, empty stop-word set.
+    pub fn new() -> Self {
+        Self::with_stopwords(CharArraySet::new(0, false))
+    }
+
+    /// Creates a `StandardAnalyzer` with the supplied stop-word set.
+    pub fn with_stopwords(stopwords: CharArraySet) -> Self {
+        Self {
+            state: AnalyzerState::new(Box::new(GlobalReuseStrategy)),
+            stopwords,
+            max_token_length: DEFAULT_MAX_TOKEN_LENGTH,
+        }
+    }
+
+    /// Sets the maximum token length.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LuceneError::IllegalArgument` if `length` is outside
+    /// `[1, MAX_TOKEN_LENGTH_LIMIT]`.
+    pub fn set_max_token_length(&mut self, length: usize) -> Result<()> {
+        if length < 1 {
+            return Err(LuceneError::IllegalArgument(
+                "maxTokenLength must be greater than zero".to_string(),
+            ));
+        }
+        if length > MAX_TOKEN_LENGTH_LIMIT {
+            return Err(LuceneError::IllegalArgument(format!(
+                "maxTokenLength may not exceed {MAX_TOKEN_LENGTH_LIMIT}"
+            )));
+        }
+        self.max_token_length = length;
+        Ok(())
+    }
+
+    /// Returns the current maximum token length.
+    pub fn max_token_length(&self) -> usize {
+        self.max_token_length
+    }
+
+    /// Returns the stop-word set used by this analyzer.
+    pub fn stopwords(&self) -> &CharArraySet {
+        &self.stopwords
+    }
+}
+
+impl Default for StandardAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Analyzer for StandardAnalyzer {
+    fn analyzer_state(&self) -> &AnalyzerState {
+        &self.state
+    }
+
+    fn create_components(&self, _field_name: &str) -> TokenStreamComponents {
+        let tokenizer = Rc::new(RefCell::new(new_standard_tokenizer()));
+        tokenizer
+            .borrow_mut()
+            .logic_mut()
+            .set_max_token_length(self.max_token_length)
+            .unwrap();
+        let tokenizer_for_source = Rc::clone(&tokenizer);
+        let source = Box::new(move |reader: Box<dyn CharReader>| {
+            tokenizer_for_source.borrow_mut().set_reader(reader)
+        });
+        let shared = SharedTokenStream::new(tokenizer);
+        let lower = new_lower_case_filter(Box::new(shared));
+        let stop = new_stop_filter(Box::new(lower), self.stopwords.clone());
+        let sink: Rc<RefCell<dyn TokenStream>> = Rc::new(RefCell::new(stop));
+        TokenStreamComponents::new(source, sink)
+    }
+
+    fn normalize_token_stream(
+        &self,
+        _field_name: &str,
+        input: Box<dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        Box::new(new_lower_case_filter(input))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,5 +744,71 @@ mod tests {
             .unwrap();
         assert_eq!(att.start_offset(), 11);
         assert_eq!(att.end_offset(), 11);
+    }
+
+    fn analyze(analyzer: &dyn Analyzer, text: &str) -> Vec<String> {
+        let stream = analyzer.token_stream_from_str("field", text).unwrap();
+        let mut stream = stream.borrow_mut();
+        stream.reset().unwrap();
+        let mut terms = Vec::new();
+        while stream.increment_token().unwrap() {
+            let term = stream
+                .attribute_source()
+                .get_attribute::<crate::analysis::PackedTokenAttributeImpl>()
+                .unwrap()
+                .term();
+            terms.push(term);
+        }
+        stream.end().unwrap();
+        terms
+    }
+
+    #[test]
+    fn standard_analyzer_lowercases_text() {
+        let analyzer = StandardAnalyzer::new();
+        let terms = analyze(&analyzer, "Hello, World!");
+        assert_eq!(terms, vec!["hello".to_string(), "world".to_string()]);
+    }
+
+    #[test]
+    fn standard_analyzer_default_has_no_stopwords() {
+        let analyzer = StandardAnalyzer::new();
+        let terms = analyze(&analyzer, "The quick brown fox");
+        assert_eq!(
+            terms,
+            vec![
+                "the".to_string(),
+                "quick".to_string(),
+                "brown".to_string(),
+                "fox".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn standard_analyzer_removes_configured_stopwords() {
+        let stopwords = CharArraySet::from_iter(["the", "a", "is"], false);
+        let analyzer = StandardAnalyzer::with_stopwords(stopwords);
+        let terms = analyze(&analyzer, "The quick brown fox is running");
+        assert_eq!(
+            terms,
+            vec![
+                "quick".to_string(),
+                "brown".to_string(),
+                "fox".to_string(),
+                "running".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn standard_analyzer_respects_max_token_length() {
+        let mut analyzer = StandardAnalyzer::new();
+        analyzer.set_max_token_length(3).unwrap();
+        let terms = analyze(&analyzer, "abcdefg");
+        assert_eq!(
+            terms,
+            vec!["abc".to_string(), "def".to_string(), "g".to_string()]
+        );
     }
 }
