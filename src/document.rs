@@ -901,6 +901,30 @@ impl<'a> IntoIterator for &'a Document {
 }
 
 // -----------------------------------------------------------------------------
+// Numeric helpers for point encoding
+// -----------------------------------------------------------------------------
+
+fn float_to_sortable_bytes(value: f32, dest: &mut [u8], offset: usize) {
+    let encoded = crate::util::NumericUtils::float_to_sortable_int(value);
+    crate::util::NumericUtils::int_to_sortable_bytes(encoded, dest, offset);
+}
+
+fn double_to_sortable_bytes(value: f64, dest: &mut [u8], offset: usize) {
+    let encoded = crate::util::NumericUtils::double_to_sortable_long(value);
+    crate::util::NumericUtils::long_to_sortable_bytes(encoded, dest, offset);
+}
+
+fn sortable_bytes_to_float(encoded: &[u8], offset: usize) -> f32 {
+    let bits = crate::util::NumericUtils::sortable_bytes_to_int(encoded, offset);
+    crate::util::NumericUtils::sortable_int_to_float(bits)
+}
+
+fn sortable_bytes_to_double(encoded: &[u8], offset: usize) -> f64 {
+    let bits = crate::util::NumericUtils::sortable_bytes_to_long(encoded, offset);
+    crate::util::NumericUtils::sortable_long_to_double(bits)
+}
+
+// -----------------------------------------------------------------------------
 // Store
 // -----------------------------------------------------------------------------
 
@@ -1429,6 +1453,1314 @@ impl IndexableField for KeywordField {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Point fields
+// -----------------------------------------------------------------------------
+
+fn int_point_field_type(num_dims: usize) -> FieldType {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<usize, FieldType>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().unwrap();
+    guard
+        .entry(num_dims)
+        .or_insert_with(|| {
+            let mut ft = FieldType::new();
+            ft.set_dimensions(num_dims as i32, 4).unwrap();
+            ft.freeze();
+            ft
+        })
+        .clone()
+}
+
+fn long_point_field_type(num_dims: usize) -> FieldType {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<usize, FieldType>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().unwrap();
+    guard
+        .entry(num_dims)
+        .or_insert_with(|| {
+            let mut ft = FieldType::new();
+            ft.set_dimensions(num_dims as i32, 8).unwrap();
+            ft.freeze();
+            ft
+        })
+        .clone()
+}
+
+fn float_point_field_type(num_dims: usize) -> FieldType {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<usize, FieldType>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().unwrap();
+    guard
+        .entry(num_dims)
+        .or_insert_with(|| {
+            let mut ft = FieldType::new();
+            ft.set_dimensions(num_dims as i32, 4).unwrap();
+            ft.freeze();
+            ft
+        })
+        .clone()
+}
+
+fn double_point_field_type(num_dims: usize) -> FieldType {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<usize, FieldType>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().unwrap();
+    guard
+        .entry(num_dims)
+        .or_insert_with(|| {
+            let mut ft = FieldType::new();
+            ft.set_dimensions(num_dims as i32, 8).unwrap();
+            ft.freeze();
+            ft
+        })
+        .clone()
+}
+
+/// Packs one or more `i32` point dimensions into a [`BytesRef`].
+pub fn pack_int_point(point: &[i32]) -> Result<BytesRef> {
+    if point.is_empty() {
+        return Err(LuceneError::IllegalArgument(
+            "point must not be 0 dimensions".to_string(),
+        ));
+    }
+    let mut packed = vec![0u8; point.len() * 4];
+    for (dim, &value) in point.iter().enumerate() {
+        crate::util::NumericUtils::int_to_sortable_bytes(value, &mut packed, dim * 4);
+    }
+    Ok(BytesRef::new(packed))
+}
+
+/// Packs one or more `i64` point dimensions into a [`BytesRef`].
+pub fn pack_long_point(point: &[i64]) -> Result<BytesRef> {
+    if point.is_empty() {
+        return Err(LuceneError::IllegalArgument(
+            "point must not be 0 dimensions".to_string(),
+        ));
+    }
+    let mut packed = vec![0u8; point.len() * 8];
+    for (dim, &value) in point.iter().enumerate() {
+        crate::util::NumericUtils::long_to_sortable_bytes(value, &mut packed, dim * 8);
+    }
+    Ok(BytesRef::new(packed))
+}
+
+/// Packs one or more `f32` point dimensions into a [`BytesRef`].
+pub fn pack_float_point(point: &[f32]) -> Result<BytesRef> {
+    if point.is_empty() {
+        return Err(LuceneError::IllegalArgument(
+            "point must not be 0 dimensions".to_string(),
+        ));
+    }
+    let mut packed = vec![0u8; point.len() * 4];
+    for (dim, &value) in point.iter().enumerate() {
+        float_to_sortable_bytes(value, &mut packed, dim * 4);
+    }
+    Ok(BytesRef::new(packed))
+}
+
+/// Packs one or more `f64` point dimensions into a [`BytesRef`].
+pub fn pack_double_point(point: &[f64]) -> Result<BytesRef> {
+    if point.is_empty() {
+        return Err(LuceneError::IllegalArgument(
+            "point must not be 0 dimensions".to_string(),
+        ));
+    }
+    let mut packed = vec![0u8; point.len() * 8];
+    for (dim, &value) in point.iter().enumerate() {
+        double_to_sortable_bytes(value, &mut packed, dim * 8);
+    }
+    Ok(BytesRef::new(packed))
+}
+
+/// Packs one or more binary dimensions into a [`BytesRef`].
+pub fn pack_binary_point(point: &[BytesRef]) -> Result<BytesRef> {
+    if point.is_empty() {
+        return Err(LuceneError::IllegalArgument(
+            "point must not be 0 dimensions".to_string(),
+        ));
+    }
+    let bytes_per_dim = point[0].length;
+    let mut packed = Vec::with_capacity(bytes_per_dim * point.len());
+    for dim in point {
+        if dim.length != bytes_per_dim {
+            return Err(LuceneError::IllegalArgument(
+                "all dimensions must have same bytes length".to_string(),
+            ));
+        }
+        packed.extend_from_slice(dim.slice());
+    }
+    Ok(BytesRef::new(packed))
+}
+
+/// An indexed `i32` point field.
+///
+/// Equivalent to `org.apache.lucene.document.IntPoint`.
+#[derive(Debug)]
+pub struct IntPoint {
+    name: String,
+    field_type: FieldType,
+    fields_data: FieldData,
+}
+
+impl IntPoint {
+    /// Creates a new IntPoint.
+    pub fn new(name: &str, point: &[i32]) -> Result<Self> {
+        let field_type = int_point_field_type(point.len()).clone();
+        let packed = pack_int_point(point)?;
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            fields_data: FieldData::Bytes(packed),
+        })
+    }
+
+    /// Sets new values, keeping the same dimension count.
+    pub fn set_values(&mut self, point: &[i32]) -> Result<()> {
+        if point.len() as i32 != self.field_type.point_dimension_count() {
+            return Err(LuceneError::IllegalArgument(
+                "dimension count mismatch".to_string(),
+            ));
+        }
+        self.fields_data = FieldData::Bytes(pack_int_point(point)?);
+        Ok(())
+    }
+
+    /// Encodes a single integer dimension into `dest` at `offset`.
+    pub fn encode_dimension(value: i32, dest: &mut [u8], offset: usize) {
+        crate::util::NumericUtils::int_to_sortable_bytes(value, dest, offset);
+    }
+
+    /// Decodes a single integer dimension from `value` at `offset`.
+    pub fn decode_dimension(value: &[u8], offset: usize) -> i32 {
+        crate::util::NumericUtils::sortable_bytes_to_int(value, offset)
+    }
+
+    /// Query stub: exact match.
+    pub fn new_exact_query(_field: &str, _value: i32) -> ! {
+        todo!("IntPoint::new_exact_query requires the search module")
+    }
+
+    /// Query stub: range match.
+    pub fn new_range_query(_field: &str, _lower: &[i32], _upper: &[i32]) -> ! {
+        todo!("IntPoint::new_range_query requires the search module")
+    }
+}
+
+impl IndexableField for IntPoint {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        let value = self
+            .binary_value()
+            .unwrap_or_else(|| BytesRef::new(Vec::new()));
+        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        match &self.fields_data {
+            FieldData::Bytes(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        if self.field_type.point_dimension_count() == 1 {
+            if let Some(bytes) = self.binary_value() {
+                let value = Self::decode_dimension(bytes.slice(), 0);
+                return Some(NumericValue::Int(value));
+            }
+        }
+        None
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        None
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
+    }
+}
+
+/// An indexed `i64` point field.
+///
+/// Equivalent to `org.apache.lucene.document.LongPoint`.
+#[derive(Debug)]
+pub struct LongPoint {
+    name: String,
+    field_type: FieldType,
+    fields_data: FieldData,
+}
+
+impl LongPoint {
+    /// Creates a new LongPoint.
+    pub fn new(name: &str, point: &[i64]) -> Result<Self> {
+        let field_type = long_point_field_type(point.len()).clone();
+        let packed = pack_long_point(point)?;
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            fields_data: FieldData::Bytes(packed),
+        })
+    }
+
+    /// Sets new values, keeping the same dimension count.
+    pub fn set_values(&mut self, point: &[i64]) -> Result<()> {
+        if point.len() as i32 != self.field_type.point_dimension_count() {
+            return Err(LuceneError::IllegalArgument(
+                "dimension count mismatch".to_string(),
+            ));
+        }
+        self.fields_data = FieldData::Bytes(pack_long_point(point)?);
+        Ok(())
+    }
+
+    /// Encodes a single long dimension into `dest` at `offset`.
+    pub fn encode_dimension(value: i64, dest: &mut [u8], offset: usize) {
+        crate::util::NumericUtils::long_to_sortable_bytes(value, dest, offset);
+    }
+
+    /// Decodes a single long dimension from `value` at `offset`.
+    pub fn decode_dimension(value: &[u8], offset: usize) -> i64 {
+        crate::util::NumericUtils::sortable_bytes_to_long(value, offset)
+    }
+
+    /// Query stub: exact match.
+    pub fn new_exact_query(_field: &str, _value: i64) -> ! {
+        todo!("LongPoint::new_exact_query requires the search module")
+    }
+
+    /// Query stub: range match.
+    pub fn new_range_query(_field: &str, _lower: &[i64], _upper: &[i64]) -> ! {
+        todo!("LongPoint::new_range_query requires the search module")
+    }
+}
+
+impl IndexableField for LongPoint {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        let value = self
+            .binary_value()
+            .unwrap_or_else(|| BytesRef::new(Vec::new()));
+        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        match &self.fields_data {
+            FieldData::Bytes(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        if self.field_type.point_dimension_count() == 1 {
+            if let Some(bytes) = self.binary_value() {
+                let value = Self::decode_dimension(bytes.slice(), 0);
+                return Some(NumericValue::Long(value));
+            }
+        }
+        None
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        None
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
+    }
+}
+
+/// An indexed `f32` point field.
+///
+/// Equivalent to `org.apache.lucene.document.FloatPoint`.
+#[derive(Debug)]
+pub struct FloatPoint {
+    name: String,
+    field_type: FieldType,
+    fields_data: FieldData,
+}
+
+impl FloatPoint {
+    /// Creates a new FloatPoint.
+    pub fn new(name: &str, point: &[f32]) -> Result<Self> {
+        let field_type = float_point_field_type(point.len()).clone();
+        let packed = pack_float_point(point)?;
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            fields_data: FieldData::Bytes(packed),
+        })
+    }
+
+    /// Sets new values, keeping the same dimension count.
+    pub fn set_values(&mut self, point: &[f32]) -> Result<()> {
+        if point.len() as i32 != self.field_type.point_dimension_count() {
+            return Err(LuceneError::IllegalArgument(
+                "dimension count mismatch".to_string(),
+            ));
+        }
+        self.fields_data = FieldData::Bytes(pack_float_point(point)?);
+        Ok(())
+    }
+
+    /// Encodes a single float dimension into `dest` at `offset`.
+    pub fn encode_dimension(value: f32, dest: &mut [u8], offset: usize) {
+        float_to_sortable_bytes(value, dest, offset);
+    }
+
+    /// Decodes a single float dimension from `value` at `offset`.
+    pub fn decode_dimension(value: &[u8], offset: usize) -> f32 {
+        sortable_bytes_to_float(value, offset)
+    }
+
+    /// Query stub: exact match.
+    pub fn new_exact_query(_field: &str, _value: f32) -> ! {
+        todo!("FloatPoint::new_exact_query requires the search module")
+    }
+
+    /// Query stub: range match.
+    pub fn new_range_query(_field: &str, _lower: &[f32], _upper: &[f32]) -> ! {
+        todo!("FloatPoint::new_range_query requires the search module")
+    }
+}
+
+impl IndexableField for FloatPoint {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        let value = self
+            .binary_value()
+            .unwrap_or_else(|| BytesRef::new(Vec::new()));
+        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        match &self.fields_data {
+            FieldData::Bytes(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        if self.field_type.point_dimension_count() == 1 {
+            if let Some(bytes) = self.binary_value() {
+                let value = Self::decode_dimension(bytes.slice(), 0);
+                return Some(NumericValue::Float(value));
+            }
+        }
+        None
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        None
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
+    }
+}
+
+/// An indexed `f64` point field.
+///
+/// Equivalent to `org.apache.lucene.document.DoublePoint`.
+#[derive(Debug)]
+pub struct DoublePoint {
+    name: String,
+    field_type: FieldType,
+    fields_data: FieldData,
+}
+
+impl DoublePoint {
+    /// Creates a new DoublePoint.
+    pub fn new(name: &str, point: &[f64]) -> Result<Self> {
+        let field_type = double_point_field_type(point.len()).clone();
+        let packed = pack_double_point(point)?;
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            fields_data: FieldData::Bytes(packed),
+        })
+    }
+
+    /// Sets new values, keeping the same dimension count.
+    pub fn set_values(&mut self, point: &[f64]) -> Result<()> {
+        if point.len() as i32 != self.field_type.point_dimension_count() {
+            return Err(LuceneError::IllegalArgument(
+                "dimension count mismatch".to_string(),
+            ));
+        }
+        self.fields_data = FieldData::Bytes(pack_double_point(point)?);
+        Ok(())
+    }
+
+    /// Encodes a single double dimension into `dest` at `offset`.
+    pub fn encode_dimension(value: f64, dest: &mut [u8], offset: usize) {
+        double_to_sortable_bytes(value, dest, offset);
+    }
+
+    /// Decodes a single double dimension from `value` at `offset`.
+    pub fn decode_dimension(value: &[u8], offset: usize) -> f64 {
+        sortable_bytes_to_double(value, offset)
+    }
+
+    /// Query stub: exact match.
+    pub fn new_exact_query(_field: &str, _value: f64) -> ! {
+        todo!("DoublePoint::new_exact_query requires the search module")
+    }
+
+    /// Query stub: range match.
+    pub fn new_range_query(_field: &str, _lower: &[f64], _upper: &[f64]) -> ! {
+        todo!("DoublePoint::new_range_query requires the search module")
+    }
+}
+
+impl IndexableField for DoublePoint {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        let value = self
+            .binary_value()
+            .unwrap_or_else(|| BytesRef::new(Vec::new()));
+        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        match &self.fields_data {
+            FieldData::Bytes(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        if self.field_type.point_dimension_count() == 1 {
+            if let Some(bytes) = self.binary_value() {
+                let value = Self::decode_dimension(bytes.slice(), 0);
+                return Some(NumericValue::Double(value));
+            }
+        }
+        None
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        None
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
+    }
+}
+
+/// An indexed binary point field.
+///
+/// Equivalent to `org.apache.lucene.document.BinaryPoint`.
+#[derive(Debug)]
+pub struct BinaryPoint {
+    name: String,
+    field_type: FieldType,
+    fields_data: FieldData,
+}
+
+impl BinaryPoint {
+    fn field_type_for_point(point: &[BytesRef]) -> Result<FieldType> {
+        if point.is_empty() {
+            return Err(LuceneError::IllegalArgument(
+                "point must not be 0 dimensions".to_string(),
+            ));
+        }
+        let bytes_per_dim = point[0].length;
+        for dim in point {
+            if dim.length != bytes_per_dim {
+                return Err(LuceneError::IllegalArgument(
+                    "all dimensions must have same bytes length".to_string(),
+                ));
+            }
+        }
+        let mut ft = FieldType::new();
+        ft.set_dimensions(point.len() as i32, bytes_per_dim as i32)
+            .unwrap();
+        ft.freeze();
+        Ok(ft)
+    }
+
+    /// Creates a new BinaryPoint.
+    pub fn new(name: &str, point: &[BytesRef]) -> Result<Self> {
+        let field_type = Self::field_type_for_point(point)?;
+        let packed = pack_binary_point(point)?;
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            fields_data: FieldData::Bytes(packed),
+        })
+    }
+
+    /// Expert: creates a BinaryPoint with an already-packed value and custom
+    /// field type.
+    pub fn new_with_packed(
+        name: &str,
+        packed_point: BytesRef,
+        field_type: FieldType,
+    ) -> Result<Self> {
+        let expected = field_type.point_dimension_count() * field_type.point_num_bytes();
+        if packed_point.length as i32 != expected {
+            return Err(LuceneError::IllegalArgument(
+                "packedPoint length does not match field type dimensions".to_string(),
+            ));
+        }
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            fields_data: FieldData::Bytes(packed_point),
+        })
+    }
+
+    /// Query stub: exact match.
+    pub fn new_exact_query(_field: &str, _value: &[u8]) -> ! {
+        todo!("BinaryPoint::new_exact_query requires the search module")
+    }
+
+    /// Query stub: range match.
+    pub fn new_range_query(_field: &str, _lower: &[BytesRef], _upper: &[BytesRef]) -> ! {
+        todo!("BinaryPoint::new_range_query requires the search module")
+    }
+}
+
+impl IndexableField for BinaryPoint {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        let value = self
+            .binary_value()
+            .unwrap_or_else(|| BytesRef::new(Vec::new()));
+        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        match &self.fields_data {
+            FieldData::Bytes(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        None
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Doc-values fields
+// -----------------------------------------------------------------------------
+
+fn numeric_doc_values_field_type() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new();
+        ft.set_doc_values_type(DocValuesType::NUMERIC).unwrap();
+        ft.freeze();
+        ft
+    })
+}
+
+fn numeric_doc_values_indexed_field_type() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new_from(numeric_doc_values_field_type());
+        ft.set_doc_values_skip_index_type(DocValuesSkipIndexType::RANGE)
+            .unwrap();
+        ft.freeze();
+        ft
+    })
+}
+
+fn sorted_numeric_doc_values_field_type() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new();
+        ft.set_doc_values_type(DocValuesType::SORTED_NUMERIC)
+            .unwrap();
+        ft.freeze();
+        ft
+    })
+}
+
+fn sorted_numeric_doc_values_indexed_field_type() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new_from(sorted_numeric_doc_values_field_type());
+        ft.set_doc_values_skip_index_type(DocValuesSkipIndexType::RANGE)
+            .unwrap();
+        ft.freeze();
+        ft
+    })
+}
+
+fn sorted_doc_values_field_type() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new();
+        ft.set_doc_values_type(DocValuesType::SORTED).unwrap();
+        ft.freeze();
+        ft
+    })
+}
+
+fn sorted_doc_values_indexed_field_type() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new_from(sorted_doc_values_field_type());
+        ft.set_doc_values_skip_index_type(DocValuesSkipIndexType::RANGE)
+            .unwrap();
+        ft.freeze();
+        ft
+    })
+}
+
+fn sorted_set_doc_values_field_type() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new();
+        ft.set_doc_values_type(DocValuesType::SORTED_SET).unwrap();
+        ft.freeze();
+        ft
+    })
+}
+
+fn sorted_set_doc_values_indexed_field_type() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new_from(sorted_set_doc_values_field_type());
+        ft.set_doc_values_skip_index_type(DocValuesSkipIndexType::RANGE)
+            .unwrap();
+        ft.freeze();
+        ft
+    })
+}
+
+fn binary_doc_values_field_type() -> &'static FieldType {
+    static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
+    TYPE.get_or_init(|| {
+        let mut ft = FieldType::new();
+        ft.set_doc_values_type(DocValuesType::BINARY).unwrap();
+        ft.freeze();
+        ft
+    })
+}
+
+/// A per-document numeric doc-values field.
+///
+/// Equivalent to `org.apache.lucene.document.NumericDocValuesField`.
+#[derive(Debug)]
+pub struct NumericDocValuesField {
+    name: String,
+    field_type: FieldType,
+    value: i64,
+}
+
+impl NumericDocValuesField {
+    /// Creates a new NumericDocValuesField.
+    pub fn new(name: &str, value: i64) -> Self {
+        Self {
+            name: name.to_string(),
+            field_type: numeric_doc_values_field_type().clone(),
+            value,
+        }
+    }
+
+    /// Creates a NumericDocValuesField with a skip index.
+    pub fn indexed_field(name: &str, value: i64) -> Self {
+        Self {
+            name: name.to_string(),
+            field_type: numeric_doc_values_indexed_field_type().clone(),
+            value,
+        }
+    }
+
+    /// Sets a new value.
+    pub fn set_value(&mut self, value: i64) {
+        self.value = value;
+    }
+
+    /// Query stub: slow exact query.
+    pub fn new_slow_exact_query(_field: &str, _value: i64) -> ! {
+        todo!("NumericDocValuesField::new_slow_exact_query requires the search module")
+    }
+
+    /// Query stub: slow range query.
+    pub fn new_slow_range_query(_field: &str, _lower: i64, _upper: i64) -> ! {
+        todo!("NumericDocValuesField::new_slow_range_query requires the search module")
+    }
+}
+
+impl IndexableField for NumericDocValuesField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        Box::new(crate::analysis::StringTokenStream::new("".to_string()).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        None
+    }
+
+    fn string_value(&self) -> Option<String> {
+        Some(self.value.to_string())
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        Some(NumericValue::Long(self.value))
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        None
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
+    }
+}
+
+/// A per-document float doc-values field.
+///
+/// Equivalent to `org.apache.lucene.document.FloatDocValuesField`.
+#[derive(Debug)]
+pub struct FloatDocValuesField {
+    inner: NumericDocValuesField,
+}
+
+impl FloatDocValuesField {
+    /// Creates a new FloatDocValuesField.
+    pub fn new(name: &str, value: f32) -> Self {
+        let bits = value.to_bits() as i64;
+        Self {
+            inner: NumericDocValuesField::new(name, bits),
+        }
+    }
+
+    /// Sets a new value.
+    pub fn set_value(&mut self, value: f32) {
+        self.inner.set_value(value.to_bits() as i64);
+    }
+}
+
+impl IndexableField for FloatDocValuesField {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        self.inner.field_type()
+    }
+
+    fn token_stream(
+        &self,
+        analyzer: &dyn Analyzer,
+        reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        self.inner.token_stream(analyzer, reuse)
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        self.inner.binary_value()
+    }
+
+    fn string_value(&self) -> Option<String> {
+        self.inner.string_value()
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        self.inner.numeric_value()
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        None
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
+    }
+}
+
+/// A per-document double doc-values field.
+///
+/// Equivalent to `org.apache.lucene.document.DoubleDocValuesField`.
+#[derive(Debug)]
+pub struct DoubleDocValuesField {
+    inner: NumericDocValuesField,
+}
+
+impl DoubleDocValuesField {
+    /// Creates a new DoubleDocValuesField.
+    pub fn new(name: &str, value: f64) -> Self {
+        let bits = value.to_bits() as i64;
+        Self {
+            inner: NumericDocValuesField::new(name, bits),
+        }
+    }
+
+    /// Sets a new value.
+    pub fn set_value(&mut self, value: f64) {
+        self.inner.set_value(value.to_bits() as i64);
+    }
+}
+
+impl IndexableField for DoubleDocValuesField {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        self.inner.field_type()
+    }
+
+    fn token_stream(
+        &self,
+        analyzer: &dyn Analyzer,
+        reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        self.inner.token_stream(analyzer, reuse)
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        self.inner.binary_value()
+    }
+
+    fn string_value(&self) -> Option<String> {
+        self.inner.string_value()
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        self.inner.numeric_value()
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        None
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
+    }
+}
+
+/// A per-document sorted-bytes doc-values field.
+///
+/// Equivalent to `org.apache.lucene.document.SortedDocValuesField`.
+#[derive(Debug)]
+pub struct SortedDocValuesField {
+    name: String,
+    field_type: FieldType,
+    value: BytesRef,
+}
+
+impl SortedDocValuesField {
+    /// Creates a new SortedDocValuesField.
+    pub fn new(name: &str, value: BytesRef) -> Self {
+        Self {
+            name: name.to_string(),
+            field_type: sorted_doc_values_field_type().clone(),
+            value,
+        }
+    }
+
+    /// Creates a SortedDocValuesField with a skip index.
+    pub fn indexed_field(name: &str, value: BytesRef) -> Self {
+        Self {
+            name: name.to_string(),
+            field_type: sorted_doc_values_indexed_field_type().clone(),
+            value,
+        }
+    }
+
+    /// Query stub: slow exact query.
+    pub fn new_slow_exact_query(_field: &str, _value: &BytesRef) -> ! {
+        todo!("SortedDocValuesField::new_slow_exact_query requires the search module")
+    }
+}
+
+impl IndexableField for SortedDocValuesField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        Box::new(crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        Some(self.value.clone())
+    }
+
+    fn string_value(&self) -> Option<String> {
+        String::from_utf8(self.value.slice().to_vec()).ok()
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        None
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
+    }
+}
+
+/// A per-document sorted-set doc-values field.
+///
+/// Equivalent to `org.apache.lucene.document.SortedSetDocValuesField`.
+#[derive(Debug)]
+pub struct SortedSetDocValuesField {
+    name: String,
+    field_type: FieldType,
+    value: BytesRef,
+}
+
+impl SortedSetDocValuesField {
+    /// Creates a new SortedSetDocValuesField.
+    pub fn new(name: &str, value: BytesRef) -> Self {
+        Self {
+            name: name.to_string(),
+            field_type: sorted_set_doc_values_field_type().clone(),
+            value,
+        }
+    }
+
+    /// Creates a SortedSetDocValuesField with a skip index.
+    pub fn indexed_field(name: &str, value: BytesRef) -> Self {
+        Self {
+            name: name.to_string(),
+            field_type: sorted_set_doc_values_indexed_field_type().clone(),
+            value,
+        }
+    }
+
+    /// Query stub: slow exact query.
+    pub fn new_slow_exact_query(_field: &str, _value: &BytesRef) -> ! {
+        todo!("SortedSetDocValuesField::new_slow_exact_query requires the search module")
+    }
+}
+
+impl IndexableField for SortedSetDocValuesField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        Box::new(crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        Some(self.value.clone())
+    }
+
+    fn string_value(&self) -> Option<String> {
+        String::from_utf8(self.value.slice().to_vec()).ok()
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        None
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
+    }
+}
+
+/// A per-document sorted-numeric doc-values field.
+///
+/// Equivalent to `org.apache.lucene.document.SortedNumericDocValuesField`.
+#[derive(Debug)]
+pub struct SortedNumericDocValuesField {
+    name: String,
+    field_type: FieldType,
+    value: i64,
+}
+
+impl SortedNumericDocValuesField {
+    /// Creates a new SortedNumericDocValuesField.
+    pub fn new(name: &str, value: i64) -> Self {
+        Self {
+            name: name.to_string(),
+            field_type: sorted_numeric_doc_values_field_type().clone(),
+            value,
+        }
+    }
+
+    /// Creates a SortedNumericDocValuesField with a skip index.
+    pub fn indexed_field(name: &str, value: i64) -> Self {
+        Self {
+            name: name.to_string(),
+            field_type: sorted_numeric_doc_values_indexed_field_type().clone(),
+            value,
+        }
+    }
+
+    /// Query stub: slow exact query.
+    pub fn new_slow_exact_query(_field: &str, _value: i64) -> ! {
+        todo!("SortedNumericDocValuesField::new_slow_exact_query requires the search module")
+    }
+}
+
+impl IndexableField for SortedNumericDocValuesField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        Box::new(crate::analysis::StringTokenStream::new("".to_string()).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        None
+    }
+
+    fn string_value(&self) -> Option<String> {
+        Some(self.value.to_string())
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        Some(NumericValue::Long(self.value))
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        None
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
+    }
+}
+
+/// A per-document binary doc-values field.
+///
+/// Equivalent to `org.apache.lucene.document.BinaryDocValuesField`.
+#[derive(Debug)]
+pub struct BinaryDocValuesField {
+    name: String,
+    field_type: FieldType,
+    value: BytesRef,
+}
+
+impl BinaryDocValuesField {
+    /// Creates a new BinaryDocValuesField.
+    pub fn new(name: &str, value: BytesRef) -> Self {
+        Self {
+            name: name.to_string(),
+            field_type: binary_doc_values_field_type().clone(),
+            value,
+        }
+    }
+}
+
+impl IndexableField for BinaryDocValuesField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        Box::new(crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        Some(self.value.clone())
+    }
+
+    fn string_value(&self) -> Option<String> {
+        String::from_utf8(self.value.slice().to_vec()).ok()
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Option<StoredValue> {
+        None
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1622,5 +2954,108 @@ mod tests {
         );
         assert!(!field.field_type().tokenized());
         assert_eq!(field.string_value(), Some("urgent".to_string()));
+    }
+
+    #[test]
+    fn int_point_encodes_sortable_bytes() {
+        let field = IntPoint::new("count", &[42]).unwrap();
+        assert_eq!(field.field_type().point_dimension_count(), 1);
+        assert_eq!(field.field_type().point_num_bytes(), 4);
+        let bytes = field.binary_value().unwrap();
+        assert_eq!(bytes.length, 4);
+        assert_eq!(IntPoint::decode_dimension(bytes.slice(), 0), 42);
+        assert_eq!(field.numeric_value(), Some(NumericValue::Int(42)));
+    }
+
+    #[test]
+    fn long_point_multi_dimension() {
+        let field = LongPoint::new("loc", &[1i64, 2i64]).unwrap();
+        assert_eq!(field.field_type().point_dimension_count(), 2);
+        let bytes = field.binary_value().unwrap();
+        assert_eq!(bytes.length, 16);
+    }
+
+    #[test]
+    fn float_point_round_trip() {
+        let field = FloatPoint::new("temp", &[3.14f32]).unwrap();
+        let bytes = field.binary_value().unwrap();
+        let decoded = FloatPoint::decode_dimension(bytes.slice(), 0);
+        assert!((decoded - 3.14f32).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn double_point_round_trip() {
+        let field = DoublePoint::new("temp", &[3.14f64]).unwrap();
+        let bytes = field.binary_value().unwrap();
+        let decoded = DoublePoint::decode_dimension(bytes.slice(), 0);
+        assert!((decoded - 3.14f64).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn binary_point_packs_dimensions() {
+        let dims = vec![BytesRef::new(vec![1, 2]), BytesRef::new(vec![3, 4])];
+        let field = BinaryPoint::new("shape", &dims).unwrap();
+        assert_eq!(field.field_type().point_dimension_count(), 2);
+        assert_eq!(field.field_type().point_num_bytes(), 2);
+        let bytes = field.binary_value().unwrap();
+        assert_eq!(bytes.slice(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn numeric_doc_values_field_reports_type() {
+        let field = NumericDocValuesField::new("count", 42);
+        assert_eq!(field.field_type().doc_values_type(), DocValuesType::NUMERIC);
+        assert_eq!(field.numeric_value(), Some(NumericValue::Long(42)));
+    }
+
+    #[test]
+    fn float_doc_values_field_encodes_raw_bits() {
+        let field = FloatDocValuesField::new("score", 1.5f32);
+        assert_eq!(field.field_type().doc_values_type(), DocValuesType::NUMERIC);
+        assert_eq!(
+            field.numeric_value(),
+            Some(NumericValue::Long(1.5f32.to_bits() as i64))
+        );
+    }
+
+    #[test]
+    fn double_doc_values_field_encodes_raw_bits() {
+        let field = DoubleDocValuesField::new("score", 1.5f64);
+        assert_eq!(
+            field.numeric_value(),
+            Some(NumericValue::Long(1.5f64.to_bits() as i64))
+        );
+    }
+
+    #[test]
+    fn sorted_doc_values_field_reports_type() {
+        let field = SortedDocValuesField::new("tag", BytesRef::new(vec![97, 98]));
+        assert_eq!(field.field_type().doc_values_type(), DocValuesType::SORTED);
+        assert_eq!(field.string_value(), Some("ab".to_string()));
+    }
+
+    #[test]
+    fn sorted_set_doc_values_field_reports_type() {
+        let field = SortedSetDocValuesField::new("tag", BytesRef::new(vec![97]));
+        assert_eq!(
+            field.field_type().doc_values_type(),
+            DocValuesType::SORTED_SET
+        );
+    }
+
+    #[test]
+    fn sorted_numeric_doc_values_field_reports_type() {
+        let field = SortedNumericDocValuesField::new("count", 7);
+        assert_eq!(
+            field.field_type().doc_values_type(),
+            DocValuesType::SORTED_NUMERIC
+        );
+    }
+
+    #[test]
+    fn binary_doc_values_field_reports_type() {
+        let field = BinaryDocValuesField::new("payload", BytesRef::new(vec![1, 2, 3]));
+        assert_eq!(field.field_type().doc_values_type(), DocValuesType::BINARY);
+        assert_eq!(field.binary_value().unwrap().slice(), &[1, 2, 3]);
     }
 }
