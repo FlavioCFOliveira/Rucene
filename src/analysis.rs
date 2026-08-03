@@ -7,6 +7,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod caching_token_filter;
 pub mod char_array_map;
 pub mod char_array_set;
 pub mod character_utils;
@@ -26,6 +27,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+pub use caching_token_filter::{new_caching_token_filter, CachingTokenFilter};
 pub use char_array_map::CharArrayMap;
 pub use char_array_set::CharArraySet;
 pub use character_utils::{
