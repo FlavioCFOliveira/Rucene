@@ -3608,18 +3608,18 @@ mod tests {
 
     #[test]
     fn float_point_round_trip() {
-        let field = FloatPoint::new("temp", &[3.14f32]).unwrap();
+        let field = FloatPoint::new("temp", &[2.5f32]).unwrap();
         let bytes = field.binary_value().unwrap();
         let decoded = FloatPoint::decode_dimension(bytes.slice(), 0);
-        assert!((decoded - 3.14f32).abs() < f32::EPSILON);
+        assert!((decoded - 2.5f32).abs() < f32::EPSILON);
     }
 
     #[test]
     fn double_point_round_trip() {
-        let field = DoublePoint::new("temp", &[3.14f64]).unwrap();
+        let field = DoublePoint::new("temp", &[2.5f64]).unwrap();
         let bytes = field.binary_value().unwrap();
         let decoded = DoublePoint::decode_dimension(bytes.slice(), 0);
-        assert!((decoded - 3.14f64).abs() < f64::EPSILON);
+        assert!((decoded - 2.5f64).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -3712,20 +3712,20 @@ mod tests {
 
     #[test]
     fn float_field_encodes_binary_like_point() {
-        let field = FloatField::new("temp", 3.14f32, Store::NO);
+        let field = FloatField::new("temp", 2.5f32, Store::NO);
         let bytes = field.binary_value().unwrap();
         assert_eq!(bytes.length, 4);
         let decoded = FloatPoint::decode_dimension(bytes.slice(), 0);
-        assert!((decoded - 3.14f32).abs() < f32::EPSILON);
+        assert!((decoded - 2.5f32).abs() < f32::EPSILON);
     }
 
     #[test]
     fn double_field_encodes_binary_like_point() {
-        let field = DoubleField::new("temp", 3.14f64, Store::NO);
+        let field = DoubleField::new("temp", 2.5f64, Store::NO);
         let bytes = field.binary_value().unwrap();
         assert_eq!(bytes.length, 8);
         let decoded = DoublePoint::decode_dimension(bytes.slice(), 0);
-        assert!((decoded - 3.14f64).abs() < f64::EPSILON);
+        assert!((decoded - 2.5f64).abs() < f64::EPSILON);
     }
 
     #[test]
