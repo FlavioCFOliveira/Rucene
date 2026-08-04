@@ -7,8 +7,12 @@
 
 pub mod codec_util;
 pub mod compound;
+pub mod doc_values;
 pub mod field_infos;
+pub mod knn_vectors;
 pub mod live_docs;
+pub mod norms;
+pub mod points;
 pub mod postings;
 pub mod segment_info;
 pub mod state;
@@ -27,8 +31,30 @@ pub use codec_util::{
 pub use compound::{
     CompoundDirectory, CompoundFormat, EmptyCompoundDirectory, EmptyCompoundFormat,
 };
+pub use doc_values::{
+    BinaryDocValues, DocValuesConsumer, DocValuesFormat, DocValuesProducer, DocValuesSkipper,
+    EmptyBinaryDocValues, EmptyDocValuesConsumer, EmptyDocValuesFormat, EmptyDocValuesProducer,
+    EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
+    EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues, SortedDocValues,
+    SortedNumericDocValues, SortedSetDocValues,
+};
 pub use field_infos::{EmptyFieldInfosFormat, FieldInfosFormat};
+pub use knn_vectors::{
+    BufferingKnnVectorsWriter, ByteVectorValues, EmptyBufferingKnnVectorsWriter,
+    EmptyByteVectorValues, EmptyFloatVectorValues, EmptyKnnCollector, EmptyKnnFieldVectorsWriter,
+    EmptyKnnVectorsFormat, EmptyKnnVectorsReader, EmptyKnnVectorsWriter, FloatVectorValues,
+    KnnCollector, KnnFieldVectorsWriter, KnnSearchStrategy, KnnVectorsFormat, KnnVectorsReader,
+    KnnVectorsWriter, SorterDocMap, TopDocs,
+};
 pub use live_docs::{EmptyLiveDocsFormat, LiveDocsFormat};
+pub use norms::{
+    EmptyNormsConsumer, EmptyNormsDocValues, EmptyNormsFormat, EmptyNormsProducer, NormsConsumer,
+    NormsFormat, NormsProducer,
+};
+pub use points::{
+    EmptyPointValues, EmptyPointsFormat, EmptyPointsReader, EmptyPointsWriter, PointValues,
+    PointsFormat, PointsReader, PointsWriter,
+};
 pub use postings::{
     available_postings_formats, postings_for_name, FieldsConsumer, FieldsProducer, MergeState,
     PostingsFormat, PostingsFormatRegistry, PostingsReaderBase, PostingsWriterBase,
@@ -51,49 +77,6 @@ use std::fmt;
 use std::sync::{Arc, LazyLock, RwLock};
 
 use crate::error::{LuceneError, Result};
-
-// ---------------------------------------------------------------------------
-// Placeholder sub-format SPI traits.
-//
-// These traits mirror format classes in Java Lucene's `org.apache.lucene.codecs`
-// package whose full read/write API has not yet been ported. They are
-// intentionally minimal: every format is a named SPI component, so the only
-// required method is `name`. Tasks that port the corresponding concrete
-// format will replace these placeholders with the full traits defined in
-// sub-modules.
-// ---------------------------------------------------------------------------
-
-/// Encodes and decodes doc values (columnar per-document values).
-///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.DocValuesFormat`.
-pub trait DocValuesFormat: Send + Sync + fmt::Debug {
-    /// Returns this format's SPI name.
-    fn name(&self) -> &str;
-}
-
-/// Encodes and decodes document normalization values.
-///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.NormsFormat`.
-pub trait NormsFormat: Send + Sync + fmt::Debug {
-    /// Returns this format's SPI name.
-    fn name(&self) -> &str;
-}
-
-/// Encodes and decodes point values.
-///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.PointsFormat`.
-pub trait PointsFormat: Send + Sync + fmt::Debug {
-    /// Returns this format's SPI name.
-    fn name(&self) -> &str;
-}
-
-/// Encodes and decodes numeric vector fields used for KNN search.
-///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.KnnVectorsFormat`.
-pub trait KnnVectorsFormat: Send + Sync + fmt::Debug {
-    /// Returns this format's SPI name.
-    fn name(&self) -> &str;
-}
 
 // ---------------------------------------------------------------------------
 // Codec trait
@@ -561,6 +544,20 @@ mod tests {
         fn name(&self) -> &str {
             self.0
         }
+
+        fn fields_consumer(
+            &self,
+            _state: &SegmentWriteState,
+        ) -> crate::error::Result<Box<dyn DocValuesConsumer>> {
+            Ok(Box::new(EmptyDocValuesConsumer))
+        }
+
+        fn fields_producer(
+            &self,
+            _state: &SegmentReadState,
+        ) -> crate::error::Result<Box<dyn DocValuesProducer>> {
+            Ok(Box::new(EmptyDocValuesProducer))
+        }
     }
 
     impl StoredFieldsFormat for DummyFormat {
@@ -669,6 +666,20 @@ mod tests {
         fn name(&self) -> &str {
             self.0
         }
+
+        fn norms_consumer(
+            &self,
+            _state: &SegmentWriteState,
+        ) -> crate::error::Result<Box<dyn NormsConsumer>> {
+            Ok(Box::new(EmptyNormsConsumer))
+        }
+
+        fn norms_producer(
+            &self,
+            _state: &SegmentReadState,
+        ) -> crate::error::Result<Box<dyn NormsProducer>> {
+            Ok(Box::new(EmptyNormsProducer))
+        }
     }
 
     impl LiveDocsFormat for DummyFormat {
@@ -732,11 +743,43 @@ mod tests {
         fn name(&self) -> &str {
             self.0
         }
+
+        fn fields_writer(
+            &self,
+            _state: &SegmentWriteState,
+        ) -> crate::error::Result<Box<dyn PointsWriter>> {
+            Ok(Box::new(EmptyPointsWriter))
+        }
+
+        fn fields_reader(
+            &self,
+            _state: &SegmentReadState,
+        ) -> crate::error::Result<Box<dyn PointsReader>> {
+            Ok(Box::new(EmptyPointsReader))
+        }
     }
 
     impl KnnVectorsFormat for DummyFormat {
         fn name(&self) -> &str {
             self.0
+        }
+
+        fn fields_writer(
+            &self,
+            _state: &SegmentWriteState,
+        ) -> crate::error::Result<Box<dyn KnnVectorsWriter>> {
+            Ok(Box::new(EmptyKnnVectorsWriter))
+        }
+
+        fn fields_reader(
+            &self,
+            _state: &SegmentReadState,
+        ) -> crate::error::Result<Box<dyn KnnVectorsReader>> {
+            Ok(Box::new(EmptyKnnVectorsReader))
+        }
+
+        fn get_max_dimensions(&self, _field_name: &str) -> i32 {
+            1024
         }
     }
 
