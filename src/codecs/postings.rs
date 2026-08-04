@@ -28,7 +28,7 @@ use crate::codecs::knn_vectors::KnnVectorsReader;
 use crate::codecs::points::PointsReader;
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stored_fields::StoredFieldsReader;
-use crate::codecs::stub::FieldInfos;
+use crate::codecs::stub::{FieldInfo, FieldInfos};
 use crate::codecs::term_vectors::TermVectorsReader;
 use crate::error::{LuceneError, Result};
 use crate::index::IndexOptions;
@@ -66,42 +66,6 @@ pub const POSTINGS_ENUM_ALL: i32 =
 pub use crate::codecs::term_state::{
     BlockTermState, CompetitiveImpactAccumulator, Impact, TermStats,
 };
-
-/// Describes the properties of a single indexed field.
-///
-/// Equivalent to `org.apache.lucene.index.FieldInfo`.
-#[derive(Debug, Clone)]
-pub struct FieldInfo {
-    /// Field name.
-    pub name: String,
-    /// Field number.
-    pub number: i32,
-    /// What is stored in the inverted index for this field.
-    pub index_options: IndexOptions,
-    /// Whether normalization values are stored for this field.
-    pub has_norms: bool,
-    /// Whether payloads are indexed for this field.
-    pub has_payloads: bool,
-}
-
-impl FieldInfo {
-    /// Creates a new `FieldInfo`.
-    pub fn new(
-        name: impl Into<String>,
-        number: i32,
-        index_options: IndexOptions,
-        has_norms: bool,
-        has_payloads: bool,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            number,
-            index_options,
-            has_norms,
-            has_payloads,
-        }
-    }
-}
 
 /// State passed to [`FieldsConsumer::merge`] describing the source segments.
 ///
@@ -630,7 +594,7 @@ pub trait PushPostingsWriterBase: Send + Sync {
         state.write_offsets = field_info
             .index_options
             .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
-        state.write_payloads = field_info.has_payloads;
+        state.write_payloads = field_info.has_payloads();
 
         if !state.write_freqs {
             state.enum_flags = POSTINGS_ENUM_NONE;
@@ -670,7 +634,7 @@ pub trait PushPostingsWriterBase: Send + Sync {
             .clone();
 
         let mut norms_values: Option<Box<dyn NumericDocValues>> = None;
-        if field_info.has_norms {
+        if field_info.has_norms() {
             norms_values = Some(norms.get_norms(&field_info)?);
         }
         let norms_ref = norms_values.as_deref();
@@ -1223,14 +1187,14 @@ mod tests {
         reader
             .decode_term(
                 &mut crate::store::ByteArrayDataInput::new(vec![]),
-                &FieldInfo::new("field", 0, IndexOptions::DOCS, false, false),
+                &FieldInfo::new("field", 0).with_postings_options(IndexOptions::DOCS, false, false),
                 &mut BlockTermState::default(),
                 true,
             )
             .unwrap();
         let _enum_ = reader
             .postings(
-                &FieldInfo::new("field", 0, IndexOptions::DOCS, false, false),
+                &FieldInfo::new("field", 0).with_postings_options(IndexOptions::DOCS, false, false),
                 &BlockTermState::default(),
                 None,
                 POSTINGS_ENUM_NONE,
@@ -1238,7 +1202,7 @@ mod tests {
             .unwrap();
         let _impacts = reader
             .impacts(
-                &FieldInfo::new("field", 0, IndexOptions::DOCS, false, false),
+                &FieldInfo::new("field", 0).with_postings_options(IndexOptions::DOCS, false, false),
                 &BlockTermState::default(),
                 POSTINGS_ENUM_NONE,
             )
@@ -1275,7 +1239,8 @@ mod tests {
         )
         .unwrap();
 
-        let field_info = FieldInfo::new("field", 0, IndexOptions::DOCS, false, false);
+        let field_info =
+            FieldInfo::new("field", 0).with_postings_options(IndexOptions::DOCS, false, false);
         crate::codecs::postings::PostingsWriterBase::set_field(&mut writer, &field_info).unwrap();
 
         let mut docs_seen = FixedBitSet::new(8);
@@ -1325,7 +1290,8 @@ mod tests {
                 &write_state,
             )
             .unwrap();
-        let field_info = FieldInfo::new("field", 0, IndexOptions::DOCS, false, false);
+        let field_info =
+            FieldInfo::new("field", 0).with_postings_options(IndexOptions::DOCS, false, false);
         writer.set_field(&field_info).unwrap();
         let mut docs_seen = FixedBitSet::new(8);
         let result = writer
@@ -1383,9 +1349,7 @@ mod tests {
     #[test]
     fn push_writer_set_field_computes_flags() {
         let mut writer = StubPushWriter::default();
-        let field_info = FieldInfo::new(
-            "text",
-            0,
+        let field_info = FieldInfo::new("text", 0).with_postings_options(
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
             false,
             true,

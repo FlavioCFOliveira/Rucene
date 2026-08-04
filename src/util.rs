@@ -17,6 +17,9 @@ pub mod packed;
 pub mod small_float;
 pub mod string_helper;
 
+/// Block KD-tree utilities ported from `org.apache.lucene.util.bkd`.
+pub mod bkd;
+
 pub use attribute::{
     unwrap_all, AsUnwrappable, Attribute, AttributeFactory, AttributeImpl, AttributeReflector,
     AttributeSource, CapturedState, CloseableThreadLocal, DefaultAttributeFactory, Unwrappable,

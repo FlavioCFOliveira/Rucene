@@ -170,7 +170,13 @@ impl<'a> FieldsWriter<'a> {
 
         for field_ref in field_names {
             let field = field_ref.as_ref();
-            let field_info = self.write_state.field_infos.field_info(field)?;
+            let field_info = self
+                .write_state
+                .field_infos
+                .field_info(field)
+                .ok_or_else(|| {
+                    LuceneError::IllegalArgument(format!("field {} not found", field))
+                })?;
             let format = (self.resolver)(field);
             let format_name = format.name().to_string();
 
@@ -1453,7 +1459,7 @@ mod tests {
         body.index_options = IndexOptions::DOCS;
         let mut title = FieldInfo::new("title", 1);
         title.index_options = IndexOptions::DOCS;
-        let field_infos = FieldInfos::new(vec![body, title]);
+        let field_infos = FieldInfos::new(vec![body, title]).unwrap();
 
         let format_a = Arc::new(NamedPostingsFormat("FormatA"));
         let format_b = Arc::new(NamedPostingsFormat("FormatB"));
@@ -1487,10 +1493,7 @@ mod tests {
         #[derive(Debug, Default, Clone)]
         struct NoOpNorms;
         impl NormsProducer for NoOpNorms {
-            fn get_norms(
-                &self,
-                _field_info: &crate::codecs::postings::FieldInfo,
-            ) -> Result<Box<dyn NumericDocValues>> {
+            fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
                 unreachable!("no norms requested in this test")
             }
         }
@@ -1522,8 +1525,8 @@ mod tests {
     fn per_field_merge_state_restricts_fields() {
         let body = FieldInfo::new("body", 0);
         let title = FieldInfo::new("title", 1);
-        let merge_field_infos = FieldInfos::new(vec![body.clone(), title.clone()]);
-        let segment_field_infos = FieldInfos::new(vec![body, title]);
+        let merge_field_infos = FieldInfos::new(vec![body.clone(), title.clone()]).unwrap();
+        let segment_field_infos = FieldInfos::new(vec![body, title]).unwrap();
 
         let producer_a = Box::new(NamedFieldsProducer("A")) as Box<dyn FieldsProducer>;
         let merge_state = MergeState::new(vec![Some(producer_a)], vec![10])
@@ -1540,7 +1543,7 @@ mod tests {
                 .number,
             1
         );
-        assert!(restricted.merge_field_infos.field_info("body").is_err());
+        assert!(restricted.merge_field_infos.field_info("body").is_none());
 
         let producer = restricted.fields_producers[0].as_ref().unwrap();
         let names: Vec<String> = producer.iterator().collect();

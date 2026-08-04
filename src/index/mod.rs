@@ -5,6 +5,10 @@
 
 #![deny(unsafe_code)]
 
+pub mod field_infos;
+
+pub use field_infos::{FieldInfo, FieldInfos};
+
 use std::collections::HashMap;
 
 use crate::{
@@ -75,6 +79,25 @@ pub enum DocValuesSkipIndexType {
     NONE,
     /// Record range of values per range of doc IDs.
     RANGE,
+}
+
+impl DocValuesSkipIndexType {
+    /// Returns `true` if this skip-index type is compatible with the given
+    /// DocValues type.
+    ///
+    /// Equivalent to `DocValuesSkipIndexType.isCompatibleWith(DocValuesType)`.
+    pub fn is_compatible_with(self, doc_values_type: DocValuesType) -> bool {
+        match self {
+            Self::NONE => true,
+            Self::RANGE => matches!(
+                doc_values_type,
+                DocValuesType::NUMERIC
+                    | DocValuesType::SORTED_NUMERIC
+                    | DocValuesType::SORTED
+                    | DocValuesType::SORTED_SET
+            ),
+        }
+    }
 }
 
 /// The numeric datatype of the vector values.
