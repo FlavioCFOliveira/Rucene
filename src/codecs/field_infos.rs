@@ -77,7 +77,7 @@ mod tests {
         assert_eq!(format.name(), "EmptyFieldInfos");
 
         let dir: &dyn Directory = &crate::store::RamDirectory::default();
-        let segment_info = SegmentInfo;
+        let segment_info = crate::codecs::tests::test_segment_info("test", 10);
         let infos = FieldInfos::default();
         format
             .write(

@@ -1348,17 +1348,19 @@ mod tests {
     use super::*;
     use crate::codecs::postings::NumericDocValues;
     use crate::codecs::stub::FieldInfos;
-    use crate::index::IndexOptions;
+    use crate::index::{IndexOptions, SegmentInfo};
 
     fn write_state() -> SegmentWriteState<'static> {
-        use crate::codecs::stub::{BufferedUpdates, FieldInfos, SegmentInfo};
+        use crate::codecs::stub::BufferedUpdates;
         use crate::store::DEFAULT_IO_CONTEXT;
         use crate::util::default_info_stream;
 
         let dir = crate::store::RamDirectory::default();
         let dir_ref: &'static dyn crate::store::Directory = Box::leak(Box::new(dir));
         let info_stream: &'static dyn crate::util::InfoStream = default_info_stream();
-        let segment_info: &'static SegmentInfo = Box::leak(Box::new(SegmentInfo));
+        let segment_info: &'static SegmentInfo = Box::leak(Box::new(
+            crate::codecs::tests::test_segment_info("test", 10),
+        ));
         let field_infos: &'static FieldInfos = Box::leak(Box::new(FieldInfos::default()));
         let seg_updates: &'static BufferedUpdates = Box::leak(Box::new(BufferedUpdates));
         let context: &'static dyn crate::store::IOContext = &*DEFAULT_IO_CONTEXT;
@@ -1374,12 +1376,13 @@ mod tests {
     }
 
     fn read_state() -> SegmentReadState<'static> {
-        use crate::codecs::stub::{FieldInfos, SegmentInfo};
         use crate::store::DEFAULT_IO_CONTEXT;
 
         let dir = crate::store::RamDirectory::default();
         let dir_ref: &'static dyn crate::store::Directory = Box::leak(Box::new(dir));
-        let segment_info: &'static SegmentInfo = Box::leak(Box::new(SegmentInfo));
+        let segment_info: &'static SegmentInfo = Box::leak(Box::new(
+            crate::codecs::tests::test_segment_info("test", 10),
+        ));
         let field_infos: &'static FieldInfos = Box::leak(Box::new(FieldInfos::default()));
         let context: &'static dyn crate::store::IOContext = &*DEFAULT_IO_CONTEXT;
 

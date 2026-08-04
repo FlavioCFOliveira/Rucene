@@ -5,9 +5,8 @@
 use std::fmt;
 
 use crate::error::Result;
+use crate::index::SegmentInfo;
 use crate::store::{Directory, IOContext};
-
-use super::stub::SegmentInfo;
 
 /// Encodes and decodes the segment metadata file.
 ///
@@ -50,7 +49,9 @@ impl SegmentInfoFormat for EmptySegmentInfoFormat {
         _segment_id: &[u8],
         _context: &dyn IOContext,
     ) -> Result<SegmentInfo> {
-        Ok(SegmentInfo)
+        Err(crate::error::LuceneError::UnsupportedOperation(
+            "EmptySegmentInfoFormat cannot read".to_string(),
+        ))
     }
 
     fn write(
@@ -68,18 +69,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_segment_info_format_round_trip() {
+    fn empty_segment_info_format_name() {
         let format = EmptySegmentInfoFormat;
         assert_eq!(format.name(), "EmptySegmentInfo");
-
-        let dir: &dyn Directory = &crate::store::RamDirectory::default();
-        let info = SegmentInfo;
-        format
-            .write(dir, &info, &*crate::store::DEFAULT_IO_CONTEXT)
-            .unwrap();
-        let read = format
-            .read(dir, "_0", b"id", &*crate::store::DEFAULT_IO_CONTEXT)
-            .unwrap();
-        assert_eq!(read, SegmentInfo);
     }
 }

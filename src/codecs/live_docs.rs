@@ -83,7 +83,7 @@ mod tests {
         assert_eq!(format.name(), "EmptyLiveDocs");
 
         let dir: &dyn Directory = &crate::store::RamDirectory::default();
-        let info = SegmentCommitInfo;
+        let info = crate::codecs::tests::test_segment_commit_info("test", 10);
         let bits = format
             .read_live_docs(dir, &info, &*crate::store::DEFAULT_IO_CONTEXT)
             .unwrap();

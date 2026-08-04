@@ -235,7 +235,8 @@ impl PointsFormat for EmptyPointsFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codecs::stub::{BufferedUpdates, FieldInfos, SegmentInfo};
+    use crate::codecs::stub::BufferedUpdates;
+    use crate::index::FieldInfos;
 
     #[test]
     fn empty_point_values_reports_zero() {
@@ -277,17 +278,18 @@ mod tests {
         let dir_ref: &dyn crate::store::Directory = &dir;
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
         let field_infos = FieldInfos::default();
+        let segment_info = crate::codecs::tests::test_segment_info("test", 10);
         let write_state = SegmentWriteState::new(
             crate::util::default_info_stream(),
             dir_ref,
-            &SegmentInfo,
+            &segment_info,
             &field_infos,
             &BufferedUpdates,
             context,
         );
         let _writer = format.fields_writer(&write_state).unwrap();
 
-        let read_state = SegmentReadState::new(dir_ref, &SegmentInfo, &field_infos, context);
+        let read_state = SegmentReadState::new(dir_ref, &segment_info, &field_infos, context);
         let _reader = format.fields_reader(&read_state).unwrap();
     }
 }

@@ -10,7 +10,8 @@
 use crate::store::{Directory, IOContext};
 use crate::util::{FixedBitSet, InfoStream};
 
-use super::stub::{BufferedUpdates, FieldInfos, SegmentInfo};
+use super::stub::BufferedUpdates;
+use crate::index::{FieldInfos, SegmentInfo};
 
 /// Parameters used when reading a segment.
 ///

@@ -6,8 +6,10 @@
 #![deny(unsafe_code)]
 
 pub mod field_infos;
+pub mod segment_info;
 
 pub use field_infos::{FieldInfo, FieldInfos};
+pub use segment_info::{SegmentCommitInfo, SegmentInfo};
 
 use std::collections::HashMap;
 

@@ -13,13 +13,9 @@ pub use crate::index::FieldInfo;
 
 pub use crate::index::FieldInfos;
 
-/// Placeholder for `org.apache.lucene.index.SegmentInfo`.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct SegmentInfo;
+pub use crate::index::SegmentCommitInfo;
 
-/// Placeholder for `org.apache.lucene.index.SegmentCommitInfo`.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct SegmentCommitInfo;
+pub use crate::index::SegmentInfo;
 
 /// Placeholder for `org.apache.lucene.index.BufferedUpdates`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

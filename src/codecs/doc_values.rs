@@ -632,7 +632,8 @@ mod tests {
 
     #[test]
     fn empty_doc_values_format_name_and_factories() {
-        use crate::codecs::stub::{BufferedUpdates, FieldInfos, SegmentInfo};
+        use crate::codecs::stub::BufferedUpdates;
+        use crate::index::FieldInfos;
 
         let format = EmptyDocValuesFormat::new("EmptyDV");
         assert_eq!(format.name(), "EmptyDV");
@@ -641,17 +642,18 @@ mod tests {
         let dir_ref: &dyn crate::store::Directory = &dir;
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
         let field_infos = FieldInfos::default();
+        let segment_info = crate::codecs::tests::test_segment_info("test", 10);
         let state = SegmentWriteState::new(
             crate::util::default_info_stream(),
             dir_ref,
-            &SegmentInfo,
+            &segment_info,
             &field_infos,
             &BufferedUpdates,
             context,
         );
         let _consumer = format.fields_consumer(&state).unwrap();
 
-        let read_state = SegmentReadState::new(dir_ref, &SegmentInfo, &field_infos, context);
+        let read_state = SegmentReadState::new(dir_ref, &segment_info, &field_infos, context);
         let _producer = format.fields_producer(&read_state).unwrap();
     }
 }

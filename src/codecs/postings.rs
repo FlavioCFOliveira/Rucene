@@ -34,6 +34,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::IndexOptions;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{DataInput, DataOutput, IndexInput, IndexOutput};
+use crate::util::automaton::CompiledAutomaton;
 use crate::util::{BytesRef, FixedBitSet};
 
 // -----------------------------------------------------------------------------
@@ -214,6 +215,19 @@ pub trait Terms: Send + Sync {
 
     /// Returns the highest term, if known.
     fn max(&self) -> Result<Option<&BytesRef>>;
+
+    /// Returns a `TermsEnum` that visits only terms accepted by `automaton`.
+    ///
+    /// `skip_ahead` may be used to skip terms before the given prefix.
+    fn intersect(
+        &self,
+        _automaton: &CompiledAutomaton,
+        _skip_ahead: Option<&BytesRef>,
+    ) -> Result<Box<dyn TermsEnum>> {
+        Err(LuceneError::UnsupportedOperation(
+            "terms intersection is not supported by this implementation".to_string(),
+        ))
+    }
 }
 
 /// Postings iterator: doc IDs plus optional frequencies, positions, payloads and
@@ -243,6 +257,112 @@ pub trait PostingsEnum: DocIdSetIterator {
 ///
 /// Equivalent to `org.apache.lucene.index.ImpactsEnum`.
 pub trait ImpactsEnum: PostingsEnum {}
+
+/// Empty postings iterator.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct EmptyPostingsEnum;
+
+impl DocIdSetIterator for EmptyPostingsEnum {
+    fn doc_id(&self) -> i32 {
+        NO_MORE_DOCS
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        Ok(NO_MORE_DOCS)
+    }
+
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Ok(NO_MORE_DOCS)
+    }
+
+    fn cost(&self) -> i64 {
+        0
+    }
+}
+
+impl PostingsEnum for EmptyPostingsEnum {
+    fn freq(&self) -> Result<i32> {
+        Ok(0)
+    }
+
+    fn next_position(&mut self) -> Result<i32> {
+        Ok(-1)
+    }
+
+    fn start_offset(&self) -> i32 {
+        -1
+    }
+
+    fn end_offset(&self) -> i32 {
+        -1
+    }
+
+    fn get_payload(&self) -> Result<Option<&[u8]>> {
+        Ok(None)
+    }
+}
+
+/// Empty terms iterator.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct EmptyTermsEnum;
+
+impl TermsEnum for EmptyTermsEnum {
+    fn term(&self) -> &BytesRef {
+        static EMPTY: std::sync::OnceLock<BytesRef> = std::sync::OnceLock::new();
+        EMPTY.get_or_init(BytesRef::default)
+    }
+
+    fn postings(
+        &mut self,
+        _reuse: Option<Box<dyn PostingsEnum>>,
+        _flags: i32,
+    ) -> Result<Box<dyn PostingsEnum>> {
+        Ok(Box::new(EmptyPostingsEnum))
+    }
+}
+
+/// Returns an empty terms iterator.
+pub fn empty_terms_enum() -> Box<dyn TermsEnum> {
+    Box::new(EmptyTermsEnum)
+}
+
+/// Terms iterator that always reports a single fixed term and delegates
+/// postings to an underlying iterator.
+///
+/// Equivalent to `org.apache.lucene.index.SingleTermsEnum`.
+pub struct SingleTermsEnum {
+    inner: Box<dyn TermsEnum>,
+    term: BytesRef,
+}
+
+impl SingleTermsEnum {
+    /// Creates a single-term enum wrapping `inner` and reporting `term`.
+    pub fn new(inner: Box<dyn TermsEnum>, term: BytesRef) -> Self {
+        Self { inner, term }
+    }
+}
+
+impl std::fmt::Debug for SingleTermsEnum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SingleTermsEnum")
+            .field("term", &self.term)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TermsEnum for SingleTermsEnum {
+    fn term(&self) -> &BytesRef {
+        &self.term
+    }
+
+    fn postings(
+        &mut self,
+        reuse: Option<Box<dyn PostingsEnum>>,
+        flags: i32,
+    ) -> Result<Box<dyn PostingsEnum>> {
+        self.inner.postings(reuse, flags)
+    }
+}
 
 /// Collection of per-field terms for a segment.
 ///
@@ -1137,7 +1257,21 @@ mod tests {
 
         let dir = crate::store::RamDirectory::default();
         let dir_ref: &dyn crate::store::Directory = &dir;
-        let segment_info = crate::codecs::stub::SegmentInfo;
+        let segment_info = crate::index::SegmentInfo::new(
+            std::sync::Arc::new(crate::store::RamDirectory::default()),
+            crate::util::Version::LUCENE_10_5_0,
+            Some(crate::util::Version::LUCENE_10_5_0),
+            "_0".to_string(),
+            0,
+            false,
+            false,
+            std::sync::Arc::new(crate::codecs::tests::DummyCodec::new("Dummy")),
+            std::collections::HashMap::new(),
+            crate::util::StringHelper::random_id(),
+            std::collections::HashMap::new(),
+            crate::search::Sort::default(),
+        )
+        .unwrap();
         let field_infos = crate::codecs::stub::FieldInfos::default();
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
         let seg_updates = crate::codecs::stub::BufferedUpdates;
@@ -1170,7 +1304,21 @@ mod tests {
     fn stub_postings_reader_base_compiles_and_runs() {
         let dir = crate::store::RamDirectory::default();
         let dir_ref: &dyn crate::store::Directory = &dir;
-        let segment_info = crate::codecs::stub::SegmentInfo;
+        let segment_info = crate::index::SegmentInfo::new(
+            std::sync::Arc::new(crate::store::RamDirectory::default()),
+            crate::util::Version::LUCENE_10_5_0,
+            Some(crate::util::Version::LUCENE_10_5_0),
+            "_0".to_string(),
+            0,
+            false,
+            false,
+            std::sync::Arc::new(crate::codecs::tests::DummyCodec::new("Dummy")),
+            std::collections::HashMap::new(),
+            crate::util::StringHelper::random_id(),
+            std::collections::HashMap::new(),
+            crate::search::Sort::default(),
+        )
+        .unwrap();
         let field_infos = crate::codecs::stub::FieldInfos::default();
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
         let read_state = SegmentReadState::new(dir_ref, &segment_info, &field_infos, context);
@@ -1215,7 +1363,21 @@ mod tests {
     fn stub_push_postings_writer_blanket_impl_runs() {
         let dir = crate::store::RamDirectory::default();
         let dir_ref: &dyn crate::store::Directory = &dir;
-        let segment_info = crate::codecs::stub::SegmentInfo;
+        let segment_info = crate::index::SegmentInfo::new(
+            std::sync::Arc::new(crate::store::RamDirectory::default()),
+            crate::util::Version::LUCENE_10_5_0,
+            Some(crate::util::Version::LUCENE_10_5_0),
+            "_0".to_string(),
+            0,
+            false,
+            false,
+            std::sync::Arc::new(crate::codecs::tests::DummyCodec::new("Dummy")),
+            std::collections::HashMap::new(),
+            crate::util::StringHelper::random_id(),
+            std::collections::HashMap::new(),
+            crate::search::Sort::default(),
+        )
+        .unwrap();
         let field_infos = crate::codecs::stub::FieldInfos::default();
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
         let seg_updates = crate::codecs::stub::BufferedUpdates;
@@ -1269,7 +1431,21 @@ mod tests {
     fn stub_postings_writer_base_compiles_and_runs() {
         let dir = crate::store::RamDirectory::default();
         let dir_ref: &dyn crate::store::Directory = &dir;
-        let segment_info = crate::codecs::stub::SegmentInfo;
+        let segment_info = crate::index::SegmentInfo::new(
+            std::sync::Arc::new(crate::store::RamDirectory::default()),
+            crate::util::Version::LUCENE_10_5_0,
+            Some(crate::util::Version::LUCENE_10_5_0),
+            "_0".to_string(),
+            0,
+            false,
+            false,
+            std::sync::Arc::new(crate::codecs::tests::DummyCodec::new("Dummy")),
+            std::collections::HashMap::new(),
+            crate::util::StringHelper::random_id(),
+            std::collections::HashMap::new(),
+            crate::search::Sort::default(),
+        )
+        .unwrap();
         let field_infos = crate::codecs::stub::FieldInfos::default();
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
         let seg_updates = crate::codecs::stub::BufferedUpdates;

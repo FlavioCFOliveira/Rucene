@@ -9,6 +9,7 @@
 #![deny(unsafe_code)]
 
 pub mod attribute;
+pub mod automaton;
 pub mod chars_ref;
 /// LZ4 and lowercase-ASCII compression utilities.
 pub mod compress;
@@ -26,6 +27,10 @@ pub mod bit_sets;
 pub use attribute::{
     unwrap_all, AsUnwrappable, Attribute, AttributeFactory, AttributeImpl, AttributeReflector,
     AttributeSource, CapturedState, CloseableThreadLocal, DefaultAttributeFactory, Unwrappable,
+};
+pub use automaton::{
+    automata, operations, Automaton, AutomatonType, ByteRunAutomaton, ByteRunnable,
+    CompiledAutomaton, RunAutomaton, Transition, TransitionAccessor,
 };
 pub use bit_sets::{DenseLiveDocs, RoaringDocIdSet, SparseFixedBitSet, SparseLiveDocs};
 pub use chars_ref::{CharsRef, EMPTY_CHARS};

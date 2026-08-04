@@ -473,7 +473,7 @@ impl Codec for FilterCodec {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::stub::*;
     use super::*;
 
@@ -537,7 +537,7 @@ mod tests {
 
     /// A trivial named placeholder format used by the dummy codec in tests.
     #[derive(Debug)]
-    struct DummyFormat(&'static str);
+    pub(crate) struct DummyFormat(&'static str);
 
     impl PostingsFormat for DummyFormat {
         fn name(&self) -> &str {
@@ -664,11 +664,29 @@ mod tests {
         fn read(
             &self,
             _directory: &dyn crate::store::Directory,
-            _segment_name: &str,
-            _segment_id: &[u8],
+            segment_name: &str,
+            segment_id: &[u8],
             _context: &dyn crate::store::IOContext,
         ) -> crate::error::Result<SegmentInfo> {
-            Ok(SegmentInfo)
+            let mut id = [0u8; crate::util::string_helper::ID_LENGTH];
+            let len = segment_id.len().min(id.len());
+            id[..len].copy_from_slice(&segment_id[..len]);
+            SegmentInfo::new(
+                Arc::new(crate::store::FilterDirectory::new(Box::new(
+                    crate::store::RamDirectory::default(),
+                ))),
+                crate::util::Version::LUCENE_10_5_0,
+                Some(crate::util::Version::LUCENE_10_5_0),
+                segment_name.to_string(),
+                0,
+                false,
+                false,
+                Arc::new(DummyCodec::new("Dummy")),
+                HashMap::new(),
+                id,
+                HashMap::new(),
+                crate::search::Sort::default(),
+            )
         }
 
         fn write(
@@ -805,7 +823,7 @@ mod tests {
     /// A minimal codec implementation used only for unit testing the SPI and
     /// delegation machinery.
     #[derive(Debug)]
-    struct DummyCodec {
+    pub(crate) struct DummyCodec {
         name: String,
         postings: DummyFormat,
         doc_values: DummyFormat,
@@ -821,7 +839,7 @@ mod tests {
     }
 
     impl DummyCodec {
-        fn new(name: &str) -> Self {
+        pub(crate) fn new(name: &str) -> Self {
             Self {
                 name: name.to_string(),
                 postings: DummyFormat("dummy-postings"),
@@ -887,6 +905,42 @@ mod tests {
         fn knn_vectors_format(&self) -> &dyn KnnVectorsFormat {
             &self.knn_vectors
         }
+    }
+
+    /// Returns a minimal `SegmentInfo` for use in cross-module codec tests.
+    pub(crate) fn test_segment_info(name: &str, max_doc: i32) -> SegmentInfo {
+        SegmentInfo::new(
+            std::sync::Arc::new(crate::store::RamDirectory::default()),
+            crate::util::Version::LUCENE_10_5_0,
+            Some(crate::util::Version::LUCENE_10_5_0),
+            name.to_string(),
+            max_doc,
+            false,
+            false,
+            std::sync::Arc::new(DummyCodec::new("Dummy")),
+            std::collections::HashMap::new(),
+            [0u8; crate::util::string_helper::ID_LENGTH],
+            std::collections::HashMap::new(),
+            crate::search::Sort::default(),
+        )
+        .expect("test segment info should be valid")
+    }
+
+    /// Returns a minimal `SegmentCommitInfo` for use in cross-module codec tests.
+    pub(crate) fn test_segment_commit_info(
+        name: &str,
+        max_doc: i32,
+    ) -> crate::index::SegmentCommitInfo {
+        crate::index::SegmentCommitInfo::new(
+            test_segment_info(name, max_doc),
+            0,
+            0,
+            -1,
+            -1,
+            -1,
+            [0u8; crate::util::string_helper::ID_LENGTH],
+        )
+        .expect("test segment commit info should be valid")
     }
 
     #[test]
