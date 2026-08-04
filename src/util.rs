@@ -20,10 +20,14 @@ pub mod string_helper;
 /// Block KD-tree utilities ported from `org.apache.lucene.util.bkd`.
 pub mod bkd;
 
+/// Additional bitset and live-docs variants.
+pub mod bit_sets;
+
 pub use attribute::{
     unwrap_all, AsUnwrappable, Attribute, AttributeFactory, AttributeImpl, AttributeReflector,
     AttributeSource, CapturedState, CloseableThreadLocal, DefaultAttributeFactory, Unwrappable,
 };
+pub use bit_sets::{DenseLiveDocs, RoaringDocIdSet, SparseFixedBitSet, SparseLiveDocs};
 pub use chars_ref::{CharsRef, EMPTY_CHARS};
 pub use extra::{
     IdentityLongValues, IntoIter as PriorityQueueIntoIter, LongBitSet, LongValues, MergedIterator,
