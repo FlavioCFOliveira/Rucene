@@ -9,9 +9,11 @@
 
 #![deny(unsafe_code)]
 
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::{Arc, LazyLock, RwLock};
 
-use crate::error::Result;
+use crate::error::{LuceneError, Result};
 use crate::util::BytesRef;
 
 use super::postings::MergeState;
@@ -199,10 +201,109 @@ pub trait DocValuesFormat: Send + Sync + fmt::Debug {
     fn name(&self) -> &str;
 
     /// Returns a consumer to write docvalues to the index.
-    fn fields_consumer(&self, state: &SegmentWriteState) -> Result<Box<dyn DocValuesConsumer>>;
+    fn fields_consumer<'a>(
+        &self,
+        state: &SegmentWriteState<'a>,
+    ) -> Result<Box<dyn DocValuesConsumer + 'a>>;
 
     /// Returns a producer to read docvalues from the index.
-    fn fields_producer(&self, state: &SegmentReadState) -> Result<Box<dyn DocValuesProducer>>;
+    fn fields_producer<'a>(
+        &self,
+        state: &SegmentReadState<'a>,
+    ) -> Result<Box<dyn DocValuesProducer + 'a>>;
+}
+
+// -----------------------------------------------------------------------------
+// Doc-values format registry
+// -----------------------------------------------------------------------------
+
+/// A registry mapping doc-values-format short names to [`DocValuesFormat`]
+/// implementations.
+///
+/// The registry intentionally does not use reflection or SPI loading. Formats
+/// are registered explicitly with [`DocValuesFormatRegistry::register`] and
+/// looked up by name with [`DocValuesFormatRegistry::for_name`].
+#[derive(Debug, Default, Clone)]
+pub struct DocValuesFormatRegistry {
+    formats: Arc<RwLock<HashMap<String, Arc<dyn DocValuesFormat>>>>,
+}
+
+impl DocValuesFormatRegistry {
+    /// Creates an empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers a doc-values format under the given short name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if `name` is empty, contains
+    /// characters other than ASCII alphanumerics, or is longer than 127 bytes.
+    /// Returns [`LuceneError::IllegalState`] if the name is already registered.
+    pub fn register<F>(&self, name: impl Into<String>, format: F) -> Result<()>
+    where
+        F: DocValuesFormat + 'static,
+    {
+        let name = name.into();
+        super::validate_service_name(&name)?;
+
+        let mut formats = self.formats.write().map_err(|_| {
+            LuceneError::IllegalState("doc-values format registry lock was poisoned".to_string())
+        })?;
+
+        if formats.contains_key(&name) {
+            return Err(LuceneError::IllegalState(format!(
+                "doc-values format already registered: {name}"
+            )));
+        }
+
+        formats.insert(name, Arc::new(format));
+        Ok(())
+    }
+
+    /// Looks up a doc-values format by name.
+    ///
+    /// Returns `None` if no format has been registered under the given name.
+    pub fn for_name(&self, name: &str) -> Option<Arc<dyn DocValuesFormat>> {
+        self.formats
+            .read()
+            .map_err(|_| {
+                LuceneError::IllegalState(
+                    "doc-values format registry lock was poisoned".to_string(),
+                )
+            })
+            .ok()?
+            .get(name)
+            .cloned()
+    }
+
+    /// Returns the names of all registered doc-values formats, sorted
+    /// alphabetically.
+    pub fn available_doc_values_formats(&self) -> Vec<String> {
+        let Ok(formats) = self.formats.read() else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = formats.keys().cloned().collect();
+        names.sort();
+        names
+    }
+}
+
+static GLOBAL_DOC_VALUES_REGISTRY: LazyLock<DocValuesFormatRegistry> =
+    LazyLock::new(DocValuesFormatRegistry::new);
+
+/// Looks up a doc-values format by name from the global registry.
+///
+/// Returns `None` if no format has been registered under the given name.
+pub fn doc_values_for_name(name: &str) -> Option<Arc<dyn DocValuesFormat>> {
+    GLOBAL_DOC_VALUES_REGISTRY.for_name(name)
+}
+
+/// Returns the names of all doc-values formats registered in the global
+/// registry.
+pub fn available_doc_values_formats() -> Vec<String> {
+    GLOBAL_DOC_VALUES_REGISTRY.available_doc_values_formats()
 }
 
 // -----------------------------------------------------------------------------
@@ -419,11 +520,17 @@ impl DocValuesFormat for EmptyDocValuesFormat {
         &self.name
     }
 
-    fn fields_consumer(&self, _state: &SegmentWriteState) -> Result<Box<dyn DocValuesConsumer>> {
+    fn fields_consumer<'a>(
+        &self,
+        _state: &SegmentWriteState<'a>,
+    ) -> Result<Box<dyn DocValuesConsumer + 'a>> {
         Ok(Box::new(EmptyDocValuesConsumer))
     }
 
-    fn fields_producer(&self, _state: &SegmentReadState) -> Result<Box<dyn DocValuesProducer>> {
+    fn fields_producer<'a>(
+        &self,
+        _state: &SegmentReadState<'a>,
+    ) -> Result<Box<dyn DocValuesProducer + 'a>> {
         Ok(Box::new(EmptyDocValuesProducer))
     }
 }
@@ -478,7 +585,7 @@ mod tests {
     #[test]
     fn empty_doc_values_producer_returns_empty_iterators() {
         let producer = EmptyDocValuesProducer;
-        let field = FieldInfo;
+        let field = FieldInfo::default();
         assert_eq!(producer.get_numeric(&field).unwrap().get(0).unwrap(), 0);
         assert_eq!(
             producer.get_binary(&field).unwrap().get(0).unwrap().length,
@@ -512,7 +619,7 @@ mod tests {
     fn empty_doc_values_consumer_accepts_all_fields() {
         let mut consumer = EmptyDocValuesConsumer;
         let producer = EmptyDocValuesProducer;
-        let field = FieldInfo;
+        let field = FieldInfo::default();
         consumer.add_numeric_field(&field, &producer).unwrap();
         consumer.add_binary_field(&field, &producer).unwrap();
         consumer.add_sorted_field(&field, &producer).unwrap();
@@ -533,17 +640,18 @@ mod tests {
         let dir = crate::store::RamDirectory::default();
         let dir_ref: &dyn crate::store::Directory = &dir;
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
+        let field_infos = FieldInfos::default();
         let state = SegmentWriteState::new(
             crate::util::default_info_stream(),
             dir_ref,
             &SegmentInfo,
-            &FieldInfos,
+            &field_infos,
             &BufferedUpdates,
             context,
         );
         let _consumer = format.fields_consumer(&state).unwrap();
 
-        let read_state = SegmentReadState::new(dir_ref, &SegmentInfo, &FieldInfos, context);
+        let read_state = SegmentReadState::new(dir_ref, &SegmentInfo, &field_infos, context);
         let _producer = format.fields_producer(&read_state).unwrap();
     }
 }

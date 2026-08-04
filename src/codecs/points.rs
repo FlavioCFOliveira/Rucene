@@ -262,7 +262,7 @@ mod tests {
     fn empty_points_writer_accepts_field() {
         let mut writer = EmptyPointsWriter;
         let reader = EmptyPointsReader;
-        let field = FieldInfo;
+        let field = FieldInfo::default();
         writer.write_field(&field, &reader).unwrap();
         writer.finish().unwrap();
         writer.close().unwrap();
@@ -276,17 +276,18 @@ mod tests {
         let dir = crate::store::RamDirectory::default();
         let dir_ref: &dyn crate::store::Directory = &dir;
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
+        let field_infos = FieldInfos::default();
         let write_state = SegmentWriteState::new(
             crate::util::default_info_stream(),
             dir_ref,
             &SegmentInfo,
-            &FieldInfos,
+            &field_infos,
             &BufferedUpdates,
             context,
         );
         let _writer = format.fields_writer(&write_state).unwrap();
 
-        let read_state = SegmentReadState::new(dir_ref, &SegmentInfo, &FieldInfos, context);
+        let read_state = SegmentReadState::new(dir_ref, &SegmentInfo, &field_infos, context);
         let _reader = format.fields_reader(&read_state).unwrap();
     }
 }

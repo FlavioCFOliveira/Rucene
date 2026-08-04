@@ -52,7 +52,7 @@ impl FieldInfosFormat for EmptyFieldInfosFormat {
         _segment_suffix: &str,
         _context: &dyn IOContext,
     ) -> Result<FieldInfos> {
-        Ok(FieldInfos)
+        Ok(FieldInfos::default())
     }
 
     fn write(
@@ -78,7 +78,7 @@ mod tests {
 
         let dir: &dyn Directory = &crate::store::RamDirectory::default();
         let segment_info = SegmentInfo;
-        let infos = FieldInfos;
+        let infos = FieldInfos::default();
         format
             .write(
                 dir,
@@ -91,6 +91,6 @@ mod tests {
         let read = format
             .read(dir, &segment_info, "", &*crate::store::DEFAULT_IO_CONTEXT)
             .unwrap();
-        assert_eq!(read, FieldInfos);
+        assert_eq!(read, FieldInfos::default());
     }
 }

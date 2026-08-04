@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn empty_norms_producer_returns_empty_values() {
         let mut producer = EmptyNormsProducer;
-        let field = FieldInfo;
+        let field = FieldInfo::default();
         assert_eq!(producer.get_norms(&field).unwrap().get(0).unwrap(), 0);
         producer.check_integrity().unwrap();
         let _merge = producer.get_merge_instance().unwrap();
@@ -187,7 +187,7 @@ mod tests {
     fn empty_norms_consumer_accepts_field() {
         let mut consumer = EmptyNormsConsumer;
         let producer = EmptyNormsProducer;
-        let field = FieldInfo;
+        let field = FieldInfo::default();
         consumer.add_norms_field(&field, &producer).unwrap();
         consumer.close().unwrap();
     }
@@ -200,17 +200,18 @@ mod tests {
         let dir = crate::store::RamDirectory::default();
         let dir_ref: &dyn crate::store::Directory = &dir;
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
+        let field_infos = FieldInfos::default();
         let write_state = SegmentWriteState::new(
             crate::util::default_info_stream(),
             dir_ref,
             &SegmentInfo,
-            &FieldInfos,
+            &field_infos,
             &BufferedUpdates,
             context,
         );
         let _consumer = format.norms_consumer(&write_state).unwrap();
 
-        let read_state = SegmentReadState::new(dir_ref, &SegmentInfo, &FieldInfos, context);
+        let read_state = SegmentReadState::new(dir_ref, &SegmentInfo, &field_infos, context);
         let _producer = format.norms_producer(&read_state).unwrap();
     }
 }

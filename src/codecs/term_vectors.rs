@@ -225,7 +225,7 @@ mod tests {
     fn empty_term_vectors_writer_methods() {
         let mut writer = EmptyTermVectorsWriter;
         writer.start_document(1).unwrap();
-        let info = FieldInfo;
+        let info = FieldInfo::default();
         writer.start_field(&info, 1, true, true, true).unwrap();
         let term = BytesRef::new(b"term".to_vec());
         writer.start_term(&term, 1).unwrap();

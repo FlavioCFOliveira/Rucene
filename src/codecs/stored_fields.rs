@@ -210,7 +210,7 @@ mod tests {
     fn empty_stored_fields_writer_methods() {
         let mut writer = EmptyStoredFieldsWriter;
         writer.start_document().unwrap();
-        let info = FieldInfo;
+        let info = FieldInfo::default();
         writer.write_field_i32(&info, 1).unwrap();
         writer.write_field_i64(&info, 2).unwrap();
         writer.write_field_f32(&info, 1.0).unwrap();

@@ -13,8 +13,9 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::{Arc, LazyLock, RwLock};
 
-use crate::error::Result;
+use crate::error::{LuceneError, Result};
 use crate::search::AcceptDocs;
 
 use super::postings::MergeState;
@@ -263,14 +264,113 @@ pub trait KnnVectorsFormat: Send + Sync + fmt::Debug {
     fn name(&self) -> &str;
 
     /// Returns a writer to write vectors to the index.
-    fn fields_writer(&self, state: &SegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>>;
+    fn fields_writer<'a>(
+        &self,
+        state: &SegmentWriteState<'a>,
+    ) -> Result<Box<dyn KnnVectorsWriter + 'a>>;
 
     /// Returns a reader to read vectors from the index.
-    fn fields_reader(&self, state: &SegmentReadState) -> Result<Box<dyn KnnVectorsReader>>;
+    fn fields_reader<'a>(
+        &self,
+        state: &SegmentReadState<'a>,
+    ) -> Result<Box<dyn KnnVectorsReader + 'a>>;
 
     /// Returns the maximum number of vector dimensions supported for the given
     /// field name.
     fn get_max_dimensions(&self, _field_name: &str) -> i32;
+}
+
+// -----------------------------------------------------------------------------
+// KNN-vectors format registry
+// -----------------------------------------------------------------------------
+
+/// A registry mapping KNN-vectors-format short names to [`KnnVectorsFormat`]
+/// implementations.
+///
+/// The registry intentionally does not use reflection or SPI loading. Formats
+/// are registered explicitly with [`KnnVectorsFormatRegistry::register`] and
+/// looked up by name with [`KnnVectorsFormatRegistry::for_name`].
+#[derive(Debug, Default, Clone)]
+pub struct KnnVectorsFormatRegistry {
+    formats: Arc<RwLock<HashMap<String, Arc<dyn KnnVectorsFormat>>>>,
+}
+
+impl KnnVectorsFormatRegistry {
+    /// Creates an empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers a KNN-vectors format under the given short name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if `name` is empty, contains
+    /// characters other than ASCII alphanumerics, or is longer than 127 bytes.
+    /// Returns [`LuceneError::IllegalState`] if the name is already registered.
+    pub fn register<F>(&self, name: impl Into<String>, format: F) -> Result<()>
+    where
+        F: KnnVectorsFormat + 'static,
+    {
+        let name = name.into();
+        super::validate_service_name(&name)?;
+
+        let mut formats = self.formats.write().map_err(|_| {
+            LuceneError::IllegalState("KNN-vectors format registry lock was poisoned".to_string())
+        })?;
+
+        if formats.contains_key(&name) {
+            return Err(LuceneError::IllegalState(format!(
+                "KNN-vectors format already registered: {name}"
+            )));
+        }
+
+        formats.insert(name, Arc::new(format));
+        Ok(())
+    }
+
+    /// Looks up a KNN-vectors format by name.
+    ///
+    /// Returns `None` if no format has been registered under the given name.
+    pub fn for_name(&self, name: &str) -> Option<Arc<dyn KnnVectorsFormat>> {
+        self.formats
+            .read()
+            .map_err(|_| {
+                LuceneError::IllegalState(
+                    "KNN-vectors format registry lock was poisoned".to_string(),
+                )
+            })
+            .ok()?
+            .get(name)
+            .cloned()
+    }
+
+    /// Returns the names of all registered KNN-vectors formats, sorted
+    /// alphabetically.
+    pub fn available_knn_vectors_formats(&self) -> Vec<String> {
+        let Ok(formats) = self.formats.read() else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = formats.keys().cloned().collect();
+        names.sort();
+        names
+    }
+}
+
+static GLOBAL_KNN_VECTORS_REGISTRY: LazyLock<KnnVectorsFormatRegistry> =
+    LazyLock::new(KnnVectorsFormatRegistry::new);
+
+/// Looks up a KNN-vectors format by name from the global registry.
+///
+/// Returns `None` if no format has been registered under the given name.
+pub fn knn_vectors_for_name(name: &str) -> Option<Arc<dyn KnnVectorsFormat>> {
+    GLOBAL_KNN_VECTORS_REGISTRY.for_name(name)
+}
+
+/// Returns the names of all KNN-vectors formats registered in the global
+/// registry.
+pub fn available_knn_vectors_formats() -> Vec<String> {
+    GLOBAL_KNN_VECTORS_REGISTRY.available_knn_vectors_formats()
 }
 
 // -----------------------------------------------------------------------------
@@ -501,11 +601,17 @@ impl KnnVectorsFormat for EmptyKnnVectorsFormat {
         &self.name
     }
 
-    fn fields_writer(&self, _state: &SegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>> {
+    fn fields_writer<'a>(
+        &self,
+        _state: &SegmentWriteState<'a>,
+    ) -> Result<Box<dyn KnnVectorsWriter + 'a>> {
         Ok(Box::new(EmptyKnnVectorsWriter))
     }
 
-    fn fields_reader(&self, _state: &SegmentReadState) -> Result<Box<dyn KnnVectorsReader>> {
+    fn fields_reader<'a>(
+        &self,
+        _state: &SegmentReadState<'a>,
+    ) -> Result<Box<dyn KnnVectorsReader + 'a>> {
         Ok(Box::new(EmptyKnnVectorsReader))
     }
 
@@ -562,7 +668,7 @@ mod tests {
     #[test]
     fn empty_knn_vectors_writer_lifecycle() {
         let mut writer = EmptyKnnVectorsWriter;
-        let field = FieldInfo;
+        let field = FieldInfo::default();
         let _field_writer = writer.add_field(&field).unwrap();
         writer.flush(10, None).unwrap();
         writer.finish().unwrap();
@@ -572,7 +678,7 @@ mod tests {
     #[test]
     fn empty_buffering_knn_vectors_writer_lifecycle() {
         let mut writer = EmptyBufferingKnnVectorsWriter;
-        let field = FieldInfo;
+        let field = FieldInfo::default();
         writer
             .write_field_float(&field, &EmptyFloatVectorValues, 10)
             .unwrap();
@@ -612,17 +718,18 @@ mod tests {
         let dir = crate::store::RamDirectory::default();
         let dir_ref: &dyn crate::store::Directory = &dir;
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
+        let field_infos = FieldInfos::default();
         let write_state = SegmentWriteState::new(
             crate::util::default_info_stream(),
             dir_ref,
             &SegmentInfo,
-            &FieldInfos,
+            &field_infos,
             &BufferedUpdates,
             context,
         );
         let _writer = format.fields_writer(&write_state).unwrap();
 
-        let read_state = SegmentReadState::new(dir_ref, &SegmentInfo, &FieldInfos, context);
+        let read_state = SegmentReadState::new(dir_ref, &SegmentInfo, &field_infos, context);
         let _reader = format.fields_reader(&read_state).unwrap();
     }
 }

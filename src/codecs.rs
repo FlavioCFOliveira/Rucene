@@ -12,6 +12,7 @@ pub mod field_infos;
 pub mod knn_vectors;
 pub mod live_docs;
 pub mod norms;
+pub mod per_field;
 pub mod points;
 pub mod postings;
 pub mod segment_info;
@@ -35,7 +36,8 @@ pub use compound::{
     EmptyCompoundDirectory, EmptyCompoundFormat,
 };
 pub use doc_values::{
-    BinaryDocValues, DocValuesConsumer, DocValuesFormat, DocValuesProducer, DocValuesSkipper,
+    available_doc_values_formats, doc_values_for_name, BinaryDocValues, DocValuesConsumer,
+    DocValuesFormat, DocValuesFormatRegistry, DocValuesProducer, DocValuesSkipper,
     EmptyBinaryDocValues, EmptyDocValuesConsumer, EmptyDocValuesFormat, EmptyDocValuesProducer,
     EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
     EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues, SortedDocValues,
@@ -43,16 +45,20 @@ pub use doc_values::{
 };
 pub use field_infos::{EmptyFieldInfosFormat, FieldInfosFormat};
 pub use knn_vectors::{
-    BufferingKnnVectorsWriter, ByteVectorValues, EmptyBufferingKnnVectorsWriter,
-    EmptyByteVectorValues, EmptyFloatVectorValues, EmptyKnnCollector, EmptyKnnFieldVectorsWriter,
-    EmptyKnnVectorsFormat, EmptyKnnVectorsReader, EmptyKnnVectorsWriter, FloatVectorValues,
-    KnnCollector, KnnFieldVectorsWriter, KnnSearchStrategy, KnnVectorsFormat, KnnVectorsReader,
-    KnnVectorsWriter, SorterDocMap, TopDocs,
+    available_knn_vectors_formats, knn_vectors_for_name, BufferingKnnVectorsWriter,
+    ByteVectorValues, EmptyBufferingKnnVectorsWriter, EmptyByteVectorValues,
+    EmptyFloatVectorValues, EmptyKnnCollector, EmptyKnnFieldVectorsWriter, EmptyKnnVectorsFormat,
+    EmptyKnnVectorsReader, EmptyKnnVectorsWriter, FloatVectorValues, KnnCollector,
+    KnnFieldVectorsWriter, KnnSearchStrategy, KnnVectorsFormat, KnnVectorsFormatRegistry,
+    KnnVectorsReader, KnnVectorsWriter, SorterDocMap, TopDocs,
 };
 pub use live_docs::{EmptyLiveDocsFormat, LiveDocsFormat};
 pub use norms::{
     EmptyNormsConsumer, EmptyNormsDocValues, EmptyNormsFormat, EmptyNormsProducer, NormsConsumer,
     NormsFormat, NormsProducer,
+};
+pub use per_field::{
+    PerFieldDocValuesFormat, PerFieldKnnVectorsFormat, PerFieldMergeState, PerFieldPostingsFormat,
 };
 pub use points::{
     EmptyPointValues, EmptyPointsFormat, EmptyPointsReader, EmptyPointsWriter, PointValues,
@@ -538,11 +544,17 @@ mod tests {
             self.0
         }
 
-        fn fields_consumer(&self, _state: &SegmentWriteState) -> Result<Box<dyn FieldsConsumer>> {
+        fn fields_consumer<'a>(
+            &self,
+            _state: &SegmentWriteState<'a>,
+        ) -> Result<Box<dyn FieldsConsumer + 'a>> {
             Ok(Box::new(DummyFieldsConsumer))
         }
 
-        fn fields_producer(&self, _state: &SegmentReadState) -> Result<Box<dyn FieldsProducer>> {
+        fn fields_producer<'a>(
+            &self,
+            _state: &SegmentReadState<'a>,
+        ) -> Result<Box<dyn FieldsProducer + 'a>> {
             Ok(Box::new(DummyFieldsProducer))
         }
     }
@@ -552,17 +564,17 @@ mod tests {
             self.0
         }
 
-        fn fields_consumer(
+        fn fields_consumer<'a>(
             &self,
-            _state: &SegmentWriteState,
-        ) -> crate::error::Result<Box<dyn DocValuesConsumer>> {
+            _state: &SegmentWriteState<'a>,
+        ) -> crate::error::Result<Box<dyn DocValuesConsumer + 'a>> {
             Ok(Box::new(EmptyDocValuesConsumer))
         }
 
-        fn fields_producer(
+        fn fields_producer<'a>(
             &self,
-            _state: &SegmentReadState,
-        ) -> crate::error::Result<Box<dyn DocValuesProducer>> {
+            _state: &SegmentReadState<'a>,
+        ) -> crate::error::Result<Box<dyn DocValuesProducer + 'a>> {
             Ok(Box::new(EmptyDocValuesProducer))
         }
     }
@@ -629,7 +641,7 @@ mod tests {
             _segment_suffix: &str,
             _context: &dyn crate::store::IOContext,
         ) -> crate::error::Result<FieldInfos> {
-            Ok(FieldInfos)
+            Ok(FieldInfos::default())
         }
 
         fn write(
@@ -771,17 +783,17 @@ mod tests {
             self.0
         }
 
-        fn fields_writer(
+        fn fields_writer<'a>(
             &self,
-            _state: &SegmentWriteState,
-        ) -> crate::error::Result<Box<dyn KnnVectorsWriter>> {
+            _state: &SegmentWriteState<'a>,
+        ) -> crate::error::Result<Box<dyn KnnVectorsWriter + 'a>> {
             Ok(Box::new(EmptyKnnVectorsWriter))
         }
 
-        fn fields_reader(
+        fn fields_reader<'a>(
             &self,
-            _state: &SegmentReadState,
-        ) -> crate::error::Result<Box<dyn KnnVectorsReader>> {
+            _state: &SegmentReadState<'a>,
+        ) -> crate::error::Result<Box<dyn KnnVectorsReader + 'a>> {
             Ok(Box::new(EmptyKnnVectorsReader))
         }
 
