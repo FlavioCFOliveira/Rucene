@@ -1,15 +1,35 @@
 //! Indexing engine ported from `org.apache.lucene.index`.
 //!
-//! This module currently exposes the minimal support types shared by
-//! `Document`, `Field`, `FieldType` and the analysis pipeline.
+//! This module exposes the core value-accessor abstractions used by codec
+//! producers and index consumers: field metadata, segment information,
+//! doc-values, vector values, and point values.
 
 #![deny(unsafe_code)]
 
+pub mod doc_values;
 pub mod field_infos;
+pub mod point_values;
 pub mod segment_info;
+pub mod vector_values;
 
+pub use doc_values::{
+    BinaryDocValues, DocValues, DocValuesIterator, DocValuesSkipper, EmptyBinaryDocValues,
+    EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
+    EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues,
+    SingletonSortedNumericDocValues, SingletonSortedSetDocValues, SortedDocValues,
+    SortedNumericDocValues, SortedSetDocValues,
+};
 pub use field_infos::{FieldInfo, FieldInfos};
+pub use point_values::{
+    EmptyPointValues, IntersectVisitor, PointValues, Relation, MAX_DIMENSIONS,
+    MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
+};
 pub use segment_info::{SegmentCommitInfo, SegmentInfo};
+pub use vector_values::{
+    ByteVectorValues, DenseDocIndexIterator, DocIndexIterator, EmptyByteVectorValues,
+    EmptyFloatVectorValues, EmptyKnnVectorValues, FloatVectorValues, FromDisiDocIndexIterator,
+    KnnVectorValues,
+};
 
 use std::collections::HashMap;
 
@@ -138,21 +158,6 @@ pub enum VectorSimilarityFunction {
     COSINE,
     /// Maximum inner product.
     MAXIMUM_INNER_PRODUCT,
-}
-
-/// Access to indexed numeric values.
-///
-/// Only the constants from `org.apache.lucene.index.PointValues` are exposed
-/// here; the full point-values API is out of scope for this task.
-pub struct PointValues;
-
-impl PointValues {
-    /// Maximum number of bytes for each dimension.
-    pub const MAX_NUM_BYTES: i32 = 16;
-    /// Maximum number of dimensions.
-    pub const MAX_DIMENSIONS: i32 = 16;
-    /// Maximum number of index dimensions.
-    pub const MAX_INDEX_DIMENSIONS: i32 = 8;
 }
 
 /// Describes the properties of a field.
@@ -335,9 +340,9 @@ mod tests {
 
     #[test]
     fn point_values_constants_match_java() {
-        assert_eq!(PointValues::MAX_NUM_BYTES, 16);
-        assert_eq!(PointValues::MAX_DIMENSIONS, 16);
-        assert_eq!(PointValues::MAX_INDEX_DIMENSIONS, 8);
+        assert_eq!(MAX_NUM_BYTES, 16);
+        assert_eq!(MAX_DIMENSIONS, 16);
+        assert_eq!(MAX_INDEX_DIMENSIONS, 8);
     }
 
     #[test]

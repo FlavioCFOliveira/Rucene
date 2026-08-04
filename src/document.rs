@@ -16,7 +16,7 @@ use crate::analysis::{Analyzer, TokenStream};
 use crate::error::{LuceneError, Result};
 use crate::index::{
     DocValuesSkipIndexType, DocValuesType, IndexOptions, IndexableField, IndexableFieldType,
-    PointValues, VectorEncoding, VectorSimilarityFunction,
+    VectorEncoding, VectorSimilarityFunction, MAX_DIMENSIONS, MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
 };
 use crate::store::DataInput;
 use crate::util::BytesRef;
@@ -250,7 +250,7 @@ impl FieldType {
                 "dimensionCount must be >= 0".to_string(),
             ));
         }
-        if dimension_count > PointValues::MAX_DIMENSIONS {
+        if dimension_count > MAX_DIMENSIONS {
             return Err(LuceneError::IllegalArgument(
                 "dimensionCount exceeds MAX_DIMENSIONS".to_string(),
             ));
@@ -265,7 +265,7 @@ impl FieldType {
                 "indexDimensionCount must be <= dimensionCount".to_string(),
             ));
         }
-        if index_dimension_count > PointValues::MAX_INDEX_DIMENSIONS {
+        if index_dimension_count > MAX_INDEX_DIMENSIONS {
             return Err(LuceneError::IllegalArgument(
                 "indexDimensionCount exceeds MAX_INDEX_DIMENSIONS".to_string(),
             ));
@@ -275,7 +275,7 @@ impl FieldType {
                 "dimensionNumBytes must be >= 0".to_string(),
             ));
         }
-        if dimension_num_bytes > PointValues::MAX_NUM_BYTES {
+        if dimension_num_bytes > MAX_NUM_BYTES {
             return Err(LuceneError::IllegalArgument(
                 "dimensionNumBytes exceeds MAX_NUM_BYTES".to_string(),
             ));

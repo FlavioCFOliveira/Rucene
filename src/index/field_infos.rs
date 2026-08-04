@@ -11,8 +11,8 @@ use std::sync::RwLock;
 
 use crate::error::{LuceneError, Result};
 use crate::index::{
-    DocValuesSkipIndexType, DocValuesType, IndexOptions, PointValues, VectorEncoding,
-    VectorSimilarityFunction,
+    DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding, VectorSimilarityFunction,
+    MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
 };
 use crate::store::DataOutput;
 
@@ -464,10 +464,10 @@ impl FieldInfo {
                 self.name
             )));
         }
-        if index_dimension_count > PointValues::MAX_INDEX_DIMENSIONS {
+        if index_dimension_count > MAX_INDEX_DIMENSIONS {
             return Err(LuceneError::IllegalArgument(format!(
                 "point index dimension count must be <= PointValues.MAX_INDEX_DIMENSIONS (={}); got {index_dimension_count} for field='{}'",
-                PointValues::MAX_INDEX_DIMENSIONS,
+                MAX_INDEX_DIMENSIONS,
                 self.name
             )));
         }
@@ -483,10 +483,10 @@ impl FieldInfo {
                 self.name
             )));
         }
-        if num_bytes > PointValues::MAX_NUM_BYTES {
+        if num_bytes > MAX_NUM_BYTES {
             return Err(LuceneError::IllegalArgument(format!(
                 "point numBytes must be <= PointValues.MAX_NUM_BYTES (={}); got {num_bytes} for field='{}'",
-                PointValues::MAX_NUM_BYTES,
+                MAX_NUM_BYTES,
                 self.name
             )));
         }
