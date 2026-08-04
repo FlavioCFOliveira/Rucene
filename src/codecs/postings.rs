@@ -57,20 +57,9 @@ pub const POSTINGS_ENUM_ALL: i32 =
 // State abstractions
 // -----------------------------------------------------------------------------
 
-/// Per-term state shared between the terms dictionary and the postings
-/// implementation.
-///
-/// Equivalent to `org.apache.lucene.codecs.BlockTermState`.
-#[derive(Debug, Default, Clone)]
-pub struct BlockTermState {
-    /// Number of documents containing this term.
-    pub doc_freq: i32,
-    /// Total number of occurrences of this term, or `-1` if frequencies are
-    /// omitted.
-    pub total_term_freq: i64,
-    /// Ordinal of this term inside its block in the terms dictionary.
-    pub term_block_ord: i32,
-}
+pub use crate::codecs::term_state::{
+    BlockTermState, CompetitiveImpactAccumulator, Impact, TermStats,
+};
 
 /// Describes the properties of a single indexed field.
 ///

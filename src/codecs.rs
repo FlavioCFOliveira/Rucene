@@ -15,9 +15,11 @@ pub mod norms;
 pub mod points;
 pub mod postings;
 pub mod segment_info;
+pub mod skip_list;
 pub mod state;
 pub mod stored_fields;
 pub mod stub;
+pub mod term_state;
 pub mod term_vectors;
 
 pub use codec_util::{
@@ -29,7 +31,8 @@ pub use codec_util::{
 };
 
 pub use compound::{
-    CompoundDirectory, CompoundFormat, EmptyCompoundDirectory, EmptyCompoundFormat,
+    CompoundDirectory, CompoundFileDirectory, CompoundFileEntry, CompoundFormat,
+    EmptyCompoundDirectory, EmptyCompoundFormat,
 };
 pub use doc_values::{
     BinaryDocValues, DocValuesConsumer, DocValuesFormat, DocValuesProducer, DocValuesSkipper,
@@ -62,11 +65,15 @@ pub use postings::{
     POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
 };
 pub use segment_info::{EmptySegmentInfoFormat, SegmentInfoFormat};
+pub use skip_list::{
+    MultiLevelSkipListReader, MultiLevelSkipListWriter, SkipDataReader, SkipDataWriter,
+};
 pub use state::{SegmentReadState, SegmentWriteState};
 pub use stored_fields::{
     EmptyStoredFieldsFormat, EmptyStoredFieldsReader, EmptyStoredFieldsWriter, StoredFieldsFormat,
     StoredFieldsReader, StoredFieldsWriter,
 };
+pub use term_state::{BlockTermState, CompetitiveImpactAccumulator, Impact, TermStats};
 pub use term_vectors::{
     EmptyTermVectorsFormat, EmptyTermVectorsReader, EmptyTermVectorsWriter, TermVectorsFormat,
     TermVectorsReader, TermVectorsWriter,
