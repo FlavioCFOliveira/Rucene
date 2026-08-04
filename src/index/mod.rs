@@ -17,10 +17,11 @@ use crate::{
 /// Controls how much information is stored in the postings lists.
 ///
 /// Equivalent to `org.apache.lucene.index.IndexOptions`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
 pub enum IndexOptions {
     /// Not indexed.
+    #[default]
     NONE,
     /// Only documents are indexed.
     DOCS,

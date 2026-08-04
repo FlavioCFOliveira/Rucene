@@ -6,6 +6,15 @@
 //! byte-compatible with Apache Lucene Core 10.5.0.
 
 pub mod codec_util;
+pub mod compound;
+pub mod field_infos;
+pub mod live_docs;
+pub mod postings;
+pub mod segment_info;
+pub mod state;
+pub mod stored_fields;
+pub mod stub;
+pub mod term_vectors;
 
 pub use codec_util::{
     check_footer, check_header, check_header_no_magic, check_index_header, check_index_header_id,
@@ -13,6 +22,28 @@ pub use codec_util::{
     index_header_length, read_be_int, read_be_long, retrieve_checksum,
     retrieve_checksum_expected_length, write_be_int, write_be_long, write_footer, write_header,
     write_index_header, CODEC_MAGIC, FOOTER_MAGIC,
+};
+
+pub use compound::{
+    CompoundDirectory, CompoundFormat, EmptyCompoundDirectory, EmptyCompoundFormat,
+};
+pub use field_infos::{EmptyFieldInfosFormat, FieldInfosFormat};
+pub use live_docs::{EmptyLiveDocsFormat, LiveDocsFormat};
+pub use postings::{
+    available_postings_formats, postings_for_name, FieldsConsumer, FieldsProducer, MergeState,
+    PostingsFormat, PostingsFormatRegistry, PostingsReaderBase, PostingsWriterBase,
+    PushPostingsWriterBase, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS, POSTINGS_ENUM_NONE,
+    POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
+};
+pub use segment_info::{EmptySegmentInfoFormat, SegmentInfoFormat};
+pub use state::{SegmentReadState, SegmentWriteState};
+pub use stored_fields::{
+    EmptyStoredFieldsFormat, EmptyStoredFieldsReader, EmptyStoredFieldsWriter, StoredFieldsFormat,
+    StoredFieldsReader, StoredFieldsWriter,
+};
+pub use term_vectors::{
+    EmptyTermVectorsFormat, EmptyTermVectorsReader, EmptyTermVectorsWriter, TermVectorsFormat,
+    TermVectorsReader, TermVectorsWriter,
 };
 
 use std::collections::HashMap;
@@ -24,19 +55,13 @@ use crate::error::{LuceneError, Result};
 // ---------------------------------------------------------------------------
 // Placeholder sub-format SPI traits.
 //
-// Each trait mirrors one of the format classes in Java Lucene's
-// `org.apache.lucene.codecs` package. They are intentionally minimal here:
-// later tasks will add the full read/write API. Every format is a named SPI
-// component, so the only required method is `name`.
+// These traits mirror format classes in Java Lucene's `org.apache.lucene.codecs`
+// package whose full read/write API has not yet been ported. They are
+// intentionally minimal: every format is a named SPI component, so the only
+// required method is `name`. Tasks that port the corresponding concrete
+// format will replace these placeholders with the full traits defined in
+// sub-modules.
 // ---------------------------------------------------------------------------
-
-/// Encodes and decodes postings (inverted-index term-document lists).
-///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.PostingsFormat`.
-pub trait PostingsFormat: Send + Sync + fmt::Debug {
-    /// Returns this format's SPI name.
-    fn name(&self) -> &str;
-}
 
 /// Encodes and decodes doc values (columnar per-document values).
 ///
@@ -46,58 +71,10 @@ pub trait DocValuesFormat: Send + Sync + fmt::Debug {
     fn name(&self) -> &str;
 }
 
-/// Encodes and decodes stored fields.
-///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.StoredFieldsFormat`.
-pub trait StoredFieldsFormat: Send + Sync + fmt::Debug {
-    /// Returns this format's SPI name.
-    fn name(&self) -> &str;
-}
-
-/// Encodes and decodes term vectors.
-///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.TermVectorsFormat`.
-pub trait TermVectorsFormat: Send + Sync + fmt::Debug {
-    /// Returns this format's SPI name.
-    fn name(&self) -> &str;
-}
-
-/// Encodes and decodes the field infos file.
-///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.FieldInfosFormat`.
-pub trait FieldInfosFormat: Send + Sync + fmt::Debug {
-    /// Returns this format's SPI name.
-    fn name(&self) -> &str;
-}
-
-/// Encodes and decodes the segment info file.
-///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.SegmentInfoFormat`.
-pub trait SegmentInfoFormat: Send + Sync + fmt::Debug {
-    /// Returns this format's SPI name.
-    fn name(&self) -> &str;
-}
-
 /// Encodes and decodes document normalization values.
 ///
 /// Lucene Core equivalent: `org.apache.lucene.codecs.NormsFormat`.
 pub trait NormsFormat: Send + Sync + fmt::Debug {
-    /// Returns this format's SPI name.
-    fn name(&self) -> &str;
-}
-
-/// Encodes and decodes live documents (deleted docs).
-///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.LiveDocsFormat`.
-pub trait LiveDocsFormat: Send + Sync + fmt::Debug {
-    /// Returns this format's SPI name.
-    fn name(&self) -> &str;
-}
-
-/// Encodes and decodes compound files.
-///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.CompoundFormat`.
-pub trait CompoundFormat: Send + Sync + fmt::Debug {
     /// Returns this format's SPI name.
     fn name(&self) -> &str;
 }
@@ -263,7 +240,7 @@ impl CodecRegistry {
 
 /// Validates that a codec/format SPI name contains only ASCII alphanumerics
 /// and is between 1 and 127 bytes long.
-fn validate_service_name(name: &str) -> Result<()> {
+pub(crate) fn validate_service_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(LuceneError::IllegalArgument(
             "codec name must not be empty".to_string(),
@@ -501,7 +478,66 @@ impl Codec for FilterCodec {
 
 #[cfg(test)]
 mod tests {
+    use super::stub::*;
     use super::*;
+
+    /// A no-op fields consumer for the dummy postings format.
+    #[derive(Debug, Default, Clone)]
+    struct DummyFieldsConsumer;
+
+    impl FieldsConsumer for DummyFieldsConsumer {
+        fn write(
+            &mut self,
+            _fields: &dyn crate::codecs::postings::Fields,
+            _norms: &dyn crate::codecs::postings::NormsProducer,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn merge(
+            &mut self,
+            _merge_state: &MergeState,
+            _norms: &dyn crate::codecs::postings::NormsProducer,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A no-op fields producer for the dummy postings format.
+    #[derive(Debug, Default, Clone)]
+    struct DummyFieldsProducer;
+
+    impl crate::codecs::postings::Fields for DummyFieldsProducer {
+        fn size(&self) -> i32 {
+            0
+        }
+
+        fn terms(&self, _field: &str) -> Result<Option<Box<dyn crate::codecs::postings::Terms>>> {
+            Ok(None)
+        }
+
+        fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+            Box::new(std::iter::empty::<String>())
+        }
+    }
+
+    impl FieldsProducer for DummyFieldsProducer {
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
+            Ok(Box::new(self.clone()))
+        }
+
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
 
     /// A trivial named placeholder format used by the dummy codec in tests.
     #[derive(Debug)]
@@ -510,6 +546,14 @@ mod tests {
     impl PostingsFormat for DummyFormat {
         fn name(&self) -> &str {
             self.0
+        }
+
+        fn fields_consumer(&self, _state: &SegmentWriteState) -> Result<Box<dyn FieldsConsumer>> {
+            Ok(Box::new(DummyFieldsConsumer))
+        }
+
+        fn fields_producer(&self, _state: &SegmentReadState) -> Result<Box<dyn FieldsProducer>> {
+            Ok(Box::new(DummyFieldsProducer))
         }
     }
 
@@ -523,11 +567,49 @@ mod tests {
         fn name(&self) -> &str {
             self.0
         }
+
+        fn fields_reader(
+            &self,
+            _directory: &dyn crate::store::Directory,
+            _segment_info: &SegmentInfo,
+            _field_infos: &FieldInfos,
+            _context: &dyn crate::store::IOContext,
+        ) -> crate::error::Result<Box<dyn StoredFieldsReader>> {
+            Ok(Box::new(EmptyStoredFieldsReader))
+        }
+
+        fn fields_writer(
+            &self,
+            _directory: &dyn crate::store::Directory,
+            _segment_info: &SegmentInfo,
+            _context: &dyn crate::store::IOContext,
+        ) -> crate::error::Result<Box<dyn StoredFieldsWriter>> {
+            Ok(Box::new(EmptyStoredFieldsWriter))
+        }
     }
 
     impl TermVectorsFormat for DummyFormat {
         fn name(&self) -> &str {
             self.0
+        }
+
+        fn vectors_reader(
+            &self,
+            _directory: &dyn crate::store::Directory,
+            _segment_info: &SegmentInfo,
+            _field_infos: &FieldInfos,
+            _context: &dyn crate::store::IOContext,
+        ) -> crate::error::Result<Box<dyn TermVectorsReader>> {
+            Ok(Box::new(EmptyTermVectorsReader))
+        }
+
+        fn vectors_writer(
+            &self,
+            _directory: &dyn crate::store::Directory,
+            _segment_info: &SegmentInfo,
+            _context: &dyn crate::store::IOContext,
+        ) -> crate::error::Result<Box<dyn TermVectorsWriter>> {
+            Ok(Box::new(EmptyTermVectorsWriter))
         }
     }
 
@@ -535,11 +617,51 @@ mod tests {
         fn name(&self) -> &str {
             self.0
         }
+
+        fn read(
+            &self,
+            _directory: &dyn crate::store::Directory,
+            _segment_info: &SegmentInfo,
+            _segment_suffix: &str,
+            _context: &dyn crate::store::IOContext,
+        ) -> crate::error::Result<FieldInfos> {
+            Ok(FieldInfos)
+        }
+
+        fn write(
+            &self,
+            _directory: &dyn crate::store::Directory,
+            _segment_info: &SegmentInfo,
+            _segment_suffix: &str,
+            _infos: &FieldInfos,
+            _context: &dyn crate::store::IOContext,
+        ) -> crate::error::Result<()> {
+            Ok(())
+        }
     }
 
     impl SegmentInfoFormat for DummyFormat {
         fn name(&self) -> &str {
             self.0
+        }
+
+        fn read(
+            &self,
+            _directory: &dyn crate::store::Directory,
+            _segment_name: &str,
+            _segment_id: &[u8],
+            _context: &dyn crate::store::IOContext,
+        ) -> crate::error::Result<SegmentInfo> {
+            Ok(SegmentInfo)
+        }
+
+        fn write(
+            &self,
+            _directory: &dyn crate::store::Directory,
+            _info: &SegmentInfo,
+            _context: &dyn crate::store::IOContext,
+        ) -> crate::error::Result<()> {
+            Ok(())
         }
     }
 
@@ -553,11 +675,56 @@ mod tests {
         fn name(&self) -> &str {
             self.0
         }
+
+        fn read_live_docs(
+            &self,
+            _dir: &dyn crate::store::Directory,
+            _info: &SegmentCommitInfo,
+            _context: &dyn crate::store::IOContext,
+        ) -> crate::error::Result<Box<dyn crate::util::Bits>> {
+            Ok(Box::new(crate::util::MatchAllBits::new(0)))
+        }
+
+        fn write_live_docs(
+            &self,
+            _bits: &dyn crate::util::Bits,
+            _dir: &dyn crate::store::Directory,
+            _info: &SegmentCommitInfo,
+            _new_del_count: i32,
+            _context: &dyn crate::store::IOContext,
+        ) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        fn files(
+            &self,
+            _info: &SegmentCommitInfo,
+            _files: &mut Vec<String>,
+        ) -> crate::error::Result<()> {
+            Ok(())
+        }
     }
 
     impl CompoundFormat for DummyFormat {
         fn name(&self) -> &str {
             self.0
+        }
+
+        fn get_compound_reader(
+            &self,
+            _dir: &dyn crate::store::Directory,
+            _segment_info: &SegmentInfo,
+        ) -> crate::error::Result<Box<dyn CompoundDirectory>> {
+            Ok(Box::new(EmptyCompoundDirectory))
+        }
+
+        fn write(
+            &self,
+            _dir: &dyn crate::store::Directory,
+            _segment_info: &SegmentInfo,
+            _context: &dyn crate::store::IOContext,
+        ) -> crate::error::Result<()> {
+            Ok(())
         }
     }
 
