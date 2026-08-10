@@ -12,6 +12,10 @@ pub mod doc_values;
 pub mod field_infos;
 pub mod knn_vectors;
 pub mod live_docs;
+
+/// Bundled Lucene 9.0 sub-formats reused by the default `Lucene104` codec.
+pub mod lucene90;
+
 pub mod norms;
 pub mod per_field;
 pub mod points;
@@ -55,6 +59,8 @@ pub use knn_vectors::{
     KnnVectorsReader, KnnVectorsWriter, SorterDocMap, TopDocs,
 };
 pub use live_docs::{EmptyLiveDocsFormat, LiveDocsFormat};
+pub use lucene90::live_docs::Lucene90LiveDocsFormat;
+pub use lucene90::{Lucene90CompressingStoredFieldsFormat, Lucene90StoredFieldsFormat, Mode};
 pub use norms::{
     EmptyNormsConsumer, EmptyNormsDocValues, EmptyNormsFormat, EmptyNormsProducer, NormsConsumer,
     NormsFormat, NormsProducer,
