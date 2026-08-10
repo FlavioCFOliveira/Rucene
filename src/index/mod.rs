@@ -8,6 +8,7 @@
 
 pub mod doc_values;
 pub mod field_infos;
+pub mod merge;
 pub mod point_values;
 pub mod postings_enum;
 pub mod segment_info;
@@ -22,6 +23,9 @@ pub use doc_values::{
     SortedNumericDocValues, SortedSetDocValues,
 };
 pub use field_infos::{FieldInfo, FieldInfos};
+pub use merge::{
+    deletion_doc_map, identity_doc_map, DocIDMerger, DocIDMergerSub, DocMap, MergeState,
+};
 pub use point_values::{
     EmptyPointValues, IntersectVisitor, PointValues, Relation, MAX_DIMENSIONS,
     MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
