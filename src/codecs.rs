@@ -19,6 +19,9 @@ pub mod lucene90;
 /// Bundled Lucene 9.4 sub-formats reused by the default `Lucene104` codec.
 pub mod lucene94;
 
+/// Bundled Lucene 9.9 sub-formats reused by the default `Lucene104` codec.
+pub mod lucene99;
+
 pub mod norms;
 pub mod per_field;
 pub mod points;
@@ -65,6 +68,7 @@ pub use live_docs::{EmptyLiveDocsFormat, LiveDocsFormat};
 pub use lucene90::live_docs::Lucene90LiveDocsFormat;
 pub use lucene90::{Lucene90CompressingStoredFieldsFormat, Lucene90StoredFieldsFormat, Mode};
 pub use lucene94::Lucene94FieldInfosFormat;
+pub use lucene99::Lucene99SegmentInfoFormat;
 pub use norms::{
     EmptyNormsConsumer, EmptyNormsDocValues, EmptyNormsFormat, EmptyNormsProducer, NormsConsumer,
     NormsFormat, NormsProducer,

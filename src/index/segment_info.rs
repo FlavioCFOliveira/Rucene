@@ -113,6 +113,51 @@ impl SegmentInfo {
         })
     }
 
+    /// Creates a new `SegmentInfo` without an associated codec.
+    ///
+    /// This is used by `SegmentInfoFormat::read` before the codec name has been
+    /// resolved from the enclosing `SegmentInfos`. The codec must be set later
+    /// with [`set_codec`](Self::set_codec).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if `max_doc` is negative.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_without_codec(
+        directory: Arc<dyn Directory>,
+        version: Version,
+        min_version: Option<Version>,
+        name: String,
+        max_doc: i32,
+        is_compound_file: bool,
+        has_blocks: bool,
+        diagnostics: HashMap<String, String>,
+        id: [u8; ID_LENGTH],
+        attributes: HashMap<String, String>,
+        index_sort: Sort,
+    ) -> Result<Self> {
+        if max_doc < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "maxDoc must be non-negative: {max_doc}"
+            )));
+        }
+        Ok(Self {
+            directory,
+            version,
+            min_version,
+            name,
+            max_doc,
+            is_compound_file,
+            has_blocks,
+            codec: None,
+            diagnostics,
+            id,
+            attributes: RwLock::new(attributes),
+            index_sort,
+            files: RwLock::new(None),
+        })
+    }
+
     /// Returns the number of documents in the segment.
     ///
     /// # Errors
@@ -229,6 +274,11 @@ impl SegmentInfo {
     /// Returns the index sort for this segment.
     pub fn index_sort(&self) -> &Sort {
         &self.index_sort
+    }
+
+    /// Replaces the index sort for this segment.
+    pub fn set_index_sort(&mut self, sort: Sort) {
+        self.index_sort = sort;
     }
 
     /// Returns the files referenced by this segment.

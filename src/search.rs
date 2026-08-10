@@ -14,4 +14,4 @@ pub use doc_id_set_iterator::{
     BitsAcceptDocs, DocIdSetIterator, DocIdSetIteratorSupplier, EmptyDocIdSetIterator,
     IteratorAcceptDocs, RangeDocIdSetIterator, NO_MORE_DOCS,
 };
-pub use sort::{MissingValue, Sort, SortField, SortFieldType};
+pub use sort::{read_sort, write_sort, MissingValue, Sort, SortField, SortFieldType};
