@@ -31,6 +31,8 @@ memmap2 = { version = "0.9", optional = true }
 crc32fast = "1.4"
 # Cross-platform advisory file locks for NativeFSLockFactory.
 fslock = "0.2"
+# Deflate compression for the compressing stored-fields/term-vectors formats.
+flate2 = "1"
 # Unicode word segmentation (UAX #29) for the standard tokenizer.
 unicode-segmentation = "1.12"
 # Date/time handling for DateTools, matching Java's GregorianCalendar in GMT.

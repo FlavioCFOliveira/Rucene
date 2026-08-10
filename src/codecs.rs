@@ -7,6 +7,7 @@
 
 pub mod codec_util;
 pub mod compound;
+pub mod compressing;
 pub mod doc_values;
 pub mod field_infos;
 pub mod knn_vectors;
@@ -30,6 +31,7 @@ pub use codec_util::{
     retrieve_checksum_expected_length, write_be_int, write_be_long, write_footer, write_header,
     write_index_header, CODEC_MAGIC, FOOTER_MAGIC,
 };
+pub use compressing::{CompressionMode, Compressor, Decompressor, MatchingReaders};
 
 pub use compound::{
     CompoundDirectory, CompoundFileDirectory, CompoundFileEntry, CompoundFormat,
