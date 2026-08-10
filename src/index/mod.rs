@@ -8,6 +8,7 @@
 
 pub mod doc_values;
 pub mod field_infos;
+pub mod index_file_names;
 pub mod merge;
 pub mod point_values;
 pub mod postings_enum;
@@ -23,6 +24,20 @@ pub use doc_values::{
     SortedNumericDocValues, SortedSetDocValues,
 };
 pub use field_infos::{FieldInfo, FieldInfos};
+pub use index_file_names::{
+    file_name_from_generation, get_extension, is_codec_file, matches_extension, parse_generation,
+    parse_segment_name, segment_file_name, standard_extensions, strip_extension,
+    strip_segment_name, COMPOUND_FILE_ENTRIES_EXTENSION, COMPOUND_FILE_EXTENSION,
+    DOC_VALUES_EXTENSION, DOC_VALUES_META_EXTENSION, FIELD_INFO_EXTENSION, KNN_VECTORS_EXTENSION,
+    KNN_VECTORS_FORMAT_META_EXTENSION, KNN_VECTORS_INDEX_EXTENSION, KNN_VECTORS_META_EXTENSION,
+    LIVE_DOCS_EXTENSION, NORMS_EXTENSION, NORMS_META_EXTENSION, OLD_LIVE_DOCS_EXTENSION,
+    PAYLOADS_EXTENSION, PENDING_SEGMENTS, POINTS_EXTENSION, POINTS_INDEX_EXTENSION,
+    POINTS_META_EXTENSION, POSITIONS_EXTENSION, POSTINGS_EXTENSION, SEGMENTS,
+    SEGMENT_INFO_EXTENSION, STORED_FIELDS_EXTENSION, STORED_FIELDS_INDEX_EXTENSION,
+    STORED_FIELDS_META_EXTENSION, TERMS_EXTENSION, TERMS_INDEX_EXTENSION, TERMS_META_EXTENSION,
+    TERMS_POSTINGS_EXTENSION, VECTORS_FIELDS_EXTENSION, VECTORS_INDEX_EXTENSION,
+    VECTORS_META_EXTENSION,
+};
 pub use merge::{
     deletion_doc_map, identity_doc_map, DocIDMerger, DocIDMergerSub, DocMap, MergeState,
 };
