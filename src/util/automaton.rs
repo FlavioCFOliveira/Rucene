@@ -1519,11 +1519,26 @@ mod tests {
     struct ListTermsEnum {
         terms: Vec<BytesRef>,
         pos: usize,
+        atts: crate::util::attribute::AttributeSource,
+    }
+
+    impl ListTermsEnum {
+        fn new(terms: Vec<BytesRef>) -> Self {
+            Self {
+                terms,
+                pos: 0,
+                atts: crate::util::attribute::AttributeSource::new(),
+            }
+        }
     }
 
     impl TermsEnum for ListTermsEnum {
-        fn term(&self) -> &BytesRef {
-            &self.terms[self.pos]
+        fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
+            &mut self.atts
+        }
+
+        fn term(&self) -> crate::error::Result<BytesRef> {
+            Ok(self.terms[self.pos].clone())
         }
 
         fn postings(
@@ -1531,17 +1546,91 @@ mod tests {
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
         ) -> crate::error::Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(EmptyPostingsEnum))
+            Ok(Box::new(EmptyPostingsEnum::new()))
+        }
+
+        fn seek_exact(&mut self, _text: &BytesRef) -> crate::error::Result<bool> {
+            Ok(false)
+        }
+
+        fn seek_ceil(
+            &mut self,
+            _text: &BytesRef,
+        ) -> crate::error::Result<crate::index::SeekStatus> {
+            Ok(crate::index::SeekStatus::END)
+        }
+
+        fn seek_ord(&mut self, ord: i64) -> crate::error::Result<()> {
+            self.pos = ord as usize;
+            Ok(())
+        }
+
+        fn seek_term_state(
+            &mut self,
+            _text: &BytesRef,
+            _state: &dyn crate::index::TermState,
+        ) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        fn ord(&self) -> crate::error::Result<i64> {
+            Ok(self.pos as i64)
+        }
+
+        fn doc_freq(&self) -> crate::error::Result<i32> {
+            Ok(0)
+        }
+
+        fn total_term_freq(&self) -> crate::error::Result<i64> {
+            Ok(0)
+        }
+
+        fn impacts(
+            &mut self,
+            _flags: i32,
+        ) -> crate::error::Result<Box<dyn crate::index::ImpactsEnum>> {
+            Err(crate::error::LuceneError::UnsupportedOperation(
+                "impacts not supported".to_string(),
+            ))
+        }
+
+        fn term_state(&mut self) -> crate::error::Result<Box<dyn crate::index::TermState>> {
+            Ok(Box::new(
+                crate::codecs::term_state::BlockTermState::default(),
+            ))
+        }
+
+        fn next(&mut self) -> crate::error::Result<Option<BytesRef>> {
+            if self.pos >= self.terms.len() {
+                Ok(None)
+            } else {
+                let term = self.terms[self.pos].clone();
+                self.pos += 1;
+                Ok(Some(term))
+            }
         }
     }
 
     #[derive(Debug)]
-    struct IntersectTermsEnum;
+    struct IntersectTermsEnum {
+        atts: crate::util::attribute::AttributeSource,
+    }
+
+    impl IntersectTermsEnum {
+        fn new() -> Self {
+            Self {
+                atts: crate::util::attribute::AttributeSource::new(),
+            }
+        }
+    }
 
     impl TermsEnum for IntersectTermsEnum {
-        fn term(&self) -> &BytesRef {
-            static MARKER: std::sync::OnceLock<BytesRef> = std::sync::OnceLock::new();
-            MARKER.get_or_init(|| BytesRef::new(b"intersect".to_vec()))
+        fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
+            &mut self.atts
+        }
+
+        fn term(&self) -> crate::error::Result<BytesRef> {
+            Ok(BytesRef::new(b"intersect".to_vec()))
         }
 
         fn postings(
@@ -1549,7 +1638,61 @@ mod tests {
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
         ) -> crate::error::Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(EmptyPostingsEnum))
+            Ok(Box::new(EmptyPostingsEnum::new()))
+        }
+
+        fn seek_exact(&mut self, _text: &BytesRef) -> crate::error::Result<bool> {
+            Ok(false)
+        }
+
+        fn seek_ceil(
+            &mut self,
+            _text: &BytesRef,
+        ) -> crate::error::Result<crate::index::SeekStatus> {
+            Ok(crate::index::SeekStatus::END)
+        }
+
+        fn seek_ord(&mut self, _ord: i64) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        fn seek_term_state(
+            &mut self,
+            _text: &BytesRef,
+            _state: &dyn crate::index::TermState,
+        ) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        fn ord(&self) -> crate::error::Result<i64> {
+            Ok(-1)
+        }
+
+        fn doc_freq(&self) -> crate::error::Result<i32> {
+            Ok(0)
+        }
+
+        fn total_term_freq(&self) -> crate::error::Result<i64> {
+            Ok(0)
+        }
+
+        fn impacts(
+            &mut self,
+            _flags: i32,
+        ) -> crate::error::Result<Box<dyn crate::index::ImpactsEnum>> {
+            Err(crate::error::LuceneError::UnsupportedOperation(
+                "impacts not supported".to_string(),
+            ))
+        }
+
+        fn term_state(&mut self) -> crate::error::Result<Box<dyn crate::index::TermState>> {
+            Ok(Box::new(
+                crate::codecs::term_state::BlockTermState::default(),
+            ))
+        }
+
+        fn next(&mut self) -> crate::error::Result<Option<BytesRef>> {
+            Ok(None)
         }
     }
 
@@ -1560,10 +1703,7 @@ mod tests {
 
     impl Terms for StubTerms {
         fn iterator(&self) -> crate::error::Result<Box<dyn TermsEnum>> {
-            Ok(Box::new(ListTermsEnum {
-                terms: self.terms.clone(),
-                pos: 0,
-            }))
+            Ok(Box::new(ListTermsEnum::new(self.terms.clone())))
         }
 
         fn size(&self) -> i64 {
@@ -1598,11 +1738,11 @@ mod tests {
             false
         }
 
-        fn min(&self) -> crate::error::Result<Option<&BytesRef>> {
+        fn min(&self) -> crate::error::Result<Option<BytesRef>> {
             Ok(None)
         }
 
-        fn max(&self) -> crate::error::Result<Option<&BytesRef>> {
+        fn max(&self) -> crate::error::Result<Option<BytesRef>> {
             Ok(None)
         }
 
@@ -1612,7 +1752,7 @@ mod tests {
             _skip_ahead: Option<&BytesRef>,
         ) -> crate::error::Result<Box<dyn TermsEnum>> {
             self.intersect_called.store(true, Ordering::SeqCst);
-            Ok(Box::new(IntersectTermsEnum))
+            Ok(Box::new(IntersectTermsEnum::new()))
         }
     }
 
@@ -1628,19 +1768,19 @@ mod tests {
 
         // NONE returns an empty iterator.
         let none = CompiledAutomaton::new(automata::make_empty(), true, true, true).unwrap();
-        let it = none.get_terms_enum(&terms).unwrap();
-        assert_eq!(it.term(), &BytesRef::default());
+        let mut it = none.get_terms_enum(&terms).unwrap();
+        assert_eq!(it.next().unwrap(), None);
 
         // ALL returns the full iterator positioned on the first term.
         let all = CompiledAutomaton::new(automata::make_any_string(), false, true, false).unwrap();
         let it = all.get_terms_enum(&terms).unwrap();
-        assert_eq!(it.term(), &BytesRef::new(b"alpha".to_vec()));
+        assert_eq!(it.term().unwrap(), BytesRef::new(b"alpha".to_vec()));
 
         // SINGLE returns a SingleTermsEnum reporting the fixed term.
         let single =
             CompiledAutomaton::new(automata::make_string(b"beta"), true, true, true).unwrap();
         let it = single.get_terms_enum(&terms).unwrap();
-        assert_eq!(it.term(), &BytesRef::new(b"beta".to_vec()));
+        assert_eq!(it.term().unwrap(), BytesRef::new(b"beta".to_vec()));
 
         // NORMAL delegates to Terms::intersect.
         let min = BytesRef::new(b"a".to_vec());
@@ -1650,7 +1790,7 @@ mod tests {
         assert!(!terms.intersect_called.load(Ordering::SeqCst));
         let it = normal.get_terms_enum(&terms).unwrap();
         assert!(terms.intersect_called.load(Ordering::SeqCst));
-        assert_eq!(it.term(), &BytesRef::new(b"intersect".to_vec()));
+        assert_eq!(it.term().unwrap(), BytesRef::new(b"intersect".to_vec()));
     }
 
     #[test]

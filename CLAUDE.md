@@ -57,9 +57,9 @@ Internal module organization should mirror the Lucene Core Java structure as clo
 
 ---
 
-## 4. Production orientation
+## 4. Perfection orientation
 
-**Everything** done — development, fixes, evaluations, analyses, audits, and any other actions — must be treated with production-grade rigor.
+**Everything** done — development, fixes, evaluations, analyses, audits, and any other actions — must be treated with exemplary, production-grade rigor. The goal is not merely "good enough"; every deliverable should be as correct, safe, and well-crafted as possible within the constraints of the task.
 
 ### 4.1 Exemplary components
 
@@ -202,6 +202,18 @@ If the answer to any of these questions is "no" or "I don't know," the economica
 **Limit of this principle (precedence):** token economy **never** justifies compromising correctness, safety, completeness, or evidence gathering. If the cheaper path produces a different, incomplete, or uncertain result, then it is **not** the same operation — in that case, rules 7 (Never guess), 8 (Measure to decide), and 11 (Decision framework) prevail. Saving tokens must never lead to guessing or assuming.
 
 ### 12.2 Concrete examples
+
+**Prefer the local CLI when available**
+
+- If an operation can be performed locally through a CLI command, **use the CLI** rather than a more expensive alternative such as a web lookup, browser tool, or remote service. The local CLI is systematically the cheapest option when an equivalent command exists.
+- Examples:
+  - Use `git log`, `git show`, `git diff`, and `git blame` locally instead of browsing the repository web interface;
+  - Use `gh issue view`, `gh pr view`, and `gh api` instead of opening the corresponding GitHub web pages;
+  - Use `rmp` for all task, sprint, and Knowledge Graph operations (see 5 and 6), since it is also the single source of truth;
+  - Use `--help`, `man`, or the command's own documentation instead of searching online for the same information;
+  - Filter and aggregate data locally (for example with `grep`, `jq`, `sort`, `wc`) instead of pulling the full dataset into the context.
+- Reserve more expensive paths (web, browser, remote services) for cases where **no local CLI can produce the same result**.
+- This preference is still subject to the equivalence test in 12.1: if the CLI does not return the same information with the same scope and accuracy, use the path that guarantees the result.
 
 **External information gathering**
 

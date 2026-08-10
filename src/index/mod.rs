@@ -9,7 +9,9 @@
 pub mod doc_values;
 pub mod field_infos;
 pub mod point_values;
+pub mod postings_enum;
 pub mod segment_info;
+pub mod terms;
 pub mod vector_values;
 
 pub use doc_values::{
@@ -24,7 +26,15 @@ pub use point_values::{
     EmptyPointValues, IntersectVisitor, PointValues, Relation, MAX_DIMENSIONS,
     MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
 };
+pub use postings_enum::{
+    feature_requested, DocAndFloatFeatureBuffer, EmptyPostingsEnum, FreqAndNormBuffer, Impacts,
+    ImpactsEnum, ImpactsSource, PostingsEnum, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS,
+    POSTINGS_ENUM_NONE, POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
+};
 pub use segment_info::{SegmentCommitInfo, SegmentInfo};
+pub use terms::{
+    EmptyFields, EmptyTerms, EmptyTermsEnum, Fields, SeekStatus, TermState, Terms, TermsEnum,
+};
 pub use vector_values::{
     ByteVectorValues, DenseDocIndexIterator, DocIndexIterator, EmptyByteVectorValues,
     EmptyFloatVectorValues, EmptyKnnVectorValues, FloatVectorValues, FromDisiDocIndexIterator,

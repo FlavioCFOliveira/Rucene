@@ -7,6 +7,8 @@
 
 use std::collections::BTreeSet;
 
+use crate::index::TermState;
+
 /// Per-term statistics.
 ///
 /// Equivalent to `org.apache.lucene.codecs.TermStats`.
@@ -216,6 +218,22 @@ impl BlockTermState {
         self.total_term_freq = other.total_term_freq;
         self.term_block_ord = other.term_block_ord;
         self.block_file_pointer = other.block_file_pointer;
+    }
+}
+
+impl TermState for BlockTermState {
+    fn copy_from(&mut self, other: &dyn crate::index::TermState) {
+        if let Some(other) = other.as_any().downcast_ref::<Self>() {
+            BlockTermState::copy_from(self, other);
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn crate::index::TermState> {
+        Box::new(*self)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

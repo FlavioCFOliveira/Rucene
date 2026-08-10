@@ -32,33 +32,18 @@ use crate::codecs::stub::{FieldInfo, FieldInfos};
 use crate::codecs::term_vectors::TermVectorsReader;
 use crate::error::{LuceneError, Result};
 use crate::index::IndexOptions;
-use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
+use crate::search::NO_MORE_DOCS;
 use crate::store::{DataInput, DataOutput, IndexInput, IndexOutput};
-use crate::util::automaton::CompiledAutomaton;
 use crate::util::{BytesRef, FixedBitSet};
 
 // -----------------------------------------------------------------------------
-// Postings flags
+// Postings flags (re-exported from the index module)
 // -----------------------------------------------------------------------------
 
-/// Request no optional information from a postings enum.
-pub const POSTINGS_ENUM_NONE: i32 = 0x00;
-
-/// Request term frequencies.
-pub const POSTINGS_ENUM_FREQS: i32 = 0x04;
-
-/// Request term positions.
-pub const POSTINGS_ENUM_POSITIONS: i32 = 0x08;
-
-/// Request payloads.
-pub const POSTINGS_ENUM_PAYLOADS: i32 = 0x10;
-
-/// Request term offsets.
-pub const POSTINGS_ENUM_OFFSETS: i32 = 0x20;
-
-/// Request everything (freqs, positions, payloads, offsets).
-pub const POSTINGS_ENUM_ALL: i32 =
-    POSTINGS_ENUM_FREQS | POSTINGS_ENUM_POSITIONS | POSTINGS_ENUM_PAYLOADS | POSTINGS_ENUM_OFFSETS;
+pub use crate::index::{
+    feature_requested as postings_feature_requested, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS,
+    POSTINGS_ENUM_NONE, POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
+};
 
 // -----------------------------------------------------------------------------
 // State abstractions
@@ -153,177 +138,20 @@ pub trait NormsProducer: Send + Sync {
 }
 
 // -----------------------------------------------------------------------------
-// Field / term / postings iteration
+// Field / term / postings iteration (re-exported from the index module)
 // -----------------------------------------------------------------------------
 
-/// Iterator over the terms of a field.
-///
-/// Equivalent to `org.apache.lucene.index.TermsEnum`.
-pub trait TermsEnum {
-    /// Returns the current term bytes.
-    fn term(&self) -> &BytesRef;
-
-    /// Returns a postings iterator for the current term.
-    ///
-    /// `reuse` may be a previously returned iterator that the implementation
-    /// may recycle. `flags` is a bitmask of [`POSTINGS_ENUM_FREQS`],
-    /// [`POSTINGS_ENUM_POSITIONS`], [`POSTINGS_ENUM_PAYLOADS`] and
-    /// [`POSTINGS_ENUM_OFFSETS`].
-    fn postings(
-        &mut self,
-        reuse: Option<Box<dyn PostingsEnum>>,
-        flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>>;
-}
-
-/// Terms for a single field.
-///
-/// Equivalent to `org.apache.lucene.index.Terms`.
-pub trait Terms: Send + Sync {
-    /// Returns an iterator over the terms in this field.
-    fn iterator(&self) -> Result<Box<dyn TermsEnum>>;
-
-    /// Returns the number of terms for this field, or `-1` if unknown.
-    fn size(&self) -> i64;
-
-    /// Returns the number of documents that have at least one term for this
-    /// field, or `-1` if unknown.
-    fn doc_count(&self) -> i32;
-
-    /// Returns the sum of [`PostingsEnum::freq`] for each term, or `-1` if
-    /// frequencies are omitted.
-    fn sum_total_term_freq(&self) -> i64;
-
-    /// Returns the sum of [`BlockTermState::doc_freq`] for each term, or `-1`
-    /// if unknown.
-    fn sum_doc_freq(&self) -> i64;
-
-    /// Returns whether term frequencies are available.
-    fn has_freqs(&self) -> bool;
-
-    /// Returns whether term positions are available.
-    fn has_positions(&self) -> bool;
-
-    /// Returns whether payloads are available.
-    fn has_payloads(&self) -> bool;
-
-    /// Returns whether term offsets are available.
-    fn has_offsets(&self) -> bool;
-
-    /// Returns the lowest term, if known.
-    fn min(&self) -> Result<Option<&BytesRef>>;
-
-    /// Returns the highest term, if known.
-    fn max(&self) -> Result<Option<&BytesRef>>;
-
-    /// Returns a `TermsEnum` that visits only terms accepted by `automaton`.
-    ///
-    /// `skip_ahead` may be used to skip terms before the given prefix.
-    fn intersect(
-        &self,
-        _automaton: &CompiledAutomaton,
-        _skip_ahead: Option<&BytesRef>,
-    ) -> Result<Box<dyn TermsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
-            "terms intersection is not supported by this implementation".to_string(),
-        ))
-    }
-}
-
-/// Postings iterator: doc IDs plus optional frequencies, positions, payloads and
-/// offsets.
-///
-/// Equivalent to `org.apache.lucene.index.PostingsEnum`.
-pub trait PostingsEnum: DocIdSetIterator {
-    /// Returns the frequency of the current document.
-    fn freq(&self) -> Result<i32>;
-
-    /// Advances to the next position for the current document.
-    fn next_position(&mut self) -> Result<i32>;
-
-    /// Returns the start offset for the current position, or `-1` if offsets
-    /// are omitted.
-    fn start_offset(&self) -> i32;
-
-    /// Returns the end offset for the current position, or `-1` if offsets are
-    /// omitted.
-    fn end_offset(&self) -> i32;
-
-    /// Returns the payload for the current position, or `None` if none.
-    fn get_payload(&self) -> Result<Option<&[u8]>>;
-}
-
-/// Postings iterator that also exposes impact (block-max scoring) data.
-///
-/// Equivalent to `org.apache.lucene.index.ImpactsEnum`.
-pub trait ImpactsEnum: PostingsEnum {}
+pub use crate::index::{
+    EmptyFields, EmptyTerms, EmptyTermsEnum, Fields, ImpactsEnum, PostingsEnum, SeekStatus,
+    TermState, Terms, TermsEnum,
+};
 
 /// Empty postings iterator.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyPostingsEnum;
-
-impl DocIdSetIterator for EmptyPostingsEnum {
-    fn doc_id(&self) -> i32 {
-        NO_MORE_DOCS
-    }
-
-    fn next_doc(&mut self) -> Result<i32> {
-        Ok(NO_MORE_DOCS)
-    }
-
-    fn advance(&mut self, _target: i32) -> Result<i32> {
-        Ok(NO_MORE_DOCS)
-    }
-
-    fn cost(&self) -> i64 {
-        0
-    }
-}
-
-impl PostingsEnum for EmptyPostingsEnum {
-    fn freq(&self) -> Result<i32> {
-        Ok(0)
-    }
-
-    fn next_position(&mut self) -> Result<i32> {
-        Ok(-1)
-    }
-
-    fn start_offset(&self) -> i32 {
-        -1
-    }
-
-    fn end_offset(&self) -> i32 {
-        -1
-    }
-
-    fn get_payload(&self) -> Result<Option<&[u8]>> {
-        Ok(None)
-    }
-}
-
-/// Empty terms iterator.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyTermsEnum;
-
-impl TermsEnum for EmptyTermsEnum {
-    fn term(&self) -> &BytesRef {
-        static EMPTY: std::sync::OnceLock<BytesRef> = std::sync::OnceLock::new();
-        EMPTY.get_or_init(BytesRef::default)
-    }
-
-    fn postings(
-        &mut self,
-        _reuse: Option<Box<dyn PostingsEnum>>,
-        _flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
-        Ok(Box::new(EmptyPostingsEnum))
-    }
-}
+pub use crate::index::EmptyPostingsEnum;
 
 /// Returns an empty terms iterator.
 pub fn empty_terms_enum() -> Box<dyn TermsEnum> {
-    Box::new(EmptyTermsEnum)
+    Box::new(EmptyTermsEnum::new())
 }
 
 /// Terms iterator that always reports a single fixed term and delegates
@@ -333,12 +161,17 @@ pub fn empty_terms_enum() -> Box<dyn TermsEnum> {
 pub struct SingleTermsEnum {
     inner: Box<dyn TermsEnum>,
     term: BytesRef,
+    atts: crate::util::attribute::AttributeSource,
 }
 
 impl SingleTermsEnum {
     /// Creates a single-term enum wrapping `inner` and reporting `term`.
     pub fn new(inner: Box<dyn TermsEnum>, term: BytesRef) -> Self {
-        Self { inner, term }
+        Self {
+            inner,
+            term,
+            atts: crate::util::attribute::AttributeSource::new(),
+        }
     }
 }
 
@@ -351,8 +184,12 @@ impl std::fmt::Debug for SingleTermsEnum {
 }
 
 impl TermsEnum for SingleTermsEnum {
-    fn term(&self) -> &BytesRef {
-        &self.term
+    fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
+        &mut self.atts
+    }
+
+    fn term(&self) -> Result<BytesRef> {
+        Ok(self.term.clone())
     }
 
     fn postings(
@@ -362,21 +199,56 @@ impl TermsEnum for SingleTermsEnum {
     ) -> Result<Box<dyn PostingsEnum>> {
         self.inner.postings(reuse, flags)
     }
-}
 
-/// Collection of per-field terms for a segment.
-///
-/// Equivalent to `org.apache.lucene.index.Fields`.
-pub trait Fields: Send + Sync {
-    /// Returns the number of fields.
-    fn size(&self) -> i32;
+    fn seek_exact(&mut self, _text: &BytesRef) -> Result<bool> {
+        Ok(false)
+    }
 
-    /// Returns the terms for the named field, or `None` if the field has no
-    /// indexed terms.
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>>;
+    fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
+        Ok(SeekStatus::END)
+    }
 
-    /// Returns an iterator over the field names.
-    fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_>;
+    fn seek_ord(&mut self, _ord: i64) -> Result<()> {
+        Ok(())
+    }
+
+    fn seek_term_state(&mut self, _text: &BytesRef, _state: &dyn TermState) -> Result<()> {
+        Ok(())
+    }
+
+    fn ord(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "ord not supported by SingleTermsEnum".to_string(),
+        ))
+    }
+
+    fn doc_freq(&self) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(
+            "doc_freq not supported by SingleTermsEnum".to_string(),
+        ))
+    }
+
+    fn total_term_freq(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "total_term_freq not supported by SingleTermsEnum".to_string(),
+        ))
+    }
+
+    fn impacts(&mut self, _flags: i32) -> Result<Box<dyn crate::index::ImpactsEnum>> {
+        Err(LuceneError::UnsupportedOperation(
+            "impacts not supported by SingleTermsEnum".to_string(),
+        ))
+    }
+
+    fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        Err(LuceneError::UnsupportedOperation(
+            "term_state not supported by SingleTermsEnum".to_string(),
+        ))
+    }
+
+    fn next(&mut self) -> Result<Option<BytesRef>> {
+        Ok(None)
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -860,6 +732,7 @@ impl<T: PushPostingsWriterBase + ?Sized> PostingsWriterBase for T {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::DocIdSetIterator;
 
     // Stub Fields -----------------------------------------------------------
     #[derive(Debug, Default, Clone)]
@@ -881,12 +754,17 @@ mod tests {
 
     // Stub TermsEnum --------------------------------------------------------
     #[derive(Debug, Default, Clone)]
-    struct StubTermsEnum;
+    struct StubTermsEnum {
+        atts: crate::util::attribute::AttributeSource,
+    }
 
     impl TermsEnum for StubTermsEnum {
-        fn term(&self) -> &BytesRef {
-            static EMPTY: std::sync::OnceLock<BytesRef> = std::sync::OnceLock::new();
-            EMPTY.get_or_init(BytesRef::default)
+        fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
+            &mut self.atts
+        }
+
+        fn term(&self) -> Result<BytesRef> {
+            Ok(BytesRef::default())
         }
 
         fn postings(
@@ -895,6 +773,48 @@ mod tests {
             _flags: i32,
         ) -> Result<Box<dyn PostingsEnum>> {
             Ok(Box::new(StubPostingsEnum::default()))
+        }
+
+        fn seek_exact(&mut self, _text: &BytesRef) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
+            Ok(SeekStatus::END)
+        }
+
+        fn seek_ord(&mut self, _ord: i64) -> Result<()> {
+            Ok(())
+        }
+
+        fn seek_term_state(&mut self, _text: &BytesRef, _state: &dyn TermState) -> Result<()> {
+            Ok(())
+        }
+
+        fn ord(&self) -> Result<i64> {
+            Ok(-1)
+        }
+
+        fn doc_freq(&self) -> Result<i32> {
+            Ok(0)
+        }
+
+        fn total_term_freq(&self) -> Result<i64> {
+            Ok(0)
+        }
+
+        fn impacts(&mut self, _flags: i32) -> Result<Box<dyn crate::index::ImpactsEnum>> {
+            Ok(Box::new(StubImpactsEnum::default()))
+        }
+
+        fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+            Ok(Box::new(
+                crate::codecs::term_state::BlockTermState::default(),
+            ))
+        }
+
+        fn next(&mut self) -> Result<Option<BytesRef>> {
+            Ok(None)
         }
     }
 
@@ -990,7 +910,36 @@ mod tests {
         }
     }
 
+    impl crate::index::ImpactsSource for StubImpactsEnum {
+        fn advance_shallow(&mut self, _target: i32) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_impacts(&mut self) -> Result<Box<dyn crate::index::Impacts>> {
+            Ok(Box::new(StubImpacts::default()))
+        }
+    }
+
     impl ImpactsEnum for StubImpactsEnum {}
+
+    #[derive(Debug, Default, Clone)]
+    struct StubImpacts;
+
+    impl crate::index::Impacts for StubImpacts {
+        fn num_levels(&self) -> i32 {
+            1
+        }
+
+        fn doc_id_up_to(&self, _level: i32) -> i32 {
+            i32::MAX
+        }
+
+        fn get_impacts(&self, _level: i32) -> crate::index::FreqAndNormBuffer {
+            let mut buf = crate::index::FreqAndNormBuffer::new();
+            buf.add(1, 1);
+            buf
+        }
+    }
 
     // Stub NumericDocValues / NormsProducer ---------------------------------
     #[derive(Debug, Default, Clone)]
@@ -1409,7 +1358,7 @@ mod tests {
         let result = PostingsWriterBase::write_term(
             &mut writer,
             &BytesRef::default(),
-            &mut StubTermsEnum,
+            &mut StubTermsEnum::default(),
             &mut docs_seen,
             &StubNormsProducer,
         )
@@ -1473,7 +1422,7 @@ mod tests {
         let result = writer
             .write_term(
                 &BytesRef::default(),
-                &mut StubTermsEnum,
+                &mut StubTermsEnum::default(),
                 &mut docs_seen,
                 &StubNormsProducer,
             )
