@@ -57,3 +57,57 @@ A module is considered compatible when:
 
 - At least one round-trip portability test passes for its primary output files.
 - `cargo test` includes a test that fails if byte output diverges from the reference fixture.
+
+## 8. Java codec harness
+
+The reusable reference-index generator lives under
+`tests/fixtures/java-codec-harness`. It is a Maven project that depends on
+Apache Lucene Core 10.5.0 (plus `lucene-demo`, `lucene-analysis-common` and
+`lucene-queryparser`) and writes deterministic indexes using `IndexWriter` with
+`Lucene104Codec`.
+
+### 8.1 Manual usage
+
+```bash
+cd tests/fixtures/java-codec-harness
+mvn -q compile exec:java \
+  -Dexec.mainClass=org.apache.lucene.rucene.codec.CodecIndexWriter \
+  -Dexec.args="/tmp/rucene-ref-index text"
+```
+
+The second argument is the *document shape*. Supported shapes:
+
+| Shape        | Fields exercised                              |
+| ------------ | --------------------------------------------- |
+| `text`       | `StringField`, `TextField`                    |
+| `docvalues`  | numeric, sorted, sorted-set, binary doc-values |
+| `points`     | `IntPoint`, `LongPoint`, `FloatPoint`, `DoublePoint` |
+| `vectors`    | `KnnFloatVectorField`                         |
+| `stored`     | `StoredField`                                   |
+| `termvectors`| text field with term vectors enabled          |
+
+### 8.2 Adding a new shape
+
+1. Open `tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/CodecIndexWriter.java`.
+2. Add a new `case` in `writeDocuments` and a new `write*Documents` helper that
+   adds deterministic documents to the `IndexWriter`.
+3. Keep the number of documents and field values deterministic so that the
+   generated index is byte-identical across runs.
+4. Add the shape name to the integration test in `tests/portability/codecs.rs`
+   (`java_harness_supports_all_document_shapes`) so it is exercised by `cargo test`.
+5. When Rucene can write the same shape, add a round-trip test that calls
+   `assert_directories_equal` to compare the Java reference tree with the
+   Rucene-produced tree.
+
+### 8.3 Automated invocation
+
+The integration test target `portability_codecs` compiles and runs the harness
+automatically:
+
+```bash
+cargo test --test portability_codecs
+```
+
+The test currently verifies that the harness produces a valid Lucene index
+for every supported shape. Byte-for-byte comparisons with Rucene output will be
+added once the corresponding Rust codec writers are implemented.

@@ -44,6 +44,10 @@ proptest = "1"
 criterion = { version = "0.5", features = ["async_tokio"] }
 tempfile = "3"
 
+[[test]]
+name = "portability_codecs"
+path = "tests/portability/codecs.rs"
+
 [profile.release]
 lto = true
 codegen-units = 1
