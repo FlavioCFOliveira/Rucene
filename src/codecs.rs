@@ -69,7 +69,10 @@ pub use knn_vectors::{
 };
 pub use live_docs::{EmptyLiveDocsFormat, LiveDocsFormat};
 pub use lucene90::live_docs::Lucene90LiveDocsFormat;
-pub use lucene90::{Lucene90CompressingStoredFieldsFormat, Lucene90StoredFieldsFormat, Mode};
+pub use lucene90::{
+    Lucene90CompressingStoredFieldsFormat, Lucene90DocValuesFormat, Lucene90StoredFieldsFormat,
+    Mode,
+};
 pub use lucene94::Lucene94FieldInfosFormat;
 pub use lucene99::Lucene99SegmentInfoFormat;
 pub use norms::{

@@ -1992,7 +1992,10 @@ mod tests {
                 .write_field_i64(field_infos.field_info("value").unwrap(), 1234567890123i64)
                 .unwrap();
             writer
-                .write_field_f32(field_infos.field_info("value").unwrap(), std::f32::consts::PI)
+                .write_field_f32(
+                    field_infos.field_info("value").unwrap(),
+                    std::f32::consts::PI,
+                )
                 .unwrap();
             writer
                 .write_field_f64(
@@ -2052,7 +2055,10 @@ mod tests {
             vec![
                 ("id".to_string(), StoredValue::Int(42)),
                 ("value".to_string(), StoredValue::Long(1234567890123i64)),
-                ("value".to_string(), StoredValue::Float(std::f32::consts::PI)),
+                (
+                    "value".to_string(),
+                    StoredValue::Float(std::f32::consts::PI)
+                ),
                 (
                     "value".to_string(),
                     StoredValue::Double(std::f64::consts::E)

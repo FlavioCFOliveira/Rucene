@@ -6,6 +6,11 @@
 //! These traits provide the abstract read/write API for per-document columnar
 //! values (numeric, binary, sorted, sorted-set and sorted-numeric). Concrete
 //! codecs implement the format-specific encoding underneath this API.
+//!
+//! The per-document value iterators are re-exported from
+//! [`crate::index::doc_values`] so that the codec layer and the index layer
+//! share the same iterator contract (position via `next_doc`/`advance`, value
+//! retrieval only after the iterator is positioned on a doc that has a value).
 
 #![deny(unsafe_code)]
 
@@ -14,95 +19,18 @@ use std::fmt;
 use std::sync::{Arc, LazyLock, RwLock};
 
 use crate::error::{LuceneError, Result};
-use crate::util::BytesRef;
+
+pub use crate::index::doc_values::{
+    BinaryDocValues, DocValues, DocValuesIterator, DocValuesSkipper, EmptyBinaryDocValues,
+    EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
+    EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues,
+    SingletonSortedNumericDocValues, SingletonSortedSetDocValues, SortedDocValues,
+    SortedNumericDocValues, SortedSetDocValues,
+};
 
 use super::postings::MergeState;
 use super::state::{SegmentReadState, SegmentWriteState};
 use super::stub::FieldInfo;
-
-// -----------------------------------------------------------------------------
-// Per-field value abstractions
-// -----------------------------------------------------------------------------
-
-/// Iterator over the numeric doc values of a single field.
-///
-/// Equivalent to `org.apache.lucene.index.NumericDocValues`.
-pub trait NumericDocValues: Send + Sync {
-    /// Returns the numeric value for the given document.
-    fn get(&self, doc_id: i32) -> Result<i64>;
-}
-
-/// Iterator over the binary doc values of a single field.
-///
-/// Equivalent to `org.apache.lucene.index.BinaryDocValues`.
-pub trait BinaryDocValues: Send + Sync {
-    /// Returns the binary value for the given document.
-    fn get(&self, doc_id: i32) -> Result<BytesRef>;
-}
-
-/// Iterator over the sorted binary doc values of a single field.
-///
-/// Equivalent to `org.apache.lucene.index.SortedDocValues`.
-pub trait SortedDocValues: Send + Sync {
-    /// Returns the ordinal for the current document.
-    fn ord_value(&self) -> Result<i32>;
-
-    /// Returns the number of unique values.
-    fn get_value_count(&self) -> Result<i32>;
-
-    /// Looks up the binary value for the given ordinal.
-    fn lookup_ord(&self, ord: i32) -> Result<BytesRef>;
-}
-
-/// Iterator over the sorted numeric doc values of a single field.
-///
-/// Equivalent to `org.apache.lucene.index.SortedNumericDocValues`.
-pub trait SortedNumericDocValues: Send + Sync {
-    /// Positions the iterator on or after the given document and returns the
-    /// number of values for that document.
-    fn set_document(&self, doc_id: i32) -> Result<i32>;
-
-    /// Returns the next numeric value for the current document.
-    fn next_value(&self) -> Result<i64>;
-}
-
-/// Iterator over the sorted set doc values of a single field.
-///
-/// Equivalent to `org.apache.lucene.index.SortedSetDocValues`.
-pub trait SortedSetDocValues: Send + Sync {
-    /// Positions the iterator on or after the given document and returns the
-    /// number of values for that document.
-    fn set_document(&self, doc_id: i32) -> Result<i32>;
-
-    /// Returns the next ordinal for the current document.
-    fn next_ord(&self) -> Result<i64>;
-
-    /// Returns the number of unique values.
-    fn get_value_count(&self) -> Result<i64>;
-
-    /// Looks up the binary value for the given ordinal.
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef>;
-}
-
-/// Skip index for fast-forwarding inside a doc-values field.
-///
-/// Equivalent to `org.apache.lucene.index.DocValuesSkipper`.
-pub trait DocValuesSkipper: Send + Sync {
-    /// Positions the skipper at or after the target document.
-    fn advance(&self, target: i32) -> Result<i32>;
-
-    /// Returns the first doc ID covered by the current block.
-    fn min_doc_id(&self) -> i32;
-
-    /// Returns the last doc ID (inclusive) covered by the current block.
-    fn max_doc_id(&self) -> i32;
-
-    /// Returns the minimum value in the current block.
-    fn min_value(&self) -> i64;
-
-    /// Returns the maximum value in the current block.
-    fn max_value(&self) -> i64;
-}
 
 // -----------------------------------------------------------------------------
 // Producer
@@ -113,22 +41,28 @@ pub trait DocValuesSkipper: Send + Sync {
 /// Equivalent to `org.apache.lucene.codecs.DocValuesProducer`.
 pub trait DocValuesProducer: Send + Sync + fmt::Debug {
     /// Returns the numeric values for the given field.
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>>;
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues + Send + Sync>>;
 
     /// Returns the binary values for the given field.
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>>;
+    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues + Send + Sync>>;
 
     /// Returns the sorted values for the given field.
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>>;
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues + Send + Sync>>;
 
     /// Returns the sorted-numeric values for the given field.
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>>;
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Box<dyn SortedNumericDocValues + Send + Sync>>;
 
     /// Returns the sorted-set values for the given field.
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>>;
+    fn get_sorted_set(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Box<dyn SortedSetDocValues + Send + Sync>>;
 
     /// Returns the skip index for the given field.
-    fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>>;
+    fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper + Send + Sync>>;
 
     /// Checks consistency of this producer.
     fn check_integrity(&self) -> Result<()>;
@@ -310,132 +244,38 @@ pub fn available_doc_values_formats() -> Vec<String> {
 // No-op implementations
 // -----------------------------------------------------------------------------
 
-/// A no-op numeric doc-values iterator that always returns zero.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyNumericDocValues;
-
-impl NumericDocValues for EmptyNumericDocValues {
-    fn get(&self, _doc_id: i32) -> Result<i64> {
-        Ok(0)
-    }
-}
-
-/// A no-op binary doc-values iterator that always returns an empty value.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyBinaryDocValues;
-
-impl BinaryDocValues for EmptyBinaryDocValues {
-    fn get(&self, _doc_id: i32) -> Result<BytesRef> {
-        Ok(BytesRef::new(Vec::new()))
-    }
-}
-
-/// A no-op sorted doc-values iterator.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptySortedDocValues;
-
-impl SortedDocValues for EmptySortedDocValues {
-    fn ord_value(&self) -> Result<i32> {
-        Ok(-1)
-    }
-
-    fn get_value_count(&self) -> Result<i32> {
-        Ok(0)
-    }
-
-    fn lookup_ord(&self, _ord: i32) -> Result<BytesRef> {
-        Ok(BytesRef::new(Vec::new()))
-    }
-}
-
-/// A no-op sorted-numeric doc-values iterator.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptySortedNumericDocValues;
-
-impl SortedNumericDocValues for EmptySortedNumericDocValues {
-    fn set_document(&self, _doc_id: i32) -> Result<i32> {
-        Ok(0)
-    }
-
-    fn next_value(&self) -> Result<i64> {
-        Ok(0)
-    }
-}
-
-/// A no-op sorted-set doc-values iterator.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptySortedSetDocValues;
-
-impl SortedSetDocValues for EmptySortedSetDocValues {
-    fn set_document(&self, _doc_id: i32) -> Result<i32> {
-        Ok(0)
-    }
-
-    fn next_ord(&self) -> Result<i64> {
-        Ok(-1)
-    }
-
-    fn get_value_count(&self) -> Result<i64> {
-        Ok(0)
-    }
-
-    fn lookup_ord(&self, _ord: i64) -> Result<BytesRef> {
-        Ok(BytesRef::new(Vec::new()))
-    }
-}
-
-/// A no-op doc-values skipper.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyDocValuesSkipper;
-
-impl DocValuesSkipper for EmptyDocValuesSkipper {
-    fn advance(&self, target: i32) -> Result<i32> {
-        Ok(target)
-    }
-
-    fn min_doc_id(&self) -> i32 {
-        0
-    }
-
-    fn max_doc_id(&self) -> i32 {
-        0
-    }
-
-    fn min_value(&self) -> i64 {
-        0
-    }
-
-    fn max_value(&self) -> i64 {
-        0
-    }
-}
-
 /// A no-op doc-values producer.
 #[derive(Debug, Default, Clone)]
 pub struct EmptyDocValuesProducer;
 
 impl DocValuesProducer for EmptyDocValuesProducer {
-    fn get_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        Ok(Box::new(EmptyNumericDocValues))
+    fn get_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues + Send + Sync>> {
+        Ok(Box::new(EmptyNumericDocValues::new()))
     }
 
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        Ok(Box::new(EmptyBinaryDocValues))
+    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues + Send + Sync>> {
+        Ok(Box::new(EmptyBinaryDocValues::new()))
     }
 
-    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        Ok(Box::new(EmptySortedDocValues))
+    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn SortedDocValues + Send + Sync>> {
+        Ok(Box::new(EmptySortedDocValues::new()))
     }
 
-    fn get_sorted_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        Ok(Box::new(EmptySortedNumericDocValues))
+    fn get_sorted_numeric(
+        &self,
+        _field: &FieldInfo,
+    ) -> Result<Box<dyn SortedNumericDocValues + Send + Sync>> {
+        Ok(Box::new(EmptySortedNumericDocValues::new()))
     }
 
-    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        Ok(Box::new(EmptySortedSetDocValues))
+    fn get_sorted_set(
+        &self,
+        _field: &FieldInfo,
+    ) -> Result<Box<dyn SortedSetDocValues + Send + Sync>> {
+        Ok(Box::new(EmptySortedSetDocValues::new()))
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper + Send + Sync>> {
         Ok(Box::new(EmptyDocValuesSkipper))
     }
 
@@ -542,76 +382,73 @@ impl DocValuesFormat for EmptyDocValuesFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 
     #[test]
-    fn empty_numeric_doc_values_returns_zero() {
-        let values = EmptyNumericDocValues;
-        assert_eq!(values.get(0).unwrap(), 0);
-        assert_eq!(values.get(100).unwrap(), 0);
+    fn empty_numeric_doc_values_returns_no_docs() {
+        let mut values = EmptyNumericDocValues::new();
+        assert_eq!(values.doc_id(), -1);
+        assert_eq!(values.next_doc().unwrap(), NO_MORE_DOCS);
+        assert!(!values.advance_exact(0).unwrap());
+        assert!(values.long_value().is_err());
     }
 
     #[test]
-    fn empty_binary_doc_values_returns_empty() {
-        let values = EmptyBinaryDocValues;
-        assert_eq!(values.get(0).unwrap().length, 0);
+    fn empty_binary_doc_values_returns_no_docs() {
+        let mut values = EmptyBinaryDocValues::new();
+        assert_eq!(values.next_doc().unwrap(), NO_MORE_DOCS);
+        assert!(values.binary_value().is_err());
     }
 
     #[test]
     fn empty_sorted_doc_values_has_no_values() {
-        let values = EmptySortedDocValues;
-        assert_eq!(values.ord_value().unwrap(), -1);
+        let values = EmptySortedDocValues::new();
         assert_eq!(values.get_value_count().unwrap(), 0);
+        assert_eq!(values.lookup_ord(0).unwrap().length, 0);
+        assert!(values.ord_value().is_err());
     }
 
     #[test]
-    fn empty_sorted_numeric_doc_values_has_no_values() {
-        let values = EmptySortedNumericDocValues;
-        assert_eq!(values.set_document(0).unwrap(), 0);
+    fn empty_sorted_numeric_doc_values_has_zero_values() {
+        let mut values = EmptySortedNumericDocValues::new();
+        assert!(!values.advance_exact(0).unwrap());
+        assert_eq!(values.doc_value_count().unwrap(), 0);
     }
 
     #[test]
-    fn empty_sorted_set_doc_values_has_no_values() {
-        let values = EmptySortedSetDocValues;
-        assert_eq!(values.set_document(0).unwrap(), 0);
-        assert_eq!(values.next_ord().unwrap(), -1);
+    fn empty_sorted_set_doc_values_has_empty_dictionary() {
+        let mut values = EmptySortedSetDocValues::new();
+        assert!(!values.advance_exact(0).unwrap());
+        assert_eq!(values.get_value_count().unwrap(), 0);
+        assert_eq!(values.lookup_ord(0).unwrap().length, 0);
     }
 
     #[test]
-    fn empty_doc_values_skipper_advance_is_identity() {
-        let skipper = EmptyDocValuesSkipper;
-        assert_eq!(skipper.advance(42).unwrap(), 42);
+    fn empty_doc_values_skipper_reports_no_interval() {
+        let mut skipper = EmptyDocValuesSkipper;
+        skipper.advance(42).unwrap();
+        assert_eq!(skipper.num_levels(), 1);
+        assert_eq!(skipper.min_doc_id(0), -1);
+        assert_eq!(skipper.max_doc_id(0), -1);
+        assert_eq!(skipper.global_doc_count(), 0);
     }
 
     #[test]
     fn empty_doc_values_producer_returns_empty_iterators() {
         let producer = EmptyDocValuesProducer;
         let field = FieldInfo::default();
-        assert_eq!(producer.get_numeric(&field).unwrap().get(0).unwrap(), 0);
-        assert_eq!(
-            producer.get_binary(&field).unwrap().get(0).unwrap().length,
-            0
-        );
-        assert_eq!(
-            producer.get_sorted(&field).unwrap().ord_value().unwrap(),
-            -1
-        );
-        assert_eq!(
-            producer
-                .get_sorted_numeric(&field)
-                .unwrap()
-                .set_document(0)
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            producer
-                .get_sorted_set(&field)
-                .unwrap()
-                .set_document(0)
-                .unwrap(),
-            0
-        );
-        assert_eq!(producer.get_skipper(&field).unwrap().min_doc_id(), 0);
+        let mut numeric = producer.get_numeric(&field).unwrap();
+        assert_eq!(numeric.next_doc().unwrap(), NO_MORE_DOCS);
+        let mut binary = producer.get_binary(&field).unwrap();
+        assert_eq!(binary.next_doc().unwrap(), NO_MORE_DOCS);
+        let mut sorted = producer.get_sorted(&field).unwrap();
+        assert_eq!(sorted.next_doc().unwrap(), NO_MORE_DOCS);
+        let mut sorted_numeric = producer.get_sorted_numeric(&field).unwrap();
+        assert_eq!(sorted_numeric.next_doc().unwrap(), NO_MORE_DOCS);
+        let mut sorted_set = producer.get_sorted_set(&field).unwrap();
+        assert_eq!(sorted_set.next_doc().unwrap(), NO_MORE_DOCS);
+        let skipper = producer.get_skipper(&field).unwrap();
+        assert_eq!(skipper.num_levels(), 1);
         producer.check_integrity().unwrap();
     }
 

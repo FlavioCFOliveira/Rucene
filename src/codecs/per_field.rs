@@ -807,36 +807,42 @@ impl<'a> DocValuesProducer for DvFieldsReader<'a> {
     fn get_numeric(
         &self,
         field: &FieldInfo,
-    ) -> Result<Box<dyn super::doc_values::NumericDocValues>> {
+    ) -> Result<Box<dyn super::doc_values::NumericDocValues + Send + Sync>> {
         self.producer_for(field)?.get_numeric(field)
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn super::doc_values::BinaryDocValues>> {
+    fn get_binary(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Box<dyn super::doc_values::BinaryDocValues + Send + Sync>> {
         self.producer_for(field)?.get_binary(field)
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn super::doc_values::SortedDocValues>> {
+    fn get_sorted(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Box<dyn super::doc_values::SortedDocValues + Send + Sync>> {
         self.producer_for(field)?.get_sorted(field)
     }
 
     fn get_sorted_numeric(
         &self,
         field: &FieldInfo,
-    ) -> Result<Box<dyn super::doc_values::SortedNumericDocValues>> {
+    ) -> Result<Box<dyn super::doc_values::SortedNumericDocValues + Send + Sync>> {
         self.producer_for(field)?.get_sorted_numeric(field)
     }
 
     fn get_sorted_set(
         &self,
         field: &FieldInfo,
-    ) -> Result<Box<dyn super::doc_values::SortedSetDocValues>> {
+    ) -> Result<Box<dyn super::doc_values::SortedSetDocValues + Send + Sync>> {
         self.producer_for(field)?.get_sorted_set(field)
     }
 
     fn get_skipper(
         &self,
         field: &FieldInfo,
-    ) -> Result<Box<dyn super::doc_values::DocValuesSkipper>> {
+    ) -> Result<Box<dyn super::doc_values::DocValuesSkipper + Send + Sync>> {
         self.producer_for(field)?.get_skipper(field)
     }
 

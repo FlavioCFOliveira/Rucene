@@ -456,7 +456,7 @@ pub trait RandomAccessInput: IndexInput {
 ///
 /// Equivalent to `org.apache.lucene.store.IndexInput`. Implementations are not
 /// thread-safe; each thread must use its own instance, obtained by cloning.
-pub trait IndexInput: DataInput {
+pub trait IndexInput: DataInput + Send + Sync {
     /// Closes this stream to further operations.
     fn close(&mut self) -> Result<()>;
 
