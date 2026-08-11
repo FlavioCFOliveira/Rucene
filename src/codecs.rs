@@ -22,6 +22,9 @@ pub mod lucene94;
 /// Bundled Lucene 9.9 sub-formats reused by the default `Lucene104` codec.
 pub mod lucene99;
 
+/// Bundled Lucene 10.3 sub-formats reused by the default `Lucene104` codec.
+pub mod lucene103;
+
 /// Low-level helpers for the `Lucene104` postings format.
 pub mod lucene104;
 
@@ -68,6 +71,7 @@ pub use knn_vectors::{
     KnnVectorsReader, KnnVectorsWriter, SorterDocMap, TopDocs,
 };
 pub use live_docs::{EmptyLiveDocsFormat, LiveDocsFormat};
+pub use lucene103::{Lucene103BlockTreeTermsWriter, TrieBuilder, TrieReader};
 pub use lucene90::live_docs::Lucene90LiveDocsFormat;
 pub use lucene90::{
     Lucene90CompressingStoredFieldsFormat, Lucene90DocValuesFormat, Lucene90StoredFieldsFormat,
