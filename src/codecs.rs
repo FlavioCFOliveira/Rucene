@@ -22,6 +22,9 @@ pub mod lucene94;
 /// Bundled Lucene 9.9 sub-formats reused by the default `Lucene104` codec.
 pub mod lucene99;
 
+/// Low-level helpers for the `Lucene104` postings format.
+pub mod lucene104;
+
 pub mod norms;
 pub mod per_field;
 pub mod points;

@@ -924,6 +924,47 @@ impl SortedSetDocValues for SingletonSortedSetDocValues {
 }
 
 // -----------------------------------------------------------------------------
+// Box forwarding impls
+// -----------------------------------------------------------------------------
+
+/// Forwarding implementations so that `Box<dyn Trait>` can be used wherever
+/// `dyn Trait` is expected. This mirrors Java's polymorphic references and
+/// avoids manual unboxing at every call site.
+impl<T: DocIdSetIterator + ?Sized> DocIdSetIterator for Box<T> {
+    fn doc_id(&self) -> i32 {
+        (&**self).doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        (&mut **self).next_doc()
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        (&mut **self).advance(target)
+    }
+
+    fn cost(&self) -> i64 {
+        (&**self).cost()
+    }
+
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        (&mut **self).into_bit_set(up_to, bit_set, offset)
+    }
+}
+
+impl<T: DocValuesIterator + ?Sized> DocValuesIterator for Box<T> {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        (&mut **self).advance_exact(target)
+    }
+}
+
+impl<T: NumericDocValues + ?Sized> NumericDocValues for Box<T> {
+    fn long_value(&self) -> Result<i64> {
+        (&**self).long_value()
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
 

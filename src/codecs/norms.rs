@@ -13,10 +13,10 @@ use std::fmt;
 
 use crate::error::Result;
 
-use super::doc_values::NumericDocValues;
 use super::postings::MergeState;
 use super::state::{SegmentReadState, SegmentWriteState};
 use super::stub::FieldInfo;
+use crate::index::doc_values::{DocValues, EmptyNumericDocValues, NumericDocValues};
 
 // -----------------------------------------------------------------------------
 // Producer
@@ -25,7 +25,7 @@ use super::stub::FieldInfo;
 /// Reads normalization values from a segment.
 ///
 /// Equivalent to `org.apache.lucene.codecs.NormsProducer`.
-pub trait NormsProducer: Send + Sync + fmt::Debug {
+pub trait NormsProducer: fmt::Debug {
     /// Returns the numeric norm values for the given field.
     fn get_norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>>;
 
@@ -46,7 +46,7 @@ pub trait NormsProducer: Send + Sync + fmt::Debug {
 /// Writes normalization values for a segment.
 ///
 /// Equivalent to `org.apache.lucene.codecs.NormsConsumer`.
-pub trait NormsConsumer: Send + Sync + fmt::Debug {
+pub trait NormsConsumer: fmt::Debug {
     /// Writes normalization values for a field.
     fn add_norms_field(&mut self, field: &FieldInfo, values: &dyn NormsProducer) -> Result<()>;
 
@@ -84,15 +84,12 @@ pub trait NormsFormat: Send + Sync + fmt::Debug {
 // No-op implementations
 // -----------------------------------------------------------------------------
 
-/// A no-op numeric doc-values iterator that always returns zero.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyNormsDocValues;
-
-impl NumericDocValues for EmptyNormsDocValues {
-    fn get(&self, _doc_id: i32) -> Result<i64> {
-        Ok(0)
-    }
-}
+/// A no-op numeric doc-values iterator that returns no documents.
+///
+/// This is an alias for [`EmptyNumericDocValues`] from the `index` module so
+/// that the norms API uses the same iterator-based [`NumericDocValues`] trait
+/// as the rest of the doc-values stack.
+pub type EmptyNormsDocValues = EmptyNumericDocValues;
 
 /// A no-op norms producer.
 #[derive(Debug, Default, Clone)]
@@ -100,7 +97,7 @@ pub struct EmptyNormsProducer;
 
 impl NormsProducer for EmptyNormsProducer {
     fn get_norms(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        Ok(Box::new(EmptyNormsDocValues))
+        Ok(Box::new(DocValues::empty_numeric()))
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -168,17 +165,25 @@ mod tests {
     use crate::index::FieldInfos;
 
     #[test]
-    fn empty_norms_doc_values_returns_zero() {
-        let norms = EmptyNormsDocValues;
-        assert_eq!(norms.get(0).unwrap(), 0);
-        assert_eq!(norms.get(42).unwrap(), 0);
+    fn empty_norms_doc_values_is_exhausted() {
+        use crate::index::doc_values::DocValuesIterator;
+        use crate::search::DocIdSetIterator;
+
+        let mut norms = EmptyNormsDocValues::default();
+        assert_eq!(norms.doc_id(), -1);
+        assert_eq!(norms.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
+        assert!(!norms.advance_exact(0).unwrap());
+        assert_eq!(norms.cost(), 0);
     }
 
     #[test]
     fn empty_norms_producer_returns_empty_values() {
+        use crate::search::DocIdSetIterator;
+
         let mut producer = EmptyNormsProducer;
         let field = FieldInfo::default();
-        assert_eq!(producer.get_norms(&field).unwrap().get(0).unwrap(), 0);
+        let mut values = producer.get_norms(&field).unwrap();
+        assert_eq!(values.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
         producer.check_integrity().unwrap();
         let _merge = producer.get_merge_instance().unwrap();
         producer.close().unwrap();
