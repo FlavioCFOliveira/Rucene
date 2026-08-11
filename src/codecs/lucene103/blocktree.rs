@@ -12,9 +12,10 @@ use std::fmt;
 
 use crate::codecs::codec_util::{write_be_long, write_footer, write_index_header};
 use crate::codecs::postings::{
-    Fields, FieldsConsumer, MergeState, NormsProducer, PostingsWriterBase, TermsEnum,
+    Fields, FieldsConsumer, FieldsProducer, MergeState, NormsProducer, PostingsReaderBase,
+    PostingsWriterBase, Terms, TermsEnum,
 };
-use crate::codecs::state::SegmentWriteState;
+use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::{FieldInfo, FieldInfos};
 use crate::codecs::term_state::BlockTermState;
 use crate::error::{LuceneError, Result};
@@ -510,7 +511,7 @@ pub struct Lucene103BlockTreeTermsWriter<'a> {
 impl<'a> Lucene103BlockTreeTermsWriter<'a> {
     /// Creates a new writer with the current format version.
     pub fn new(
-        state: &'a SegmentWriteState,
+        state: &SegmentWriteState<'a>,
         postings_writer: Box<dyn PostingsWriterBase>,
         min_items_in_block: i32,
         max_items_in_block: i32,
@@ -527,7 +528,7 @@ impl<'a> Lucene103BlockTreeTermsWriter<'a> {
     /// Expert constructor that allows configuring the version, used for backward
     /// compatibility tests.
     pub fn new_with_version(
-        state: &'a SegmentWriteState,
+        state: &SegmentWriteState<'a>,
         postings_writer: Box<dyn PostingsWriterBase>,
         min_items_in_block: i32,
         max_items_in_block: i32,
@@ -693,6 +694,95 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
         index_out.close()?;
         self.postings_writer.close()?;
         Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Terms dictionary reader skeleton
+// -----------------------------------------------------------------------------
+
+/// Block-based terms index and dictionary reader.
+///
+/// This is a minimal skeleton that satisfies the [`FieldsProducer`] contract.
+/// It opens no files and reports an empty term space. The full recursive block
+/// tree loading, suffix decompression and FST-style trie index will be added in
+/// later tasks.
+///
+/// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.Lucene103BlockTreeTermsReader`.
+pub struct Lucene103BlockTreeTermsReader {
+    postings_reader: Box<dyn PostingsReaderBase>,
+    segment: String,
+    segment_suffix: String,
+    version: i32,
+}
+
+impl std::fmt::Debug for Lucene103BlockTreeTermsReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Lucene103BlockTreeTermsReader")
+            .field("segment", &self.segment)
+            .field("segment_suffix", &self.segment_suffix)
+            .field("version", &self.version)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Lucene103BlockTreeTermsReader {
+    /// Creates a new skeleton reader.
+    pub fn new(
+        postings_reader: Box<dyn PostingsReaderBase>,
+        state: &SegmentReadState,
+    ) -> Result<Self> {
+        Ok(Self {
+            postings_reader,
+            segment: state.segment_info.name.clone(),
+            segment_suffix: state.segment_suffix.clone(),
+            version: VERSION_CURRENT,
+        })
+    }
+
+    /// Returns the segment name this reader was opened for.
+    pub fn segment(&self) -> &str {
+        &self.segment
+    }
+
+    /// Returns the segment suffix used when opening this reader.
+    pub fn segment_suffix(&self) -> &str {
+        &self.segment_suffix
+    }
+
+    /// Returns the format version of the underlying files.
+    pub fn version(&self) -> i32 {
+        self.version
+    }
+}
+
+impl Fields for Lucene103BlockTreeTermsReader {
+    fn size(&self) -> i32 {
+        0
+    }
+
+    fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        Ok(None)
+    }
+
+    fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        Box::new(std::iter::empty::<String>())
+    }
+}
+
+impl FieldsProducer for Lucene103BlockTreeTermsReader {
+    fn check_integrity(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
+        Err(LuceneError::UnsupportedOperation(
+            "Lucene103BlockTreeTermsReader skeleton does not support merge instances".to_string(),
+        ))
+    }
+
+    fn close(&mut self) -> Result<()> {
+        self.postings_reader.close()
     }
 }
 

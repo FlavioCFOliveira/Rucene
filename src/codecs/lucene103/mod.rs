@@ -9,5 +9,6 @@
 pub mod blocktree;
 
 pub use blocktree::{
-    CompressionAlgorithm, Lucene103BlockTreeTermsWriter, Stats, TrieBuilder, TrieReader,
+    CompressionAlgorithm, Lucene103BlockTreeTermsReader, Lucene103BlockTreeTermsWriter, Stats,
+    TrieBuilder, TrieReader,
 };
