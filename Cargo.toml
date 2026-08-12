@@ -48,6 +48,10 @@ tempfile = "3"
 name = "portability_codecs"
 path = "tests/portability/codecs.rs"
 
+[[test]]
+name = "fuzz_codec_headers"
+path = "tests/fuzz/codec_headers.rs"
+
 [profile.release]
 lto = true
 codegen-units = 1
