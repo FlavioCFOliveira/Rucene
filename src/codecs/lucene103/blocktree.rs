@@ -1396,10 +1396,12 @@ impl FieldsProducer for Lucene103BlockTreeTermsReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codecs::codec_util::{check_footer, check_index_header, footer_length};
+    use crate::codecs::codec_util::{
+        check_footer, check_index_header, footer_length, index_header_length,
+    };
     use crate::codecs::postings::FieldsConsumer;
     use crate::codecs::term_state::BlockTermState;
-    use crate::index::{EmptyFields, SegmentInfo};
+    use crate::index::{EmptyFields, PostingsEnum, SeekStatus, SegmentInfo, TermState};
     use crate::store::{Directory, IndexInput, IndexOutput, RamDirectory};
     use crate::util::default_info_stream;
     use std::collections::HashMap;
@@ -1549,5 +1551,249 @@ mod tests {
         assert!(Lucene103BlockTreeTermsWriter::validate_settings(25, 24).is_err());
         assert!(Lucene103BlockTreeTermsWriter::validate_settings(25, 25).is_err());
         assert!(Lucene103BlockTreeTermsWriter::validate_settings(25, 48).is_ok());
+    }
+
+    /// A [`Fields`] implementation that yields a deterministic list of terms.
+    #[derive(Debug, Clone)]
+    struct TestFields {
+        field: String,
+        terms: Vec<BytesRef>,
+    }
+
+    impl Fields for TestFields {
+        fn size(&self) -> i32 {
+            1
+        }
+
+        fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+            if field == self.field {
+                Ok(Some(Box::new(TestTerms {
+                    terms: self.terms.clone(),
+                })))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+            Box::new(std::iter::once(self.field.clone()))
+        }
+    }
+
+    /// A [`Terms`] implementation backed by a vector of [`BytesRef`] values.
+    #[derive(Debug, Clone)]
+    struct TestTerms {
+        terms: Vec<BytesRef>,
+    }
+
+    impl Terms for TestTerms {
+        fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
+            Ok(Box::new(TestTermsEnum {
+                terms: self.terms.clone(),
+                pos: 0,
+                atts: crate::util::attribute::AttributeSource::new(),
+            }))
+        }
+
+        fn size(&self) -> i64 {
+            self.terms.len() as i64
+        }
+
+        fn sum_total_term_freq(&self) -> i64 {
+            self.terms.len() as i64
+        }
+
+        fn sum_doc_freq(&self) -> i64 {
+            self.terms.len() as i64
+        }
+
+        fn doc_count(&self) -> i32 {
+            self.terms.len() as i32
+        }
+
+        fn has_freqs(&self) -> bool {
+            false
+        }
+
+        fn has_offsets(&self) -> bool {
+            false
+        }
+
+        fn has_positions(&self) -> bool {
+            false
+        }
+
+        fn has_payloads(&self) -> bool {
+            false
+        }
+    }
+
+    /// A [`TermsEnum`] that walks the terms in a [`TestTerms`].
+    #[derive(Debug, Clone)]
+    struct TestTermsEnum {
+        terms: Vec<BytesRef>,
+        pos: usize,
+        atts: crate::util::attribute::AttributeSource,
+    }
+
+    impl TermsEnum for TestTermsEnum {
+        fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
+            &mut self.atts
+        }
+
+        fn term(&self) -> Result<BytesRef> {
+            if self.pos == 0 {
+                Ok(BytesRef::default())
+            } else {
+                Ok(self.terms[self.pos - 1].clone())
+            }
+        }
+
+        fn next(&mut self) -> Result<Option<BytesRef>> {
+            if self.pos < self.terms.len() {
+                let term = self.terms[self.pos].clone();
+                self.pos += 1;
+                Ok(Some(term))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn seek_exact(&mut self, _text: &BytesRef) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
+            Ok(SeekStatus::END)
+        }
+
+        fn seek_ord(&mut self, _ord: i64) -> Result<()> {
+            Ok(())
+        }
+
+        fn seek_term_state(&mut self, _text: &BytesRef, _state: &dyn TermState) -> Result<()> {
+            Ok(())
+        }
+
+        fn ord(&self) -> Result<i64> {
+            Ok(self.pos as i64)
+        }
+
+        fn doc_freq(&self) -> Result<i32> {
+            Ok(1)
+        }
+
+        fn total_term_freq(&self) -> Result<i64> {
+            Ok(1)
+        }
+
+        fn postings(
+            &mut self,
+            _reuse: Option<Box<dyn PostingsEnum>>,
+            _flags: i32,
+        ) -> Result<Box<dyn PostingsEnum>> {
+            Ok(Box::new(crate::index::EmptyPostingsEnum::new()))
+        }
+
+        fn impacts(&mut self, _flags: i32) -> Result<Box<dyn crate::index::ImpactsEnum>> {
+            Err(LuceneError::UnsupportedOperation(
+                "impacts not supported".to_string(),
+            ))
+        }
+
+        fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+            Ok(Box::new(BlockTermState::default()))
+        }
+    }
+
+    /// A postings writer stub that returns a synthetic [`BlockTermState`] for
+    /// every term so that the blocktree writer actually writes blocks.
+    #[derive(Debug, Default, Clone)]
+    struct CountingPostingsWriter;
+
+    impl PostingsWriterBase for CountingPostingsWriter {
+        fn init(
+            &mut self,
+            _terms_out: &mut dyn IndexOutput,
+            _state: &SegmentWriteState,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn write_term(
+            &mut self,
+            _term: &BytesRef,
+            _terms_enum: &mut dyn TermsEnum,
+            docs_seen: &mut FixedBitSet,
+            _norms: &dyn NormsProducer,
+        ) -> Result<Option<BlockTermState>> {
+            docs_seen.set(0);
+            let mut state = BlockTermState::default();
+            state.doc_freq = 1;
+            state.total_term_freq = 1;
+            Ok(Some(state))
+        }
+
+        fn encode_term(
+            &mut self,
+            _out: &mut dyn crate::store::DataOutput,
+            _field_info: &FieldInfo,
+            _state: &BlockTermState,
+            _absolute: bool,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn set_field(&mut self, _field_info: &FieldInfo) -> Result<()> {
+            Ok(())
+        }
+
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn writer_writes_nonempty_terms_file_for_small_field() {
+        let dir = RamDirectory::default();
+        let dir_ref: &dyn Directory = &dir;
+        let segment_info = test_segment_info("_0", 10);
+        let field = FieldInfo::new("body", 0);
+        let field_infos = FieldInfos::new(vec![field.clone()]).expect("valid field infos");
+        let state = test_write_state(dir_ref, &segment_info, &field_infos);
+
+        let terms = vec![
+            BytesRef::new(b"a".to_vec()),
+            BytesRef::new(b"ab".to_vec()),
+            BytesRef::new(b"abc".to_vec()),
+            BytesRef::new(b"abd".to_vec()),
+            BytesRef::new(b"b".to_vec()),
+            BytesRef::new(b"c".to_vec()),
+        ];
+        let fields = TestFields {
+            field: "body".to_string(),
+            terms,
+        };
+
+        let postings_writer: Box<dyn PostingsWriterBase> = Box::new(CountingPostingsWriter);
+        let mut writer = Lucene103BlockTreeTermsWriter::new(
+            &state,
+            postings_writer,
+            DEFAULT_MIN_BLOCK_SIZE,
+            DEFAULT_MAX_BLOCK_SIZE,
+        )
+        .expect("writer should be created");
+
+        writer
+            .write(&fields, &StubNormsProducer)
+            .expect("write should succeed");
+        writer.close().expect("close should succeed");
+
+        let tim_length = dir.file_length("_0.tim").expect("tim file should exist");
+        assert!(
+            tim_length
+                > (index_header_length(TERMS_CODEC_NAME, "") as i64 + footer_length() as i64),
+            ".tim file should contain more than just header and footer"
+        );
     }
 }
