@@ -17,13 +17,14 @@ use crate::codecs::postings::{
 };
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::{FieldInfo, FieldInfos};
-use crate::codecs::term_state::BlockTermState;
+use crate::codecs::term_state::{BlockTermState, TermStats};
 use crate::error::{LuceneError, Result};
 use crate::index::index_file_names::segment_file_name;
+use crate::index::IndexOptions;
 use crate::index::SegmentInfo;
-use crate::store::{Directory, IOContext};
+use crate::store::{ByteBuffersDataOutput, DataOutput, Directory, IOContext, IndexOutput};
 use crate::util::compress::{LowercaseAsciiCompression, Lz4};
-use crate::util::{BytesRef, BytesRefBuilder, FixedBitSet};
+use crate::util::{ArrayUtil, BytesRef, BytesRefBuilder, FixedBitSet, StringHelper};
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -305,6 +306,13 @@ impl fmt::Display for Stats {
 /// strategies, etc.) will be added in a later run.
 ///
 /// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.TrieBuilder`.
+/// Builder for the blocktree term index trie.
+///
+/// This is a minimal implementation for the current checkpoint. It stores the
+/// file pointer and has-terms flag of the root block for each field and writes
+/// a trivial one-node trie to the `.tip` file.
+///
+/// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.TrieBuilder`.
 #[derive(Debug, Default, Clone)]
 pub struct TrieBuilder {
     /// File pointer in the `.tip` file where this field's trie starts.
@@ -320,6 +328,56 @@ impl TrieBuilder {
             index_start_fp,
             has_terms,
         }
+    }
+
+    /// Compiles the index for a list of pending blocks.
+    ///
+    /// In this simplified version only the first block's output is retained.
+    pub(crate) fn compile(
+        blocks: &[PendingBlock],
+        scratch: &mut ByteBuffersDataOutput,
+    ) -> Result<Self> {
+        scratch.reset();
+        let first = &blocks[0];
+        if first.is_floor {
+            scratch.write_v_int((blocks.len() - 1) as i32)?;
+            for block in &blocks[1..] {
+                scratch.write_byte(block.floor_lead_byte as u8)?;
+                scratch.write_v_long(
+                    ((block.fp - first.fp) << 1) | if block.has_terms { 1 } else { 0 },
+                )?;
+            }
+        }
+        Ok(Self::new(first.fp, first.has_terms))
+    }
+
+    /// Saves this trie to the index output, recording offsets in `meta`.
+    pub fn save(&self, meta: &mut dyn DataOutput, index_out: &mut dyn IndexOutput) -> Result<()> {
+        let index_start_fp = index_out.file_pointer();
+        meta.write_v_long(index_start_fp)?;
+        let root_fp = index_out.file_pointer();
+        // Trivial trie: single leaf node with output.
+        let output_fp_bytes = Self::bytes_required_v_long(self.index_start_fp);
+        let header = 0x00 | ((output_fp_bytes - 1) << 2) | if self.has_terms { 1 << 5 } else { 0 };
+        index_out.write_byte(header as u8)?;
+        Self::write_long_n_bytes(index_out, self.index_start_fp, output_fp_bytes)?;
+        index_out.write_long(0)?;
+        meta.write_v_long(root_fp)?;
+        meta.write_v_long(index_out.file_pointer())?;
+        Ok(())
+    }
+
+    fn bytes_required_v_long(v: i64) -> i32 {
+        (8 - ((v | 1).leading_zeros() >> 3)) as i32
+    }
+
+    fn write_long_n_bytes(out: &mut dyn IndexOutput, v: i64, n: i32) -> Result<()> {
+        let mut v = v;
+        for _ in 0..n {
+            out.write_byte(v as u8)?;
+            v >>= 8;
+        }
+        Ok(())
     }
 }
 
@@ -423,9 +481,10 @@ impl PendingBlock {
 /// intentionally not implemented yet.
 ///
 /// Lucene Core equivalent: `Lucene103BlockTreeTermsWriter.TermsWriter`.
-#[allow(dead_code)]
-struct TermsWriter {
+struct TermsWriter<'a> {
     field_info: FieldInfo,
+    min_items_in_block: i32,
+    max_items_in_block: i32,
     num_terms: i64,
     docs_seen: FixedBitSet,
     sum_total_term_freq: i64,
@@ -435,12 +494,36 @@ struct TermsWriter {
     last_term: BytesRefBuilder,
     first_pending_term: Option<PendingTerm>,
     last_pending_term: Option<PendingTerm>,
+    suffix_lengths_writer: ByteBuffersDataOutput,
+    suffix_writer: BytesRefBuilder,
+    stats_writer: ByteBuffersDataOutput,
+    meta_writer: ByteBuffersDataOutput,
+    spare_writer: ByteBuffersDataOutput,
+    spare_bytes: Vec<u8>,
+    compression_hash_table: Option<Box<dyn Lz4HashTable>>,
+    terms_out: &'a mut dyn IndexOutput,
+    index_out: &'a mut dyn IndexOutput,
+    scratch_bytes: &'a mut ByteBuffersDataOutput,
+    has_freqs: bool,
+    new_blocks: Vec<PendingBlock>,
 }
 
-impl TermsWriter {
-    fn new(field_info: FieldInfo, max_doc: i32) -> Self {
+impl<'a> TermsWriter<'a> {
+    fn new(
+        field_info: FieldInfo,
+        max_doc: i32,
+        min_items_in_block: i32,
+        max_items_in_block: i32,
+        terms_out: &'a mut dyn IndexOutput,
+        index_out: &'a mut dyn IndexOutput,
+        scratch_bytes: &'a mut ByteBuffersDataOutput,
+        compression_hash_table: Option<Box<dyn Lz4HashTable>>,
+    ) -> Self {
+        let has_freqs = field_info.index_options != IndexOptions::DOCS;
         Self {
             field_info,
+            min_items_in_block,
+            max_items_in_block,
             num_terms: 0,
             docs_seen: FixedBitSet::new(max_doc as usize),
             sum_total_term_freq: 0,
@@ -450,33 +533,417 @@ impl TermsWriter {
             last_term: BytesRefBuilder::new(),
             first_pending_term: None,
             last_pending_term: None,
+            suffix_lengths_writer: ByteBuffersDataOutput::new_resettable_instance(),
+            suffix_writer: BytesRefBuilder::new(),
+            stats_writer: ByteBuffersDataOutput::new_resettable_instance(),
+            meta_writer: ByteBuffersDataOutput::new_resettable_instance(),
+            spare_writer: ByteBuffersDataOutput::new_resettable_instance(),
+            spare_bytes: Vec::new(),
+            compression_hash_table,
+            terms_out,
+            index_out,
+            scratch_bytes,
+            has_freqs,
+            new_blocks: Vec::new(),
         }
     }
 
-    /// Writes a single term and its postings.
-    ///
-    /// This skeleton only records the term bytes and updates field-level
-    /// counters; the recursive block construction is left for a later run.
     fn write(
         &mut self,
         term: &BytesRef,
-        _terms_enum: &mut dyn TermsEnum,
-        _norms: &dyn NormsProducer,
+        terms_enum: &mut dyn TermsEnum,
+        postings_writer: &mut dyn PostingsWriterBase,
+        norms: &dyn NormsProducer,
     ) -> Result<()> {
-        self.num_terms += 1;
-        self.last_term
-            .copy_bytes(&term.bytes, term.offset, term.length);
-        let pending = PendingTerm::new(term, BlockTermState::default());
-        if self.first_pending_term.is_none() {
-            self.first_pending_term = Some(pending.clone());
+        if let Some(state) =
+            postings_writer.write_term(term, terms_enum, &mut self.docs_seen, norms)?
+        {
+            self.push_term(term, postings_writer)?;
+            let pending = PendingTerm::new(term, state);
+            self.pending.push(PendingEntry::Term(pending.clone()));
+            self.sum_doc_freq += state.doc_freq as i64;
+            self.sum_total_term_freq += state.total_term_freq;
+            self.num_terms += 1;
+            if self.first_pending_term.is_none() {
+                self.first_pending_term = Some(pending.clone());
+            }
+            self.last_pending_term = Some(pending);
         }
-        self.last_pending_term = Some(pending);
         Ok(())
     }
 
-    /// Finishes this field. For the skeleton this is a no-op when no terms were
-    /// seen; real block flushing will happen here later.
-    fn finish(&mut self) -> Result<()> {
+    fn push_term(
+        &mut self,
+        text: &BytesRef,
+        postings_writer: &mut dyn PostingsWriterBase,
+    ) -> Result<()> {
+        let prefix_length = if self.last_term.length() == 0 {
+            0
+        } else {
+            let last = self.last_term.get();
+            let last_ref = BytesRef {
+                bytes: last.bytes.clone(),
+                offset: last.offset,
+                length: last.length,
+            };
+            let text_ref = BytesRef {
+                bytes: text.bytes.clone(),
+                offset: text.offset,
+                length: text.length,
+            };
+            StringHelper::bytes_difference(&last_ref, &text_ref).unwrap_or(0)
+        };
+
+        for i in ((prefix_length as usize)..self.last_term.length()).rev() {
+            let prefix_top_size = self.pending.len() as i32 - self.prefix_starts[i];
+            if prefix_top_size >= self.min_items_in_block {
+                self.write_blocks(i as i32 + 1, prefix_top_size, postings_writer)?;
+                self.prefix_starts[i] -= prefix_top_size - 1;
+            }
+        }
+
+        if self.prefix_starts.len() < text.length {
+            self.prefix_starts.resize(text.length + 1, 0);
+        }
+        for i in prefix_length as usize..text.length {
+            self.prefix_starts[i] = self.pending.len() as i32;
+        }
+
+        self.last_term
+            .copy_bytes(&text.bytes, text.offset, text.length);
+        Ok(())
+    }
+
+    fn write_blocks(
+        &mut self,
+        prefix_length: i32,
+        count: i32,
+        postings_writer: &mut dyn PostingsWriterBase,
+    ) -> Result<()> {
+        debug_assert!(count > 0);
+        debug_assert!(prefix_length > 0 || count as usize == self.pending.len());
+
+        let start = self.pending.len() - count as usize;
+        let end = self.pending.len();
+        let mut last_suffix_lead_label = -1;
+        let mut has_terms = false;
+        let mut has_sub_blocks = false;
+        let mut next_block_start = start;
+        let mut next_floor_lead_label = -1;
+
+        for i in start..end {
+            let suffix_lead_label = match &self.pending[i] {
+                PendingEntry::Term(term) => {
+                    if term.term_bytes.len() == prefix_length as usize {
+                        -1
+                    } else {
+                        term.term_bytes[prefix_length as usize] as i32 & 0xff
+                    }
+                }
+                PendingEntry::Block(block) => {
+                    debug_assert!(block.prefix.length > prefix_length as usize);
+                    block.prefix.bytes[block.prefix.offset + prefix_length as usize] as i32 & 0xff
+                }
+            };
+
+            if suffix_lead_label != last_suffix_lead_label {
+                let items_in_block = i as i32 - next_block_start as i32;
+                if items_in_block >= self.min_items_in_block
+                    && end as i32 - next_block_start as i32 > self.max_items_in_block
+                {
+                    let is_floor = items_in_block < count;
+                    let block = self.write_block(
+                        prefix_length,
+                        is_floor,
+                        next_floor_lead_label,
+                        next_block_start,
+                        i,
+                        has_terms,
+                        has_sub_blocks,
+                        postings_writer,
+                    )?;
+                    self.new_blocks.push(block);
+                    has_terms = false;
+                    has_sub_blocks = false;
+                    next_floor_lead_label = suffix_lead_label;
+                    next_block_start = i;
+                }
+                last_suffix_lead_label = suffix_lead_label;
+            }
+
+            match &self.pending[i] {
+                PendingEntry::Term(_) => has_terms = true,
+                PendingEntry::Block(_) => has_sub_blocks = true,
+            }
+        }
+
+        if next_block_start < end {
+            let items_in_block = end as i32 - next_block_start as i32;
+            let is_floor = items_in_block < count;
+            let block = self.write_block(
+                prefix_length,
+                is_floor,
+                next_floor_lead_label,
+                next_block_start,
+                end,
+                has_terms,
+                has_sub_blocks,
+                postings_writer,
+            )?;
+            self.new_blocks.push(block);
+        }
+
+        debug_assert!(!self.new_blocks.is_empty());
+        let first_block = self.new_blocks.remove(0);
+        debug_assert!(first_block.is_floor || self.new_blocks.is_empty());
+
+        // Compile index for the first block using the new_blocks list.
+        let mut all_blocks = vec![first_block.clone()];
+        all_blocks.extend(self.new_blocks.drain(..));
+        let compiled = TrieBuilder::compile(&all_blocks, &mut *self.scratch_bytes)?;
+        let first_block = PendingBlock {
+            index: Some(compiled),
+            ..all_blocks.into_iter().next().unwrap()
+        };
+
+        self.pending.truncate(self.pending.len() - count as usize);
+        self.pending.push(PendingEntry::Block(first_block));
+        Ok(())
+    }
+
+    fn all_equal(bytes: &[u8], start: usize, end: usize, value: u8) -> bool {
+        bytes[start..end].iter().all(|&b| b == value)
+    }
+
+    fn write_block(
+        &mut self,
+        prefix_length: i32,
+        is_floor: bool,
+        floor_lead_label: i32,
+        start: usize,
+        end: usize,
+        has_terms: bool,
+        has_sub_blocks: bool,
+        postings_writer: &mut dyn PostingsWriterBase,
+    ) -> Result<PendingBlock> {
+        let start_fp = self.terms_out.file_pointer();
+        let has_floor_lead_label = is_floor && floor_lead_label != -1;
+        let prefix_len = prefix_length as usize + if has_floor_lead_label { 1 } else { 0 };
+        let mut prefix = BytesRef::with_capacity(prefix_len);
+        let last = self.last_term.get();
+        prefix.bytes[..prefix_length as usize]
+            .copy_from_slice(&last.bytes[last.offset..last.offset + prefix_length as usize]);
+        prefix.length = prefix_length as usize;
+
+        let num_entries = end - start;
+        let mut code = (num_entries as i32) << 1;
+        if end == self.pending.len() {
+            code |= 1;
+        }
+        self.terms_out.write_v_int(code)?;
+
+        let is_leaf_block = !has_sub_blocks;
+        let mut sub_indices: Option<Vec<TrieBuilder>> = if is_leaf_block {
+            None
+        } else {
+            Some(Vec::new())
+        };
+        let mut absolute = true;
+
+        // Snapshot pending entries so we can mutate self while iterating.
+        let entries: Vec<PendingEntry> = self.pending[start..end].to_vec();
+
+        if is_leaf_block {
+            for ent in entries {
+                if let PendingEntry::Term(term) = ent {
+                    let suffix = term.term_bytes.len() - prefix_length as usize;
+                    self.suffix_lengths_writer.write_v_int(suffix as i32)?;
+                    self.suffix_writer.append_bytes(
+                        &term.term_bytes,
+                        prefix_length as usize,
+                        suffix,
+                    );
+                    self.write_term_stats(term.state.doc_freq, term.state.total_term_freq)?;
+                    postings_writer.encode_term(
+                        &mut self.meta_writer,
+                        &self.field_info,
+                        &term.state,
+                        absolute,
+                    )?;
+                    absolute = false;
+                } else {
+                    panic!("leaf block contains a sub-block");
+                }
+            }
+        } else {
+            for ent in entries {
+                match ent {
+                    PendingEntry::Term(term) => {
+                        let suffix = term.term_bytes.len() - prefix_length as usize;
+                        self.suffix_lengths_writer
+                            .write_v_int((suffix as i32) << 1)?;
+                        self.suffix_writer.append_bytes(
+                            &term.term_bytes,
+                            prefix_length as usize,
+                            suffix,
+                        );
+                        self.write_term_stats(term.state.doc_freq, term.state.total_term_freq)?;
+                        postings_writer.encode_term(
+                            &mut self.meta_writer,
+                            &self.field_info,
+                            &term.state,
+                            absolute,
+                        )?;
+                        absolute = false;
+                    }
+                    PendingEntry::Block(block) => {
+                        let suffix = block.prefix.length - prefix_length as usize;
+                        self.suffix_lengths_writer
+                            .write_v_int(((suffix as i32) << 1) | 1)?;
+                        self.suffix_writer.append_bytes(
+                            &block.prefix.bytes,
+                            block.prefix.offset + prefix_length as usize,
+                            suffix,
+                        );
+                        self.terms_out.write_v_long(start_fp - block.fp)?;
+                        if let Some(idx) = &block.index {
+                            sub_indices.as_mut().unwrap().push(idx.clone());
+                        }
+                    }
+                }
+            }
+        }
+        // Stats are written as we go; the stats_writer is a simple ByteBuffersDataOutput.
+
+        // Suffix compression (disabled in this checkpoint: always no compression).
+        let compression_alg = CompressionAlgorithm::NoCompression;
+        let suffix_len = self.suffix_writer.length();
+
+        let mut token = (suffix_len as i64) << 3;
+        if is_leaf_block {
+            token |= 0x04;
+        }
+        token |= compression_alg.code() as i64;
+        self.terms_out.write_v_long(token)?;
+        if compression_alg == CompressionAlgorithm::NoCompression {
+            self.terms_out
+                .write_bytes(self.suffix_writer.bytes(), 0, suffix_len)?;
+        } else {
+            self.spare_writer.copy_to(self.terms_out)?;
+        }
+        self.suffix_writer.clear();
+        self.spare_writer.reset();
+
+        // Suffix lengths
+        let num_suffix_bytes = self.suffix_lengths_writer.size();
+        self.spare_bytes.resize(num_suffix_bytes, 0);
+        let mut suffix_lengths_out = crate::store::ByteArrayDataOutput::new();
+        self.suffix_lengths_writer
+            .copy_to(&mut suffix_lengths_out)?;
+        self.suffix_lengths_writer.reset();
+        self.spare_bytes.resize(suffix_lengths_out.len(), 0);
+        self.spare_bytes
+            .copy_from_slice(suffix_lengths_out.as_inner());
+        if num_suffix_bytes > 1
+            && Self::all_equal(&self.spare_bytes, 1, num_suffix_bytes, self.spare_bytes[0])
+        {
+            self.terms_out
+                .write_v_int(((num_suffix_bytes as i32) << 1) | 1)?;
+            self.terms_out.write_byte(self.spare_bytes[0])?;
+        } else {
+            self.terms_out.write_v_int((num_suffix_bytes as i32) << 1)?;
+            self.terms_out
+                .write_bytes(&self.spare_bytes, 0, num_suffix_bytes)?;
+        }
+
+        // Stats
+        let num_stats_bytes = self.stats_writer.size();
+        self.terms_out.write_v_int(num_stats_bytes as i32)?;
+        self.stats_writer.copy_to(self.terms_out)?;
+        self.stats_writer.reset();
+
+        // Term metadata
+        self.terms_out.write_v_int(self.meta_writer.size() as i32)?;
+        self.meta_writer.copy_to(self.terms_out)?;
+        self.meta_writer.reset();
+
+        if has_floor_lead_label {
+            prefix.bytes[prefix.length] = floor_lead_label as u8;
+            prefix.length += 1;
+        }
+
+        Ok(PendingBlock::new(
+            prefix,
+            start_fp,
+            has_terms,
+            is_floor,
+            floor_lead_label,
+            sub_indices,
+        ))
+    }
+
+    fn write_term_stats(&mut self, doc_freq: i32, total_term_freq: i64) -> Result<()> {
+        if doc_freq == 1 && (!self.has_freqs || total_term_freq == 1) {
+            self.stats_writer.write_v_int(1)?;
+        } else {
+            self.stats_writer.write_v_int(doc_freq << 1)?;
+            if self.has_freqs {
+                self.stats_writer
+                    .write_v_long(total_term_freq - doc_freq as i64)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self, postings_writer: &mut dyn PostingsWriterBase) -> Result<Vec<u8>> {
+        if self.num_terms > 0 {
+            self.push_term(&BytesRef::new(Vec::new()), postings_writer)?;
+            self.push_term(&BytesRef::new(Vec::new()), postings_writer)?;
+            self.write_blocks(0, self.pending.len() as i32, postings_writer)?;
+
+            debug_assert!(self.pending.len() == 1);
+            let root = match self.pending.pop() {
+                Some(PendingEntry::Block(b)) => b,
+                _ => panic!("expected single root block"),
+            };
+            debug_assert!(root.prefix.length == 0);
+
+            let mut meta = ByteBuffersDataOutput::new();
+            meta.write_v_int(self.field_info.number)?;
+            meta.write_v_long(self.num_terms)?;
+            if self.has_freqs {
+                meta.write_v_long(self.sum_total_term_freq)?;
+            }
+            meta.write_v_long(self.sum_doc_freq)?;
+            meta.write_v_int(self.docs_seen.cardinality() as i32)?;
+            Self::write_bytes_ref(
+                &mut meta,
+                &BytesRef::new(self.first_pending_term.as_ref().unwrap().term_bytes.clone()),
+            )?;
+            Self::write_bytes_ref(
+                &mut meta,
+                &BytesRef::new(self.last_pending_term.as_ref().unwrap().term_bytes.clone()),
+            )?;
+
+            let first_term = self.first_pending_term.take().unwrap();
+            let root_index = root
+                .index
+                .unwrap_or_else(|| TrieBuilder::new(0, root.has_terms));
+            root_index.save(&mut meta, self.index_out)?;
+
+            // Keep postings writer in sync.
+            let _ = postings_writer;
+            let _ = first_term;
+
+            Ok(meta.to_array_copy())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    fn write_bytes_ref(out: &mut dyn DataOutput, bytes: &BytesRef) -> Result<()> {
+        out.write_v_int(bytes.length as i32)?;
+        out.write_bytes(&bytes.bytes, bytes.offset, bytes.length)?;
         Ok(())
     }
 }
@@ -506,6 +973,52 @@ pub struct Lucene103BlockTreeTermsWriter<'a> {
     postings_writer: Box<dyn PostingsWriterBase>,
     fields: Vec<Vec<u8>>,
     closed: bool,
+    scratch_bytes: ByteBuffersDataOutput,
+    compression_hash_table: Option<Box<dyn Lz4HashTable>>,
+}
+
+/// Hash-table interface used by the LZ4 high-compression encoder.
+///
+/// Lucene Core equivalent: `org.apache.lucene.util.compress.LZ4.HASH_TABLE`.
+pub trait Lz4HashTable: Send + Sync {
+    /// Resets the table for a new input region.
+    fn reset(&mut self, bytes: &[u8], off: usize, len: usize) -> Result<()>;
+    /// Initializes the dictionary portion of the input.
+    fn init_dictionary(&mut self, bytes: &[u8], dict_len: usize);
+    /// Looks up a 4-byte hash at `off`; returns a previous offset or `None`.
+    fn get(&mut self, bytes: &[u8], off: usize) -> Option<usize>;
+    /// Returns the previous occurrence for a matched offset.
+    fn previous(&mut self, bytes: &[u8], off: usize) -> Option<usize>;
+}
+
+impl Lz4HashTable for crate::util::compress::FastCompressionHashTable {
+    fn reset(&mut self, bytes: &[u8], off: usize, len: usize) -> Result<()> {
+        crate::util::compress::FastCompressionHashTable::reset(self, bytes, off, len)
+    }
+    fn init_dictionary(&mut self, bytes: &[u8], dict_len: usize) {
+        crate::util::compress::FastCompressionHashTable::init_dictionary(self, bytes, dict_len);
+    }
+    fn get(&mut self, bytes: &[u8], off: usize) -> Option<usize> {
+        crate::util::compress::FastCompressionHashTable::get(self, bytes, off)
+    }
+    fn previous(&mut self, bytes: &[u8], off: usize) -> Option<usize> {
+        crate::util::compress::FastCompressionHashTable::previous(self, bytes, off)
+    }
+}
+
+impl Lz4HashTable for crate::util::compress::HighCompressionHashTable {
+    fn reset(&mut self, bytes: &[u8], off: usize, len: usize) -> Result<()> {
+        crate::util::compress::HighCompressionHashTable::reset(self, bytes, off, len)
+    }
+    fn init_dictionary(&mut self, bytes: &[u8], dict_len: usize) {
+        crate::util::compress::HighCompressionHashTable::init_dictionary(self, bytes, dict_len);
+    }
+    fn get(&mut self, bytes: &[u8], off: usize) -> Option<usize> {
+        crate::util::compress::HighCompressionHashTable::get(self, bytes, off)
+    }
+    fn previous(&mut self, bytes: &[u8], off: usize) -> Option<usize> {
+        crate::util::compress::HighCompressionHashTable::previous(self, bytes, off)
+    }
 }
 
 impl<'a> Lucene103BlockTreeTermsWriter<'a> {
@@ -556,6 +1069,8 @@ impl<'a> Lucene103BlockTreeTermsWriter<'a> {
             postings_writer,
             fields: Vec::new(),
             closed: false,
+            scratch_bytes: ByteBuffersDataOutput::new_resettable_instance(),
+            compression_hash_table: None,
         })
     }
 
@@ -595,6 +1110,61 @@ impl<'a> fmt::Debug for Lucene103BlockTreeTermsWriter<'a> {
 
 impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
     fn write(&mut self, fields: &dyn Fields, norms: &dyn NormsProducer) -> Result<()> {
+        // Open outputs early so per-field TermsWriter can write blocks directly.
+        let terms_name = segment_file_name(
+            &self.segment_info.name,
+            &self.segment_suffix,
+            TERMS_EXTENSION,
+        );
+        let mut terms_out = self.directory.create_output(&terms_name, self.context)?;
+        write_index_header(
+            terms_out.as_mut(),
+            TERMS_CODEC_NAME,
+            self.version,
+            &self.segment_info.id(),
+            &self.segment_suffix,
+        )?;
+
+        let index_name = segment_file_name(
+            &self.segment_info.name,
+            &self.segment_suffix,
+            TERMS_INDEX_EXTENSION,
+        );
+        let mut index_out = self.directory.create_output(&index_name, self.context)?;
+        write_index_header(
+            index_out.as_mut(),
+            TERMS_INDEX_CODEC_NAME,
+            self.version,
+            &self.segment_info.id(),
+            &self.segment_suffix,
+        )?;
+
+        let meta_name = segment_file_name(
+            &self.segment_info.name,
+            &self.segment_suffix,
+            TERMS_META_EXTENSION,
+        );
+        let mut meta_out = self.directory.create_output(&meta_name, self.context)?;
+        write_index_header(
+            meta_out.as_mut(),
+            TERMS_META_CODEC_NAME,
+            self.version,
+            &self.segment_info.id(),
+            &self.segment_suffix,
+        )?;
+
+        self.postings_writer.init(
+            meta_out.as_mut(),
+            &SegmentWriteState::new(
+                crate::util::default_info_stream(),
+                self.directory,
+                self.segment_info,
+                &self.field_infos,
+                &crate::codecs::stub::BufferedUpdates,
+                self.context,
+            ),
+        )?;
+
         for field in fields.iterator() {
             if let Some(terms) = fields.terms(&field)? {
                 let mut terms_enum = terms.iterator()?;
@@ -603,13 +1173,46 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
                     .field_info(&field)
                     .cloned()
                     .unwrap_or_default();
-                let mut terms_writer = TermsWriter::new(field_info, self.max_doc);
-                while let Some(term) = terms_enum.next()? {
-                    terms_writer.write(&term, &mut *terms_enum, norms)?;
+                {
+                    let postings_writer_ref: &mut dyn PostingsWriterBase =
+                        self.postings_writer.as_mut();
+                    postings_writer_ref.set_field(&field_info)?;
+                    let mut terms_writer = TermsWriter::new(
+                        field_info,
+                        self.max_doc,
+                        self.min_items_in_block,
+                        self.max_items_in_block,
+                        terms_out.as_mut(),
+                        index_out.as_mut(),
+                        &mut self.scratch_bytes,
+                        self.compression_hash_table.take(),
+                    );
+                    while let Some(term) = terms_enum.next()? {
+                        terms_writer.write(&term, &mut *terms_enum, postings_writer_ref, norms)?;
+                    }
+                    let field_meta = terms_writer.finish(postings_writer_ref)?;
+                    self.fields.push(field_meta);
+                    self.compression_hash_table = terms_writer.compression_hash_table;
                 }
-                terms_writer.finish()?;
             }
         }
+
+        meta_out.write_v_int(self.fields.len() as i32)?;
+        for field_meta in &self.fields {
+            meta_out.write_bytes(field_meta, 0, field_meta.len())?;
+        }
+
+        write_footer(index_out.as_mut())?;
+        write_be_long(meta_out.as_mut(), index_out.file_pointer())?;
+        write_footer(terms_out.as_mut())?;
+        write_be_long(meta_out.as_mut(), terms_out.file_pointer())?;
+        write_footer(meta_out.as_mut())?;
+
+        meta_out.close()?;
+        terms_out.close()?;
+        index_out.close()?;
+        self.postings_writer.close()?;
+        self.closed = true;
         Ok(())
     }
 
@@ -678,11 +1281,11 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
             ),
         )?;
 
-        meta_out.write_v_int(self.fields.len() as i32)?;
         for field_meta in &self.fields {
             meta_out.write_bytes(field_meta, 0, field_meta.len())?;
         }
 
+        meta_out.write_v_int(self.fields.len() as i32)?;
         write_footer(index_out.as_mut())?;
         write_be_long(meta_out.as_mut(), index_out.file_pointer())?;
         write_footer(terms_out.as_mut())?;
