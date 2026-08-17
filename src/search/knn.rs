@@ -1,12 +1,24 @@
 //! k-nearest-neighbor collection primitives.
 //!
-//! Equivalent to `org.apache.lucene.search.KnnCollector` and
-//! `org.apache.lucene.search.TopKnnCollector`.
+//! Equivalent to `org.apache.lucene.search.KnnCollector`,
+//! `org.apache.lucene.search.TopKnnCollector`, `TopDocs` and
+//! `KnnSearchStrategy`.
 
 #![deny(unsafe_code)]
 
-use crate::error::Result;
 use crate::util::hnsw::NeighborQueue;
+
+/// Placeholder for the result of a KNN search.
+///
+/// Equivalent to `org.apache.lucene.search.TopDocs`.
+#[derive(Debug, Default, Clone)]
+pub struct TopDocs;
+
+/// Placeholder for a KNN search strategy.
+///
+/// Equivalent to `org.apache.lucene.search.knn.KnnSearchStrategy`.
+#[derive(Debug, Default, Clone)]
+pub struct KnnSearchStrategy;
 
 /// Collects the results of a kNN search.
 ///
@@ -33,6 +45,12 @@ pub trait KnnCollector: Send {
 
     /// Returns the minimum similarity required to remain competitive.
     fn min_competitive_similarity(&self) -> f32;
+
+    /// Drains the collected results into a `TopDocs`.
+    fn top_docs(&self) -> TopDocs;
+
+    /// Returns the search strategy, if any.
+    fn get_search_strategy(&self) -> Option<&KnnSearchStrategy>;
 }
 
 /// A simple kNN collector that keeps the top `k` results by similarity.
@@ -90,11 +108,19 @@ impl KnnCollector for TopKnnCollector {
             f32::NEG_INFINITY
         }
     }
+
+    fn top_docs(&self) -> TopDocs {
+        TopDocs
+    }
+
+    fn get_search_strategy(&self) -> Option<&KnnSearchStrategy> {
+        None
+    }
 }
 
 impl TopKnnCollector {
     /// Returns the collected document ids and scores, best first.
-    pub fn top_docs(&self) -> Result<Vec<(i32, f32)>> {
+    pub fn top_docs_with_scores(&self) -> Vec<(i32, f32)> {
         let mut results = Vec::with_capacity(self.queue.size() as usize);
         let mut clone = self.queue.clone();
         while clone.size() > 0 {
@@ -102,7 +128,7 @@ impl TopKnnCollector {
             clone.pop();
         }
         results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        Ok(results)
+        results
     }
 
     /// Returns the collected node ids in arbitrary order.

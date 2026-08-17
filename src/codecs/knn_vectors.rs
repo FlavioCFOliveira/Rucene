@@ -16,6 +16,7 @@ use std::fmt;
 use std::sync::{Arc, LazyLock, RwLock};
 
 use crate::error::{LuceneError, Result};
+pub use crate::search::knn::{KnnCollector, KnnSearchStrategy, TopDocs};
 use crate::search::AcceptDocs;
 
 use super::postings::MergeState;
@@ -25,18 +26,6 @@ use super::stub::FieldInfo;
 // -----------------------------------------------------------------------------
 // Supporting types
 // -----------------------------------------------------------------------------
-
-/// Placeholder for the result of a KNN search.
-///
-/// Equivalent to `org.apache.lucene.search.TopDocs`.
-#[derive(Debug, Default, Clone)]
-pub struct TopDocs;
-
-/// Placeholder for a KNN search strategy.
-///
-/// Equivalent to `org.apache.lucene.search.knn.KnnSearchStrategy`.
-#[derive(Debug, Default, Clone)]
-pub struct KnnSearchStrategy;
 
 /// Iterator over float vector values.
 ///
@@ -66,39 +55,8 @@ pub trait ByteVectorValues: Send + Sync {
     fn vector_value(&self, ord: i32) -> Result<Vec<u8>>;
 }
 
-/// Collector for KNN search results.
-///
-/// Equivalent to `org.apache.lucene.search.KnnCollector`.
-pub trait KnnCollector: Send + Sync {
-    /// Returns whether the search terminated early.
-    fn early_terminated(&self) -> bool;
-
-    /// Increments the visited vector count.
-    fn inc_visited_count(&mut self, count: i32);
-
-    /// Returns the current visited vector count.
-    fn visited_count(&self) -> i64;
-
-    /// Returns the visited vector limit.
-    fn visit_limit(&self) -> i64;
-
-    /// Returns the expected number of collected results.
-    fn k(&self) -> i32;
-
-    /// Collects a document with its similarity score.
-    fn collect(&mut self, doc_id: i32, similarity: f32) -> bool;
-
-    /// Returns the current minimum competitive similarity.
-    fn min_competitive_similarity(&self) -> f32;
-
-    /// Drains the collected results into a `TopDocs`.
-    fn top_docs(&self) -> TopDocs;
-
-    /// Returns the search strategy, if any.
-    fn get_search_strategy(&self) -> Option<&KnnSearchStrategy>;
-}
-
 // -----------------------------------------------------------------------------
+
 // Field writer
 // -----------------------------------------------------------------------------
 

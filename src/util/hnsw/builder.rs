@@ -440,6 +440,14 @@ impl KnnCollector for GraphBuilderKnnCollector {
             f32::NEG_INFINITY
         }
     }
+
+    fn top_docs(&self) -> crate::search::knn::TopDocs {
+        crate::search::knn::TopDocs
+    }
+
+    fn get_search_strategy(&self) -> Option<&crate::search::knn::KnnSearchStrategy> {
+        None
+    }
 }
 
 /// A tiny deterministic RNG used for graph level assignment.
