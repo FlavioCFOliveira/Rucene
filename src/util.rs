@@ -24,6 +24,9 @@ pub mod bkd;
 /// Additional bitset and live-docs variants.
 pub mod bit_sets;
 
+/// HNSW graph utilities for vector search.
+pub mod hnsw;
+
 pub use attribute::{
     unwrap_all, AsUnwrappable, Attribute, AttributeFactory, AttributeImpl, AttributeReflector,
     AttributeSource, CapturedState, CloseableThreadLocal, DefaultAttributeFactory, Unwrappable,

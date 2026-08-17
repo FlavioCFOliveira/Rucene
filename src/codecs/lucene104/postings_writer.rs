@@ -776,7 +776,10 @@ impl Lucene104PostingsWriter {
             debug_assert!(or_val != 0);
             let bits_per_value = 32 - (or_val as u32).leading_zeros() as i32;
             let doc_range = self.last_doc_id - self.level0_last_doc_id;
-            debug_assert_eq!(doc_range, self.doc_delta_buffer[..block_size].iter().sum());
+            debug_assert_eq!(
+                doc_range,
+                self.doc_delta_buffer[..block_size].iter().sum::<i32>()
+            );
             let num_bit_set_longs = FixedBitSet::bits2words(doc_range as usize);
             let num_bits_next_bits_per_value = (bits_per_value + 1).min(32) * block_size_i;
 

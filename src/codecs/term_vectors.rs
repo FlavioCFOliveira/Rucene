@@ -54,7 +54,7 @@ pub trait TermVectorsReader: Send + Sync + fmt::Debug {
     }
 
     /// Returns term vectors for this document, or `None` if none exist.
-    fn get(&self, doc: i32) -> Result<Option<Fields>>;
+    fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>>;
 
     /// Optional hint that the given document will be read in the near future.
     fn prefetch(&self, _doc_id: i32) -> Result<()> {
@@ -155,7 +155,7 @@ impl TermVectorsReader for EmptyTermVectorsReader {
         Box::new(*self)
     }
 
-    fn get(&self, _doc: i32) -> Result<Option<Fields>> {
+    fn get(&self, _doc: i32) -> Result<Option<Box<dyn Fields>>> {
         Ok(None)
     }
 }

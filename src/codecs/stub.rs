@@ -68,18 +68,12 @@ pub enum StoredFieldVisitorStatus {
     Stop,
 }
 
-/// Placeholder for `org.apache.lucene.index.Fields`.
-#[derive(Debug, Default, Clone)]
-pub struct Fields;
-
-/// Placeholder for `org.apache.lucene.index.Terms`.
-#[derive(Debug, Default, Clone)]
-pub struct Terms;
+pub use crate::index::terms::{Fields, Terms, TermsEnum};
 
 /// Placeholder base for `org.apache.lucene.index.TermVectors`.
 pub trait TermVectors: Send + Sync {
     /// Returns term vectors for the given document, or `None` if none exist.
-    fn get(&self, _doc: i32) -> Result<Option<Fields>> {
+    fn get(&self, _doc: i32) -> Result<Option<Box<dyn Fields>>> {
         Ok(None)
     }
 }

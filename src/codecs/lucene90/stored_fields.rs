@@ -360,7 +360,7 @@ impl StoredFieldsInts {
 // -----------------------------------------------------------------------------
 
 /// Doc-id to block-offset mapping used by the stored-fields reader.
-pub(crate) trait FieldsIndex {
+pub(crate) trait FieldsIndex: Send + Sync {
     /// Returns the block that contains `doc_id`.
     fn get_block_id(&self, doc_id: i32) -> Result<i64>;
 
@@ -407,7 +407,7 @@ pub(crate) struct FieldsIndexReader {
 }
 
 impl FieldsIndexReader {
-    fn new(
+    pub(crate) fn new(
         directory: Arc<dyn Directory>,
         segment: &str,
         suffix: &str,
@@ -502,6 +502,12 @@ impl fmt::Debug for FieldsIndexReader {
             .field("num_blocks", &self.num_blocks)
             .field("max_pointer", &self.max_pointer)
             .finish_non_exhaustive()
+    }
+}
+
+impl FieldsIndexReader {
+    pub(crate) fn max_pointer(&self) -> i64 {
+        self.max_pointer
     }
 }
 
@@ -611,7 +617,7 @@ impl fmt::Debug for FieldsIndexWriter {
 }
 
 impl FieldsIndexWriter {
-    fn new(
+    pub(crate) fn new(
         directory: &dyn Directory,
         segment: &str,
         suffix: &str,
@@ -641,7 +647,7 @@ impl FieldsIndexWriter {
         })
     }
 
-    fn write_index(&mut self, num_docs: i32, start_pointer: i64) -> Result<()> {
+    pub(crate) fn write_index(&mut self, num_docs: i32, start_pointer: i64) -> Result<()> {
         debug_assert!(start_pointer >= self.previous_fp);
         self.doc_counts.push(num_docs);
         self.start_pointer_deltas
@@ -651,7 +657,7 @@ impl FieldsIndexWriter {
         Ok(())
     }
 
-    fn finish(
+    pub(crate) fn finish(
         &mut self,
         num_docs: i32,
         max_pointer: i64,

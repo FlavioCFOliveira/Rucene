@@ -154,6 +154,86 @@ impl Format {
     }
 }
 
+/// Write `values` using the `Format::Packed` bit-packed encoding, without a
+/// format/version header.
+///
+/// Equivalent to `PackedInts.getWriterNoHeader(out, Format.PACKED, values.len(),
+/// bits_per_value, 1).finish()`.
+pub fn write_packed_ints_no_header(
+    out: &mut dyn DataOutput,
+    values: &[i64],
+    bits_per_value: i32,
+) -> Result<()> {
+    if values.is_empty() {
+        return Ok(());
+    }
+    if !(1..=64).contains(&bits_per_value) {
+        return Err(LuceneError::IllegalArgument(format!(
+            "bitsPerValue must be in [1, 64], got {bits_per_value}"
+        )));
+    }
+
+    let encoder = BulkOperationPacked::new(bits_per_value as usize)?;
+    let values_per_block = encoder.byte_value_count();
+    let bytes_per_block = encoder.byte_block_count();
+
+    let num_values = values.len() as i64;
+    let iterations = (num_values as usize).div_ceil(values_per_block);
+    let total_values = iterations * values_per_block;
+    let total_blocks = iterations * bytes_per_block;
+
+    let mut padded = values.to_vec();
+    padded.resize(total_values, 0);
+
+    let mut blocks = vec![0u8; total_blocks];
+    encoder.encode_longs_to_bytes(&padded, 0, &mut blocks, 0, iterations)?;
+
+    let byte_count = ((num_values * bits_per_value as i64 + 7) / 8) as usize;
+    out.write_bytes(&blocks, 0, byte_count)?;
+    Ok(())
+}
+
+/// Read `num_values` integers using the `Format::Packed` bit-packed encoding,
+/// without a format/version header.
+///
+/// Equivalent to `PackedInts.getReaderIteratorNoHeader(input, Format.PACKED,
+/// packed_ints_version, num_values, bits_per_value, 1)`.
+pub fn read_packed_ints_no_header(
+    input: &mut dyn DataInput,
+    num_values: i64,
+    bits_per_value: i32,
+) -> Result<Vec<i64>> {
+    if num_values < 0 {
+        return Err(LuceneError::IllegalArgument(format!(
+            "numValues must be non-negative, got {num_values}"
+        )));
+    }
+    if num_values == 0 {
+        return Ok(Vec::new());
+    }
+    if !(1..=64).contains(&bits_per_value) {
+        return Err(LuceneError::IllegalArgument(format!(
+            "bitsPerValue must be in [1, 64], got {bits_per_value}"
+        )));
+    }
+
+    let decoder = BulkOperationPacked::new(bits_per_value as usize)?;
+    let values_per_block = decoder.byte_value_count();
+    let bytes_per_block = decoder.byte_block_count();
+
+    let iterations = (num_values as usize).div_ceil(values_per_block);
+    let total_blocks = iterations * bytes_per_block;
+
+    let byte_count = ((num_values * bits_per_value as i64 + 7) / 8) as usize;
+    let mut blocks = vec![0u8; total_blocks];
+    input.read_bytes(&mut blocks, 0, byte_count)?;
+
+    let mut values = vec![0i64; iterations * values_per_block];
+    decoder.decode_bytes_to_longs(&blocks, 0, &mut values, 0, iterations)?;
+    values.truncate(num_values as usize);
+    Ok(values)
+}
+
 // -----------------------------------------------------------------------------
 // Generic bit-packed encoder/decoder (Format.PACKED)
 // -----------------------------------------------------------------------------
