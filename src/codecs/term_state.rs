@@ -192,8 +192,11 @@ impl CompetitiveImpactAccumulator {
 /// implementation.
 ///
 /// Equivalent to `org.apache.lucene.codecs.BlockTermState` (which extends
-/// `org.apache.lucene.index.OrdTermState`).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// `org.apache.lucene.index.OrdTermState`) plus the fields that Lucene holds
+/// in `org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat.IntBlockTermState`.
+/// Keeping them on the shared state lets the push postings writer implement
+/// `PostingsWriterBase` without an extra downcast layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockTermState {
     /// Ordinal of this term in the dictionary.
     pub ord: i64,
@@ -206,6 +209,39 @@ pub struct BlockTermState {
     pub term_block_ord: i32,
     /// File pointer into the terms dictionary primary file that holds this term.
     pub block_file_pointer: i64,
+
+    // Lucene104 postings-format specific fields (from IntBlockTermState).
+    /// File pointer to the start of the doc ids enumeration, in the `.doc`
+    /// file.
+    pub doc_start_fp: i64,
+    /// File pointer to the start of the positions enumeration, in the `.pos`
+    /// file.
+    pub pos_start_fp: i64,
+    /// File pointer to the start of the payloads enumeration, in the `.pay`
+    /// file.
+    pub pay_start_fp: i64,
+    /// File offset for the last position in the last block, or `-1` if there
+    /// are no packed position blocks.
+    pub last_pos_block_offset: i64,
+    /// Pulsed singleton doc ID, or `-1` if the term has more than one doc.
+    pub singleton_doc_id: i32,
+}
+
+impl Default for BlockTermState {
+    fn default() -> Self {
+        Self {
+            ord: 0,
+            doc_freq: 0,
+            total_term_freq: 0,
+            term_block_ord: 0,
+            block_file_pointer: 0,
+            doc_start_fp: 0,
+            pos_start_fp: 0,
+            pay_start_fp: 0,
+            last_pos_block_offset: -1,
+            singleton_doc_id: -1,
+        }
+    }
 }
 
 impl BlockTermState {
@@ -218,6 +254,11 @@ impl BlockTermState {
         self.total_term_freq = other.total_term_freq;
         self.term_block_ord = other.term_block_ord;
         self.block_file_pointer = other.block_file_pointer;
+        self.doc_start_fp = other.doc_start_fp;
+        self.pos_start_fp = other.pos_start_fp;
+        self.pay_start_fp = other.pay_start_fp;
+        self.last_pos_block_offset = other.last_pos_block_offset;
+        self.singleton_doc_id = other.singleton_doc_id;
     }
 }
 
@@ -352,6 +393,7 @@ mod tests {
             total_term_freq: 100,
             term_block_ord: 3,
             block_file_pointer: 1234,
+            ..Default::default()
         };
         a.copy_from(&b);
         assert_eq!(a, b);

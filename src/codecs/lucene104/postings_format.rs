@@ -13,18 +13,16 @@ use crate::codecs::lucene103::blocktree::{
     Lucene103BlockTreeTermsReader, Lucene103BlockTreeTermsWriter, DEFAULT_MAX_BLOCK_SIZE,
     DEFAULT_MIN_BLOCK_SIZE,
 };
+use crate::codecs::lucene104::postings_writer::Lucene104PostingsWriter;
 use crate::codecs::postings::{
     FieldsConsumer, FieldsProducer, ImpactsEnum, PostingsEnum, PostingsFormat, PostingsReaderBase,
-    PostingsWriterBase,
 };
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
 use crate::codecs::term_state::BlockTermState;
 use crate::error::{LuceneError, Result};
-use crate::index::TermsEnum;
 use crate::search::NO_MORE_DOCS;
-use crate::store::{DataInput, DataOutput, IndexInput, IndexOutput};
-use crate::util::{BytesRef, FixedBitSet};
+use crate::store::{DataInput, IndexInput};
 
 // -----------------------------------------------------------------------------
 // Format constants
@@ -198,7 +196,7 @@ impl PostingsFormat for Lucene104PostingsFormat {
         &self,
         state: &SegmentWriteState<'a>,
     ) -> Result<Box<dyn FieldsConsumer + 'a>> {
-        let postings_writer = Box::new(Lucene104PostingsWriter::new(self.version));
+        let postings_writer = Box::new(Lucene104PostingsWriter::with_version(state, self.version)?);
         let terms_writer = Lucene103BlockTreeTermsWriter::new(
             state,
             postings_writer,
@@ -219,63 +217,15 @@ impl PostingsFormat for Lucene104PostingsFormat {
 }
 
 // -----------------------------------------------------------------------------
-// Lucene104 postings writer skeleton
+// Lucene104 postings writer
 // -----------------------------------------------------------------------------
 
-/// Low-level postings writer for the Lucene 10.4 format.
-///
-/// This is a minimal skeleton that implements [`PostingsWriterBase`] with
-/// no-op methods. The full encode logic will be added in later tasks.
-///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.lucene104.Lucene104PostingsWriter`.
-#[derive(Debug, Default, Clone)]
-pub struct Lucene104PostingsWriter {
-    #[allow(dead_code)]
-    version: i32,
-}
-
-impl Lucene104PostingsWriter {
-    /// Creates a new skeleton writer for the given format version.
-    pub fn new(version: i32) -> Self {
-        Self { version }
-    }
-}
-
-impl PostingsWriterBase for Lucene104PostingsWriter {
-    fn init(&mut self, _terms_out: &mut dyn IndexOutput, _state: &SegmentWriteState) -> Result<()> {
-        Ok(())
-    }
-
-    fn write_term(
-        &mut self,
-        _term: &BytesRef,
-        _terms_enum: &mut dyn TermsEnum,
-        _docs_seen: &mut FixedBitSet,
-        _norms: &dyn crate::codecs::postings::NormsProducer,
-    ) -> Result<Option<BlockTermState>> {
-        Ok(None)
-    }
-
-    fn encode_term(
-        &mut self,
-        _out: &mut dyn DataOutput,
-        _field_info: &FieldInfo,
-        _state: &BlockTermState,
-        _absolute: bool,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn set_field(&mut self, _field_info: &FieldInfo) -> Result<()> {
-        Ok(())
-    }
-
-    fn close(&mut self) -> Result<()> {
-        Ok(())
-    }
-}
+// The full writer lives in `crate::codecs::lucene104::postings_writer` and is
+// re-exported as `crate::codecs::lucene104::Lucene104PostingsWriter`. It is
+// imported above and instantiated in `fields_consumer`.
 
 // -----------------------------------------------------------------------------
+
 // Lucene104 postings reader skeleton
 // -----------------------------------------------------------------------------
 
@@ -621,53 +571,5 @@ mod tests {
             .check_integrity()
             .expect("check_integrity should succeed");
         reader.close().expect("close should succeed");
-    }
-
-    #[test]
-    fn postings_writer_base_methods_run() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
-        let segment_info = test_segment_info("_0", 10);
-        let field_infos = FieldInfos::default();
-        let write_state = test_write_state(dir_ref, &segment_info, &field_infos);
-
-        let mut writer = Lucene104PostingsWriter::new(VERSION_CURRENT);
-        writer
-            .init(
-                &mut crate::store::MockIndexOutput::new("test", "test"),
-                &write_state,
-            )
-            .expect("init should succeed");
-
-        let field_info = FieldInfo::new("field", 0).with_postings_options(
-            crate::index::IndexOptions::DOCS,
-            false,
-            false,
-        );
-        writer
-            .set_field(&field_info)
-            .expect("set_field should succeed");
-
-        let mut docs_seen = FixedBitSet::new(8);
-        let result = writer
-            .write_term(
-                &BytesRef::default(),
-                &mut crate::index::EmptyTermsEnum::new(),
-                &mut docs_seen,
-                &TestNormsProducer,
-            )
-            .expect("write_term should succeed");
-        assert!(result.is_none());
-
-        writer
-            .encode_term(
-                &mut crate::store::ByteArrayDataOutput::new(),
-                &field_info,
-                &BlockTermState::default(),
-                true,
-            )
-            .expect("encode_term should succeed");
-
-        writer.close().expect("close should succeed");
     }
 }

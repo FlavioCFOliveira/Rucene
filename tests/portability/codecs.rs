@@ -204,6 +204,36 @@ fn java_harness_supports_all_document_shapes() {
     }
 }
 
+/// Asserts that the Java harness produces the expected Lucene90 points files
+/// for the {@code points} shape.
+///
+/// This is a structural portability check: it verifies that the default
+/// Lucene104Codec writes separate {@code .kdm}, {@code .kdi} and {@code .kdd}
+/// files and that they are non-empty. A byte-for-byte comparison of these
+/// files against Rucene output is deferred until Rucene has an IndexWriter
+/// wired to Lucene104Codec that can produce a matching segment.
+#[test]
+fn java_harness_produces_points_files() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let out_dir = tmp.path();
+
+    let stdout =
+        run_java_harness(out_dir, "points").unwrap_or_else(|e| panic!("points shape: {}", e));
+    assert_harness_metadata(&stdout, "points");
+
+    let files = list_index_files(out_dir).unwrap_or_else(|e| panic!("points shape: {}", e));
+    for ext in ["kdm", "kdi", "kdd"] {
+        let matched = files.iter().find(|n| n.ends_with(ext)).cloned();
+        let name =
+            matched.unwrap_or_else(|| panic!("missing .{} points file; got: {:?}", ext, files));
+        let path = out_dir.join(&name);
+        let len = std::fs::metadata(&path)
+            .unwrap_or_else(|e| panic!("metadata for {}: {}", path.display(), e))
+            .len();
+        assert!(len > 0, "{} should be non-empty", path.display());
+    }
+}
+
 /// Placeholder for the future byte-for-byte comparison.
 ///
 /// When Rucene's `IndexWriter` with `Lucene104Codec` can write the same

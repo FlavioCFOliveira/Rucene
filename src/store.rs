@@ -10,7 +10,6 @@
 pub mod mmap;
 
 use std::{
-    cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     io::{self, Read, Seek, SeekFrom, Write},
@@ -1623,8 +1622,10 @@ impl RandomAccessInput for SlicedIndexInput {
 /// Abstract base trait for appending data to a file in a Lucene `Directory`.
 ///
 /// Equivalent to `org.apache.lucene.store.IndexOutput`. Implementations are not
-/// thread-safe; each thread must use its own instance.
-pub trait IndexOutput: DataOutput {
+/// thread-safe; each thread must use its own instance.  The trait is marked
+/// `Send + Sync` so that `Box<dyn IndexOutput>` can be stored in codecs that
+/// require thread-safe trait objects (e.g. `PushPostingsWriterBase`).
+pub trait IndexOutput: DataOutput + Send + Sync {
     /// Closes this stream to further operations.
     fn close(&mut self) -> Result<()>;
 
@@ -5682,7 +5683,7 @@ impl FileEntry {
         let file_name = self_arc.file_name.clone();
         let output_to_input = Arc::clone(output_to_input);
         let entry_for_close = Arc::clone(&self_arc);
-        let on_close: Option<Box<dyn FnOnce(ByteBuffersDataOutput) + Send>> =
+        let on_close: Option<Box<dyn FnOnce(ByteBuffersDataOutput) + Send + Sync>> =
             Some(Box::new(move |output: ByteBuffersDataOutput| {
                 let input = output_to_input(&file_name, &output)
                     .expect("output-to-input conversion must not fail");
@@ -6235,7 +6236,7 @@ pub struct ByteBuffersIndexOutput {
     checksum: Option<crc32fast::Hasher>,
     last_checksum_position: AtomicI64,
     last_checksum: AtomicI64,
-    on_close: Option<Box<dyn FnOnce(ByteBuffersDataOutput) + Send>>,
+    on_close: Option<Box<dyn FnOnce(ByteBuffersDataOutput) + Send + Sync>>,
     resource_description: String,
     name: String,
 }
@@ -6262,7 +6263,7 @@ impl ByteBuffersIndexOutput {
         resource_description: impl Into<String>,
         name: impl Into<String>,
         checksum: Option<crc32fast::Hasher>,
-        on_close: Option<Box<dyn FnOnce(ByteBuffersDataOutput) + Send>>,
+        on_close: Option<Box<dyn FnOnce(ByteBuffersDataOutput) + Send + Sync>>,
     ) -> Self {
         Self {
             delegate: Some(delegate),
@@ -6492,16 +6493,16 @@ impl<W: Write> Write for ChunkedOutput<W> {
 ///
 /// Equivalent to `org.apache.lucene.store.OutputStreamIndexOutput`. Writes are
 /// buffered and a CRC-32 checksum is computed over all bytes written.
-pub struct OutputStreamIndexOutput<W: Write> {
+pub struct OutputStreamIndexOutput<W: Write + Send + Sync> {
     name: String,
     resource_description: String,
-    out: RefCell<io::BufWriter<W>>,
+    out: io::BufWriter<W>,
     crc: BufferedChecksum,
     bytes_written: i64,
     flushed_on_close: bool,
 }
 
-impl<W: Write> OutputStreamIndexOutput<W> {
+impl<W: Write + Send + Sync> OutputStreamIndexOutput<W> {
     /// Creates a new output over `out` with the given buffer size.
     ///
     /// # Errors
@@ -6522,7 +6523,7 @@ impl<W: Write> OutputStreamIndexOutput<W> {
         Ok(Self {
             name: name.into(),
             resource_description: resource_description.into(),
-            out: RefCell::new(io::BufWriter::with_capacity(buffer_size, out)),
+            out: io::BufWriter::with_capacity(buffer_size, out),
             crc: BufferedChecksum::new(),
             bytes_written: 0,
             flushed_on_close: false,
@@ -6530,13 +6531,10 @@ impl<W: Write> OutputStreamIndexOutput<W> {
     }
 }
 
-impl<W: Write> DataOutput for OutputStreamIndexOutput<W> {
+impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.crc.update(b);
-        self.out
-            .borrow_mut()
-            .write_all(&[b])
-            .map_err(LuceneError::from)?;
+        self.out.write_all(&[b]).map_err(LuceneError::from)?;
         self.bytes_written += 1;
         Ok(())
     }
@@ -6553,7 +6551,6 @@ impl<W: Write> DataOutput for OutputStreamIndexOutput<W> {
         }
         self.crc.update_bytes(b, offset, len)?;
         self.out
-            .borrow_mut()
             .write_all(&b[offset..end])
             .map_err(LuceneError::from)?;
         self.bytes_written += len as i64;
@@ -6565,10 +6562,7 @@ impl<W: Write> DataOutput for OutputStreamIndexOutput<W> {
         buf[0] = i as u8;
         buf[1] = (i >> 8) as u8;
         self.crc.update_bytes(&buf, 0, 2)?;
-        self.out
-            .borrow_mut()
-            .write_all(&buf)
-            .map_err(LuceneError::from)?;
+        self.out.write_all(&buf).map_err(LuceneError::from)?;
         self.bytes_written += 2;
         Ok(())
     }
@@ -6580,10 +6574,7 @@ impl<W: Write> DataOutput for OutputStreamIndexOutput<W> {
         buf[2] = (i >> 16) as u8;
         buf[3] = (i >> 24) as u8;
         self.crc.update_bytes(&buf, 0, 4)?;
-        self.out
-            .borrow_mut()
-            .write_all(&buf)
-            .map_err(LuceneError::from)?;
+        self.out.write_all(&buf).map_err(LuceneError::from)?;
         self.bytes_written += 4;
         Ok(())
     }
@@ -6599,20 +6590,17 @@ impl<W: Write> DataOutput for OutputStreamIndexOutput<W> {
         buf[6] = (i >> 48) as u8;
         buf[7] = (i >> 56) as u8;
         self.crc.update_bytes(&buf, 0, 8)?;
-        self.out
-            .borrow_mut()
-            .write_all(&buf)
-            .map_err(LuceneError::from)?;
+        self.out.write_all(&buf).map_err(LuceneError::from)?;
         self.bytes_written += 8;
         Ok(())
     }
 }
 
-impl<W: Write> IndexOutput for OutputStreamIndexOutput<W> {
+impl<W: Write + Send + Sync> IndexOutput for OutputStreamIndexOutput<W> {
     fn close(&mut self) -> Result<()> {
         if !self.flushed_on_close {
             self.flushed_on_close = true;
-            self.out.borrow_mut().flush().map_err(LuceneError::from)?;
+            self.out.flush().map_err(LuceneError::from)?;
         }
         Ok(())
     }
@@ -6622,7 +6610,9 @@ impl<W: Write> IndexOutput for OutputStreamIndexOutput<W> {
     }
 
     fn checksum(&self) -> Result<i64> {
-        self.out.borrow_mut().flush().map_err(LuceneError::from)?;
+        // The CRC is updated on every write, so no flush is required to obtain the
+        // current checksum.  This also avoids interior mutability, keeping the
+        // type `Sync`.
         Ok(self.crc.get_value())
     }
 
@@ -6635,7 +6625,7 @@ impl<W: Write> IndexOutput for OutputStreamIndexOutput<W> {
     }
 }
 
-impl<W: Write> std::fmt::Debug for OutputStreamIndexOutput<W> {
+impl<W: Write + Send + Sync> std::fmt::Debug for OutputStreamIndexOutput<W> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OutputStreamIndexOutput")
             .field("resource_description", &self.resource_description)

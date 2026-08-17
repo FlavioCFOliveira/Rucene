@@ -12,9 +12,35 @@ use std::fmt;
 
 use crate::error::Result;
 
+pub use crate::util::bkd::{IntersectVisitor, Relation};
+
 use super::postings::MergeState;
 use super::state::{SegmentReadState, SegmentWriteState};
 use super::stub::FieldInfo;
+
+// -----------------------------------------------------------------------------
+// Doc-values visitor
+// -----------------------------------------------------------------------------
+
+/// Visitor that receives every indexed point together with its document id.
+///
+/// This is the codec-level counterpart to Java's
+/// `PointValues.IntersectVisitor` used while writing a field: the writer
+/// needs to consume all `(doc_id, packed_value)` pairs, not only the ones
+/// matching a query.
+pub trait DocValuesVisitor {
+    /// Called once for every indexed point value.
+    fn visit(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()>;
+}
+
+impl<F> DocValuesVisitor for F
+where
+    F: FnMut(i32, &[u8]) -> Result<()> + Send + Sync,
+{
+    fn visit(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
+        (self)(doc_id, packed_value)
+    }
+}
 
 // -----------------------------------------------------------------------------
 // Point values
@@ -44,6 +70,35 @@ pub trait PointValues: Send + Sync {
 
     /// Returns the maximum packed value.
     fn max_packed_value(&self) -> Result<Vec<u8>>;
+
+    /// Iterates every indexed point value for this field.
+    ///
+    /// The default implementation is a no-op so that existing implementors keep
+    /// compiling. Concrete sources that can enumerate their values (for
+    /// example a BKD-backed reader) must override this method.
+    fn visit_doc_values(&self, _visitor: &mut dyn DocValuesVisitor) -> Result<()> {
+        Ok(())
+    }
+
+    /// Finds all matching points for the provided intersection visitor.
+    ///
+    /// The default implementation enumerates every stored point and invokes the
+    /// visitor directly. BKD-backed implementations override this to use the
+    /// tree index for efficient range/intersection queries.
+    fn intersect(&self, visitor: &mut dyn IntersectVisitor) -> Result<()> {
+        struct IntersectDocValuesVisitor<'a> {
+            visitor: &'a mut dyn IntersectVisitor,
+        }
+
+        impl<'a> DocValuesVisitor for IntersectDocValuesVisitor<'a> {
+            fn visit(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
+                self.visitor.visit_point(doc_id, packed_value);
+                Ok(())
+            }
+        }
+
+        self.visit_doc_values(&mut IntersectDocValuesVisitor { visitor })
+    }
 }
 
 // -----------------------------------------------------------------------------

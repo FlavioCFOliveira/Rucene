@@ -582,8 +582,8 @@ impl PointWriter for HeapPointWriter {
         }
         Ok(Box::new(HeapPointReader {
             writer: self,
-            cur: start.saturating_sub(1),
-            end: start + length,
+            cur: start as i64 - 1,
+            end: (start + length) as i64,
             current: PointValue::new(Vec::new(), 0),
         }))
     }
@@ -607,8 +607,8 @@ impl PointWriter for HeapPointWriter {
 /// In-memory point reader that reads from a [`HeapPointWriter`].
 pub struct HeapPointReader<'a> {
     writer: &'a HeapPointWriter,
-    cur: usize,
-    end: usize,
+    cur: i64,
+    end: i64,
     current: PointValue,
 }
 
@@ -616,7 +616,7 @@ impl<'a> PointReader for HeapPointReader<'a> {
     fn next(&mut self) -> Result<bool> {
         self.cur += 1;
         if self.cur < self.end {
-            self.current = self.writer.point_value_at(self.cur);
+            self.current = self.writer.point_value_at(self.cur as usize);
             Ok(true)
         } else {
             Ok(false)
@@ -635,7 +635,7 @@ impl<'a> PointReader for HeapPointReader<'a> {
 impl<'a> HeapPointReader<'a> {
     /// Returns an owned copy of the current point value.
     pub fn point_value_owned(&self) -> PointValue {
-        self.writer.point_value_at(self.cur)
+        self.writer.point_value_at(self.cur as usize)
     }
 }
 
@@ -1469,6 +1469,31 @@ impl BKDReader {
     pub fn doc_count(&self) -> i32 {
         self.doc_count
     }
+
+    /// Returns the minimum packed value across all indexed points.
+    pub fn min_packed_value(&self) -> &[u8] {
+        &self.min_packed_value
+    }
+
+    /// Returns the maximum packed value across all indexed points.
+    pub fn max_packed_value(&self) -> &[u8] {
+        &self.max_packed_value
+    }
+
+    /// Returns the number of data dimensions stored in leaf blocks.
+    pub fn num_dims(&self) -> i32 {
+        self.config.num_dims
+    }
+
+    /// Returns the number of dimensions indexed in internal nodes.
+    pub fn num_index_dims(&self) -> i32 {
+        self.config.num_index_dims
+    }
+
+    /// Returns the number of bytes per dimension value.
+    pub fn bytes_per_dim(&self) -> i32 {
+        self.config.bytes_per_dim
+    }
 }
 
 #[derive(Clone)]
@@ -1660,6 +1685,21 @@ pub struct BKDWriter {
 }
 
 impl BKDWriter {
+    /// Minimum supported BKD format version.
+    pub const VERSION_START: i32 = 4;
+
+    /// Version that introduced the separate meta file.
+    pub const VERSION_META_FILE: i32 = 9;
+
+    /// Version that introduced storing actual min/max bounds in leaf blocks.
+    pub const VERSION_LEAF_STORES_BOUNDS: i32 = 7;
+
+    /// Version that introduced vectorized BPV_24 and BPV_21 doc-id encodings.
+    pub const VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21: i32 = 10;
+
+    /// Current format version used by this implementation.
+    pub const VERSION_CURRENT: i32 = 10;
+
     /// Creates a writer using [`VERSION_CURRENT`].
     pub fn new_default(
         max_doc: i32,
@@ -1737,6 +1777,11 @@ impl BKDWriter {
             point_count: 0,
             finished: false,
         })
+    }
+
+    /// Returns the number of points that have been added so far.
+    pub fn point_count(&self) -> i64 {
+        self.point_count
     }
 
     fn init_point_writer(&mut self) -> Result<()> {

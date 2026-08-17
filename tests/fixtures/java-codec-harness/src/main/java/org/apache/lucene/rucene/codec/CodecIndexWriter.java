@@ -21,6 +21,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.core.WhitespaceAnalyzer;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.codecs.lucene104.Lucene104Codec;
 import org.apache.lucene.document.BinaryDocValuesField;
@@ -29,6 +31,7 @@ import org.apache.lucene.document.DoubleDocValuesField;
 import org.apache.lucene.document.DoublePoint;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
+import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.document.FloatDocValuesField;
 import org.apache.lucene.document.FloatPoint;
 import org.apache.lucene.document.IntPoint;
@@ -67,6 +70,7 @@ import org.apache.lucene.util.Version;
  *   <li>{@code vectors} - float KNN vector fields.</li>
  *   <li>{@code stored} - stored-only fields.</li>
  *   <li>{@code termvectors} - text fields with term vectors enabled.</li>
+ *   <li>{@code postings} - deterministic tokenized body field with positions and offsets, exposed as separate postings files.</li>
  * </ul>
  */
 public final class CodecIndexWriter {
@@ -76,7 +80,7 @@ public final class CodecIndexWriter {
   public static void main(String[] args) {
     if (args.length != 2) {
       System.err.println("Usage: CodecIndexWriter <output-dir> <shape>");
-      System.err.println("Supported shapes: text, docvalues, points, vectors, stored, termvectors");
+      System.err.println("Supported shapes: text, docvalues, points, vectors, stored, termvectors, postings");
       System.exit(1);
     }
 
@@ -86,11 +90,17 @@ public final class CodecIndexWriter {
     try {
       Files.createDirectories(outputDir);
 
-      IndexWriterConfig config = new IndexWriterConfig(new StandardAnalyzer());
+      Analyzer analyzer = shape.equals("postings") ? new WhitespaceAnalyzer() : new StandardAnalyzer();
+      IndexWriterConfig config = new IndexWriterConfig(analyzer);
       config.setCodec(new Lucene104Codec());
       config.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
       // Disable the randomized merge policy so produced indexes are reproducible.
       config.setMergePolicy(org.apache.lucene.index.NoMergePolicy.INSTANCE);
+      // The postings and points shapes must expose individual files for byte-for-byte
+      // portability tests; compound files hide those extensions inside .cfs/.cfe.
+      if (shape.equals("postings") || shape.equals("points")) {
+        config.setUseCompoundFile(false);
+      }
 
       try (FSDirectory dir = FSDirectory.open(outputDir);
            IndexWriter writer = new IndexWriter(dir, config)) {
@@ -116,6 +126,7 @@ public final class CodecIndexWriter {
       case "vectors" -> writeVectorDocuments(writer);
       case "stored" -> writeStoredDocuments(writer);
       case "termvectors" -> writeTermVectorDocuments(writer);
+      case "postings" -> writePostingsDocuments(writer);
       default -> throw new IllegalArgumentException("Unknown shape: " + shape);
     }
   }
@@ -205,6 +216,28 @@ public final class CodecIndexWriter {
       Document doc = new Document();
       doc.add(new StringField("id", "tv-" + i, Field.Store.YES));
       doc.add(new Field("body", bodies[i], tvType));
+      writer.addDocument(doc);
+    }
+  }
+
+  private static void writePostingsDocuments(IndexWriter writer) throws IOException {
+    FieldType bodyType = new FieldType();
+    bodyType.setIndexOptions(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
+    bodyType.setTokenized(true);
+    bodyType.setStored(false);
+    bodyType.freeze();
+
+    String[] bodies = {
+      "a b c d e f g",
+      "a a b b c c d",
+      "x y z",
+      "a b x y",
+      "one two three four five"
+    };
+    for (int i = 0; i < bodies.length; i++) {
+      Document doc = new Document();
+      doc.add(new StringField("id", "postings-" + i, Field.Store.YES));
+      doc.add(new Field("body", bodies[i], bodyType));
       writer.addDocument(doc);
     }
   }
