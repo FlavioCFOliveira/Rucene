@@ -1545,7 +1545,7 @@ fn read_int_in_group(input: &mut dyn DataInput, num_bytes_minus_1: usize) -> Res
 mod tests {
     use super::*;
     use crate::codecs::stub::{BufferedUpdates, FieldInfos};
-    use crate::codecs::{KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter};
+    use crate::codecs::KnnVectorsFormat;
     use crate::index::field_infos::FieldInfo;
     use crate::index::{
         segment_file_name, DocValuesSkipIndexType, DocValuesType, IndexOptions, SegmentInfo,

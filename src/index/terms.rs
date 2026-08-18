@@ -392,7 +392,7 @@ impl Fields for EmptyFields {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::postings_enum::{EmptyPostingsEnum, POSTINGS_ENUM_FREQS};
+    use crate::index::postings_enum::POSTINGS_ENUM_FREQS;
 
     #[test]
     fn empty_terms_enum_returns_no_terms() {

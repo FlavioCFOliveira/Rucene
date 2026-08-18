@@ -17,14 +17,14 @@ use crate::codecs::postings::{
 };
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::{FieldInfo, FieldInfos};
-use crate::codecs::term_state::{BlockTermState, TermStats};
+use crate::codecs::term_state::BlockTermState;
 use crate::error::{LuceneError, Result};
 use crate::index::index_file_names::segment_file_name;
 use crate::index::IndexOptions;
 use crate::index::SegmentInfo;
 use crate::store::{ByteBuffersDataOutput, DataOutput, Directory, IOContext, IndexOutput};
-use crate::util::compress::{LowercaseAsciiCompression, Lz4};
-use crate::util::{ArrayUtil, BytesRef, BytesRefBuilder, FixedBitSet, StringHelper};
+use crate::util::compress::{LowercaseAsciiCompression, Lz4, Lz4HashTable};
+use crate::util::{BytesRef, BytesRefBuilder, FixedBitSet, StringHelper};
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -975,50 +975,6 @@ pub struct Lucene103BlockTreeTermsWriter<'a> {
     closed: bool,
     scratch_bytes: ByteBuffersDataOutput,
     compression_hash_table: Option<Box<dyn Lz4HashTable>>,
-}
-
-/// Hash-table interface used by the LZ4 high-compression encoder.
-///
-/// Lucene Core equivalent: `org.apache.lucene.util.compress.LZ4.HASH_TABLE`.
-pub trait Lz4HashTable: Send + Sync {
-    /// Resets the table for a new input region.
-    fn reset(&mut self, bytes: &[u8], off: usize, len: usize) -> Result<()>;
-    /// Initializes the dictionary portion of the input.
-    fn init_dictionary(&mut self, bytes: &[u8], dict_len: usize);
-    /// Looks up a 4-byte hash at `off`; returns a previous offset or `None`.
-    fn get(&mut self, bytes: &[u8], off: usize) -> Option<usize>;
-    /// Returns the previous occurrence for a matched offset.
-    fn previous(&mut self, bytes: &[u8], off: usize) -> Option<usize>;
-}
-
-impl Lz4HashTable for crate::util::compress::FastCompressionHashTable {
-    fn reset(&mut self, bytes: &[u8], off: usize, len: usize) -> Result<()> {
-        crate::util::compress::FastCompressionHashTable::reset(self, bytes, off, len)
-    }
-    fn init_dictionary(&mut self, bytes: &[u8], dict_len: usize) {
-        crate::util::compress::FastCompressionHashTable::init_dictionary(self, bytes, dict_len);
-    }
-    fn get(&mut self, bytes: &[u8], off: usize) -> Option<usize> {
-        crate::util::compress::FastCompressionHashTable::get(self, bytes, off)
-    }
-    fn previous(&mut self, bytes: &[u8], off: usize) -> Option<usize> {
-        crate::util::compress::FastCompressionHashTable::previous(self, bytes, off)
-    }
-}
-
-impl Lz4HashTable for crate::util::compress::HighCompressionHashTable {
-    fn reset(&mut self, bytes: &[u8], off: usize, len: usize) -> Result<()> {
-        crate::util::compress::HighCompressionHashTable::reset(self, bytes, off, len)
-    }
-    fn init_dictionary(&mut self, bytes: &[u8], dict_len: usize) {
-        crate::util::compress::HighCompressionHashTable::init_dictionary(self, bytes, dict_len);
-    }
-    fn get(&mut self, bytes: &[u8], off: usize) -> Option<usize> {
-        crate::util::compress::HighCompressionHashTable::get(self, bytes, off)
-    }
-    fn previous(&mut self, bytes: &[u8], off: usize) -> Option<usize> {
-        crate::util::compress::HighCompressionHashTable::previous(self, bytes, off)
-    }
 }
 
 impl<'a> Lucene103BlockTreeTermsWriter<'a> {

@@ -22,8 +22,7 @@ use super::doc_values::{
 };
 use super::knn_vectors::{
     knn_vectors_for_name, ByteVectorValues, EmptyKnnVectorsReader, FieldVectorWriter,
-    FloatVectorValues, KnnCollector, KnnFieldVectorsWriter, KnnVectorsFormat, KnnVectorsReader,
-    KnnVectorsWriter,
+    FloatVectorValues, KnnCollector, KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
 };
 use super::postings::{
     postings_for_name, Fields, FieldsConsumer, FieldsProducer, MergeState, NormsProducer,

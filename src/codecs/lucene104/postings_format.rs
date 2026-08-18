@@ -15,7 +15,7 @@ use crate::codecs::lucene103::blocktree::{
 };
 use crate::codecs::lucene104::postings_reader::Lucene104PostingsReader;
 use crate::codecs::lucene104::postings_writer::Lucene104PostingsWriter;
-use crate::codecs::postings::{FieldsConsumer, FieldsProducer, PostingsFormat, PostingsReaderBase};
+use crate::codecs::postings::{FieldsConsumer, FieldsProducer, PostingsFormat};
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::error::{LuceneError, Result};
 

@@ -38,14 +38,14 @@ use crate::index::index_file_names::segment_file_name;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{
     ByteArrayDataInput, ByteBuffersDataOutput, ByteBuffersIndexOutput, DataInput, DataOutput,
-    Directory, IOContext, IndexInput, IndexOutput, MockIndexOutput, RandomAccessInput,
+    Directory, IOContext, IndexInput, IndexOutput, MockIndexOutput,
 };
 use crate::util::compress::{FastCompressionHashTable, Lz4};
 use crate::util::extra::LongValues;
 use crate::util::packed::{
     DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter, DirectReader, DirectWriter,
 };
-use crate::util::{ArrayUtil, BytesRef, BytesRefBuilder, FixedBitSet, StringHelper};
+use crate::util::{ArrayUtil, BytesRef, BytesRefBuilder, StringHelper};
 
 // -----------------------------------------------------------------------------
 // Format constants

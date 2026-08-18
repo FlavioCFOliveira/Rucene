@@ -16,16 +16,26 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 
 /// Path to the Java codec harness, relative to `CARGO_MANIFEST_DIR`.
 fn harness_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/java-codec-harness")
 }
 
+/// Serialize calls into the Java harness so that multiple parallel Maven
+/// executions do not fight over the shared `target/` directory.
+static HARNESS_LOCK: Mutex<()> = Mutex::new(());
+
 /// Runs the Java harness for `shape`, writing the index into `out_dir`.
 ///
 /// Returns the captured stdout so callers can assert on emitted metadata.
 fn run_java_harness(out_dir: &Path, shape: &str) -> Result<String, String> {
+    // Multiple tests run in parallel and all invoke Maven in the same harness
+    // directory. The lock prevents concurrent Maven builds from corrupting the
+    // shared `target/` directory.
+    let _guard = HARNESS_LOCK.lock().unwrap();
+
     let harness = harness_dir();
     if !harness.join("pom.xml").exists() {
         return Err(format!("pom.xml not found in {}", harness.display()));

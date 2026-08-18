@@ -125,7 +125,7 @@ fn encode_sequence(
 /// Hash table used by the LZ4 compressor to find repeated 4-byte sequences.
 ///
 /// Equivalent to `org.apache.lucene.util.compress.LZ4.HashTable`.
-pub trait Lz4HashTable {
+pub trait Lz4HashTable: Send + Sync {
     /// Reset this hash table in order to compress the given content.
     fn reset(&mut self, bytes: &[u8], off: usize, len: usize) -> Result<()>;
 

@@ -1551,12 +1551,11 @@ mod tests {
     use crate::codecs::lucene104::Lucene104PostingsWriter;
     use crate::codecs::postings::{NumericDocValues, PushPostingsWriterBase};
     use crate::codecs::state::SegmentWriteState;
-    use crate::index::{FieldInfo, FieldInfos, IndexOptions, PostingsEnum};
+    use crate::index::{FieldInfo, FieldInfos, IndexOptions};
     use crate::search::DocIdSetIterator;
     use crate::store::{
         ByteBuffersDataOutput, ByteBuffersIndexOutput, Directory, MockIndexInput, RamDirectory,
     };
-    use crate::util::BytesRef;
 
     struct TestNorms;
 

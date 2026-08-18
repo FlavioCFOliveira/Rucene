@@ -194,7 +194,6 @@ impl Codec for Lucene104Codec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codecs::Codec as _;
 
     #[test]
     fn codec_reports_correct_name_and_subformats() {

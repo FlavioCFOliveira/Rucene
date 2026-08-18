@@ -907,7 +907,7 @@ impl Lucene104PostingsWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codecs::codec_util::{check_index_header, checksum_entire_file};
+    use crate::codecs::codec_util::check_index_header;
     use crate::codecs::lucene104::{
         Lucene104PostingsFormat, DOC_CODEC, META_CODEC, PAY_CODEC, POS_CODEC,
     };
@@ -917,6 +917,7 @@ mod tests {
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
     use crate::store::{Directory, RamDirectory};
     use crate::util::{AttributeSource, BytesRef};
+    use base64::Engine as _;
 
     struct TestNorms;
 
@@ -1331,7 +1332,9 @@ mod tests {
         if let Some(expected_b64) = expected_b64 {
             assert!(exists, "{name} should exist for this field config");
             let actual = read_file_bytes(dir, name);
-            let expected = base64::decode(expected_b64).expect("expected base64 should decode");
+            let expected = base64::engine::general_purpose::STANDARD
+                .decode(expected_b64)
+                .expect("expected base64 should decode");
             assert_eq!(
                 actual, expected,
                 "{name} bytes differ from Java Lucene reference"
