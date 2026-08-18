@@ -93,10 +93,18 @@ pub enum IndexOptions {
 impl IndexOptions {
     /// Returns `true` if this option records at least as much information as
     /// `other`.
+    ///
+    /// Equivalent to `org.apache.lucene.index.IndexOptions.subsumes(IndexOptions)`.
+    /// `DOCS_AND_CUSTOM_FREQS` is encoded with the same bits as
+    /// `DOCS_AND_FREQS`, so for ordering purposes it is treated as the latter.
     pub fn subsumes(&self, other: IndexOptions) -> bool {
-        let ord = *self as i32;
-        let other_ord = other as i32;
-        ord >= other_ord
+        if *self == IndexOptions::DOCS_AND_CUSTOM_FREQS {
+            return IndexOptions::DOCS_AND_FREQS.subsumes(other);
+        }
+        if other == IndexOptions::DOCS_AND_CUSTOM_FREQS {
+            return self.subsumes(IndexOptions::DOCS_AND_FREQS);
+        }
+        (*self as i32) >= (other as i32)
     }
 }
 
@@ -228,21 +236,21 @@ impl VectorSimilarityFunction {
         debug_assert_eq!(a.len(), b.len());
         match self {
             Self::EUCLIDEAN => {
-                let dist = square_distance_u8(a, b);
+                let dist = square_distance_i8(a, b);
                 1.0 / (1.0 + dist)
             }
             Self::DOT_PRODUCT => {
-                let dot = dot_product_u8(a, b);
+                let dot = dot_product_i8(a, b);
                 // divide by 2 * 2^14 (maximum absolute value of product of 2 signed bytes) * len
                 let denom = (a.len() * (1 << 15)) as f32;
                 0.5 + dot / denom
             }
             Self::COSINE => {
-                let score = cosine_u8(a, b);
+                let score = cosine_i8(a, b);
                 (1.0 + score) / 2.0
             }
             Self::MAXIMUM_INNER_PRODUCT => {
-                let dot = dot_product_u8_signed(a, b);
+                let dot = dot_product_i8(a, b);
                 if dot < 0.0 {
                     1.0 / (1.0 - dot)
                 } else {
@@ -277,34 +285,31 @@ fn cosine_f32(a: &[f32], b: &[f32]) -> f32 {
     dot / (norm_a * norm_b)
 }
 
-fn dot_product_u8(a: &[u8], b: &[u8]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| (x as i32 * y as i32) as f32)
-        .sum()
-}
-
-fn dot_product_u8_signed(a: &[u8], b: &[u8]) -> f32 {
+/// Dot product computed over signed bytes, as used by Lucene's
+/// `VectorUtil.dotProduct(byte[], byte[])`.
+fn dot_product_i8(a: &[u8], b: &[u8]) -> f32 {
     a.iter()
         .zip(b.iter())
         .map(|(&x, &y)| (x as i8 as i32 * y as i8 as i32) as f32)
         .sum()
 }
 
-fn square_distance_u8(a: &[u8], b: &[u8]) -> f32 {
+/// Squared Euclidean distance computed over signed bytes, as used by Lucene's
+/// `VectorUtil.squareDistance(byte[], byte[])`.
+fn square_distance_i8(a: &[u8], b: &[u8]) -> f32 {
     a.iter()
         .zip(b.iter())
         .map(|(&x, &y)| {
-            let d = x as i32 - y as i32;
+            let d = x as i8 as i32 - y as i8 as i32;
             (d * d) as f32
         })
         .sum()
 }
 
-fn cosine_u8(a: &[u8], b: &[u8]) -> f32 {
-    let dot = dot_product_u8_signed(a, b);
-    let norm_a = dot_product_u8_signed(a, a).sqrt();
-    let norm_b = dot_product_u8_signed(b, b).sqrt();
+fn cosine_i8(a: &[u8], b: &[u8]) -> f32 {
+    let dot = dot_product_i8(a, b);
+    let norm_a = dot_product_i8(a, a).sqrt();
+    let norm_b = dot_product_i8(b, b).sqrt();
     if norm_a == 0.0 || norm_b == 0.0 {
         return 0.0;
     }
@@ -460,6 +465,20 @@ mod tests {
     }
 
     #[test]
+    fn index_options_subsumes_matches_java() {
+        // DOCS_AND_CUSTOM_FREQS is encoded like DOCS_AND_FREQS, so it is treated
+        // as that option for subsumes comparisons.
+        assert!(!IndexOptions::DOCS_AND_FREQS
+            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS));
+        assert!(!IndexOptions::DOCS_AND_CUSTOM_FREQS
+            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS));
+        assert!(IndexOptions::DOCS_AND_CUSTOM_FREQS.subsumes(IndexOptions::DOCS));
+        assert!(IndexOptions::DOCS_AND_CUSTOM_FREQS.subsumes(IndexOptions::DOCS_AND_FREQS));
+        assert!(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS
+            .subsumes(IndexOptions::DOCS_AND_CUSTOM_FREQS));
+    }
+
+    #[test]
     fn doc_values_type_ordinals_match_java() {
         assert_eq!(DocValuesType::NONE as usize, 0);
         assert_eq!(DocValuesType::NUMERIC as usize, 1);
@@ -487,6 +506,26 @@ mod tests {
         assert_eq!(VectorSimilarityFunction::DOT_PRODUCT as usize, 1);
         assert_eq!(VectorSimilarityFunction::COSINE as usize, 2);
         assert_eq!(VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT as usize, 3);
+    }
+
+    #[test]
+    fn vector_similarity_byte_comparisons_use_signed_arithmetic() {
+        // Java VectorUtil treats byte vectors as signed for every similarity function.
+        let a = [0xFFu8, 0x00]; // -1, 0 as signed bytes
+        let b = [0x01u8, 0x00]; //  1, 0 as signed bytes
+
+        // Dot product of [-1, 0] and [1, 0] is -1, scaled by 2^15 * 2.
+        let dot = VectorSimilarityFunction::DOT_PRODUCT.compare_u8(&a, &b);
+        let expected_dot = 0.5f32 - 1.0 / ((a.len() * (1 << 15)) as f32);
+        assert!((dot - expected_dot).abs() < 1e-6, "dot product score should be ~{expected_dot}");
+
+        // Maximum inner product of [-1, 0] and [1, 0] is -1 -> scaled to 1/2.
+        let mip = VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT.compare_u8(&a, &b);
+        assert!((mip - 0.5f32).abs() < f32::EPSILON, "MIP score should be 0.5");
+
+        // Euclidean distance squared of [-1, 0] and [1, 0] is 4.
+        let euclid = VectorSimilarityFunction::EUCLIDEAN.compare_u8(&a, &b);
+        assert!((euclid - 1.0 / 5.0).abs() < 1e-6, "euclidean score should be 1/5");
     }
 
     #[test]

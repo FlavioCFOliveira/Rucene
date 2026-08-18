@@ -347,6 +347,8 @@ impl FieldInfo {
     /// Sets the DocValues generation for this field.
     pub fn set_doc_values_gen(&mut self, doc_values_gen: i64) {
         self.doc_values_gen = doc_values_gen;
+        // Java re-validates after changing the generation.
+        self.check_consistency().expect("set_doc_values_gen produced an inconsistent FieldInfo");
     }
 
     /// Returns `true` if term vectors are stored for this field.
@@ -409,6 +411,8 @@ impl FieldInfo {
         {
             self.store_payloads = true;
         }
+        // Java also re-validates after mutating payload storage.
+        self.check_consistency().expect("store_payloads produced an inconsistent FieldInfo");
     }
 
     /// Returns `true` if this field has vector values.
@@ -1482,6 +1486,35 @@ mod tests {
         fi.doc_values_skip_index_type = DocValuesSkipIndexType::RANGE;
         let err = fi.check_consistency().expect_err("should fail");
         assert!(matches!(err, LuceneError::IllegalArgument(_)));
+    }
+
+    #[test]
+    fn field_info_set_doc_values_gen_re_validates() {
+        let mut fi = FieldInfo::new("f", 0);
+        fi.doc_values_type = DocValuesType::NUMERIC;
+        fi.set_doc_values_gen(1);
+        assert_eq!(fi.get_doc_values_gen(), 1);
+
+        let mut fi2 = FieldInfo::new("f2", 1);
+        // Setting a generation without doc values should panic (via expect in the
+        // setter), matching Java's IllegalArgumentException.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            fi2.set_doc_values_gen(1);
+        }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn field_info_set_store_payloads_re_validates() {
+        let mut fi = FieldInfo::new("f", 0);
+        fi.index_options = IndexOptions::DOCS;
+        fi.set_store_payloads(); // no-op because positions are absent
+        assert!(!fi.has_payloads());
+
+        let mut fi2 = FieldInfo::new("f2", 1);
+        fi2.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
+        fi2.set_store_payloads();
+        assert!(fi2.has_payloads());
     }
 
     #[test]
