@@ -8,6 +8,7 @@
 #![deny(unsafe_code)]
 
 pub mod automaton_terms_enum;
+pub mod directory_reader;
 pub mod doc_values;
 pub mod field_infos;
 pub mod index_file_names;
@@ -19,6 +20,7 @@ pub mod postings_enum;
 pub mod reader_context;
 pub mod segment_info;
 pub mod segment_infos;
+pub mod segment_reader;
 pub mod terms;
 pub mod vector_values;
 
@@ -69,6 +71,15 @@ pub use segment_info::{
     SegmentCommitInfo, SegmentInfo, SegmentOrder, SegmentReadState, SegmentWriteState,
 };
 pub use segment_infos::SegmentInfos;
+
+// Directory/segment reader exports.
+pub use directory_reader::{
+    index_exists, list_commits, open as open_directory_reader, open_if_changed,
+    open_if_changed_with_commit, open_if_changed_with_writer, open_with_commit, DirectoryReader,
+    IndexCommit, IndexWriter as DirectoryReaderIndexWriter, StandardDirectoryReader,
+};
+pub use segment_reader::SegmentReader;
+
 pub use terms::{
     AcceptStatus, EmptyFields, EmptyTerms, EmptyTermsEnum, Fields, FilteredTermsEnum,
     FilteredTermsEnumFilter, OrdTermState, PrefixCodedTerms, PrefixCodedTermsBuilder,
