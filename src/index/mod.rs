@@ -6,6 +6,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod automaton_terms_enum;
 pub mod doc_values;
 pub mod field_infos;
 pub mod index_file_names;
@@ -16,6 +17,7 @@ pub mod segment_info;
 pub mod terms;
 pub mod vector_values;
 
+pub use automaton_terms_enum::AutomatonTermsEnum;
 pub use doc_values::{
     BinaryDocValues, DocValues, DocValuesIterator, DocValuesSkipper, EmptyBinaryDocValues,
     EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
@@ -52,7 +54,9 @@ pub use postings_enum::{
 };
 pub use segment_info::{SegmentCommitInfo, SegmentInfo};
 pub use terms::{
-    EmptyFields, EmptyTerms, EmptyTermsEnum, Fields, SeekStatus, TermState, Terms, TermsEnum,
+    AcceptStatus, EmptyFields, EmptyTerms, EmptyTermsEnum, Fields, FilteredTermsEnum,
+    FilteredTermsEnumFilter, OrdTermState, PrefixCodedTerms, PrefixCodedTermsBuilder,
+    PrefixCodedTermsIterator, SeekStatus, SingleTermsEnum, Term, TermState, Terms, TermsEnum,
 };
 pub use vector_values::{
     ByteVectorValues, DenseDocIndexIterator, DocIndexIterator, EmptyByteVectorValues,
@@ -468,8 +472,7 @@ mod tests {
     fn index_options_subsumes_matches_java() {
         // DOCS_AND_CUSTOM_FREQS is encoded like DOCS_AND_FREQS, so it is treated
         // as that option for subsumes comparisons.
-        assert!(!IndexOptions::DOCS_AND_FREQS
-            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS));
+        assert!(!IndexOptions::DOCS_AND_FREQS.subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS));
         assert!(!IndexOptions::DOCS_AND_CUSTOM_FREQS
             .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS));
         assert!(IndexOptions::DOCS_AND_CUSTOM_FREQS.subsumes(IndexOptions::DOCS));
@@ -517,15 +520,24 @@ mod tests {
         // Dot product of [-1, 0] and [1, 0] is -1, scaled by 2^15 * 2.
         let dot = VectorSimilarityFunction::DOT_PRODUCT.compare_u8(&a, &b);
         let expected_dot = 0.5f32 - 1.0 / ((a.len() * (1 << 15)) as f32);
-        assert!((dot - expected_dot).abs() < 1e-6, "dot product score should be ~{expected_dot}");
+        assert!(
+            (dot - expected_dot).abs() < 1e-6,
+            "dot product score should be ~{expected_dot}"
+        );
 
         // Maximum inner product of [-1, 0] and [1, 0] is -1 -> scaled to 1/2.
         let mip = VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT.compare_u8(&a, &b);
-        assert!((mip - 0.5f32).abs() < f32::EPSILON, "MIP score should be 0.5");
+        assert!(
+            (mip - 0.5f32).abs() < f32::EPSILON,
+            "MIP score should be 0.5"
+        );
 
         // Euclidean distance squared of [-1, 0] and [1, 0] is 4.
         let euclid = VectorSimilarityFunction::EUCLIDEAN.compare_u8(&a, &b);
-        assert!((euclid - 1.0 / 5.0).abs() < 1e-6, "euclidean score should be 1/5");
+        assert!(
+            (euclid - 1.0 / 5.0).abs() < 1e-6,
+            "euclidean score should be 1/5"
+        );
     }
 
     #[test]

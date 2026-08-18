@@ -348,7 +348,8 @@ impl FieldInfo {
     pub fn set_doc_values_gen(&mut self, doc_values_gen: i64) {
         self.doc_values_gen = doc_values_gen;
         // Java re-validates after changing the generation.
-        self.check_consistency().expect("set_doc_values_gen produced an inconsistent FieldInfo");
+        self.check_consistency()
+            .expect("set_doc_values_gen produced an inconsistent FieldInfo");
     }
 
     /// Returns `true` if term vectors are stored for this field.
@@ -412,7 +413,8 @@ impl FieldInfo {
             self.store_payloads = true;
         }
         // Java also re-validates after mutating payload storage.
-        self.check_consistency().expect("store_payloads produced an inconsistent FieldInfo");
+        self.check_consistency()
+            .expect("store_payloads produced an inconsistent FieldInfo");
     }
 
     /// Returns `true` if this field has vector values.
