@@ -13,16 +13,11 @@ use crate::codecs::lucene103::blocktree::{
     Lucene103BlockTreeTermsReader, Lucene103BlockTreeTermsWriter, DEFAULT_MAX_BLOCK_SIZE,
     DEFAULT_MIN_BLOCK_SIZE,
 };
+use crate::codecs::lucene104::postings_reader::Lucene104PostingsReader;
 use crate::codecs::lucene104::postings_writer::Lucene104PostingsWriter;
-use crate::codecs::postings::{
-    FieldsConsumer, FieldsProducer, ImpactsEnum, PostingsEnum, PostingsFormat, PostingsReaderBase,
-};
+use crate::codecs::postings::{FieldsConsumer, FieldsProducer, PostingsFormat, PostingsReaderBase};
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
-use crate::codecs::stub::FieldInfo;
-use crate::codecs::term_state::BlockTermState;
 use crate::error::{LuceneError, Result};
-use crate::search::NO_MORE_DOCS;
-use crate::store::{DataInput, IndexInput};
 
 // -----------------------------------------------------------------------------
 // Format constants
@@ -210,7 +205,7 @@ impl PostingsFormat for Lucene104PostingsFormat {
         &self,
         state: &SegmentReadState<'a>,
     ) -> Result<Box<dyn FieldsProducer + 'a>> {
-        let postings_reader = Box::new(Lucene104PostingsReader::new(self.version));
+        let postings_reader = Box::new(Lucene104PostingsReader::new(state)?);
         let reader = Lucene103BlockTreeTermsReader::new(postings_reader, state)?;
         Ok(Box::new(reader))
     }
@@ -225,130 +220,6 @@ impl PostingsFormat for Lucene104PostingsFormat {
 // imported above and instantiated in `fields_consumer`.
 
 // -----------------------------------------------------------------------------
-
-// Lucene104 postings reader skeleton
-// -----------------------------------------------------------------------------
-
-/// Low-level postings reader for the Lucene 10.4 format.
-///
-/// This is a minimal skeleton that implements [`PostingsReaderBase`] with
-/// no-op / placeholder methods. The full decode logic will be added in later
-/// tasks.
-///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.lucene104.Lucene104PostingsReader`.
-#[derive(Debug, Default, Clone)]
-pub struct Lucene104PostingsReader {
-    #[allow(dead_code)]
-    version: i32,
-}
-
-impl Lucene104PostingsReader {
-    /// Creates a new skeleton reader for the given format version.
-    pub fn new(version: i32) -> Self {
-        Self { version }
-    }
-}
-
-impl PostingsReaderBase for Lucene104PostingsReader {
-    fn init(&mut self, _terms_in: &mut dyn IndexInput, _state: &SegmentReadState) -> Result<()> {
-        Ok(())
-    }
-
-    fn new_term_state(&self) -> Result<BlockTermState> {
-        Ok(BlockTermState::default())
-    }
-
-    fn decode_term(
-        &mut self,
-        _input: &mut dyn DataInput,
-        _field_info: &FieldInfo,
-        _state: &mut BlockTermState,
-        _absolute: bool,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn postings(
-        &mut self,
-        _field_info: &FieldInfo,
-        _state: &BlockTermState,
-        _reuse: Option<Box<dyn PostingsEnum>>,
-        _flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
-        Ok(Box::new(EmptyPostingsEnum))
-    }
-
-    fn impacts(
-        &mut self,
-        _field_info: &FieldInfo,
-        _state: &BlockTermState,
-        _flags: i32,
-    ) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
-            "impacts not implemented by Lucene104PostingsReader skeleton".to_string(),
-        ))
-    }
-
-    fn check_integrity(&self) -> Result<()> {
-        Ok(())
-    }
-
-    fn close(&mut self) -> Result<()> {
-        Ok(())
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Empty postings enum used by the reader skeleton
-// -----------------------------------------------------------------------------
-
-use crate::search::DocIdSetIterator;
-
-/// Empty postings iterator returned by the skeleton reader.
-#[derive(Debug, Default, Clone)]
-struct EmptyPostingsEnum;
-
-impl DocIdSetIterator for EmptyPostingsEnum {
-    fn doc_id(&self) -> i32 {
-        NO_MORE_DOCS
-    }
-
-    fn next_doc(&mut self) -> Result<i32> {
-        Ok(NO_MORE_DOCS)
-    }
-
-    fn advance(&mut self, _target: i32) -> Result<i32> {
-        Ok(NO_MORE_DOCS)
-    }
-
-    fn cost(&self) -> i64 {
-        0
-    }
-}
-
-impl PostingsEnum for EmptyPostingsEnum {
-    fn freq(&self) -> Result<i32> {
-        Ok(0)
-    }
-
-    fn next_position(&mut self) -> Result<i32> {
-        Ok(-1)
-    }
-
-    fn start_offset(&self) -> i32 {
-        -1
-    }
-
-    fn end_offset(&self) -> i32 {
-        -1
-    }
-
-    fn get_payload(&self) -> Result<Option<&[u8]>> {
-        Ok(None)
-    }
-}
-
-// -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
 
@@ -356,7 +227,7 @@ impl PostingsEnum for EmptyPostingsEnum {
 mod tests {
     use super::*;
     use crate::codecs::postings::{NormsProducer, NumericDocValues};
-    use crate::codecs::stub::FieldInfos;
+    use crate::codecs::stub::{FieldInfo, FieldInfos};
     use crate::index::SegmentInfo;
     use crate::store::{Directory, RamDirectory};
     use crate::util::{StringHelper, Version};
@@ -507,14 +378,23 @@ mod tests {
     }
 
     #[test]
-    fn fields_producer_returns_reader() {
+    fn fields_producer_returns_reader_after_writing_empty_fields() {
         let dir = RamDirectory::default();
         let dir_ref: &dyn crate::store::Directory = &dir;
         let segment_info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
-        let read_state = test_read_state(dir_ref, &segment_info, &field_infos);
+        let write_state = test_write_state(dir_ref, &segment_info, &field_infos);
 
         let format = Lucene104PostingsFormat::new();
+        let mut consumer = format
+            .fields_consumer(&write_state)
+            .expect("consumer should build");
+        consumer
+            .write(&crate::index::EmptyFields::new(), &TestNormsProducer)
+            .expect("write should succeed on empty fields");
+        consumer.close().expect("close should succeed");
+
+        let read_state = test_read_state(dir_ref, &segment_info, &field_infos);
         let mut producer = format
             .fields_producer(&read_state)
             .expect("producer should build");
@@ -524,52 +404,5 @@ mod tests {
             .check_integrity()
             .expect("check_integrity should succeed");
         producer.close().expect("close should succeed");
-    }
-
-    #[test]
-    fn postings_reader_base_methods_run() {
-        let mut reader = Lucene104PostingsReader::new(VERSION_CURRENT);
-        let mut input = crate::store::MockIndexInput::new(vec![], "test");
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
-        let segment_info = test_segment_info("_0", 10);
-        let field_infos = FieldInfos::default();
-        let read_state = test_read_state(dir_ref, &segment_info, &field_infos);
-
-        reader
-            .init(&mut input, &read_state)
-            .expect("init should succeed");
-        let state = reader
-            .new_term_state()
-            .expect("new_term_state should succeed");
-        assert_eq!(state.doc_freq, 0);
-
-        let field_info = FieldInfo::new("field", 0).with_postings_options(
-            crate::index::IndexOptions::DOCS,
-            false,
-            false,
-        );
-        reader
-            .decode_term(
-                &mut crate::store::ByteArrayDataInput::new(vec![]),
-                &field_info,
-                &mut BlockTermState::default(),
-                true,
-            )
-            .expect("decode_term should succeed");
-
-        let _enum_ = reader
-            .postings(
-                &field_info,
-                &BlockTermState::default(),
-                None,
-                crate::codecs::postings::POSTINGS_ENUM_NONE,
-            )
-            .expect("postings should succeed");
-
-        reader
-            .check_integrity()
-            .expect("check_integrity should succeed");
-        reader.close().expect("close should succeed");
     }
 }

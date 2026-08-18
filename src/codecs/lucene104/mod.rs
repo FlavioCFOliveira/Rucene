@@ -18,6 +18,7 @@ pub mod p_for_util;
 pub mod posting_decoding_util;
 pub mod posting_index_input;
 pub mod postings_format;
+pub mod postings_reader;
 pub mod postings_util;
 pub mod postings_writer;
 
@@ -27,10 +28,11 @@ pub use p_for_util::PForUtil;
 pub use posting_decoding_util::PostingDecodingUtil;
 pub use posting_index_input::PostingIndexInput;
 pub use postings_format::{
-    Lucene104PostingsFormat, Lucene104PostingsReader, BLOCK_MASK, BLOCK_SIZE, BLOCK_SIZE_LOG2,
-    DOC_CODEC, DOC_EXTENSION, LEVEL1_FACTOR, LEVEL1_MASK, LEVEL1_NUM_DOCS, MAX_BLOCK_SIZE,
-    META_CODEC, META_EXTENSION, PAY_CODEC, PAY_EXTENSION, POS_CODEC, POS_EXTENSION, SKIP_INTERVAL,
-    TERMS_CODEC, VERSION_CURRENT, VERSION_START,
+    Lucene104PostingsFormat, BLOCK_MASK, BLOCK_SIZE, BLOCK_SIZE_LOG2, DOC_CODEC, DOC_EXTENSION,
+    LEVEL1_FACTOR, LEVEL1_MASK, LEVEL1_NUM_DOCS, MAX_BLOCK_SIZE, META_CODEC, META_EXTENSION,
+    PAY_CODEC, PAY_EXTENSION, POS_CODEC, POS_EXTENSION, SKIP_INTERVAL, TERMS_CODEC,
+    VERSION_CURRENT, VERSION_START,
 };
+pub use postings_reader::Lucene104PostingsReader;
 pub use postings_util::{read_v_int_block, write_v_int_block};
 pub use postings_writer::{write_impacts, Lucene104PostingsWriter};
