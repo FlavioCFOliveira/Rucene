@@ -20,10 +20,12 @@ pub mod vector_values;
 pub use automaton_terms_enum::AutomatonTermsEnum;
 pub use doc_values::{
     BinaryDocValues, DocValues, DocValuesIterator, DocValuesSkipper, EmptyBinaryDocValues,
-    EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
-    EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues,
-    SingletonSortedNumericDocValues, SingletonSortedSetDocValues, SortedDocValues,
-    SortedNumericDocValues, SortedSetDocValues,
+    EmptyDocValuesProducer, EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
+    EmptySortedNumericDocValues, EmptySortedSetDocValues, FilterBinaryDocValues,
+    FilterNumericDocValues, FilterSortedDocValues, FilterSortedNumericDocValues,
+    FilterSortedSetDocValues, NumericDocValues, OrdinalMap, SingletonSortedNumericDocValues,
+    SingletonSortedSetDocValues, SortedDocValues, SortedDocValuesTermsEnum, SortedNumericDocValues,
+    SortedSetDocValues, SortedSetDocValuesTermsEnum,
 };
 pub use field_infos::{FieldInfo, FieldInfos};
 pub use index_file_names::{

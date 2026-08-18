@@ -22,7 +22,7 @@ use crate::error::{LuceneError, Result};
 
 pub use crate::index::doc_values::{
     BinaryDocValues, DocValues, DocValuesIterator, DocValuesSkipper, EmptyBinaryDocValues,
-    EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
+    EmptyDocValuesProducer, EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
     EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues,
     SingletonSortedNumericDocValues, SingletonSortedSetDocValues, SortedDocValues,
     SortedNumericDocValues, SortedSetDocValues,
@@ -243,54 +243,6 @@ pub fn available_doc_values_formats() -> Vec<String> {
 // -----------------------------------------------------------------------------
 // No-op implementations
 // -----------------------------------------------------------------------------
-
-/// A no-op doc-values producer.
-#[derive(Debug, Default, Clone)]
-pub struct EmptyDocValuesProducer;
-
-impl DocValuesProducer for EmptyDocValuesProducer {
-    fn get_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues + Send + Sync>> {
-        Ok(Box::new(EmptyNumericDocValues::new()))
-    }
-
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues + Send + Sync>> {
-        Ok(Box::new(EmptyBinaryDocValues::new()))
-    }
-
-    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn SortedDocValues + Send + Sync>> {
-        Ok(Box::new(EmptySortedDocValues::new()))
-    }
-
-    fn get_sorted_numeric(
-        &self,
-        _field: &FieldInfo,
-    ) -> Result<Box<dyn SortedNumericDocValues + Send + Sync>> {
-        Ok(Box::new(EmptySortedNumericDocValues::new()))
-    }
-
-    fn get_sorted_set(
-        &self,
-        _field: &FieldInfo,
-    ) -> Result<Box<dyn SortedSetDocValues + Send + Sync>> {
-        Ok(Box::new(EmptySortedSetDocValues::new()))
-    }
-
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper + Send + Sync>> {
-        Ok(Box::new(EmptyDocValuesSkipper))
-    }
-
-    fn check_integrity(&self) -> Result<()> {
-        Ok(())
-    }
-
-    fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-        Ok(Box::new(self.clone()))
-    }
-
-    fn close(&mut self) -> Result<()> {
-        Ok(())
-    }
-}
 
 /// A no-op doc-values consumer.
 #[derive(Debug, Default, Clone)]
