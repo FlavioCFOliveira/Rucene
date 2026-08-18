@@ -2,7 +2,8 @@
 //!
 //! This module exposes the core value-accessor abstractions used by codec
 //! producers and index consumers: field metadata, segment information,
-//! doc-values, vector values, and point values.
+//! doc-values, vector values, point values, and the reader hierarchy
+//! (`IndexReader`, `LeafReader`, and their contexts).
 
 #![deny(unsafe_code)]
 
@@ -10,9 +11,12 @@ pub mod automaton_terms_enum;
 pub mod doc_values;
 pub mod field_infos;
 pub mod index_file_names;
+pub mod index_reader;
+pub mod leaf_reader;
 pub mod merge;
 pub mod point_values;
 pub mod postings_enum;
+pub mod reader_context;
 pub mod segment_info;
 pub mod terms;
 pub mod vector_values;
@@ -42,6 +46,11 @@ pub use index_file_names::{
     TERMS_POSTINGS_EXTENSION, VECTORS_FIELDS_EXTENSION, VECTORS_INDEX_EXTENSION,
     VECTORS_META_EXTENSION,
 };
+pub use index_reader::{
+    CacheHelper, CacheKey, ClosedListener, CompositeReader, IndexReader, IndexReaderCore,
+    StoredFields,
+};
+pub use leaf_reader::{EmptyTermVectors, LeafMetaData, LeafReader, TermVectors};
 pub use merge::{
     deletion_doc_map, identity_doc_map, DocIDMerger, DocIDMergerSub, DocMap, MergeState,
 };
@@ -54,6 +63,7 @@ pub use postings_enum::{
     ImpactsEnum, ImpactsSource, PostingsEnum, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS,
     POSTINGS_ENUM_NONE, POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
 };
+pub use reader_context::{CompositeReaderContext, IndexReaderContext, LeafReaderContext};
 pub use segment_info::{SegmentCommitInfo, SegmentInfo};
 pub use terms::{
     AcceptStatus, EmptyFields, EmptyTerms, EmptyTermsEnum, Fields, FilteredTermsEnum,
