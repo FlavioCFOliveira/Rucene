@@ -96,9 +96,10 @@ public final class CodecIndexWriter {
       config.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
       // Disable the randomized merge policy so produced indexes are reproducible.
       config.setMergePolicy(org.apache.lucene.index.NoMergePolicy.INSTANCE);
-      // The postings and points shapes must expose individual files for byte-for-byte
-      // portability tests; compound files hide those extensions inside .cfs/.cfe.
-      if (shape.equals("postings") || shape.equals("points")) {
+      // The postings, points and vectors shapes must expose individual files for
+      // byte-for-byte portability tests; compound files hide those extensions
+      // inside .cfs/.cfe.
+      if (shape.equals("postings") || shape.equals("points") || shape.equals("vectors")) {
         config.setUseCompoundFile(false);
       }
 

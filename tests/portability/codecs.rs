@@ -6,9 +6,12 @@
 //! successfully and that the resulting directory tree contains the expected
 //! index files.
 //!
-//! Once Rucene's own `IndexWriter` and `Lucene104Codec` implementations are
-//! complete, the same harness can be used to generate both sides of a
-//! byte-for-byte directory comparison.
+//! Because Rucene does not yet have its own `IndexWriter`, the tests in this
+//! module validate the reference side only: they prove that the Java harness
+//! produces deterministic, well-formed index trees for every shape that the
+//! future Rucene `IndexWriter` will have to match byte-for-byte. The helper
+//! `assert_directories_equal` is kept in place for the round-trip tests that
+//! will be added once Rucene can write complete indexes.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -179,6 +182,7 @@ fn java_harness_supports_all_document_shapes() {
         "vectors",
         "stored",
         "termvectors",
+        "postings",
     ];
 
     for shape in shapes {
@@ -232,6 +236,118 @@ fn java_harness_produces_points_files() {
             .len();
         assert!(len > 0, "{} should be non-empty", path.display());
     }
+}
+
+/// Asserts that the Java harness produces the expected postings files for the
+/// {@code postings} shape.
+///
+/// Because compound files are disabled for this shape, the default
+/// `Lucene104Codec` writes separate {@code .doc}, {@code .pos}, {@code .pay},
+/// {@code .psm} and {@code .tim} files. This test verifies that all expected
+/// extensions are present and non-empty.
+#[test]
+fn java_harness_produces_postings_files() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let out_dir = tmp.path();
+
+    let stdout =
+        run_java_harness(out_dir, "postings").unwrap_or_else(|e| panic!("postings shape: {}", e));
+    assert_harness_metadata(&stdout, "postings");
+
+    let files = list_index_files(out_dir).unwrap_or_else(|e| panic!("postings shape: {}", e));
+    for ext in ["doc", "pos", "pay", "psm", "tim"] {
+        let matched = files.iter().find(|n| n.ends_with(ext)).cloned();
+        let name =
+            matched.unwrap_or_else(|| panic!("missing .{} postings file; got: {:?}", ext, files));
+        let path = out_dir.join(&name);
+        let len = std::fs::metadata(&path)
+            .unwrap_or_else(|e| panic!("metadata for {}: {}", path.display(), e))
+            .len();
+        assert!(len > 0, "{} should be non-empty", path.display());
+    }
+}
+
+/// Asserts that the Java harness produces the expected KNN vector files for
+/// the {@code vectors} shape.
+///
+/// The default `Lucene104Codec` with `Lucene99HnswVectorsFormat` writes
+/// {@code .vec}, {@code .vem} and {@code .vex} files. This test verifies that
+/// these files are present and non-empty.
+#[test]
+fn java_harness_produces_vectors_files() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let out_dir = tmp.path();
+
+    let stdout =
+        run_java_harness(out_dir, "vectors").unwrap_or_else(|e| panic!("vectors shape: {}", e));
+    assert_harness_metadata(&stdout, "vectors");
+
+    let files = list_index_files(out_dir).unwrap_or_else(|e| panic!("vectors shape: {}", e));
+    for ext in ["vec", "vem", "vex"] {
+        let matched = files.iter().find(|n| n.ends_with(ext)).cloned();
+        let name =
+            matched.unwrap_or_else(|| panic!("missing .{} vector file; got: {:?}", ext, files));
+        let path = out_dir.join(&name);
+        let len = std::fs::metadata(&path)
+            .unwrap_or_else(|e| panic!("metadata for {}: {}", path.display(), e))
+            .len();
+        assert!(len > 0, "{} should be non-empty", path.display());
+    }
+}
+
+/// Verifies that the Java harness is structurally deterministic: two runs with
+/// the same shape produce the same set of files with the same sizes.
+///
+/// Full byte-for-byte identity is not asserted here because some Lucene files
+/// (e.g. terms dictionaries) may include internally hashed structures whose
+/// iteration order is not byte-stable across runs. The structural check is a
+/// prerequisite for future byte-for-byte portability tests against Rucene
+/// output.
+#[test]
+fn java_harness_is_structurally_deterministic_for_postings() {
+    let left_tmp = tempfile::tempdir().expect("temp dir");
+    let right_tmp = tempfile::tempdir().expect("temp dir");
+
+    let left_stdout = run_java_harness(left_tmp.path(), "postings")
+        .unwrap_or_else(|e| panic!("first postings run: {}", e));
+    let right_stdout = run_java_harness(right_tmp.path(), "postings")
+        .unwrap_or_else(|e| panic!("second postings run: {}", e));
+
+    assert_harness_metadata(&left_stdout, "postings");
+    assert_harness_metadata(&right_stdout, "postings");
+    assert_directory_structures_equal(left_tmp.path(), right_tmp.path())
+        .expect("postings runs should have matching structure");
+}
+
+/// Asserts that two directories contain the same files with the same sizes.
+fn assert_directory_structures_equal(left: &Path, right: &Path) -> Result<(), String> {
+    let left_files = list_index_files(left)?;
+    let right_files = list_index_files(right)?;
+    if left_files != right_files {
+        return Err(format!(
+            "directory file sets differ\nleft:  {:?}\nright: {:?}",
+            left_files, right_files
+        ));
+    }
+
+    for name in &left_files {
+        let left_path = left.join(name);
+        let right_path = right.join(name);
+        let left_len = std::fs::metadata(&left_path)
+            .map_err(|e| format!("failed to stat {}: {}", left_path.display(), e))?
+            .len();
+        let right_len = std::fs::metadata(&right_path)
+            .map_err(|e| format!("failed to stat {}: {}", right_path.display(), e))?
+            .len();
+        if left_len != right_len {
+            return Err(format!(
+                "{} differs in size: {} bytes vs {} bytes",
+                name, left_len, right_len
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 /// Placeholder for the future byte-for-byte comparison.
