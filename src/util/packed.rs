@@ -869,6 +869,7 @@ impl<'a> DirectMonotonicWriter<'a> {
     }
 }
 
+#[derive(Clone)]
 pub struct DirectMonotonicMeta {
     pub block_shift: i32,
     pub num_blocks: usize,

@@ -21,8 +21,9 @@ use super::doc_values::{
     EmptyDocValuesProducer,
 };
 use super::knn_vectors::{
-    knn_vectors_for_name, ByteVectorValues, EmptyKnnVectorsReader, FloatVectorValues, KnnCollector,
-    KnnFieldVectorsWriter, KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
+    knn_vectors_for_name, ByteVectorValues, EmptyKnnVectorsReader, FieldVectorWriter,
+    FloatVectorValues, KnnCollector, KnnFieldVectorsWriter, KnnVectorsFormat, KnnVectorsReader,
+    KnnVectorsWriter,
 };
 use super::postings::{
     postings_for_name, Fields, FieldsConsumer, FieldsProducer, MergeState, NormsProducer,
@@ -1013,10 +1014,7 @@ impl<'a> KnnFieldsWriter<'a> {
 }
 
 impl<'a> KnnVectorsWriter for KnnFieldsWriter<'a> {
-    fn add_field(
-        &mut self,
-        field_info: &FieldInfo,
-    ) -> Result<Box<dyn KnnFieldVectorsWriter<Vec<f32>>>> {
+    fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
         self.get_instance(field_info)?.add_field(field_info)
     }
 

@@ -16,44 +16,16 @@ use std::fmt;
 use std::sync::{Arc, LazyLock, RwLock};
 
 use crate::error::{LuceneError, Result};
+pub use crate::index::vector_values::{
+    ByteVectorValues, EmptyByteVectorValues, EmptyFloatVectorValues, EmptyKnnVectorValues,
+    FloatVectorValues, KnnVectorValues,
+};
 pub use crate::search::knn::{KnnCollector, KnnSearchStrategy, TopDocs};
 use crate::search::AcceptDocs;
 
 use super::postings::MergeState;
 use super::state::{SegmentReadState, SegmentWriteState};
 use super::stub::FieldInfo;
-
-// -----------------------------------------------------------------------------
-// Supporting types
-// -----------------------------------------------------------------------------
-
-/// Iterator over float vector values.
-///
-/// Equivalent to `org.apache.lucene.index.FloatVectorValues`.
-pub trait FloatVectorValues: Send + Sync {
-    /// Returns the vector dimension.
-    fn dimension(&self) -> i32;
-
-    /// Returns the number of vectors.
-    fn size(&self) -> i32;
-
-    /// Returns the vector for the given ordinal.
-    fn vector_value(&self, ord: i32) -> Result<Vec<f32>>;
-}
-
-/// Iterator over byte vector values.
-///
-/// Equivalent to `org.apache.lucene.index.ByteVectorValues`.
-pub trait ByteVectorValues: Send + Sync {
-    /// Returns the vector dimension.
-    fn dimension(&self) -> i32;
-
-    /// Returns the number of vectors.
-    fn size(&self) -> i32;
-
-    /// Returns the vector for the given ordinal.
-    fn vector_value(&self, ord: i32) -> Result<Vec<u8>>;
-}
 
 // -----------------------------------------------------------------------------
 
@@ -75,18 +47,25 @@ pub trait KnnFieldVectorsWriter<T>: Send + Sync {
 // Segment writer
 // -----------------------------------------------------------------------------
 
+/// Per-field writer returned by [`KnnVectorsWriter::add_field`].
+///
+/// Concrete writers return the variant matching the field's
+/// [`VectorEncoding`](crate::index::VectorEncoding).
+pub enum FieldVectorWriter {
+    /// Float-vector field writer.
+    Float(Box<dyn KnnFieldVectorsWriter<Vec<f32>>>),
+    /// Byte-vector field writer.
+    Byte(Box<dyn KnnFieldVectorsWriter<Vec<u8>>>),
+}
+
 /// Writes vectors to an index.
 ///
 /// Equivalent to `org.apache.lucene.codecs.KnnVectorsWriter`.
 pub trait KnnVectorsWriter: Send + Sync + fmt::Debug {
     /// Adds a new vector field for indexing.
     ///
-    /// Note: the no-op stub returns a float-vector field writer. Real
-    /// implementations dispatch on the field's `VectorEncoding`.
-    fn add_field(
-        &mut self,
-        field_info: &FieldInfo,
-    ) -> Result<Box<dyn KnnFieldVectorsWriter<Vec<f32>>>>;
+    /// The returned variant matches the field's `VectorEncoding`.
+    fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter>;
 
     /// Flushes all buffered data to disk.
     fn flush(&mut self, max_doc: i32, sort_map: Option<&SorterDocMap>) -> Result<()>;
@@ -331,45 +310,23 @@ pub fn available_knn_vectors_formats() -> Vec<String> {
     GLOBAL_KNN_VECTORS_REGISTRY.available_knn_vectors_formats()
 }
 
+/// Registers a KNN-vectors format in the global registry.
+///
+/// If the format has already been registered, this is a no-op so that formats
+/// can safely call it from their constructors.
+pub fn register_global_knn_vectors_format<F>(name: &str, format: F) -> Result<()>
+where
+    F: KnnVectorsFormat + 'static,
+{
+    if GLOBAL_KNN_VECTORS_REGISTRY.for_name(name).is_some() {
+        return Ok(());
+    }
+    GLOBAL_KNN_VECTORS_REGISTRY.register(name, format)
+}
+
 // -----------------------------------------------------------------------------
 // No-op implementations
 // -----------------------------------------------------------------------------
-
-/// A no-op float vector values iterator.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyFloatVectorValues;
-
-impl FloatVectorValues for EmptyFloatVectorValues {
-    fn dimension(&self) -> i32 {
-        0
-    }
-
-    fn size(&self) -> i32 {
-        0
-    }
-
-    fn vector_value(&self, _ord: i32) -> Result<Vec<f32>> {
-        Ok(Vec::new())
-    }
-}
-
-/// A no-op byte vector values iterator.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyByteVectorValues;
-
-impl ByteVectorValues for EmptyByteVectorValues {
-    fn dimension(&self) -> i32 {
-        0
-    }
-
-    fn size(&self) -> i32 {
-        0
-    }
-
-    fn vector_value(&self, _ord: i32) -> Result<Vec<u8>> {
-        Ok(Vec::new())
-    }
-}
 
 /// A no-op KNN collector.
 #[derive(Debug, Default, Clone)]
@@ -430,11 +387,15 @@ impl KnnFieldVectorsWriter<Vec<f32>> for EmptyKnnFieldVectorsWriter {
 pub struct EmptyKnnVectorsWriter;
 
 impl KnnVectorsWriter for EmptyKnnVectorsWriter {
-    fn add_field(
-        &mut self,
-        _field_info: &FieldInfo,
-    ) -> Result<Box<dyn KnnFieldVectorsWriter<Vec<f32>>>> {
-        Ok(Box::new(EmptyKnnFieldVectorsWriter))
+    fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
+        Ok(match field_info.vector_encoding {
+            crate::index::VectorEncoding::FLOAT32 => {
+                FieldVectorWriter::Float(Box::new(EmptyKnnFieldVectorsWriter))
+            }
+            crate::index::VectorEncoding::BYTE => {
+                FieldVectorWriter::Byte(Box::new(EmptyByteKnnFieldVectorsWriter))
+            }
+        })
     }
 
     fn flush(&mut self, _max_doc: i32, _sort_map: Option<&SorterDocMap>) -> Result<()> {
@@ -450,16 +411,34 @@ impl KnnVectorsWriter for EmptyKnnVectorsWriter {
     }
 }
 
+/// A no-op byte-vector field writer.
+#[derive(Debug, Default, Clone)]
+pub struct EmptyByteKnnFieldVectorsWriter;
+
+impl KnnFieldVectorsWriter<Vec<u8>> for EmptyByteKnnFieldVectorsWriter {
+    fn add_value(&mut self, _doc_id: i32, _vector_value: Vec<u8>) -> Result<()> {
+        Ok(())
+    }
+
+    fn copy_value(&self, vector_value: Vec<u8>) -> Vec<u8> {
+        vector_value
+    }
+}
+
 /// A no-op buffering KNN vectors writer.
 #[derive(Debug, Default, Clone)]
 pub struct EmptyBufferingKnnVectorsWriter;
 
 impl KnnVectorsWriter for EmptyBufferingKnnVectorsWriter {
-    fn add_field(
-        &mut self,
-        _field_info: &FieldInfo,
-    ) -> Result<Box<dyn KnnFieldVectorsWriter<Vec<f32>>>> {
-        Ok(Box::new(EmptyKnnFieldVectorsWriter))
+    fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
+        Ok(match field_info.vector_encoding {
+            crate::index::VectorEncoding::FLOAT32 => {
+                FieldVectorWriter::Float(Box::new(EmptyKnnFieldVectorsWriter))
+            }
+            crate::index::VectorEncoding::BYTE => {
+                FieldVectorWriter::Byte(Box::new(EmptyByteKnnFieldVectorsWriter))
+            }
+        })
     }
 
     fn flush(&mut self, _max_doc: i32, _sort_map: Option<&SorterDocMap>) -> Result<()> {

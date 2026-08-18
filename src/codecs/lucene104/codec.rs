@@ -12,11 +12,14 @@ use crate::codecs::lucene90::{
     Lucene90CompoundFormat, Lucene90LiveDocsFormat, Lucene90NormsFormat, Lucene90PointsFormat,
     Lucene90TermVectorsFormat,
 };
+use std::sync::Arc;
+
 use crate::codecs::{
-    Codec, CompoundFormat, DocValuesFormat, EmptyKnnVectorsFormat, FieldInfosFormat,
-    KnnVectorsFormat, LiveDocsFormat, Lucene104PostingsFormat, Lucene90DocValuesFormat,
-    Lucene90StoredFieldsFormat, Lucene94FieldInfosFormat, Lucene99SegmentInfoFormat, NormsFormat,
-    PointsFormat, PostingsFormat, SegmentInfoFormat, StoredFieldsFormat, TermVectorsFormat,
+    Codec, CompoundFormat, DocValuesFormat, FieldInfosFormat, KnnVectorsFormat, LiveDocsFormat,
+    Lucene104PostingsFormat, Lucene90DocValuesFormat, Lucene90StoredFieldsFormat,
+    Lucene94FieldInfosFormat, Lucene99HnswVectorsFormat, Lucene99SegmentInfoFormat, NormsFormat,
+    PerFieldDocValuesFormat, PerFieldKnnVectorsFormat, PerFieldPostingsFormat, PointsFormat,
+    PostingsFormat, SegmentInfoFormat, StoredFieldsFormat, TermVectorsFormat,
 };
 
 /// Stored-fields compression mode for the codec.
@@ -52,13 +55,16 @@ impl std::fmt::Display for Mode {
 /// Lucene 10.4 codec.
 ///
 /// Lucene Core equivalent: `org.apache.lucene.codecs.lucene104.Lucene104Codec`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
 pub struct Lucene104Codec {
     mode: Mode,
     stored_fields_format: Lucene90StoredFieldsFormat,
-    default_postings_format: Lucene104PostingsFormat,
-    default_doc_values_format: Lucene90DocValuesFormat,
-    default_knn_vectors_format: EmptyKnnVectorsFormat,
+    default_postings_format: Arc<dyn PostingsFormat>,
+    per_field_postings_format: PerFieldPostingsFormat,
+    default_doc_values_format: Arc<dyn DocValuesFormat>,
+    per_field_doc_values_format: PerFieldDocValuesFormat,
+    default_knn_vectors_format: Arc<dyn KnnVectorsFormat>,
+    per_field_knn_vectors_format: PerFieldKnnVectorsFormat,
 }
 
 impl Lucene104Codec {
@@ -70,12 +76,30 @@ impl Lucene104Codec {
     /// Creates the codec with the given stored-fields mode.
     pub fn with_mode(mode: Mode) -> Self {
         let stored_fields_format = Lucene90StoredFieldsFormat::with_mode(mode.stored_mode());
+        let default_postings_format: Arc<dyn PostingsFormat> =
+            Arc::new(Lucene104PostingsFormat::new());
+        let default_doc_values_format: Arc<dyn DocValuesFormat> =
+            Arc::new(Lucene90DocValuesFormat::new());
+        let default_knn_vectors_format: Arc<dyn KnnVectorsFormat> =
+            Arc::new(Lucene99HnswVectorsFormat::new());
         Self {
             mode,
             stored_fields_format,
-            default_postings_format: Lucene104PostingsFormat::new(),
-            default_doc_values_format: Lucene90DocValuesFormat::new(),
-            default_knn_vectors_format: EmptyKnnVectorsFormat::new("Lucene99HnswVectorsFormat"),
+            per_field_postings_format: PerFieldPostingsFormat::from_map(
+                std::collections::HashMap::new(),
+                Arc::clone(&default_postings_format),
+            ),
+            default_postings_format,
+            per_field_doc_values_format: PerFieldDocValuesFormat::from_map(
+                std::collections::HashMap::new(),
+                Arc::clone(&default_doc_values_format),
+            ),
+            default_doc_values_format,
+            per_field_knn_vectors_format: PerFieldKnnVectorsFormat::from_map(
+                std::collections::HashMap::new(),
+                Arc::clone(&default_knn_vectors_format),
+            ),
+            default_knn_vectors_format,
         }
     }
 
@@ -89,7 +113,7 @@ impl Lucene104Codec {
     ///
     /// Mirrors `Lucene104Codec.getPostingsFormatForField`.
     pub fn get_postings_format_for_field(&self, _field: &str) -> &dyn PostingsFormat {
-        &self.default_postings_format
+        &*self.default_postings_format
     }
 
     /// Returns the doc-values format used for fields that do not select a custom
@@ -97,7 +121,7 @@ impl Lucene104Codec {
     ///
     /// Mirrors `Lucene104Codec.getDocValuesFormatForField`.
     pub fn get_doc_values_format_for_field(&self, _field: &str) -> &dyn DocValuesFormat {
-        &self.default_doc_values_format
+        &*self.default_doc_values_format
     }
 
     /// Returns the KNN-vectors format used for fields that do not select a
@@ -105,7 +129,7 @@ impl Lucene104Codec {
     ///
     /// Mirrors `Lucene104Codec.getKnnVectorsFormatForField`.
     pub fn get_knn_vectors_format_for_field(&self, _field: &str) -> &dyn KnnVectorsFormat {
-        &self.default_knn_vectors_format
+        &*self.default_knn_vectors_format
     }
 }
 
@@ -115,11 +139,11 @@ impl Codec for Lucene104Codec {
     }
 
     fn postings_format(&self) -> &dyn PostingsFormat {
-        self.get_postings_format_for_field("")
+        &self.per_field_postings_format
     }
 
     fn doc_values_format(&self) -> &dyn DocValuesFormat {
-        self.get_doc_values_format_for_field("")
+        &self.per_field_doc_values_format
     }
 
     fn stored_fields_format(&self) -> &dyn StoredFieldsFormat {
@@ -163,7 +187,7 @@ impl Codec for Lucene104Codec {
     }
 
     fn knn_vectors_format(&self) -> &dyn KnnVectorsFormat {
-        self.get_knn_vectors_format_for_field("")
+        &self.per_field_knn_vectors_format
     }
 }
 
@@ -176,8 +200,19 @@ mod tests {
     fn codec_reports_correct_name_and_subformats() {
         let codec = Lucene104Codec::new();
         assert_eq!(codec.name(), "Lucene104");
-        assert_eq!(codec.postings_format().name(), "Lucene104");
-        assert_eq!(codec.doc_values_format().name(), "Lucene90");
+        // The codec exposes per-field wrappers for postings, doc-values and
+        // knn-vectors, matching Lucene104Codec's use of PerFieldPostingsFormat,
+        // PerFieldDocValuesFormat and PerFieldKnnVectorsFormat.
+        assert_eq!(codec.postings_format().name(), "PerField40");
+        assert_eq!(codec.doc_values_format().name(), "PerFieldDV40");
+        assert_eq!(codec.knn_vectors_format().name(), "PerFieldVectors90");
+        // Per-field hooks still resolve to the concrete default formats.
+        assert_eq!(codec.get_postings_format_for_field("").name(), "Lucene104");
+        assert_eq!(codec.get_doc_values_format_for_field("").name(), "Lucene90");
+        assert_eq!(
+            codec.get_knn_vectors_format_for_field("").name(),
+            "Lucene99HnswVectorsFormat"
+        );
         assert_eq!(
             codec.stored_fields_format().name(),
             "Lucene90StoredFieldsFormat"

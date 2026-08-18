@@ -10,6 +10,7 @@ pub mod compound;
 pub mod compressing;
 pub mod doc_values;
 pub mod field_infos;
+pub mod hnsw;
 pub mod knn_vectors;
 pub mod live_docs;
 
@@ -62,6 +63,10 @@ pub use doc_values::{
     SortedNumericDocValues, SortedSetDocValues,
 };
 pub use field_infos::{EmptyFieldInfosFormat, FieldInfosFormat};
+pub use hnsw::{
+    DefaultFlatVectorScorer, DocsWithFieldSet, FlatFieldVectorsWriter, FlatVectorScorerUtil,
+    FlatVectorsFormat, FlatVectorsReader, FlatVectorsScorer, FlatVectorsWriter,
+};
 pub use knn_vectors::{
     available_knn_vectors_formats, knn_vectors_for_name, BufferingKnnVectorsWriter,
     ByteVectorValues, EmptyBufferingKnnVectorsWriter, EmptyByteVectorValues,
@@ -87,7 +92,11 @@ pub use lucene90::{
     Mode,
 };
 pub use lucene94::Lucene94FieldInfosFormat;
-pub use lucene99::Lucene99SegmentInfoFormat;
+pub use lucene99::{
+    Lucene99FlatVectorsFormat, Lucene99FlatVectorsReader, Lucene99FlatVectorsWriter,
+    Lucene99HnswVectorsFormat, Lucene99HnswVectorsReader, Lucene99HnswVectorsWriter,
+    Lucene99SegmentInfoFormat,
+};
 pub use norms::{
     EmptyNormsConsumer, EmptyNormsDocValues, EmptyNormsFormat, EmptyNormsProducer, NormsConsumer,
     NormsFormat, NormsProducer,

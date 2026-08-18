@@ -189,6 +189,128 @@ pub enum VectorSimilarityFunction {
     MAXIMUM_INNER_PRODUCT,
 }
 
+impl VectorSimilarityFunction {
+    /// Returns the similarity score between two float vectors.
+    ///
+    /// Higher scores correspond to closer vectors. Equivalent to the Java
+    /// `VectorSimilarityFunction.compare(float[], float[])`.
+    pub fn compare_f32(&self, a: &[f32], b: &[f32]) -> f32 {
+        debug_assert_eq!(a.len(), b.len());
+        match self {
+            Self::EUCLIDEAN => {
+                let dist = square_distance_f32(a, b);
+                1.0 / (1.0 + dist)
+            }
+            Self::DOT_PRODUCT => {
+                let dot = dot_product_f32(a, b);
+                ((1.0 + dot) / 2.0).max(0.0)
+            }
+            Self::COSINE => {
+                let score = cosine_f32(a, b);
+                ((1.0 + score) / 2.0).max(0.0)
+            }
+            Self::MAXIMUM_INNER_PRODUCT => {
+                let dot = dot_product_f32(a, b);
+                if dot < 0.0 {
+                    1.0 / (1.0 - dot)
+                } else {
+                    dot + 1.0
+                }
+            }
+        }
+    }
+
+    /// Returns the similarity score between two byte vectors.
+    ///
+    /// Higher scores correspond to closer vectors. Equivalent to the Java
+    /// `VectorSimilarityFunction.compare(byte[], byte[])`.
+    pub fn compare_u8(&self, a: &[u8], b: &[u8]) -> f32 {
+        debug_assert_eq!(a.len(), b.len());
+        match self {
+            Self::EUCLIDEAN => {
+                let dist = square_distance_u8(a, b);
+                1.0 / (1.0 + dist)
+            }
+            Self::DOT_PRODUCT => {
+                let dot = dot_product_u8(a, b);
+                // divide by 2 * 2^14 (maximum absolute value of product of 2 signed bytes) * len
+                let denom = (a.len() * (1 << 15)) as f32;
+                0.5 + dot / denom
+            }
+            Self::COSINE => {
+                let score = cosine_u8(a, b);
+                (1.0 + score) / 2.0
+            }
+            Self::MAXIMUM_INNER_PRODUCT => {
+                let dot = dot_product_u8_signed(a, b);
+                if dot < 0.0 {
+                    1.0 / (1.0 - dot)
+                } else {
+                    dot + 1.0
+                }
+            }
+        }
+    }
+}
+
+fn dot_product_f32(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum()
+}
+
+fn square_distance_f32(a: &[f32], b: &[f32]) -> f32 {
+    a.iter()
+        .zip(b.iter())
+        .map(|(&x, &y)| {
+            let d = x - y;
+            d * d
+        })
+        .sum()
+}
+
+fn cosine_f32(a: &[f32], b: &[f32]) -> f32 {
+    let dot = dot_product_f32(a, b);
+    let norm_a = dot_product_f32(a, a).sqrt();
+    let norm_b = dot_product_f32(b, b).sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a * norm_b)
+}
+
+fn dot_product_u8(a: &[u8], b: &[u8]) -> f32 {
+    a.iter()
+        .zip(b.iter())
+        .map(|(&x, &y)| (x as i32 * y as i32) as f32)
+        .sum()
+}
+
+fn dot_product_u8_signed(a: &[u8], b: &[u8]) -> f32 {
+    a.iter()
+        .zip(b.iter())
+        .map(|(&x, &y)| (x as i8 as i32 * y as i8 as i32) as f32)
+        .sum()
+}
+
+fn square_distance_u8(a: &[u8], b: &[u8]) -> f32 {
+    a.iter()
+        .zip(b.iter())
+        .map(|(&x, &y)| {
+            let d = x as i32 - y as i32;
+            (d * d) as f32
+        })
+        .sum()
+}
+
+fn cosine_u8(a: &[u8], b: &[u8]) -> f32 {
+    let dot = dot_product_u8_signed(a, b);
+    let norm_a = dot_product_u8_signed(a, a).sqrt();
+    let norm_b = dot_product_u8_signed(b, b).sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a * norm_b)
+}
+
 /// Describes the properties of a field.
 ///
 /// Equivalent to `org.apache.lucene.index.IndexableFieldType`.
