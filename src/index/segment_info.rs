@@ -11,10 +11,13 @@ use std::sync::{Arc, RwLock};
 
 use crate::codecs::Codec;
 use crate::error::{LuceneError, Result};
+use crate::index::IndexReader;
 use crate::search::Sort;
 use crate::store::Directory;
 use crate::util::string_helper::{StringHelper, ID_LENGTH};
 use crate::util::Version;
+
+pub use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 
 // -----------------------------------------------------------------------------
 // SegmentInfo
@@ -701,6 +704,49 @@ impl SegmentCommitInfo {
         self.size_in_bytes = -1;
         self.id = StringHelper::random_id();
     }
+
+    /// Returns all files in use by this segment commit.
+    ///
+    /// Equivalent to `SegmentCommitInfo.files()`.
+    pub fn files(&self) -> Result<HashSet<String>> {
+        let mut files = self.info.files()?;
+
+        if self.has_deletions() {
+            if let Some(codec) = self.info.codec() {
+                let mut live_docs_files = Vec::new();
+                codec.live_docs_format().files(self, &mut live_docs_files)?;
+                for file in live_docs_files {
+                    files.insert(file);
+                }
+            }
+        }
+
+        for set in self.dv_updates_files.values() {
+            for file in set {
+                files.insert(file.clone());
+            }
+        }
+
+        for file in &self.field_infos_files {
+            files.insert(file.clone());
+        }
+
+        Ok(files)
+    }
+
+    /// Returns the total size in bytes of all files for this segment.
+    ///
+    /// Equivalent to `SegmentCommitInfo.sizeInBytes()`.
+    pub fn size_in_bytes(&mut self) -> Result<i64> {
+        if self.size_in_bytes == -1 {
+            let mut sum = 0i64;
+            for file in self.files()? {
+                sum += self.info.directory.file_length(&file)?;
+            }
+            self.size_in_bytes = sum;
+        }
+        Ok(self.size_in_bytes)
+    }
 }
 
 impl Debug for SegmentCommitInfo {
@@ -736,6 +782,67 @@ impl Clone for SegmentCommitInfo {
         };
         other.id = StringHelper::random_id();
         other
+    }
+}
+
+impl PartialEq for SegmentCommitInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.info == other.info
+            && self.del_count == other.del_count
+            && self.soft_del_count == other.soft_del_count
+            && self.del_gen == other.del_gen
+            && self.field_infos_gen == other.field_infos_gen
+            && self.doc_values_gen == other.doc_values_gen
+    }
+}
+
+impl Eq for SegmentCommitInfo {}
+
+// -----------------------------------------------------------------------------
+// SegmentOrder
+// -----------------------------------------------------------------------------
+
+/// Utility class to re-order segments within an `IndexReader` to assist in early
+/// termination.
+///
+/// Equivalent to `org.apache.lucene.index.SegmentOrder`.
+///
+/// The full numeric sorter implementation depends on `LeafReader` point and
+/// doc-values skipper APIs that are still being ported. This struct provides
+/// the public API surface and an identity fallback.
+#[derive(Debug)]
+pub struct SegmentOrder {
+    inner: Box<dyn SegmentOrderImpl>,
+}
+
+impl SegmentOrder {
+    /// Builds a sorter from the primary numeric field of `sort`.
+    ///
+    /// If the primary sort field is not numeric, this currently returns an
+    /// identity orderer (no reordering), matching the Java no-op behaviour for
+    /// non-numeric sorts.
+    pub fn from_sort(_sort: &Sort) -> Self {
+        Self {
+            inner: Box::new(IdentitySegmentOrder),
+        }
+    }
+
+    /// Produces a new view over `reader` by re-ordering the reader's segments.
+    pub fn reorder(&self, reader: Arc<dyn IndexReader>) -> Result<Arc<dyn IndexReader>> {
+        self.inner.reorder(reader)
+    }
+}
+
+trait SegmentOrderImpl: Send + Sync + Debug {
+    fn reorder(&self, reader: Arc<dyn IndexReader>) -> Result<Arc<dyn IndexReader>>;
+}
+
+#[derive(Debug)]
+struct IdentitySegmentOrder;
+
+impl SegmentOrderImpl for IdentitySegmentOrder {
+    fn reorder(&self, reader: Arc<dyn IndexReader>) -> Result<Arc<dyn IndexReader>> {
+        Ok(reader)
     }
 }
 

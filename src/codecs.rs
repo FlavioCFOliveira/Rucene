@@ -320,6 +320,19 @@ pub fn default_codec() -> Option<Arc<dyn Codec>> {
     GLOBAL_REGISTRY.default_codec()
 }
 
+/// Registers a codec in the global registry.
+///
+/// This mirrors the static `Codec.register` path used by `SegmentInfos` when
+/// resolving codec names read from `segments_N` files.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] if the name is invalid, or
+/// [`LuceneError::IllegalState`] if the name is already registered.
+pub fn register_codec(name: impl Into<String>, codec: impl Codec + 'static) -> Result<()> {
+    GLOBAL_REGISTRY.register(name, codec)
+}
+
 // ---------------------------------------------------------------------------
 // FilterCodec
 // ---------------------------------------------------------------------------

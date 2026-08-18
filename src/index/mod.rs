@@ -18,6 +18,7 @@ pub mod point_values;
 pub mod postings_enum;
 pub mod reader_context;
 pub mod segment_info;
+pub mod segment_infos;
 pub mod terms;
 pub mod vector_values;
 
@@ -64,7 +65,10 @@ pub use postings_enum::{
     POSTINGS_ENUM_NONE, POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
 };
 pub use reader_context::{CompositeReaderContext, IndexReaderContext, LeafReaderContext};
-pub use segment_info::{SegmentCommitInfo, SegmentInfo};
+pub use segment_info::{
+    SegmentCommitInfo, SegmentInfo, SegmentOrder, SegmentReadState, SegmentWriteState,
+};
+pub use segment_infos::SegmentInfos;
 pub use terms::{
     AcceptStatus, EmptyFields, EmptyTerms, EmptyTermsEnum, Fields, FilteredTermsEnum,
     FilteredTermsEnumFilter, OrdTermState, PrefixCodedTerms, PrefixCodedTermsBuilder,
