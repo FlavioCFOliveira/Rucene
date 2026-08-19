@@ -596,6 +596,12 @@ pub(crate) mod tests {
     #[derive(Debug)]
     pub(crate) struct DummyFormat(&'static str);
 
+    impl DummyFormat {
+        pub(crate) fn new(name: &'static str) -> Self {
+            Self(name)
+        }
+    }
+
     impl PostingsFormat for DummyFormat {
         fn name(&self) -> &str {
             self.0
@@ -604,14 +610,14 @@ pub(crate) mod tests {
         fn fields_consumer<'a>(
             &self,
             _state: &SegmentWriteState<'a>,
-        ) -> Result<Box<dyn FieldsConsumer + 'a>> {
+        ) -> Result<Box<dyn FieldsConsumer>> {
             Ok(Box::new(DummyFieldsConsumer))
         }
 
         fn fields_producer<'a>(
             &self,
             _state: &SegmentReadState<'a>,
-        ) -> Result<Box<dyn FieldsProducer + 'a>> {
+        ) -> Result<Box<dyn FieldsProducer>> {
             Ok(Box::new(DummyFieldsProducer))
         }
     }
@@ -624,14 +630,14 @@ pub(crate) mod tests {
         fn fields_consumer<'a>(
             &self,
             _state: &SegmentWriteState<'a>,
-        ) -> crate::error::Result<Box<dyn DocValuesConsumer + 'a>> {
+        ) -> crate::error::Result<Box<dyn DocValuesConsumer>> {
             Ok(Box::new(EmptyDocValuesConsumer))
         }
 
         fn fields_producer<'a>(
             &self,
             _state: &SegmentReadState<'a>,
-        ) -> crate::error::Result<Box<dyn DocValuesProducer + 'a>> {
+        ) -> crate::error::Result<Box<dyn DocValuesProducer>> {
             Ok(Box::new(EmptyDocValuesProducer))
         }
     }
@@ -861,14 +867,14 @@ pub(crate) mod tests {
         fn fields_writer<'a>(
             &self,
             _state: &SegmentWriteState<'a>,
-        ) -> crate::error::Result<Box<dyn KnnVectorsWriter + 'a>> {
+        ) -> crate::error::Result<Box<dyn KnnVectorsWriter>> {
             Ok(Box::new(EmptyKnnVectorsWriter))
         }
 
         fn fields_reader<'a>(
             &self,
             _state: &SegmentReadState<'a>,
-        ) -> crate::error::Result<Box<dyn KnnVectorsReader + 'a>> {
+        ) -> crate::error::Result<Box<dyn KnnVectorsReader>> {
             Ok(Box::new(EmptyKnnVectorsReader))
         }
 
