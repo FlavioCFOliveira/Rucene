@@ -13,6 +13,7 @@ pub mod doc_values;
 pub mod field_infos;
 pub mod index_file_names;
 pub mod index_reader;
+pub mod index_writer_config;
 pub mod leaf_reader;
 pub mod merge;
 pub mod point_values;
@@ -71,6 +72,14 @@ pub use segment_info::{
     SegmentCommitInfo, SegmentInfo, SegmentOrder, SegmentReadState, SegmentWriteState,
 };
 pub use segment_infos::SegmentInfos;
+
+pub use index_writer_config::{
+    ConcurrentMergeScheduler, DefaultSimilarity, FlushByRamOrCountsPolicy, FlushPolicy,
+    IndexDeletionPolicy, IndexWriterConfig, IndexWriterEventListener,
+    KeepOnlyLastCommitDeletionPolicy, LeafComparator, LiveIndexWriterConfig, MergePolicy,
+    MergeScheduler, MergeSpecification, MergedSegmentWarmer, NoOpIndexWriterEventListener,
+    OpenMode, Similarity, TieredMergePolicy,
+};
 
 // Directory/segment reader exports.
 pub use directory_reader::{

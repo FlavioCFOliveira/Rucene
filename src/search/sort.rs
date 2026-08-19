@@ -145,7 +145,10 @@ impl SortFieldType {
     }
 
     /// Returns true if this sort-field type can be persisted in segment info.
-    fn is_serializable(self) -> bool {
+    ///
+    /// This also indicates whether the type can be used as an index sorter,
+    /// matching the Java `SortField.getIndexSorter() != null` check.
+    pub fn is_serializable(self) -> bool {
         matches!(
             self,
             SortFieldType::String
