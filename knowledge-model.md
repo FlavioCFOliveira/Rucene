@@ -86,6 +86,54 @@ A source, build, documentation, or configuration file.
 | `gitCommit` | Last confirmed commit hash. |
 | `gitDate` | ISO date of `gitCommit`. |
 
+### `RustStruct`, `RustTrait`, `RustEnum`
+A type declared by the local Rucene crate. Identity is `{name, file}`, so two
+types with the same name in different modules stay distinct.
+
+| Property | Purpose |
+|----------|---------|
+| `name` | Rust type name, e.g. `"DocumentsWriterFlushControl"`. |
+| `file` | Path of the declaring file, relative to the repository root, e.g. `"src/index/documents_writer.rs"`. |
+| `kind` | `"struct"`, `"trait"`, `"enum"`. |
+| `language` | Always `"Rust"`. |
+| `gitCommit` | Last confirmed commit hash. |
+| `gitDate` | ISO date of `gitCommit`. |
+
+Older syncs registered Rust types under the Java labels (`Class`, `Interface`,
+`Struct`, `Trait`) or under `Component`; those nodes are still present and are
+told apart from the Java ones by a `file` that starts with `src/`.
+
+### `Component`
+A named unit of the local crate registered before the `Rust*` labels existed
+(mostly `src/util.rs` and `src/store.rs` items). Identity is `name`. Kept for
+backward compatibility; new work uses `RustStruct`/`RustTrait`/`RustEnum`.
+
+### `Task`
+An `rmp` task, mirrored into the graph when it is closed.
+
+| Property | Purpose |
+|----------|---------|
+| `id` | The `rmp` task number (identity). |
+| `name` | Task title. |
+| `status` | `rmp` status at the time of the sync, e.g. `"COMPLETED"`. |
+| `components` | Comma-separated Rust paths (`rucene::<module>::<Type>`) delivered by the task. |
+| `gitCommit` | Commit that closed the task. |
+| `gitDate` | ISO date of `gitCommit`. |
+
+### `Commit`
+A commit of the local repository. Identity is `hash` (full 40-char).
+
+| Property | Purpose |
+|----------|---------|
+| `hash` | Full commit hash (identity). |
+| `message` | Commit subject line. |
+| `date` | Author date, ISO 8601 with offset. |
+| `task_id` | `rmp` task the commit closes, when there is one. |
+| `gitCommit` / `gitDate` | Same provenance stamp carried by every other node. |
+
+A few pre-2026-08 `Commit` nodes use `commitHash` instead of `hash`; new nodes
+always use `hash`.
+
 ### `Feature`
 A high-level functional capability, used to link packages/types to what they implement.
 
@@ -115,6 +163,12 @@ A high-level functional capability, used to link packages/types to what they imp
 | `TESTS` | `File` / `Class` → `Feature` / `Class`. |
 | `SPECIFIED_IN` | `Feature` → `File` (specification document). |
 | `REFERENCES` | `Project` → `Project` (Rucene references Apache Lucene Core 10.5.0). |
+| `PORTS` | Rucene type (`RustStruct`/`RustTrait`/`RustEnum`/`Component`) → Lucene `Class`/`Interface`/`Enum`. The Rust type is the port of that Lucene type. Optional `note` property records that the port is partial or a placeholder, and says what is missing. |
+| `IMPLEMENTED_IN` | `Component`/`Task` → `File`/`Module`/`Commit` (where the thing lives or landed). |
+| `IMPLEMENTS` | Also used as `Feature` → `File`/`Class`: the file or type that realises the feature. |
+| `COMMITTED_IN` | `File`/`Feature`/`Component` → `Commit`. |
+| `CLOSES_TASK` | `Commit` → `Task`. |
+| `TESTED_BY` / `MODIFIES` / `FULFILLS` / `DELIVERS` | Legacy provenance edges from the first syncs; not used by new work. |
 
 ---
 
@@ -141,3 +195,7 @@ Every node and edge carries `gitCommit` (full 40-char hash) and `gitDate` (`YYYY
 | `EXTENDS` / `IMPLEMENTS` | populated (type→type relationships) |
 | `REFERENCES` | populated (Rucene → Apache Lucene Core 10.5.0) |
 | `TESTS` / `SPECIFIED_IN` | target — to be populated as specifications and tests are authored |
+| `RustStruct` / `RustTrait` / `RustEnum` | populated incrementally, one sync per commit that ports types; `RustEnum` not yet used |
+| `Task` / `Commit` | populated for the commits that have been synced; not a complete history |
+| `PORTS` | populated for every ported Rucene type whose Lucene counterpart is already modelled |
+| `IMPLEMENTED_IN` / `IMPLEMENTS` / `COMMITTED_IN` / `CLOSES_TASK` | populated per synced commit |
