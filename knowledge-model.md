@@ -160,10 +160,10 @@ A high-level functional capability, used to link packages/types to what they imp
 | `USES` | `Feature` (`module-info`) → `Class` (SPI service interface). |
 | `PROVIDES` | `Feature` (`module-info`) → `Class` (SPI service interface). |
 | `PROVIDED_BY` | `Class` (SPI interface) → `Class` (implementation). |
-| `TESTS` | `File` / `Class` → `Feature` / `Class`. |
+| `TESTS` | `File` / `Class` → `Feature` / `Class` / `RustStruct`/`RustTrait`/`RustEnum`. A portability test file points at the harness `Feature` it belongs to and at the Rucene types whose behaviour it pins down. |
 | `SPECIFIED_IN` | `Feature` → `File` (specification document). |
 | `REFERENCES` | `Project` → `Project` (Rucene references Apache Lucene Core 10.5.0). |
-| `PORTS` | Rucene type (`RustStruct`/`RustTrait`/`RustEnum`/`Component`) → Lucene `Class`/`Interface`/`Enum`. The Rust type is the port of that Lucene type. Optional `note` property records that the port is partial or a placeholder, and says what is missing. |
+| `PORTS` | Rucene type (`RustStruct`/`RustTrait`/`RustEnum`/`Component`) → Lucene `Class`/`Interface`/`Enum`. The Rust type is the port of that Lucene type. Optional `note` property records that the port is partial, a placeholder, or a deliberate adaptation, and says what is missing or what was changed and why. |
 | `IMPLEMENTED_IN` | `Component`/`Task` → `File`/`Module`/`Commit` (where the thing lives or landed). |
 | `IMPLEMENTS` | Also used as `Feature` → `File`/`Class`: the file or type that realises the feature. |
 | `COMMITTED_IN` | `File`/`Feature`/`Component` → `Commit`. |
@@ -194,7 +194,7 @@ Every node and edge carries `gitCommit` (full 40-char hash) and `gitDate` (`YYYY
 | `DEPENDS_ON` | populated (package→package dependencies derived from imports) |
 | `EXTENDS` / `IMPLEMENTS` | populated (type→type relationships) |
 | `REFERENCES` | populated (Rucene → Apache Lucene Core 10.5.0) |
-| `TESTS` / `SPECIFIED_IN` | target — to be populated as specifications and tests are authored |
+| `TESTS` / `SPECIFIED_IN` | populated for the portability harness and the components it validates; extended per synced commit |
 | `RustStruct` / `RustTrait` / `RustEnum` | populated incrementally, one sync per commit that ports types; `RustEnum` not yet used |
 | `Task` / `Commit` | populated for the commits that have been synced; not a complete history |
 | `PORTS` | populated for every ported Rucene type whose Lucene counterpart is already modelled |
