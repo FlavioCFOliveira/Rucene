@@ -4,6 +4,11 @@
 //! producers and index consumers: field metadata, segment information,
 //! doc-values, vector values, point values, and the reader hierarchy
 //! (`IndexReader`, `LeafReader`, and their contexts).
+//!
+//! It also holds the write path: [`documents_writer`] buffers documents and
+//! orchestrates flushes, [`indexing_chain`] inverts each document, and
+//! [`freq_prox_terms_writer`] buffers the resulting postings in RAM and streams
+//! them through the codec's postings format at flush time.
 
 #![deny(unsafe_code)]
 
@@ -12,9 +17,11 @@ pub mod directory_reader;
 pub mod doc_values;
 pub mod documents_writer;
 pub mod field_infos;
+pub mod freq_prox_terms_writer;
 pub mod index_file_names;
 pub mod index_reader;
 pub mod index_writer_config;
+pub mod indexing_chain;
 pub mod leaf_reader;
 pub mod merge;
 pub mod point_values;
@@ -75,6 +82,15 @@ pub use segment_info::{
 };
 pub use segment_infos::SegmentInfos;
 
+pub use freq_prox_terms_writer::{
+    ByteSlicePool, ByteSliceReader, FreqProxFields, FreqProxPosting, FreqProxTermsWriter,
+    FreqProxTermsWriterPerField, InvertedToken, TermSlot, TermsHash, TermsHashPerField,
+    FIRST_LEVEL_SIZE, LEVEL_SIZE_ARRAY, NEXT_LEVEL_ARRAY,
+};
+pub use indexing_chain::{
+    DefaultIndexingChain, EmptyNormsProducer, FieldInvertState, MAX_POSITION,
+};
+
 pub use index_writer_config::{
     ConcurrentMergeScheduler, DefaultSimilarity, IndexDeletionPolicy, IndexWriterConfig,
     IndexWriterEventListener, KeepOnlyLastCommitDeletionPolicy, LeafComparator,
@@ -84,14 +100,14 @@ pub use index_writer_config::{
 
 // In-memory indexing pipeline exports.
 pub use documents_writer::{
-    BufferedUpdates, DefaultIndexingChain, DeleteNode, DeleteSlice, DocumentsWriter,
-    DocumentsWriterDeleteQueue, DocumentsWriterFlushControl, DocumentsWriterFlushQueue,
-    DocumentsWriterPerThread, DocumentsWriterPerThreadPool, DocumentsWriterShared,
-    DocumentsWriterStallControl, DwptGuard, FlushByRamOrCountsPolicy, FlushControlHandle,
-    FlushNotifications, FlushPolicy, FlushTicket, FlushedSegment, FrozenBufferedUpdates,
-    IndexingChain, IndexingChainFactory, IndexingChainFlushState, LockAllGuard,
-    NoOpFlushNotifications, Query, SegmentNameSupplier, SharedIndexingScratch, TermDelete,
-    BYTES_PER_DEL_QUERY, BYTES_SCRATCH_SIZE, INTS_SCRATCH_SIZE, MAX_DOCS, SOURCE_FLUSH,
+    BufferedUpdates, DeleteNode, DeleteSlice, DocumentsWriter, DocumentsWriterDeleteQueue,
+    DocumentsWriterFlushControl, DocumentsWriterFlushQueue, DocumentsWriterPerThread,
+    DocumentsWriterPerThreadPool, DocumentsWriterShared, DocumentsWriterStallControl, DwptGuard,
+    FlushByRamOrCountsPolicy, FlushControlHandle, FlushNotifications, FlushPolicy, FlushTicket,
+    FlushedSegment, FrozenBufferedUpdates, IndexingChain, IndexingChainFactory,
+    IndexingChainFlushState, LockAllGuard, NoOpFlushNotifications, Query, SegmentNameSupplier,
+    SharedIndexingScratch, TermDelete, BYTES_PER_DEL_QUERY, BYTES_SCRATCH_SIZE, INTS_SCRATCH_SIZE,
+    MAX_DOCS, SOURCE_FLUSH,
 };
 
 // Directory/segment reader exports.

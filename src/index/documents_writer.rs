@@ -63,12 +63,12 @@
 //!
 //! # Scope
 //!
-//! The byte-level postings/stored-fields writer (`IndexingChain` and
-//! `FreqProxTermsWriter`, task 103) is deliberately out of scope. This module
-//! defines the [`IndexingChain`] seam that the real chain will implement and
-//! ships [`DefaultIndexingChain`], a working chain that runs the analysis
-//! pipeline, builds the segment's [`FieldInfos`] through the writer-wide
-//! [`FieldNumbers`] registry and accounts RAM, but writes no codec files yet.
+//! This module owns the document buffering and flush orchestration only. The
+//! [`IndexingChain`] trait is the seam through which a chain inverts documents
+//! and writes codec files; the implementation used in production lives in
+//! [`crate::index::indexing_chain::DefaultIndexingChain`], which builds the
+//! segment's [`FieldInfos`] through the writer-wide [`FieldNumbers`] registry
+//! and writes the postings files through the codec.
 
 #![deny(unsafe_code)]
 
@@ -85,7 +85,8 @@ use crate::document::Document;
 use crate::error::{LuceneError, Result};
 use crate::index::field_infos::{FieldInfosBuilder, FieldNumbers};
 use crate::index::index_writer_config::LiveIndexWriterConfig;
-use crate::index::{FieldInfo, FieldInfos, IndexOptions, SegmentCommitInfo, SegmentInfo, Term};
+use crate::index::indexing_chain::DefaultIndexingChain;
+use crate::index::{FieldInfos, SegmentCommitInfo, SegmentInfo, Term};
 use crate::store::{
     flush_io_context, BufferedChecksumIndexInput, Directory, FlushInfo, IOContext, IndexInput,
     IndexOutput, Lock, TrackingDirectoryWrapper,
@@ -597,6 +598,26 @@ pub struct IndexingChainFlushState<'a> {
     pub live_docs: Option<&'a FixedBitSet>,
     /// Number of documents deleted during indexing.
     pub del_count_on_flush: i32,
+    /// Segment-private delete-by-term buffered while this segment was indexed.
+    ///
+    /// Equivalent to `SegmentWriteState.segUpdates.deleteTerms`, which
+    /// `FreqProxTermsWriter.applyDeletes` consumes at flush time.
+    pub delete_terms: &'a [TermDelete],
+}
+
+/// What the indexing chain changed while flushing a segment.
+///
+/// Lucene's chain writes straight into the mutable `liveDocs` and
+/// `delCountOnFlush` fields of `SegmentWriteState`. Returning them keeps the
+/// flush state immutable for every caller, so nothing else can observe a
+/// half-updated segment.
+#[derive(Debug, Default)]
+pub struct IndexingChainFlushResult {
+    /// Live documents after the chain applied the segment-private deletes, or
+    /// `None` when every document is still alive.
+    pub live_docs: Option<FixedBitSet>,
+    /// Number of deleted documents after the chain applied them.
+    pub del_count_on_flush: i32,
 }
 
 impl Debug for IndexingChainFlushState<'_> {
@@ -638,10 +659,14 @@ pub trait IndexingChain: Send + Debug {
 
     /// Writes the buffered documents into the segment described by `state`.
     ///
+    /// Returns the live documents and deleted-document count after the chain
+    /// applied `state.delete_terms`, mirroring the mutations Lucene performs on
+    /// `SegmentWriteState`.
+    ///
     /// # Errors
     ///
     /// Returns any I/O or consistency error raised while writing.
-    fn flush(&mut self, state: &IndexingChainFlushState<'_>) -> Result<()>;
+    fn flush(&mut self, state: &IndexingChainFlushState<'_>) -> Result<IndexingChainFlushResult>;
 
     /// Returns and clears an error that makes the whole DWPT unusable.
     ///
@@ -651,141 +676,6 @@ pub trait IndexingChain: Send + Debug {
     /// reports one.
     fn take_aborting_error(&mut self) -> Option<LuceneError> {
         None
-    }
-}
-
-/// Indexing chain used until the byte-level chain of task 103 lands.
-///
-/// It performs the parts of Lucene's `IndexingChain` that do not depend on the
-/// postings/stored-fields writers:
-///
-/// * every field is registered in the segment's [`FieldInfosBuilder`], which
-///   allocates field numbers from the writer-wide [`FieldNumbers`] registry, so
-///   a field name keeps the same number in every segment;
-/// * tokenized indexed fields are run through the configured analyzer, so the
-///   analysis pipeline is exercised and its token count is accounted;
-/// * RAM usage is accounted so that the RAM-based flush triggers work.
-///
-/// It writes no codec files; [`DocumentsWriter`] therefore produces segments
-/// whose `SegmentInfo` is complete but whose file set is empty.
-#[derive(Debug)]
-pub struct DefaultIndexingChain {
-    config: Arc<LiveIndexWriterConfig>,
-    bytes_used: Arc<AtomicI64>,
-    scratch: SharedIndexingScratch,
-    /// Number of tokens produced for each field, kept so the chain has real
-    /// per-segment state to reset on `abort`/`flush`.
-    field_token_counts: HashMap<String, i64>,
-}
-
-impl DefaultIndexingChain {
-    /// Creates a chain bound to the given live configuration.
-    pub fn new(config: Arc<LiveIndexWriterConfig>) -> Self {
-        let bytes_used = Arc::new(AtomicI64::new(0));
-        Self {
-            config,
-            scratch: SharedIndexingScratch::new(Arc::clone(&bytes_used)),
-            bytes_used,
-            field_token_counts: HashMap::new(),
-        }
-    }
-
-    /// Returns the number of tokens indexed for `field` in this segment.
-    pub fn field_token_count(&self, field: &str) -> i64 {
-        self.field_token_counts.get(field).copied().unwrap_or(0)
-    }
-
-    /// Returns the shared scratch buffers of this chain.
-    pub fn scratch(&mut self) -> &mut SharedIndexingScratch {
-        &mut self.scratch
-    }
-}
-
-impl IndexingChain for DefaultIndexingChain {
-    fn process_document(
-        &mut self,
-        _doc_id: i32,
-        doc: &Document,
-        _is_last_doc: bool,
-        field_infos: &mut FieldInfosBuilder,
-    ) -> Result<()> {
-        let analyzer = self.config.analyzer_arc();
-        let soft_deletes_field = field_infos.soft_deletes_field_name().map(str::to_string);
-        let parent_field = field_infos.parent_field_name().map(str::to_string);
-
-        for field in doc.get_fields() {
-            let field_type = field.field_type();
-            let name = field.name().to_string();
-            let info = FieldInfo::new_full(
-                name.clone(),
-                -1,
-                field_type.store_term_vectors(),
-                field_type.omit_norms(),
-                false,
-                field_type.index_options(),
-                field_type.doc_values_type(),
-                field_type.doc_values_skip_index_type(),
-                -1,
-                field_type.attributes().clone(),
-                field_type.point_dimension_count(),
-                field_type.point_index_dimension_count(),
-                field_type.point_num_bytes(),
-                field_type.vector_dimension(),
-                field_type.vector_encoding(),
-                field_type.vector_similarity_function(),
-                soft_deletes_field.as_deref() == Some(name.as_str()),
-                parent_field.as_deref() == Some(name.as_str()),
-            )?;
-            field_infos.add(&info)?;
-
-            // 24 bytes per field is the fixed per-field bookkeeping Lucene pays
-            // in its per-field writers; it keeps the RAM estimate monotonic even
-            // for fields that produce no tokens.
-            let mut field_bytes: i64 = 24;
-            if field_type.index_options() != IndexOptions::NONE && field_type.tokenized() {
-                let mut token_stream = field.token_stream(analyzer.as_ref(), None);
-                token_stream.reset()?;
-                let mut tokens: i64 = 0;
-                while token_stream.increment_token()? {
-                    tokens += 1;
-                }
-                token_stream.end()?;
-                token_stream.close()?;
-                *self.field_token_counts.entry(name).or_insert(0) += tokens;
-                // Lucene's inverter pays roughly one postings slot per token.
-                field_bytes += tokens * 8;
-            } else if let Some(value) = field.string_value() {
-                field_bytes += value.len() as i64;
-            } else if let Some(value) = field.binary_value() {
-                field_bytes += value.length as i64;
-            }
-            self.bytes_used.fetch_add(field_bytes, Ordering::AcqRel);
-        }
-        Ok(())
-    }
-
-    fn abort(&mut self) {
-        self.field_token_counts.clear();
-        self.bytes_used.store(0, Ordering::Release);
-    }
-
-    fn ram_bytes_used(&self) -> i64 {
-        self.bytes_used.load(Ordering::Acquire)
-    }
-
-    fn flush(&mut self, state: &IndexingChainFlushState<'_>) -> Result<()> {
-        if state.info_stream.is_enabled("DWPT") {
-            state.info_stream.message(
-                "DWPT",
-                &format!(
-                    "DefaultIndexingChain: no codec files written for segment {} ({} fields)",
-                    state.segment_info.name,
-                    state.field_infos.size()
-                ),
-            );
-        }
-        self.field_token_counts.clear();
-        Ok(())
     }
 }
 
@@ -2663,7 +2553,8 @@ impl DwptGuard {
 
         let field_infos = self.state_mut().field_infos.finish()?;
         let context = flush_io_context(FlushInfo::new(max_doc, last_committed_bytes_used));
-        {
+        let delete_terms = self.state().pending_updates.delete_terms();
+        let flush_result = {
             let state = self
                 .state
                 .as_mut()
@@ -2676,13 +2567,17 @@ impl DwptGuard {
                 context: context.as_ref(),
                 live_docs: live_docs.as_ref(),
                 del_count_on_flush: del_count,
+                delete_terms: &delete_terms,
             };
-            state.indexing_chain.flush(&flush_state)?;
-        }
+            state.indexing_chain.flush(&flush_state)?
+        };
+        // `FreqProxTermsWriter.applyDeletes` may have deleted more documents of
+        // this very segment while flushing it.
+        let (live_docs, del_count) = (flush_result.live_docs, flush_result.del_count_on_flush);
 
-        // Delete terms have been applied to this segment's buffered updates and
-        // are also carried by the frozen global packet, so Lucene drops them
-        // here to avoid replaying them twice.
+        // Delete terms have now been applied to this segment and are also
+        // carried by the frozen global packet, so Lucene drops them here to
+        // avoid replaying them twice.
         self.state_mut().pending_updates.clear_delete_terms();
         segment_info.set_files(self.dwpt.directory.get_created_files());
         set_flush_diagnostics(&mut segment_info);
@@ -4555,8 +4450,14 @@ mod tests {
             self.num_docs * self.bytes_per_doc
         }
 
-        fn flush(&mut self, _state: &IndexingChainFlushState<'_>) -> Result<()> {
-            Ok(())
+        fn flush(
+            &mut self,
+            state: &IndexingChainFlushState<'_>,
+        ) -> Result<IndexingChainFlushResult> {
+            Ok(IndexingChainFlushResult {
+                live_docs: state.live_docs.cloned(),
+                del_count_on_flush: state.del_count_on_flush,
+            })
         }
 
         fn take_aborting_error(&mut self) -> Option<LuceneError> {
@@ -5487,6 +5388,26 @@ mod tests {
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].segment_info.info.max_doc().unwrap(), 5);
         assert!(!fixture.writer.any_changes());
+
+        // The indexing chain writes the postings files of the segment, and the
+        // tracking directory records them on the `SegmentInfo`.
+        let files = segments[0]
+            .segment_info
+            .info
+            .files()
+            .expect("segment files");
+        assert!(
+            files.iter().any(|name| name.ends_with(".doc")),
+            "a flushed segment must carry its postings files, got {files:?}"
+        );
+        for extension in ["tim", "tip", "tmd"] {
+            assert!(
+                files
+                    .iter()
+                    .any(|name| name.ends_with(&format!(".{extension}"))),
+                "a flushed segment must carry its .{extension} file, got {files:?}"
+            );
+        }
     }
 
     #[test]
@@ -5597,9 +5518,14 @@ mod tests {
             .process_document(0, &doc("the quick brown fox"), true, &mut field_infos)
             .unwrap();
         assert_eq!(
-            chain.field_token_count("body"),
+            chain.field_term_count("body"),
             4,
             "the analyzer must actually run over the field value"
+        );
+        assert_eq!(
+            chain.field_invert_state("body").unwrap().length(),
+            4,
+            "every analyzed token must be counted in the invert state"
         );
         assert!(chain.ram_bytes_used() > 0);
         assert_eq!(field_infos.len(), 1);
@@ -5610,7 +5536,7 @@ mod tests {
         assert_eq!(chain.scratch().bytes_scratch().len(), BYTES_SCRATCH_SIZE);
 
         chain.abort();
-        assert_eq!(chain.field_token_count("body"), 0);
+        assert_eq!(chain.field_term_count("body"), 0);
     }
 
     #[test]

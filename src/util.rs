@@ -10,6 +10,8 @@
 
 pub mod attribute;
 pub mod automaton;
+pub mod byte_block_pool;
+pub mod bytes_ref_hash;
 pub mod chars_ref;
 /// LZ4 and lowercase-ASCII compression utilities.
 pub mod compress;
@@ -36,6 +38,10 @@ pub use automaton::{
     CompiledAutomaton, RunAutomaton, Transition, TransitionAccessor,
 };
 pub use bit_sets::{DenseLiveDocs, RoaringDocIdSet, SparseFixedBitSet, SparseLiveDocs};
+pub use byte_block_pool::{
+    ByteBlockPool, BYTE_BLOCK_MASK, BYTE_BLOCK_SHIFT, BYTE_BLOCK_SIZE, MAX_TERM_LENGTH,
+};
+pub use bytes_ref_hash::BytesRefHash;
 pub use chars_ref::{CharsRef, EMPTY_CHARS};
 pub use extra::{
     IdentityLongValues, IntoIter as PriorityQueueIntoIter, LongBitSet, LongValues, MergedIterator,

@@ -50,6 +50,10 @@ name = "portability_codecs"
 path = "tests/portability/codecs.rs"
 
 [[test]]
+name = "portability_indexing_chain"
+path = "tests/portability/indexing_chain.rs"
+
+[[test]]
 name = "fuzz_codec_headers"
 path = "tests/fuzz/codec_headers.rs"
 

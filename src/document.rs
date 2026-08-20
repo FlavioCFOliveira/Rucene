@@ -782,15 +782,20 @@ impl IndexableField for Field {
         }
     }
 
+    /// Returns [`InvertableType::TOKEN_STREAM`] for every indexed field.
+    ///
+    /// Matches `org.apache.lucene.document.Field.invertableType()`, which
+    /// returns `TOKEN_STREAM` unconditionally: [`Field::token_stream`] produces
+    /// a single-token stream for a non-tokenized value, so the inverter never
+    /// needs the binary path. Only `StringField` and `KeywordField` override
+    /// this to [`InvertableType::BINARY`], because they carry the term bytes
+    /// directly. `None` encodes Lucene's "field is not indexed", for which
+    /// `IndexingChain` never calls `invertableType()` at all.
     fn invertable_type(&self) -> Option<InvertableType> {
         if self.field_type.index_options() == IndexOptions::NONE {
             return None;
         }
-        if self.field_type.tokenized() {
-            Some(InvertableType::TOKEN_STREAM)
-        } else {
-            Some(InvertableType::BINARY)
-        }
+        Some(InvertableType::TOKEN_STREAM)
     }
 }
 
@@ -3770,6 +3775,54 @@ mod tests {
         assert_eq!(
             DateTools::time_to_string(time, Resolution::MILLISECOND),
             original
+        );
+    }
+
+    #[test]
+    fn field_invertable_type_matches_lucene_for_every_field_kind() {
+        // `org.apache.lucene.document.Field.invertableType()` returns
+        // TOKEN_STREAM unconditionally, because `Field.tokenStream` wraps a
+        // non-tokenized value in a single-token stream. Only `StringField` and
+        // `KeywordField` override it to BINARY, since they carry the term bytes
+        // directly. Reporting BINARY for a non-tokenized `Field` sent the
+        // indexing chain down the binary path, where `binaryValue()` of a
+        // string-valued field is `None`.
+        let mut not_tokenized = FieldType::new();
+        not_tokenized.set_tokenized(false).unwrap();
+        not_tokenized.set_index_options(IndexOptions::DOCS).unwrap();
+        not_tokenized.freeze();
+        let field = Field::new("body", "value".to_string(), not_tokenized).unwrap();
+        assert_eq!(
+            IndexableField::invertable_type(&field),
+            Some(InvertableType::TOKEN_STREAM)
+        );
+
+        let mut tokenized = FieldType::new();
+        tokenized.set_tokenized(true).unwrap();
+        tokenized
+            .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
+            .unwrap();
+        tokenized.freeze();
+        let field = Field::new("body", "value".to_string(), tokenized).unwrap();
+        assert_eq!(
+            IndexableField::invertable_type(&field),
+            Some(InvertableType::TOKEN_STREAM)
+        );
+
+        let mut not_indexed = FieldType::new();
+        not_indexed.set_stored(true).unwrap();
+        not_indexed.freeze();
+        let field = Field::new("meta", "value".to_string(), not_indexed).unwrap();
+        assert_eq!(
+            IndexableField::invertable_type(&field),
+            None,
+            "a field that is not indexed is never inverted"
+        );
+
+        let string_field = StringField::new("id", "abc".to_string(), Store::NO).unwrap();
+        assert_eq!(
+            IndexableField::invertable_type(&string_field),
+            Some(InvertableType::BINARY)
         );
     }
 }

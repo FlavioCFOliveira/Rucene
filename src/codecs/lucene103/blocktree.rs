@@ -10,7 +10,7 @@
 
 use std::fmt;
 
-use crate::codecs::codec_util::{write_be_long, write_footer, write_index_header};
+use crate::codecs::codec_util::{write_footer, write_index_header};
 use crate::codecs::postings::{
     Fields, FieldsConsumer, FieldsProducer, MergeState, NormsProducer, PostingsReaderBase,
     PostingsWriterBase, Terms, TermsEnum,
@@ -355,10 +355,14 @@ impl TrieBuilder {
     pub fn save(&self, meta: &mut dyn DataOutput, index_out: &mut dyn IndexOutput) -> Result<()> {
         let index_start_fp = index_out.file_pointer();
         meta.write_v_long(index_start_fp)?;
-        let root_fp = index_out.file_pointer();
+        // Java's `TrieBuilder.saveNodes` returns the root node's file pointer
+        // *relative* to the start of the trie, because `TrieReader` adds the
+        // start back when it seeks. Writing an absolute pointer here would make
+        // the reader jump past the root of every non-empty trie.
+        let root_fp = index_out.file_pointer() - index_start_fp;
         // Trivial trie: single leaf node with output.
         let output_fp_bytes = Self::bytes_required_v_long(self.index_start_fp);
-        let header = 0x00 | ((output_fp_bytes - 1) << 2) | if self.has_terms { 1 << 5 } else { 0 };
+        let header = ((output_fp_bytes - 1) << 2) | if self.has_terms { 1 << 5 } else { 0 };
         index_out.write_byte(header as u8)?;
         Self::write_long_n_bytes(index_out, self.index_start_fp, output_fp_bytes)?;
         index_out.write_long(0)?;
@@ -497,6 +501,10 @@ struct TermsWriter<'a> {
     suffix_lengths_writer: ByteBuffersDataOutput,
     suffix_writer: BytesRefBuilder,
     stats_writer: ByteBuffersDataOutput,
+    /// Number of consecutive singleton terms buffered but not yet written.
+    ///
+    /// Equivalent to `Lucene103BlockTreeTermsWriter.StatsWriter.singletonCount`.
+    stats_singleton_count: i32,
     meta_writer: ByteBuffersDataOutput,
     spare_writer: ByteBuffersDataOutput,
     spare_bytes: Vec<u8>,
@@ -536,6 +544,7 @@ impl<'a> TermsWriter<'a> {
             suffix_lengths_writer: ByteBuffersDataOutput::new_resettable_instance(),
             suffix_writer: BytesRefBuilder::new(),
             stats_writer: ByteBuffersDataOutput::new_resettable_instance(),
+            stats_singleton_count: 0,
             meta_writer: ByteBuffersDataOutput::new_resettable_instance(),
             spare_writer: ByteBuffersDataOutput::new_resettable_instance(),
             spare_bytes: Vec::new(),
@@ -729,7 +738,10 @@ impl<'a> TermsWriter<'a> {
         let start_fp = self.terms_out.file_pointer();
         let has_floor_lead_label = is_floor && floor_lead_label != -1;
         let prefix_len = prefix_length as usize + if has_floor_lead_label { 1 } else { 0 };
-        let mut prefix = BytesRef::with_capacity(prefix_len);
+        // `BytesRef::with_capacity` reserves capacity but leaves the buffer
+        // empty, so the block prefix must be materialised before it is written
+        // into; the extra byte is the floor lead label appended below.
+        let mut prefix = BytesRef::new(vec![0u8; prefix_len]);
         let last = self.last_term.get();
         prefix.bytes[..prefix_length as usize]
             .copy_from_slice(&last.bytes[last.offset..last.offset + prefix_length as usize]);
@@ -775,6 +787,7 @@ impl<'a> TermsWriter<'a> {
                     panic!("leaf block contains a sub-block");
                 }
             }
+            self.finish_term_stats()?;
         } else {
             for ent in entries {
                 match ent {
@@ -805,15 +818,20 @@ impl<'a> TermsWriter<'a> {
                             block.prefix.offset + prefix_length as usize,
                             suffix,
                         );
-                        self.terms_out.write_v_long(start_fp - block.fp)?;
+                        // The pointer back to the sub-block belongs to the
+                        // suffix-lengths blob, which is written after the suffix
+                        // bytes; writing it straight to the terms output would
+                        // put it before them.
+                        self.suffix_lengths_writer
+                            .write_v_long(start_fp - block.fp)?;
                         if let Some(idx) = &block.index {
                             sub_indices.as_mut().unwrap().push(idx.clone());
                         }
                     }
                 }
             }
+            self.finish_term_stats()?;
         }
-        // Stats are written as we go; the stats_writer is a simple ByteBuffersDataOutput.
 
         // Suffix compression (disabled in this checkpoint: always no compression).
         let compression_alg = CompressionAlgorithm::NoCompression;
@@ -844,7 +862,11 @@ impl<'a> TermsWriter<'a> {
         self.spare_bytes.resize(suffix_lengths_out.len(), 0);
         self.spare_bytes
             .copy_from_slice(suffix_lengths_out.as_inner());
-        if num_suffix_bytes > 1
+        // Java tests `allEqual(spareBytes, 1, numSuffixBytes, spareBytes[0])`,
+        // which is vacuously true for a single length byte — the common case of
+        // a block holding one term. Requiring more than one byte here produced
+        // the uncompressed encoding where Lucene uses the all-equal one.
+        if num_suffix_bytes > 0
             && Self::all_equal(&self.spare_bytes, 1, num_suffix_bytes, self.spare_bytes[0])
         {
             self.terms_out
@@ -882,15 +904,33 @@ impl<'a> TermsWriter<'a> {
         ))
     }
 
+    /// Appends the statistics of one term.
+    ///
+    /// Equivalent to `Lucene103BlockTreeTermsWriter.StatsWriter.add(int, long)`:
+    /// singleton terms (one document, one occurrence) are run-length encoded
+    /// and only materialise when [`Self::finish_term_stats`] closes the run.
     fn write_term_stats(&mut self, doc_freq: i32, total_term_freq: i64) -> Result<()> {
         if doc_freq == 1 && (!self.has_freqs || total_term_freq == 1) {
-            self.stats_writer.write_v_int(1)?;
+            self.stats_singleton_count += 1;
         } else {
+            self.finish_term_stats()?;
             self.stats_writer.write_v_int(doc_freq << 1)?;
             if self.has_freqs {
                 self.stats_writer
                     .write_v_long(total_term_freq - doc_freq as i64)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Closes an open run of singleton terms.
+    ///
+    /// Equivalent to `Lucene103BlockTreeTermsWriter.StatsWriter.finish()`.
+    fn finish_term_stats(&mut self) -> Result<()> {
+        if self.stats_singleton_count > 0 {
+            self.stats_writer
+                .write_v_int(((self.stats_singleton_count - 1) << 1) | 1)?;
+            self.stats_singleton_count = 0;
         }
         Ok(())
     }
@@ -1109,15 +1149,20 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
             &self.segment_suffix,
         )?;
 
+        // The postings writer stamps its own index header into the metadata
+        // file, and that header carries the segment suffix. Passing a state
+        // without the suffix would write an empty one, which the reader
+        // rejects when it validates the header of `.tmd`.
         self.postings_writer.init(
             meta_out.as_mut(),
-            &SegmentWriteState::new(
+            &SegmentWriteState::with_suffix(
                 crate::util::default_info_stream(),
                 self.directory,
                 self.segment_info,
                 &self.field_infos,
                 &crate::codecs::stub::BufferedUpdates,
                 self.context,
+                self.segment_suffix.clone(),
             ),
         )?;
 
@@ -1159,9 +1204,11 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
         }
 
         write_footer(index_out.as_mut())?;
-        write_be_long(meta_out.as_mut(), index_out.file_pointer())?;
+        // `DataOutput.writeLong` is little-endian since Lucene 9; the reader
+        // uses these two lengths to retrieve the checksums of `.tip`/`.tim`.
+        meta_out.write_long(index_out.file_pointer())?;
         write_footer(terms_out.as_mut())?;
-        write_be_long(meta_out.as_mut(), terms_out.file_pointer())?;
+        meta_out.write_long(terms_out.file_pointer())?;
         write_footer(meta_out.as_mut())?;
 
         meta_out.close()?;
@@ -1243,9 +1290,11 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
 
         meta_out.write_v_int(self.fields.len() as i32)?;
         write_footer(index_out.as_mut())?;
-        write_be_long(meta_out.as_mut(), index_out.file_pointer())?;
+        // `DataOutput.writeLong` is little-endian since Lucene 9; the reader
+        // uses these two lengths to retrieve the checksums of `.tip`/`.tim`.
+        meta_out.write_long(index_out.file_pointer())?;
         write_footer(terms_out.as_mut())?;
-        write_be_long(meta_out.as_mut(), terms_out.file_pointer())?;
+        meta_out.write_long(terms_out.file_pointer())?;
         write_footer(meta_out.as_mut())?;
 
         meta_out.close()?;
