@@ -403,6 +403,7 @@ mod tests {
 
     #[test]
     fn sequential_merger_skips_deleted_docs() {
+        #[derive(Debug)]
         struct SparseBits {
             len: usize,
             deleted: Vec<bool>,
@@ -471,6 +472,7 @@ mod tests {
 
     #[test]
     fn deletion_doc_map_skips_unmapped() {
+        #[derive(Debug)]
         struct SparseBits {
             len: usize,
             deleted: Vec<bool>,

@@ -23,6 +23,15 @@ pub use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 // SegmentInfo
 // -----------------------------------------------------------------------------
 
+/// Sentinel stored in [`SegmentInfo::max_doc`] while the document count is not
+/// known yet.
+///
+/// Lucene's `SegmentInfo` constructor accepts `-1` and only
+/// `SegmentInfo.maxDoc()` refuses to return it, because
+/// `DocumentsWriterPerThread` builds its `SegmentInfo` before it knows how many
+/// documents the segment will hold and calls `setMaxDoc` at flush time.
+pub const UNSET_MAX_DOC: i32 = -1;
+
 /// Metadata identifying a single segment.
 ///
 /// Equivalent to `org.apache.lucene.index.SegmentInfo`.
@@ -94,9 +103,9 @@ impl SegmentInfo {
         attributes: HashMap<String, String>,
         index_sort: Sort,
     ) -> Result<Self> {
-        if max_doc < 0 {
+        if max_doc < UNSET_MAX_DOC {
             return Err(LuceneError::IllegalArgument(format!(
-                "maxDoc must be non-negative: {max_doc}"
+                "maxDoc must be non-negative or {UNSET_MAX_DOC} (not set yet): {max_doc}"
             )));
         }
         Ok(Self {
@@ -139,9 +148,9 @@ impl SegmentInfo {
         attributes: HashMap<String, String>,
         index_sort: Sort,
     ) -> Result<Self> {
-        if max_doc < 0 {
+        if max_doc < UNSET_MAX_DOC {
             return Err(LuceneError::IllegalArgument(format!(
-                "maxDoc must be non-negative: {max_doc}"
+                "maxDoc must be non-negative or {UNSET_MAX_DOC} (not set yet): {max_doc}"
             )));
         }
         Ok(Self {
@@ -887,6 +896,40 @@ mod tests {
         .unwrap()
     }
 
+    /// Regression test: `DocumentsWriterPerThread` builds its `SegmentInfo`
+    /// before the document count is known and passes `UNSET_MAX_DOC`, exactly
+    /// as `DocumentsWriterPerThread`'s Java constructor passes `-1`. Rejecting
+    /// that value made the whole indexing pipeline impossible to construct.
+    #[test]
+    fn segment_info_accepts_an_unset_max_doc_and_rejects_smaller_values() {
+        let mut info = test_segment_info("_0", UNSET_MAX_DOC);
+        assert!(
+            info.max_doc().is_err(),
+            "maxDoc must stay unreadable until it is set"
+        );
+        info.set_max_doc(7).unwrap();
+        assert_eq!(info.max_doc().unwrap(), 7);
+        assert!(info.set_max_doc(8).is_err(), "maxDoc may only be set once");
+
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let error = SegmentInfo::new(
+            dir,
+            Version::LUCENE_10_5_0,
+            Some(Version::LUCENE_10_5_0),
+            "_1".to_string(),
+            -2,
+            false,
+            false,
+            test_codec(),
+            HashMap::new(),
+            StringHelper::random_id(),
+            HashMap::new(),
+            Sort::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, LuceneError::IllegalArgument(_)));
+    }
+
     #[test]
     fn segment_info_basic() {
         let info = test_segment_info("_0", 42);
@@ -924,13 +967,18 @@ mod tests {
 
     #[test]
     fn segment_info_max_doc_validation() {
+        // `-1` is Lucene's "not set yet" sentinel and must be accepted; only
+        // values below it are illegal.
+        let info = test_segment_info("_0", UNSET_MAX_DOC);
+        assert!(info.max_doc().is_err());
+
         let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let result = SegmentInfo::new(
             dir,
             Version::LUCENE_10_5_0,
             Some(Version::LUCENE_10_5_0),
             "_0".to_string(),
-            -1,
+            -3,
             false,
             false,
             test_codec(),

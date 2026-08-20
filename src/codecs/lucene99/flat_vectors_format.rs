@@ -116,10 +116,7 @@ impl KnnVectorsFormat for Lucene99FlatVectorsFormat {
         Ok(Box::new(self.create_writer(state)?))
     }
 
-    fn fields_reader<'a>(
-        &self,
-        state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn KnnVectorsReader + 'a>> {
+    fn fields_reader<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn KnnVectorsReader>> {
         Ok(Box::new(self.create_reader(state)?))
     }
 

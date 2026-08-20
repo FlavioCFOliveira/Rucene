@@ -10,6 +10,7 @@
 pub mod automaton_terms_enum;
 pub mod directory_reader;
 pub mod doc_values;
+pub mod documents_writer;
 pub mod field_infos;
 pub mod index_file_names;
 pub mod index_reader;
@@ -35,7 +36,7 @@ pub use doc_values::{
     SingletonSortedSetDocValues, SortedDocValues, SortedDocValuesTermsEnum, SortedNumericDocValues,
     SortedSetDocValues, SortedSetDocValuesTermsEnum,
 };
-pub use field_infos::{FieldInfo, FieldInfos};
+pub use field_infos::{FieldInfo, FieldInfos, FieldInfosBuilder, FieldNumbers};
 pub use index_file_names::{
     file_name_from_generation, get_extension, is_codec_file, matches_extension, parse_generation,
     parse_segment_name, segment_file_name, standard_extensions, strip_extension,
@@ -70,15 +71,27 @@ pub use postings_enum::{
 pub use reader_context::{CompositeReaderContext, IndexReaderContext, LeafReaderContext};
 pub use segment_info::{
     SegmentCommitInfo, SegmentInfo, SegmentOrder, SegmentReadState, SegmentWriteState,
+    UNSET_MAX_DOC,
 };
 pub use segment_infos::SegmentInfos;
 
 pub use index_writer_config::{
-    ConcurrentMergeScheduler, DefaultSimilarity, FlushByRamOrCountsPolicy, FlushPolicy,
-    IndexDeletionPolicy, IndexWriterConfig, IndexWriterEventListener,
-    KeepOnlyLastCommitDeletionPolicy, LeafComparator, LiveIndexWriterConfig, MergePolicy,
-    MergeScheduler, MergeSpecification, MergedSegmentWarmer, NoOpIndexWriterEventListener,
-    OpenMode, Similarity, TieredMergePolicy,
+    ConcurrentMergeScheduler, DefaultSimilarity, IndexDeletionPolicy, IndexWriterConfig,
+    IndexWriterEventListener, KeepOnlyLastCommitDeletionPolicy, LeafComparator,
+    LiveIndexWriterConfig, MergePolicy, MergeScheduler, MergeSpecification, MergedSegmentWarmer,
+    NoOpIndexWriterEventListener, OpenMode, Similarity, TieredMergePolicy,
+};
+
+// In-memory indexing pipeline exports.
+pub use documents_writer::{
+    BufferedUpdates, DefaultIndexingChain, DeleteNode, DeleteSlice, DocumentsWriter,
+    DocumentsWriterDeleteQueue, DocumentsWriterFlushControl, DocumentsWriterFlushQueue,
+    DocumentsWriterPerThread, DocumentsWriterPerThreadPool, DocumentsWriterShared,
+    DocumentsWriterStallControl, DwptGuard, FlushByRamOrCountsPolicy, FlushControlHandle,
+    FlushNotifications, FlushPolicy, FlushTicket, FlushedSegment, FrozenBufferedUpdates,
+    IndexingChain, IndexingChainFactory, IndexingChainFlushState, LockAllGuard,
+    NoOpFlushNotifications, Query, SegmentNameSupplier, SharedIndexingScratch, TermDelete,
+    BYTES_PER_DEL_QUERY, BYTES_SCRATCH_SIZE, INTS_SCRATCH_SIZE, MAX_DOCS, SOURCE_FLUSH,
 };
 
 // Directory/segment reader exports.

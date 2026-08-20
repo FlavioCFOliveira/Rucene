@@ -7,7 +7,7 @@
 #![deny(unsafe_code)]
 
 use std::collections::{HashMap, HashSet};
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use crate::error::{LuceneError, Result};
 use crate::index::{
@@ -1403,6 +1403,377 @@ impl FieldInfo {
 }
 
 // -----------------------------------------------------------------------------
+// FieldNumbers / FieldInfos.Builder
+// -----------------------------------------------------------------------------
+
+/// Index-wide registry that assigns a stable field number to every field name.
+///
+/// Equivalent to `org.apache.lucene.index.FieldInfos.FieldNumbers`.
+///
+/// A single instance is shared by every `DocumentsWriterPerThread` of an
+/// `IndexWriter` so that a given field name always maps to the same field
+/// number in every segment the writer produces. Lucene relies on that
+/// invariant when merging segments, so it is a hard requirement for index
+/// compatibility.
+///
+/// # Java to Rust adaptation
+///
+/// Java synchronises every method on the instance monitor. Here the mutable
+/// part lives behind a single [`Mutex`], which gives exactly the same mutual
+/// exclusion; the immutable soft-deletes/parent field names are stored outside
+/// the lock so they can be read without blocking.
+///
+/// Java's `FieldProperties` record stores precisely the properties that
+/// `FieldInfo::verify_same_schema` compares, so this port keeps the first
+/// [`FieldInfo`] seen for a name as the canonical schema and verifies against
+/// it directly.
+#[derive(Debug)]
+pub struct FieldNumbers {
+    inner: Mutex<FieldNumbersInner>,
+    soft_deletes_field_name: Option<String>,
+    parent_field_name: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct FieldNumbersInner {
+    /// Reverse map used to detect field-number collisions.
+    number_to_name: HashMap<i32, String>,
+    /// Canonical schema for every field name known to this index.
+    field_properties: HashMap<String, FieldInfo>,
+    /// Lowest field number that has not been handed out yet, minus one.
+    lowest_unassigned_field_number: i32,
+}
+
+impl FieldNumbers {
+    /// Creates an empty registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if the same field name is
+    /// configured both as the soft-deletes field and as the parent field.
+    pub fn new(
+        soft_deletes_field_name: Option<String>,
+        parent_field_name: Option<String>,
+    ) -> Result<Self> {
+        if let (Some(soft), Some(parent)) = (&soft_deletes_field_name, &parent_field_name) {
+            if soft == parent {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "parent document and soft-deletes field can't be the same field \"{parent}\""
+                )));
+            }
+        }
+        Ok(Self {
+            inner: Mutex::new(FieldNumbersInner {
+                number_to_name: HashMap::new(),
+                field_properties: HashMap::new(),
+                lowest_unassigned_field_number: -1,
+            }),
+            soft_deletes_field_name,
+            parent_field_name,
+        })
+    }
+
+    /// Returns the configured soft-deletes field name, if any.
+    pub fn soft_deletes_field_name(&self) -> Option<&str> {
+        self.soft_deletes_field_name.as_deref()
+    }
+
+    /// Returns the configured parent field name, if any.
+    pub fn parent_field_name(&self) -> Option<&str> {
+        self.parent_field_name.as_deref()
+    }
+
+    /// Verifies that `info` is consistent with what this index already knows
+    /// about the field, without registering it.
+    ///
+    /// Equivalent to `FieldNumbers.verifyFieldInfo(FieldInfo)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the schema conflicts.
+    pub fn verify_field_info(&self, info: &FieldInfo) -> Result<()> {
+        let name = info.get_name();
+        self.verify_soft_deletes_field_name(name, info.is_soft_deletes_field())?;
+        self.verify_parent_field_name(name, info.is_parent_field())?;
+        let inner = self.lock();
+        if let Some(current) = inner.field_properties.get(name) {
+            current.verify_same_schema(info)?;
+        }
+        Ok(())
+    }
+
+    /// Returns the field number for `info`, assigning a new one the first time
+    /// the field name is seen in this index.
+    ///
+    /// Equivalent to `FieldNumbers.addOrGet(FieldInfo)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field schema conflicts
+    /// with the schema already recorded for that name.
+    pub fn add_or_get(&self, info: &FieldInfo) -> Result<i32> {
+        let name = info.get_name();
+        self.verify_soft_deletes_field_name(name, info.is_soft_deletes_field())?;
+        self.verify_parent_field_name(name, info.is_parent_field())?;
+
+        let mut inner = self.lock();
+        if let Some(current) = inner.field_properties.get(name) {
+            current.verify_same_schema(info)?;
+            return Ok(current.get_field_number());
+        }
+
+        // First time we see this field in this index.
+        let preferred = info.get_field_number();
+        let field_number = if preferred != -1 && !inner.number_to_name.contains_key(&preferred) {
+            preferred
+        } else {
+            loop {
+                inner.lowest_unassigned_field_number += 1;
+                let candidate = inner.lowest_unassigned_field_number;
+                if !inner.number_to_name.contains_key(&candidate) {
+                    break candidate;
+                }
+            }
+        };
+        debug_assert!(field_number >= 0);
+
+        inner.number_to_name.insert(field_number, name.to_string());
+        let mut canonical = info.clone();
+        canonical.number = field_number;
+        inner.field_properties.insert(name.to_string(), canonical);
+        Ok(field_number)
+    }
+
+    /// Returns the number assigned to `name`, if the field is known.
+    pub fn field_number(&self, name: &str) -> Option<i32> {
+        self.lock()
+            .field_properties
+            .get(name)
+            .map(FieldInfo::get_field_number)
+    }
+
+    /// Returns `true` if `name` is already registered.
+    pub fn contains(&self, name: &str) -> bool {
+        self.lock().field_properties.contains_key(name)
+    }
+
+    /// Returns the number of registered field names.
+    pub fn len(&self) -> usize {
+        self.lock().field_properties.len()
+    }
+
+    /// Returns `true` if no field has been registered yet.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Forgets every registered field.
+    ///
+    /// Equivalent to `FieldNumbers.clear()`; used when an `IndexWriter` rolls
+    /// back or deletes all documents.
+    pub fn clear(&self) {
+        let mut inner = self.lock();
+        inner.number_to_name.clear();
+        inner.field_properties.clear();
+        inner.lowest_unassigned_field_number = -1;
+    }
+
+    fn lock(&self) -> MutexGuard<'_, FieldNumbersInner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn verify_soft_deletes_field_name(&self, name: &str, is_soft_deletes: bool) -> Result<()> {
+        match (&self.soft_deletes_field_name, is_soft_deletes) {
+            (None, true) => Err(LuceneError::IllegalArgument(format!(
+                "this index has [{name}] as soft-deletes already but soft-deletes field is not configured in IWC"
+            ))),
+            (Some(configured), true) if configured != name => {
+                Err(LuceneError::IllegalArgument(format!(
+                    "cannot configure [{configured}] as soft-deletes; this index uses [{name}] as soft-deletes already"
+                )))
+            }
+            (Some(configured), false) if configured == name => {
+                Err(LuceneError::IllegalArgument(format!(
+                    "cannot configure [{configured}] as soft-deletes; this index uses [{name}] as non-soft-deletes already"
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn verify_parent_field_name(&self, name: &str, is_parent: bool) -> Result<()> {
+        match (&self.parent_field_name, is_parent) {
+            (None, true) => Err(LuceneError::IllegalArgument(format!(
+                "can't add field [{name}] as parent document field; this IndexWriter has no parent document field configured"
+            ))),
+            (Some(configured), true) if configured != name => {
+                Err(LuceneError::IllegalArgument(format!(
+                    "can't add field [{name}] as parent document field; this IndexWriter is configured with [{configured}] as parent document field"
+                )))
+            }
+            (Some(configured), false) if configured == name => {
+                Err(LuceneError::IllegalArgument(format!(
+                    "can't add [{name}] as non parent document field; this IndexWriter is configured with [{configured}] as parent document field"
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Accumulates the [`FieldInfo`]s of one segment while it is being indexed.
+///
+/// Equivalent to `org.apache.lucene.index.FieldInfos.Builder`.
+///
+/// One builder belongs to exactly one `DocumentsWriterPerThread` and is never
+/// shared between threads, so it needs no interior locking; the shared
+/// [`FieldNumbers`] it delegates to provides the cross-thread synchronisation.
+#[derive(Debug)]
+pub struct FieldInfosBuilder {
+    by_name: HashMap<String, FieldInfo>,
+    global_field_numbers: Arc<FieldNumbers>,
+    finished: bool,
+}
+
+impl FieldInfosBuilder {
+    /// Creates a builder backed by the writer-wide field-number registry.
+    pub fn new(global_field_numbers: Arc<FieldNumbers>) -> Self {
+        Self {
+            by_name: HashMap::new(),
+            global_field_numbers,
+            finished: false,
+        }
+    }
+
+    /// Returns the soft-deletes field name configured for this index.
+    pub fn soft_deletes_field_name(&self) -> Option<&str> {
+        self.global_field_numbers.soft_deletes_field_name()
+    }
+
+    /// Returns the parent field name configured for this index.
+    pub fn parent_field_name(&self) -> Option<&str> {
+        self.global_field_numbers.parent_field_name()
+    }
+
+    /// Returns the shared field-number registry.
+    pub fn global_field_numbers(&self) -> &Arc<FieldNumbers> {
+        &self.global_field_numbers
+    }
+
+    /// Adds `info` to this segment, merging it with the entry already present
+    /// for that field name.
+    ///
+    /// Equivalent to `FieldInfos.Builder.add(FieldInfo)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if the schema conflicts with a
+    /// previous definition of the same field, and
+    /// [`LuceneError::IllegalState`] if the builder has already been finished.
+    pub fn add(&mut self, info: &FieldInfo) -> Result<&FieldInfo> {
+        self.add_with_doc_values_gen(info, -1)
+    }
+
+    /// Same as [`add`](Self::add) but forces the doc-values generation of a
+    /// newly created entry.
+    ///
+    /// Equivalent to the package-private `FieldInfos.Builder.add(FieldInfo, long)`.
+    ///
+    /// # Errors
+    ///
+    /// See [`add`](Self::add).
+    pub fn add_with_doc_values_gen(&mut self, info: &FieldInfo, dv_gen: i64) -> Result<&FieldInfo> {
+        let name = info.get_name().to_string();
+        if self.by_name.contains_key(&name) {
+            // Verify first, then merge attributes/payloads into the existing entry.
+            {
+                let current = &self.by_name[&name];
+                current.verify_same_schema(info)?;
+            }
+            let attributes = info.attributes();
+            let has_payloads = info.has_payloads();
+            let current = self
+                .by_name
+                .get_mut(&name)
+                .expect("INVARIANT: presence checked above");
+            for (key, value) in attributes {
+                current.put_attribute(key, value);
+            }
+            if has_payloads {
+                current.set_store_payloads();
+            }
+            return Ok(current);
+        }
+
+        if self.finished {
+            return Err(LuceneError::IllegalState(
+                "FieldInfos.Builder was already finished; cannot add new fields".to_string(),
+            ));
+        }
+
+        let field_number = self.global_field_numbers.add_or_get(info)?;
+        let new_info = FieldInfo::new_full(
+            name.clone(),
+            field_number,
+            info.has_term_vectors(),
+            info.omits_norms(),
+            info.has_payloads(),
+            info.get_index_options(),
+            info.get_doc_values_type(),
+            info.doc_values_skip_index_type(),
+            dv_gen,
+            info.attributes(),
+            info.get_point_dimension_count(),
+            info.get_point_index_dimension_count(),
+            info.get_point_num_bytes(),
+            info.get_vector_dimension(),
+            info.get_vector_encoding(),
+            info.get_vector_similarity_function(),
+            info.is_soft_deletes_field(),
+            info.is_parent_field(),
+        )?;
+        Ok(self.by_name.entry(name).or_insert(new_info))
+    }
+
+    /// Returns the field info recorded for `name` in this segment.
+    pub fn field_info(&self, name: &str) -> Option<&FieldInfo> {
+        self.by_name.get(name)
+    }
+
+    /// Returns a mutable view of the field info recorded for `name`.
+    pub fn field_info_mut(&mut self, name: &str) -> Option<&mut FieldInfo> {
+        self.by_name.get_mut(name)
+    }
+
+    /// Returns the number of fields seen so far.
+    pub fn len(&self) -> usize {
+        self.by_name.len()
+    }
+
+    /// Returns `true` if no field has been added yet.
+    pub fn is_empty(&self) -> bool {
+        self.by_name.is_empty()
+    }
+
+    /// Seals the builder and materialises the segment's [`FieldInfos`].
+    ///
+    /// Equivalent to `FieldInfos.Builder.finish()`. Field infos are emitted in
+    /// ascending field-number order, which is the order Lucene writes them in.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the validation errors of [`FieldInfos::new`].
+    pub fn finish(&mut self) -> Result<FieldInfos> {
+        self.finished = true;
+        let mut infos: Vec<FieldInfo> = self.by_name.values().cloned().collect();
+        infos.sort_by_key(FieldInfo::get_field_number);
+        FieldInfos::new(infos)
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
 
@@ -1773,5 +2144,186 @@ mod tests {
             read.field_info("title").unwrap().get_attribute("fmt"),
             Some("MockPostings".to_string())
         );
+    }
+
+    // -- FieldNumbers / FieldInfos.Builder ---------------------------------
+
+    fn indexed_field(name: &str) -> FieldInfo {
+        FieldInfo::new_full(
+            name,
+            -1,
+            false,
+            false,
+            false,
+            IndexOptions::DOCS,
+            DocValuesType::NONE,
+            DocValuesSkipIndexType::NONE,
+            -1,
+            HashMap::new(),
+            0,
+            0,
+            0,
+            0,
+            VectorEncoding::FLOAT32,
+            VectorSimilarityFunction::EUCLIDEAN,
+            false,
+            false,
+        )
+        .expect("valid field info")
+    }
+
+    #[test]
+    fn field_numbers_assign_dense_numbers_and_are_stable_per_name() {
+        let numbers = FieldNumbers::new(None, None).unwrap();
+        assert!(numbers.is_empty());
+        assert_eq!(numbers.add_or_get(&indexed_field("a")).unwrap(), 0);
+        assert_eq!(numbers.add_or_get(&indexed_field("b")).unwrap(), 1);
+        assert_eq!(
+            numbers.add_or_get(&indexed_field("a")).unwrap(),
+            0,
+            "a field name always keeps its first number"
+        );
+        assert_eq!(numbers.len(), 2);
+        assert_eq!(numbers.field_number("b"), Some(1));
+        assert!(numbers.contains("a"));
+
+        numbers.clear();
+        assert!(numbers.is_empty());
+        assert_eq!(numbers.add_or_get(&indexed_field("z")).unwrap(), 0);
+    }
+
+    #[test]
+    fn field_numbers_honour_a_preferred_free_number() {
+        let numbers = FieldNumbers::new(None, None).unwrap();
+        let mut preferred = indexed_field("a");
+        preferred.number = 7;
+        assert_eq!(numbers.add_or_get(&preferred).unwrap(), 7);
+        // 7 is taken, so the next field falls back to the lowest free number.
+        assert_eq!(numbers.add_or_get(&indexed_field("b")).unwrap(), 0);
+    }
+
+    #[test]
+    fn field_numbers_reject_conflicting_schemas() {
+        let numbers = FieldNumbers::new(None, None).unwrap();
+        numbers.add_or_get(&indexed_field("a")).unwrap();
+
+        let mut conflicting = indexed_field("a");
+        conflicting.index_options = IndexOptions::DOCS_AND_FREQS;
+        let error = numbers.add_or_get(&conflicting).unwrap_err();
+        assert!(matches!(error, LuceneError::IllegalArgument(_)));
+        assert!(numbers.verify_field_info(&conflicting).is_err());
+        assert!(numbers.verify_field_info(&indexed_field("a")).is_ok());
+    }
+
+    #[test]
+    fn field_numbers_enforce_the_soft_deletes_and_parent_field_names() {
+        assert!(
+            FieldNumbers::new(Some("x".to_string()), Some("x".to_string())).is_err(),
+            "the parent field and the soft-deletes field must differ"
+        );
+
+        let numbers = FieldNumbers::new(Some("soft".to_string()), None).unwrap();
+        assert_eq!(numbers.soft_deletes_field_name(), Some("soft"));
+        // A non-soft-deletes field may not use the configured name.
+        assert!(numbers.add_or_get(&indexed_field("soft")).is_err());
+
+        let plain = FieldNumbers::new(None, None).unwrap();
+        let mut soft = indexed_field("soft");
+        soft.soft_deletes_field = true;
+        assert!(
+            plain.add_or_get(&soft).is_err(),
+            "a soft-deletes field needs the writer to be configured for it"
+        );
+    }
+
+    #[test]
+    fn field_infos_builder_shares_field_numbers_across_segments() {
+        let numbers = Arc::new(FieldNumbers::new(None, None).unwrap());
+        let mut first = FieldInfosBuilder::new(Arc::clone(&numbers));
+        first.add(&indexed_field("title")).unwrap();
+        first.add(&indexed_field("body")).unwrap();
+
+        // A second segment that sees the fields in the opposite order must
+        // still number them identically, otherwise the segments cannot merge.
+        let mut second = FieldInfosBuilder::new(Arc::clone(&numbers));
+        second.add(&indexed_field("body")).unwrap();
+        second.add(&indexed_field("title")).unwrap();
+
+        let first = first.finish().unwrap();
+        let second = second.finish().unwrap();
+        for name in ["title", "body"] {
+            assert_eq!(
+                first.field_info(name).unwrap().get_field_number(),
+                second.field_info(name).unwrap().get_field_number(),
+                "field {name} must keep the same number in every segment"
+            );
+        }
+        assert_eq!(first.size(), 2);
+    }
+
+    #[test]
+    fn field_infos_builder_merges_attributes_and_payloads_into_the_existing_entry() {
+        let numbers = Arc::new(FieldNumbers::new(None, None).unwrap());
+        let mut builder = FieldInfosBuilder::new(Arc::clone(&numbers));
+        let mut base = indexed_field("title");
+        base.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
+        builder.add(&base).unwrap();
+
+        let mut again = base.clone();
+        again.put_attribute("fmt", "MockPostings");
+        again.set_store_payloads();
+        builder.add(&again).unwrap();
+
+        let info = builder.field_info("title").unwrap();
+        assert_eq!(info.get_attribute("fmt"), Some("MockPostings".to_string()));
+        assert!(info.has_payloads());
+        assert_eq!(builder.len(), 1);
+        assert!(!builder.is_empty());
+    }
+
+    #[test]
+    fn field_infos_builder_refuses_new_fields_after_finish() {
+        let numbers = Arc::new(FieldNumbers::new(None, None).unwrap());
+        let mut builder = FieldInfosBuilder::new(numbers);
+        builder.add(&indexed_field("a")).unwrap();
+        builder.finish().unwrap();
+        // Re-adding a known field is still fine; a new one is not.
+        assert!(builder.add(&indexed_field("a")).is_ok());
+        let error = builder.add(&indexed_field("b")).unwrap_err();
+        assert!(matches!(error, LuceneError::IllegalState(_)));
+    }
+
+    #[test]
+    fn field_numbers_are_thread_safe() {
+        use std::thread;
+
+        let numbers = Arc::new(FieldNumbers::new(None, None).unwrap());
+        let names: Vec<String> = (0..64).map(|i| format!("f{i}")).collect();
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let numbers = Arc::clone(&numbers);
+            let names = names.clone();
+            handles.push(thread::spawn(move || {
+                names
+                    .iter()
+                    .map(|name| numbers.add_or_get(&indexed_field(name)).unwrap())
+                    .collect::<Vec<i32>>()
+            }));
+        }
+        let results: Vec<Vec<i32>> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        for result in &results[1..] {
+            assert_eq!(
+                result, &results[0],
+                "every thread must observe the same field numbering"
+            );
+        }
+        let mut unique = results[0].clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "field numbers must be unique");
+        assert_eq!(numbers.len(), names.len());
     }
 }

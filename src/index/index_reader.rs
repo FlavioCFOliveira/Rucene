@@ -27,7 +27,7 @@ use crate::index::TermVectors;
 ///
 /// Equivalent to `org.apache.lucene.index.IndexReader.CacheKey`. Identity
 /// (`==`) is the only meaningful comparison.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct CacheKey;
 
 /// Listener invoked when a resource guarded by a [`CacheKey`] is closed.

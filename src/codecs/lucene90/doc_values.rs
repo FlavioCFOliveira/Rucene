@@ -171,7 +171,7 @@ impl DocValuesFormat for Lucene90DocValuesFormat {
     fn fields_producer<'a>(
         &self,
         state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn DocValuesProducer + 'a>> {
+    ) -> Result<Box<dyn DocValuesProducer>> {
         Ok(Box::new(Lucene90DocValuesProducer::new(state)?))
     }
 }

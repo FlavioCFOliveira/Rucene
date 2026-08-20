@@ -144,7 +144,7 @@ pub trait DocValuesFormat: Send + Sync + fmt::Debug {
     fn fields_producer<'a>(
         &self,
         state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn DocValuesProducer + 'a>>;
+    ) -> Result<Box<dyn DocValuesProducer>>;
 }
 
 // -----------------------------------------------------------------------------
@@ -322,7 +322,7 @@ impl DocValuesFormat for EmptyDocValuesFormat {
     fn fields_producer<'a>(
         &self,
         _state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn DocValuesProducer + 'a>> {
+    ) -> Result<Box<dyn DocValuesProducer>> {
         Ok(Box::new(EmptyDocValuesProducer))
     }
 }

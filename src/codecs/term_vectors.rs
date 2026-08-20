@@ -60,6 +60,11 @@ pub trait TermVectorsReader: Send + Sync + fmt::Debug {
     fn prefetch(&self, _doc_id: i32) -> Result<()> {
         Ok(())
     }
+
+    /// Closes this reader, releasing all resources.
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Codec API for writing term vectors.

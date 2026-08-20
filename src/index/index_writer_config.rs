@@ -23,6 +23,7 @@ use crate::analysis::{Analyzer, StandardAnalyzer};
 use crate::codecs::{default_codec, Codec};
 use crate::error::{LuceneError, Result};
 use crate::index::directory_reader::IndexWriter as IndexWriterTrait;
+use crate::index::documents_writer::{FlushByRamOrCountsPolicy, FlushPolicy};
 use crate::index::leaf_reader::LeafReader;
 use crate::index::IndexCommit;
 use crate::search::Sort;
@@ -50,12 +51,6 @@ pub trait MergeScheduler: Send + Sync + Debug {}
 /// Only the minimal trait bounds needed by `IndexWriterConfig` are enforced;
 /// commit-lifecycle logic will be added in a later task.
 pub trait IndexDeletionPolicy: Send + Sync + Debug {}
-
-/// Placeholder for `org.apache.lucene.index.FlushPolicy`.
-///
-/// Only the minimal trait bounds needed by `IndexWriterConfig` are enforced;
-/// flush-trigger logic will be added in a later task.
-pub trait FlushPolicy: Send + Sync + Debug {}
 
 /// Placeholder for `org.apache.lucene.search.similarities.Similarity`.
 ///
@@ -103,14 +98,6 @@ impl MergeScheduler for ConcurrentMergeScheduler {}
 pub struct TieredMergePolicy;
 
 impl MergePolicy for TieredMergePolicy {}
-
-/// Default flush policy.
-///
-/// Equivalent to `org.apache.lucene.index.FlushByRamOrCountsPolicy`.
-#[derive(Debug)]
-pub struct FlushByRamOrCountsPolicy;
-
-impl FlushPolicy for FlushByRamOrCountsPolicy {}
 
 /// Default similarity used when no other implementation is supplied.
 ///
@@ -275,7 +262,7 @@ impl LiveIndexWriterConfig {
             info_stream: Arc::new(crate::util::NoOutputInfoStream),
             merge_policy: Arc::new(TieredMergePolicy),
             reader_pooling: Self::DEFAULT_READER_POOLING,
-            flush_policy: Arc::new(FlushByRamOrCountsPolicy),
+            flush_policy: Arc::new(FlushByRamOrCountsPolicy::new()),
             per_thread_hard_limit_mb: Self::DEFAULT_RAM_PER_THREAD_HARD_LIMIT_MB,
             use_compound_file: Self::DEFAULT_USE_COMPOUND_FILE_SYSTEM,
             commit_on_close: Self::DEFAULT_COMMIT_ON_CLOSE,

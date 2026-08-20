@@ -304,10 +304,7 @@ pub trait PostingsFormat: Send + Sync + fmt::Debug {
     ) -> Result<Box<dyn FieldsConsumer + 'a>>;
 
     /// Creates a reader for an existing segment.
-    fn fields_producer<'a>(
-        &self,
-        state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn FieldsProducer + 'a>>;
+    fn fields_producer<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn FieldsProducer>>;
 }
 
 /// A registry mapping postings-format short names to [`PostingsFormat`]
@@ -1029,7 +1026,7 @@ mod tests {
         fn fields_producer<'a>(
             &self,
             _state: &SegmentReadState<'a>,
-        ) -> Result<Box<dyn FieldsProducer + 'a>> {
+        ) -> Result<Box<dyn FieldsProducer>> {
             Ok(Box::new(StubFieldsProducer))
         }
     }

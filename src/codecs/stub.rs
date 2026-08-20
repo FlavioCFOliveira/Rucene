@@ -22,7 +22,7 @@ pub use crate::index::SegmentInfo;
 pub struct BufferedUpdates;
 
 /// Placeholder for `org.apache.lucene.index.StoredFieldVisitor`.
-pub trait StoredFieldVisitor: Send + Sync {
+pub trait StoredFieldVisitor {
     /// Called for a stored binary field.
     fn binary_field(&mut self, _info: &FieldInfo, _value: &[u8]) -> Result<()> {
         Ok(())

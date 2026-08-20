@@ -1117,7 +1117,7 @@ pub fn set_default_info_stream(stream: Box<dyn InfoStream>) {
 // ---------------------------------------------------------------------------
 
 /// Bitset-like interface.
-pub trait Bits {
+pub trait Bits: Send + Sync + Debug {
     /// Returns the value of the bit at `index`.
     fn get(&self, index: usize) -> bool;
 

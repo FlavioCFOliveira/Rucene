@@ -179,10 +179,7 @@ impl KnnVectorsFormat for Lucene99HnswVectorsFormat {
         )?))
     }
 
-    fn fields_reader<'a>(
-        &self,
-        state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn KnnVectorsReader + 'a>> {
+    fn fields_reader<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn KnnVectorsReader>> {
         ensure_registered();
         let flat_reader = self.flat_format().fields_reader_flat(state)?;
         Ok(Box::new(Lucene99HnswVectorsReader::new(

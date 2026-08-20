@@ -29,7 +29,7 @@ use crate::index::reader_context::IndexReaderContext;
 use crate::index::segment_infos::{SegmentInfos, OLD_SEGMENTS_GEN};
 use crate::index::segment_reader::SegmentReader;
 use crate::index::Term;
-use crate::store::Directory;
+use crate::store::{Directory, DEFAULT_IO_CONTEXT};
 
 // -----------------------------------------------------------------------------
 // IndexCommit
@@ -218,7 +218,11 @@ impl StandardDirectoryReader {
         let mut segment_readers = Vec::with_capacity(infos.size());
         for i in 0..infos.size() {
             let sci = infos.info(i);
-            let reader = Arc::new(SegmentReader::new(sci.clone(), index_created_version)?);
+            let reader = Arc::new(SegmentReader::new(
+                sci.clone(),
+                index_created_version,
+                &*DEFAULT_IO_CONTEXT,
+            )?);
             segment_readers.push(reader);
         }
 

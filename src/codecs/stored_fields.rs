@@ -38,7 +38,7 @@ pub trait StoredFieldsFormat: Send + Sync + fmt::Debug {
 /// Codec API for reading stored fields.
 ///
 /// Lucene Core equivalent: `org.apache.lucene.codecs.StoredFieldsReader`.
-pub trait StoredFieldsReader: fmt::Debug {
+pub trait StoredFieldsReader: Send + Sync + fmt::Debug {
     /// Visits the stored fields of the given document.
     fn document(&self, doc_id: i32, visitor: &mut dyn StoredFieldVisitor) -> Result<()>;
 
@@ -57,6 +57,11 @@ pub trait StoredFieldsReader: fmt::Debug {
 
     /// Optional hint that the given document will be read in the near future.
     fn prefetch(&self, _doc_id: i32) -> Result<()> {
+        Ok(())
+    }
+
+    /// Closes this reader, releasing all resources.
+    fn close(&mut self) -> Result<()> {
         Ok(())
     }
 }

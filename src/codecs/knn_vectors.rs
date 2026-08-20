@@ -207,10 +207,7 @@ pub trait KnnVectorsFormat: Send + Sync + fmt::Debug {
     ) -> Result<Box<dyn KnnVectorsWriter + 'a>>;
 
     /// Returns a reader to read vectors from the index.
-    fn fields_reader<'a>(
-        &self,
-        state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn KnnVectorsReader + 'a>>;
+    fn fields_reader<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn KnnVectorsReader>>;
 
     /// Returns the maximum number of vector dimensions supported for the given
     /// field name.
@@ -548,7 +545,7 @@ impl KnnVectorsFormat for EmptyKnnVectorsFormat {
     fn fields_reader<'a>(
         &self,
         _state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn KnnVectorsReader + 'a>> {
+    ) -> Result<Box<dyn KnnVectorsReader>> {
         Ok(Box::new(EmptyKnnVectorsReader))
     }
 
