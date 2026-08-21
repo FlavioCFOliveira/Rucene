@@ -1727,10 +1727,12 @@ impl LeafReader for SegmentReader {
     }
 
     fn get_point_values(&self, _field: &str) -> Result<Option<Box<dyn IndexPointValues>>> {
-        // TODO(task/segment-reader-points-bridge): bridge `PointsReader` to the
-        // index-layer `PointValues` trait. The codec-level point values live in
-        // `core_readers.points_reader`; an adapter is needed to expose them as
-        // `index::PointValues`.
+        // TODO(rmp #119): bridge `PointsReader` to the index-layer
+        // `PointValues` trait. The codec-level point values live in
+        // `core_readers.points_reader`; exposing them as `index::PointValues`
+        // needs the BKD-backed `PointTree` implementation, which task #119
+        // ports. Until then this leaf reports no point values, which the
+        // `PointValues` contract treats as "this field has no points".
         Ok(None)
     }
 

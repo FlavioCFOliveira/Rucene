@@ -66,9 +66,15 @@ pub use leaf_reader::{EmptyTermVectors, LeafMetaData, LeafReader, TermVectors};
 pub use merge::{
     deletion_doc_map, identity_doc_map, DocIDMerger, DocIDMergerSub, DocMap, MergeState,
 };
+// The per-reader aggregation helpers (`size`, `doc_count`, `min_packed_value`,
+// `max_packed_value`) and the traversal free functions (`intersect`,
+// `estimate_point_count`, ...) are deliberately not re-exported here: their
+// names are far too generic at the `index` root. They are reached through
+// `crate::index::point_values::`, which is the exact analogue of Java's
+// `PointValues.size(reader, field)` static call.
 pub use point_values::{
-    EmptyPointValues, IntersectVisitor, PointValues, Relation, MAX_DIMENSIONS,
-    MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
+    EmptyPointValues, InMemoryPointTree, InMemoryPointValues, IntersectVisitor, PointTree,
+    PointValues, Relation, MAX_DIMENSIONS, MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
 };
 pub use postings_enum::{
     feature_requested, DocAndFloatFeatureBuffer, EmptyPostingsEnum, FreqAndNormBuffer, Impacts,
@@ -124,9 +130,10 @@ pub use terms::{
     PrefixCodedTermsIterator, SeekStatus, SingleTermsEnum, Term, TermState, Terms, TermsEnum,
 };
 pub use vector_values::{
+    accept_ords, check_byte_field, check_float_field, from_bytes, from_floats, AcceptOrds,
     ByteVectorValues, DenseDocIndexIterator, DocIndexIterator, EmptyByteVectorValues,
     EmptyFloatVectorValues, EmptyKnnVectorValues, FloatVectorValues, FromDisiDocIndexIterator,
-    KnnVectorValues,
+    KnnVectorValues, ListByteVectorValues, ListFloatVectorValues, SparseDocIndexIterator,
 };
 
 use std::collections::HashMap;
@@ -134,8 +141,9 @@ use std::collections::HashMap;
 use crate::{
     analysis::{Analyzer, TokenStream},
     document::{InvertableType, NumericValue, StoredValue},
+    error::Result,
     store::{ByteArrayDataInput, DataInput},
-    util::BytesRef,
+    util::{vector_util, BytesRef},
 };
 
 /// Controls how much information is stored in the postings lists.
@@ -269,120 +277,65 @@ pub enum VectorSimilarityFunction {
 impl VectorSimilarityFunction {
     /// Returns the similarity score between two float vectors.
     ///
-    /// Higher scores correspond to closer vectors. Equivalent to the Java
-    /// `VectorSimilarityFunction.compare(float[], float[])`.
-    pub fn compare_f32(&self, a: &[f32], b: &[f32]) -> f32 {
-        debug_assert_eq!(a.len(), b.len());
+    /// Higher scores correspond to closer vectors. Equivalent to
+    /// `VectorSimilarityFunction.compare(float[], float[])`, which delegates
+    /// every arithmetic step to `VectorUtil`; this port does the same through
+    /// [`crate::util::vector_util`], so the scores are bit-identical to
+    /// Lucene's scalar, non-FMA path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::LuceneError::IllegalArgument`] when the two
+    /// vectors have different dimensions, matching the
+    /// `IllegalArgumentException` that `VectorUtil` throws.
+    pub fn compare_f32(&self, a: &[f32], b: &[f32]) -> Result<f32> {
         match self {
-            Self::EUCLIDEAN => {
-                let dist = square_distance_f32(a, b);
-                1.0 / (1.0 + dist)
-            }
-            Self::DOT_PRODUCT => {
-                let dot = dot_product_f32(a, b);
-                ((1.0 + dot) / 2.0).max(0.0)
-            }
-            Self::COSINE => {
-                let score = cosine_f32(a, b);
-                ((1.0 + score) / 2.0).max(0.0)
-            }
-            Self::MAXIMUM_INNER_PRODUCT => {
-                let dot = dot_product_f32(a, b);
-                if dot < 0.0 {
-                    1.0 / (1.0 - dot)
-                } else {
-                    dot + 1.0
-                }
-            }
+            Self::EUCLIDEAN => Ok(vector_util::normalize_distance_to_unit_interval(
+                vector_util::square_distance_f32(a, b)?,
+            )),
+            Self::DOT_PRODUCT => Ok(vector_util::normalize_to_unit_interval(
+                vector_util::dot_product_f32(a, b)?,
+            )),
+            Self::COSINE => Ok(vector_util::normalize_to_unit_interval(
+                vector_util::cosine_f32(a, b)?,
+            )),
+            Self::MAXIMUM_INNER_PRODUCT => Ok(vector_util::scale_max_inner_product_score(
+                vector_util::dot_product_f32(a, b)?,
+            )),
         }
     }
 
     /// Returns the similarity score between two byte vectors.
     ///
-    /// Higher scores correspond to closer vectors. Equivalent to the Java
+    /// The bytes are interpreted as **signed** values in `[-128, 127]`, as
+    /// Lucene does. Equivalent to
     /// `VectorSimilarityFunction.compare(byte[], byte[])`.
-    pub fn compare_u8(&self, a: &[u8], b: &[u8]) -> f32 {
-        debug_assert_eq!(a.len(), b.len());
+    ///
+    /// Note the deliberate asymmetry with [`compare_f32`](Self::compare_f32):
+    /// the float `DOT_PRODUCT` and `COSINE` paths clamp negative scores to
+    /// zero, the byte paths do not. That is Lucene's behaviour, not an
+    /// oversight.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::LuceneError::IllegalArgument`] when the two
+    /// vectors have different dimensions.
+    pub fn compare_bytes(&self, a: &[u8], b: &[u8]) -> Result<f32> {
         match self {
             Self::EUCLIDEAN => {
-                let dist = square_distance_i8(a, b);
-                1.0 / (1.0 + dist)
+                let dist = vector_util::square_distance_bytes(a, b)?;
+                Ok(1.0 / (1.0 + dist as f32))
             }
-            Self::DOT_PRODUCT => {
-                let dot = dot_product_i8(a, b);
-                // divide by 2 * 2^14 (maximum absolute value of product of 2 signed bytes) * len
-                let denom = (a.len() * (1 << 15)) as f32;
-                0.5 + dot / denom
-            }
+            Self::DOT_PRODUCT => vector_util::dot_product_score(a, b),
             Self::COSINE => {
-                let score = cosine_i8(a, b);
-                (1.0 + score) / 2.0
+                let score = vector_util::cosine_bytes(a, b)?;
+                Ok((1.0 + score) / 2.0)
             }
-            Self::MAXIMUM_INNER_PRODUCT => {
-                let dot = dot_product_i8(a, b);
-                if dot < 0.0 {
-                    1.0 / (1.0 - dot)
-                } else {
-                    dot + 1.0
-                }
-            }
+            Self::MAXIMUM_INNER_PRODUCT => Ok(vector_util::scale_max_inner_product_score(
+                vector_util::dot_product_bytes(a, b)? as f32,
+            )),
         }
     }
-}
-
-fn dot_product_f32(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum()
-}
-
-fn square_distance_f32(a: &[f32], b: &[f32]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| {
-            let d = x - y;
-            d * d
-        })
-        .sum()
-}
-
-fn cosine_f32(a: &[f32], b: &[f32]) -> f32 {
-    let dot = dot_product_f32(a, b);
-    let norm_a = dot_product_f32(a, a).sqrt();
-    let norm_b = dot_product_f32(b, b).sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-    dot / (norm_a * norm_b)
-}
-
-/// Dot product computed over signed bytes, as used by Lucene's
-/// `VectorUtil.dotProduct(byte[], byte[])`.
-fn dot_product_i8(a: &[u8], b: &[u8]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| (x as i8 as i32 * y as i8 as i32) as f32)
-        .sum()
-}
-
-/// Squared Euclidean distance computed over signed bytes, as used by Lucene's
-/// `VectorUtil.squareDistance(byte[], byte[])`.
-fn square_distance_i8(a: &[u8], b: &[u8]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| {
-            let d = x as i8 as i32 - y as i8 as i32;
-            (d * d) as f32
-        })
-        .sum()
-}
-
-fn cosine_i8(a: &[u8], b: &[u8]) -> f32 {
-    let dot = dot_product_i8(a, b);
-    let norm_a = dot_product_i8(a, a).sqrt();
-    let norm_b = dot_product_i8(b, b).sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-    dot / (norm_a * norm_b)
 }
 
 /// Describes the properties of a field.
@@ -569,6 +522,12 @@ mod tests {
     }
 
     #[test]
+    fn vector_encoding_ordinals_match_java() {
+        assert_eq!(VectorEncoding::BYTE as usize, 0);
+        assert_eq!(VectorEncoding::FLOAT32 as usize, 1);
+    }
+
+    #[test]
     fn vector_similarity_function_ordinals_match_java() {
         assert_eq!(VectorSimilarityFunction::EUCLIDEAN as usize, 0);
         assert_eq!(VectorSimilarityFunction::DOT_PRODUCT as usize, 1);
@@ -583,7 +542,9 @@ mod tests {
         let b = [0x01u8, 0x00]; //  1, 0 as signed bytes
 
         // Dot product of [-1, 0] and [1, 0] is -1, scaled by 2^15 * 2.
-        let dot = VectorSimilarityFunction::DOT_PRODUCT.compare_u8(&a, &b);
+        let dot = VectorSimilarityFunction::DOT_PRODUCT
+            .compare_bytes(&a, &b)
+            .unwrap();
         let expected_dot = 0.5f32 - 1.0 / ((a.len() * (1 << 15)) as f32);
         assert!(
             (dot - expected_dot).abs() < 1e-6,
@@ -591,14 +552,18 @@ mod tests {
         );
 
         // Maximum inner product of [-1, 0] and [1, 0] is -1 -> scaled to 1/2.
-        let mip = VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT.compare_u8(&a, &b);
+        let mip = VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT
+            .compare_bytes(&a, &b)
+            .unwrap();
         assert!(
             (mip - 0.5f32).abs() < f32::EPSILON,
             "MIP score should be 0.5"
         );
 
         // Euclidean distance squared of [-1, 0] and [1, 0] is 4.
-        let euclid = VectorSimilarityFunction::EUCLIDEAN.compare_u8(&a, &b);
+        let euclid = VectorSimilarityFunction::EUCLIDEAN
+            .compare_bytes(&a, &b)
+            .unwrap();
         assert!(
             (euclid - 1.0 / 5.0).abs() < 1e-6,
             "euclidean score should be 1/5"

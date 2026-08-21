@@ -400,9 +400,11 @@ impl<T: LeafReader> IndexReader for T {
         leaf_ord: i32,
         leaf_doc_base: i32,
     ) -> Arc<dyn IndexReaderContext> {
+        let leaf_reader: Arc<dyn LeafReader> = Arc::clone(&self) as Arc<dyn LeafReader>;
         let reader: Arc<dyn IndexReader> = self;
         Arc::new(LeafReaderContext::new(
             reader,
+            leaf_reader,
             parent,
             ord_in_parent,
             doc_base_in_parent,

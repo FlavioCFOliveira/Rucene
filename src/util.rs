@@ -29,6 +29,9 @@ pub mod bit_sets;
 /// HNSW graph utilities for vector search.
 pub mod hnsw;
 
+/// Vector arithmetic primitives ported from `org.apache.lucene.util.VectorUtil`.
+pub mod vector_util;
+
 pub use attribute::{
     unwrap_all, AsUnwrappable, Attribute, AttributeFactory, AttributeImpl, AttributeReflector,
     AttributeSource, CapturedState, CloseableThreadLocal, DefaultAttributeFactory, Unwrappable,
@@ -49,6 +52,12 @@ pub use extra::{
 };
 pub use small_float::SmallFloat;
 pub use string_helper::{read_string, write_string, IntsRef, StringHelper, ID_LENGTH};
+pub use vector_util::{
+    add, check_finite, cosine_bytes, cosine_f32, dot_product_bytes, dot_product_f32,
+    dot_product_score, is_unit_vector, is_zero_vector_bytes, is_zero_vector_f32, l2normalize,
+    normalize_distance_to_unit_interval, normalize_to_unit_interval, scale_max_inner_product_score,
+    square_distance_bytes, square_distance_f32, USE_FMA,
+};
 
 use std::{
     cmp::Ordering,

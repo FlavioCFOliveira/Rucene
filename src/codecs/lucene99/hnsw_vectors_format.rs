@@ -827,6 +827,10 @@ impl KnnVectorValues for BufferedFloatVectorValues {
 }
 
 impl FloatVectorValues for BufferedFloatVectorValues {
+    fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
+        Ok(Box::new(self.clone()))
+    }
+
     fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
         self.vectors
             .get(ord as usize)
@@ -887,6 +891,10 @@ impl KnnVectorValues for BufferedByteVectorValues {
 }
 
 impl ByteVectorValues for BufferedByteVectorValues {
+    fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
+        Ok(Box::new(self.clone()))
+    }
+
     fn vector_value(&self, ord: i32) -> Result<Vec<u8>> {
         self.vectors
             .get(ord as usize)
@@ -1540,6 +1548,33 @@ fn read_int_in_group(input: &mut dyn DataInput, num_bytes_minus_1: usize) -> Res
 
 #[cfg(test)]
 mod tests {
+    /// The four serialization sites for `VectorEncoding` and
+    /// `VectorSimilarityFunction` each carry their own ordinal table. Java has
+    /// one, `Enum.ordinal()`, so the tables must agree with the declaration
+    /// order of the Rust enums and therefore with each other; a divergence here
+    /// silently writes an unreadable index.
+    #[test]
+    fn vector_ordinals_match_the_enum_declaration_order() {
+        use crate::index::{VectorEncoding, VectorSimilarityFunction};
+
+        for encoding in [VectorEncoding::BYTE, VectorEncoding::FLOAT32] {
+            let ordinal = encoding as i32;
+            assert_eq!(super::vector_encoding_ordinal(encoding), ordinal);
+            assert_eq!(super::read_vector_encoding(ordinal).unwrap(), encoding);
+        }
+
+        for similarity in [
+            VectorSimilarityFunction::EUCLIDEAN,
+            VectorSimilarityFunction::DOT_PRODUCT,
+            VectorSimilarityFunction::COSINE,
+            VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
+        ] {
+            let ordinal = similarity as i32;
+            assert_eq!(super::vector_similarity_ordinal(similarity), ordinal);
+            assert_eq!(super::read_vector_similarity(ordinal).unwrap(), similarity);
+        }
+    }
+
     use super::*;
     use crate::codecs::stub::{BufferedUpdates, FieldInfos};
     use crate::codecs::KnnVectorsFormat;

@@ -244,6 +244,37 @@ fn vector_similarity_function_from_byte(b: u8) -> Result<VectorSimilarityFunctio
 
 #[cfg(test)]
 mod tests {
+    /// The four serialization sites for `VectorEncoding` and
+    /// `VectorSimilarityFunction` each carry their own ordinal table. Java has
+    /// one, `Enum.ordinal()`, so the tables must agree with the declaration
+    /// order of the Rust enums and therefore with each other; a divergence here
+    /// silently writes an unreadable index.
+    #[test]
+    fn vector_ordinals_match_the_enum_declaration_order() {
+        use crate::index::{VectorEncoding, VectorSimilarityFunction};
+
+        for encoding in [VectorEncoding::BYTE, VectorEncoding::FLOAT32] {
+            let ordinal = encoding as i32;
+            assert_eq!(
+                super::vector_encoding_from_byte(ordinal as u8).unwrap(),
+                encoding
+            );
+        }
+
+        for similarity in [
+            VectorSimilarityFunction::EUCLIDEAN,
+            VectorSimilarityFunction::DOT_PRODUCT,
+            VectorSimilarityFunction::COSINE,
+            VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
+        ] {
+            let ordinal = similarity as i32;
+            assert_eq!(
+                super::vector_similarity_function_from_byte(ordinal as u8).unwrap(),
+                similarity
+            );
+        }
+    }
+
     use super::*;
     use crate::codecs::tests::test_segment_info;
     use crate::store::RamDirectory;

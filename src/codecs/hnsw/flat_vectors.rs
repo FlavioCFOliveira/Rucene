@@ -485,7 +485,7 @@ impl FloatVectorScorer {
 impl RandomVectorScorer for FloatVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
         let v = self.values.vector_value(node)?;
-        Ok(self.similarity_function.compare_f32(&self.query, &v))
+        self.similarity_function.compare_f32(&self.query, &v)
     }
 
     fn max_ord(&self) -> i32 {
@@ -520,7 +520,7 @@ impl ByteVectorScorer {
 impl RandomVectorScorer for ByteVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
         let v = self.values.vector_value(node)?;
-        Ok(self.similarity_function.compare_u8(&self.query, &v))
+        self.similarity_function.compare_bytes(&self.query, &v)
     }
 
     fn max_ord(&self) -> i32 {
@@ -582,7 +582,7 @@ struct UpdateableFloatVectorScorer {
 impl RandomVectorScorer for UpdateableFloatVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
         let v = self.target_vectors.vector_value(node)?;
-        Ok(self.similarity_function.compare_f32(&self.query, &v))
+        self.similarity_function.compare_f32(&self.query, &v)
     }
 
     fn max_ord(&self) -> i32 {
@@ -652,7 +652,7 @@ struct UpdateableByteVectorScorer {
 impl RandomVectorScorer for UpdateableByteVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
         let v = self.target_vectors.vector_value(node)?;
-        Ok(self.similarity_function.compare_u8(&self.query, &v))
+        self.similarity_function.compare_bytes(&self.query, &v)
     }
 
     fn max_ord(&self) -> i32 {
@@ -767,58 +767,8 @@ impl FlatVectorScorerUtil {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::Result;
-    use crate::index::vector_values::{DenseDocIndexIterator, KnnVectorValues};
+    use crate::index::vector_values::from_floats;
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
-
-    /// Simple float vector values for testing.
-    struct VecFloatVectorValues {
-        vectors: Vec<Vec<f32>>,
-        dimension: i32,
-    }
-
-    impl VecFloatVectorValues {
-        fn new(vectors: Vec<Vec<f32>>, dimension: i32) -> Self {
-            Self { vectors, dimension }
-        }
-    }
-
-    impl KnnVectorValues for VecFloatVectorValues {
-        fn dimension(&self) -> i32 {
-            self.dimension
-        }
-
-        fn size(&self) -> i32 {
-            self.vectors.len() as i32
-        }
-
-        fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-            Ok(Box::new(Self {
-                vectors: self.vectors.clone(),
-                dimension: self.dimension,
-            }))
-        }
-
-        fn encoding(&self) -> crate::index::VectorEncoding {
-            crate::index::VectorEncoding::FLOAT32
-        }
-
-        fn iterator(&self) -> Result<Box<dyn crate::index::vector_values::DocIndexIterator>> {
-            Ok(Box::new(DenseDocIndexIterator::new(self.size())))
-        }
-    }
-
-    impl FloatVectorValues for VecFloatVectorValues {
-        fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
-            if ord < 0 || ord as usize >= self.vectors.len() {
-                return Err(crate::error::LuceneError::IllegalArgument(format!(
-                    "ordinal {ord} out of range [0, {})",
-                    self.vectors.len()
-                )));
-            }
-            Ok(self.vectors[ord as usize].clone())
-        }
-    }
 
     #[test]
     fn docs_with_field_set_dense() {
@@ -890,7 +840,7 @@ mod tests {
 
     #[test]
     fn default_flat_vector_scorer_scores_float_vectors() {
-        let vectors = VecFloatVectorValues::new(
+        let vectors = from_floats(
             vec![
                 vec![1.0, 0.0, 0.0],
                 vec![0.0, 1.0, 0.0],
@@ -912,7 +862,7 @@ mod tests {
 
     #[test]
     fn default_flat_vector_scorer_supplier_updates_query() {
-        let vectors = VecFloatVectorValues::new(
+        let vectors = from_floats(
             vec![
                 vec![1.0, 0.0, 0.0],
                 vec![0.0, 1.0, 0.0],

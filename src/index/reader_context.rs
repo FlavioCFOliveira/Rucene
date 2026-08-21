@@ -12,6 +12,7 @@ use std::{
 };
 
 use crate::index::index_reader::{CompositeReader, IndexReader};
+use crate::index::leaf_reader::LeafReader;
 
 /// A node in the hierarchical reader context tree.
 ///
@@ -64,6 +65,7 @@ pub struct LeafReaderContext {
     ord_in_parent: i32,
     doc_base_in_parent: i32,
     reader: Arc<dyn IndexReader>,
+    leaf_reader: Arc<dyn LeafReader>,
     ord: i32,
     doc_base: i32,
     identity: usize,
@@ -71,8 +73,15 @@ pub struct LeafReaderContext {
 
 impl LeafReaderContext {
     /// Creates a leaf context.
+    ///
+    /// Both handles must point at the same reader. Java's
+    /// `LeafReaderContext.reader()` returns a `LeafReader` directly; Rust
+    /// cannot upcast `Arc<dyn LeafReader>` to `Arc<dyn IndexReader>` (the two
+    /// traits are related by a blanket impl, not by inheritance), so the
+    /// context carries one handle per view.
     pub fn new(
         reader: Arc<dyn IndexReader>,
+        leaf_reader: Arc<dyn LeafReader>,
         parent: Option<Weak<dyn IndexReaderContext>>,
         ord_in_parent: i32,
         doc_base_in_parent: i32,
@@ -86,10 +95,20 @@ impl LeafReaderContext {
             ord_in_parent,
             doc_base_in_parent,
             reader,
+            leaf_reader,
             ord: leaf_ord,
             doc_base: leaf_doc_base,
             identity: new_identity(),
         }
+    }
+
+    /// Returns this leaf's reader as a [`LeafReader`].
+    ///
+    /// Equivalent to `LeafReaderContext.reader()`, whose Java return type is
+    /// `LeafReader`; [`IndexReaderContext::reader`] keeps the erased view
+    /// required by the trait.
+    pub fn leaf_reader(&self) -> Arc<dyn LeafReader> {
+        Arc::clone(&self.leaf_reader)
     }
 
     /// The reader's ordinal in the top-level leaves array.

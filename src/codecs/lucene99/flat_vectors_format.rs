@@ -1103,6 +1103,45 @@ impl OffHeapFloatVectorValues {
     }
 }
 
+impl OffHeapFloatVectorValues {
+    /// Clones the instance together with a fresh view over the vector data.
+    ///
+    /// Shared by `copy` and `copy_float`, which differ only in the trait object
+    /// they hand back; Rust cannot express Java's covariant return.
+    fn clone_values(&self) -> Result<Self> {
+        let slice = Mutex::new(
+            self.slice
+                .lock()
+                .map_err(|_| {
+                    LuceneError::IllegalState(
+                        "off-heap vector slice mutex was poisoned".to_string(),
+                    )
+                })?
+                .clone_input()?,
+        );
+        match (&self.config, &self.data_input) {
+            (Some(config), Some(data_input)) => Ok(Self {
+                dimension: self.dimension,
+                size: self.size,
+                byte_size: self.byte_size,
+                slice,
+                config: Some(config.clone()),
+                data_input: Some(data_input.clone_input()?),
+                ord_to_doc_data: self.ord_to_doc_data.clone(),
+            }),
+            _ => Ok(Self {
+                dimension: self.dimension,
+                size: self.size,
+                byte_size: self.byte_size,
+                slice,
+                config: None,
+                data_input: None,
+                ord_to_doc_data: Vec::new(),
+            }),
+        }
+    }
+}
+
 impl KnnVectorValues for OffHeapFloatVectorValues {
     fn dimension(&self) -> i32 {
         self.dimension
@@ -1125,39 +1164,7 @@ impl KnnVectorValues for OffHeapFloatVectorValues {
     }
 
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        let new_slice = Mutex::new(
-            self.slice
-                .lock()
-                .map_err(|_| {
-                    LuceneError::IllegalState(
-                        "off-heap vector slice mutex was poisoned".to_string(),
-                    )
-                })?
-                .clone_input()?,
-        );
-        match (&self.config, &self.data_input) {
-            (Some(config), Some(data_input)) => {
-                let new_data_input = data_input.clone_input()?;
-                Ok(Box::new(Self {
-                    dimension: self.dimension,
-                    size: self.size,
-                    byte_size: self.byte_size,
-                    slice: new_slice,
-                    config: Some(config.clone()),
-                    data_input: Some(new_data_input),
-                    ord_to_doc_data: self.ord_to_doc_data.clone(),
-                }))
-            }
-            _ => Ok(Box::new(Self {
-                dimension: self.dimension,
-                size: self.size,
-                byte_size: self.byte_size,
-                slice: new_slice,
-                config: None,
-                data_input: None,
-                ord_to_doc_data: Vec::new(),
-            })),
-        }
+        Ok(Box::new(self.clone_values()?))
     }
 
     fn encoding(&self) -> VectorEncoding {
@@ -1187,6 +1194,10 @@ impl KnnVectorValues for OffHeapFloatVectorValues {
 }
 
 impl FloatVectorValues for OffHeapFloatVectorValues {
+    fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
+        Ok(Box::new(self.clone_values()?))
+    }
+
     fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
         let mut value = vec![0.0f32; self.dimension as usize];
         let mut slice = self.slice.lock().map_err(|_| {
@@ -1247,6 +1258,45 @@ impl OffHeapByteVectorValues {
     }
 }
 
+impl OffHeapByteVectorValues {
+    /// Clones the instance together with a fresh view over the vector data.
+    ///
+    /// Shared by `copy` and `copy_byte`, which differ only in the trait object
+    /// they hand back; Rust cannot express Java's covariant return.
+    fn clone_values(&self) -> Result<Self> {
+        let slice = Mutex::new(
+            self.slice
+                .lock()
+                .map_err(|_| {
+                    LuceneError::IllegalState(
+                        "off-heap vector slice mutex was poisoned".to_string(),
+                    )
+                })?
+                .clone_input()?,
+        );
+        match (&self.config, &self.data_input) {
+            (Some(config), Some(data_input)) => Ok(Self {
+                dimension: self.dimension,
+                size: self.size,
+                byte_size: self.byte_size,
+                slice,
+                config: Some(config.clone()),
+                data_input: Some(data_input.clone_input()?),
+                ord_to_doc_data: self.ord_to_doc_data.clone(),
+            }),
+            _ => Ok(Self {
+                dimension: self.dimension,
+                size: self.size,
+                byte_size: self.byte_size,
+                slice,
+                config: None,
+                data_input: None,
+                ord_to_doc_data: Vec::new(),
+            }),
+        }
+    }
+}
+
 impl KnnVectorValues for OffHeapByteVectorValues {
     fn dimension(&self) -> i32 {
         self.dimension
@@ -1269,39 +1319,7 @@ impl KnnVectorValues for OffHeapByteVectorValues {
     }
 
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        let new_slice = Mutex::new(
-            self.slice
-                .lock()
-                .map_err(|_| {
-                    LuceneError::IllegalState(
-                        "off-heap vector slice mutex was poisoned".to_string(),
-                    )
-                })?
-                .clone_input()?,
-        );
-        match (&self.config, &self.data_input) {
-            (Some(config), Some(data_input)) => {
-                let new_data_input = data_input.clone_input()?;
-                Ok(Box::new(Self {
-                    dimension: self.dimension,
-                    size: self.size,
-                    byte_size: self.byte_size,
-                    slice: new_slice,
-                    config: Some(config.clone()),
-                    data_input: Some(new_data_input),
-                    ord_to_doc_data: self.ord_to_doc_data.clone(),
-                }))
-            }
-            _ => Ok(Box::new(Self {
-                dimension: self.dimension,
-                size: self.size,
-                byte_size: self.byte_size,
-                slice: new_slice,
-                config: None,
-                data_input: None,
-                ord_to_doc_data: Vec::new(),
-            })),
-        }
+        Ok(Box::new(self.clone_values()?))
     }
 
     fn encoding(&self) -> VectorEncoding {
@@ -1331,6 +1349,10 @@ impl KnnVectorValues for OffHeapByteVectorValues {
 }
 
 impl ByteVectorValues for OffHeapByteVectorValues {
+    fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
+        Ok(Box::new(self.clone_values()?))
+    }
+
     fn vector_value(&self, ord: i32) -> Result<Vec<u8>> {
         let mut value = vec![0u8; self.dimension as usize];
         let mut slice = self.slice.lock().map_err(|_| {
@@ -1360,6 +1382,33 @@ fn read_ord_to_doc_data(vector_data: &dyn IndexInput, config: &OrdToDocConfig) -
 
 #[cfg(test)]
 mod tests {
+    /// The four serialization sites for `VectorEncoding` and
+    /// `VectorSimilarityFunction` each carry their own ordinal table. Java has
+    /// one, `Enum.ordinal()`, so the tables must agree with the declaration
+    /// order of the Rust enums and therefore with each other; a divergence here
+    /// silently writes an unreadable index.
+    #[test]
+    fn vector_ordinals_match_the_enum_declaration_order() {
+        use crate::index::{VectorEncoding, VectorSimilarityFunction};
+
+        for encoding in [VectorEncoding::BYTE, VectorEncoding::FLOAT32] {
+            let ordinal = encoding as i32;
+            assert_eq!(super::vector_encoding_ordinal(encoding), ordinal);
+            assert_eq!(super::read_vector_encoding(ordinal).unwrap(), encoding);
+        }
+
+        for similarity in [
+            VectorSimilarityFunction::EUCLIDEAN,
+            VectorSimilarityFunction::DOT_PRODUCT,
+            VectorSimilarityFunction::COSINE,
+            VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
+        ] {
+            let ordinal = similarity as i32;
+            assert_eq!(super::vector_similarity_ordinal(similarity), ordinal);
+            assert_eq!(super::read_vector_similarity(ordinal).unwrap(), similarity);
+        }
+    }
+
     use super::*;
     use crate::codecs::stub::{BufferedUpdates, FieldInfos};
     use crate::codecs::{FlatVectorsFormat, KnnVectorsFormat};

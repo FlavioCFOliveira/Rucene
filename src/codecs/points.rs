@@ -12,7 +12,10 @@ use std::fmt;
 
 use crate::error::Result;
 
-pub use crate::util::bkd::{IntersectVisitor, Relation};
+// The codec layer speaks the same visitor language as the index layer; Java's
+// `PointsReader.getValues` likewise returns an `org.apache.lucene.index.PointValues`
+// whose `intersect` takes `PointValues.IntersectVisitor`.
+pub use crate::index::point_values::{IntersectVisitor, Relation};
 
 use super::postings::MergeState;
 use super::state::{SegmentReadState, SegmentWriteState};
@@ -90,10 +93,9 @@ pub trait PointValues: Send + Sync {
             visitor: &'a mut dyn IntersectVisitor,
         }
 
-        impl<'a> DocValuesVisitor for IntersectDocValuesVisitor<'a> {
+        impl DocValuesVisitor for IntersectDocValuesVisitor<'_> {
             fn visit(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
-                self.visitor.visit_point(doc_id, packed_value);
-                Ok(())
+                self.visitor.visit_with_value(doc_id, packed_value)
             }
         }
 

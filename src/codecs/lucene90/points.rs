@@ -535,40 +535,22 @@ impl PointValues for BkdPointValues {
 
     fn visit_doc_values(&self, visitor: &mut dyn DocValuesVisitor) -> Result<()> {
         let mut guard = self.reader.lock().unwrap();
-        let mut all_visitor = AllPointsVisitor {
-            visitor,
-            error: None,
-        };
-        guard.intersect(&mut all_visitor)?;
-        if let Some(result) = all_visitor.error {
-            result
-        } else {
-            Ok(())
-        }
+        let mut all_visitor = AllPointsVisitor { visitor };
+        guard.intersect(&mut all_visitor)
     }
 
     fn intersect(&self, visitor: &mut dyn crate::codecs::points::IntersectVisitor) -> Result<()> {
+        // The BKD reader and the codec speak the same visitor language now, so
+        // no translation layer is needed.
         let mut guard = self.reader.lock().unwrap();
-        let mut codec_visitor = CodecToBkdVisitor {
-            visitor,
-            error: None,
-        };
-        guard.intersect(&mut codec_visitor)?;
-        if let Some(result) = codec_visitor.error {
-            result
-        } else {
-            Ok(())
-        }
+        guard.intersect(visitor)
     }
 }
 
 /// BKD visitor that traverses every leaf and forwards each point to a codec
-/// [`DocValuesVisitor`]. The BKD callback trait is infallible, so any error
-/// returned by the wrapped visitor is stashed and propagated after the tree
-/// traversal finishes.
+/// [`DocValuesVisitor`].
 struct AllPointsVisitor<'a> {
     visitor: &'a mut dyn DocValuesVisitor,
-    error: Option<Result<()>>,
 }
 
 impl BkdIntersectVisitor for AllPointsVisitor<'_> {
@@ -578,51 +560,14 @@ impl BkdIntersectVisitor for AllPointsVisitor<'_> {
         BkdRelation::CellCrossesQuery
     }
 
-    fn visit(&mut self, _doc_id: i32) {
+    fn visit(&mut self, _doc_id: i32) -> Result<()> {
         // This callback is used only for fully-inside cells. Because we always
         // report CellCrossesQuery it should never be called.
+        Ok(())
     }
 
-    fn visit_point(&mut self, doc_id: i32, packed_value: &[u8]) {
-        if self.error.is_some() {
-            return;
-        }
-        if let Err(e) = self.visitor.visit(doc_id, packed_value) {
-            self.error = Some(Err(e));
-        }
-    }
-}
-
-/// BKD visitor that forwards codec-level intersection callbacks to the
-/// underlying BKD tree. Any error from the codec visitor is stashed and
-/// propagated after the traversal finishes.
-struct CodecToBkdVisitor<'a> {
-    visitor: &'a mut dyn crate::codecs::points::IntersectVisitor,
-    error: Option<Result<()>>,
-}
-
-impl BkdIntersectVisitor for CodecToBkdVisitor<'_> {
-    fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> BkdRelation {
-        use crate::codecs::points::Relation;
-        match self.visitor.compare(min_packed, max_packed) {
-            Relation::CellOutsideQuery => BkdRelation::CellOutsideQuery,
-            Relation::CellInsideQuery => BkdRelation::CellInsideQuery,
-            Relation::CellCrossesQuery => BkdRelation::CellCrossesQuery,
-        }
-    }
-
-    fn visit(&mut self, doc_id: i32) {
-        if self.error.is_some() {
-            return;
-        }
-        self.visitor.visit(doc_id);
-    }
-
-    fn visit_point(&mut self, doc_id: i32, packed_value: &[u8]) {
-        if self.error.is_some() {
-            return;
-        }
-        self.visitor.visit_point(doc_id, packed_value);
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
+        self.visitor.visit(doc_id, packed_value)
     }
 }
 
@@ -1156,13 +1101,16 @@ mod tests {
                 }
             }
 
-            fn visit(&mut self, _doc_id: i32) {}
+            fn visit(&mut self, _doc_id: i32) -> Result<()> {
+                Ok(())
+            }
 
-            fn visit_point(&mut self, doc_id: i32, packed_value: &[u8]) {
+            fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
                 let v = BitUtil::read_le_int(packed_value, 0);
                 if v >= self.min && v <= self.max {
                     self.found.push(doc_id);
                 }
+                Ok(())
             }
         }
 
@@ -1243,14 +1191,17 @@ mod tests {
                 }
             }
 
-            fn visit(&mut self, _doc_id: i32) {}
+            fn visit(&mut self, _doc_id: i32) -> Result<()> {
+                Ok(())
+            }
 
-            fn visit_point(&mut self, doc_id: i32, packed_value: &[u8]) {
+            fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
                 let x = BitUtil::read_le_int(packed_value, 0);
                 let y = BitUtil::read_le_int(packed_value, 4);
                 if x >= self.min_x && x <= self.max_x && y >= self.min_y && y <= self.max_y {
                     self.found.push(doc_id);
                 }
+                Ok(())
             }
         }
 

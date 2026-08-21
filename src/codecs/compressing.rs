@@ -410,7 +410,6 @@ mod tests {
 
     #[test]
     fn matching_readers_detects_divergent_name() {
-        let fi_a0 = FieldInfo::new("a", 0);
         let fi_b0 = FieldInfo::new("x", 0);
         let merged = FieldInfos::new(vec![FieldInfo::new("a", 0)]).unwrap();
 

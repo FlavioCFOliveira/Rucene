@@ -17,8 +17,9 @@ use std::sync::{Arc, LazyLock, RwLock};
 
 use crate::error::{LuceneError, Result};
 pub use crate::index::vector_values::{
-    ByteVectorValues, EmptyByteVectorValues, EmptyFloatVectorValues, EmptyKnnVectorValues,
-    FloatVectorValues, KnnVectorValues,
+    accept_ords, from_bytes, from_floats, ByteVectorValues, DenseDocIndexIterator,
+    DocIndexIterator, EmptyByteVectorValues, EmptyFloatVectorValues, EmptyKnnVectorValues,
+    FloatVectorValues, FromDisiDocIndexIterator, KnnVectorValues, SparseDocIndexIterator,
 };
 pub use crate::search::knn::{KnnCollector, KnnSearchStrategy, TopDocs};
 use crate::search::AcceptDocs;
@@ -569,7 +570,9 @@ mod tests {
         let values = EmptyFloatVectorValues;
         assert_eq!(values.dimension(), 0);
         assert_eq!(values.size(), 0);
-        assert!(values.vector_value(0).unwrap().is_empty());
+        // Java documents `vectorValue(ord)` as throwing IndexOutOfBoundsException
+        // outside [0, size()); with size() == 0 every ordinal is out of range.
+        assert!(values.vector_value(0).is_err());
     }
 
     #[test]
@@ -577,7 +580,7 @@ mod tests {
         let values = EmptyByteVectorValues;
         assert_eq!(values.dimension(), 0);
         assert_eq!(values.size(), 0);
-        assert!(values.vector_value(0).unwrap().is_empty());
+        assert!(values.vector_value(0).is_err());
     }
 
     #[test]

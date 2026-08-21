@@ -1118,32 +1118,12 @@ impl DocIdsWriter {
 // IntersectVisitor / Relation
 // -----------------------------------------------------------------------------
 
-/// Relation between a query range and a BKD tree cell.
-///
-/// Equivalent to `org.apache.lucene.index.PointValues.Relation`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Relation {
-    /// The cell is fully outside the query range.
-    CellOutsideQuery,
-    /// The cell is fully inside the query range.
-    CellInsideQuery,
-    /// The cell crosses the query boundary.
-    CellCrossesQuery,
-}
-
-/// Visitor invoked while traversing a BKD tree.
-///
-/// Equivalent to `org.apache.lucene.index.PointValues.IntersectVisitor`.
-pub trait IntersectVisitor {
-    /// Compares the query range with the given cell bounds.
-    fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Relation;
-
-    /// Visits a single matching document id.
-    fn visit(&mut self, doc_id: i32);
-
-    /// Visits a single matching point value together with its doc id.
-    fn visit_point(&mut self, doc_id: i32, packed_value: &[u8]);
-}
+// The BKD reader guides its traversal with the very same visitor the index
+// layer defines; `org.apache.lucene.util.bkd.BKDReader` likewise imports
+// `org.apache.lucene.index.PointValues`. Re-exporting keeps a single definition
+// in the crate while leaving `crate::util::bkd::IntersectVisitor` usable as a
+// path, as it is in Lucene.
+pub use crate::index::point_values::{IntersectVisitor, Relation};
 
 // -----------------------------------------------------------------------------
 // BKDReader
@@ -1369,10 +1349,15 @@ impl BKDReader {
         if config.num_index_dims != 1 && version >= VERSION_LEAF_STORES_BOUNDS {
             skip_actual_bounds(leaf_in.as_mut(), config, &common_prefix_lengths)?;
         }
+        // `BKDReader.visitDocValuesNoCardinality` announces the exact leaf point
+        // count before handing any value over. The narrowing re-check it also
+        // performs against the leaf's stored bounds is a traversal refinement
+        // that arrives with the BKD-backed `PointTree`.
+        visitor.grow(count as i32);
         let compressed_dim = read_compressed_dim(leaf_in.as_mut(), version, config)?;
         if compressed_dim == -1 {
             for &doc in &doc_ids {
-                visitor.visit_point(doc, &scratch_packed);
+                visitor.visit_with_value(doc, &scratch_packed)?;
             }
         } else if compressed_dim == -2 {
             visit_sparse_doc_values(
@@ -1605,7 +1590,7 @@ fn visit_sparse_doc_values(
             in_.read_bytes(scratch_packed, off, config.bytes_per_dim as usize - prefix)?;
         }
         for j in 0..length {
-            visitor.visit_point(doc_ids[i + j], scratch_packed);
+            visitor.visit_with_value(doc_ids[i + j], scratch_packed)?;
         }
         i += length;
     }
@@ -1643,7 +1628,7 @@ fn visit_compressed_doc_values(
                 let off = dim * config.bytes_per_dim as usize + prefix;
                 in_.read_bytes(scratch_packed, off, config.bytes_per_dim as usize - prefix)?;
             }
-            visitor.visit_point(doc_ids[i], scratch_packed);
+            visitor.visit_with_value(doc_ids[i], scratch_packed)?;
             i += 1;
         }
     }
@@ -3009,14 +2994,16 @@ mod tests {
                 Relation::CellCrossesQuery
             }
         }
-        fn visit(&mut self, doc_id: i32) {
+        fn visit(&mut self, doc_id: i32) -> Result<()> {
             self.found.push(doc_id);
+            Ok(())
         }
-        fn visit_point(&mut self, doc_id: i32, packed_value: &[u8]) {
+        fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
             let v = BitUtil::read_le_int(packed_value, 0);
             if v >= self.min && v <= self.max {
                 self.found.push(doc_id);
             }
+            Ok(())
         }
     }
 
@@ -3037,13 +3024,15 @@ mod tests {
                 Relation::CellCrossesQuery
             }
         }
-        fn visit(&mut self, doc_id: i32) {
+        fn visit(&mut self, doc_id: i32) -> Result<()> {
             self.found.push(doc_id);
+            Ok(())
         }
-        fn visit_point(&mut self, doc_id: i32, packed_value: &[u8]) {
+        fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
             if BitUtil::read_le_int(packed_value, 0) == self.value {
                 self.found.push(doc_id);
             }
+            Ok(())
         }
     }
 
@@ -3074,15 +3063,17 @@ mod tests {
                 Relation::CellCrossesQuery
             }
         }
-        fn visit(&mut self, doc_id: i32) {
+        fn visit(&mut self, doc_id: i32) -> Result<()> {
             self.found.push(doc_id);
+            Ok(())
         }
-        fn visit_point(&mut self, doc_id: i32, packed_value: &[u8]) {
+        fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
             let x = BitUtil::read_le_int(packed_value, 0);
             let y = BitUtil::read_le_int(packed_value, 4);
             if x >= self.min_x && x <= self.max_x && y >= self.min_y && y <= self.max_y {
                 self.found.push(doc_id);
             }
+            Ok(())
         }
     }
 }
