@@ -49,14 +49,20 @@ use crate::store::{MockIndexInput, MockIndexOutput, RamDirectory};
 /// Codec name written in the BKD meta header.
 const CODEC_NAME: &str = "BKD";
 
-/// Minimum supported BKD format version.
+/// Minimum supported BKD format version, written by Lucene 7.0.
 const VERSION_START: i32 = 4;
+
+/// Version that introduced storing the actual min/max bounds in leaf blocks.
+const VERSION_LEAF_STORES_BOUNDS: i32 = 5;
+
+/// Version that introduced indexing only a prefix of the data dimensions.
+const VERSION_SELECTIVE_INDEXING: i32 = 6;
+
+/// Version that introduced the low-cardinality leaf block encoding.
+const VERSION_LOW_CARDINALITY_LEAVES: i32 = 7;
 
 /// Version that introduced the separate meta file.
 const VERSION_META_FILE: i32 = 9;
-
-/// Version that introduced storing actual min/max bounds in leaf blocks.
-const VERSION_LEAF_STORES_BOUNDS: i32 = 7;
 
 /// Version that introduced vectorized BPV_24 and BPV_21 doc-id encodings.
 const VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21: i32 = 10;
@@ -1160,7 +1166,7 @@ impl BKDReader {
     ) -> Result<Self> {
         let version = check_header(meta_in, CODEC_NAME, VERSION_START, VERSION_CURRENT)?;
         let num_dims = meta_in.read_v_int()?;
-        let num_index_dims = if version >= 6 {
+        let num_index_dims = if version >= VERSION_SELECTIVE_INDEXING {
             meta_in.read_v_int()?
         } else {
             num_dims
@@ -1543,7 +1549,7 @@ fn read_compressed_dim(in_: &mut dyn IndexInput, version: i32, config: &BKDConfi
             dim
         )));
     }
-    if version < VERSION_LEAF_STORES_BOUNDS && dim == -2 {
+    if version < VERSION_LOW_CARDINALITY_LEAVES && dim == -2 {
         return Err(LuceneError::CorruptIndex(
             "LOW_CARDINALITY not supported in this version".to_string(),
         ));
@@ -1670,22 +1676,33 @@ pub struct BKDWriter {
 }
 
 impl BKDWriter {
-    /// Minimum supported BKD format version.
-    pub const VERSION_START: i32 = 4;
+    /// Minimum supported BKD format version, written by Lucene 7.0.
+    ///
+    /// Mirrors the `BKDWriter` version constants of Lucene Core 10.5.0. Every
+    /// value is re-exported from the single module-level definition so the two
+    /// views can never drift apart.
+    pub const VERSION_START: i32 = self::VERSION_START;
+
+    /// Version that introduced storing the actual min/max bounds in leaf blocks.
+    pub const VERSION_LEAF_STORES_BOUNDS: i32 = self::VERSION_LEAF_STORES_BOUNDS;
+
+    /// Version that introduced indexing only a prefix of the data dimensions.
+    pub const VERSION_SELECTIVE_INDEXING: i32 = self::VERSION_SELECTIVE_INDEXING;
+
+    /// Version that introduced the low-cardinality leaf block encoding.
+    pub const VERSION_LOW_CARDINALITY_LEAVES: i32 = self::VERSION_LOW_CARDINALITY_LEAVES;
 
     /// Version that introduced the separate meta file.
-    pub const VERSION_META_FILE: i32 = 9;
-
-    /// Version that introduced storing actual min/max bounds in leaf blocks.
-    pub const VERSION_LEAF_STORES_BOUNDS: i32 = 7;
+    pub const VERSION_META_FILE: i32 = self::VERSION_META_FILE;
 
     /// Version that introduced vectorized BPV_24 and BPV_21 doc-id encodings.
-    pub const VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21: i32 = 10;
+    pub const VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21: i32 =
+        self::VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21;
 
     /// Current format version used by this implementation.
-    pub const VERSION_CURRENT: i32 = 10;
+    pub const VERSION_CURRENT: i32 = self::VERSION_CURRENT;
 
-    /// Creates a writer using [`VERSION_CURRENT`].
+    /// Creates a writer using [`Self::VERSION_CURRENT`].
     pub fn new_default(
         max_doc: i32,
         temp_dir: Box<dyn Directory>,
@@ -2762,6 +2779,57 @@ fn run_len(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins the BKD format version constants to the values declared by
+    /// `BKDWriter` in Lucene Core 10.5.0 (`BKDWriter.java:86-92`).
+    ///
+    /// These numbers are part of the on-disk contract: every version gate in
+    /// the reader is a comparison against one of them, so a silent edit here
+    /// would change how existing indexes are decoded. The test also asserts
+    /// that the public `BKDWriter` associated constants stay in lockstep with
+    /// the module-level definitions they alias.
+    #[test]
+    fn bkd_version_constants_match_lucene_10_5_0() {
+        assert_eq!(VERSION_START, 4);
+        assert_eq!(VERSION_LEAF_STORES_BOUNDS, 5);
+        assert_eq!(VERSION_SELECTIVE_INDEXING, 6);
+        assert_eq!(VERSION_LOW_CARDINALITY_LEAVES, 7);
+        assert_eq!(VERSION_META_FILE, 9);
+        assert_eq!(VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21, 10);
+        assert_eq!(VERSION_CURRENT, VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21);
+
+        assert_eq!(BKDWriter::VERSION_START, VERSION_START);
+        assert_eq!(
+            BKDWriter::VERSION_LEAF_STORES_BOUNDS,
+            VERSION_LEAF_STORES_BOUNDS
+        );
+        assert_eq!(
+            BKDWriter::VERSION_SELECTIVE_INDEXING,
+            VERSION_SELECTIVE_INDEXING
+        );
+        assert_eq!(
+            BKDWriter::VERSION_LOW_CARDINALITY_LEAVES,
+            VERSION_LOW_CARDINALITY_LEAVES
+        );
+        assert_eq!(BKDWriter::VERSION_META_FILE, VERSION_META_FILE);
+        assert_eq!(
+            BKDWriter::VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21,
+            VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21
+        );
+        assert_eq!(BKDWriter::VERSION_CURRENT, VERSION_CURRENT);
+
+        // The constants are strictly ordered, which is what makes the `>=` and
+        // `<` gates in the reader meaningful.
+        let ordered = [
+            VERSION_START,
+            VERSION_LEAF_STORES_BOUNDS,
+            VERSION_SELECTIVE_INDEXING,
+            VERSION_LOW_CARDINALITY_LEAVES,
+            VERSION_META_FILE,
+            VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21,
+        ];
+        assert!(ordered.windows(2).all(|w| w[0] < w[1]));
+    }
 
     #[test]
     fn bkd_config_validation_and_defaults() {
