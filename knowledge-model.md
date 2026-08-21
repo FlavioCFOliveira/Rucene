@@ -105,8 +105,11 @@ told apart from the Java ones by a `file` that starts with `src/`.
 
 ### `Component`
 A named unit of the local crate registered before the `Rust*` labels existed
-(mostly `src/util.rs` and `src/store.rs` items). Identity is `name`. Kept for
-backward compatibility; new work uses `RustStruct`/`RustTrait`/`RustEnum`.
+(mostly `src/util.rs` and `src/store.rs` items). Identity is `name`. New work
+uses `RustStruct`/`RustTrait`/`RustEnum` for anything that declares a Rust type,
+and keeps `Component` for a module of free functions that declares none — the
+ports of Lucene's static utility classes, such as `ArrayUtil`, `BitUtil`,
+`IOUtils`, `NumericUtils` and `VectorUtil`.
 
 ### `Task`
 An `rmp` task, mirrored into the graph when it is closed.
@@ -195,7 +198,7 @@ Every node and edge carries `gitCommit` (full 40-char hash) and `gitDate` (`YYYY
 | `EXTENDS` / `IMPLEMENTS` | populated (type→type relationships) |
 | `REFERENCES` | populated (Rucene → Apache Lucene Core 10.5.0) |
 | `TESTS` / `SPECIFIED_IN` | populated for the portability harness and the components it validates; extended per synced commit |
-| `RustStruct` / `RustTrait` / `RustEnum` | populated incrementally, one sync per commit that ports types; `RustEnum` not yet used |
+| `RustStruct` / `RustTrait` / `RustEnum` | populated incrementally, one sync per commit that ports types |
 | `Task` / `Commit` | populated for the commits that have been synced; not a complete history |
 | `PORTS` | populated for every ported Rucene type whose Lucene counterpart is already modelled |
 | `IMPLEMENTED_IN` / `IMPLEMENTS` / `COMMITTED_IN` / `CLOSES_TASK` | populated per synced commit |
