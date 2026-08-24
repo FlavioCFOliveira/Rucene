@@ -58,6 +58,10 @@ name = "portability_vector_point"
 path = "tests/portability/vector_point.rs"
 
 [[test]]
+name = "portability_bkd_doc_ids"
+path = "tests/portability/bkd_doc_ids.rs"
+
+[[test]]
 name = "fuzz_codec_headers"
 path = "tests/fuzz/codec_headers.rs"
 

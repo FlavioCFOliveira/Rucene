@@ -6,17 +6,26 @@
 //! Apache Lucene Core 10.5.0's `util.bkd` package while remaining fully safe
 //! Rust.
 //!
+//! # Byte order
+//!
+//! The BKD on-disk format uses little-endian multi-byte primitives, matching
+//! Lucene's `DataOutput`/`DataInput` byte order (low byte first, as documented
+//! by `BitUtil#VH_LE_INT`). Rucene's store layer defaults to little-endian, so
+//! the BKD path uses the native `write_int`/`write_long`/`write_short` and
+//! `read_int`/`read_long`/`read_short` methods wherever the on-disk layout must
+//! match the Java reference. This includes the doc-id encodings and the two
+//! file pointers in the meta block. The only big-endian bytes in the format are
+//! the codec header written by `CodecUtil.writeHeader` (magic and version),
+//! which Rucene mirrors with `write_header`/`check_header` from `codec_util`.
+//!
 //! # Deviations from Java byte-for-byte layout
 //!
-//! - Doc IDs are stored with this crate's native [`DataOutput::write_int`]
-//!   (little-endian). This matches the rest of Rucene's store layer and is
-//!   internally consistent between the heap and offline point writers.
 //! - The offline point writer keeps all data in memory for its external merge
 //!   sort; this is simpler than the Java reference's true streaming sort but is
 //!   sufficient for the current port phase.
-//! - `DocIdsWriter` implements scalar `BPV_24` rather than the vectorized
-//!   `BPV_24` variant introduced in Lucene 10.5.0. The format remains readable
-//!   by this module and the encodings are functionally equivalent.
+//! - `DocIdsWriter` implements the full set of doc-id encodings from Lucene
+//!   10.5.0, including the vectorized `BPV_24` layout and `BPV_21`, selected by
+//!   the BKD format version exactly as the Java reference does.
 //! - `BKDWriter` switches any `OfflinePointWriter` into a `HeapPointWriter` at
 //!   `finish` time and builds the tree in memory, as allowed by the task
 //!   specification. Partitioning is performed by sorting sub-slices and
@@ -83,6 +92,7 @@ const LOW_CARDINALITY: i8 = -2;
 const CONTINUOUS_IDS: i8 = -2;
 const BITSET_IDS: i8 = -1;
 const DELTA_BPV_16: i8 = 16;
+const BPV_21: i8 = 21;
 const BPV_24: i8 = 24;
 const BPV_32: i8 = 32;
 const LEGACY_DELTA_VINT: i8 = 0;
@@ -880,14 +890,28 @@ impl PointReader for OfflinePointReader {
 /// Equivalent to `org.apache.lucene.util.bkd.DocIdsWriter`.
 ///
 /// This implementation supports `CONTINUOUS_IDS`, `BITSET_IDS`, `DELTA_BPV_16`,
-/// scalar `BPV_24`, and `BPV_32`. It intentionally uses the scalar `BPV_24`
-/// format rather than the newer vectorized layout, trading absolute byte
-/// parity with Lucene 10.5.0 for a simpler, safe Rust implementation.
+/// `BPV_21`, `BPV_24` (both the scalar and the vectorized layout, selected by
+/// the BKD format version), and `BPV_32`. The byte layout matches the Java
+/// reference exactly, including the version gate that chooses between the
+/// scalar and vectorized `BPV_24` encodings.
 pub struct DocIdsWriter;
+
+/// Rounds `n` down to the nearest multiple of 16.
+///
+/// Equivalent to `DocIdsWriter.floorToMultipleOf16` in Lucene Core 10.5.0,
+/// which masks off the low four bits.
+fn floor_to_multiple_of_16(n: i32) -> i32 {
+    n & !0xF
+}
 
 impl DocIdsWriter {
     /// Writes `doc_ids` to `out` using the most appropriate encoding.
-    pub fn write_doc_ids(out: &mut dyn IndexOutput, doc_ids: &[i32]) -> Result<()> {
+    ///
+    /// `version` is the BKD format version of the index being written; it
+    /// selects between the scalar and vectorized `BPV_24` layouts and gates the
+    /// availability of `BPV_21`, exactly as `DocIdsWriter.writeDocIds` does in
+    /// Lucene Core 10.5.0.
+    pub fn write_doc_ids(out: &mut dyn IndexOutput, doc_ids: &[i32], version: i32) -> Result<()> {
         if doc_ids.is_empty() {
             return Err(LuceneError::IllegalArgument(
                 "doc_ids must not be empty".to_string(),
@@ -922,28 +946,109 @@ impl DocIdsWriter {
 
         if min2max <= 0xFFFF {
             out.write_byte(DELTA_BPV_16 as u8)?;
+            let mut scratch = vec![0i32; count];
+            for i in 0..count {
+                scratch[i] = doc_ids[i] - min;
+            }
             out.write_v_int(min)?;
             let half_len = count >> 1;
-            let mut scratch = vec![0i32; half_len];
             for i in 0..half_len {
-                let lower = doc_ids[i * 2] - min;
-                let upper = doc_ids[i * 2 + 1] - min;
-                scratch[i] = (lower << 16) | (upper & 0xFFFF);
+                scratch[i] = scratch[half_len + i] | (scratch[i] << 16);
             }
-            for &v in &scratch {
+            for &v in scratch.iter().take(half_len) {
                 out.write_int(v)?;
             }
             if (count & 1) == 1 {
-                out.write_short((doc_ids[count - 1] - min) as i16)?;
+                out.write_short(scratch[count - 1] as i16)?;
             }
+        } else if max <= 0x1FFFFF && version >= VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21 {
+            out.write_byte(BPV_21 as u8)?;
+            Self::write_ints21(out, doc_ids)?;
         } else if max <= 0xFFFFFF {
             out.write_byte(BPV_24 as u8)?;
-            Self::write_scalar_ints24(out, doc_ids)?;
+            if version < VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21 {
+                Self::write_scalar_ints24(out, doc_ids)?;
+            } else {
+                Self::write_ints24(out, doc_ids)?;
+            }
         } else {
             out.write_byte(BPV_32 as u8)?;
             for &v in doc_ids {
                 out.write_int(v)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Writes `doc_ids` using the 21-bits-per-value layout introduced in BKD
+    /// format version 10.
+    ///
+    /// The first `floorToMultipleOf16(count / 3) * 2` doc ids are packed into
+    /// ints (21 bits each, two per int plus the low 11 bits of a third), the
+    /// following ids are packed three per long, and the residual ids are
+    /// written as a short plus a byte. Mirrors `DocIdsWriter.writeDocIds` in
+    /// Lucene Core 10.5.0.
+    fn write_ints21(out: &mut dyn IndexOutput, doc_ids: &[i32]) -> Result<()> {
+        let count = doc_ids.len();
+        let one_third = floor_to_multiple_of_16((count / 3) as i32) as usize;
+        let num_ints = one_third * 2;
+        let mut scratch = vec![0i32; count];
+        for i in 0..num_ints {
+            scratch[i] = doc_ids[i] << 11;
+        }
+        for i in 0..one_third {
+            let long_idx = i + num_ints;
+            scratch[i] |= doc_ids[long_idx] & 0x7FF;
+            scratch[i + one_third] |= (doc_ids[long_idx] >> 11) & 0x7FF;
+        }
+        for &v in scratch.iter().take(num_ints) {
+            out.write_int(v)?;
+        }
+        let mut i = one_third * 3;
+        while i + 2 < count {
+            let l = (doc_ids[i] as i64)
+                | ((doc_ids[i + 1] as i64) << 21)
+                | ((doc_ids[i + 2] as i64) << 42);
+            out.write_long(l)?;
+            i += 3;
+        }
+        while i < count {
+            out.write_short(doc_ids[i] as i16)?;
+            out.write_byte((doc_ids[i] >> 16) as u8)?;
+            i += 1;
+        }
+        Ok(())
+    }
+
+    /// Writes `doc_ids` using the vectorized 24-bits-per-value layout
+    /// introduced in BKD format version 10.
+    ///
+    /// The first `(count >> 2) * 3` doc ids are packed into ints (24 bits
+    /// each, three per int plus the low 8 bits of a fourth), and the residual
+    /// ids are written as a short plus a byte. Mirrors the vectorized branch
+    /// of `DocIdsWriter.writeDocIds` in Lucene Core 10.5.0.
+    fn write_ints24(out: &mut dyn IndexOutput, doc_ids: &[i32]) -> Result<()> {
+        let count = doc_ids.len();
+        let quarter = count >> 2;
+        let num_ints = quarter * 3;
+        let mut scratch = vec![0i32; count];
+        for i in 0..num_ints {
+            scratch[i] = doc_ids[i] << 8;
+        }
+        for i in 0..quarter {
+            let long_idx = i + num_ints;
+            scratch[i] |= doc_ids[long_idx] & 0xFF;
+            scratch[i + quarter] |= (doc_ids[long_idx] >> 8) & 0xFF;
+            scratch[i + quarter * 2] |= doc_ids[long_idx] >> 16;
+        }
+        for &v in scratch.iter().take(num_ints) {
+            out.write_int(v)?;
+        }
+        let mut i = quarter << 2;
+        while i < count {
+            out.write_short(doc_ids[i] as i16)?;
+            out.write_byte((doc_ids[i] >> 16) as u8)?;
+            i += 1;
         }
         Ok(())
     }
@@ -1003,7 +1108,16 @@ impl DocIdsWriter {
     }
 
     /// Reads `count` doc ids from `in_` into `out`.
-    pub fn read_doc_ids(in_: &mut dyn IndexInput, count: usize, out: &mut [i32]) -> Result<()> {
+    ///
+    /// `version` is the BKD format version of the index being read; it selects
+    /// between the scalar and vectorized `BPV_24` layouts, exactly as
+    /// `DocIdsWriter.readInts` does in Lucene Core 10.5.0.
+    pub fn read_doc_ids(
+        in_: &mut dyn IndexInput,
+        count: usize,
+        out: &mut [i32],
+        version: i32,
+    ) -> Result<()> {
         if count > out.len() {
             return Err(LuceneError::IllegalArgument(
                 "read_doc_ids output buffer too small".to_string(),
@@ -1014,7 +1128,14 @@ impl DocIdsWriter {
             CONTINUOUS_IDS => Self::read_continuous_ids(in_, count, out),
             BITSET_IDS => Self::read_bit_set(in_, count, out),
             DELTA_BPV_16 => Self::read_delta16(in_, count, out),
-            BPV_24 => Self::read_scalar_ints24(in_, count, out),
+            BPV_21 => Self::read_ints21(in_, count, out),
+            BPV_24 => {
+                if version < VERSION_VECTORIZE_BPV24_AND_INTRODUCE_BPV21 {
+                    Self::read_scalar_ints24(in_, count, out)
+                } else {
+                    Self::read_ints24(in_, count, out)
+                }
+            }
             BPV_32 => Self::read_ints32(in_, count, out),
             LEGACY_DELTA_VINT => Self::read_legacy_delta_vints(in_, count, out),
             _ => Err(LuceneError::CorruptIndex(format!(
@@ -1040,15 +1161,19 @@ impl DocIdsWriter {
             *word = in_.read_long()? as u64;
         }
         let bit_set = FixedBitSet::from_bits(words, long_len << 6);
+        // The bits are stored relative to the block base (`offset_words << 6`),
+        // so the absolute doc id is the set-bit index plus that base. This
+        // mirrors `DocBaseBitSetIterator` in Lucene Core 10.5.0.
+        let base = (offset_words << 6) as i32;
         let mut pos = 0;
-        for doc in offset_words << 6..bit_set.length() {
-            if bit_set.get(doc) {
+        for rel in 0..bit_set.length() {
+            if bit_set.get(rel) {
                 if pos >= count {
                     return Err(LuceneError::CorruptIndex(
                         "bit set contained more doc ids than expected".to_string(),
                     ));
                 }
-                out[pos] = doc as i32;
+                out[pos] = base + rel as i32;
                 pos += 1;
             }
         }
@@ -1065,13 +1190,76 @@ impl DocIdsWriter {
         let half = count >> 1;
         for i in 0..half {
             let packed = in_.read_int()?;
-            out[i * 2] = (packed >> 16) + min;
-            out[i * 2 + 1] = (packed & 0xFFFF) + min;
+            out[i] = ((packed as u32 >> 16) as i32) + min;
+            out[i + half] = (packed & 0xFFFF) + min;
         }
         if (count & 1) == 1 {
             out[count - 1] = (in_.read_short()? as i32 & 0xFFFF) + min;
         }
         Ok(())
+    }
+
+    fn read_ints21(in_: &mut dyn IndexInput, count: usize, out: &mut [i32]) -> Result<()> {
+        let one_third = floor_to_multiple_of_16((count / 3) as i32) as usize;
+        let num_ints = one_third * 2;
+        let mut scratch = vec![0i32; num_ints];
+        for slot in scratch.iter_mut() {
+            *slot = in_.read_int()?;
+        }
+        Self::decode21(out, &scratch, one_third, num_ints);
+        let mut i = one_third * 3;
+        while i + 2 < count {
+            let l = in_.read_long()? as u64;
+            out[i] = (l & 0x1FFFFF) as i32;
+            out[i + 1] = ((l >> 21) & 0x1FFFFF) as i32;
+            out[i + 2] = (l >> 42) as i32;
+            i += 3;
+        }
+        while i < count {
+            let low = (in_.read_short()? as i32) & 0xFFFF;
+            let high = (in_.read_byte()? as i32) << 16;
+            out[i] = low | high;
+            i += 1;
+        }
+        Ok(())
+    }
+
+    fn decode21(doc_ids: &mut [i32], scratch: &[i32], one_third: usize, num_ints: usize) {
+        for i in 0..num_ints {
+            doc_ids[i] = (scratch[i] as u32 >> 11) as i32;
+        }
+        for i in 0..one_third {
+            doc_ids[i + num_ints] = (scratch[i] & 0x7FF) | ((scratch[i + one_third] & 0x7FF) << 11);
+        }
+    }
+
+    fn read_ints24(in_: &mut dyn IndexInput, count: usize, out: &mut [i32]) -> Result<()> {
+        let quarter = count >> 2;
+        let num_ints = quarter * 3;
+        let mut scratch = vec![0i32; num_ints];
+        for slot in scratch.iter_mut() {
+            *slot = in_.read_int()?;
+        }
+        Self::decode24(out, &scratch, quarter, num_ints);
+        let mut i = quarter << 2;
+        while i < count {
+            let low = (in_.read_short()? as i32) & 0xFFFF;
+            let high = (in_.read_byte()? as i32) << 16;
+            out[i] = low | high;
+            i += 1;
+        }
+        Ok(())
+    }
+
+    fn decode24(doc_ids: &mut [i32], scratch: &[i32], quarter: usize, num_ints: usize) {
+        for i in 0..num_ints {
+            doc_ids[i] = (scratch[i] as u32 >> 8) as i32;
+        }
+        for i in 0..quarter {
+            doc_ids[i + num_ints] = (scratch[i] & 0xFF)
+                | ((scratch[i + quarter] & 0xFF) << 8)
+                | ((scratch[i + quarter * 2] & 0xFF) << 16);
+        }
     }
 
     fn read_scalar_ints24(in_: &mut dyn IndexInput, count: usize, out: &mut [i32]) -> Result<()> {
@@ -1343,7 +1531,7 @@ impl BKDReader {
         leaf_in.seek(block_fp)?;
         let count = leaf_in.read_v_int()? as usize;
         let mut doc_ids = vec![0i32; count];
-        DocIdsWriter::read_doc_ids(leaf_in.as_mut(), count, &mut doc_ids)?;
+        DocIdsWriter::read_doc_ids(leaf_in.as_mut(), count, &mut doc_ids, version)?;
         let mut common_prefix_lengths = vec![0usize; config.num_dims as usize];
         let mut scratch_packed = vec![0u8; config.packed_bytes_length() as usize];
         read_common_prefixes(
@@ -2016,7 +2204,12 @@ impl BKDWriter {
             for (i, slot) in doc_ids.iter_mut().enumerate().take(count) {
                 *slot = heap.doc_id(from + i);
             }
-            write_leaf_block_docs(out, &doc_ids, self.config.max_points_in_leaf_node as usize)?;
+            write_leaf_block_docs(
+                out,
+                &doc_ids,
+                self.config.max_points_in_leaf_node as usize,
+                self.version,
+            )?;
 
             let mut first_value = vec![0u8; self.config.packed_bytes_length() as usize];
             heap.copy_packed_value(from, &mut first_value);
@@ -2519,9 +2712,10 @@ fn write_leaf_block_docs(
     out: &mut dyn IndexOutput,
     doc_ids: &[i32],
     _max_points_in_leaf: usize,
+    version: i32,
 ) -> Result<()> {
     out.write_v_int(doc_ids.len() as i32)?;
-    DocIdsWriter::write_doc_ids(out, doc_ids)
+    DocIdsWriter::write_doc_ids(out, doc_ids, version)
 }
 
 fn write_common_prefixes(
@@ -2875,19 +3069,168 @@ mod tests {
             (0..512).collect(),
             vec![0, 5, 10, 15, 20, 25],
         ];
-        for doc_ids in sequences {
+        // Exercise both the scalar (pre-10) and vectorized (10) BKD versions so
+        // the version gate in the writer and reader is covered.
+        for version in [VERSION_META_FILE, VERSION_CURRENT] {
+            for doc_ids in &sequences {
+                let mut out = MockIndexOutput::new("test", "docids.bin");
+                DocIdsWriter::write_doc_ids(&mut out, doc_ids, version).unwrap();
+                let bytes = out.into_inner();
+                let mut input = MockIndexInput::new(bytes, "docids.bin");
+                let mut decoded = vec![0i32; doc_ids.len()];
+                DocIdsWriter::read_doc_ids(&mut input, doc_ids.len(), &mut decoded, version)
+                    .unwrap();
+                assert_eq!(
+                    decoded, *doc_ids,
+                    "doc ids round-trip failed for {:?} at version {}",
+                    doc_ids, version
+                );
+            }
+        }
+    }
+
+    /// Regression: the BPV_24 encoding must be selected by the BKD format
+    /// version, exactly as `DocIdsWriter.writeDocIds` does in Lucene 10.5.0.
+    ///
+    /// Before the fix, `VERSION_CURRENT` was set to 10 but the scalar BPV_24
+    /// layout was always written, so a Java reader (which dispatches on the
+    /// version) would mis-decode the leaf. This test locks in the version gate
+    /// in both directions: version 9 writes the scalar layout, version 10 the
+    /// vectorized one, and the two byte streams differ.
+    #[test]
+    fn doc_ids_bpv24_version_gate() {
+        // max > 0x1FFFFF and <= 0xFFFFFF, min2max > 0xFFFF: BPV_24 at every
+        // version, but with a different layout depending on the version.
+        let doc_ids = vec![2000000, 2020000, 2040000, 2060000, 2080000, 2100000];
+
+        let mut scalar_out = MockIndexOutput::new("test", "scalar.bin");
+        DocIdsWriter::write_doc_ids(&mut scalar_out, &doc_ids, VERSION_META_FILE).unwrap();
+        let scalar_bytes = scalar_out.into_inner();
+        assert_eq!(
+            scalar_bytes[0], BPV_24 as u8,
+            "version 9 must write the BPV_24 marker"
+        );
+
+        let mut vector_out = MockIndexOutput::new("test", "vector.bin");
+        DocIdsWriter::write_doc_ids(&mut vector_out, &doc_ids, VERSION_CURRENT).unwrap();
+        let vector_bytes = vector_out.into_inner();
+        assert_eq!(
+            vector_bytes[0], BPV_24 as u8,
+            "version 10 must write the BPV_24 marker"
+        );
+
+        assert_ne!(
+            scalar_bytes, vector_bytes,
+            "the scalar and vectorized BPV_24 layouts must differ"
+        );
+
+        for version in [VERSION_META_FILE, VERSION_CURRENT] {
             let mut out = MockIndexOutput::new("test", "docids.bin");
-            DocIdsWriter::write_doc_ids(&mut out, &doc_ids).unwrap();
+            DocIdsWriter::write_doc_ids(&mut out, &doc_ids, version).unwrap();
             let bytes = out.into_inner();
             let mut input = MockIndexInput::new(bytes, "docids.bin");
             let mut decoded = vec![0i32; doc_ids.len()];
-            DocIdsWriter::read_doc_ids(&mut input, doc_ids.len(), &mut decoded).unwrap();
+            DocIdsWriter::read_doc_ids(&mut input, doc_ids.len(), &mut decoded, version).unwrap();
             assert_eq!(
                 decoded, doc_ids,
-                "doc ids round-trip failed for {:?}",
-                doc_ids
+                "BPV_24 round-trip failed at version {}",
+                version
             );
         }
+    }
+
+    /// Regression: BPV_21 was missing entirely. Before the fix, a leaf whose
+    /// doc ids fit in 21 bits (max <= 0x1FFFFF) with a span above 0xFFFF was
+    /// written as BPV_24, and reading a Java-written BPV_21 leaf failed with
+    /// "Unsupported number of bits per value: 21".
+    #[test]
+    fn doc_ids_bpv21_encoding() {
+        // max <= 0x1FFFFF, min2max > 0xFFFF: BPV_21 at version 10.
+        let doc_ids = vec![100000, 120000, 140000, 160000, 180000, 200000];
+
+        let mut out = MockIndexOutput::new("test", "bpv21.bin");
+        DocIdsWriter::write_doc_ids(&mut out, &doc_ids, VERSION_CURRENT).unwrap();
+        let bytes = out.into_inner();
+        assert_eq!(
+            bytes[0], BPV_21 as u8,
+            "version 10 must write the BPV_21 marker"
+        );
+
+        let mut input = MockIndexInput::new(bytes, "bpv21.bin");
+        let mut decoded = vec![0i32; doc_ids.len()];
+        DocIdsWriter::read_doc_ids(&mut input, doc_ids.len(), &mut decoded, VERSION_CURRENT)
+            .unwrap();
+        assert_eq!(decoded, doc_ids, "BPV_21 round-trip failed");
+
+        // At version 9 the BPV_21 branch is gated off, so the same doc ids fall
+        // through to BPV_24.
+        let mut out = MockIndexOutput::new("test", "bpv24.bin");
+        DocIdsWriter::write_doc_ids(&mut out, &doc_ids, VERSION_META_FILE).unwrap();
+        let bytes = out.into_inner();
+        assert_eq!(bytes[0], BPV_24 as u8, "version 9 must fall back to BPV_24");
+    }
+
+    /// Regression: DELTA_BPV_16 packed adjacent pairs (2i, 2i+1) instead of
+    /// halves (i, half+i). The byte stream below is the exact layout Lucene
+    /// 10.5.0 produces for this input, so it also locks in the big-endian byte
+    /// order of the packed ints and the odd-count residual short.
+    #[test]
+    fn doc_ids_delta16_halves_layout() {
+        // min2max (101) > count << 4 (96) and <= 0xFFFF: DELTA_BPV_16.
+        let doc_ids = vec![1000, 1020, 1040, 1060, 1080, 1100];
+
+        let mut out = MockIndexOutput::new("test", "delta16.bin");
+        DocIdsWriter::write_doc_ids(&mut out, &doc_ids, VERSION_CURRENT).unwrap();
+        let bytes = out.into_inner();
+        assert_eq!(bytes[0], DELTA_BPV_16 as u8);
+
+        // vInt(1000) = 0xE8 0x07, then three little-endian ints packing element i
+        // with element half+i: 60 | (0 << 16), 80 | (20 << 16), 100 | (40 << 16).
+        let expected: Vec<u8> = vec![
+            0x10, 0xE8, 0x07, 0x3C, 0x00, 0x00, 0x00, 0x50, 0x00, 0x14, 0x00, 0x64, 0x00, 0x28,
+            0x00,
+        ];
+        assert_eq!(
+            bytes, expected,
+            "DELTA_BPV_16 byte layout diverges from Lucene"
+        );
+
+        let mut input = MockIndexInput::new(bytes, "delta16.bin");
+        let mut decoded = vec![0i32; doc_ids.len()];
+        DocIdsWriter::read_doc_ids(&mut input, doc_ids.len(), &mut decoded, VERSION_CURRENT)
+            .unwrap();
+        assert_eq!(decoded, doc_ids, "DELTA_BPV_16 round-trip failed");
+    }
+
+    /// Regression: the BITSET_IDS reader tested the bit set with the absolute
+    /// doc id instead of the block-relative index. With a smallest doc id of 64
+    /// the block base is non-zero, so the bug would have produced wrong doc ids.
+    /// The byte stream below is the exact layout Lucene 10.5.0 produces.
+    #[test]
+    fn doc_ids_bitset_relative_index() {
+        // Strictly sorted, count (6) < min2max (11) <= count << 4 (96): BITSET_IDS.
+        let doc_ids = vec![64, 66, 68, 70, 72, 74];
+
+        let mut out = MockIndexOutput::new("test", "bitset.bin");
+        DocIdsWriter::write_doc_ids(&mut out, &doc_ids, VERSION_CURRENT).unwrap();
+        let bytes = out.into_inner();
+        assert_eq!(bytes[0], BITSET_IDS as u8);
+
+        // vInt(offsetWords=1), vInt(totalWordCount=1), then one little-endian
+        // long with bits 0, 2, 4, 6, 8, 10 set (relative to the block base 64).
+        let expected: Vec<u8> = vec![
+            0xFF, 0x01, 0x01, 0x55, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(
+            bytes, expected,
+            "BITSET_IDS byte layout diverges from Lucene"
+        );
+
+        let mut input = MockIndexInput::new(bytes, "bitset.bin");
+        let mut decoded = vec![0i32; doc_ids.len()];
+        DocIdsWriter::read_doc_ids(&mut input, doc_ids.len(), &mut decoded, VERSION_CURRENT)
+            .unwrap();
+        assert_eq!(decoded, doc_ids, "BITSET_IDS round-trip failed");
     }
 
     #[test]
