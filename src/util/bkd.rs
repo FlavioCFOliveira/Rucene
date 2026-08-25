@@ -1505,6 +1505,7 @@ impl BKDReader {
             min_packed: self.min_packed_value.clone(),
             max_packed: self.max_packed_value.clone(),
             negative_deltas: vec![false; self.config.num_index_dims as usize],
+            right_node_position: 0,
         };
         let parent = root.clone();
         Self::read_node_data(
@@ -1556,6 +1557,15 @@ impl BKDReader {
                 self.visit(&left, inner, leaf, visitor)?;
 
                 let mut right = node.child(self.num_leaves, false)?;
+                // The right child starts at the absolute offset recorded when
+                // this node's own `read_node_data` ran (Java:
+                // `rightNodePositions[level]`). Seeking is required because the
+                // left-subtree traversal may have pruned a cell and returned
+                // early, leaving the shared cursor mid-stream; without the
+                // seek the right child would be decoded from a desynchronised
+                // position. The left child needs no seek: its bytes
+                // immediately follow the parent's, matching Java's `pushLeft`.
+                inner.seek(node.right_node_position)?;
                 Self::read_node_data(
                     inner,
                     node,
@@ -1588,6 +1598,11 @@ impl BKDReader {
         self.visit_all(&left, inner, leaf, visitor)?;
 
         let mut right = node.child(self.num_leaves, false)?;
+        // See `visit` for why the right child must be sought to: the
+        // `visit_all` descent of the left subtree consumes the left child's
+        // bytes, but a seek keeps the cursor synchronised even under pruning
+        // paths that may be added later and matches Java's `pushRight`.
+        inner.seek(node.right_node_position)?;
         Self::read_node_data(
             inner,
             node,
@@ -1849,6 +1864,20 @@ impl BKDReader {
             child.leaf_block_fp += inner_in.read_v_long()?;
         }
         if child.node_id < num_leaves {
+            // Override the inherited negative-delta flag for the parent's
+            // split dimension BEFORE reading the split code, matching Java's
+            // `readNodeData`: it copies `negativeDeltas[level-1]` into
+            // `negativeDeltas[level]`, sets the parent-split-dim entry to
+            // `isLeft`, and only then reads the split code and applies
+            // `negativeDeltas[level][splitDim]` to `firstDiffByteDelta`. The
+            // child already inherited the parent's flags via `child()`, so we
+            // only need the override here. Reading `parent.negative_deltas`
+            // instead (and overriding after) uses the wrong sign on every
+            // descent when `split_dim == parent.split_dim`, which is always
+            // true for a one-dimensional index.
+            if parent.split_dim >= 0 {
+                child.negative_deltas[parent.split_dim as usize] = is_left;
+            }
             let code = inner_in.read_v_int()?;
             let split_dim = (code % config.num_index_dims) as usize;
             child.split_dim = split_dim as i32;
@@ -1858,7 +1887,7 @@ impl BKDReader {
             let dim_off = split_dim * config.bytes_per_dim as usize;
             if suffix > 0 {
                 let mut first_diff = code / (1 + config.bytes_per_dim);
-                if parent.negative_deltas[split_dim] {
+                if child.negative_deltas[split_dim] {
                     first_diff = -first_diff;
                 }
                 let start = dim_off + prefix;
@@ -1868,28 +1897,41 @@ impl BKDReader {
                     inner_in.read_bytes(&mut child.split_value, start + 1, suffix - 1)?;
                 }
             }
-            if parent.split_dim >= 0 && (parent.split_dim as usize) < config.num_index_dims as usize
-            {
-                let parent_dim_off = parent.split_dim as usize * config.bytes_per_dim as usize;
-                if is_left {
-                    child.max_packed
-                        [parent_dim_off..parent_dim_off + config.bytes_per_dim as usize]
-                        .copy_from_slice(
-                            &parent.split_value
-                                [parent_dim_off..parent_dim_off + config.bytes_per_dim as usize],
-                        );
-                } else {
-                    child.min_packed
-                        [parent_dim_off..parent_dim_off + config.bytes_per_dim as usize]
-                        .copy_from_slice(
-                            &parent.split_value
-                                [parent_dim_off..parent_dim_off + config.bytes_per_dim as usize],
-                        );
-                }
-                child.negative_deltas[parent.split_dim as usize] = is_left;
-            }
-            if child.node_id * 2 < num_leaves {
-                let _left_num_bytes = inner_in.read_v_int()?;
+            let left_num_bytes = if child.node_id * 2 < num_leaves {
+                inner_in.read_v_int()? as i64
+            } else {
+                0
+            };
+            // Record the right child's absolute position so the traversal can
+            // seek to it directly. Java stores this in `rightNodePositions`
+            // after reading `leftNumBytes`; the right child is only reachable
+            // via a seek because the recursive traversal shares one cursor and
+            // may prune (and thus not consume) the left subtree's bytes.
+            child.right_node_position = inner_in.file_pointer() + left_num_bytes;
+        }
+        // Narrow the cell bounds from the parent's split dimension and split
+        // value. Java does this in `pushBoundsLeft`/`pushBoundsRight` (called
+        // from `pushLeft`/`pushRight`), which apply to internal AND leaf nodes;
+        // Rucene folds the same step into `read_node_data` since it is called
+        // exactly once per node at the point Java would pushLeft/pushRight.
+        // Applying this only to internal nodes (the old behaviour) left leaves
+        // with the root's full bounds, defeating tree-level pruning: an
+        // all-identical `-1` leaf, which has no refinement compare, could not
+        // be pruned at all.
+        if parent.split_dim >= 0 && (parent.split_dim as usize) < config.num_index_dims as usize {
+            let parent_dim_off = parent.split_dim as usize * config.bytes_per_dim as usize;
+            if is_left {
+                child.max_packed[parent_dim_off..parent_dim_off + config.bytes_per_dim as usize]
+                    .copy_from_slice(
+                        &parent.split_value
+                            [parent_dim_off..parent_dim_off + config.bytes_per_dim as usize],
+                    );
+            } else {
+                child.min_packed[parent_dim_off..parent_dim_off + config.bytes_per_dim as usize]
+                    .copy_from_slice(
+                        &parent.split_value
+                            [parent_dim_off..parent_dim_off + config.bytes_per_dim as usize],
+                    );
             }
         }
         Ok(())
@@ -1945,6 +1987,13 @@ struct BKDTreeNode {
     min_packed: Vec<u8>,
     max_packed: Vec<u8>,
     negative_deltas: Vec<bool>,
+    /// Absolute byte offset of this internal node's right child within the
+    /// inner-nodes index stream. Recorded by `read_node_data` after reading
+    /// `left_num_bytes` (Java: `rightNodePositions[level]`), so the right
+    /// child can be sought to directly even when the left subtree was
+    /// pruned and left the shared cursor mid-stream. Only meaningful for
+    /// internal nodes; leaves inherit `0` and never use it.
+    right_node_position: i64,
 }
 
 impl BKDTreeNode {
@@ -1965,6 +2014,7 @@ impl BKDTreeNode {
             min_packed: self.min_packed.clone(),
             max_packed: self.max_packed.clone(),
             negative_deltas: self.negative_deltas.clone(),
+            right_node_position: 0,
         })
     }
 }
@@ -3543,7 +3593,12 @@ mod tests {
         let mut expected = Vec::new();
         for i in 0..50 {
             let mut packed = vec![0u8; 4];
-            BitUtil::write_le_int(&mut packed, 0, i * 7);
+            // Big-endian encoding: the BKD tree orders points by unsigned
+            // byte comparison (offset 0 first), so byte order must equal
+            // numeric order for a numeric range query to be correct. Only
+            // big-endian gives that for i32 values >= 256 (values here reach
+            // 49*7 = 343), matching Lucene's IntPoint packed encoding.
+            BitUtil::write_be_int(&mut packed, 0, i * 7);
             writer.add(&packed, i).unwrap();
             expected.push((packed, i));
         }
@@ -3573,7 +3628,7 @@ mod tests {
         let expected_docs: Vec<i32> = expected
             .iter()
             .filter(|(p, _)| {
-                let v = BitUtil::read_le_int(p, 0);
+                let v = BitUtil::read_be_int(p, 0);
                 (50..=150).contains(&v)
             })
             .map(|(_, d)| *d)
@@ -3658,8 +3713,8 @@ mod tests {
 
     impl IntersectVisitor for RangeVisitor {
         fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
-            let min_v = BitUtil::read_le_int(min_packed, 0);
-            let max_v = BitUtil::read_le_int(max_packed, 0);
+            let min_v = BitUtil::read_be_int(min_packed, 0);
+            let max_v = BitUtil::read_be_int(max_packed, 0);
             if max_v < self.min || min_v > self.max {
                 Relation::CellOutsideQuery
             } else if min_v >= self.min && max_v <= self.max {
@@ -3673,7 +3728,7 @@ mod tests {
             Ok(())
         }
         fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
-            let v = BitUtil::read_le_int(packed_value, 0);
+            let v = BitUtil::read_be_int(packed_value, 0);
             if v >= self.min && v <= self.max {
                 self.found.push(doc_id);
             }
@@ -3688,8 +3743,8 @@ mod tests {
 
     impl IntersectVisitor for ExactVisitor {
         fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
-            let min_v = BitUtil::read_le_int(min_packed, 0);
-            let max_v = BitUtil::read_le_int(max_packed, 0);
+            let min_v = BitUtil::read_be_int(min_packed, 0);
+            let max_v = BitUtil::read_be_int(max_packed, 0);
             if self.value < min_v || self.value > max_v {
                 Relation::CellOutsideQuery
             } else if self.value == min_v && self.value == max_v {
@@ -3703,7 +3758,7 @@ mod tests {
             Ok(())
         }
         fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
-            if BitUtil::read_le_int(packed_value, 0) == self.value {
+            if BitUtil::read_be_int(packed_value, 0) == self.value {
                 self.found.push(doc_id);
             }
             Ok(())
@@ -4266,5 +4321,384 @@ mod tests {
             trace.iter().any(|t| t.starts_with("visit_iter_v 4")),
             "trace must show visit_iter_v 4 (4 docs iterated via bulk), got {trace:?}"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Regression tests for task #125 (BKD cursor desync after subtree pruning)
+    // -------------------------------------------------------------------------
+
+    /// Snapshot of one node captured during a manual tree walk. The walk
+    /// mirrors `BkdReader::visit` exactly (including the right-child seek and
+    /// the negative-delta / cell-narrowing order fixed by task #125), so the
+    /// invariants asserted in the tests below exercise the same code path the
+    /// query traversal uses.
+    #[allow(dead_code)]
+    struct NodeInfo {
+        node_id: i32,
+        split_dim: i32,
+        split_value: Vec<u8>,
+        min_packed: Vec<u8>,
+        max_packed: Vec<u8>,
+        is_leaf: bool,
+        /// Split dimension of the parent; `-1` for the root. The parent's
+        /// split is what narrows this node's cell bounds.
+        parent_split_dim: i32,
+        /// Parent's accumulated split value (only meaningful when
+        /// `parent_split_dim >= 0`).
+        parent_split_value: Vec<u8>,
+        /// `(doc_id, packed_value)` for every point in this node's subtree.
+        points: Vec<(i32, Vec<u8>)>,
+    }
+
+    /// Reads the doc IDs of a leaf block directly from the data file and maps
+    /// them to their packed values via `by_doc`.
+    fn read_leaf_points(
+        reader: &BKDReader,
+        node: &BKDTreeNode,
+        by_doc: &std::collections::HashMap<i32, Vec<u8>>,
+    ) -> Vec<(i32, Vec<u8>)> {
+        let mut leaf = reader.data_in.clone_input().unwrap();
+        leaf.seek(node.leaf_block_fp).unwrap();
+        let count = leaf.read_v_int().unwrap() as usize;
+        let mut doc_ids = vec![0i32; count];
+        DocIdsWriter::read_doc_ids(leaf.as_mut(), count, &mut doc_ids, reader.version).unwrap();
+        doc_ids
+            .into_iter()
+            .map(|d| (d, by_doc.get(&d).cloned().unwrap_or_default()))
+            .collect()
+    }
+
+    /// Recursive tree walk that collects one `NodeInfo` per node. It descends
+    /// both children for every internal node using the SAME machinery as
+    /// `BkdReader::visit`: the left child is read in place (no seek, matching
+    /// Java's `pushLeft`), and the right child is sought to
+    /// `node.right_node_position` (matching Java's `pushRight`) before being
+    /// read. This is the exact path that task #125's seek fix repairs.
+    fn walk_collect(
+        reader: &BKDReader,
+        inner: &mut Box<dyn IndexInput>,
+        node: BKDTreeNode,
+        parent_split_dim: i32,
+        parent_split_value: &[u8],
+        by_doc: &std::collections::HashMap<i32, Vec<u8>>,
+        out: &mut Vec<NodeInfo>,
+    ) -> Vec<(i32, Vec<u8>)> {
+        if node.node_id >= reader.num_leaves {
+            let pts = read_leaf_points(reader, &node, by_doc);
+            out.push(NodeInfo {
+                node_id: node.node_id,
+                split_dim: node.split_dim,
+                split_value: node.split_value.clone(),
+                min_packed: node.min_packed.clone(),
+                max_packed: node.max_packed.clone(),
+                is_leaf: true,
+                parent_split_dim,
+                parent_split_value: parent_split_value.to_vec(),
+                points: pts.clone(),
+            });
+            pts
+        } else {
+            let mut left = node.child(reader.num_leaves, true).unwrap();
+            BKDReader::read_node_data(
+                inner,
+                &node,
+                &mut left,
+                true,
+                &reader.config,
+                reader.num_leaves,
+            )
+            .unwrap();
+            let left_pts = walk_collect(
+                reader,
+                inner,
+                left,
+                node.split_dim,
+                &node.split_value,
+                by_doc,
+                out,
+            );
+            let mut right = node.child(reader.num_leaves, false).unwrap();
+            // The seek that task #125 (Defect 1) restored: without it the
+            // right child is decoded from a desynchronised cursor whenever the
+            // left subtree was pruned.
+            inner.seek(node.right_node_position).unwrap();
+            BKDReader::read_node_data(
+                inner,
+                &node,
+                &mut right,
+                false,
+                &reader.config,
+                reader.num_leaves,
+            )
+            .unwrap();
+            let right_pts = walk_collect(
+                reader,
+                inner,
+                right,
+                node.split_dim,
+                &node.split_value,
+                by_doc,
+                out,
+            );
+            let mut pts = left_pts;
+            pts.extend(right_pts);
+            out.push(NodeInfo {
+                node_id: node.node_id,
+                split_dim: node.split_dim,
+                split_value: node.split_value.clone(),
+                min_packed: node.min_packed.clone(),
+                max_packed: node.max_packed.clone(),
+                is_leaf: false,
+                parent_split_dim,
+                parent_split_value: parent_split_value.to_vec(),
+                points: pts.clone(),
+            });
+            pts
+        }
+    }
+
+    /// Builds the full tree from `reader` and returns one `NodeInfo` per node,
+    /// in depth-first order. The root is read the same way `intersect` reads
+    /// it (is_left = false, parent = a clone of the root with split_dim = -1).
+    fn build_tree_info(reader: &BKDReader, points: &[(i32, Vec<u8>)]) -> Vec<NodeInfo> {
+        let mut by_doc = std::collections::HashMap::new();
+        for (d, p) in points {
+            by_doc.insert(*d, p.clone());
+        }
+        let mut inner = reader.index_in.clone_input().unwrap();
+        inner.seek(reader.index_start_pointer).unwrap();
+        let mut root = BKDTreeNode {
+            node_id: 1,
+            leaf_block_fp: 0,
+            split_value: vec![0u8; reader.config.packed_index_bytes_length() as usize],
+            split_dim: -1,
+            min_packed: reader.min_packed_value.clone(),
+            max_packed: reader.max_packed_value.clone(),
+            negative_deltas: vec![false; reader.config.num_index_dims as usize],
+            right_node_position: 0,
+        };
+        let parent = root.clone();
+        BKDReader::read_node_data(
+            &mut inner,
+            &parent,
+            &mut root,
+            false,
+            &reader.config,
+            reader.num_leaves,
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        walk_collect(reader, &mut inner, root, -1, &[], &by_doc, &mut out);
+        out
+    }
+
+    /// Defect 1 regression: when the left subtree is pruned (`CellOutsideQuery`)
+    /// before its bytes are consumed, the right subtree must still be decoded
+    /// from the correct position. Before the fix, `left_num_bytes` was
+    /// discarded and no seek was issued, so the right child read garbage and
+    /// the result set was wrong or panicked.
+    #[test]
+    fn cursor_prunes_left_subtree_returns_right_docs() {
+        // 16 points in 1D, bytes_per_dim = 4, values = i*7 (0,7,...,105). The
+        // points are big-endian encoded so byte order (the BKD tree's packed
+        // order) equals numeric order, matching Lucene's IntPoint contract and
+        // the big-endian-int comparison used by the test visitor.
+        let points: Vec<(i32, Vec<u8>)> = (0..16)
+            .map(|i| {
+                let mut packed = vec![0u8; 4];
+                BitUtil::write_be_int(&mut packed, 0, i * 7);
+                (i, packed)
+            })
+            .collect();
+        // maxPoints = 4 forces a 4-leaf tree (3 internal levels), so an
+        // internal node can prune the whole left subtree.
+        let mut reader = build_bkd_reader(1, 1, 4, 4, &points);
+
+        // Query [80, 120]: the left half of the tree (values 0..49) is
+        // `CellOutsideQuery` at an internal node, so it is pruned before its
+        // inner-index bytes are consumed. Only the rightmost leaf (values
+        // 84..105) is `CellInsideQuery`.
+        let mut visitor = RangeVisitor {
+            min: 80,
+            max: 120,
+            found: Vec::new(),
+        };
+        reader.intersect(&mut visitor).unwrap();
+        visitor.found.sort();
+
+        // Expected: docs whose values fall in [80, 120] = 84,91,98,105
+        // = docs 12,13,14,15.
+        let expected: Vec<i32> = points
+            .iter()
+            .filter(|(_, p)| {
+                let v = BitUtil::read_be_int(p, 0);
+                (80..=120).contains(&v)
+            })
+            .map(|(d, _)| *d)
+            .collect();
+        assert_eq!(
+            visitor.found, expected,
+            "pruned-left-subtree query must return exactly the in-range docs"
+        );
+        assert_eq!(expected, vec![12, 13, 14, 15]);
+    }
+
+    /// Defect 2 regression: in a one-dimensional tree of at least two levels,
+    /// every internal node's cell bounds must contain ALL the values in its
+    /// subtree. Before the fix, the `negativeDeltas` override was applied
+    /// AFTER reading the split code, so the first-difference delta used the
+    /// parent's flag instead of the child's. With one index dimension the
+    /// split dim always equals the parent split dim, so every split value
+    /// from the first inner level was decoded with the wrong sign and the
+    /// cell bounds did not contain the subtree's values.
+    #[test]
+    fn one_dim_two_levels_negative_delta_bounds_match_values() {
+        // 16 points, 1D, big-endian encoded values i*10 (0..150). Big-endian
+        // byte order equals numeric order (the BKD contract), so cell bounds
+        // read as big-endian ints compare numerically with the values. A 1D
+        // tree naturally produces negative first-difference deltas on every
+        // left descent: a left child's split value is less than its parent's
+        // split value along the single dimension.
+        let points: Vec<(i32, Vec<u8>)> = (0..16)
+            .map(|i| {
+                let mut packed = vec![0u8; 4];
+                BitUtil::write_be_int(&mut packed, 0, i * 10);
+                (i, packed)
+            })
+            .collect();
+        let reader = build_bkd_reader(1, 1, 4, 4, &points);
+        let nodes = build_tree_info(&reader, &points);
+
+        // At least one internal node must exist beyond the root.
+        let internal_count = nodes.iter().filter(|n| !n.is_leaf).count();
+        assert!(
+            internal_count >= 2,
+            "expected at least 2 internal nodes (>= 4 leaves), got {internal_count}"
+        );
+
+        for n in nodes.iter().filter(|n| !n.is_leaf) {
+            let cell_min = BitUtil::read_be_int(&n.min_packed, 0);
+            let cell_max = BitUtil::read_be_int(&n.max_packed, 0);
+            for (_, pv) in &n.points {
+                let v = BitUtil::read_be_int(pv, 0);
+                assert!(
+                    (cell_min..=cell_max).contains(&v),
+                    "node {} cell [{}, {}] does not contain value {} from its subtree",
+                    n.node_id,
+                    cell_min,
+                    cell_max,
+                    v
+                );
+            }
+        }
+    }
+
+    /// Defect 3 regression: cell narrowing must apply to leaf nodes as well as
+    /// internal nodes. Asserts (a) every node's cell bounds contain the cells
+    /// of all its descendants, and (b) sibling leaves partition the parent's
+    /// range along the split dimension: the left leaf's max on the split dim
+    /// equals the right leaf's min on the split dim, and both equal the
+    /// parent's split value on that dimension.
+    #[test]
+    fn bounds_invariants_descendants_contained_and_siblings_partition() {
+        // 2D tree, 16 points, maxPoints = 4 -> 4 leaves. dim0 carries the
+        // spread (i, 0..15) and dim1 is held constant so every split falls on
+        // dim0 (the writer's split-value encoding is correct for dim0; mixing
+        // in a varying dim1 would exercise a pre-existing writer bug outside
+        // this task's reader-cursor scope). Per-dim values are all < 256 so
+        // byte-wise cell comparisons are unambiguous.
+        let points: Vec<(i32, Vec<u8>)> = (0..16)
+            .map(|i| {
+                let mut packed = vec![0u8; 8];
+                BitUtil::write_le_int(&mut packed, 0, i);
+                BitUtil::write_le_int(&mut packed, 4, 7);
+                (i, packed)
+            })
+            .collect();
+        let bpd = 4usize;
+        let reader = build_bkd_reader(2, 2, 4, 4, &points);
+        let nodes = build_tree_info(&reader, &points);
+
+        // Index nodes by node_id for descendant lookups.
+        use std::collections::HashMap;
+        let by_id: HashMap<i32, &NodeInfo> = nodes.iter().map(|n| (n.node_id, n)).collect();
+
+        // (a) Every node's cell must contain the cells of all its descendants.
+        // We check the direct children: a parent contains its children, and by
+        // induction that propagates. We also check that every node contains
+        // every point in its subtree.
+        for n in nodes.iter() {
+            let (nmin, nmax) = (&n.min_packed, &n.max_packed);
+            for (_, pv) in &n.points {
+                for d in 0..2 {
+                    let off = d * bpd;
+                    let lo = &nmin[off..off + bpd];
+                    let hi = &nmax[off..off + bpd];
+                    let v = &pv[off..off + bpd];
+                    assert!(
+                        v >= lo && v <= hi,
+                        "node {} cell dim {} [{:?}, {:?}] does not contain point value {:?}",
+                        n.node_id,
+                        d,
+                        lo,
+                        hi,
+                        v
+                    );
+                }
+            }
+            // Direct children's cells must be contained in this node's cell.
+            if !n.is_leaf {
+                let left_id = n.node_id * 2;
+                let right_id = n.node_id * 2 + 1;
+                for cid in [left_id, right_id] {
+                    if let Some(child) = by_id.get(&cid) {
+                        for d in 0..2 {
+                            let off = d * bpd;
+                            assert!(
+                                child.min_packed[off..off + bpd] >= nmin[off..off + bpd]
+                                    && child.max_packed[off..off + bpd] <= nmax[off..off + bpd],
+                                "node {} does not contain child {} on dim {}",
+                                n.node_id,
+                                cid,
+                                d
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // (b) Sibling leaves partition the parent's range along the split
+        // dimension: left.max == right.min == parent.split_value on that dim.
+        for n in nodes.iter().filter(|n| !n.is_leaf) {
+            let left_id = n.node_id * 2;
+            let right_id = n.node_id * 2 + 1;
+            let (left, right) = match (by_id.get(&left_id), by_id.get(&right_id)) {
+                (Some(l), Some(r)) => (*l, *r),
+                _ => continue,
+            };
+            if !(left.is_leaf && right.is_leaf) {
+                continue;
+            }
+            assert!(
+                n.split_dim >= 0,
+                "internal node {} has no split dim",
+                n.node_id
+            );
+            let off = n.split_dim as usize * bpd;
+            let parent_split = &n.split_value[off..off + bpd];
+            let left_max = &left.max_packed[off..off + bpd];
+            let right_min = &right.min_packed[off..off + bpd];
+            assert_eq!(
+                left_max, parent_split,
+                "left leaf {} max on dim {} != parent {} split value",
+                left.node_id, n.split_dim, n.node_id
+            );
+            assert_eq!(
+                right_min, parent_split,
+                "right leaf {} min on dim {} != parent {} split value",
+                right.node_id, n.split_dim, n.node_id
+            );
+        }
     }
 }
