@@ -56,6 +56,8 @@ use rucene::index::vector_values::{
 };
 use rucene::index::VectorSimilarityFunction;
 use rucene::search::{DocIdSetIterator, NO_MORE_DOCS};
+use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+use rucene::util::bkd::{BKDConfig, BKDReader, BKDWriter};
 use rucene::util::vector_util;
 
 // ---------------------------------------------------------------------------
@@ -580,6 +582,75 @@ fn rust_values(java: &JavaPoints) -> InMemoryPointValues {
     .expect("the leaf Java produced satisfies the PointTree contract")
 }
 
+/// Builds a real BKD index from the Java fixture's points and returns a reader
+/// over it.
+///
+/// This routes the `intersect` call through the production BKD cursor — the same
+/// code path Lucene uses — so the trace includes the refinement `compare` against
+/// the leaf's narrowed bounds that the in-memory reference tree does not emit.
+fn bkd_reader_from_java_points(java: &JavaPoints) -> BKDReader {
+    let dir = RamDirectory::default();
+    let config = BKDConfig::of(
+        java.num_dims,
+        java.num_index_dims,
+        java.bytes_per_dim,
+        BKDConfig::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
+    )
+    .expect("BKDConfig from Java dimensions");
+
+    let mut writer = BKDWriter::new(
+        java.doc_count,
+        Box::new(RamDirectory::default()),
+        "_0",
+        config.clone(),
+        16.0,
+        java.points.len() as i64,
+        BKDWriter::VERSION_CURRENT,
+    )
+    .expect("BKDWriter");
+
+    for (doc_id, packed) in &java.points {
+        writer.add(packed, *doc_id).expect("add point");
+    }
+
+    let meta_out = dir
+        .create_output("_0.kdm", &*DEFAULT_IO_CONTEXT)
+        .expect("create meta output");
+    let index_out = dir
+        .create_output("_0.kdi", &*DEFAULT_IO_CONTEXT)
+        .expect("create index output");
+    let data_out = dir
+        .create_output("_0.kdd", &*DEFAULT_IO_CONTEXT)
+        .expect("create data output");
+
+    // `finish` consumes the outputs by value through `&mut dyn IndexOutput`.
+    let mut meta_out = meta_out;
+    let mut index_out = index_out;
+    let mut data_out = data_out;
+    writer
+        .finish(meta_out.as_mut(), index_out.as_mut(), data_out.as_mut())
+        .expect("finish BKD tree");
+
+    // `RamIndexOutput` only persists its bytes to the directory on `close`,
+    // so the outputs must be closed before they can be opened for reading.
+    meta_out.close().expect("close meta output");
+    index_out.close().expect("close index output");
+    data_out.close().expect("close data output");
+
+    let mut meta_in = dir
+        .open_input("_0.kdm", &*DEFAULT_IO_CONTEXT)
+        .expect("open meta input");
+    let mut index_in = dir
+        .open_input("_0.kdi", &*DEFAULT_IO_CONTEXT)
+        .expect("open index input");
+    let mut data_in = dir
+        .open_input("_0.kdd", &*DEFAULT_IO_CONTEXT)
+        .expect("open data input");
+
+    BKDReader::new(meta_in.as_mut(), index_in.as_mut(), data_in.as_mut())
+        .expect("BKDReader from written index")
+}
+
 fn assert_metadata_matches(java: &JavaPoints, values: &InMemoryPointValues) {
     assert_eq!(values.size(), java.size, "size");
     assert_eq!(values.doc_count(), java.doc_count, "doc count");
@@ -682,19 +753,32 @@ fn two_dimensional_single_leaf_results_match_java() {
     let values = rust_values(&java);
     assert_metadata_matches(&java, &values);
 
+    // Build a real BKD index from the Java fixture's points so the trace
+    // comparison goes through the production BKD cursor. For `numIndexDims != 1`
+    // BKDReader issues an extra `compare` against the leaf's narrowed bounds
+    // before visiting — the in-memory reference tree does not, so its trace
+    // cannot match Java's for the 2D case.
+    let mut bkd_reader = bkd_reader_from_java_points(&java);
+
     for (name, min, max) in &java.queries {
+        // Trace comparison through the BKD reader.
         let mut visitor = TracingVisitor::new(min, max, java.num_index_dims, java.bytes_per_dim);
-        values.intersect(&mut visitor).expect("traversal succeeds");
-        // The raw trace is deliberately not compared here: for
-        // `numIndexDims != 1` BKDReader issues an extra `compare` against the
-        // leaf's narrowed bounds before visiting, which is a property of the
-        // BKD cursor rather than of the traversal algorithm. Task #119 brings
-        // that cursor, and with it the trace comparison for this case.
+        bkd_reader
+            .intersect(&mut visitor)
+            .unwrap_or_else(|e| panic!("query {name}: BKD traversal failed: {e}"));
+        assert_eq!(
+            visitor.trace(),
+            java.traces.get(name).cloned().unwrap_or_default(),
+            "query {name}: the BKD intersect call trace diverges from Lucene"
+        );
         assert_eq!(
             visitor.accepted, java.accepted[name],
-            "query {name}: accepted documents"
+            "query {name}: accepted documents (BKD reader)"
         );
 
+        // Estimates via the in-memory reference tree, as before: the
+        // estimators are PointValues-level and do not depend on the BKD
+        // cursor's refinement compare.
         let mut estimator = TracingVisitor::new(min, max, java.num_index_dims, java.bytes_per_dim);
         let point_count = values.estimate_point_count(&mut estimator).unwrap();
         let doc_count = values.estimate_doc_count(&mut estimator).unwrap();

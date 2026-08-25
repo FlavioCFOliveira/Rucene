@@ -41,11 +41,12 @@ use std::{cmp::Ordering, collections::HashSet};
 use crate::{
     codecs::codec_util::{check_header, write_header},
     error::{LuceneError, Result},
+    search::{DocIdSetIterator, NO_MORE_DOCS},
     store::{
         ByteArrayDataOutput, DataOutput, Directory, IndexInput, IndexOutput, DEFAULT_IO_CONTEXT,
         READONCE_IO_CONTEXT,
     },
-    util::{BitUtil, FixedBitSet},
+    util::{BitUtil, FixedBitSet, IntsRef},
 };
 
 #[cfg(test)]
@@ -1320,6 +1321,74 @@ impl DocIdsWriter {
 pub use crate::index::point_values::{IntersectVisitor, Relation};
 
 // -----------------------------------------------------------------------------
+// BkdReaderDocIdSetIterator
+// -----------------------------------------------------------------------------
+
+/// Borrowing `DocIdSetIterator` over a slice of doc IDs, mirroring Java's
+/// `BKDReader.BKDReaderDocIDSetIterator`.
+///
+/// Java's iterator owns an `int[]` populated by the reader; this Rust equivalent
+/// borrows a `&[i32]` slice for the same lifetime. It is reusable across leaves:
+/// call [`reset`](Self::reset) before each bulk visit to reposition the window.
+///
+/// Equivalent to `org.apache.lucene.util.bkd.BKDReader.BKDReaderDocIDSetIterator`.
+pub struct BkdReaderDocIdSetIterator<'a> {
+    doc_ids: &'a [i32],
+    offset: usize,
+    length: usize,
+    idx: usize,
+    doc: i32,
+}
+
+impl<'a> BkdReaderDocIdSetIterator<'a> {
+    /// Creates an iterator over the given doc-ID slice, initially unpositioned.
+    pub fn new(doc_ids: &'a [i32]) -> Self {
+        Self {
+            doc_ids,
+            offset: 0,
+            length: 0,
+            idx: 0,
+            doc: -1,
+        }
+    }
+
+    /// Repositions the iterator to before `offset` for a run of `length` doc IDs.
+    ///
+    /// After calling this, [`doc_id`](Self::doc_id) returns `-1` and the first
+    /// [`next_doc`](Self::next_doc) will yield `doc_ids[offset]`.
+    pub fn reset(&mut self, offset: usize, length: usize) {
+        self.offset = offset;
+        self.length = length;
+        self.doc = -1;
+        self.idx = 0;
+    }
+}
+
+impl<'a> DocIdSetIterator for BkdReaderDocIdSetIterator<'a> {
+    fn doc_id(&self) -> i32 {
+        self.doc
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        if self.idx >= self.length {
+            self.doc = NO_MORE_DOCS;
+        } else {
+            self.doc = self.doc_ids[self.offset + self.idx];
+            self.idx += 1;
+        }
+        Ok(self.doc)
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.slow_advance(target)
+    }
+
+    fn cost(&self) -> i64 {
+        self.length as i64
+    }
+}
+
+// -----------------------------------------------------------------------------
 // BKDReader
 // -----------------------------------------------------------------------------
 
@@ -1457,13 +1526,26 @@ impl BKDReader {
         visitor: &mut dyn IntersectVisitor,
     ) -> Result<()> {
         if node.node_id >= self.num_leaves {
-            return Self::visit_leaf(
-                leaf,
-                &self.config,
-                self.version,
-                node.leaf_block_fp,
-                visitor,
-            );
+            // Leaf node: Java's `PointValues.intersect` calls `compare` at
+            // the tree level before dispatching to `visitDocValues` or
+            // `visitDocIDs`. `BKDReader.visit` must do the same so the trace
+            // carries the tree-level `compare` that precedes the leaf-level
+            // refinement `compare` inside `visitDocValuesWithCardinality`.
+            match visitor.compare(&node.min_packed, &node.max_packed) {
+                Relation::CellOutsideQuery => return Ok(()),
+                Relation::CellInsideQuery => {
+                    return self.visit_all(node, inner, leaf, visitor);
+                }
+                Relation::CellCrossesQuery => {
+                    return Self::visit_leaf(
+                        leaf,
+                        &self.config,
+                        self.version,
+                        node.leaf_block_fp,
+                        visitor,
+                    );
+                }
+            }
         }
         match visitor.compare(&node.min_packed, &node.max_packed) {
             Relation::CellOutsideQuery => Ok(()),
@@ -1496,13 +1578,10 @@ impl BKDReader {
         visitor: &mut dyn IntersectVisitor,
     ) -> Result<()> {
         if node.node_id >= self.num_leaves {
-            return Self::visit_leaf(
-                leaf,
-                &self.config,
-                self.version,
-                node.leaf_block_fp,
-                visitor,
-            );
+            // Fully inside: visit every doc ID without value-level filtering,
+            // matching Java's `addAll` which reads doc IDs and calls
+            // `visit(IntsRef)` without touching the leaf bounds.
+            return Self::visit_leaf_doc_ids(leaf, self.version, node.leaf_block_fp, visitor);
         }
         let mut left = node.child(self.num_leaves, true)?;
         Self::read_node_data(inner, node, &mut left, true, &self.config, self.num_leaves)?;
@@ -1518,6 +1597,28 @@ impl BKDReader {
             self.num_leaves,
         )?;
         self.visit_all(&right, inner, leaf, visitor)?;
+        Ok(())
+    }
+
+    /// Visits every doc ID in a leaf without value-level filtering.
+    ///
+    /// Equivalent to the leaf branch of Java's `BKDReader.addAll`, which reads
+    /// the doc IDs and calls `visitor.visit(IntsRef)` (or the `DocIdSetIterator`
+    /// bulk form) without reading the leaf's value bounds. Used when the cell
+    /// is fully inside the query.
+    fn visit_leaf_doc_ids(
+        leaf_in: &mut Box<dyn IndexInput>,
+        version: i32,
+        block_fp: i64,
+        visitor: &mut dyn IntersectVisitor,
+    ) -> Result<()> {
+        leaf_in.seek(block_fp)?;
+        let count = leaf_in.read_v_int()? as usize;
+        let mut doc_ids = vec![0i32; count];
+        DocIdsWriter::read_doc_ids(leaf_in.as_mut(), count, &mut doc_ids, version)?;
+        visitor.grow(count as i32);
+        let ints_ref = IntsRef::new(doc_ids);
+        visitor.visit_ints_ref(&ints_ref)?;
         Ok(())
     }
 
@@ -1540,40 +1641,200 @@ impl BKDReader {
             &mut scratch_packed,
             config,
         )?;
-        if config.num_index_dims != 1 && version >= VERSION_LEAF_STORES_BOUNDS {
-            skip_actual_bounds(leaf_in.as_mut(), config, &common_prefix_lengths)?;
+        if version >= VERSION_LOW_CARDINALITY_LEAVES {
+            Self::visit_leaf_with_cardinality(
+                leaf_in,
+                config,
+                version,
+                &mut common_prefix_lengths,
+                &mut scratch_packed,
+                &doc_ids,
+                visitor,
+            )
+        } else {
+            Self::visit_leaf_no_cardinality(
+                leaf_in,
+                config,
+                version,
+                &mut common_prefix_lengths,
+                &mut scratch_packed,
+                &doc_ids,
+                visitor,
+            )
         }
-        // `BKDReader.visitDocValuesNoCardinality` announces the exact leaf point
-        // count before handing any value over. The narrowing re-check it also
-        // performs against the leaf's stored bounds is a traversal refinement
-        // that arrives with the BKD-backed `PointTree`.
-        visitor.grow(count as i32);
+    }
+
+    /// Visits a leaf block written in the version-7-and-later layout, where the
+    /// compressed-dimension byte precedes the actual value bounds.
+    ///
+    /// Equivalent to `BKDReader.visitDocValuesWithCardinality`.
+    fn visit_leaf_with_cardinality(
+        leaf_in: &mut Box<dyn IndexInput>,
+        config: &BKDConfig,
+        version: i32,
+        common_prefix_lengths: &mut [usize],
+        scratch_packed: &mut [u8],
+        doc_ids: &[i32],
+        visitor: &mut dyn IntersectVisitor,
+    ) -> Result<()> {
         let compressed_dim = read_compressed_dim(leaf_in.as_mut(), version, config)?;
         if compressed_dim == -1 {
-            for &doc in &doc_ids {
-                visitor.visit_with_value(doc, &scratch_packed)?;
+            // All values in the leaf are identical: the packed value is fully
+            // determined by the common prefixes, and no bounds are stored, even
+            // when there are several index dimensions.
+            //
+            // Equivalent to `BKDReader.visitUniqueRawDocValues`: one bulk
+            // `visit(DocIdSetIterator, byte[])` call, not N per-doc calls.
+            visitor.grow(doc_ids.len() as i32);
+            let mut iter = BkdReaderDocIdSetIterator::new(doc_ids);
+            iter.reset(0, doc_ids.len());
+            visitor.visit_iterator_with_value(&mut iter, scratch_packed)?;
+            return Ok(());
+        }
+        if config.num_index_dims != 1 {
+            if Self::refine_relation_with_leaf_bounds(
+                leaf_in.as_mut(),
+                config,
+                common_prefix_lengths,
+                scratch_packed,
+                doc_ids,
+                visitor,
+            )? {
+                return Ok(());
             }
-        } else if compressed_dim == -2 {
+        } else {
+            // Single index dimension: the cell bounds from the index are the
+            // bounds of the values, so no refinement is possible.
+            visitor.grow(doc_ids.len() as i32);
+        }
+        if compressed_dim == -2 {
             visit_sparse_doc_values(
                 leaf_in.as_mut(),
                 config,
-                &common_prefix_lengths,
-                &mut scratch_packed,
-                &doc_ids,
+                common_prefix_lengths,
+                scratch_packed,
+                doc_ids,
                 visitor,
             )?;
         } else {
             visit_compressed_doc_values(
                 leaf_in.as_mut(),
                 config,
-                &mut common_prefix_lengths,
-                &mut scratch_packed,
-                &doc_ids,
+                common_prefix_lengths,
+                scratch_packed,
+                doc_ids,
                 visitor,
                 compressed_dim,
             )?;
         }
         Ok(())
+    }
+
+    /// Visits a leaf block written in the pre-version-7 layout, where the actual
+    /// value bounds precede the compressed-dimension byte.
+    ///
+    /// Equivalent to `BKDReader.visitDocValuesNoCardinality`.
+    fn visit_leaf_no_cardinality(
+        leaf_in: &mut Box<dyn IndexInput>,
+        config: &BKDConfig,
+        version: i32,
+        common_prefix_lengths: &mut [usize],
+        scratch_packed: &mut [u8],
+        doc_ids: &[i32],
+        visitor: &mut dyn IntersectVisitor,
+    ) -> Result<()> {
+        if config.num_index_dims != 1 && version >= VERSION_LEAF_STORES_BOUNDS {
+            if Self::refine_relation_with_leaf_bounds(
+                leaf_in.as_mut(),
+                config,
+                common_prefix_lengths,
+                scratch_packed,
+                doc_ids,
+                visitor,
+            )? {
+                return Ok(());
+            }
+        } else {
+            visitor.grow(doc_ids.len() as i32);
+        }
+        let compressed_dim = read_compressed_dim(leaf_in.as_mut(), version, config)?;
+        if compressed_dim == -1 {
+            // All values are the same; `grow` was already called above.
+            //
+            // Equivalent to `BKDReader.visitUniqueRawDocValues`: one bulk
+            // `visit(DocIdSetIterator, byte[])` call, not N per-doc calls.
+            let mut iter = BkdReaderDocIdSetIterator::new(doc_ids);
+            iter.reset(0, doc_ids.len());
+            visitor.visit_iterator_with_value(&mut iter, scratch_packed)?;
+        } else {
+            visit_compressed_doc_values(
+                leaf_in.as_mut(),
+                config,
+                common_prefix_lengths,
+                scratch_packed,
+                doc_ids,
+                visitor,
+                compressed_dim,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Reads the leaf's actual value bounds and re-checks the visitor relation
+    /// against them, refining what the cell bounds from the index implied.
+    ///
+    /// The cell bounds reflect the splits that produced the leaf, but the
+    /// actual values stored in it can span a far narrower range — especially
+    /// when dimensions are correlated, so that splitting on one dimension
+    /// significantly changes the range of another. Re-checking here is cheap
+    /// and can reveal that the block either entirely matches or does not match
+    /// at all.
+    ///
+    /// Returns `Ok(true)` when the leaf was fully handled by this check: the
+    /// bounds fall outside the query (nothing visited) or they fall entirely
+    /// inside it (all doc IDs handed over through the bulk visit, without
+    /// decoding a single value). Returns `Ok(false)` when the leaf crosses the
+    /// query and its values must be decoded. In the latter two cases the
+    /// visitor has been grown to the leaf's point count; in the outside case
+    /// it has not, exactly as Java does.
+    ///
+    /// Equivalent to the `readMinMax` + `visitor.compare` block shared by
+    /// `BKDReader.visitDocValuesNoCardinality` and
+    /// `BKDReader.visitDocValuesWithCardinality`.
+    fn refine_relation_with_leaf_bounds(
+        leaf_in: &mut dyn IndexInput,
+        config: &BKDConfig,
+        common_prefix_lengths: &[usize],
+        scratch_packed: &[u8],
+        doc_ids: &[i32],
+        visitor: &mut dyn IntersectVisitor,
+    ) -> Result<bool> {
+        let bounds_len = config.packed_index_bytes_length() as usize;
+        let mut min_packed = vec![0u8; bounds_len];
+        let mut max_packed = vec![0u8; bounds_len];
+        // Seed both bounds with the common prefixes before reading the
+        // adjusted box from the stream.
+        min_packed.copy_from_slice(&scratch_packed[..bounds_len]);
+        max_packed.copy_from_slice(&scratch_packed[..bounds_len]);
+        read_min_max(
+            leaf_in,
+            config,
+            common_prefix_lengths,
+            &mut min_packed,
+            &mut max_packed,
+        )?;
+
+        let relation = visitor.compare(&min_packed, &max_packed);
+        if relation == Relation::CellOutsideQuery {
+            return Ok(true);
+        }
+        visitor.grow(doc_ids.len() as i32);
+        if relation == Relation::CellInsideQuery {
+            let ints_ref = IntsRef::new(doc_ids.to_vec());
+            visitor.visit_ints_ref(&ints_ref)?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     fn read_node_data(
@@ -1745,21 +2006,23 @@ fn read_compressed_dim(in_: &mut dyn IndexInput, version: i32, config: &BKDConfi
     Ok(dim)
 }
 
-fn skip_actual_bounds(
+/// Reads the leaf's actual value bounds, one min/max pair per index dimension,
+/// skipping the common prefix of each dimension.
+///
+/// Equivalent to `BKDReader.readMinMax`.
+fn read_min_max(
     in_: &mut dyn IndexInput,
     config: &BKDConfig,
     common_prefix_lengths: &[usize],
+    min_packed: &mut [u8],
+    max_packed: &mut [u8],
 ) -> Result<()> {
-    let mut discard = vec![0u8; config.bytes_per_dim as usize];
-    for &prefix in common_prefix_lengths
-        .iter()
-        .take(config.num_index_dims as usize)
-    {
+    for dim in 0..config.num_index_dims as usize {
+        let prefix = common_prefix_lengths[dim];
+        let off = dim * config.bytes_per_dim as usize + prefix;
         let suffix = config.bytes_per_dim as usize - prefix;
-        if suffix > 0 {
-            in_.read_bytes(&mut discard, 0, suffix)?;
-            in_.read_bytes(&mut discard, 0, suffix)?;
-        }
+        in_.read_bytes(min_packed, off, suffix)?;
+        in_.read_bytes(max_packed, off, suffix)?;
     }
     Ok(())
 }
@@ -3486,5 +3749,522 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Recording visitor for leaf-reading tests (A/B/C)
+    // -------------------------------------------------------------------------
+
+    /// Visitor that records every callback as a short tag, so the exact call
+    /// sequence can be asserted in tests.
+    struct RecordingVisitor {
+        query_min: Vec<u8>,
+        query_max: Vec<u8>,
+        num_index_dims: usize,
+        bytes_per_dim: usize,
+        trace: std::cell::RefCell<Vec<String>>,
+        found: Vec<i32>,
+    }
+
+    impl RecordingVisitor {
+        fn new(
+            query_min: &[u8],
+            query_max: &[u8],
+            num_index_dims: usize,
+            bytes_per_dim: usize,
+        ) -> Self {
+            Self {
+                query_min: query_min.to_vec(),
+                query_max: query_max.to_vec(),
+                num_index_dims,
+                bytes_per_dim,
+                trace: std::cell::RefCell::new(Vec::new()),
+                found: Vec::new(),
+            }
+        }
+
+        fn dim<'a>(&self, value: &'a [u8], dim: usize) -> &'a [u8] {
+            let off = dim * self.bytes_per_dim;
+            &value[off..off + self.bytes_per_dim]
+        }
+
+        fn relate(&self, cell_min: &[u8], cell_max: &[u8]) -> Relation {
+            let mut inside = true;
+            for dim in 0..self.num_index_dims {
+                if self.dim(cell_max, dim) < self.dim(&self.query_min, dim)
+                    || self.dim(cell_min, dim) > self.dim(&self.query_max, dim)
+                {
+                    return Relation::CellOutsideQuery;
+                }
+                if self.dim(cell_min, dim) < self.dim(&self.query_min, dim)
+                    || self.dim(cell_max, dim) > self.dim(&self.query_max, dim)
+                {
+                    inside = false;
+                }
+            }
+            if inside {
+                Relation::CellInsideQuery
+            } else {
+                Relation::CellCrossesQuery
+            }
+        }
+
+        fn matches(&self, packed: &[u8]) -> bool {
+            (0..self.num_index_dims).all(|dim| {
+                self.dim(packed, dim) >= self.dim(&self.query_min, dim)
+                    && self.dim(packed, dim) <= self.dim(&self.query_max, dim)
+            })
+        }
+
+        fn trace(&self) -> Vec<String> {
+            self.trace.borrow().clone()
+        }
+    }
+
+    impl IntersectVisitor for RecordingVisitor {
+        fn visit(&mut self, doc_id: i32) -> Result<()> {
+            self.trace.borrow_mut().push(format!("visit {doc_id}"));
+            self.found.push(doc_id);
+            Ok(())
+        }
+
+        fn visit_ints_ref(&mut self, ints_ref: &IntsRef) -> Result<()> {
+            // Record the bulk call but do NOT fan out to `visit`, so the trace
+            // cleanly distinguishes the bulk `visit_ints_ref` path (INSIDE) from
+            // the per-doc `visit_with_value` path (CROSSES).
+            self.trace
+                .borrow_mut()
+                .push(format!("visit_ints_ref {}", ints_ref.length));
+            for doc_id in ints_ref.slice().iter().copied() {
+                self.found.push(doc_id);
+            }
+            Ok(())
+        }
+
+        fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
+            self.trace.borrow_mut().push(format!("visitv {doc_id}"));
+            if self.matches(packed_value) {
+                self.found.push(doc_id);
+            }
+            Ok(())
+        }
+
+        fn visit_iterator_with_value(
+            &mut self,
+            iterator: &mut dyn DocIdSetIterator,
+            packed_value: &[u8],
+        ) -> Result<()> {
+            // Record the bulk call but do NOT fan out to `visit_with_value`, so
+            // the trace cleanly shows ONE `visit_iter_v` entry (the Divergence 1
+            // fix path) with no per-doc `visitv` entries.
+            let mut count = 0;
+            loop {
+                let doc_id = iterator.next_doc()?;
+                if doc_id == NO_MORE_DOCS {
+                    break;
+                }
+                count += 1;
+                if self.matches(packed_value) {
+                    self.found.push(doc_id);
+                }
+            }
+            self.trace
+                .borrow_mut()
+                .push(format!("visit_iter_v {count}"));
+            Ok(())
+        }
+
+        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+            let r = self.relate(min_packed, max_packed);
+            self.trace.borrow_mut().push(format!("compare {r:?}"));
+            r
+        }
+
+        fn grow(&mut self, count: i32) {
+            self.trace.borrow_mut().push(format!("grow {count}"));
+        }
+    }
+
+    /// Builds a BKD index from the given points and returns a reader.
+    ///
+    /// `max_points_in_leaf_node` controls the leaf size: pass a large value
+    /// (e.g. 512) for a single-leaf tree, or a small value (e.g. 4) for a
+    /// multi-leaf tree where leaf cell bounds (from parent splits) are wider
+    /// than the leaf's actual value bounds (from `readMinMax`).
+    fn build_bkd_reader(
+        num_dims: i32,
+        num_index_dims: i32,
+        bytes_per_dim: i32,
+        max_points_in_leaf_node: i32,
+        points: &[(i32, Vec<u8>)],
+    ) -> BKDReader {
+        let dir = Box::new(RamDirectory::new());
+        let config = BKDConfig::of(
+            num_dims,
+            num_index_dims,
+            bytes_per_dim,
+            max_points_in_leaf_node,
+        )
+        .unwrap();
+        let mut writer =
+            BKDWriter::new_default(100, dir, "bkd", config.clone(), 16.0, points.len() as i64)
+                .unwrap();
+        for (doc_id, packed) in points {
+            writer.add(packed, *doc_id).unwrap();
+        }
+        let mut meta = MockIndexOutput::new("meta", "meta.bin");
+        let mut index = MockIndexOutput::new("index", "index.bin");
+        let mut data = MockIndexOutput::new("data", "data.bin");
+        writer.finish(&mut meta, &mut index, &mut data).unwrap();
+        writer.close().unwrap();
+
+        let mut meta_in = MockIndexInput::new(meta.into_inner(), "meta.bin");
+        let mut index_in = MockIndexInput::new(index.into_inner(), "index.bin");
+        let mut data_in = MockIndexInput::new(data.into_inner(), "data.bin");
+        BKDReader::new(&mut meta_in, &mut index_in, &mut data_in).unwrap()
+    }
+
+    // -------------------------------------------------------------------------
+    // (A) Multi-index-dimension leaf, coincidence broken
+    // -------------------------------------------------------------------------
+
+    /// Data chosen so that the current coincidence does NOT hold: the sorted
+    /// (compressed) dimension is NOT 0 and the last bounds byte is NOT 0.
+    ///
+    /// Two 2D points with `bytes_per_dim = 4`:
+    ///   - dim0 = `{00,00,00,7F}` for both (identical, so the common prefix
+    ///     covers all 4 bytes)
+    ///   - dim1 = `{10,00,00,00}` and `{20,00,00,00}` (differ in the first byte)
+    ///
+    /// BKD sorts on the dimension with the widest spread, which is dim1, so
+    /// `compressed_dim = 1` (not 0). The last bounds byte for dim1 is `0x10`
+    /// or `0x20`, neither of which is zero. This exercises the `read_min_max`
+    /// path that was previously a silent `skip_actual_bounds`.
+    #[test]
+    fn leaf_with_nonzero_sorted_dim_and_nonzero_bounds_byte() {
+        let points: Vec<(i32, Vec<u8>)> = vec![
+            (0, vec![0x00, 0x00, 0x00, 0x7F, 0x10, 0x00, 0x00, 0x00]),
+            (1, vec![0x00, 0x00, 0x00, 0x7F, 0x20, 0x00, 0x00, 0x00]),
+        ];
+        let mut reader = build_bkd_reader(2, 2, 4, 512, &points);
+
+        // Query that CROSSES the cell in dim1 so both the tree-level and the
+        // leaf-level refinement `compare` fire, and every point is visited
+        // individually via `visit_with_value`.
+        //
+        // Cell bounds: dim0 = [00,00,00,7F]..[00,00,00,7F] (identical),
+        //              dim1 = [10,00,00,00]..[20,00,00,00].
+        // Query:       dim0 = [00..FF] (fully contains), dim1 = [15..25]
+        //              (crosses: cell min 0x10 < query min 0x15,
+        //               cell max 0x20 <= query max 0x25).
+        let query_min = vec![0x00, 0x00, 0x00, 0x00, 0x15, 0x00, 0x00, 0x00];
+        let query_max = vec![0xFF, 0xFF, 0xFF, 0xFF, 0x25, 0x00, 0x00, 0x00];
+        let mut visitor = RecordingVisitor::new(&query_min, &query_max, 2, 4);
+        reader.intersect(&mut visitor).unwrap();
+
+        // The decoded points must match what was written. Only point 1
+        // (dim1 = 0x20) is inside the query dim1 range [0x15..0x25]; point 0
+        // (dim1 = 0x10) is below the query min.
+        assert_eq!(visitor.found, vec![1], "only doc 1 matches the query");
+
+        // The trace must contain two compares: the tree-level compare and the
+        // leaf-level refinement compare.
+        let trace = visitor.trace();
+        let compare_count = trace.iter().filter(|t| t.starts_with("compare")).count();
+        assert_eq!(
+            compare_count, 2,
+            "expected two compares (tree + refinement), got {trace:?}"
+        );
+
+        // The last bounds byte for the sorted dimension (dim1) is non-zero,
+        // which is exactly the case the old `skip_actual_bounds` code would
+        // have mishandled. The fact that we read the correct points proves the
+        // `read_min_max` fix works.
+    }
+
+    // -------------------------------------------------------------------------
+    // (B) Refinement comparison, three outcomes
+    // -------------------------------------------------------------------------
+
+    /// Exercises the three outcomes of the leaf-level **refinement** `compare`
+    /// (the extra `compare` inside `visitDocValuesWithCardinality` that
+    /// re-checks the visitor relation against the leaf's narrowed value bounds
+    /// from `readMinMax`).
+    ///
+    /// The refinement compare is only reached when the **tree-level** compare
+    /// returns `CROSSES` (causing `visit_leaf` to run) AND `compressed_dim != -1`
+    /// AND `num_index_dims != 1`. For the refinement compare's three outcomes to
+    /// be distinguishable from the tree-level compare, the leaf's **cell**
+    /// bounds (inherited from the parent split, used by the tree-level compare)
+    /// must be **wider** than the leaf's **value** bounds (read from the data
+    /// file by `readMinMax`, used by the refinement compare). This requires a
+    /// **multi-leaf** tree.
+    ///
+    /// Construction: a 2D multi-leaf tree with `max_points_in_leaf_node = 4`.
+    /// The left leaf has 4 points all at `dim0 = 10` with `dim1` varying
+    /// (10, 20, 30, 40); the right leaf has 4 points at `(100, 100)`. The BKD
+    /// writer splits on `dim0` at the median (value 100), so the left leaf's
+    /// cell bounds are `dim0 = [10, 100], dim1 = [10, 100]` (wide), while its
+    /// value bounds are `dim0 = [10, 10], dim1 = [10, 40]` (narrow). All three
+    /// queries CROSSES the left cell (tree-level → `visit_leaf`) but the
+    /// refinement compare on the narrowed value bounds returns OUTSIDE, INSIDE,
+    /// or CROSSES depending on the query.
+    #[test]
+    fn refinement_compare_three_outcomes() {
+        // 8 points: left leaf = 4 points at dim0=10, dim1=10/20/30/40;
+        // right leaf = 4 points at dim0=100, dim1=100/110/120/130. The right
+        // leaf deliberately holds *varied* values (not all identical) so that
+        // its pruning is driven by the refinement comparison — which is the
+        // subject of this test — rather than by cell-bound narrowing at the
+        // tree level. Cell-bound narrowing for leaves is the cursor work of
+        // task #125; pruning an all-identical (-1) leaf requires it, so that
+        // case is covered separately by `all_identical_leaf_uses_compressed_dim_minus_one`.
+        let points: Vec<(i32, Vec<u8>)> = vec![
+            (0, vec![10, 10]),
+            (1, vec![10, 20]),
+            (2, vec![10, 30]),
+            (3, vec![10, 40]),
+            (4, vec![100, 100]),
+            (5, vec![100, 110]),
+            (6, vec![100, 120]),
+            (7, vec![100, 130]),
+        ];
+
+        // --- OUTSIDE ---
+        // Query dim0=[5,15] × dim1=[50,60].
+        // Tree-level: left cell [10,100]×[10,100] vs [5,15]×[50,60] → CROSSES.
+        // Refinement: value [10,10]×[10,40] vs [5,15]×[50,60] →
+        //   dim0: 10 ∈ [5,15] → INSIDE; dim1: 40 < 50 → OUTSIDE → OUTSIDE.
+        {
+            let mut reader = build_bkd_reader(2, 2, 1, 4, &points);
+            let query_min = vec![5u8, 50u8];
+            let query_max = vec![15u8, 60u8];
+            let mut visitor = RecordingVisitor::new(&query_min, &query_max, 2, 1);
+            reader.intersect(&mut visitor).unwrap();
+            let trace = visitor.trace();
+
+            // The refinement compare (the compare that follows the tree-level
+            // CROSSES) must return OUTSIDE.
+            assert!(
+                trace.iter().any(|t| t.contains("CellOutsideQuery")),
+                "OUTSIDE case must have a compare returning OUTSIDE, got {trace:?}"
+            );
+            // OUTSIDE: no grow, no visit callbacks at all.
+            assert!(
+                !trace.iter().any(|t| t.starts_with("grow")),
+                "OUTSIDE must not call grow, got {trace:?}"
+            );
+            assert!(
+                !trace.iter().any(|t| t.starts_with("visitv")),
+                "OUTSIDE must not call visit_with_value, got {trace:?}"
+            );
+            assert!(
+                !trace.iter().any(|t| t.starts_with("visit_ints_ref")),
+                "OUTSIDE must not call visit_ints_ref, got {trace:?}"
+            );
+            assert!(
+                !trace.iter().any(|t| t.starts_with("visit_iter_v")),
+                "OUTSIDE must not call visit_iterator_with_value, got {trace:?}"
+            );
+            assert!(visitor.found.is_empty(), "OUTSIDE must find no docs");
+        }
+
+        // --- INSIDE ---
+        // Query dim0=[5,15] × dim1=[5,50].
+        // Tree-level: left cell [10,100]×[10,100] vs [5,15]×[5,50] → CROSSES.
+        // Refinement: value [10,10]×[10,40] vs [5,15]×[5,50] →
+        //   dim0: 10 ∈ [5,15] → INSIDE; dim1: [10,40] ⊆ [5,50] → INSIDE → INSIDE.
+        {
+            let mut reader = build_bkd_reader(2, 2, 1, 4, &points);
+            let query_min = vec![5u8, 5u8];
+            let query_max = vec![15u8, 50u8];
+            let mut visitor = RecordingVisitor::new(&query_min, &query_max, 2, 1);
+            reader.intersect(&mut visitor).unwrap();
+            let trace = visitor.trace();
+
+            // The refinement compare must return INSIDE.
+            assert!(
+                trace.iter().any(|t| t.contains("CellInsideQuery")),
+                "INSIDE case must have a compare returning INSIDE, got {trace:?}"
+            );
+            // INSIDE: grow + visit_ints_ref (bulk), NO visit_with_value.
+            assert!(
+                trace.iter().any(|t| t.starts_with("grow")),
+                "INSIDE must call grow, got {trace:?}"
+            );
+            assert!(
+                trace.iter().any(|t| t.starts_with("visit_ints_ref")),
+                "INSIDE must call visit_ints_ref (bulk), got {trace:?}"
+            );
+            assert!(
+                !trace.iter().any(|t| t.starts_with("visitv ")),
+                "INSIDE must NOT call visit_with_value, got {trace:?}"
+            );
+            assert!(
+                !trace.iter().any(|t| t.starts_with("visit_iter_v")),
+                "INSIDE must NOT call visit_iterator_with_value, got {trace:?}"
+            );
+            // All 4 left-leaf docs are inside the query.
+            assert_eq!(
+                visitor.found.len(),
+                4,
+                "INSIDE must accept all 4 left-leaf docs"
+            );
+        }
+
+        // --- CROSSES ---
+        // Query dim0=[5,15] × dim1=[25,35].
+        // Tree-level: left cell [10,100]×[10,100] vs [5,15]×[25,35] → CROSSES.
+        // Refinement: value [10,10]×[10,40] vs [5,15]×[25,35] →
+        //   dim0: 10 ∈ [5,15] → INSIDE; dim1: 10 < 25, 40 > 35 → CROSSES → CROSSES.
+        {
+            let mut reader = build_bkd_reader(2, 2, 1, 4, &points);
+            let query_min = vec![5u8, 25u8];
+            let query_max = vec![15u8, 35u8];
+            let mut visitor = RecordingVisitor::new(&query_min, &query_max, 2, 1);
+            reader.intersect(&mut visitor).unwrap();
+            let trace = visitor.trace();
+
+            // The refinement compare is the `compare` immediately before the
+            // first `grow` (it runs inside `visitDocValuesWithCardinality`,
+            // after the tree-level compare that CROSSES the leaf cell). It must
+            // return CROSSES.
+            let grow_idx = trace
+                .iter()
+                .position(|t| t.starts_with("grow"))
+                .expect("CROSSES must call grow");
+            let refinement = &trace[grow_idx - 1];
+            assert!(
+                refinement.contains("CellCrossesQuery"),
+                "the refinement compare (before grow) must be CROSSES, got {trace:?}"
+            );
+            // CROSSES: grow + visit_with_value per doc, NO visit_ints_ref.
+            assert!(
+                trace.iter().any(|t| t.starts_with("grow")),
+                "CROSSES must call grow, got {trace:?}"
+            );
+            assert!(
+                trace.iter().any(|t| t.starts_with("visitv ")),
+                "CROSSES must call visit_with_value per doc, got {trace:?}"
+            );
+            assert!(
+                !trace.iter().any(|t| t.starts_with("visit_ints_ref")),
+                "CROSSES must NOT call visit_ints_ref, got {trace:?}"
+            );
+            assert!(
+                !trace.iter().any(|t| t.starts_with("visit_iter_v")),
+                "CROSSES must NOT call visit_iterator_with_value, got {trace:?}"
+            );
+            // Only the point with dim1=30 is inside [25,35].
+            assert_eq!(visitor.found, vec![2], "only doc 2 (dim1=30) matches");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // (C) All-identical leaf via compressed_dim -1
+    // -------------------------------------------------------------------------
+
+    /// Exercises the `compressed_dim == -1` branch (all values in the leaf are
+    /// identical) in a **multi-leaf** tree, where the leaf is reached via a
+    /// CROSSES tree-level compare.
+    ///
+    /// In a single-leaf tree, the root IS the leaf, so the tree-level compare
+    /// uses the same bounds as the value bounds — CROSSES is impossible when
+    /// all values are identical (min == max → only INSIDE or OUTSIDE). A
+    /// multi-leaf tree is required so the leaf's cell bounds (from the parent
+    /// split) are wider than its value bounds (a single point).
+    ///
+    /// Construction: a 2D multi-leaf tree with `max_points_in_leaf_node = 4`.
+    /// The left leaf has 4 points all at `[42, 42]` (compressed_dim = -1); the
+    /// right leaf has 4 points at `[100, 100]`. The writer splits on `dim0` at
+    /// value 100, so the left leaf's cell is `dim0 = [42, 100], dim1 = [42,
+    /// 100]` (wide) while its value bounds are `[42, 42]×[42, 42]` (a single
+    /// point). A query of `dim0 = [50, 60]` CROSSES the left cell (42 < 50,
+    /// 100 > 60) but does NOT contain the value 42, so the refinement compare
+    /// would return OUTSIDE — but the `-1` branch short-circuits before the
+    /// refinement block, calling `visit_iterator_with_value` (bulk) directly.
+    #[test]
+    fn all_identical_leaf_uses_compressed_dim_minus_one() {
+        // 8 points: left leaf = 4 docs all at [42,42];
+        // right leaf = 4 docs all at [100,100].
+        let points: Vec<(i32, Vec<u8>)> = vec![
+            (0, vec![42, 42]),
+            (1, vec![42, 42]),
+            (2, vec![42, 42]),
+            (3, vec![42, 42]),
+            (4, vec![100, 100]),
+            (5, vec![100, 100]),
+            (6, vec![100, 100]),
+            (7, vec![100, 100]),
+        ];
+        let mut reader = build_bkd_reader(2, 2, 1, 4, &points);
+
+        // Query dim0=[50,60] × dim1=[0,255].
+        // Tree-level: left cell [42,100]×[42,100] vs [50,60]×[0,255] →
+        //   dim0: 42 < 50, 100 > 60 → CROSSES; dim1: INSIDE → CROSSES.
+        // The `-1` branch fires: grow + visit_iterator_with_value (bulk),
+        // NO refinement compare, NO visit_with_value per doc.
+        let query_min = vec![50u8, 0u8];
+        let query_max = vec![60u8, 255u8];
+        let mut visitor = RecordingVisitor::new(&query_min, &query_max, 2, 1);
+        reader.intersect(&mut visitor).unwrap();
+        let trace = visitor.trace();
+
+        // The trace must contain `grow` then `visit_iter_v` (the bulk
+        // `visit_iterator_with_value` call from the Divergence 1 fix).
+        assert!(
+            trace.iter().any(|t| t.starts_with("grow")),
+            "compressed_dim -1 must call grow, got {trace:?}"
+        );
+        assert!(
+            trace.iter().any(|t| t.starts_with("visit_iter_v")),
+            "compressed_dim -1 must call visit_iterator_with_value (bulk), got {trace:?}"
+        );
+
+        // NO refinement compare: the `-1` branch short-circuits before the
+        // refinement block. The only compares in the trace are tree-level
+        // (root, left leaf, right leaf) — none appear between `grow` and
+        // `visit_iter_v`.
+        let grow_idx = trace
+            .iter()
+            .position(|t| t.starts_with("grow"))
+            .expect("grow must be in the trace");
+        let iter_idx = trace
+            .iter()
+            .position(|t| t.starts_with("visit_iter_v"))
+            .expect("visit_iter_v must be in the trace");
+        let refinement_between = &trace[grow_idx..iter_idx];
+        assert!(
+            !refinement_between.iter().any(|t| t.starts_with("compare")),
+            "no refinement compare between grow and visit_iter_v, got {trace:?}"
+        );
+
+        // NO per-doc visit_with_value and NO visit_ints_ref.
+        assert!(
+            !trace.iter().any(|t| t.starts_with("visitv ")),
+            "compressed_dim -1 must NOT call visit_with_value per doc, got {trace:?}"
+        );
+        assert!(
+            !trace.iter().any(|t| t.starts_with("visit_ints_ref")),
+            "compressed_dim -1 must NOT call visit_ints_ref, got {trace:?}"
+        );
+
+        // The query [50,60] does NOT contain the value 42, so the visitor
+        // correctly filters out all docs. The key assertion is that the
+        // `-1` branch was taken (proven by `visit_iter_v` in the trace), NOT
+        // that docs were found — the `-1` branch delegates filtering to the
+        // visitor, which rejects [42,42] against [50,60]×[0,255].
+        assert!(
+            visitor.found.is_empty(),
+            "query [50,60] does not contain 42, so no docs should match, got {:?}",
+            visitor.found
+        );
+
+        // The `visit_iter_v 4` entry shows 4 docs were iterated (the bulk
+        // call), even though none matched — proving the `-1` branch was taken.
+        assert!(
+            trace.iter().any(|t| t.starts_with("visit_iter_v 4")),
+            "trace must show visit_iter_v 4 (4 docs iterated via bulk), got {trace:?}"
+        );
     }
 }
