@@ -135,7 +135,28 @@ A commit of the local repository. Identity is `hash` (full 40-char).
 | `gitCommit` / `gitDate` | Same provenance stamp carried by every other node. |
 
 A few pre-2026-08 `Commit` nodes use `commitHash` instead of `hash`; new nodes
-always use `hash`.
+always use `hash`. Two nodes written by the 2026-08-26 syncs carry `subject`
+instead of `message` and no `date`/`task_id`; new nodes always use `message`,
+`date` and `task_id`.
+
+### `Decision`
+An engineering decision that constrains the code — a dependency choice, a
+backend selection, a deliberate deviation — recorded so it can be audited and
+revisited (see `CLAUDE.md` §13.2). Identity is `name`.
+
+| Property | Purpose |
+|----------|---------|
+| `name` | Short decision title (identity), e.g. `"flate2 deflate backend for BEST_COMPRESSION"`. |
+| `kind` | `"dependency"`, `"algorithm"`, `"format"`, `"adaptation"`. |
+| `summary` | What was decided, in one or two sentences. |
+| `rationale` | Why, in terms of the component's objective. |
+| `alternatives` | Options considered and why each was rejected. |
+| `evidence` | The measurement or source that settles it (see `CLAUDE.md` §8). |
+| `gitCommit` | Last confirmed commit hash. |
+| `gitDate` | ISO date of `gitCommit`. |
+
+A `Decision` reaches the code through `IMPLEMENTED_IN` (→ `File`) and records
+where it landed through `COMMITTED_IN` (→ `Commit`).
 
 ### `Feature`
 A high-level functional capability, used to link packages/types to what they implement.
@@ -152,11 +173,11 @@ A high-level functional capability, used to link packages/types to what they imp
 | Edge | Meaning |
 |------|---------|
 | `CONTAINS` | `Project` → `Module`, `Module` → `Package`, `Package` → `Package`, `Package` → `Class`/`Interface`/`Enum`/`Exception`/`Annotation`, `Class` → `Method`. |
-| `DECLARES` | `File` → `Class`/`Interface`/`Enum`/`Exception`/`Annotation`/`Method`. |
+| `DECLARES` | `File` → `Class`/`Interface`/`Enum`/`Exception`/`Annotation`/`Method`, and, for local crate files, `File` → `RustStruct`/`RustTrait`/`RustEnum`. |
 | `NESTED_IN` | `Class` (inner type) → `Class` (enclosing top-level type). |
-| `DEPENDS_ON` | `Package` → `Package`, `Class` → `Class`, `Module` → `Module`. |
+| `DEPENDS_ON` | `Package` → `Package`, `Class` → `Class`, `Module` → `Module`, and Rucene type → Rucene type (`RustStruct`/`RustTrait`/`RustEnum`/legacy `Trait`), optionally carrying a `note` that says what the dependency is. |
 | `EXTENDS` | `Class` → `Class` / `Class` → `Interface`. |
-| `IMPLEMENTS` | `Class` → `Interface`. |
+| `IMPLEMENTS` | `Class` → `Interface`, and Rucene type → `RustTrait` (the Rust type implements that trait). |
 | `EXPORTS` | `Feature` (`module-info`) → `Package` (JPMS exported package). |
 | `OPENS` | `Feature` (`module-info`) → `Package` (JPMS opened package). |
 | `REQUIRES` | `Feature` (`module-info`) → `Feature` (required module). |
@@ -167,9 +188,9 @@ A high-level functional capability, used to link packages/types to what they imp
 | `SPECIFIED_IN` | `Feature` → `File` (specification document). |
 | `REFERENCES` | `Project` → `Project` (Rucene references Apache Lucene Core 10.5.0). |
 | `PORTS` | Rucene type (`RustStruct`/`RustTrait`/`RustEnum`/`Component`) → Lucene `Class`/`Interface`/`Enum`. The Rust type is the port of that Lucene type. Optional `note` property records that the port is partial, a placeholder, or a deliberate adaptation, and says what is missing or what was changed and why. |
-| `IMPLEMENTED_IN` | `Component`/`Task` → `File`/`Module`/`Commit` (where the thing lives or landed). |
+| `IMPLEMENTED_IN` | `Component`/`Task`/`Decision` → `File`/`Module`/`Commit` (where the thing lives or landed). |
 | `IMPLEMENTS` | Also used as `Feature` → `File`/`Class`: the file or type that realises the feature. |
-| `COMMITTED_IN` | `File`/`Feature`/`Component` → `Commit`. |
+| `COMMITTED_IN` | `File`/`Feature`/`Component`/`Decision` → `Commit`. |
 | `CLOSES_TASK` | `Commit` → `Task`. |
 | `TESTED_BY` / `MODIFIES` / `FULFILLS` / `DELIVERS` | Legacy provenance edges from the first syncs; not used by new work. |
 
@@ -191,14 +212,15 @@ Every node and edge carries `gitCommit` (full 40-char hash) and `gitDate` (`YYYY
 | `Class`/`Interface`/`Enum`/`Exception`/`Annotation` | populated (1,196 top-level types from `lucene/core`, including `src/java` and `src/java21` sources); inner classes are not yet modelled |
 | `Method` | target — populated selectively for key APIs |
 | `File` | populated (1,232 source files from `lucene/core` — `src/java`, `src/java21` and `module-info.java` — plus local project files) |
-| `Feature` | target — to be created as needed for Rucene features |
+| `Feature` | populated (35 nodes): JPMS module descriptors, Lucene-side capability groupings, and Rucene features created per synced commit |
 | `CONTAINS` | populated (project→module, module→package, package→file) |
-| `DECLARES` | populated (file→top-level type) |
-| `DEPENDS_ON` | populated (package→package dependencies derived from imports) |
+| `DECLARES` | populated (file→top-level type, Java and Rust) |
+| `DEPENDS_ON` | populated (package→package dependencies derived from imports; type→type added per synced commit) |
 | `EXTENDS` / `IMPLEMENTS` | populated (type→type relationships) |
 | `REFERENCES` | populated (Rucene → Apache Lucene Core 10.5.0) |
 | `TESTS` / `SPECIFIED_IN` | populated for the portability harness and the components it validates; extended per synced commit |
 | `RustStruct` / `RustTrait` / `RustEnum` | populated incrementally, one sync per commit that ports types |
 | `Task` / `Commit` | populated for the commits that have been synced; not a complete history |
+| `Decision` | populated per synced commit, for decisions that constrain the code |
 | `PORTS` | populated for every ported Rucene type whose Lucene counterpart is already modelled |
 | `IMPLEMENTED_IN` / `IMPLEMENTS` / `COMMITTED_IN` / `CLOSES_TASK` | populated per synced commit |
