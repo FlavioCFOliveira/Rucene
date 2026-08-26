@@ -24,6 +24,7 @@ use crate::codecs::{default_codec, Codec};
 use crate::error::{LuceneError, Result};
 use crate::index::directory_reader::IndexWriter as IndexWriterTrait;
 use crate::index::documents_writer::{FlushByRamOrCountsPolicy, FlushPolicy};
+use crate::index::index_deletion_policy::{IndexDeletionPolicy, KeepOnlyLastCommitDeletionPolicy};
 use crate::index::leaf_reader::LeafReader;
 use crate::index::IndexCommit;
 use crate::search::Sort;
@@ -45,12 +46,6 @@ pub trait MergePolicy: Send + Sync + Debug {}
 /// Only the minimal trait bounds needed by `IndexWriterConfig` are enforced;
 /// the actual merge scheduling will be added in a later task.
 pub trait MergeScheduler: Send + Sync + Debug {}
-
-/// Placeholder for `org.apache.lucene.index.IndexDeletionPolicy`.
-///
-/// Only the minimal trait bounds needed by `IndexWriterConfig` are enforced;
-/// commit-lifecycle logic will be added in a later task.
-pub trait IndexDeletionPolicy: Send + Sync + Debug {}
 
 /// Placeholder for `org.apache.lucene.search.similarities.Similarity`.
 ///
@@ -74,14 +69,6 @@ pub trait LeafComparator: Send + Sync + Debug {
 // -----------------------------------------------------------------------------
 // Default placeholder implementations.
 // -----------------------------------------------------------------------------
-
-/// Default deletion policy: keeps only the most recent commit.
-///
-/// Equivalent to `org.apache.lucene.index.KeepOnlyLastCommitDeletionPolicy`.
-#[derive(Debug)]
-pub struct KeepOnlyLastCommitDeletionPolicy;
-
-impl IndexDeletionPolicy for KeepOnlyLastCommitDeletionPolicy {}
 
 /// Default merge scheduler.
 ///
@@ -252,7 +239,7 @@ impl LiveIndexWriterConfig {
             max_buffered_docs: Self::DEFAULT_MAX_BUFFERED_DOCS,
             ram_buffer_size_mb: Self::DEFAULT_RAM_BUFFER_SIZE_MB,
             merged_segment_warmer: None,
-            del_policy: Arc::new(KeepOnlyLastCommitDeletionPolicy),
+            del_policy: Arc::new(KeepOnlyLastCommitDeletionPolicy::new()),
             commit: None,
             open_mode: OpenMode::CREATE_OR_APPEND,
             created_version_major: Version::LATEST.major as i32,
@@ -1156,6 +1143,50 @@ mod tests {
     fn new_config() -> IndexWriterConfig {
         ensure_default_codec();
         IndexWriterConfig::new()
+    }
+
+    #[test]
+    fn default_deletion_policy_keeps_only_the_last_commit() {
+        use crate::index::index_commit::test_support::TestCommit;
+        use crate::index::IndexCommit;
+        use crate::store::{Directory, RamDirectory};
+
+        let config = new_config();
+        let directory: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let commits: Vec<Arc<dyn IndexCommit>> = (1..=3)
+            .map(|generation| TestCommit::at_generation(Arc::clone(&directory), generation))
+            .collect();
+
+        // The default policy is a working KeepOnlyLastCommitDeletionPolicy, not
+        // an inert placeholder: it must actually drop the older commits.
+        config
+            .index_deletion_policy()
+            .on_commit(&commits)
+            .expect("the default policy must run");
+        let deleted: Vec<bool> = commits.iter().map(|c| c.is_deleted()).collect();
+        assert_eq!(deleted, vec![true, true, false]);
+    }
+
+    #[test]
+    fn a_custom_deletion_policy_can_be_installed() {
+        use crate::index::index_commit::test_support::TestCommit;
+        use crate::index::index_deletion_policy::KeepLastNCommitsDeletionPolicy;
+        use crate::index::IndexCommit;
+        use crate::store::{Directory, RamDirectory};
+
+        let mut config = new_config();
+        config
+            .set_index_deletion_policy(Arc::new(KeepLastNCommitsDeletionPolicy::new(2).unwrap()))
+            .unwrap();
+
+        let directory: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let commits: Vec<Arc<dyn IndexCommit>> = (1..=3)
+            .map(|generation| TestCommit::at_generation(Arc::clone(&directory), generation))
+            .collect();
+
+        config.index_deletion_policy().on_commit(&commits).unwrap();
+        let deleted: Vec<bool> = commits.iter().map(|c| c.is_deleted()).collect();
+        assert_eq!(deleted, vec![true, false, false]);
     }
 
     #[test]

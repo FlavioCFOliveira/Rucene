@@ -19,6 +19,8 @@ pub mod doc_values_field_updates;
 pub mod documents_writer;
 pub mod field_infos;
 pub mod freq_prox_terms_writer;
+pub mod index_commit;
+pub mod index_deletion_policy;
 pub mod index_file_names;
 pub mod index_reader;
 pub mod index_writer_config;
@@ -110,10 +112,18 @@ pub use indexing_chain::{
 };
 
 pub use index_writer_config::{
-    ConcurrentMergeScheduler, DefaultSimilarity, IndexDeletionPolicy, IndexWriterConfig,
-    IndexWriterEventListener, KeepOnlyLastCommitDeletionPolicy, LeafComparator,
-    LiveIndexWriterConfig, MergePolicy, MergeScheduler, MergeSpecification, MergedSegmentWarmer,
-    NoOpIndexWriterEventListener, OpenMode, Similarity, TieredMergePolicy,
+    ConcurrentMergeScheduler, DefaultSimilarity, IndexWriterConfig, IndexWriterEventListener,
+    LeafComparator, LiveIndexWriterConfig, MergePolicy, MergeScheduler, MergeSpecification,
+    MergedSegmentWarmer, NoOpIndexWriterEventListener, OpenMode, Similarity, TieredMergePolicy,
+};
+
+// Commit points, two-phase commit and deletion policies.
+pub use index_commit::{
+    execute as execute_two_phase_commit, IndexCommit, TwoPhaseCommit, TwoPhaseCommitError,
+};
+pub use index_deletion_policy::{
+    IndexDeletionPolicy, KeepLastNCommitsDeletionPolicy, KeepOnlyLastCommitDeletionPolicy,
+    NoDeletionPolicy, PersistentSnapshotDeletionPolicy, SnapshotDeletionPolicy, SNAPSHOTS_PREFIX,
 };
 
 // In-memory indexing pipeline exports.
@@ -132,7 +142,7 @@ pub use documents_writer::{
 pub use directory_reader::{
     index_exists, list_commits, open as open_directory_reader, open_if_changed,
     open_if_changed_with_commit, open_if_changed_with_writer, open_with_commit, DirectoryReader,
-    IndexCommit, IndexWriter as DirectoryReaderIndexWriter, StandardDirectoryReader,
+    IndexWriter as DirectoryReaderIndexWriter, StandardDirectoryReader,
 };
 pub use mapped_multi_fields::MappedMultiFields;
 pub use mapping_multi_postings_enum::MappingMultiPostingsEnum;

@@ -62,6 +62,10 @@ name = "portability_bkd_doc_ids"
 path = "tests/portability/bkd_doc_ids.rs"
 
 [[test]]
+name = "portability_deletion_policy"
+path = "tests/portability/deletion_policy.rs"
+
+[[test]]
 name = "fuzz_codec_headers"
 path = "tests/fuzz/codec_headers.rs"
 

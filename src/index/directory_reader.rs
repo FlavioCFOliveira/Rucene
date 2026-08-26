@@ -12,13 +12,13 @@
 
 #![deny(unsafe_code)]
 
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::io;
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::error::{LuceneError, Result};
+use crate::index::index_commit::IndexCommit;
 use crate::index::index_file_names::SEGMENTS;
 use crate::index::index_reader::{
     build_composite_context, CacheHelper, CacheKey, ClosedListener, CompositeReader, IndexReader,
@@ -26,50 +26,10 @@ use crate::index::index_reader::{
 };
 use crate::index::leaf_reader::{LeafReader, TermVectors};
 use crate::index::reader_context::IndexReaderContext;
-use crate::index::segment_infos::{SegmentInfos, OLD_SEGMENTS_GEN};
+use crate::index::segment_infos::SegmentInfos;
 use crate::index::segment_reader::SegmentReader;
 use crate::index::Term;
 use crate::store::{Directory, DEFAULT_IO_CONTEXT};
-
-// -----------------------------------------------------------------------------
-// IndexCommit
-// -----------------------------------------------------------------------------
-
-/// Represents a single commit into an index as seen by `IndexDeletionPolicy` or
-/// `IndexReader`.
-///
-/// Equivalent to `org.apache.lucene.index.IndexCommit`.
-pub trait IndexCommit: Send + Sync + Debug {
-    /// Returns the segments file (`segments_N`) associated with this commit point.
-    fn get_segments_file_name(&self) -> String;
-
-    /// Returns all index files referenced by this commit point.
-    fn get_file_names(&self) -> Result<HashSet<String>>;
-
-    /// Returns the directory for the index.
-    fn get_directory(&self) -> Arc<dyn Directory>;
-
-    /// Deletes this commit point. Most implementations do not support deletion.
-    fn delete(&self) -> Result<()>;
-
-    /// Returns `true` if this commit should be deleted.
-    fn is_deleted(&self) -> bool;
-
-    /// Returns the number of segments referenced by this commit.
-    fn get_segment_count(&self) -> i32;
-
-    /// Returns the generation (the `_N` in `segments_N`) for this commit.
-    fn get_generation(&self) -> i64;
-
-    /// Returns user data previously attached to this commit.
-    fn get_user_data(&self) -> Result<HashMap<String, String>>;
-
-    /// Package-private accessor used by `IndexWriter` to retrieve the reader
-    /// that produced this NRT commit point.
-    fn get_reader(&self) -> Option<Arc<StandardDirectoryReader>> {
-        None
-    }
-}
 
 // -----------------------------------------------------------------------------
 // IndexWriter (minimal trait for NRT signatures)
@@ -474,6 +434,29 @@ impl Debug for ReaderCommit {
 }
 
 impl ReaderCommit {
+    /// Builds a commit point over `infos`.
+    ///
+    /// # Divergence: a commit with no `segments_N` name
+    ///
+    /// `IndexCommit::getSegmentsFileName()` is `String` in Java and may be
+    /// `null`: it forwards to `SegmentInfos.getSegmentsFileName()`, which calls
+    /// `IndexFileNames.fileNameFromGeneration`, and that returns `null` for
+    /// generation `-1` (`IndexFileNames.java:56-59`). Rucene's
+    /// [`IndexCommit::get_segments_file_name`] returns a plain `String`, so the
+    /// missing name is rendered as `"segments"` — which is also the *legitimate*
+    /// name of generation `0` (`fileNameFromGeneration` with `gen == 0`), making
+    /// the two cases indistinguishable.
+    ///
+    /// This is unreachable through the two public entry points that build a
+    /// `ReaderCommit` today ([`list_commits`] and
+    /// [`DirectoryReader::index_commit`]): both feed it a [`SegmentInfos`] that
+    /// was read from an actual `segments_N`, whose `last_generation` is
+    /// therefore `>= 0`. It becomes reachable only for an uncommitted
+    /// `SegmentInfos`, i.e. once a near-real-time reader can be opened from a
+    /// writer that has never committed — and note that Java would not reach it
+    /// even then, because its `SegmentInfos.generation`/`lastGeneration` fields
+    /// default to `0` (`SegmentInfos.java:132-133`, no initialiser) where
+    /// Rucene's [`SegmentInfos::new`] starts them at `-1`.
     fn new(
         reader: Option<Weak<StandardDirectoryReader>>,
         infos: SegmentInfos,
@@ -481,7 +464,7 @@ impl ReaderCommit {
     ) -> Result<Self> {
         let segments_file_name = infos
             .segments_file_name()
-            .unwrap_or_else(|| "segments".to_string());
+            .unwrap_or_else(|| SEGMENTS.to_string());
         let generation = infos.generation();
         let user_data = infos.user_data().clone();
         let segment_count = infos.size() as i32;
@@ -658,26 +641,43 @@ pub fn open_if_changed_with_writer(
 /// Returns all commit points that exist in the directory, sorted from oldest
 /// to latest.
 ///
+/// The result is shared as `Arc<dyn IndexCommit>` so that it can be handed
+/// straight to an [`IndexDeletionPolicy`](crate::index::IndexDeletionPolicy),
+/// which may retain individual commit points (see
+/// [`SnapshotDeletionPolicy`](crate::index::SnapshotDeletionPolicy)).
+///
 /// Equivalent to `DirectoryReader.listCommits(Directory)`.
-pub fn list_commits(directory: Arc<dyn Directory>) -> Result<Vec<Box<dyn IndexCommit>>> {
+///
+/// # Errors
+///
+/// Returns an error if the directory cannot be listed or a commit cannot be
+/// read.
+pub fn list_commits(directory: Arc<dyn Directory>) -> Result<Vec<Arc<dyn IndexCommit>>> {
     let files = directory.list_all()?;
     let latest = SegmentInfos::read_latest_commit_with_min_version(directory.as_ref(), 0)?;
     let current_gen = latest.generation();
 
-    let mut commits: Vec<Box<dyn IndexCommit>> = Vec::new();
-    commits.push(Box::new(ReaderCommit::new(
+    let mut commits: Vec<Arc<dyn IndexCommit>> = Vec::new();
+    commits.push(Arc::new(ReaderCommit::new(
         None,
         latest,
         Arc::clone(&directory),
     )?));
 
     for file in files {
-        if file.starts_with(SEGMENTS) && !file.starts_with(OLD_SEGMENTS_GEN) {
+        // Java does *not* filter `segments.gen` out here, unlike
+        // `SegmentInfos.getLastCommitGeneration`: the legacy file reaches
+        // `generationFromSegmentsFileName`, which rejects it with
+        // `IllegalArgumentException` (`SegmentInfos.java:246-249`). That is
+        // deliberate — it is how Lucene reports "this looks like a pre-4.0
+        // index" instead of silently listing a partial set of commits — so
+        // Rucene lets the same error surface.
+        if file.starts_with(SEGMENTS) {
             let gen = SegmentInfos::generation_from_segments_file_name(&file)?;
             if gen < current_gen {
                 match SegmentInfos::read_commit_with_min_version(directory.as_ref(), &file, 0) {
                     Ok(infos) => {
-                        commits.push(Box::new(ReaderCommit::new(
+                        commits.push(Arc::new(ReaderCommit::new(
                             None,
                             infos,
                             Arc::clone(&directory),
@@ -692,12 +692,11 @@ pub fn list_commits(directory: Arc<dyn Directory>) -> Result<Vec<Box<dyn IndexCo
         }
     }
 
-    commits.sort_by(|a, b| {
-        if !Arc::ptr_eq(&a.get_directory(), &b.get_directory()) {
-            return Ordering::Equal;
-        }
-        a.get_generation().cmp(&b.get_generation())
-    });
+    // Every commit above was built from the same `directory`, so
+    // `IndexCommit::compare_to` can never fail here and reduces to comparing
+    // generations. Sorting by generation keeps the total order that `sort_by`
+    // requires, which an `Ordering::Equal` fallback would not.
+    commits.sort_by_key(|commit| commit.get_generation());
 
     Ok(commits)
 }
@@ -726,6 +725,7 @@ mod tests {
     use crate::codecs::tests::{test_segment_info, DummyCodec};
     use crate::codecs::{register_codec, FilterCodec, Lucene99SegmentInfoFormat};
     use crate::index::index_file_names::SEGMENTS;
+    use crate::index::segment_infos::OLD_SEGMENTS_GEN;
     use crate::index::{SegmentCommitInfo, SegmentInfos};
     use crate::search::{Sort, SortField, SortFieldType};
     use crate::store::{Directory, RamDirectory};
@@ -950,6 +950,35 @@ mod tests {
         assert_eq!(commits.len(), 2);
         assert!(commits[0].get_generation() < commits[1].get_generation());
         assert_eq!(commits[1].get_segment_count(), 2);
+    }
+
+    #[test]
+    fn list_commits_rejects_a_legacy_segments_gen_file() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let _reader = commit_single_segment(Arc::clone(&dir));
+        assert_eq!(list_commits(Arc::clone(&dir)).unwrap().len(), 1);
+
+        // A pre-4.0 index leaves a `segments.gen` behind. Java's
+        // `DirectoryReader.listCommits` does not filter it out
+        // (`DirectoryReader.java:459-460`), so it reaches
+        // `generationFromSegmentsFileName`, which rejects it
+        // (`SegmentInfos.java:246-249`). Silently skipping it would list a
+        // partial set of commits instead of reporting the old index.
+        {
+            let mut out = dir
+                .create_output(OLD_SEGMENTS_GEN, &*DEFAULT_IO_CONTEXT)
+                .unwrap();
+            out.write_byte(0).unwrap();
+            out.close().unwrap();
+        }
+
+        let err = list_commits(Arc::clone(&dir))
+            .expect_err("a segments.gen file must be reported, not skipped");
+        assert!(
+            matches!(&err, LuceneError::IllegalArgument(msg)
+                if msg.contains("segments.gen") && msg.contains("not a valid segment file name")),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]
