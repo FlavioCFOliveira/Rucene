@@ -159,6 +159,43 @@ impl IndexReaderCore {
         Ok(())
     }
 
+    /// Decrements the reference count, invoking `on_zero` exactly once when the
+    /// count reaches zero (before reporting close to parent readers).
+    ///
+    /// This is the core of `IndexReader::dec_ref`, factored out so that readers
+    /// held as `dyn LeafReader` (which cannot be upcast to `dyn IndexReader`) can
+    /// still be reference-counted through their `IndexReaderCore`. `on_zero` is
+    /// expected to perform the reader-specific `do_close` work and return its
+    /// result, which is propagated after parent readers are notified.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::AlreadyClosed`] if the count is already zero, and
+    /// [`LuceneError::IllegalState`] if it would drop below zero.
+    pub fn dec_ref_with_close<F>(&self, on_zero: F) -> Result<()>
+    where
+        F: FnOnce() -> Result<()>,
+    {
+        if self.ref_count.load(Ordering::SeqCst) <= 0 {
+            return Err(LuceneError::AlreadyClosed(
+                "this IndexReader is closed".to_string(),
+            ));
+        }
+        let rc = self.ref_count.fetch_sub(1, Ordering::SeqCst) - 1;
+        if rc == 0 {
+            self.set_closed();
+            let close_result = on_zero();
+            self.report_close_to_parent_readers();
+            close_result
+        } else if rc < 0 {
+            Err(LuceneError::IllegalState(format!(
+                "too many decRef calls: refCount is {rc} after decrement"
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Throws an error if this reader or any of its child readers is closed.
     pub fn ensure_open(&self) -> Result<()> {
         if self.ref_count.load(Ordering::SeqCst) <= 0 {

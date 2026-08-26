@@ -826,6 +826,14 @@ impl Document {
         self.fields.push(field);
     }
 
+    /// Consumes this document and returns its fields.
+    ///
+    /// This is used by parallel/composite stored-fields views that need to merge
+    /// the stored fields of several sub-readers for the same doc ID.
+    pub fn into_fields(self) -> Vec<Box<dyn IndexableField>> {
+        self.fields
+    }
+
     /// Removes the first field with the given name.
     pub fn remove_field(&mut self, name: &str) {
         if let Some(pos) = self.fields.iter().position(|f| f.name() == name) {

@@ -511,14 +511,24 @@ fn resolve_sub(doc_id: i32, max_doc: i32, starts: &[i32]) -> Result<(usize, i32)
 /// re-resolves them. The trait's `get(&self)` is non-mutating, so caching
 /// would require interior mutability that is not worth the cost here; the
 /// sub-readers are expected to cache their own `TermVectors` state.
-struct MultiTermVectors {
+/// `TermVectors` view that dispatches per doc ID to the owning sub-reader.
+///
+/// Equivalent to the anonymous `TermVectors` returned by
+/// `BaseCompositeReader.termVectors()`. Exposed as `pub(crate)` so that
+/// [`ParallelCompositeReader`](crate::index::ParallelCompositeReader) can reuse
+/// the same dispatch logic over its synthetic `ParallelLeafReader` sub-readers.
+pub(crate) struct MultiTermVectors {
     sub_readers: Vec<Arc<dyn IndexReader>>,
     starts: Vec<i32>,
     max_doc: i32,
 }
 
 impl MultiTermVectors {
-    fn new(sub_readers: Vec<Arc<dyn IndexReader>>, starts: Vec<i32>, max_doc: i32) -> Self {
+    pub(crate) fn new(
+        sub_readers: Vec<Arc<dyn IndexReader>>,
+        starts: Vec<i32>,
+        max_doc: i32,
+    ) -> Self {
         Self {
             sub_readers,
             starts,
@@ -556,14 +566,24 @@ impl TermVectors for MultiTermVectors {
 /// Equivalent to the anonymous `StoredFields` returned by
 /// `BaseCompositeReader.storedFields()`. As with [`MultiTermVectors`], per-sub
 /// handles are not cached.
-struct MultiStoredFields {
+/// `StoredFields` view that dispatches per doc ID to the owning sub-reader.
+///
+/// Equivalent to the anonymous `StoredFields` returned by
+/// `BaseCompositeReader.storedFields()`. Exposed as `pub(crate)` so that
+/// [`ParallelCompositeReader`](crate::index::ParallelCompositeReader) can reuse
+/// the same dispatch logic over its synthetic `ParallelLeafReader` sub-readers.
+pub(crate) struct MultiStoredFields {
     sub_readers: Vec<Arc<dyn IndexReader>>,
     starts: Vec<i32>,
     max_doc: i32,
 }
 
 impl MultiStoredFields {
-    fn new(sub_readers: Vec<Arc<dyn IndexReader>>, starts: Vec<i32>, max_doc: i32) -> Self {
+    pub(crate) fn new(
+        sub_readers: Vec<Arc<dyn IndexReader>>,
+        starts: Vec<i32>,
+        max_doc: i32,
+    ) -> Self {
         Self {
             sub_readers,
             starts,
