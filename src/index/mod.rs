@@ -24,6 +24,7 @@ pub mod index_writer_config;
 pub mod indexing_chain;
 pub mod leaf_reader;
 pub mod merge;
+pub mod multi_fields;
 pub mod multi_reader;
 pub mod point_values;
 pub mod postings_enum;
@@ -123,6 +124,7 @@ pub use directory_reader::{
     open_if_changed_with_commit, open_if_changed_with_writer, open_with_commit, DirectoryReader,
     IndexCommit, IndexWriter as DirectoryReaderIndexWriter, StandardDirectoryReader,
 };
+pub use multi_fields::{MultiFields, MultiTerms};
 pub use multi_reader::{
     get_top_level_context, index_of, sub_index, sub_index_from_leaves, MultiReader, ReaderSlice,
 };
