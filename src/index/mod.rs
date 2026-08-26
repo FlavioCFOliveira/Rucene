@@ -31,6 +31,7 @@ pub mod parallel_reader;
 pub mod point_values;
 pub mod postings_enum;
 pub mod reader_context;
+pub mod reader_manager;
 pub mod readers_and_updates;
 pub mod segment_info;
 pub mod segment_infos;
@@ -132,6 +133,7 @@ pub use multi_reader::{
     get_top_level_context, index_of, sub_index, sub_index_from_leaves, MultiReader, ReaderSlice,
 };
 pub use parallel_reader::{ParallelCompositeReader, ParallelLeafReader};
+pub use reader_manager::ReaderManager;
 pub use segment_reader::SegmentReader;
 
 pub use terms::{
