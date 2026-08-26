@@ -1319,6 +1319,7 @@ impl DocIdsWriter {
 // in the crate while leaving `crate::util::bkd::IntersectVisitor` usable as a
 // path, as it is in Lucene.
 pub use crate::index::point_values::{IntersectVisitor, Relation};
+use crate::index::point_values::{PointTree, PointValues};
 
 // -----------------------------------------------------------------------------
 // BkdReaderDocIdSetIterator
@@ -1506,6 +1507,7 @@ impl BKDReader {
             max_packed: self.max_packed_value.clone(),
             negative_deltas: vec![false; self.config.num_index_dims as usize],
             right_node_position: 0,
+            first_child_position: 0,
         };
         let parent = root.clone();
         Self::read_node_data(
@@ -1907,7 +1909,12 @@ impl BKDReader {
             // after reading `leftNumBytes`; the right child is only reachable
             // via a seek because the recursive traversal shares one cursor and
             // may prune (and thus not consume) the left subtree's bytes.
-            child.right_node_position = inner_in.file_pointer() + left_num_bytes;
+            let left_child_start = inner_in.file_pointer();
+            child.right_node_position = left_child_start + left_num_bytes;
+            // Position where this inner node's left child data begins, captured
+            // so the explicit-stack cursor (`BKDPointTree`) can seek back to it
+            // on `moveToChild` (Java: `readNodeDataPositions[level]`).
+            child.first_child_position = left_child_start;
         }
         // Narrow the cell bounds from the parent's split dimension and split
         // value. Java does this in `pushBoundsLeft`/`pushBoundsRight` (called
@@ -1976,6 +1983,71 @@ impl BKDReader {
     pub fn bytes_per_dim(&self) -> i32 {
         self.config.bytes_per_dim
     }
+
+    /// Builds a new [`PointTree`] cursor over this BKD tree.
+    ///
+    /// Equivalent to `BKDReader.getPointTree()`. The cursor owns fresh clones
+    /// of the inner-nodes and leaf-data inputs, so it can be moved independently
+    /// of the reader and several cursors can coexist over the same reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the index inputs cannot be cloned or the root node
+    /// data cannot be read.
+    pub fn point_tree(&self) -> Result<Box<dyn PointTree>> {
+        BKDPointTree::new(self).map(|tree| Box::new(tree) as Box<dyn PointTree>)
+    }
+}
+
+/// `BKDReader` is itself a [`PointValues`]: the metadata accessors read the
+/// cached header fields, and `intersect`/`estimate_*`/`visit_doc_values` are
+/// inherited from the trait defaults, which walk the [`PointTree`] produced by
+/// [`BKDReader::point_tree`]. This mirrors Java's `BKDReader extends
+/// PointValues`, where only the accessors and `getPointTree` are overridden.
+///
+/// The inherent [`BKDReader::intersect`] method (recursive, `&mut self`) is
+/// kept for the existing unit tests; the trait method (cursor-based, `&self`)
+/// is what the reader stack uses.
+impl PointValues for BKDReader {
+    fn point_tree(&self) -> Result<Box<dyn PointTree>> {
+        self.point_tree()
+    }
+
+    fn size(&self) -> i64 {
+        self.point_count
+    }
+
+    fn doc_count(&self) -> i32 {
+        self.doc_count
+    }
+
+    fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
+        if self.point_count == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(self.min_packed_value.clone()))
+        }
+    }
+
+    fn max_packed_value(&self) -> Result<Option<Vec<u8>>> {
+        if self.point_count == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(self.max_packed_value.clone()))
+        }
+    }
+
+    fn num_dimensions(&self) -> Result<i32> {
+        Ok(self.config.num_dims)
+    }
+
+    fn num_index_dimensions(&self) -> Result<i32> {
+        Ok(self.config.num_index_dims)
+    }
+
+    fn bytes_per_dimension(&self) -> Result<i32> {
+        Ok(self.config.bytes_per_dim)
+    }
 }
 
 #[derive(Clone)]
@@ -1994,6 +2066,11 @@ struct BKDTreeNode {
     /// pruned and left the shared cursor mid-stream. Only meaningful for
     /// internal nodes; leaves inherit `0` and never use it.
     right_node_position: i64,
+    /// Absolute byte offset of this internal node's left child data within the
+    /// inner-nodes index stream (Java: `readNodeDataPositions[level]`). The
+    /// explicit-stack cursor seeks here on `moveToChild`; the recursive
+    /// traversal reads the left child sequentially and does not use it.
+    first_child_position: i64,
 }
 
 impl BKDTreeNode {
@@ -2015,7 +2092,403 @@ impl BKDTreeNode {
             max_packed: self.max_packed.clone(),
             negative_deltas: self.negative_deltas.clone(),
             right_node_position: 0,
+            first_child_position: 0,
         })
+    }
+}
+
+// -----------------------------------------------------------------------------
+// BKDPointTree — explicit-stack PointTree cursor
+// -----------------------------------------------------------------------------
+
+/// Explicit-stack cursor over a [`BKDReader`] BKD tree.
+///
+/// Equivalent to `BKDReader.BKDPointTree`. Navigation is not recursive: a
+/// stack of [`BKDTreeNode`] entries holds the per-level state (node id, cell
+/// bounds, split value, negative-delta flags, child positions). Each entry
+/// carries its own `min_packed`/`max_packed`, so push/pop is just adding or
+/// removing a stack frame — no in-place mutation or save/restore is needed,
+/// unlike Java which mutates one `minPackedValue`/`maxPackedValue` pair.
+///
+/// The cursor owns fresh clones of the inner-nodes and leaf-data inputs, so it
+/// can be moved independently of the reader and several cursors can coexist.
+/// `clone_tree` re-roots at the current node by slicing the stack down to the
+/// current frame and cloning the inputs.
+pub struct BKDPointTree {
+    config: BKDConfig,
+    version: i32,
+    num_leaves: i32,
+    inner: Box<dyn IndexInput>,
+    leaf: Box<dyn IndexInput>,
+    /// Stack of nodes; `stack[0]` is this cursor's root, `stack.last()` is the
+    /// current node. The root is fixed for a given cursor (set at construction
+    /// and on `clone_tree`), so `move_to_parent` stops there.
+    stack: Vec<BKDTreeNode>,
+    /// `size()` parameters.
+    point_count: i64,
+    last_leaf_node_point_count: i32,
+    right_most_leaf_node: i32,
+    is_tree_balanced: bool,
+    /// Reusable scratch for `visit_doc_ids` (the `addAll` bulk-accept walk).
+    scratch_doc_ids: Vec<i32>,
+    scratch_ints_ref: IntsRef,
+}
+
+impl BKDPointTree {
+    /// Creates a cursor rooted at the BKD tree's root node.
+    ///
+    /// Equivalent to the `BKDPointTree` constructor: the inner input is seeked
+    /// to the packed-index start, the root frame is pushed, and `readNodeData`
+    /// is run with `isLeft=false` (the root is treated as a right child for the
+    /// leaf-block-FP delta, matching Java).
+    fn new(reader: &BKDReader) -> Result<Self> {
+        let config = reader.config.clone();
+        let num_leaves = reader.num_leaves;
+        let version = reader.version;
+        let point_count = reader.point_count;
+        let mut inner = reader.index_in.clone_input()?;
+        let leaf = reader.data_in.clone_input()?;
+        inner.seek(reader.index_start_pointer)?;
+        let index_bytes_len = config.packed_index_bytes_length() as usize;
+        let mut root = BKDTreeNode {
+            node_id: 1,
+            leaf_block_fp: 0,
+            split_value: vec![0u8; index_bytes_len],
+            split_dim: -1,
+            min_packed: reader.min_packed_value.clone(),
+            max_packed: reader.max_packed_value.clone(),
+            negative_deltas: vec![false; config.num_index_dims as usize],
+            right_node_position: 0,
+            first_child_position: 0,
+        };
+        // The root has no parent; a `parent` with `split_dim = -1` makes
+        // `read_node_data` skip the inherited-bound-narrowing step, exactly as
+        // Java's `readNodeData(false)` at level 1 does (the root inherits the
+        // whole-tree bounds).
+        let parent = root.clone();
+        BKDReader::read_node_data(&mut inner, &parent, &mut root, false, &config, num_leaves)?;
+        // Tree-depth and the unbalanced-tree `size()` parameters, matching
+        // `BKDPointTree.size` and `BKDReader.isTreeBalanced`.
+        let tree_depth = if num_leaves >= 1 {
+            num_leaves.ilog2() as i32 + 2
+        } else {
+            2
+        };
+        let right_most_leaf_node = (1i32 << (tree_depth - 1)) - 1;
+        let last_leaf_node_point_count = if point_count == 0 {
+            0
+        } else {
+            let r = (point_count % config.max_points_in_leaf_node as i64) as i32;
+            if r == 0 {
+                config.max_points_in_leaf_node
+            } else {
+                r
+            }
+        };
+        let is_tree_balanced = version < VERSION_META_FILE && num_leaves != 1;
+        Ok(Self {
+            config,
+            version,
+            num_leaves,
+            inner,
+            leaf,
+            stack: vec![root],
+            point_count,
+            last_leaf_node_point_count,
+            right_most_leaf_node,
+            is_tree_balanced,
+            scratch_doc_ids: Vec::new(),
+            scratch_ints_ref: IntsRef::default(),
+        })
+    }
+
+    #[inline]
+    fn current(&self) -> &BKDTreeNode {
+        self.stack
+            .last()
+            .expect("INVARIANT: the cursor stack is never empty")
+    }
+
+    #[inline]
+    fn is_leaf(&self) -> bool {
+        self.current().node_id >= self.num_leaves
+    }
+
+    #[inline]
+    fn is_left_node(&self) -> bool {
+        (self.current().node_id & 1) == 0
+    }
+
+    /// Pushes the left child of the current node onto the stack.
+    fn push_left(&mut self) -> Result<()> {
+        let parent = self.current().clone();
+        let mut child = parent.child(self.num_leaves, true)?;
+        BKDReader::read_node_data(
+            &mut self.inner,
+            &parent,
+            &mut child,
+            true,
+            &self.config,
+            self.num_leaves,
+        )?;
+        self.stack.push(child);
+        Ok(())
+    }
+
+    /// Pops the current node, restoring the parent as current.
+    fn pop(&mut self) {
+        if self.stack.len() > 1 {
+            self.stack.pop();
+        }
+    }
+
+    /// Pushes the right child of the current node onto the stack, seeking the
+    /// inner-nodes input to the right child's recorded position first.
+    fn push_right(&mut self) -> Result<()> {
+        let parent = self.current().clone();
+        self.inner.seek(parent.right_node_position)?;
+        let mut child = parent.child(self.num_leaves, false)?;
+        BKDReader::read_node_data(
+            &mut self.inner,
+            &parent,
+            &mut child,
+            false,
+            &self.config,
+            self.num_leaves,
+        )?;
+        self.stack.push(child);
+        Ok(())
+    }
+
+    /// Seeks the inner-nodes input back to the current node's left-child data
+    /// start. Equivalent to Java's `resetNodeDataPosition`.
+    fn reset_node_data_position(&mut self) -> Result<()> {
+        let pos = self.current().first_child_position;
+        self.inner.seek(pos)
+    }
+
+    /// Recursive bulk-accept walk: visits every doc ID below the current node.
+    ///
+    /// Equivalent to Java's `BKDPointTree.addAll`. `grow` is called **once**
+    /// with the subtree size before any leaf is read (when `grown == false`),
+    /// then `grown = true` is propagated so leaves do not grow again; each leaf
+    /// decodes its doc IDs and hands them to the visitor through
+    /// `visit_ints_ref`.
+    fn add_all(&mut self, grown: bool, visitor: &mut dyn IntersectVisitor) -> Result<()> {
+        let mut grown = grown;
+        if !grown {
+            let size = self.size();
+            if size <= i32::MAX as i64 {
+                visitor.grow(size as i32);
+                grown = true;
+            }
+        }
+        if self.is_leaf() {
+            let block_fp = self.current().leaf_block_fp;
+            self.leaf.seek(block_fp)?;
+            let count = self.leaf.read_v_int()? as usize;
+            self.scratch_doc_ids.clear();
+            self.scratch_doc_ids.resize(count, 0);
+            DocIdsWriter::read_doc_ids(
+                self.leaf.as_mut(),
+                count,
+                &mut self.scratch_doc_ids,
+                self.version,
+            )?;
+            self.scratch_ints_ref.ints.clear();
+            self.scratch_ints_ref
+                .ints
+                .extend_from_slice(&self.scratch_doc_ids[..count]);
+            self.scratch_ints_ref.offset = 0;
+            self.scratch_ints_ref.length = count;
+            visitor.visit_ints_ref(&self.scratch_ints_ref)?;
+        } else {
+            self.push_left()?;
+            self.add_all(grown, visitor)?;
+            self.pop();
+            self.push_right()?;
+            self.add_all(grown, visitor)?;
+            self.pop();
+        }
+        Ok(())
+    }
+
+    /// Recursive per-value walk: visits every doc ID and packed value below the
+    /// current node. Equivalent to Java's `BKDPointTree.visitLeavesOneByOne`.
+    fn visit_leaves_one_by_one(&mut self, visitor: &mut dyn IntersectVisitor) -> Result<()> {
+        if self.is_leaf() {
+            let block_fp = self.current().leaf_block_fp;
+            BKDReader::visit_leaf(
+                &mut self.leaf,
+                &self.config,
+                self.version,
+                block_fp,
+                visitor,
+            )?;
+        } else {
+            self.push_left()?;
+            self.visit_leaves_one_by_one(visitor)?;
+            self.pop();
+            self.push_right()?;
+            self.visit_leaves_one_by_one(visitor)?;
+            self.pop();
+        }
+        Ok(())
+    }
+}
+
+impl PointTree for BKDPointTree {
+    fn clone_tree(&self) -> Box<dyn PointTree> {
+        // Re-root at the current node: the clone's stack holds only the current
+        // frame, so its `move_to_parent` stops here. Fresh input clones keep
+        // the clone independent of the original's stream position.
+        let inner = self
+            .inner
+            .clone_input()
+            .expect("INVARIANT: cloning a readable index input does not fail");
+        let leaf = self
+            .leaf
+            .clone_input()
+            .expect("INVARIANT: cloning a readable index input does not fail");
+        Box::new(Self {
+            config: self.config.clone(),
+            version: self.version,
+            num_leaves: self.num_leaves,
+            inner,
+            leaf,
+            stack: vec![self.current().clone()],
+            point_count: self.point_count,
+            last_leaf_node_point_count: self.last_leaf_node_point_count,
+            right_most_leaf_node: self.right_most_leaf_node,
+            is_tree_balanced: self.is_tree_balanced,
+            scratch_doc_ids: Vec::new(),
+            scratch_ints_ref: IntsRef::default(),
+        })
+    }
+
+    fn move_to_child(&mut self) -> Result<bool> {
+        if self.is_leaf() {
+            return Ok(false);
+        }
+        self.reset_node_data_position()?;
+        self.push_left()?;
+        Ok(true)
+    }
+
+    fn move_to_sibling(&mut self) -> Result<bool> {
+        if !self.is_left_node() || self.stack.len() == 1 {
+            return Ok(false);
+        }
+        // Move to the parent, then push the right child. The parent becomes
+        // the current node after `pop`, and `push_right` seeks to its recorded
+        // right-child position.
+        self.pop();
+        self.push_right()?;
+        Ok(true)
+    }
+
+    fn move_to_parent(&mut self) -> Result<bool> {
+        if self.stack.len() == 1 {
+            return Ok(false);
+        }
+        self.pop();
+        Ok(true)
+    }
+
+    fn min_packed_value(&self) -> &[u8] {
+        &self.current().min_packed
+    }
+
+    fn max_packed_value(&self) -> &[u8] {
+        &self.current().max_packed
+    }
+
+    fn size(&self) -> i64 {
+        let mut left_most = self.current().node_id;
+        while left_most < self.num_leaves {
+            left_most *= 2;
+        }
+        let mut right_most = self.current().node_id;
+        while right_most < self.num_leaves {
+            right_most = right_most * 2 + 1;
+        }
+        let num_leaves = if right_most >= left_most {
+            right_most - left_most + 1
+        } else {
+            right_most - left_most + 1 + self.num_leaves
+        };
+        if self.is_tree_balanced {
+            return size_from_balanced_tree(
+                left_most,
+                right_most,
+                self.num_leaves,
+                self.point_count,
+                self.config.max_points_in_leaf_node,
+            );
+        }
+        if right_most == self.right_most_leaf_node {
+            (num_leaves as i64 - 1) * self.config.max_points_in_leaf_node as i64
+                + self.last_leaf_node_point_count as i64
+        } else {
+            num_leaves as i64 * self.config.max_points_in_leaf_node as i64
+        }
+    }
+
+    fn visit_doc_ids(&mut self, visitor: &mut dyn IntersectVisitor) -> Result<()> {
+        self.reset_node_data_position()?;
+        self.add_all(false, visitor)
+    }
+
+    fn visit_doc_values(&mut self, visitor: &mut dyn IntersectVisitor) -> Result<()> {
+        self.reset_node_data_position()?;
+        self.visit_leaves_one_by_one(visitor)
+    }
+}
+
+/// Size of a subtree in a legacy (pre-8.6) balanced BKD tree.
+///
+/// Equivalent to `BKDPointTree.sizeFromBalancedTree`. Only reachable when
+/// `version < VERSION_META_FILE` and `num_leaves != 1`; for current indices the
+/// tree is always unbalanced and this is never called.
+fn size_from_balanced_tree(
+    left_most_leaf_node: i32,
+    right_most_leaf_node: i32,
+    leaf_node_offset: i32,
+    point_count: i64,
+    max_points_in_leaf_node: i32,
+) -> i64 {
+    let extra_points =
+        (max_points_in_leaf_node as i64 * leaf_node_offset as i64 - point_count) as i32;
+    let node_offset = leaf_node_offset - extra_points;
+    let mut count: i64 = 0;
+    for node in left_most_leaf_node..=right_most_leaf_node {
+        if balance_tree_node_position(0, leaf_node_offset, node - leaf_node_offset, 0, 0)
+            < node_offset
+        {
+            count += max_points_in_leaf_node as i64;
+        } else {
+            count += max_points_in_leaf_node as i64 - 1;
+        }
+    }
+    count
+}
+
+/// Recursive helper for [`size_from_balanced_tree`].
+fn balance_tree_node_position(
+    min_node: i32,
+    max_node: i32,
+    node: i32,
+    position: i32,
+    level: i32,
+) -> i32 {
+    if max_node - min_node == 1 {
+        return position;
+    }
+    let mid = ((min_node.wrapping_add(max_node).wrapping_add(1)) as u32 >> 1) as i32;
+    if mid > node {
+        balance_tree_node_position(min_node, mid, node, position, level + 1)
+    } else {
+        balance_tree_node_position(mid, max_node, node, position + (1 << level), level + 1)
     }
 }
 
@@ -2572,16 +3045,25 @@ impl BKDWriter {
             split_dimension_values[split_offset as usize] = split_dim as u8;
             let address = split_offset as usize * self.config.bytes_per_dim as usize;
             let split_value = heap.packed_value(mid);
-            split_packed_values[address..address + self.config.bytes_per_dim as usize]
-                .copy_from_slice(&split_value[..self.config.bytes_per_dim as usize]);
+            // The split value lives in the split dimension's slice of the packed
+            // value (`splitDim * bytesPerDim`), not at offset 0. Copying from
+            // offset 0 (always dimension 0) stored the wrong bytes whenever
+            // `split_dim != 0`, so the reader decoded some other dimension's
+            // value as this node's split value — which diverged the 2D tree
+            // from Lucene 10.5.0. The 1D tree was unaffected because its only
+            // dimension is at offset 0. This mirrors Java's `BKDWriter.build`,
+            // which copies from `splitDim * config.bytesPerDim()`.
+            let bpd = self.config.bytes_per_dim as usize;
+            let dim_off = split_dim * bpd;
+            split_packed_values[address..address + bpd]
+                .copy_from_slice(&split_value[dim_off..dim_off + bpd]);
 
             let mut min_split_packed = min_packed_value.clone();
             let mut max_split_packed = max_packed_value.clone();
-            let dim_off = split_dim * self.config.bytes_per_dim as usize;
-            min_split_packed[dim_off..dim_off + self.config.bytes_per_dim as usize]
-                .copy_from_slice(&split_value[..self.config.bytes_per_dim as usize]);
-            max_split_packed[dim_off..dim_off + self.config.bytes_per_dim as usize]
-                .copy_from_slice(&split_value[..self.config.bytes_per_dim as usize]);
+            min_split_packed[dim_off..dim_off + bpd]
+                .copy_from_slice(&split_value[dim_off..dim_off + bpd]);
+            max_split_packed[dim_off..dim_off + bpd]
+                .copy_from_slice(&split_value[dim_off..dim_off + bpd]);
 
             parent_splits[split_dim] += 1;
             self.build(
@@ -2651,6 +3133,21 @@ impl BKDWriter {
         let bytes_per_dim = self.config.bytes_per_dim as usize;
         let dim_off = dim * bytes_per_dim;
         let packed_len = self.config.packed_bytes_length() as usize;
+        // Tie-break order matches Lucene 10.5.0's
+        // `MutablePointTreeReaderUtils.sortByDim` (leaves) and `partition`
+        // (internal nodes): after the split/sorted dimension, compare the
+        // NON-INDEX data dimensions `[packedIndexBytesLength, packedBytesLength)`
+        // and then the doc id. Using the full packed value here instead folded
+        // the other INDEX dimensions into the comparison, which reordered
+        // points sharing the split dimension's value by a different dimension
+        // than Lucene does. That changed which points fall on each side of the
+        // partition boundary and so changed every split value down the tree —
+        // observed as the 2D cursor trace diverging from the Java fixture while
+        // the 1D trace matched (1D has no second index dimension to insert, so
+        // the data-dims range is empty and the two orders coincide). The
+        // data-dims range is also empty when `num_index_dims == num_dims`, so
+        // ties then resolve by doc id alone, exactly as Lucene does.
+        let idx_len = self.config.packed_index_bytes_length() as usize;
         let mut slice: Vec<usize> = (from..to).collect();
         slice.sort_by(|&a, &b| {
             let a_off = a * bytes_per_doc + dim_off;
@@ -2662,10 +3159,10 @@ impl BKDWriter {
             }
             let a_full = a * bytes_per_doc;
             let b_full = b * bytes_per_doc;
-            let full_cmp = heap.block[a_full..a_full + packed_len]
-                .cmp(&heap.block[b_full..b_full + packed_len]);
-            if full_cmp != Ordering::Equal {
-                return full_cmp;
+            let data_cmp = heap.block[a_full + idx_len..a_full + packed_len]
+                .cmp(&heap.block[b_full + idx_len..b_full + packed_len]);
+            if data_cmp != Ordering::Equal {
+                return data_cmp;
             }
             let a_doc = BitUtil::read_le_int(&heap.block, a * bytes_per_doc + packed_len);
             let b_doc = BitUtil::read_le_int(&heap.block, b * bytes_per_doc + packed_len);
@@ -3697,6 +4194,76 @@ mod tests {
         assert_eq!(visitor.found, expected_docs);
     }
 
+    /// Isolates the explicit-stack cursor (#119, `PointValues::intersect` over
+    /// `BKDPointTree`) from the recursive traversal (#125, the inherent
+    /// `BKDReader::intersect`). Both walk the **same** Rust-built BKD tree, so
+    /// their `intersect` call traces must agree on every `compare` (the cell
+    /// bounds) and every `visit_*` callback. The only structural difference is
+    /// `grow`: the recursive path grows once per leaf, the cursor grows once
+    /// per fully-inside subtree — so `grow` lines are normalised out.
+    ///
+    /// The corpus is the `MULTI_LEAF_2D` fixture's: 2000 points
+    /// `((i*7919) % 4001, (i*5003) % 4001)` big-endian per dimension. The values
+    /// are non-negative, so big-endian byte order equals numeric order, matching
+    /// the BKD unsigned-byte ordering contract and `IntPoint`'s encoding.
+    ///
+    /// Outcome: if the traces agree, the cursor's stack machinery
+    /// (`push_left`/`push_right`/`move_to_sibling`/cell-narrowing) is correct and
+    /// any divergence from Java must lie in the shared `read_node_data` or in
+    /// the writer's 2D tree geometry. If they disagree, the bug is in the cursor.
+    #[test]
+    fn cursor_matches_recursive_intersect_2d_multi_leaf() {
+        let mut points: Vec<(i32, Vec<u8>)> = Vec::with_capacity(2000);
+        for i in 0..2000i32 {
+            let x = (i as i64 * 7919 % 4001) as i32;
+            let y = (i as i64 * 5003 % 4001) as i32;
+            let mut packed = vec![0u8; 8];
+            BitUtil::write_be_int(&mut packed, 0, x);
+            BitUtil::write_be_int(&mut packed, 4, y);
+            points.push((i, packed));
+        }
+        let reader = build_bkd_reader(2, 2, 4, BKDConfig::DEFAULT_MAX_POINTS_IN_LEAF_NODE, &points);
+        assert!(
+            reader.point_count() > BKDConfig::DEFAULT_MAX_POINTS_IN_LEAF_NODE as i64,
+            "expected a multi-leaf 2D tree, got point_count={}",
+            reader.point_count()
+        );
+
+        // Query box [0, 2000] x [0, 2000] (the fixture's root-CROSSES case).
+        let mut qmin = vec![0u8; 8];
+        let mut qmax = vec![0u8; 8];
+        BitUtil::write_be_int(&mut qmin, 0, 0);
+        BitUtil::write_be_int(&mut qmin, 4, 0);
+        BitUtil::write_be_int(&mut qmax, 0, 2000);
+        BitUtil::write_be_int(&mut qmax, 4, 2000);
+
+        // Recursive traversal (#125) — the inherent method.
+        let mut v1 = RecordingVisitor::new(&qmin, &qmax, 2, 4);
+        reader.intersect(&mut v1).unwrap();
+        let recursive = v1.trace();
+
+        // Cursor traversal (#119) — the `PointValues` trait default over
+        // `BKDPointTree`.
+        let mut v2 = RecordingVisitor::new(&qmin, &qmax, 2, 4);
+        <BKDReader as PointValues>::intersect(&reader, &mut v2).unwrap();
+        let cursor = v2.trace();
+
+        // Normalise out `grow`: the two paths grow at different granularities by
+        // design, which is not a divergence. Everything else — `compare` cell
+        // bounds and `visit_*` callbacks — must be identical.
+        let filt = |tr: &Vec<String>| -> Vec<String> {
+            tr.iter()
+                .filter(|line| !line.starts_with("grow "))
+                .cloned()
+                .collect()
+        };
+        assert_eq!(
+            filt(&recursive),
+            filt(&cursor),
+            "recursive (#125) vs cursor (#119) trace diverged (grow lines normalised)"
+        );
+    }
+
     #[test]
     fn java_reference_fixture_not_generated() {
         // This test documents the current limitation: no Java-generated reference
@@ -4476,6 +5043,7 @@ mod tests {
             max_packed: reader.max_packed_value.clone(),
             negative_deltas: vec![false; reader.config.num_index_dims as usize],
             right_node_position: 0,
+            first_child_position: 0,
         };
         let parent = root.clone();
         BKDReader::read_node_data(

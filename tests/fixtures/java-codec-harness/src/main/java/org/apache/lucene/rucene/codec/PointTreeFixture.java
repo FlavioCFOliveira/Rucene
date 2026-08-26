@@ -58,7 +58,8 @@ import org.apache.lucene.util.Version;
  *       exec:java -Dexec.mainClass=org.apache.lucene.rucene.codec.PointTreeFixture \
  *       -Dexec.args="/tmp/rucene-point-fixtures ONE_LEAF_1D"
  * </pre>
- * where CASE is ONE_LEAF_1D, ONE_LEAF_2D, MULTI_VALUED_1D or MULTI_LEAF_1D.
+ * where CASE is ONE_LEAF_1D, ONE_LEAF_2D, MULTI_VALUED_1D, MULTI_LEAF_1D or
+ * MULTI_LEAF_2D.
  */
 public final class PointTreeFixture {
 
@@ -69,7 +70,7 @@ public final class PointTreeFixture {
   public static void main(String[] args) throws IOException {
     if (args.length != 2) {
       System.err.println("Usage: PointTreeFixture <output-dir> <case>");
-      System.err.println("Cases: ONE_LEAF_1D, ONE_LEAF_2D, MULTI_VALUED_1D, MULTI_LEAF_1D");
+      System.err.println("Cases: ONE_LEAF_1D, ONE_LEAF_2D, MULTI_VALUED_1D, MULTI_LEAF_1D, MULTI_LEAF_2D");
       System.exit(1);
     }
     Path outputDir = Paths.get(args[0]);
@@ -168,6 +169,16 @@ public final class PointTreeFixture {
           writer.addDocument(doc);
         }
       }
+      case "MULTI_LEAF_2D" -> {
+        // A 2D tree large enough to build several levels, exercising the
+        // multi-dimensional BKD cursor (per-level split dimensions, leaf-bound
+        // refinement `compare`).
+        for (int i = 0; i < 2000; i++) {
+          Document doc = new Document();
+          doc.add(new IntPoint(FIELD, (i * 7919) % 4001, (i * 5003) % 4001));
+          writer.addDocument(doc);
+        }
+      }
       default -> throw new IllegalArgumentException("unknown case: " + testCase);
     }
   }
@@ -190,6 +201,15 @@ public final class PointTreeFixture {
             Integer.MAX_VALUE, bytesPerDim));
         queries.add(range2d("none", 1000, 2000, 1000, 2000, bytesPerDim));
         queries.add(range2d("box", 15, 55, 15, 65, bytesPerDim));
+      }
+      case "MULTI_LEAF_2D" -> {
+        // The corpus spans 0..4001 in both dimensions; these three ranges cover
+        // CELL_INSIDE_QUERY (all), CELL_OUTSIDE_QUERY (none) and
+        // CELL_CROSSES_QUERY (box) at the root.
+        queries.add(range2d("all", Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE,
+            Integer.MAX_VALUE, bytesPerDim));
+        queries.add(range2d("none", 10000, 20000, 10000, 20000, bytesPerDim));
+        queries.add(range2d("box", 0, 2000, 0, 2000, bytesPerDim));
       }
       default -> throw new IllegalArgumentException("unknown case: " + testCase);
     }

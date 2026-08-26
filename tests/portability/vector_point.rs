@@ -836,6 +836,96 @@ fn multi_leaf_aggregates_match_java() {
 }
 
 // ---------------------------------------------------------------------------
+// Multi-leaf BKD cursor path (task #119)
+// ---------------------------------------------------------------------------
+
+/// Runs a multi-leaf BKD case through the production cursor path
+/// (`PointValues::intersect`, whose default builds a `BKDPointTree`) and
+/// compares the full `intersect` call trace, the accepted documents and both
+/// estimators against Lucene 10.5.0.
+///
+/// The queries emitted by the fixture cover `CELL_INSIDE_QUERY`,
+/// `CELL_OUTSIDE_QUERY` and `CELL_CROSSES_QUERY` at the root, so every branch
+/// of the generic traversal is exercised against the reference implementation.
+fn assert_multi_leaf_bkd_cursor_case_matches_java(case: &str, scratch: &str) {
+    let dir = scratch_dir(scratch);
+    let stdout = run_fixture("PointTreeFixture", &dir, case).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(header(&stdout, "version"), "10.5.0");
+    let node_count: usize = header(&stdout, "node_count").parse().expect("a number");
+    assert!(
+        node_count > 1,
+        "[{case}] expected a multi-leaf BKD tree, got {node_count} nodes"
+    );
+
+    let java = parse_points(&stdout);
+    let bkd_reader = bkd_reader_from_java_points(&java);
+    // Route through the cursor path explicitly: `PointValues::intersect` (the
+    // trait default) builds a `BKDPointTree` via `point_tree()`, which is the
+    // production traversal. The inherent `BKDReader::intersect` is a separate
+    // recursive implementation kept for the #125 reader tests; calling the
+    // trait method ensures we exercise the #119 cursor.
+    let values: &dyn PointValues = &bkd_reader;
+
+    assert_eq!(values.size(), java.size, "[{case}] size");
+    assert_eq!(values.doc_count(), java.doc_count, "[{case}] doc_count");
+    assert_eq!(
+        values.min_packed_value().unwrap().unwrap(),
+        java.min_packed,
+        "[{case}] min_packed"
+    );
+    assert_eq!(
+        values.max_packed_value().unwrap().unwrap(),
+        java.max_packed,
+        "[{case}] max_packed"
+    );
+    assert!(
+        !java.queries.is_empty(),
+        "[{case}] fixture emitted no queries"
+    );
+
+    for (name, min, max) in &java.queries {
+        let mut visitor = TracingVisitor::new(min, max, java.num_index_dims, java.bytes_per_dim);
+        values
+            .intersect(&mut visitor)
+            .unwrap_or_else(|e| panic!("[{case}] query {name}: cursor traversal failed: {e}"));
+        assert_eq!(
+            visitor.trace(),
+            java.traces.get(name).cloned().unwrap_or_default(),
+            "[{case}] query {name}: the cursor intersect call trace diverges from Lucene"
+        );
+        assert_eq!(
+            visitor.accepted, java.accepted[name],
+            "[{case}] query {name}: accepted documents (cursor path)"
+        );
+
+        let mut estimator = TracingVisitor::new(min, max, java.num_index_dims, java.bytes_per_dim);
+        let point_count = values
+            .estimate_point_count(&mut estimator)
+            .expect("[{case}] query {name}: estimate_point_count succeeds");
+        let doc_count = values
+            .estimate_doc_count(&mut estimator)
+            .expect("[{case}] query {name}: estimate_doc_count succeeds");
+        assert_eq!(
+            (point_count, doc_count),
+            java.estimates[name],
+            "[{case}] query {name}: estimates (cursor path)"
+        );
+    }
+}
+
+#[test]
+fn multi_leaf_one_dimensional_bkd_cursor_trace_matches_java() {
+    require_maven();
+    assert_multi_leaf_bkd_cursor_case_matches_java("MULTI_LEAF_1D", "point-tree-cursor-1d");
+}
+
+#[test]
+fn multi_leaf_two_dimensional_bkd_cursor_trace_matches_java() {
+    require_maven();
+    assert_multi_leaf_bkd_cursor_case_matches_java("MULTI_LEAF_2D", "point-tree-cursor-2d");
+}
+
+// ---------------------------------------------------------------------------
 // Vector value iterators
 // ---------------------------------------------------------------------------
 

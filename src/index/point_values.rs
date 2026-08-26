@@ -174,6 +174,67 @@ pub trait IntersectVisitor {
 }
 
 // -----------------------------------------------------------------------------
+// Doc-values visitor (write path)
+// -----------------------------------------------------------------------------
+
+/// Visitor that receives every indexed point together with its document id.
+///
+/// This is a Rucene-specific counterpart to Java's
+/// `PointValues.IntersectVisitor` used while **writing** a field: the writer
+/// needs to consume all `(doc_id, packed_value)` pairs, not only the ones
+/// matching a query. Lucene's writer reads the BKD data directly, but Rucene's
+/// writer reaches the same result by enumerating the values through
+/// [`PointValues::visit_doc_values`].
+///
+/// The trait lives in the index layer (next to [`IntersectVisitor`]) so the
+/// single [`PointValues`] trait can carry both the query and the write-path
+/// visitor; `crate::codecs::points` re-exports it.
+pub trait DocValuesVisitor {
+    /// Called once for every indexed point value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the consumer fails, for instance while writing.
+    fn visit(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()>;
+}
+
+impl<F> DocValuesVisitor for F
+where
+    F: FnMut(i32, &[u8]) -> Result<()> + Send + Sync,
+{
+    fn visit(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
+        (self)(doc_id, packed_value)
+    }
+}
+
+/// Adapter that exposes a [`DocValuesVisitor`] as an [`IntersectVisitor`] so the
+/// default [`PointValues::visit_doc_values`] can enumerate every point via the
+/// tree cursor.
+///
+/// `compare` always reports [`Relation::CellCrossesQuery`] so the per-value
+/// leaf path is taken unconditionally and every stored value is decoded and
+/// forwarded through `visit_with_value`; the no-value `visit` path is never
+/// reached for this adapter.
+struct DocValuesIntersectAdapter<'a> {
+    visitor: &'a mut dyn DocValuesVisitor,
+}
+
+impl IntersectVisitor for DocValuesIntersectAdapter<'_> {
+    fn visit(&mut self, _doc_id: i32) -> Result<()> {
+        // The per-value walk never takes the doc-ID-only fast path.
+        Ok(())
+    }
+
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
+        self.visitor.visit(doc_id, packed_value)
+    }
+
+    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Relation {
+        Relation::CellCrossesQuery
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Point tree
 // -----------------------------------------------------------------------------
 
@@ -512,6 +573,22 @@ pub trait PointValues: Send + Sync {
     ///
     /// Returns an error when the index cannot be read.
     fn bytes_per_dimension(&self) -> Result<i32>;
+
+    /// Iterates every indexed point value for this field.
+    ///
+    /// This is a Rucene-specific write-path entry point (Java's writer reads the
+    /// BKD data directly). The default implementation walks the
+    /// [`PointTree`](Self::point_tree) and forwards each decoded value to the
+    /// visitor, so a BKD-backed reader only needs to supply `point_tree`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates reader and visitor errors.
+    fn visit_doc_values(&self, visitor: &mut dyn DocValuesVisitor) -> Result<()> {
+        let mut tree = self.point_tree()?;
+        let mut adapter = DocValuesIntersectAdapter { visitor };
+        tree.visit_doc_values(&mut adapter)
+    }
 }
 
 // -----------------------------------------------------------------------------

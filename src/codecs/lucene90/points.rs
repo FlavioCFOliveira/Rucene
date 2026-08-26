@@ -38,8 +38,6 @@ use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, Result};
 use crate::index::{segment_file_name, FieldInfos};
 use crate::store::{DataInput, Directory, IndexInput, IndexOutput, RamDirectory};
-use crate::util::bkd::IntersectVisitor as BkdIntersectVisitor;
-use crate::util::bkd::Relation as BkdRelation;
 use crate::util::bkd::{BKDConfig, BKDReader, BKDWriter};
 
 // -----------------------------------------------------------------------------
@@ -488,9 +486,15 @@ impl PointsReader for Lucene90PointsReader {
 
 /// Point-values implementation backed by a [`BKDReader`].
 ///
-/// This bridges the codec-level [`PointValues`] trait with the BKD utility
-/// reader. The reader is shared behind an [`Arc`]<[`Mutex`]> so that the
-/// implementation can be cloned and returned from [`Lucene90PointsReader`].
+/// This bridges the unified [`PointValues`] trait with the BKD utility reader.
+/// The reader is shared behind an [`Arc`]<[`Mutex`]> so that the implementation
+/// can be cloned and returned from [`Lucene90PointsReader`].
+///
+/// `intersect`, `estimate_point_count`, `estimate_doc_count` and
+/// `visit_doc_values` are all inherited from the trait defaults: they walk the
+/// [`PointTree`] produced by [`BKDReader::point_tree`]. No BKD-specific visitor
+/// adapter is needed here, because the BKD cursor and the index layer share the
+/// same [`IntersectVisitor`] type.
 #[derive(Clone)]
 struct BkdPointValues {
     reader: Arc<Mutex<BKDReader>>,
@@ -505,16 +509,8 @@ impl BkdPointValues {
 }
 
 impl PointValues for BkdPointValues {
-    fn bytes_per_dimension(&self) -> i32 {
-        self.reader.lock().unwrap().config().bytes_per_dim
-    }
-
-    fn num_dimensions(&self) -> i32 {
-        self.reader.lock().unwrap().config().num_dims
-    }
-
-    fn num_index_dimensions(&self) -> i32 {
-        self.reader.lock().unwrap().config().num_index_dims
+    fn point_tree(&self) -> Result<Box<dyn crate::index::point_values::PointTree>> {
+        self.reader.lock().unwrap().point_tree()
     }
 
     fn size(&self) -> i64 {
@@ -525,49 +521,34 @@ impl PointValues for BkdPointValues {
         self.reader.lock().unwrap().doc_count()
     }
 
-    fn min_packed_value(&self) -> Result<Vec<u8>> {
-        Ok(self.reader.lock().unwrap().min_packed_value().to_vec())
+    fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
+        let reader = self.reader.lock().unwrap();
+        if reader.point_count() == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(reader.min_packed_value().to_vec()))
+        }
     }
 
-    fn max_packed_value(&self) -> Result<Vec<u8>> {
-        Ok(self.reader.lock().unwrap().max_packed_value().to_vec())
+    fn max_packed_value(&self) -> Result<Option<Vec<u8>>> {
+        let reader = self.reader.lock().unwrap();
+        if reader.point_count() == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(reader.max_packed_value().to_vec()))
+        }
     }
 
-    fn visit_doc_values(&self, visitor: &mut dyn DocValuesVisitor) -> Result<()> {
-        let mut guard = self.reader.lock().unwrap();
-        let mut all_visitor = AllPointsVisitor { visitor };
-        guard.intersect(&mut all_visitor)
+    fn num_dimensions(&self) -> Result<i32> {
+        Ok(self.reader.lock().unwrap().num_dims())
     }
 
-    fn intersect(&self, visitor: &mut dyn crate::codecs::points::IntersectVisitor) -> Result<()> {
-        // The BKD reader and the codec speak the same visitor language now, so
-        // no translation layer is needed.
-        let mut guard = self.reader.lock().unwrap();
-        guard.intersect(visitor)
-    }
-}
-
-/// BKD visitor that traverses every leaf and forwards each point to a codec
-/// [`DocValuesVisitor`].
-struct AllPointsVisitor<'a> {
-    visitor: &'a mut dyn DocValuesVisitor,
-}
-
-impl BkdIntersectVisitor for AllPointsVisitor<'_> {
-    fn compare(&self, _min_packed: &[u8], _max_packed: &[u8]) -> BkdRelation {
-        // Always report a crossing so that the traversal descends into every
-        // leaf and visits every stored point.
-        BkdRelation::CellCrossesQuery
+    fn num_index_dimensions(&self) -> Result<i32> {
+        Ok(self.reader.lock().unwrap().num_index_dims())
     }
 
-    fn visit(&mut self, _doc_id: i32) -> Result<()> {
-        // This callback is used only for fully-inside cells. Because we always
-        // report CellCrossesQuery it should never be called.
-        Ok(())
-    }
-
-    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
-        self.visitor.visit(doc_id, packed_value)
+    fn bytes_per_dimension(&self) -> Result<i32> {
+        Ok(self.reader.lock().unwrap().bytes_per_dim())
     }
 }
 
@@ -655,16 +636,18 @@ mod tests {
     }
 
     impl PointValues for VecPointValues {
-        fn bytes_per_dimension(&self) -> i32 {
-            self.bytes_per_dim
-        }
-
-        fn num_dimensions(&self) -> i32 {
-            self.dims
-        }
-
-        fn num_index_dimensions(&self) -> i32 {
-            self.index_dims
+        fn point_tree(&self) -> Result<Box<dyn crate::index::point_values::PointTree>> {
+            // Build an in-memory tree over a single leaf so the generic
+            // traversal algorithms can run on test fixtures. The points are
+            // handed to `InMemoryPointValues` which validates the 1-D ordering
+            // contract; test inputs that violate it are rejected here.
+            let values = crate::index::point_values::InMemoryPointValues::new(
+                self.dims,
+                self.index_dims,
+                self.bytes_per_dim,
+                vec![self.points.clone()],
+            )?;
+            Ok(values.point_tree()?)
         }
 
         fn size(&self) -> i64 {
@@ -679,12 +662,32 @@ mod tests {
             docs.len() as i32
         }
 
-        fn min_packed_value(&self) -> Result<Vec<u8>> {
-            Ok(self.min.clone())
+        fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
+            if self.points.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(self.min.clone()))
+            }
         }
 
-        fn max_packed_value(&self) -> Result<Vec<u8>> {
-            Ok(self.max.clone())
+        fn max_packed_value(&self) -> Result<Option<Vec<u8>>> {
+            if self.points.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(self.max.clone()))
+            }
+        }
+
+        fn num_dimensions(&self) -> Result<i32> {
+            Ok(self.dims)
+        }
+
+        fn num_index_dimensions(&self) -> Result<i32> {
+            Ok(self.index_dims)
+        }
+
+        fn bytes_per_dimension(&self) -> Result<i32> {
+            Ok(self.bytes_per_dim)
         }
 
         fn visit_doc_values(&self, visitor: &mut dyn DocValuesVisitor) -> Result<()> {
@@ -797,8 +800,8 @@ mod tests {
         let read_values = points_reader.get_values("int_point").unwrap();
 
         assert_eq!(read_values.size(), 6);
-        assert_eq!(read_values.num_dimensions(), 1);
-        assert_eq!(read_values.bytes_per_dimension(), 4);
+        assert_eq!(read_values.num_dimensions().unwrap(), 1);
+        assert_eq!(read_values.bytes_per_dimension().unwrap(), 4);
 
         let mut found = Vec::new();
         read_values
@@ -999,8 +1002,14 @@ mod tests {
 
         assert_eq!(read_values.size(), 4);
         assert_eq!(read_values.doc_count(), 3);
-        assert_eq!(read_values.min_packed_value().unwrap(), packed_int(10));
-        assert_eq!(read_values.max_packed_value().unwrap(), packed_int(40));
+        assert_eq!(
+            read_values.min_packed_value().unwrap(),
+            Some(packed_int(10))
+        );
+        assert_eq!(
+            read_values.max_packed_value().unwrap(),
+            Some(packed_int(40))
+        );
     }
 
     #[test]

@@ -1726,14 +1726,26 @@ impl LeafReader for SegmentReader {
             .map(|bits| Box::new(bits.clone()) as Box<dyn Bits>)
     }
 
-    fn get_point_values(&self, _field: &str) -> Result<Option<Box<dyn IndexPointValues>>> {
-        // TODO(rmp #119): bridge `PointsReader` to the index-layer
-        // `PointValues` trait. The codec-level point values live in
-        // `core_readers.points_reader`; exposing them as `index::PointValues`
-        // needs the BKD-backed `PointTree` implementation, which task #119
-        // ports. Until then this leaf reports no point values, which the
-        // `PointValues` contract treats as "this field has no points".
-        Ok(None)
+    fn get_point_values(&self, field: &str) -> Result<Option<Box<dyn IndexPointValues>>> {
+        // A field has point values iff its FieldInfo declares a non-zero
+        // `point_dimension_count` (set when the field is first indexed with a
+        // point value). Fields without points return `None`, matching Lucene's
+        // `SegmentReader.getPointValues` contract.
+        let Some(field_info) = self.field_infos.field_info(field) else {
+            return Ok(None);
+        };
+        if field_info.get_point_dimension_count() == 0 {
+            return Ok(None);
+        }
+        let Some(guard) = self.get_points_reader()? else {
+            return Ok(None);
+        };
+        // `PointsReader::get_values` returns `Box<dyn PointValues>`; the codec
+        // layer re-exports the index-layer `PointValues`, so this is directly
+        // `Box<dyn IndexPointValues>`. The guard is dropped here; the returned
+        // box is owned and independent of the reader's lock.
+        let values = guard.get_values(field)?;
+        Ok(Some(values))
     }
 
     fn check_integrity(&self) -> Result<()> {
