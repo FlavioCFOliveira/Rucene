@@ -6,9 +6,11 @@
 //! (`IndexReader`, `LeafReader`, and their contexts).
 //!
 //! It also holds the write path: [`documents_writer`] buffers documents and
-//! orchestrates flushes, [`indexing_chain`] inverts each document, and
+//! orchestrates flushes, [`indexing_chain`] inverts each document,
 //! [`freq_prox_terms_writer`] buffers the resulting postings in RAM and streams
-//! them through the codec's postings format at flush time.
+//! them through the codec's postings format at flush time, and
+//! [`stored_fields_consumer`] streams the stored field values of every document
+//! through the codec's stored-fields format.
 
 #![deny(unsafe_code)]
 
@@ -43,6 +45,8 @@ pub mod readers_and_updates;
 pub mod segment_info;
 pub mod segment_infos;
 pub mod segment_reader;
+pub mod stored_field_visitor;
+pub mod stored_fields_consumer;
 pub mod terms;
 pub mod terms_enum_index;
 pub mod vector_values;
@@ -157,6 +161,8 @@ pub use multi_reader::{
 pub use parallel_reader::{ParallelCompositeReader, ParallelLeafReader};
 pub use reader_manager::ReaderManager;
 pub use segment_reader::SegmentReader;
+pub use stored_field_visitor::{StoredFieldVisitor, StoredFieldVisitorStatus};
+pub use stored_fields_consumer::StoredFieldsConsumer;
 
 pub use terms::{
     AcceptStatus, EmptyFields, EmptyTerms, EmptyTermsEnum, Fields, FilteredTermsEnum,
@@ -468,8 +474,17 @@ pub trait IndexableField {
     /// Non-null if this field has a numeric value.
     fn numeric_value(&self) -> Option<NumericValue>;
 
-    /// Stored value.
-    fn stored_value(&self) -> Option<StoredValue>;
+    /// The value this field contributes to the stored-fields stream, or `None`
+    /// when the field is not stored.
+    ///
+    /// Equivalent to `IndexableField.storedValue()`, which declares
+    /// `IOException` because a field whose value is a
+    /// [`StoredFieldDataInput`] has to be read to produce it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while materialising the value.
+    fn stored_value(&self) -> Result<Option<StoredValue>>;
 
     /// Describes how this field should be inverted.
     fn invertable_type(&self) -> Option<InvertableType>;

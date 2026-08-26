@@ -32,7 +32,6 @@
 #![deny(unsafe_code)]
 
 use std::{
-    collections::HashSet,
     fmt::{Debug, Formatter},
     sync::{
         atomic::{AtomicI32, Ordering},
@@ -40,7 +39,6 @@ use std::{
     },
 };
 
-use crate::document::Document;
 use crate::error::{LuceneError, Result};
 use crate::index::index_reader::{
     build_composite_context, CacheHelper, CompositeReader, IndexReader, IndexReaderCore,
@@ -725,18 +723,6 @@ impl StoredFields for MultiStoredFields {
             .stored_fields()?
             .document_with_visitor(local, visitor)
     }
-
-    fn document(&self, doc_id: i32) -> Result<Document> {
-        let (i, local) = self.resolve(doc_id)?;
-        self.sub_readers[i].stored_fields()?.document(local)
-    }
-
-    fn document_fields(&self, doc_id: i32, fields_to_load: &HashSet<String>) -> Result<Document> {
-        let (i, local) = self.resolve(doc_id)?;
-        self.sub_readers[i]
-            .stored_fields()?
-            .document_fields(local, fields_to_load)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -784,20 +770,6 @@ mod tests {
                 self.max_doc
             );
             Ok(())
-        }
-
-        fn document(&self, doc_id: i32) -> Result<Document> {
-            assert!((0..self.max_doc).contains(&doc_id));
-            Ok(Document::new())
-        }
-
-        fn document_fields(
-            &self,
-            doc_id: i32,
-            _fields_to_load: &HashSet<String>,
-        ) -> Result<Document> {
-            assert!((0..self.max_doc).contains(&doc_id));
-            Ok(Document::new())
         }
     }
 
@@ -1259,7 +1231,8 @@ mod tests {
         sf.document(5).unwrap();
         sf.document(9).unwrap();
         sf.document_with_visitor(5, &mut NoopVisitor).unwrap();
-        sf.document_fields(9, &HashSet::new()).unwrap();
+        sf.document_fields(9, &std::collections::HashSet::new())
+            .unwrap();
     }
 
     struct NoopVisitor;
@@ -1267,8 +1240,8 @@ mod tests {
         fn needs_field(
             &mut self,
             _info: &crate::index::FieldInfo,
-        ) -> crate::codecs::stub::StoredFieldVisitorStatus {
-            crate::codecs::stub::StoredFieldVisitorStatus::No
+        ) -> Result<crate::codecs::stub::StoredFieldVisitorStatus> {
+            Ok(crate::codecs::stub::StoredFieldVisitorStatus::No)
         }
     }
 

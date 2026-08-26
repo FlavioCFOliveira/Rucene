@@ -11,7 +11,6 @@
 #![deny(unsafe_code)]
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -30,7 +29,6 @@ use crate::codecs::stored_fields::StoredFieldsReader;
 use crate::codecs::stub::StoredFieldVisitor;
 use crate::codecs::term_vectors::TermVectorsReader;
 use crate::codecs::DocValuesSkipper;
-use crate::document::{Document, NumericValue};
 use crate::error::{LuceneError, Result};
 use crate::index::index_reader::{
     CacheHelper, CacheKey, ClosedListener, IndexReaderCore, StoredFields,
@@ -48,7 +46,6 @@ use crate::search::knn::KnnCollector;
 use crate::search::AcceptDocs;
 use crate::store::{Directory, IOContext, READONCE_IO_CONTEXT};
 use crate::util::Bits;
-use crate::util::BytesRef;
 
 // -----------------------------------------------------------------------------
 // SegmentCoreReaders
@@ -1908,124 +1905,6 @@ impl StoredFields for CodecStoredFields {
             ))
         }
     }
-
-    fn document(&self, doc_id: i32) -> Result<Document> {
-        let mut loader = StoredFieldLoader::new(None);
-        self.document_with_visitor(doc_id, &mut loader)?;
-        Ok(loader.into_document())
-    }
-
-    fn document_fields(&self, doc_id: i32, fields_to_load: &HashSet<String>) -> Result<Document> {
-        let mut loader = StoredFieldLoader::new(Some(fields_to_load.clone()));
-        self.document_with_visitor(doc_id, &mut loader)?;
-        Ok(loader.into_document())
-    }
-}
-
-/// Builds a `Document` from the stored fields visited by a codec reader.
-#[derive(Debug)]
-struct StoredFieldLoader {
-    doc: Document,
-    filter: Option<HashSet<String>>,
-    current_name: String,
-}
-
-impl StoredFieldLoader {
-    fn new(filter: Option<HashSet<String>>) -> Self {
-        Self {
-            doc: Document::new(),
-            filter,
-            current_name: String::new(),
-        }
-    }
-
-    fn into_document(self) -> Document {
-        self.doc
-    }
-
-    fn should_load(&mut self, info: &FieldInfo) -> bool {
-        self.current_name = info.name.clone();
-        match &self.filter {
-            Some(set) => set.contains(&info.name),
-            None => true,
-        }
-    }
-}
-
-impl StoredFieldVisitor for StoredFieldLoader {
-    fn binary_field(&mut self, _info: &FieldInfo, _value: &[u8]) -> Result<()> {
-        if self.should_load(_info) {
-            self.doc
-                .add(Box::new(crate::document::StoredField::new_bytes(
-                    &self.current_name,
-                    BytesRef::new(_value.to_vec()),
-                )?));
-        }
-        Ok(())
-    }
-
-    fn string_field(&mut self, _info: &FieldInfo, _value: &str) -> Result<()> {
-        if self.should_load(_info) {
-            self.doc
-                .add(Box::new(crate::document::StoredField::new_string(
-                    &self.current_name,
-                    _value.to_string(),
-                )?));
-        }
-        Ok(())
-    }
-
-    fn int_field(&mut self, _info: &FieldInfo, _value: i32) -> Result<()> {
-        if self.should_load(_info) {
-            self.doc
-                .add(Box::new(crate::document::StoredField::new_number(
-                    &self.current_name,
-                    NumericValue::Int(_value),
-                )?));
-        }
-        Ok(())
-    }
-
-    fn long_field(&mut self, _info: &FieldInfo, _value: i64) -> Result<()> {
-        if self.should_load(_info) {
-            self.doc
-                .add(Box::new(crate::document::StoredField::new_number(
-                    &self.current_name,
-                    NumericValue::Long(_value),
-                )?));
-        }
-        Ok(())
-    }
-
-    fn float_field(&mut self, _info: &FieldInfo, _value: f32) -> Result<()> {
-        if self.should_load(_info) {
-            self.doc
-                .add(Box::new(crate::document::StoredField::new_number(
-                    &self.current_name,
-                    NumericValue::Float(_value),
-                )?));
-        }
-        Ok(())
-    }
-
-    fn double_field(&mut self, _info: &FieldInfo, _value: f64) -> Result<()> {
-        if self.should_load(_info) {
-            self.doc
-                .add(Box::new(crate::document::StoredField::new_number(
-                    &self.current_name,
-                    NumericValue::Double(_value),
-                )?));
-        }
-        Ok(())
-    }
-
-    fn needs_field(&mut self, info: &FieldInfo) -> crate::codecs::stub::StoredFieldVisitorStatus {
-        if self.should_load(info) {
-            crate::codecs::stub::StoredFieldVisitorStatus::Yes
-        } else {
-            crate::codecs::stub::StoredFieldVisitorStatus::No
-        }
-    }
 }
 
 /// Checks that `doc_id` is in the range `[0, max_doc)`.
@@ -2236,6 +2115,7 @@ mod tests {
     use crate::search::AcceptDocs;
     use crate::store::{Directory, IOContext, DEFAULT_IO_CONTEXT};
     use crate::util::{FixedBitSet, Version};
+    use std::collections::HashSet;
 
     #[test]
     fn segment_reader_exposes_identity() {

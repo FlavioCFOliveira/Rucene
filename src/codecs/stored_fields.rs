@@ -7,8 +7,10 @@ use std::fmt;
 
 use crate::error::Result;
 use crate::store::{Directory, IOContext};
+use crate::util::Accountable;
 
 use super::stub::{FieldInfo, FieldInfos, SegmentInfo, StoredFieldVisitor};
+use crate::index::StoredFieldDataInput;
 
 /// Controls the format of stored fields.
 ///
@@ -69,7 +71,17 @@ pub trait StoredFieldsReader: Send + Sync + fmt::Debug {
 /// Codec API for writing stored fields.
 ///
 /// Lucene Core equivalent: `org.apache.lucene.codecs.StoredFieldsWriter`.
-pub trait StoredFieldsWriter: fmt::Debug {
+///
+/// A writer is owned by exactly one
+/// [`StoredFieldsConsumer`](crate::index::StoredFieldsConsumer) and is never
+/// shared, so it needs no interior synchronisation; `Send` is required only so
+/// that the `DocumentsWriterPerThread` holding it can move between indexing
+/// threads.
+///
+/// Java declares `StoredFieldsWriter implements Accountable`, so the flush
+/// policy can count the documents buffered in RAM; [`Accountable`] is a
+/// supertrait here for the same reason.
+pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
     /// Called before writing the stored fields of a document.
     fn start_document(&mut self) -> Result<()>;
 
@@ -92,6 +104,37 @@ pub trait StoredFieldsWriter: fmt::Debug {
 
     /// Writes a stored binary value.
     fn write_field_bytes(&mut self, info: &FieldInfo, value: &[u8]) -> Result<()>;
+
+    /// Writes a stored binary value read from a [`StoredFieldDataInput`].
+    ///
+    /// Lucene Core equivalent:
+    /// `StoredFieldsWriter.writeField(FieldInfo, StoredFieldDataInput)`. The
+    /// default implementation reads every byte into a fresh buffer and calls
+    /// [`Self::write_field_bytes`], exactly as the Java base class does; a
+    /// codec that can stream the bytes straight into its own buffer overrides
+    /// it, as `Lucene90CompressingStoredFieldsWriter` does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::LuceneError::IllegalArgument`] when the declared
+    /// length is negative, and propagates any I/O error.
+    fn write_field_data_input(
+        &mut self,
+        info: &FieldInfo,
+        value: &mut StoredFieldDataInput<'_>,
+    ) -> Result<()> {
+        let length = value.length();
+        if length < 0 {
+            return Err(crate::error::LuceneError::IllegalArgument(format!(
+                "stored binary field \"{}\" has a negative length: {length}",
+                info.name
+            )));
+        }
+        let length = length as usize;
+        let mut bytes = vec![0u8; length];
+        value.data_input().read_bytes(&mut bytes, 0, length)?;
+        self.write_field_bytes(info, &bytes)
+    }
 
     /// Writes a stored string value.
     fn write_field_string(&mut self, info: &FieldInfo, value: &str) -> Result<()>;
@@ -153,6 +196,12 @@ impl StoredFieldsReader for EmptyStoredFieldsReader {
 /// A minimal no-op stored-fields writer.
 #[derive(Debug, Copy, Clone, Default)]
 pub struct EmptyStoredFieldsWriter;
+
+impl Accountable for EmptyStoredFieldsWriter {
+    fn ram_bytes_used(&self) -> i64 {
+        0
+    }
+}
 
 impl StoredFieldsWriter for EmptyStoredFieldsWriter {
     fn start_document(&mut self) -> Result<()> {
@@ -222,6 +271,11 @@ mod tests {
         writer.write_field_f64(&info, 2.0).unwrap();
         writer.write_field_bytes(&info, b"x").unwrap();
         writer.write_field_string(&info, "s").unwrap();
+        let mut input = crate::store::ByteArrayDataInput::new(vec![1, 2, 3]);
+        let mut stored_input = StoredFieldDataInput::new(&mut input, 3);
+        writer
+            .write_field_data_input(&info, &mut stored_input)
+            .unwrap();
         writer.finish_document().unwrap();
         writer.finish(1).unwrap();
         writer.close().unwrap();
@@ -233,8 +287,8 @@ mod tests {
         fn needs_field(
             &mut self,
             _info: &FieldInfo,
-        ) -> super::super::stub::StoredFieldVisitorStatus {
-            super::super::stub::StoredFieldVisitorStatus::Yes
+        ) -> Result<super::super::stub::StoredFieldVisitorStatus> {
+            Ok(super::super::stub::StoredFieldVisitorStatus::Yes)
         }
     }
 }

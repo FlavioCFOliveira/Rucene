@@ -111,11 +111,19 @@ pub trait DataInput {
     fn read_v_int(&mut self) -> Result<i32> {
         let mut b = self.read_byte()? as i32;
         let mut i = b & 0x7F;
-        let mut shift = 7;
+        let mut shift = 0u32;
         while (b & 0x80) != 0 {
             b = self.read_byte()? as i32;
-            i |= (b & 0x7F) << shift;
             shift += 7;
+            // Java's loop is unbounded too (`DataInput.java:127-135`) and the
+            // JVM masks the shift count to five bits, so a malformed varint
+            // yields a garbage value rather than an error. `wrapping_shl` is
+            // that same masked shift; a plain `<<` would abort a debug build on
+            // bytes that Lucene decodes without complaint. Termination is
+            // bounded by the input either way: the loop only continues while
+            // the continuation bit is set, and a truncated stream ends in an
+            // I/O error.
+            i |= (b & 0x7F).wrapping_shl(shift);
         }
         Ok(i)
     }
@@ -138,11 +146,12 @@ pub trait DataInput {
     fn read_v_long(&mut self) -> Result<i64> {
         let mut b = self.read_byte()? as i64;
         let mut i = b & 0x7F;
-        let mut shift = 7;
+        let mut shift = 0u32;
         while (b & 0x80) != 0 {
             b = self.read_byte()? as i64;
-            i |= (b & 0x7F_i64) << shift;
             shift += 7;
+            // See `read_v_int`: Java masks the shift count, here to six bits.
+            i |= (b & 0x7F_i64).wrapping_shl(shift);
         }
         Ok(i)
     }
@@ -10220,6 +10229,46 @@ mod tests {
         let mut target_input = ByteArrayDataInput::new(target.into_inner());
         for i in 0..2000i32 {
             assert_eq!(target_input.read_int().unwrap(), i);
+        }
+    }
+    /// Regression test: a malformed varint must not abort the process.
+    ///
+    /// Lucene's `readVInt`/`readVLong` loop until a byte without the
+    /// continuation bit (`DataInput.java:127-135`) and the JVM masks the shift
+    /// count, so a stream of continuation bytes yields a garbage value and then
+    /// an `EOFException`. This port shifted without masking, so a debug build
+    /// aborted with "attempt to shift left with overflow" on bytes Lucene reads
+    /// without complaint — reachable from any corrupt index file, since every
+    /// codec length and pointer is a varint.
+    #[test]
+    fn a_malformed_varint_yields_a_value_or_an_error_but_never_a_panic() {
+        // Ten continuation bytes then a terminator: far past the five bytes a
+        // well-formed vInt can occupy.
+        let mut bytes = vec![0xFFu8; 10];
+        bytes.push(0x00);
+        let mut input = ByteArrayDataInput::new(bytes.clone());
+        let _ = input.read_v_int().expect("a garbage value, not a panic");
+        let mut input = ByteArrayDataInput::new(bytes.clone());
+        let _ = input.read_v_long().expect("a garbage value, not a panic");
+
+        // Unterminated: the loop must end at the end of the input.
+        let mut input = ByteArrayDataInput::new(vec![0xFFu8; 32]);
+        assert!(input.read_v_int().is_err(), "a truncated vInt must error");
+        let mut input = ByteArrayDataInput::new(vec![0xFFu8; 32]);
+        assert!(input.read_v_long().is_err(), "a truncated vLong must error");
+
+        // And well-formed values still round-trip, including the widest ones.
+        for value in [0i32, 1, 127, 128, i32::MAX, -1, i32::MIN] {
+            let mut out = ByteArrayDataOutput::new();
+            out.write_v_int(value).unwrap();
+            let mut input = ByteArrayDataInput::new(out.into_inner());
+            assert_eq!(input.read_v_int().unwrap(), value, "vInt {value}");
+        }
+        for value in [0i64, 1, 127, 128, i64::MAX] {
+            let mut out = ByteArrayDataOutput::new();
+            out.write_v_long(value).unwrap();
+            let mut input = ByteArrayDataInput::new(out.into_inner());
+            assert_eq!(input.read_v_long().unwrap(), value, "vLong {value}");
         }
     }
 }

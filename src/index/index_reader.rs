@@ -76,14 +76,54 @@ pub trait StoredFields: Send + Sync + Debug {
     ) -> Result<()>;
 
     /// Returns the stored fields of `doc_id` as a [`Document`](crate::document::Document).
-    fn document(&self, doc_id: i32) -> Result<crate::document::Document>;
+    ///
+    /// Equivalent to `StoredFields.document(int)`, which Java declares `final`
+    /// because it is pure sugar over
+    /// [`DocumentStoredFieldVisitor`](crate::document::DocumentStoredFieldVisitor).
+    /// This port keeps it a provided method for the same reason: an
+    /// implementation only has to supply [`Self::document_with_visitor`] and
+    /// cannot diverge on how a document is materialised.
+    ///
+    /// **NOTE:** for performance reasons this method does not check whether the
+    /// requested document is deleted; asking for a deleted document yields
+    /// unspecified results. Test it against the live docs of the reader when
+    /// that matters.
+    ///
+    /// **NOTE:** only the content of a field is returned, and only if the field
+    /// was stored at indexing time. Metadata such as `omitNorms`,
+    /// `IndexOptions` or `tokenized` is not preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::CorruptIndex`] if the index is corrupt, and
+    /// propagates any low-level I/O error.
+    fn document(&self, doc_id: i32) -> Result<crate::document::Document> {
+        let mut visitor = crate::document::DocumentStoredFieldVisitor::new();
+        self.document_with_visitor(doc_id, &mut visitor)?;
+        Ok(visitor.into_document())
+    }
 
     /// Like [`Self::document`], but only loads the named fields.
+    ///
+    /// Equivalent to `StoredFields.document(int, Set<String>)`, also `final` in
+    /// Java and also pure sugar over
+    /// [`DocumentStoredFieldVisitor`](crate::document::DocumentStoredFieldVisitor).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::CorruptIndex`] if the index is corrupt, and
+    /// propagates any low-level I/O error.
     fn document_fields(
         &self,
         doc_id: i32,
         fields_to_load: &std::collections::HashSet<String>,
-    ) -> Result<crate::document::Document>;
+    ) -> Result<crate::document::Document> {
+        let mut visitor = crate::document::DocumentStoredFieldVisitor::with_fields(
+            fields_to_load.iter().cloned(),
+        );
+        self.document_with_visitor(doc_id, &mut visitor)?;
+        Ok(visitor.into_document())
+    }
 }
 
 // ---------------------------------------------------------------------------

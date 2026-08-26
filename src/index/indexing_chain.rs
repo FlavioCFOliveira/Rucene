@@ -7,12 +7,14 @@
 //! | `PerField` (private) | `IndexingChain.PerField` |
 //! | [`EmptyNormsProducer`] | the `NormsProducer` the chain passes to the codec |
 //!
-//! The chain turns a [`Document`] into buffered postings: it registers each
-//! field in the segment's [`FieldInfosBuilder`], runs the analysis pipeline,
-//! validates positions and offsets, and feeds every token to
-//! [`FreqProxTermsWriter`]. At flush time it streams the buffered postings
+//! The chain turns a [`Document`] into buffered postings and a stored-fields
+//! stream: it registers each field in the segment's [`FieldInfosBuilder`], runs
+//! the analysis pipeline, validates positions and offsets, feeds every token to
+//! [`FreqProxTermsWriter`], and hands every stored value to the
+//! [`StoredFieldsConsumer`]. At flush time it streams the buffered postings
 //! through the codec's postings format, producing the `.doc`, `.pos`, `.pay`,
-//! `.tim`, `.tip` and `.tmd` files of the segment.
+//! `.tim`, `.tip` and `.tmd` files of the segment, and finishes the
+//! stored-fields stream, producing `.fdt`, `.fdx` and `.fdm`.
 //!
 //! # Java to Rust adaptations
 //!
@@ -36,10 +38,15 @@
 //!
 //! # Scope
 //!
-//! Lucene's `IndexingChain` also drives stored fields, doc values, points,
-//! vectors, norms and term vectors. Those consumers are separate ports; this
-//! chain implements the inverted-index path only, so a flushed segment
-//! currently contains its postings files and nothing else.
+//! Lucene's `IndexingChain` also drives doc values, points, vectors, norms and
+//! term vectors. Those consumers are separate ports; this chain implements the
+//! inverted-index and stored-fields paths, so a flushed segment currently
+//! contains its postings files and its stored-fields files and nothing else.
+//!
+//! Lucene picks `SortingStoredFieldsConsumer` when the segment has an index
+//! sort. Index sorting is a separate port, so this chain always uses the plain
+//! [`StoredFieldsConsumer`]; [`DefaultIndexingChain::bind_segment`] is the one
+//! place that choice will be made.
 
 #![deny(unsafe_code)]
 
@@ -56,15 +63,18 @@ use crate::analysis::tokenattributes::{
 use crate::analysis::Analyzer;
 use crate::codecs::postings::{NormsProducer, NumericDocValues};
 use crate::codecs::state::SegmentWriteState;
-use crate::document::{Document, InvertableType};
+use crate::document::{Document, InvertableType, StoredValueType};
 use crate::error::{LuceneError, Result};
 use crate::index::documents_writer::{
     IndexingChain, IndexingChainFlushResult, IndexingChainFlushState, SharedIndexingScratch,
+    MAX_STORED_STRING_LENGTH,
 };
 use crate::index::field_infos::FieldInfosBuilder;
 use crate::index::freq_prox_terms_writer::{FreqProxTermsWriter, InvertedToken};
 use crate::index::index_writer_config::LiveIndexWriterConfig;
-use crate::index::{FieldInfo, IndexOptions, IndexableField};
+use crate::index::stored_fields_consumer::StoredFieldsConsumer;
+use crate::index::{FieldInfo, IndexOptions, IndexableField, SegmentInfo};
+use crate::store::TrackingDirectoryWrapper;
 use crate::util::{AttributeSource, BytesRef, InfoStream};
 
 /// Highest position a token may occupy.
@@ -455,6 +465,11 @@ pub struct DefaultIndexingChain {
     per_field_index: HashMap<String, usize>,
     next_field_gen: i64,
     aborting_error: Option<LuceneError>,
+    /// The stored-fields half of the chain, present once the chain knows which
+    /// segment it writes. Equivalent to `IndexingChain.storedFieldsConsumer`,
+    /// which Lucene builds in the constructor because it already has the
+    /// directory and the `SegmentInfo` there.
+    stored_fields_consumer: Option<StoredFieldsConsumer>,
 }
 
 impl DefaultIndexingChain {
@@ -470,7 +485,124 @@ impl DefaultIndexingChain {
             per_field_index: HashMap::new(),
             next_field_gen: 0,
             aborting_error: None,
+            stored_fields_consumer: None,
         }
+    }
+
+    /// Creates a chain already bound to the segment it will write.
+    ///
+    /// This is the shape of Lucene's `IndexingChain` constructor, which takes
+    /// the directory and the `SegmentInfo` up front. Prefer it whenever the
+    /// segment is known at construction time; the `DocumentsWriterPerThread`
+    /// cannot, because it builds both after the chain, and calls
+    /// [`IndexingChain::bind_segment`] instead.
+    pub fn new_for_segment(
+        config: Arc<LiveIndexWriterConfig>,
+        directory: Arc<TrackingDirectoryWrapper>,
+        segment_info: &SegmentInfo,
+    ) -> Result<Self> {
+        let mut chain = Self::new(config);
+        <Self as IndexingChain>::bind_segment(&mut chain, directory, segment_info)?;
+        Ok(chain)
+    }
+
+    /// Returns the stored-fields consumer, if the chain is bound to a segment.
+    pub fn stored_fields_consumer(&self) -> Option<&StoredFieldsConsumer> {
+        self.stored_fields_consumer.as_ref()
+    }
+
+    /// Opens the stored-fields frame of `doc_id`.
+    ///
+    /// Equivalent to `IndexingChain.startStoredFields(int)`: a failure here
+    /// leaves the stored-fields stream misaligned, so it aborts the whole
+    /// segment rather than just the document.
+    fn start_stored_fields(&mut self, doc_id: i32) -> Result<()> {
+        let Some(consumer) = self.stored_fields_consumer.as_mut() else {
+            return Ok(());
+        };
+        consumer.start_document(doc_id).inspect_err(|error| {
+            self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+                "the stored fields of segment may be corrupt after doc {doc_id}: {error}"
+            )));
+        })
+    }
+
+    /// Closes the stored-fields frame of the current document.
+    ///
+    /// Equivalent to `IndexingChain.finishStoredFields()`.
+    fn finish_stored_fields(&mut self) -> Result<()> {
+        let Some(consumer) = self.stored_fields_consumer.as_mut() else {
+            return Ok(());
+        };
+        consumer.finish_document().inspect_err(|error| {
+            self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+                "the stored fields of segment may be corrupt: {error}"
+            )));
+        })
+    }
+
+    /// Validates and writes the stored value of one field instance.
+    ///
+    /// Equivalent to the `fieldType.stored()` half of
+    /// `IndexingChain.invertAndStore`. The two validation failures are
+    /// document-level — the document is rejected and indexing continues — while
+    /// a failure inside the consumer is aborting, because it may have left the
+    /// stored-fields stream half written.
+    fn store_field(&mut self, per_field: usize, field: &dyn IndexableField) -> Result<()> {
+        // Aborting is deliberate, and it is where Lucene ends up too, one step
+        // later. `IndexableField.storedValue()` declares no `IOException`
+        // (`IndexableField.java:77`) and `IndexingChain.java:1422` calls it
+        // *outside* the try/catch that reaches `onAbortingException`
+        // (`:1434-1437`) — because at that point Java has read nothing: its
+        // `StoredFieldDataInput` is still a live cursor, drained later inside
+        // `StoredFieldsWriter.writeField`, which *is* inside that try/catch.
+        // This port drains the cursor eagerly in `stored_value()`, so the same
+        // read failure surfaces one call earlier and must be routed to the same
+        // place: a half-read stored value leaves the segment untrustworthy.
+        let value = field.stored_value().inspect_err(|error| {
+            self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+                "the stored value of field \"{}\" could not be read: {error}",
+                field.name()
+            )));
+        })?;
+        let Some(value) = value else {
+            // Lucene reaches this when `Field.storedValue()` returns null.
+            return Err(LuceneError::IllegalArgument(
+                "Cannot store a null value".to_string(),
+            ));
+        };
+        if value.value_type() == StoredValueType::STRING {
+            let text = value
+                .string_value()
+                .expect("INVARIANT: the value was just typed as STRING");
+            // `String.length()` counts UTF-16 code units and is O(1) in Java.
+            // A string never has more UTF-16 units than UTF-8 bytes, so the
+            // cheap byte test settles every realistic case; the exact count
+            // only runs for the few hundred megabytes above the limit.
+            if text.len() > MAX_STORED_STRING_LENGTH {
+                let length = text.encode_utf16().count();
+                if length > MAX_STORED_STRING_LENGTH {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "stored field \"{}\" is too large ({length} characters) to store",
+                        field.name()
+                    )));
+                }
+            }
+        }
+        let info = self.per_fields[per_field].field_info.clone();
+        let Some(consumer) = self.stored_fields_consumer.as_mut() else {
+            return Err(LuceneError::IllegalState(format!(
+                "the indexing chain is not bound to a segment, so the stored field \"{}\" \
+                 cannot be written; call bind_segment first",
+                field.name()
+            )));
+        };
+        consumer.write_field(&info, value).inspect_err(|error| {
+            self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+                "the stored fields of segment may be corrupt after field \"{}\": {error}",
+                field.name()
+            )));
+        })
     }
 
     /// Returns the shared scratch buffers of this chain.
@@ -813,40 +945,57 @@ impl IndexingChain for DefaultIndexingChain {
             doc_fields.push(index);
         }
 
+        // Lucene opens a stored-fields frame for every document, before any
+        // field is processed, and closes it in a `finally` block: a document
+        // that stores nothing still occupies its own frame, so the stream stays
+        // aligned with the doc ids.
+        self.start_stored_fields(doc_id)?;
+
         let mut indexed: Vec<usize> = Vec::new();
+        let mut outcome: Result<()> = Ok(());
         for (field, index) in doc.get_fields().iter().zip(doc_fields.iter().copied()) {
-            if field.field_type().index_options() == IndexOptions::NONE {
-                continue;
-            }
-            let first = self.per_fields[index].first;
-            if first {
-                self.per_fields[index].first = false;
-                indexed.push(index);
-            }
-            let result = Self::invert(
-                analyzer.as_ref(),
-                info_stream.as_ref(),
-                &mut self.terms_writer,
-                &mut self.per_fields[index],
-                doc_id,
-                field.as_ref(),
-                first,
-            );
-            if let Err(error) = result {
-                // Lucene distinguishes a document-level problem (the document is
-                // dropped, indexing continues) from a corrupt terms hash (the
-                // whole DWPT must be aborted). Only the validation errors raised
-                // above and by the per-field writer are recoverable.
-                if !matches!(
-                    error,
-                    LuceneError::IllegalArgument(_) | LuceneError::IllegalState(_)
-                ) {
-                    self.aborting_error = Some(LuceneError::CorruptIndex(format!(
-                        "indexing chain buffers may be corrupt after field \"{}\": {error}",
-                        field.name()
-                    )));
+            // `IndexingChain.invertAndStore` inverts first and stores second,
+            // for every field instance, in document order.
+            if field.field_type().index_options() != IndexOptions::NONE {
+                let first = self.per_fields[index].first;
+                if first {
+                    self.per_fields[index].first = false;
+                    indexed.push(index);
                 }
-                return Err(error);
+                let result = Self::invert(
+                    analyzer.as_ref(),
+                    info_stream.as_ref(),
+                    &mut self.terms_writer,
+                    &mut self.per_fields[index],
+                    doc_id,
+                    field.as_ref(),
+                    first,
+                );
+                if let Err(error) = result {
+                    // Lucene distinguishes a document-level problem (the
+                    // document is dropped, indexing continues) from a corrupt
+                    // terms hash (the whole DWPT must be aborted). Only the
+                    // validation errors raised above and by the per-field
+                    // writer are recoverable.
+                    if !matches!(
+                        error,
+                        LuceneError::IllegalArgument(_) | LuceneError::IllegalState(_)
+                    ) {
+                        self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+                            "indexing chain buffers may be corrupt after field \"{}\": {error}",
+                            field.name()
+                        )));
+                    }
+                    outcome = Err(error);
+                    break;
+                }
+            }
+
+            if field.field_type().stored() {
+                if let Err(error) = self.store_field(index, field.as_ref()) {
+                    outcome = Err(error);
+                    break;
+                }
             }
         }
 
@@ -863,10 +1012,45 @@ impl IndexingChain for DefaultIndexingChain {
                 }
             }
         }
+
+        // Lucene's `finally` closes the frame unless an aborting exception was
+        // already recorded, in which case the whole segment is discarded and
+        // the stream no longer matters.
+        if self.aborting_error.is_none() {
+            self.finish_stored_fields()?;
+        }
+        outcome
+    }
+
+    fn bind_segment(
+        &mut self,
+        directory: Arc<TrackingDirectoryWrapper>,
+        segment_info: &SegmentInfo,
+    ) -> Result<()> {
+        if self.stored_fields_consumer.is_some() {
+            return Err(LuceneError::IllegalState(format!(
+                "the indexing chain is already bound to segment {}",
+                segment_info.name
+            )));
+        }
+        // Lucene chooses `SortingStoredFieldsConsumer` here when the segment
+        // has an index sort; index sorting is a separate port, so the plain
+        // consumer is the only option for now.
+        self.stored_fields_consumer = Some(StoredFieldsConsumer::new(
+            self.config.codec(),
+            directory,
+            segment_info.clone(),
+        ));
         Ok(())
     }
 
     fn abort(&mut self) {
+        // Lucene runs `storedFieldsConsumer.abort()` inside a try-with-resources
+        // whose finalizer aborts the terms hash, so both release their files
+        // even when one of them throws.
+        if let Some(consumer) = self.stored_fields_consumer.as_mut() {
+            consumer.abort();
+        }
         self.terms_writer.abort();
         self.per_fields.clear();
         self.per_field_index.clear();
@@ -875,6 +1059,10 @@ impl IndexingChain for DefaultIndexingChain {
 
     fn ram_bytes_used(&self) -> i64 {
         self.bytes_used.load(Ordering::Acquire)
+            + self
+                .stored_fields_consumer
+                .as_ref()
+                .map_or(0, StoredFieldsConsumer::ram_bytes_used)
     }
 
     fn flush(&mut self, state: &IndexingChainFlushState<'_>) -> Result<IndexingChainFlushResult> {
@@ -890,6 +1078,13 @@ impl IndexingChain for DefaultIndexingChain {
         write_state.live_docs = state.live_docs.cloned();
         write_state.del_count_on_flush = state.del_count_on_flush;
 
+        // Lucene finishes the stored fields before the postings; the two write
+        // different files, so only the order of the calls is reproduced here.
+        if let Some(consumer) = self.stored_fields_consumer.as_mut() {
+            consumer.finish(state.segment_info.max_doc()?)?;
+            consumer.flush(state.segment_info)?;
+        }
+
         let norms = EmptyNormsProducer;
         self.terms_writer
             .flush(&mut write_state, state.delete_terms, &norms)?;
@@ -898,7 +1093,7 @@ impl IndexingChain for DefaultIndexingChain {
             state.info_stream.message(
                 "DWPT",
                 &format!(
-                    "flushed postings for segment {} ({} fields, {} deleted docs)",
+                    "flushed postings and stored fields for segment {} ({} fields, {} deleted docs)",
                     state.segment_info.name,
                     state.field_infos.size(),
                     write_state.del_count_on_flush
@@ -932,7 +1127,7 @@ mod tests {
     };
     use crate::analysis::{default_token_attribute_factory, StandardAnalyzer, TokenStream};
     use crate::codecs::{register_codec, Codec, Lucene104Codec};
-    use crate::document::{Field, FieldType, Store, StringField, TextField};
+    use crate::document::{Field, FieldType, IntField, Store, StoredField, StringField, TextField};
     use crate::index::documents_writer::TermDelete;
     use crate::index::field_infos::FieldNumbers;
     use crate::index::{SegmentInfo, Term};
@@ -1337,7 +1532,7 @@ mod tests {
 
     #[test]
     fn a_document_without_indexed_fields_buffers_nothing() {
-        let mut chain = DefaultIndexingChain::new(config());
+        let (mut chain, _tracking, _info) = bound_chain(1);
         let mut field_infos = builder();
         let mut document = Document::new();
         document.add(Box::new(
@@ -1368,39 +1563,80 @@ mod tests {
 
     // -- Flush -------------------------------------------------------------
 
+    /// Builds a chain bound to a fresh single-segment in-memory directory.
+    ///
+    /// Mirrors what the `DocumentsWriterPerThread` does: the tracking wrapper
+    /// the chain writes through is the one whose file list becomes the
+    /// segment's, and the `SegmentInfo` handed to `flush` is a *different*
+    /// object from the one the chain was bound to.
+    fn bound_chain(
+        max_doc: i32,
+    ) -> (
+        DefaultIndexingChain,
+        Arc<TrackingDirectoryWrapper>,
+        SegmentInfo,
+    ) {
+        let codec = ensure_codec();
+        // Reading the segment back goes through the same tracking wrapper, so
+        // there is exactly one underlying directory.
+        let tracking = Arc::new(TrackingDirectoryWrapper::new(Box::new(
+            ByteBuffersDirectory::new(),
+        )));
+        let directory: Arc<dyn Directory> = Arc::clone(&tracking) as Arc<dyn Directory>;
+        let make_info = |max_doc| {
+            SegmentInfo::new(
+                Arc::clone(&directory),
+                Version::LATEST,
+                Some(Version::LATEST),
+                "_0".to_string(),
+                max_doc,
+                false,
+                false,
+                Arc::clone(&codec),
+                HashMap::new(),
+                [7u8; 16],
+                HashMap::new(),
+                Default::default(),
+            )
+            .expect("segment info")
+        };
+        // The DWPT binds the chain while `maxDoc` is still unset.
+        let indexing_info = make_info(-1);
+        let chain =
+            DefaultIndexingChain::new_for_segment(config(), Arc::clone(&tracking), &indexing_info)
+                .expect("bind segment");
+        (chain, tracking, make_info(max_doc))
+    }
+
     /// Indexes `documents` and flushes them into a fresh in-memory directory.
     fn flush_documents(
         documents: Vec<Document>,
         delete_terms: &[TermDelete],
     ) -> (Vec<String>, IndexingChainFlushResult) {
-        let codec = ensure_codec();
-        let mut chain = DefaultIndexingChain::new(config());
-        let mut field_infos = builder();
+        let (files, result, _, _) = flush_documents_with_segment(documents, delete_terms);
+        (files, result)
+    }
+
+    /// Like [`flush_documents`], but also returns the flushed segment and the
+    /// directory it lives in, so a test can read the segment back.
+    fn flush_documents_with_segment(
+        documents: Vec<Document>,
+        delete_terms: &[TermDelete],
+    ) -> (
+        Vec<String>,
+        IndexingChainFlushResult,
+        SegmentInfo,
+        Arc<TrackingDirectoryWrapper>,
+    ) {
         let max_doc = documents.len() as i32;
+        let (mut chain, tracking, segment_info) = bound_chain(max_doc);
+        let mut field_infos = builder();
         for (doc_id, document) in documents.iter().enumerate() {
             chain
                 .process_document(doc_id as i32, document, true, &mut field_infos)
                 .expect("process document");
         }
         let finished = field_infos.finish().expect("field infos");
-
-        let directory: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
-        let tracking = TrackingDirectoryWrapper::new(Box::new(ByteBuffersDirectory::new()));
-        let segment_info = SegmentInfo::new(
-            Arc::clone(&directory),
-            Version::LATEST,
-            Some(Version::LATEST),
-            "_0".to_string(),
-            max_doc,
-            false,
-            false,
-            codec,
-            HashMap::new(),
-            [7u8; 16],
-            HashMap::new(),
-            Default::default(),
-        )
-        .expect("segment info");
 
         let info_stream = NoOutputInfoStream;
         let context = flush_io_context(FlushInfo::new(max_doc, 0));
@@ -1417,7 +1653,7 @@ mod tests {
         let result = chain.flush(&state).expect("flush");
         let mut files: Vec<String> = tracking.get_created_files().into_iter().collect();
         files.sort();
-        (files, result)
+        (files, result, segment_info, tracking)
     }
 
     #[test]
@@ -1440,7 +1676,7 @@ mod tests {
     }
 
     #[test]
-    fn flushing_a_segment_without_postings_writes_nothing() {
+    fn flushing_a_segment_without_postings_writes_only_the_stored_fields() {
         let mut stored_type = FieldType::new();
         stored_type.set_stored(true).expect("stored");
         stored_type.freeze();
@@ -1449,7 +1685,16 @@ mod tests {
             Field::new("meta", "value".to_string(), stored_type).expect("stored field"),
         ));
         let (files, result) = flush_documents(vec![document], &[]);
-        assert!(files.is_empty(), "no postings, no files: {files:?}");
+        let mut extensions: Vec<String> = files
+            .iter()
+            .filter_map(|name| name.rsplit_once('.').map(|(_, ext)| ext.to_string()))
+            .collect();
+        extensions.sort();
+        assert_eq!(
+            extensions,
+            vec!["fdm".to_string(), "fdt".to_string(), "fdx".to_string()],
+            "a stored-only document produces the stored-fields files and no postings: {files:?}"
+        );
         assert_eq!(result.del_count_on_flush, 0);
         assert!(result.live_docs.is_none());
     }
@@ -1483,6 +1728,232 @@ mod tests {
         let live_docs = result.live_docs.expect("live docs");
         assert!(!live_docs.get(0) && !live_docs.get(1));
         assert!(live_docs.get(2) && live_docs.get(3));
+    }
+
+    // -- Stored fields ------------------------------------------------------
+
+    /// Builds a stored-and-indexed text field.
+    fn stored_text_field(name: &str, value: &str) -> Box<dyn crate::index::IndexableField> {
+        Box::new(TextField::new(name, value.to_string(), Store::YES).expect("text field"))
+    }
+
+    /// Reads every document of the flushed segment back as a `Document`.
+    fn read_back(
+        segment_info: &SegmentInfo,
+        directory: &TrackingDirectoryWrapper,
+        field_infos: &crate::index::FieldInfos,
+    ) -> Vec<Vec<(String, String)>> {
+        let reader = ensure_codec()
+            .stored_fields_format()
+            .fields_reader(
+                directory,
+                segment_info,
+                field_infos,
+                &*crate::store::DEFAULT_IO_CONTEXT,
+            )
+            .expect("stored fields reader");
+        (0..segment_info.max_doc().expect("max doc"))
+            .map(|doc_id| {
+                let mut visitor = crate::document::DocumentStoredFieldVisitor::new();
+                reader.document(doc_id, &mut visitor).expect("document");
+                visitor
+                    .into_document()
+                    .into_fields()
+                    .iter()
+                    .map(|field| {
+                        (
+                            field.name().to_string(),
+                            field
+                                .string_value()
+                                .or_else(|| field.numeric_value().map(|v| v.to_string()))
+                                .unwrap_or_else(|| {
+                                    format!("{:?}", field.binary_value().expect("a value"))
+                                }),
+                        )
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn stored_fields_written_by_the_chain_come_back_from_the_segment() {
+        let mut documents = Vec::new();
+        for index in 0..3 {
+            let mut document = Document::new();
+            document.add(stored_text_field("title", &format!("title {index}")));
+            document.add(Box::new(IntField::new("num", index, Store::YES)));
+            document.add(Box::new(
+                StoredField::new_bytes("blob", BytesRef::new(vec![index as u8, 0xFF]))
+                    .expect("stored bytes"),
+            ));
+            documents.push(document);
+        }
+
+        let max_doc = documents.len() as i32;
+        let (mut chain, tracking, segment_info) = bound_chain(max_doc);
+        let mut field_infos = builder();
+        for (doc_id, document) in documents.iter().enumerate() {
+            chain
+                .process_document(doc_id as i32, document, true, &mut field_infos)
+                .expect("process document");
+        }
+        let finished = field_infos.finish().expect("field infos");
+        let info_stream = NoOutputInfoStream;
+        let context = flush_io_context(FlushInfo::new(max_doc, 0));
+        let state = IndexingChainFlushState {
+            info_stream: &info_stream,
+            directory: &tracking,
+            segment_info: &segment_info,
+            field_infos: &finished,
+            context: context.as_ref(),
+            live_docs: None,
+            del_count_on_flush: 0,
+            delete_terms: &[],
+        };
+        chain.flush(&state).expect("flush");
+
+        let documents = read_back(&segment_info, &tracking, &finished);
+        assert_eq!(
+            documents,
+            vec![
+                vec![
+                    ("title".to_string(), "title 0".to_string()),
+                    ("num".to_string(), "0".to_string()),
+                    (
+                        "blob".to_string(),
+                        format!("{:?}", BytesRef::new(vec![0, 0xFF]))
+                    ),
+                ],
+                vec![
+                    ("title".to_string(), "title 1".to_string()),
+                    ("num".to_string(), "1".to_string()),
+                    (
+                        "blob".to_string(),
+                        format!("{:?}", BytesRef::new(vec![1, 0xFF]))
+                    ),
+                ],
+                vec![
+                    ("title".to_string(), "title 2".to_string()),
+                    ("num".to_string(), "2".to_string()),
+                    (
+                        "blob".to_string(),
+                        format!("{:?}", BytesRef::new(vec![2, 0xFF]))
+                    ),
+                ],
+            ],
+            "the stored values must come back in the order the document declared them"
+        );
+    }
+
+    #[test]
+    fn a_document_that_stores_nothing_keeps_its_doc_id() {
+        let mut documents = Vec::new();
+        for index in 0..4 {
+            let mut document = Document::new();
+            if index % 2 == 0 {
+                document.add(stored_text_field("title", &format!("doc {index}")));
+            } else {
+                // Indexed but not stored: the frame must still be written.
+                document.add(scripted_field(
+                    "body",
+                    IndexOptions::DOCS,
+                    vec![Tok::new("alpha", 1, 0, 5)],
+                ));
+            }
+            documents.push(document);
+        }
+        let max_doc = documents.len() as i32;
+        let (mut chain, tracking, segment_info) = bound_chain(max_doc);
+        let mut field_infos = builder();
+        for (doc_id, document) in documents.iter().enumerate() {
+            chain
+                .process_document(doc_id as i32, document, true, &mut field_infos)
+                .expect("process document");
+        }
+        let finished = field_infos.finish().expect("field infos");
+        let info_stream = NoOutputInfoStream;
+        let context = flush_io_context(FlushInfo::new(max_doc, 0));
+        let state = IndexingChainFlushState {
+            info_stream: &info_stream,
+            directory: &tracking,
+            segment_info: &segment_info,
+            field_infos: &finished,
+            context: context.as_ref(),
+            live_docs: None,
+            del_count_on_flush: 0,
+            delete_terms: &[],
+        };
+        chain.flush(&state).expect("flush");
+
+        assert_eq!(
+            read_back(&segment_info, &tracking, &finished),
+            vec![
+                vec![("title".to_string(), "doc 0".to_string())],
+                Vec::new(),
+                vec![("title".to_string(), "doc 2".to_string())],
+                Vec::new(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_flush_writes_the_stored_field_files_even_when_nothing_was_stored() {
+        let mut document = Document::new();
+        document.add(scripted_field(
+            "body",
+            IndexOptions::DOCS,
+            vec![Tok::new("alpha", 1, 0, 5)],
+        ));
+        let (files, _) = flush_documents(vec![document], &[]);
+        for extension in ["fdt", "fdx", "fdm"] {
+            assert!(
+                files
+                    .iter()
+                    .any(|name| name.ends_with(&format!(".{extension}"))),
+                "Lucene frames every document, so a segment always has a .{extension}: {files:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_stored_field_files_are_released_on_abort() {
+        let (mut chain, _tracking, _info) = bound_chain(1);
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        document.add(stored_text_field("title", "doomed"));
+        chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect("process document");
+        assert!(
+            chain.stored_fields_consumer().expect("bound").has_writer(),
+            "indexing a document opens the stored-fields writer"
+        );
+        chain.abort();
+        assert!(
+            !chain.stored_fields_consumer().expect("bound").has_writer(),
+            "abort must release the stored-fields writer"
+        );
+    }
+
+    #[test]
+    fn binding_a_second_segment_is_rejected() {
+        let (mut chain, tracking, info) = bound_chain(1);
+        let error = IndexingChain::bind_segment(&mut chain, tracking, &info)
+            .expect_err("a chain writes exactly one segment");
+        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+    }
+
+    #[test]
+    fn an_unbound_chain_refuses_to_drop_a_stored_field() {
+        let mut chain = DefaultIndexingChain::new(config());
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        document.add(stored_text_field("title", "value"));
+        let error = chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect_err("silently dropping stored data would corrupt the segment");
+        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
     }
 
     #[test]

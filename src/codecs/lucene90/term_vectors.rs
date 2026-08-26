@@ -1167,14 +1167,14 @@ impl Lucene90CompressingTermVectorsReader {
         let chunk_size = meta_in.read_v_int()?;
 
         let index_reader = FieldsIndexReader::new(
-            Arc::clone(&directory),
+            directory.as_ref(),
             &segment,
             segment_suffix,
             INDEX_EXTENSION,
             INDEX_CODEC_NAME,
             id,
             meta_in.as_mut(),
-            dyn_io_context_clone(context),
+            context,
         )?;
         let max_pointer = index_reader.max_pointer();
 

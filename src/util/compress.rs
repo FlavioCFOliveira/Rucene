@@ -319,16 +319,20 @@ impl HighCompressionHashTable {
     fn add_hash(&mut self, bytes: &[u8], off: usize) {
         let v = read_native_int(bytes, off);
         let h = lz4_hash_hc(v);
-        let prev = self.hash_table[h];
-        let delta = if prev < 0 {
+        // Java is `int delta = off - hashTable[h]; if (delta <= 0 || delta >=
+        // MAX_DISTANCE) { delta = MAX_DISTANCE - 1; }` (`LZ4.java:475-484`),
+        // and the subtraction is **signed** for two reasons. The unset slot
+        // holds `-1`, and — the one that bites — `reset` deliberately keeps the
+        // table when the previous span was shorter than the window
+        // (`LZ4.java:411-431`), so a stale entry can hold an offset *larger*
+        // than `off`. Computing this in `usize`, as this port used to, made
+        // that case underflow: a debug build aborted and a release build
+        // wrapped. The single guard below covers both, exactly as Java's does.
+        let delta = off as i64 - i64::from(self.hash_table[h]);
+        let delta = if delta <= 0 || delta >= LZ4_MAX_DISTANCE as i64 {
             LZ4_MAX_DISTANCE - 1
         } else {
-            let d = off - prev as usize;
-            if d == 0 || d >= LZ4_MAX_DISTANCE {
-                LZ4_MAX_DISTANCE - 1
-            } else {
-                d
-            }
+            delta as usize
         };
         self.chain_table[off & (LZ4_MAX_DISTANCE - 1)] = delta as u16;
         self.hash_table[h] = off as i32;
@@ -608,6 +612,20 @@ impl Lz4 {
                 }
             }
             if literal_len != 0 {
+                // A corrupt stream can claim more literals than the buffer can
+                // hold. Java raises `ArrayIndexOutOfBoundsException` here; this
+                // port reports corruption rather than panicking, because the
+                // bytes come straight off disk and are not trusted. The bound
+                // is the whole buffer, not `dest_end`: decoding only a prefix
+                // of a block legitimately writes a few bytes past it, which is
+                // why callers pass a padded destination.
+                if literal_len > dest.len() - d_off {
+                    return Err(LuceneError::CorruptIndex(format!(
+                        "LZ4 literal run of {literal_len} bytes overruns the buffer \
+                         ({} bytes left)",
+                        dest.len() - d_off
+                    )));
+                }
                 input.read_bytes(dest, d_off, literal_len)?;
                 d_off += literal_len;
             }
@@ -636,6 +654,20 @@ impl Lz4 {
                 }
             }
             match_len += LZ4_MIN_MATCH;
+
+            // Both copies below index `d_off - match_dec`, and the match may
+            // not reach behind the start of the block.
+            if match_dec > d_off {
+                return Err(LuceneError::CorruptIndex(format!(
+                    "LZ4 match reaches {match_dec} bytes back from offset {d_off}"
+                )));
+            }
+            if match_len > dest.len() - d_off {
+                return Err(LuceneError::CorruptIndex(format!(
+                    "LZ4 match of {match_len} bytes overruns the buffer ({} bytes left)",
+                    dest.len() - d_off
+                )));
+            }
 
             let fast_len = (match_len + 7) & !7;
             if match_dec < match_len || d_off + fast_len > dest_end {
@@ -1064,5 +1096,113 @@ mod tests {
         let mut input = ByteArrayDataInput::from_slice(data);
         // len=4 needs compressed_len=3 and saved=1, but input is only 3 bytes.
         assert!(LowercaseAsciiCompression::decompress(&mut input, &mut out, 4).is_err());
+    }
+    /// A decoder must never panic on bytes it did not write.
+    ///
+    /// Java's `LZ4.decompress` raises `ArrayIndexOutOfBoundsException` for a
+    /// truncated or hostile stream; this port returns
+    /// `LuceneError::CorruptIndex`. Before the bounds checks these inputs
+    /// aborted the process in a debug build ("attempt to subtract with
+    /// overflow") and produced a wild slice index in a release build.
+    #[test]
+    fn a_corrupt_lz4_stream_is_reported_and_never_panics() {
+        // token 0x00: no literals, then a match at distance 1 with nothing
+        // decoded yet, so the match reaches behind the start of the block.
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("match before the block start", vec![0x00, 0x01, 0x00]),
+            ("huge match distance", vec![0x00, 0xFF, 0xFF]),
+            (
+                "literal run longer than the buffer",
+                vec![
+                    0xF0, 0xFF, 0x01, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                ],
+            ),
+            (
+                "match longer than the buffer",
+                vec![0x1F, b'a', 0x01, 0x00, 0xFF, 0xFF, 0xFF],
+            ),
+        ];
+        for (name, bytes) in cases {
+            let mut input = ByteArrayDataInput::new(bytes);
+            let mut dest = vec![0u8; 8];
+            let outcome = Lz4::decompress(&mut input, 8, &mut dest, 0);
+            assert!(
+                outcome.is_err(),
+                "{name}: a corrupt stream must be reported, got {outcome:?}"
+            );
+        }
+    }
+
+    /// The bounds checks must not reject anything a real encoder produces.
+    #[test]
+    fn the_corruption_checks_do_not_reject_valid_streams() {
+        for length in [0usize, 1, 7, 64, 1000, 40_000] {
+            let data: Vec<u8> = (0..length).map(|i| ((i * 13) % 61) as u8).collect();
+            let mut out = ByteArrayDataOutput::new();
+            let mut table = FastCompressionHashTable::new();
+            Lz4::compress(&data, 0, data.len(), &mut out, &mut table).unwrap();
+            let mut input = ByteArrayDataInput::new(out.into_inner());
+            let mut dest = vec![0u8; data.len() + 7];
+            let produced = Lz4::decompress(&mut input, data.len(), &mut dest, 0).unwrap();
+            assert_eq!(produced, data.len());
+            assert_eq!(&dest[..data.len()], &data[..]);
+        }
+    }
+    /// Regression test: a reused high-compression table can hold a stale offset
+    /// larger than the current one.
+    ///
+    /// `HighCompressionHashTable::reset` keeps the hash table whenever the
+    /// previous span was shorter than the 64 KiB window (`LZ4.java:411-431`),
+    /// so `hashTable[h]` can point *ahead* of the offset being added when the
+    /// next span starts over at a lower offset. Java computes
+    /// `off - hashTable[h]` in a signed `int` and guards `delta <= 0`; doing it
+    /// in `usize` underflowed — a debug build aborted with "attempt to subtract
+    /// with overflow", a release build wrapped.
+    ///
+    /// The construction is deliberate: the first span is long enough for the
+    /// match loop to hash a high offset, carries a marker well inside the
+    /// region it hashes, and is still short enough for `reset` to keep the
+    /// table; the second span opens with the same marker at offset 0. That is
+    /// the only shape in which the stale entry lies ahead of the new offset.
+    #[test]
+    fn a_reused_high_compression_table_survives_a_stale_forward_offset() {
+        const MARKER: &[u8; 4] = b"ZZZZ";
+
+        let mut first: Vec<u8> = (0..1000u32).map(|i| ((i * 37 + 11) % 251) as u8).collect();
+        first[500..504].copy_from_slice(MARKER);
+        let mut second: Vec<u8> = MARKER.to_vec();
+        second.extend((0..200u32).map(|i| ((i * 53 + 7) % 251) as u8));
+
+        let mut table = HighCompressionHashTable::new();
+        let mut out = ByteArrayDataOutput::new();
+        Lz4::compress(&first, 0, first.len(), &mut out, &mut table).unwrap();
+        // The marker's hash slot now holds offset 500; this span hashes it
+        // again at offset 0.
+        Lz4::compress(&second, 0, second.len(), &mut out, &mut table).unwrap();
+
+        // And everything written must still decode to what went in.
+        let mut input = ByteArrayDataInput::new(out.into_inner());
+        for expected in [&first[..], &second[..]] {
+            let mut dest = vec![0u8; expected.len() + 7];
+            let produced = Lz4::decompress(&mut input, expected.len(), &mut dest, 0).unwrap();
+            assert_eq!(produced, expected.len());
+            assert_eq!(&dest[..expected.len()], expected);
+        }
+    }
+
+    /// The high-compression table must agree with Java's formula for an unset
+    /// slot too, which Java leaves to the same guard rather than special-casing.
+    #[test]
+    fn the_high_compression_table_round_trips_from_a_fresh_state() {
+        for length in [4usize, 64, 4096, 70_000] {
+            let data: Vec<u8> = (0..length).map(|i| ((i / 7) % 251) as u8).collect();
+            let mut table = HighCompressionHashTable::new();
+            let mut out = ByteArrayDataOutput::new();
+            Lz4::compress(&data, 0, data.len(), &mut out, &mut table).unwrap();
+            let mut input = ByteArrayDataInput::new(out.into_inner());
+            let mut dest = vec![0u8; data.len() + 7];
+            Lz4::decompress(&mut input, data.len(), &mut dest, 0).unwrap();
+            assert_eq!(&dest[..data.len()], &data[..], "length {length}");
+        }
     }
 }

@@ -102,6 +102,14 @@ use crate::util::{Accountable, FixedBitSet, InfoStream, Version};
 /// process-wide mutable static, which is Java's `IndexWriter.actualMaxDocs`.
 pub const MAX_DOCS: i32 = i32::MAX - 128;
 
+/// Maximum length, in UTF-16 code units, of a stored string field.
+///
+/// Equivalent to `IndexWriter.MAX_STORED_STRING_LENGTH`, which Lucene defines
+/// as `ArrayUtil.MAX_ARRAY_LENGTH / UnicodeUtil.MAX_UTF8_BYTES_PER_CHAR`: the
+/// longest string whose UTF-8 encoding still fits in one Java array. It lives
+/// here, next to [`MAX_DOCS`], until `IndexWriter` itself is ported.
+pub const MAX_STORED_STRING_LENGTH: usize = crate::util::ArrayUtil::MAX_ARRAY_LENGTH / 3;
+
 /// Diagnostics value recorded on segments produced by a flush.
 ///
 /// Equivalent to `IndexWriter.SOURCE_FLUSH`.
@@ -650,6 +658,30 @@ pub trait IndexingChain: Send + Debug {
         is_last_doc: bool,
         field_infos: &mut FieldInfosBuilder,
     ) -> Result<()>;
+
+    /// Binds the chain to the segment it will write.
+    ///
+    /// Lucene passes the directory and the `SegmentInfo` to the
+    /// `IndexingChain` constructor; here the DWPT builds both after the chain
+    /// exists, so it hands them over with this call, exactly once, before the
+    /// first document. `directory` is the tracking wrapper of the segment, so
+    /// that every file a consumer creates is recorded in the segment's file
+    /// list.
+    ///
+    /// The default implementation ignores the binding, which is what a chain
+    /// that writes nothing outside the flush (or a test double) wants.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error raised while preparing the per-segment consumers.
+    fn bind_segment(
+        &mut self,
+        directory: Arc<TrackingDirectoryWrapper>,
+        segment_info: &SegmentInfo,
+    ) -> Result<()> {
+        let _ = (directory, segment_info);
+        Ok(())
+    }
 
     /// Discards every buffered document.
     fn abort(&mut self);
@@ -2012,10 +2044,14 @@ impl DocumentsWriterPerThread {
             );
         }
 
+        let tracking_directory = Arc::new(TrackingDirectoryWrapper::new(Box::new(
+            SharedDirectory(directory),
+        )));
+        let mut indexing_chain = indexing_chain;
+        indexing_chain.bind_segment(Arc::clone(&tracking_directory), &segment_info)?;
+
         Ok(Self {
-            directory: Arc::new(TrackingDirectoryWrapper::new(Box::new(SharedDirectory(
-                directory,
-            )))),
+            directory: tracking_directory,
             codec,
             info_stream,
             index_writer_config,

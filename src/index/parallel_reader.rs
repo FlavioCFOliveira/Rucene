@@ -793,37 +793,6 @@ impl StoredFields for ParallelStoredFields {
         }
         Ok(())
     }
-
-    fn document(&self, doc_id: i32) -> Result<crate::document::Document> {
-        // Lucene only exposes the visitor form; the convenience `document()`
-        // aggregates by visiting into a fresh `Document` via a collecting
-        // visitor. Here we fan out to each sub-reader's `document()`, drain the
-        // returned fields, and accumulate them — the same union a single
-        // visitor visit would produce across the parallel stored-fields set.
-        let mut doc = crate::document::Document::new();
-        for r in &self.readers {
-            let sub_doc = r.stored_fields()?.document(doc_id)?;
-            for field in sub_doc.into_fields() {
-                doc.add(field);
-            }
-        }
-        Ok(doc)
-    }
-
-    fn document_fields(
-        &self,
-        doc_id: i32,
-        fields_to_load: &HashSet<String>,
-    ) -> Result<crate::document::Document> {
-        let mut doc = crate::document::Document::new();
-        for r in &self.readers {
-            let sub_doc = r.stored_fields()?.document_fields(doc_id, fields_to_load)?;
-            for field in sub_doc.into_fields() {
-                doc.add(field);
-            }
-        }
-        Ok(doc)
-    }
 }
 
 // ---------------------------------------------------------------------------

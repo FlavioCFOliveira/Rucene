@@ -394,6 +394,19 @@ impl LiveIndexWriterConfig {
         Arc::clone(&self.codec)
     }
 
+    /// Sets the codec.
+    ///
+    /// Java declares `setCodec` on `IndexWriterConfig`, which *extends*
+    /// `LiveIndexWriterConfig` and therefore assigns the inherited field
+    /// directly. This port composes the two instead of inheriting, so the
+    /// assignment needs a method on the inner config;
+    /// [`IndexWriterConfig::set_codec`] is the public entry point and delegates
+    /// here. Like Java's, it must not be called once indexing has begun.
+    pub fn set_codec(&mut self, codec: Arc<dyn Codec>) -> &mut Self {
+        self.codec = codec;
+        self
+    }
+
     /// Returns the info stream.
     pub fn info_stream(&self) -> Arc<dyn InfoStream> {
         Arc::clone(&self.info_stream)
@@ -718,9 +731,13 @@ impl IndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `codec` is null.
+    /// None today. Java's `setCodec` rejects a null codec; an `Arc<dyn Codec>`
+    /// cannot be null, so this always succeeds. The `Result` is kept so that
+    /// the setter reads like its siblings and so a future validation — Java
+    /// also forbids changing the codec once the writer is running — can be
+    /// added without breaking callers.
     pub fn set_codec(&mut self, codec: Arc<dyn Codec>) -> Result<&mut Self> {
-        self.live.codec = codec;
+        self.live.set_codec(codec);
         Ok(self)
     }
 

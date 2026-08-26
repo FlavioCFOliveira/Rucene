@@ -1,11 +1,11 @@
 //! Minimal placeholder types consumed by the base codec format traits.
 //!
-//! `FieldInfo` and `FieldInfos` are now re-exported from `crate::index` and
-//! kept here so that existing codec modules can continue to import them from
-//! `crate::codecs::stub`. The remaining types (`SegmentInfo`,
-//! `SegmentCommitInfo`, `StoredFieldVisitor`, `Fields`, `Terms`, etc.) are
-//! still simple placeholders until their full `crate::index` equivalents are
-//! ported.
+//! `FieldInfo`, `FieldInfos`, `SegmentInfo`, `SegmentCommitInfo`,
+//! `StoredFieldVisitor` and the terms hierarchy are now re-exported from
+//! `crate::index` and kept here so that existing codec modules can continue to
+//! import them from `crate::codecs::stub`. Only `BufferedUpdates` and
+//! `TermVectors` remain simple placeholders until their full `crate::index`
+//! equivalents are ported.
 
 use crate::error::Result;
 
@@ -21,52 +21,7 @@ pub use crate::index::SegmentInfo;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct BufferedUpdates;
 
-/// Placeholder for `org.apache.lucene.index.StoredFieldVisitor`.
-pub trait StoredFieldVisitor {
-    /// Called for a stored binary field.
-    fn binary_field(&mut self, _info: &FieldInfo, _value: &[u8]) -> Result<()> {
-        Ok(())
-    }
-
-    /// Called for a stored string field.
-    fn string_field(&mut self, _info: &FieldInfo, _value: &str) -> Result<()> {
-        Ok(())
-    }
-
-    /// Called for a stored int field.
-    fn int_field(&mut self, _info: &FieldInfo, _value: i32) -> Result<()> {
-        Ok(())
-    }
-
-    /// Called for a stored long field.
-    fn long_field(&mut self, _info: &FieldInfo, _value: i64) -> Result<()> {
-        Ok(())
-    }
-
-    /// Called for a stored float field.
-    fn float_field(&mut self, _info: &FieldInfo, _value: f32) -> Result<()> {
-        Ok(())
-    }
-
-    /// Called for a stored double field.
-    fn double_field(&mut self, _info: &FieldInfo, _value: f64) -> Result<()> {
-        Ok(())
-    }
-
-    /// Returns whether this visitor needs the given field.
-    fn needs_field(&mut self, _info: &FieldInfo) -> StoredFieldVisitorStatus;
-}
-
-/// Decision returned by [`StoredFieldVisitor::needs_field`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StoredFieldVisitorStatus {
-    /// The field should be loaded.
-    Yes,
-    /// The field should be skipped.
-    No,
-    /// Loading should stop immediately.
-    Stop,
-}
+pub use crate::index::{StoredFieldVisitor, StoredFieldVisitorStatus};
 
 pub use crate::index::terms::{Fields, Terms, TermsEnum};
 

@@ -22,6 +22,23 @@ codecs = ["store", "document", "analysis", "util"]
 index = ["codecs", "document", "analysis", "store", "util"]
 search = ["index", "codecs", "document", "analysis", "store", "util"]
 
+# Byte-exact `BEST_COMPRESSION` stored fields, at the cost of a C toolchain.
+#
+# Lucene's `BEST_COMPRESSION` deflates with `java.util.zip.Deflater`, i.e. with
+# whatever zlib the JVM was linked against. The default backend of this crate is
+# `zlib-rs`, which is pure Rust but is a port of **zlib-ng**, not of stock zlib:
+# it decodes every stream zlib produces and Lucene reads everything it writes,
+# but the exact codewords differ on many inputs, so the `.fdt` bytes are not
+# identical to a JVM's. Measured on 40 deterministic inputs at level 6, raw
+# deflate with and without a 1 KiB preset dictionary, against JDK 21
+# `Deflater(6, true)`: `zlib-rs` matched 18/80, the C zlib matched 80/80.
+#
+# Enable this feature to link `flate2` against the C zlib instead, which makes
+# `BEST_COMPRESSION` byte-identical to Lucene's. It requires a C compiler at
+# build time; `BEST_SPEED`, the default mode, is byte-identical either way
+# because it uses Lucene's own LZ4.
+zlib-c = ["flate2/zlib"]
+
 [dependencies]
 log = "0.4"
 tokio = { version = "1", features = ["full"] }
@@ -31,8 +48,15 @@ memmap2 = { version = "0.9", optional = true }
 crc32fast = "1.4"
 # Cross-platform advisory file locks for NativeFSLockFactory.
 fslock = "0.2"
-# Deflate compression for the compressing stored-fields/term-vectors formats.
-flate2 = "1"
+# Deflate for the compressing stored-fields/term-vectors formats.
+#
+# The `zlib-rs` backend (pure Rust, no C toolchain) is required, not the default
+# `miniz_oxide` one: Lucene's `DeflateWithPresetDictCompressionMode` deflates
+# each sub block against a preset dictionary, and only `zlib-rs` exposes
+# `Compress::set_dictionary` / `Decompress::set_dictionary`. Without it
+# `BEST_COMPRESSION` cannot be byte-compatible with Lucene 10.5.0.
+# `default-features = false` keeps `miniz_oxide` out of the dependency tree.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 # Unicode word segmentation (UAX #29) for the standard tokenizer.
 unicode-segmentation = "1.12"
 # Date/time handling for DateTools, matching Java's GregorianCalendar in GMT.
@@ -66,8 +90,16 @@ name = "portability_deletion_policy"
 path = "tests/portability/deletion_policy.rs"
 
 [[test]]
+name = "portability_stored_fields"
+path = "tests/portability/stored_fields.rs"
+
+[[test]]
 name = "fuzz_codec_headers"
 path = "tests/fuzz/codec_headers.rs"
+
+[[test]]
+name = "fuzz_stored_fields"
+path = "tests/fuzz/stored_fields.rs"
 
 [profile.release]
 lto = true
