@@ -789,7 +789,10 @@ impl Clone for SegmentCommitInfo {
             size_in_bytes: self.size_in_bytes,
             buffered_deletes_gen: self.buffered_deletes_gen,
         };
-        other.id = StringHelper::random_id();
+        // Preserve the id from the source, matching Java's
+        // SegmentCommitInfo.clone() which passes getId() to the constructor.
+        // A new id is only generated when a generation advances (see
+        // generation_advanced), not on clone.
         other
     }
 }
@@ -1008,13 +1011,14 @@ mod tests {
     }
 
     #[test]
-    fn segment_commit_info_clone_changes_id() {
+    fn segment_commit_info_clone_preserves_id() {
         let info = test_segment_info("_0", 10);
         let sci =
             SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, StringHelper::random_id()).unwrap();
         let cloned = sci.clone();
         assert_eq!(sci.get_del_count(), cloned.get_del_count());
-        assert_ne!(sci.id(), cloned.id());
+        // Java's SegmentCommitInfo.clone() preserves the id.
+        assert_eq!(sci.id(), cloned.id());
     }
 
     #[test]

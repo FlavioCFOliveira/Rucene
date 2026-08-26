@@ -15,6 +15,7 @@
 pub mod automaton_terms_enum;
 pub mod directory_reader;
 pub mod doc_values;
+pub mod doc_values_field_updates;
 pub mod documents_writer;
 pub mod field_infos;
 pub mod freq_prox_terms_writer;
@@ -30,6 +31,7 @@ pub mod parallel_reader;
 pub mod point_values;
 pub mod postings_enum;
 pub mod reader_context;
+pub mod readers_and_updates;
 pub mod segment_info;
 pub mod segment_infos;
 pub mod segment_reader;
@@ -143,6 +145,9 @@ pub use vector_values::{
     EmptyFloatVectorValues, EmptyKnnVectorValues, FloatVectorValues, FromDisiDocIndexIterator,
     KnnVectorValues, ListByteVectorValues, ListFloatVectorValues, SparseDocIndexIterator,
 };
+
+pub use doc_values_field_updates::DocValuesFieldUpdates;
+pub use readers_and_updates::{PendingDeletes, PendingSoftDeletes, ReaderPool, ReadersAndUpdates};
 
 use std::collections::HashMap;
 

@@ -1285,6 +1285,51 @@ impl FixedBitSet {
         previous
     }
 
+    /// Returns the previous value of the bit at `index` and clears it.
+    ///
+    /// Equivalent to `FixedBitSet.getAndClear(long)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index` is out of bounds.
+    pub fn get_and_clear(&mut self, index: usize) -> bool {
+        assert!(index < self.num_bits, "index {} out of bounds", index);
+        let word = index >> 6;
+        let mask = 1u64 << (index & 0x3f);
+        let previous = (self.bits[word] & mask) != 0;
+        self.bits[word] &= !mask;
+        previous
+    }
+
+    /// Sets all bits in the range `[from, to)`.
+    ///
+    /// Equivalent to `FixedBitSet.set(long, long)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `from > to` or `to` exceeds the bit-set length.
+    pub fn set_range(&mut self, from: usize, to: usize) {
+        assert!(from <= to, "from {from} > to {to}");
+        assert!(to <= self.num_bits, "to {to} out of bounds");
+        for i in from..to {
+            self.set(i);
+        }
+    }
+
+    /// Creates a `FixedBitSet` that is a copy of the given `Bits`.
+    ///
+    /// Equivalent to `FixedBitSet.copyOf(Bits)`.
+    pub fn copy_of(bits: &dyn Bits) -> Self {
+        let length = bits.length();
+        let mut copy = Self::new(length);
+        for i in 0..length {
+            if bits.get(i) {
+                copy.set(i);
+            }
+        }
+        copy
+    }
+
     /// Returns the number of set bits.
     pub fn cardinality(&self) -> usize {
         self.bits[..self.num_words]
