@@ -90,15 +90,56 @@ pub trait StoredFields: Send + Sync + Debug {
 // IndexReaderCore
 // ---------------------------------------------------------------------------
 
+/// The part of a reader's close state that its children must be able to reach.
+///
+/// Java children keep `Set<IndexReader> parentReaders` and flip the parent's
+/// `closedByChild` field directly. A Rust child cannot hold a reference to a
+/// parent that may still be moved (a constructor returns the reader by value
+/// before it is ever placed in an `Arc`), so the flag lives here, behind an
+/// `Arc` whose address is stable from the moment the parent's
+/// [`IndexReaderCore`] is created. Children register a `Weak` to it, which
+/// keeps the parent collectable exactly like Java's weak-keyed
+/// `parentReaders` set.
+#[derive(Debug)]
+struct ReaderLink {
+    closed_by_child: AtomicBool,
+    parents: Mutex<Vec<Weak<ReaderLink>>>,
+}
+
+impl ReaderLink {
+    fn new() -> Self {
+        Self {
+            closed_by_child: AtomicBool::new(false),
+            parents: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Marks every registered parent as closed-by-child, transitively.
+    fn report_close_to_parents(&self) {
+        // The lock is released before recursing so a cycle in the (weakly
+        // linked) reader tree cannot deadlock on a re-entrant lock.
+        let parents: Vec<Weak<ReaderLink>> = match self.parents.lock() {
+            Ok(parents) => parents.clone(),
+            Err(_) => return,
+        };
+        for parent in parents {
+            if let Some(parent) = parent.upgrade() {
+                if !parent.closed_by_child.swap(true, Ordering::SeqCst) {
+                    parent.report_close_to_parents();
+                }
+            }
+        }
+    }
+}
+
 /// Shared state for all [`IndexReader`] implementations.
 ///
 /// Equivalent to the private fields of `org.apache.lucene.index.IndexReader`
 /// (`refCount`, `closed`, `parentReaders`, etc.).
 pub struct IndexReaderCore {
     closed: AtomicBool,
-    closed_by_child: AtomicBool,
     ref_count: AtomicI32,
-    parent_readers: Mutex<Vec<Weak<dyn IndexReader>>>,
+    link: Arc<ReaderLink>,
 }
 
 impl Default for IndexReaderCore {
@@ -121,9 +162,8 @@ impl IndexReaderCore {
     pub fn new() -> Self {
         Self {
             closed: AtomicBool::new(false),
-            closed_by_child: AtomicBool::new(false),
             ref_count: AtomicI32::new(1),
-            parent_readers: Mutex::new(Vec::new()),
+            link: Arc::new(ReaderLink::new()),
         }
     }
 
@@ -203,7 +243,7 @@ impl IndexReaderCore {
                 "this IndexReader is closed".to_string(),
             ));
         }
-        if self.closed_by_child.load(Ordering::SeqCst) {
+        if self.link.closed_by_child.load(Ordering::SeqCst) {
             return Err(LuceneError::AlreadyClosed(
                 "this IndexReader cannot be used anymore as one of its child readers was closed"
                     .to_string(),
@@ -214,22 +254,41 @@ impl IndexReaderCore {
 
     /// Registers a parent reader that should be marked closed when this reader
     /// closes.
+    ///
+    /// Equivalent to `IndexReader.registerParentReader(IndexReader)`. Only a
+    /// weak link is kept, so registration never keeps the parent alive.
     pub fn register_parent_reader(&self, parent: Arc<dyn IndexReader>) {
-        if let Ok(mut parents) = self.parent_readers.lock() {
-            parents.push(Arc::downgrade(&parent));
+        self.register_parent_core(parent.core());
+    }
+
+    /// Registers a parent by its [`IndexReaderCore`], for composite readers
+    /// that must register themselves inside their own constructor — before an
+    /// `Arc<dyn IndexReader>` for `self` could possibly exist.
+    ///
+    /// This is what `BaseCompositeReader`'s constructor does in Java
+    /// (`r.registerParentReader(this)`, `BaseCompositeReader.java:86`); `this`
+    /// is already a usable reference there, whereas a Rust constructor returns
+    /// the reader by value. The link is taken against the parent core's
+    /// internal, heap-allocated state, so it stays valid when the parent is
+    /// subsequently moved into an `Arc` (or anywhere else).
+    pub fn register_parent_core(&self, parent: &IndexReaderCore) {
+        if let Ok(mut parents) = self.link.parents.lock() {
+            parents.push(Arc::downgrade(&parent.link));
         }
     }
 
     /// Marks registered parents as closed by child and recurses.
+    ///
+    /// Equivalent to `IndexReader.reportCloseToParentReaders()`.
     pub fn report_close_to_parent_readers(&self) {
-        if let Ok(parents) = self.parent_readers.lock() {
-            for parent in parents.iter() {
-                if let Some(parent) = parent.upgrade() {
-                    parent.core().closed_by_child.store(true, Ordering::SeqCst);
-                    parent.core().report_close_to_parent_readers();
-                }
-            }
-        }
+        self.link.report_close_to_parents();
+    }
+
+    /// Returns `true` once one of this reader's children has been closed.
+    ///
+    /// Equivalent to reading `IndexReader.closedByChild`.
+    pub fn is_closed_by_child(&self) -> bool {
+        self.link.closed_by_child.load(Ordering::SeqCst)
     }
 
     /// Sets the closed flag.

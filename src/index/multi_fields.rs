@@ -27,7 +27,10 @@
 //! - `seek_exact` / `seek_ceil` re-seed the heap from every sub, applying the
 //!   LUCENE-2130 optimisation: when the new seek term is not before the last
 //!   one, a sub whose current term is already past the seek term is not
-//!   re-seeked.
+//!   re-seeked. The optimisation is armed only by `seek_ceil`, which leaves
+//!   every sub positioned; `seek_exact` and `next()` disarm it, because a sub
+//!   whose exact seek missed is left unpositioned and must be re-seeked from
+//!   scratch next time. See `MultiTermsEnum::reseed`.
 //!
 //! # Reference
 //!
@@ -44,8 +47,8 @@
 #![deny(unsafe_code)]
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, BinaryHeap};
-use std::sync::Arc;
+use std::collections::{BTreeSet, BinaryHeap, HashMap};
+use std::sync::{Arc, RwLock};
 
 use crate::error::{LuceneError, Result};
 use crate::index::leaf_reader::LeafReader;
@@ -66,15 +69,28 @@ use crate::util::BytesRef;
 /// [`FieldInfos`](crate::index::FieldInfos) and
 /// [`LeafReader::terms`](LeafReader::terms).
 ///
-/// This is the Rust analogue of the `Fields` instance returned by
-/// `CodecReader.fields()` in Lucene: it iterates the leaf's field names (via
-/// `FieldInfos`) and delegates `terms(field)` to `LeafReader::terms`. It is
-/// the per-leaf input that [`MultiFields`] aggregates across a composite
+/// Lucene has no counterpart to this type: there, the `Fields` instances that
+/// `MultiFields` aggregates come straight from the codec's `FieldsProducer`
+/// (`CodecReader.getPostingsReader()`), and `LeafReader.fields()` was removed
+/// long before 10.5.0. Rucene's `LeafReader` trait exposes `terms(field)` and
+/// `get_field_infos()` instead of a `Fields`, so this adapter reconstructs the
+/// same view: the per-leaf input that [`MultiFields`] merges across a composite
 /// reader's leaves.
 ///
-/// Unlike Lucene's `LeafReader.fields()`, which is a codec-level method, this
-/// adapter is constructed here because Rucene's `LeafReader` trait exposes
-/// `terms(field)` and `get_field_infos()` directly.
+/// # Only fields with a terms dictionary
+///
+/// A `FieldsProducer` lists exactly the fields that were inverted. `FieldInfos`
+/// is wider: it also describes doc-values-only, points-only and vectors-only
+/// fields, which have no terms dictionary at all (`SegmentReader::terms`
+/// returns `None` for them, matching `IndexOptions.NONE`). Enumerating those
+/// here would break more than iteration order: `PerFieldPostingsFormat` builds
+/// its format-to-field grouping from the enumerated names and stamps
+/// `PerFieldPostingsFormat.format` / `.suffix` attributes onto each
+/// `FieldInfo` it sees, so a doc-values-only field would end up declaring a
+/// postings format in the `.fnm` file and the segment would no longer be
+/// byte-compatible with Lucene 10.5.0. [`Self::iterator`] therefore filters on
+/// `index_options != IndexOptions::NONE`, and [`Self::size`] counts the same
+/// set.
 struct LeafFields {
     reader: Arc<dyn LeafReader>,
 }
@@ -83,17 +99,25 @@ impl LeafFields {
     fn new(reader: Arc<dyn LeafReader>) -> Self {
         Self { reader }
     }
+
+    /// Names of the leaf's fields that have a terms dictionary.
+    fn indexed_field_names(&self) -> Vec<String> {
+        // FieldInfos is returned by value; collect the names into an owned Vec
+        // so the returned iterator does not borrow from a local. The order
+        // follows FieldInfos' iteration order; MultiFields re-sorts the merged
+        // stream, so order here is not contractual.
+        self.reader
+            .get_field_infos()
+            .iter()
+            .filter(|fi| fi.index_options != crate::index::IndexOptions::NONE)
+            .map(|fi| fi.get_name().to_string())
+            .collect()
+    }
 }
 
 impl Fields for LeafFields {
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
-        // FieldInfos is returned by value; collect the names into an owned
-        // Vec so the returned iterator does not borrow from a local. The
-        // order follows FieldInfos' iteration order; MultiFields re-sorts the
-        // merged stream, so order here is not contractual.
-        let infos = self.reader.get_field_infos();
-        let names: Vec<String> = infos.iter().map(|fi| fi.get_name().to_string()).collect();
-        Box::new(names.into_iter())
+        Box::new(self.indexed_field_names().into_iter())
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
@@ -101,7 +125,7 @@ impl Fields for LeafFields {
     }
 
     fn size(&self) -> i32 {
-        self.reader.get_field_infos().len() as i32
+        self.indexed_field_names().len() as i32
     }
 }
 
@@ -121,11 +145,22 @@ impl Fields for LeafFields {
 ///
 /// Lucene warns — and the same applies here — that for composite readers it is
 /// usually better to operate per-`LeafReader` (via
-/// [`IndexReader::leaves`](crate::index::IndexReader::leaves)) than through
+/// [`IndexReader::leaves`]) than through
 /// this class, which stitches the leaves back into a single view.
 pub struct MultiFields {
     subs: Vec<Box<dyn Fields>>,
     sub_slices: Vec<ReaderSlice>,
+    /// Per-field [`MultiTerms`] memo, mirroring Lucene's
+    /// `Map<String, Terms> terms = new ConcurrentHashMap<>()`
+    /// (`MultiFields.java:28`). Building a `MultiTerms` asks *every* sub for
+    /// `terms(field)` and re-derives the aggregated feature flags, so a caller
+    /// that iterates fields and then re-reads one of them would pay for the
+    /// whole fan-out twice.
+    ///
+    /// Like Java, only hits are memoised: `terms.put` runs solely on the
+    /// `subs2.size() != 0` path (`MultiFields.java:60`), which also bounds the
+    /// map by the number of fields that actually exist.
+    terms_cache: RwLock<HashMap<String, Arc<MultiTerms>>>,
 }
 
 impl MultiFields {
@@ -140,13 +175,28 @@ impl MultiFields {
             sub_slices.len(),
             "MultiFields: subs and subSlices must have equal length"
         );
-        Self { subs, sub_slices }
+        Self {
+            subs,
+            sub_slices,
+            terms_cache: RwLock::new(HashMap::new()),
+        }
     }
 
-    /// Builds a `MultiFields` over all the leaves of `reader`, mirroring the
-    /// role of Lucene's `MultiFields.getFields(IndexReader)`.
+    /// Builds a `MultiFields` over all the leaves of `reader`.
     ///
-    /// Each leaf is wrapped in a [`LeafFields`] adapter paired with a
+    /// This helper has **no counterpart in Lucene 10.5.0**: neither
+    /// `MultiFields.getFields(IndexReader)` nor `LeafReader.fields()` exists
+    /// there any more. Java code that needs a merged view of one field calls
+    /// `MultiTerms.getTerms(IndexReader, String)`, and the only remaining
+    /// caller of the `MultiFields` constructor is the segment merger, which
+    /// already holds the per-segment `Fields` produced by the codec.
+    ///
+    /// Rucene still needs the bridge, because its `LeafReader` trait exposes
+    /// `terms(field)` rather than a codec-level `Fields`: something has to
+    /// adapt a leaf into a [`Fields`] before [`MultiFields`] can merge it.
+    /// Each leaf is therefore wrapped in this module's private `LeafFields`
+    /// adapter — which enumerates only the fields that have a terms dictionary,
+    /// exactly like a codec `FieldsProducer` — and paired with a
     /// [`ReaderSlice`] whose `start` is the leaf's `docBase`, `length` is its
     /// `maxDoc`, and `reader_index` is its leaf ordinal.
     pub fn get_fields(reader: &Arc<dyn IndexReader>) -> Result<Self> {
@@ -159,7 +209,11 @@ impl MultiFields {
             subs.push(Box::new(LeafFields::new(leaf)));
             sub_slices.push(slice);
         }
-        Ok(Self { subs, sub_slices })
+        Ok(Self {
+            subs,
+            sub_slices,
+            terms_cache: RwLock::new(HashMap::new()),
+        })
     }
 
     /// Returns the sub-`Fields` instances being merged.
@@ -170,6 +224,63 @@ impl MultiFields {
     /// Returns the [`ReaderSlice`]s parallel to the sub-`Fields`.
     pub fn get_sub_slices(&self) -> &[ReaderSlice] {
         &self.sub_slices
+    }
+
+    /// Concretely typed counterpart of [`Fields::terms`].
+    ///
+    /// Returns the [`MultiTerms`] aggregating `field` across every sub that has
+    /// it, or `None` when no sub does. [`Fields::terms`] is implemented on top
+    /// of this method.
+    ///
+    /// Java reaches the concrete type with a cast — `(MultiTerms) in.terms(f)`
+    /// in `MappedMultiFields.terms` — which Rust trait objects cannot express.
+    /// Exposing the concrete return type here is the equivalent, checked at
+    /// compile time instead of at runtime.
+    ///
+    /// Repeated calls for the same field return the *same* instance, as in
+    /// Lucene, which memoises in a `ConcurrentHashMap` (`MultiFields.java:44`).
+    /// Java can hand back a bare reference to the cached object; Rust needs an
+    /// owned handle, so the shared instance is returned as an
+    /// [`Arc`] — `Arc<MultiTerms>` itself implements [`Terms`], so callers can
+    /// use it wherever a `Terms` is expected.
+    pub fn multi_terms(&self, field: &str) -> Result<Option<Arc<MultiTerms>>> {
+        // Fast path: an existing memo. A poisoned lock is treated as "no memo"
+        // rather than an error — the cache is an optimisation, and rebuilding
+        // is always correct.
+        if let Ok(cache) = self.terms_cache.read() {
+            if let Some(terms) = cache.get(field) {
+                return Ok(Some(Arc::clone(terms)));
+            }
+        }
+
+        let mut subs2: Vec<Box<dyn Terms>> = Vec::new();
+        let mut slices2: Vec<ReaderSlice> = Vec::new();
+        for (i, sub) in self.subs.iter().enumerate() {
+            if let Some(terms) = sub.terms(field)? {
+                subs2.push(terms);
+                slices2.push(self.sub_slices[i]);
+            }
+        }
+        if subs2.is_empty() {
+            // Matches Lucene: misses are not memoised.
+            return Ok(None);
+        }
+
+        // `Arc` rather than `Rc`, although `Terms` is not currently bound by
+        // `Send + Sync`: Lucene's readers are fully thread-safe, and the
+        // reference count is the one part of this memo that must not have to
+        // change when Rucene's `Terms` catches up. The atomics are the cost of
+        // not baking single-threadedness into the public signature.
+        #[allow(clippy::arc_with_non_send_sync)]
+        let built = Arc::new(MultiTerms::new(subs2, slices2)?);
+        match self.terms_cache.write() {
+            // Another caller may have raced us here; keep whichever instance
+            // landed first so every caller observes one `Terms` per field.
+            Ok(mut cache) => Ok(Some(Arc::clone(
+                cache.entry(field.to_string()).or_insert(built),
+            ))),
+            Err(_) => Ok(Some(built)),
+        }
     }
 }
 
@@ -189,19 +300,9 @@ impl Fields for MultiFields {
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
-        let mut subs2: Vec<Box<dyn Terms>> = Vec::new();
-        let mut slices2: Vec<ReaderSlice> = Vec::new();
-        for (i, sub) in self.subs.iter().enumerate() {
-            if let Some(terms) = sub.terms(field)? {
-                subs2.push(terms);
-                slices2.push(self.sub_slices[i]);
-            }
-        }
-        if subs2.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(Box::new(MultiTerms::new(subs2, slices2)?)))
-        }
+        Ok(self
+            .multi_terms(field)?
+            .map(|terms| Box::new(terms) as Box<dyn Terms>))
     }
 
     fn size(&self) -> i32 {
@@ -275,6 +376,16 @@ impl MultiTerms {
     /// Equivalent to `MultiTerms.getTerms(IndexReader r, String field)`.
     /// When the reader has a single leaf, the leaf's own `terms(field)` is
     /// returned directly (no `MultiTerms` wrapper), matching Lucene.
+    ///
+    /// # `ReaderSlice::length` here is the composite `maxDoc`
+    ///
+    /// The slices built below use the **composite** reader's `max_doc()` as
+    /// `length`, not the leaf's — a faithful transcription of
+    /// `new ReaderSlice(ctx.docBase, r.maxDoc(), leafIdx)`
+    /// (`MultiTerms.java:82`). That is not the "slice width" reading of the
+    /// field, and it differs from [`MultiFields::get_fields`], which sets
+    /// `length` to the leaf's own `max_doc()`. See the note on
+    /// [`ReaderSlice`] for why both are correct.
     pub fn get_terms(reader: &Arc<dyn IndexReader>, field: &str) -> Result<Option<Box<dyn Terms>>> {
         let leaves = Arc::clone(reader).leaves();
         if leaves.len() == 1 {
@@ -296,11 +407,42 @@ impl MultiTerms {
         }
     }
 
+    /// Returns a [`PostingsEnum`] with **all** optional features requested
+    /// (freqs, positions, offsets and payloads) for `term` in `field` across
+    /// `reader`, or `None` if the field or term does not exist.
+    ///
+    /// Equivalent to
+    /// `MultiTerms.getTermPostingsEnum(IndexReader, String, BytesRef)`
+    /// (`MultiTerms.java:99-102`), the convenience overload that defaults
+    /// `flags` to `PostingsEnum.ALL`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error raised while resolving the field's terms or
+    /// seeking to `term`.
+    pub fn get_term_postings_enum_all(
+        reader: &Arc<dyn IndexReader>,
+        field: &str,
+        term: &BytesRef,
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
+        Self::get_term_postings_enum(
+            reader,
+            field,
+            term,
+            crate::index::postings_enum::POSTINGS_ENUM_ALL,
+        )
+    }
+
     /// Returns a [`PostingsEnum`] for `term` in `field` across `reader`, or
     /// `None` if the field or term does not exist.
     ///
     /// Equivalent to
     /// `MultiTerms.getTermPostingsEnum(IndexReader, String, BytesRef, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error raised while resolving the field's terms or
+    /// seeking to `term`.
     pub fn get_term_postings_enum(
         reader: &Arc<dyn IndexReader>,
         field: &str,
@@ -326,25 +468,53 @@ impl MultiTerms {
         &self.sub_slices
     }
 
-    /// Builds a merged [`TermsEnum`] from the given per-sub `TermsEnum`s.
+    /// Builds a merged [`MultiTermsEnum`] from the given per-sub `TermsEnum`s.
     ///
     /// Mirrors `MultiTermsEnum.reset(TermsEnumIndex[])`: each sub-enum is
-    /// advanced once (its first term seeded into the heap), and if no sub
-    /// yields any term an [`EmptyTermsEnum`] is returned instead.
+    /// advanced once (its first term seeded into the heap). `None` is returned
+    /// when no sub yields any term — the case where Lucene's `reset()` returns
+    /// `TermsEnum.EMPTY`.
     fn build_enum(
         sub_slices: &[ReaderSlice],
         entries: Vec<(Box<dyn TermsEnum>, ReaderSlice)>,
-    ) -> Result<Box<dyn TermsEnum>> {
+    ) -> Result<Option<MultiTermsEnum>> {
         let mut me = MultiTermsEnum::new(sub_slices);
         for (te, slice) in entries {
             me.add_sub(te, slice)?;
         }
-        me.finish()
+        Ok(me.finish())
     }
-}
 
-impl Terms for MultiTerms {
-    fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
+    /// Concretely typed counterpart of [`Terms::intersect`], returning `None`
+    /// when no sub contributed a term.
+    ///
+    /// Shares its heap-seeding step with [`Self::multi_iterator`]; the only
+    /// difference is that each sub is asked for an automaton-filtered enum.
+    pub fn multi_intersect(
+        &self,
+        compiled: &CompiledAutomaton,
+        start_term: Option<&BytesRef>,
+    ) -> Result<Option<MultiTermsEnum>> {
+        let mut entries: Vec<(Box<dyn TermsEnum>, ReaderSlice)> =
+            Vec::with_capacity(self.subs.len());
+        for (i, sub) in self.subs.iter().enumerate() {
+            // Terms::intersect returns UnsupportedOperation by default; subs
+            // that do not implement it surface as an error here, matching the
+            // expectation that a real segment reader provides intersect.
+            let te = sub.intersect(compiled, start_term)?;
+            entries.push((te, self.sub_slices[i]));
+        }
+        Self::build_enum(&self.sub_slices, entries)
+    }
+
+    /// Concretely typed counterpart of [`Terms::iterator`].
+    ///
+    /// Returns `None` exactly when [`Terms::iterator`] would return an
+    /// [`EmptyTermsEnum`], i.e. when no sub contributed a term. Java expresses
+    /// the same distinction by comparing the returned enum against the
+    /// `TermsEnum.EMPTY` singleton (LUCENE-6826) after a cast to
+    /// `MultiTermsEnum`; `Option` makes it type-safe here.
+    pub fn multi_iterator(&self) -> Result<Option<MultiTermsEnum>> {
         let mut entries: Vec<(Box<dyn TermsEnum>, ReaderSlice)> =
             Vec::with_capacity(self.subs.len());
         for (i, sub) in self.subs.iter().enumerate() {
@@ -356,22 +526,25 @@ impl Terms for MultiTerms {
         }
         Self::build_enum(&self.sub_slices, entries)
     }
+}
+
+impl Terms for MultiTerms {
+    fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
+        Ok(match self.multi_iterator()? {
+            Some(me) => Box::new(me) as Box<dyn TermsEnum>,
+            None => Box::new(EmptyTermsEnum::new()) as Box<dyn TermsEnum>,
+        })
+    }
 
     fn intersect(
         &self,
         compiled: &CompiledAutomaton,
         start_term: Option<&BytesRef>,
     ) -> Result<Box<dyn TermsEnum>> {
-        let mut entries: Vec<(Box<dyn TermsEnum>, ReaderSlice)> =
-            Vec::with_capacity(self.subs.len());
-        for (i, sub) in self.subs.iter().enumerate() {
-            // Terms::intersect returns UnsupportedOperation by default; subs
-            // that do not implement it surface as an error here, matching the
-            // expectation that a real segment reader provides intersect.
-            let te = sub.intersect(compiled, start_term)?;
-            entries.push((te, self.sub_slices[i]));
-        }
-        Self::build_enum(&self.sub_slices, entries)
+        Ok(match self.multi_intersect(compiled, start_term)? {
+            Some(me) => Box::new(me) as Box<dyn TermsEnum>,
+            None => Box::new(EmptyTermsEnum::new()) as Box<dyn TermsEnum>,
+        })
     }
 
     fn size(&self) -> i64 {
@@ -419,6 +592,20 @@ impl Terms for MultiTerms {
         self.has_payloads
     }
 
+    /// Returns the smallest term across every sub.
+    ///
+    /// **Deliberate divergence from Lucene.** `MultiTerms.getMin`
+    /// (`MultiTerms.java:155-169`) dereferences each sub's `getMin()` result
+    /// unconditionally (`term.compareTo(minTerm)`), so a sub whose field is
+    /// present but empty — `getMin()` returning `null` — makes it throw a
+    /// `NullPointerException`. This port skips such subs and folds only the
+    /// terms that exist, which is what the surrounding code already assumes.
+    ///
+    /// The difference is unobservable through the public API: `MultiTerms` is
+    /// only ever built from subs that answered `terms(field)` with a non-`None`
+    /// value, and a field with a terms dictionary has at least one term. The
+    /// divergence exists so that a future caller constructing `MultiTerms`
+    /// directly gets a sensible answer instead of a panic.
     fn min(&self) -> Result<Option<BytesRef>> {
         let mut min_term: Option<BytesRef> = None;
         for sub in &self.subs {
@@ -436,6 +623,11 @@ impl Terms for MultiTerms {
         Ok(min_term)
     }
 
+    /// Returns the largest term across every sub.
+    ///
+    /// Shares [`Self::min`]'s deliberate divergence: Lucene's
+    /// `MultiTerms.getMax` throws `NullPointerException` for a sub with no
+    /// terms, this port skips it.
     fn max(&self) -> Result<Option<BytesRef>> {
         let mut max_term: Option<BytesRef> = None;
         for sub in &self.subs {
@@ -451,6 +643,72 @@ impl Terms for MultiTerms {
             }
         }
         Ok(max_term)
+    }
+}
+
+/// Delegating [`Terms`] implementation for the shared handle returned by
+/// [`MultiFields::multi_terms`].
+///
+/// Lucene's `MultiFields` hands the *same* `MultiTerms` object back on every
+/// call for a field. Rust callers need an owned value, so the shared instance
+/// travels as an `Arc`; this impl lets that `Arc` be used directly as a
+/// `Terms`, keeping `Fields::terms` a one-liner and avoiding a rebuild per
+/// call.
+impl Terms for Arc<MultiTerms> {
+    fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
+        (**self).iterator()
+    }
+
+    fn intersect(
+        &self,
+        compiled: &CompiledAutomaton,
+        start_term: Option<&BytesRef>,
+    ) -> Result<Box<dyn TermsEnum>> {
+        (**self).intersect(compiled, start_term)
+    }
+
+    fn size(&self) -> i64 {
+        (**self).size()
+    }
+
+    fn sum_total_term_freq(&self) -> i64 {
+        (**self).sum_total_term_freq()
+    }
+
+    fn sum_doc_freq(&self) -> i64 {
+        (**self).sum_doc_freq()
+    }
+
+    fn doc_count(&self) -> i32 {
+        (**self).doc_count()
+    }
+
+    fn has_freqs(&self) -> bool {
+        (**self).has_freqs()
+    }
+
+    fn has_offsets(&self) -> bool {
+        (**self).has_offsets()
+    }
+
+    fn has_positions(&self) -> bool {
+        (**self).has_positions()
+    }
+
+    fn has_payloads(&self) -> bool {
+        (**self).has_payloads()
+    }
+
+    fn min(&self) -> Result<Option<BytesRef>> {
+        (**self).min()
+    }
+
+    fn max(&self) -> Result<Option<BytesRef>> {
+        (**self).max()
+    }
+
+    fn stats(&self) -> String {
+        (**self).stats()
     }
 }
 
@@ -567,15 +825,41 @@ impl MultiTermsEnum {
         Ok(())
     }
 
-    /// Finalises construction, returning a boxed enum. If no sub yielded a
-    /// term, returns [`EmptyTermsEnum`] — matching Lucene's
-    /// `reset()` returning `TermsEnum.EMPTY` when the queue is empty.
-    fn finish(self) -> Result<Box<dyn TermsEnum>> {
+    /// Finalises construction. Returns `None` if no sub yielded a term —
+    /// matching Lucene's `reset()` returning `TermsEnum.EMPTY` when the queue
+    /// is empty.
+    fn finish(self) -> Option<Self> {
         if self.heap.is_empty() {
-            Ok(Box::new(EmptyTermsEnum::new()))
+            None
         } else {
-            Ok(Box::new(self))
+            Some(self)
         }
+    }
+
+    /// Concretely typed counterpart of [`TermsEnum::postings`].
+    ///
+    /// Builds the [`MultiPostingsEnum`] over every sub currently positioned at
+    /// the enum's term. Java reaches the same object through a cast
+    /// (`(MultiPostingsEnum) in.postings(...)` in `MappedMultiFields`); callers
+    /// that need the per-sub [`ReaderSlice`]s — segment merging above all —
+    /// use this method instead.
+    pub fn multi_postings(&mut self, flags: i32) -> Result<MultiPostingsEnum> {
+        // Sort the top subs by reader_index so the MultiPostingsEnum receives
+        // slices in ascending doc-ID order (Lucene does the same via
+        // ArrayUtil.timSort on subIndex).
+        let mut top_sorted: Vec<usize> = self.top.clone();
+        top_sorted.sort_by_key(|&idx| self.subs[idx].slice.reader_index);
+
+        let mut sub_docs: Vec<EnumWithSlice> = Vec::with_capacity(top_sorted.len());
+        for &idx in &top_sorted {
+            // Sub-enum reuse across calls is not tracked here; each call asks
+            // the sub for a fresh postings enum. This matches Lucene's behaviour
+            // (which passes the previous sub-enum as reuse) when the sub
+            // implementations do not special-case reuse, and is correct.
+            let pe = self.subs[idx].tenum.postings(None, flags)?;
+            sub_docs.push(EnumWithSlice::new(pe, self.subs[idx].slice));
+        }
+        Ok(MultiPostingsEnum::new(sub_docs))
     }
 
     /// Advances every sub in `top` and pushes the survivors back into the
@@ -621,12 +905,38 @@ impl MultiTermsEnum {
     /// Re-seeds the heap and top from every sub after a seek, applying the
     /// LUCENE-2130 optimisation when `seek_opt` is set.
     ///
-    /// Shared by `seek_exact` (with `seek_opt = false`) and `seek_ceil`.
+    /// Shared by `seek_exact` (`exact = true`) and `seek_ceil`
+    /// (`exact = false`). Both compute `seek_opt` from the *previous*
+    /// `last_seek` before calling; this method then records the `last_seek`
+    /// that the *next* seek will consult.
+    ///
+    /// # Why an exact seek forgets `last_seek`
+    ///
+    /// A `seek_ceil` leaves every sub positioned: on `NOT_FOUND` the sub sits
+    /// on its ceiling term, and on `END` it is exhausted for every term from
+    /// here on. Recording `last_seek` is therefore safe, and lets the next
+    /// non-decreasing seek skip subs that are already past the new term.
+    ///
+    /// A `seek_exact` does not: a sub whose `seek_exact` returned `false` is
+    /// left *unpositioned* (`TermsEnum::seek_exact` promises nothing about
+    /// where the underlying enum stopped, so `current` is cleared), and the
+    /// sub may well hold terms after the one that was sought. Keeping
+    /// `last_seek` would let the next non-decreasing seek take the
+    /// "no recorded term ⇒ nothing to find here" branch and drop that sub
+    /// permanently. Clearing it forces the next seek to re-seek every sub from
+    /// scratch. This mirrors `MultiTermsEnum.seekExact`, which assigns
+    /// `lastSeek = null` (`MultiTermsEnum.java:124`) exactly where
+    /// `seekCeil` assigns `lastSeek = term` (`MultiTermsEnum.java:177`).
+    ///
+    /// With `last_seek` cleared, the `seek_opt` branch for a sub with no
+    /// recorded term is reachable only after a `seek_ceil` that returned
+    /// `SeekStatus::END` for it — for which skipping is correct, because no
+    /// term at or after the previous seek term exists in that sub.
     fn reseed(&mut self, term: &BytesRef, seek_opt: bool, exact: bool) -> Result<()> {
         self.heap.clear();
         self.top.clear();
         self.last_seek_exact = exact;
-        self.last_seek = Some(term.clone());
+        self.last_seek = if exact { None } else { Some(term.clone()) };
 
         for i in 0..self.subs.len() {
             if seek_opt {
@@ -635,13 +945,9 @@ impl MultiTermsEnum {
                 if let Some(cur) = &self.subs[i].current {
                     match term.cmp(cur) {
                         Ordering::Equal => {
-                            if exact {
-                                // seek_exact: sub is already on the term.
-                                self.top.push(i);
-                            } else {
-                                // seek_ceil: sub is on the term → FOUND.
-                                self.top.push(i);
-                            }
+                            // The sub already sits on the term: a hit for
+                            // seek_exact and a FOUND for seek_ceil alike.
+                            self.top.push(i);
                             continue;
                         }
                         Ordering::Less => {
@@ -662,8 +968,14 @@ impl MultiTermsEnum {
                         }
                     }
                 } else {
-                    // Sub exhausted previously; for seek_ceil it's END, for
-                    // seek_exact it cannot match. Skip.
+                    // No recorded term. Because `last_seek` is cleared by
+                    // `seek_exact` and by `next()`, `seek_opt` can only be set
+                    // by a preceding `seek_ceil` — so the sub reached
+                    // `SeekStatus::END` there, and `term` is not before that
+                    // seek term. Nothing at or after `term` exists in this sub;
+                    // skipping it is correct. (Reaching here after a *failed*
+                    // seek_exact would instead drop a sub that may still hold
+                    // later terms: see this function's doc comment.)
                     continue;
                 }
             }
@@ -703,6 +1015,27 @@ impl TermsEnum for MultiTermsEnum {
         &mut self.atts
     }
 
+    /// Positions the enum on `text` if any sub holds it.
+    ///
+    /// **Deliberate divergence from Lucene: the state after a miss.** Java
+    /// leaves `current` pointing at whatever term the enum was on before
+    /// (`MultiTermsEnum.java:154-158` only assigns `current` inside the
+    /// `status == true` branch), so a `false` return leaves a stale term
+    /// readable through `term()`. This port clears `current`, which is what
+    /// [`TermsEnum::seek_exact`]'s own contract requires: *"if this returns
+    /// false, the enum is unpositioned"*.
+    ///
+    /// One consequence is visible in [`Self::next`]: Java's `next()` after a
+    /// failed `seek_exact` re-seeks to the stale term and asserts the result is
+    /// `FOUND` — an assertion that only holds because the stale term happens to
+    /// exist. Here there is no term to re-seek to, so `next()` resumes from the
+    /// merge heap instead. Both behaviours are outside the `TermsEnum`
+    /// contract, which does not define `next()` on an unpositioned enum; this
+    /// one at least cannot read a term the caller never asked for.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error raised while seeking a sub-enum.
     fn seek_exact(&mut self, text: &BytesRef) -> Result<bool> {
         // LUCENE-2130: optimise only if the new term is not before the last
         // seek term.
@@ -717,6 +1050,18 @@ impl TermsEnum for MultiTermsEnum {
         }
     }
 
+    /// Positions the enum on `text`, or on the smallest term after it.
+    ///
+    /// **Deliberate divergence from Lucene: the state after `END`.** Java
+    /// leaves `current` untouched when every sub reports `END`
+    /// (`MultiTermsEnum.java:229-231` returns `SeekStatus.END` without
+    /// clearing it), so `term()` keeps reporting the previous term. This port
+    /// clears `current`, matching [`TermsEnum::seek_ceil`]'s contract that
+    /// `END` means the enum is exhausted.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error raised while seeking a sub-enum.
     fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {
         let seek_opt = self.last_seek.as_ref().is_some_and(|ls| ls <= text);
         self.reseed(text, seek_opt, false)?;
@@ -775,22 +1120,7 @@ impl TermsEnum for MultiTermsEnum {
         _reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
     ) -> Result<Box<dyn PostingsEnum>> {
-        // Sort the top subs by reader_index so the MultiPostingsEnum receives
-        // slices in ascending doc-ID order (Lucene does the same via
-        // ArrayUtil.timSort on subIndex).
-        let mut top_sorted: Vec<usize> = self.top.clone();
-        top_sorted.sort_by_key(|&idx| self.subs[idx].slice.reader_index);
-
-        let mut sub_docs: Vec<(Box<dyn PostingsEnum>, i32)> = Vec::with_capacity(top_sorted.len());
-        for &idx in &top_sorted {
-            // Sub-enum reuse across calls is not tracked here; each call asks
-            // the sub for a fresh postings enum. This matches Lucene's behaviour
-            // (which passes the previous sub-enum as reuse) when the sub
-            // implementations do not special-case reuse, and is correct.
-            let pe = self.subs[idx].tenum.postings(None, flags)?;
-            sub_docs.push((pe, self.subs[idx].slice.start));
-        }
-        Ok(Box::new(MultiPostingsEnum::new(sub_docs)))
+        Ok(Box::new(self.multi_postings(flags)?))
     }
 
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
@@ -832,6 +1162,38 @@ impl TermsEnum for MultiTermsEnum {
 // MultiPostingsEnum
 // ---------------------------------------------------------------------------
 
+/// A [`PostingsEnum`] paired with the [`ReaderSlice`] describing how its
+/// sub-reader fits into the composite reader.
+///
+/// Equivalent to `MultiPostingsEnum.EnumWithSlice`.
+pub struct EnumWithSlice {
+    /// Postings enum for this sub-reader, in the sub-reader's local doc-ID
+    /// space.
+    pub postings_enum: Box<dyn PostingsEnum>,
+    /// Placement of this sub-reader inside the composite reader.
+    pub slice: ReaderSlice,
+}
+
+impl EnumWithSlice {
+    /// Pairs `postings_enum` with `slice`.
+    pub fn new(postings_enum: Box<dyn PostingsEnum>, slice: ReaderSlice) -> Self {
+        Self {
+            postings_enum,
+            slice,
+        }
+    }
+}
+
+impl std::fmt::Debug for EnumWithSlice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Matches `EnumWithSlice.toString()`, which prints only the slice; the
+        // postings enum itself has no Debug bound in Rucene.
+        f.debug_struct("EnumWithSlice")
+            .field("slice", &self.slice)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A [`PostingsEnum`] that concatenates several sub-readers' postings, offset
 /// by each sub's slice `start`, producing a globally sorted doc-ID stream.
 ///
@@ -839,9 +1201,16 @@ impl TermsEnum for MultiTermsEnum {
 /// partition the global doc-ID space (each sub's local doc IDs are re-based by
 /// `slice.start`), so a plain concatenation yields the same globally increasing
 /// doc-ID sequence a merge would — without a per-doc comparison.
-struct MultiPostingsEnum {
-    /// `(postings, slice_start)` pairs, in ascending slice order.
-    subs: Vec<(Box<dyn PostingsEnum>, i32)>,
+///
+/// **Deliberate divergence**: Java pre-allocates one `EnumWithSlice` per
+/// sub-reader and tracks how many are live in `numSubs`, so the instance can be
+/// reset onto a new term without reallocating. Rucene builds a right-sized
+/// `Vec` per term instead: [`Self::get_num_subs`] is simply its length. Reuse
+/// buys nothing here because [`MultiTermsEnum`] does not thread `reuse` through
+/// to its sub-enums either.
+pub struct MultiPostingsEnum {
+    /// Live sub-enums with their slices, in ascending slice order.
+    subs: Vec<EnumWithSlice>,
     /// Index into `subs` of the current sub, or `-1` before the first
     /// `next_doc`/`advance`.
     upto: i32,
@@ -850,12 +1219,37 @@ struct MultiPostingsEnum {
 }
 
 impl MultiPostingsEnum {
-    fn new(subs: Vec<(Box<dyn PostingsEnum>, i32)>) -> Self {
+    /// Builds a merged postings enum over `subs`, which must be ordered by
+    /// ascending [`ReaderSlice::start`].
+    pub fn new(subs: Vec<EnumWithSlice>) -> Self {
         Self {
             subs,
             upto: -1,
             doc: -1,
         }
+    }
+
+    /// Returns how many sub-readers are being merged.
+    ///
+    /// Equivalent to `MultiPostingsEnum.getNumSubs()`.
+    pub fn get_num_subs(&self) -> usize {
+        self.subs.len()
+    }
+
+    /// Returns the sub-readers being merged.
+    ///
+    /// Equivalent to `MultiPostingsEnum.getSubs()`.
+    pub fn get_subs(&self) -> &[EnumWithSlice] {
+        &self.subs
+    }
+
+    /// Consumes this enum and returns its sub-readers, so a caller can take
+    /// ownership of the per-sub postings.
+    ///
+    /// Java hands out the live `EnumWithSlice[]` from `getSubs()` and lets the
+    /// caller keep the references; Rust ownership makes that transfer explicit.
+    pub fn into_subs(self) -> Vec<EnumWithSlice> {
+        self.subs
     }
 
     /// Returns the current sub's index, or an error if none is active.
@@ -879,12 +1273,12 @@ impl DocIdSetIterator for MultiPostingsEnum {
         loop {
             let i = self.upto;
             if i >= 0 && (i as usize) < self.subs.len() {
-                let d = self.subs[i as usize].0.next_doc()?;
+                let d = self.subs[i as usize].postings_enum.next_doc()?;
                 if d == crate::search::NO_MORE_DOCS {
                     // Exhausted current sub; advance to the next.
                     self.upto += 1;
                 } else {
-                    self.doc = d + self.subs[i as usize].1;
+                    self.doc = d + self.subs[i as usize].slice.start;
                     return Ok(self.doc);
                 }
             } else if i < self.subs.len() as i32 - 1 {
@@ -900,13 +1294,13 @@ impl DocIdSetIterator for MultiPostingsEnum {
         loop {
             let i = self.upto;
             if i >= 0 && (i as usize) < self.subs.len() {
-                let base = self.subs[i as usize].1;
+                let base = self.subs[i as usize].slice.start;
                 // target < base: target was in a previous slice that had no
                 // matching doc after it — just next_doc the current sub.
                 let d = if target < base {
-                    self.subs[i as usize].0.next_doc()?
+                    self.subs[i as usize].postings_enum.next_doc()?
                 } else {
-                    self.subs[i as usize].0.advance(target - base)?
+                    self.subs[i as usize].postings_enum.advance(target - base)?
                 };
                 if d == crate::search::NO_MORE_DOCS {
                     self.upto += 1;
@@ -925,8 +1319,8 @@ impl DocIdSetIterator for MultiPostingsEnum {
 
     fn cost(&self) -> i64 {
         let mut cost: i64 = 0;
-        for (pe, _) in &self.subs {
-            cost += pe.cost();
+        for sub in &self.subs {
+            cost += sub.postings_enum.cost();
         }
         cost
     }
@@ -934,31 +1328,32 @@ impl DocIdSetIterator for MultiPostingsEnum {
 
 impl PostingsEnum for MultiPostingsEnum {
     fn freq(&self) -> Result<i32> {
-        self.current_idx().and_then(|i| self.subs[i].0.freq())
+        self.current_idx()
+            .and_then(|i| self.subs[i].postings_enum.freq())
     }
 
     fn next_position(&mut self) -> Result<i32> {
         let i = self.current_idx()?;
-        self.subs[i].0.next_position()
+        self.subs[i].postings_enum.next_position()
     }
 
     fn start_offset(&self) -> i32 {
         match self.current_idx() {
-            Ok(i) => self.subs[i].0.start_offset(),
+            Ok(i) => self.subs[i].postings_enum.start_offset(),
             Err(_) => -1,
         }
     }
 
     fn end_offset(&self) -> i32 {
         match self.current_idx() {
-            Ok(i) => self.subs[i].0.end_offset(),
+            Ok(i) => self.subs[i].postings_enum.end_offset(),
             Err(_) => -1,
         }
     }
 
     fn get_payload(&self) -> Result<Option<&[u8]>> {
         let i = self.current_idx()?;
-        self.subs[i].0.get_payload()
+        self.subs[i].postings_enum.get_payload()
     }
 }
 
@@ -968,12 +1363,20 @@ impl PostingsEnum for MultiPostingsEnum {
 
 /// `ImpactsEnum` that wraps a [`PostingsEnum`] and reports a single trivial
 /// impact level, matching `org.apache.lucene.index.SlowImpactsEnum`.
-struct SlowImpactsEnum {
+///
+/// Use it whenever an [`ImpactsEnum`] is required but no impacts are indexed:
+/// it reports one level covering the whole postings list, with the maximum
+/// possible frequency and the minimum possible norm, which is always a valid
+/// (if useless) upper bound.
+pub struct SlowImpactsEnum {
     delegate: Box<dyn PostingsEnum>,
 }
 
 impl SlowImpactsEnum {
-    fn new(delegate: Box<dyn PostingsEnum>) -> Self {
+    /// Wraps `delegate`.
+    ///
+    /// Equivalent to `SlowImpactsEnum(PostingsEnum)`.
+    pub fn new(delegate: Box<dyn PostingsEnum>) -> Self {
         Self { delegate }
     }
 }
@@ -1239,7 +1642,7 @@ mod tests {
     }
 
     /// `Terms` over a sorted list of `(term, doc_freq, ttf, docs)`.
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     struct VecTerms {
         entries: Vec<(BytesRef, i32, i64, Vec<i32>)>,
         has_freqs: bool,
@@ -1764,6 +2167,9 @@ mod tests {
         core: IndexReaderCore,
         max_doc: i32,
         num_docs: i32,
+        field_infos: FieldInfos,
+        /// Fields that actually have a terms dictionary, keyed by name.
+        terms: std::collections::BTreeMap<String, VecTerms>,
     }
 
     impl StubLeaf {
@@ -1772,6 +2178,29 @@ mod tests {
                 core: IndexReaderCore::new(),
                 max_doc,
                 num_docs,
+                field_infos: FieldInfos::empty(),
+                terms: std::collections::BTreeMap::new(),
+            }
+        }
+
+        /// Builds a leaf whose `FieldInfos` may describe more fields than have
+        /// a terms dictionary — the doc-values-only / points-only / vectors-only
+        /// case that `LeafFields` must not enumerate.
+        fn with_fields(
+            max_doc: i32,
+            num_docs: i32,
+            field_infos: FieldInfos,
+            terms: Vec<(&str, VecTerms)>,
+        ) -> Self {
+            Self {
+                core: IndexReaderCore::new(),
+                max_doc,
+                num_docs,
+                field_infos,
+                terms: terms
+                    .into_iter()
+                    .map(|(name, t)| (name.to_string(), t))
+                    .collect(),
             }
         }
     }
@@ -1801,8 +2230,13 @@ mod tests {
         fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
             None
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
-            Ok(None)
+        fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+            // Mirrors SegmentReader::terms: a field with IndexOptions::NONE has
+            // no terms dictionary at all.
+            Ok(self
+                .terms
+                .get(field)
+                .map(|t| Box::new(t.clone()) as Box<dyn Terms>))
         }
         fn get_numeric_doc_values(&self, _: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
             Ok(None)
@@ -1856,7 +2290,7 @@ mod tests {
             Ok(())
         }
         fn get_field_infos(&self) -> FieldInfos {
-            FieldInfos::empty()
+            self.field_infos.clone()
         }
         fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
             None
@@ -1881,5 +2315,643 @@ mod tests {
         let mf = MultiFields::new(vec![Box::new(EmptyFields)], vec![ReaderSlice::new(0, 0, 0)]);
         assert_eq!(mf.iterator().count(), 0);
         assert!(mf.terms("f").unwrap().is_none());
+    }
+
+    // ----- concretely typed accessors used by segment merging -----
+
+    #[test]
+    fn multi_terms_returns_the_concrete_type_for_a_field_some_sub_has() {
+        let f1 = VecFields::new([(
+            "body".to_string(),
+            VecTerms::new(vec![(term(b"a"), 1, 1, vec![0])], true, false, false, false),
+        )]);
+        let mf = MultiFields::new(vec![Box::new(f1)], vec![ReaderSlice::new(0, 5, 0)]);
+        let terms = mf.multi_terms("body").unwrap().expect("field exists");
+        assert_eq!(terms.get_sub_terms().len(), 1);
+        assert!(mf.multi_terms("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn multi_iterator_is_none_when_no_sub_contributes_a_term() {
+        // LUCENE-6826: the field exists in both subs but neither holds a term.
+        let f1 = VecFields::new([(
+            "body".to_string(),
+            VecTerms::new(vec![], true, false, false, false),
+        )]);
+        let f2 = VecFields::new([(
+            "body".to_string(),
+            VecTerms::new(vec![], true, false, false, false),
+        )]);
+        let mf = MultiFields::new(
+            vec![Box::new(f1), Box::new(f2)],
+            vec![ReaderSlice::new(0, 5, 0), ReaderSlice::new(5, 5, 1)],
+        );
+        let terms = mf.multi_terms("body").unwrap().unwrap();
+        assert!(terms.multi_iterator().unwrap().is_none());
+        // The trait method turns that into the empty enum.
+        let mut boxed = terms.iterator().unwrap();
+        assert!(boxed.next().unwrap().is_none());
+    }
+
+    #[test]
+    fn multi_postings_expose_one_sub_per_reader_holding_the_term() {
+        let f1 = VecFields::new([(
+            "body".to_string(),
+            VecTerms::new(
+                vec![(term(b"a"), 1, 1, vec![0]), (term(b"b"), 1, 1, vec![1])],
+                true,
+                false,
+                false,
+                false,
+            ),
+        )]);
+        let f2 = VecFields::new([(
+            "body".to_string(),
+            VecTerms::new(vec![(term(b"a"), 1, 1, vec![2])], true, false, false, false),
+        )]);
+        let mf = MultiFields::new(
+            vec![Box::new(f1), Box::new(f2)],
+            vec![ReaderSlice::new(0, 5, 0), ReaderSlice::new(5, 5, 1)],
+        );
+        let terms = mf.multi_terms("body").unwrap().unwrap();
+        let mut enumerator = terms.multi_iterator().unwrap().unwrap();
+
+        assert_eq!(enumerator.next().unwrap(), Some(term(b"a")));
+        let postings = enumerator.multi_postings(POSTINGS_ENUM_FREQS).unwrap();
+        assert_eq!(postings.get_num_subs(), 2, "both subs hold 'a'");
+        let reader_indexes: Vec<i32> = postings
+            .get_subs()
+            .iter()
+            .map(|sub| sub.slice.reader_index)
+            .collect();
+        assert_eq!(
+            reader_indexes,
+            vec![0, 1],
+            "subs are ordered by reader index"
+        );
+        assert_eq!(postings.into_subs().len(), 2);
+
+        assert_eq!(enumerator.next().unwrap(), Some(term(b"b")));
+        let postings = enumerator.multi_postings(POSTINGS_ENUM_FREQS).unwrap();
+        assert_eq!(postings.get_num_subs(), 1, "only the first sub holds 'b'");
+        assert_eq!(postings.get_subs()[0].slice.reader_index, 0);
+    }
+
+    #[test]
+    fn multi_postings_still_offset_local_doc_ids_by_the_slice_start() {
+        let f1 = VecFields::new([(
+            "body".to_string(),
+            VecTerms::new(vec![(term(b"a"), 1, 1, vec![0])], true, false, false, false),
+        )]);
+        let f2 = VecFields::new([(
+            "body".to_string(),
+            VecTerms::new(vec![(term(b"a"), 1, 1, vec![2])], true, false, false, false),
+        )]);
+        let mf = MultiFields::new(
+            vec![Box::new(f1), Box::new(f2)],
+            vec![ReaderSlice::new(0, 5, 0), ReaderSlice::new(5, 5, 1)],
+        );
+        let terms = mf.multi_terms("body").unwrap().unwrap();
+        let mut enumerator = terms.multi_iterator().unwrap().unwrap();
+        assert_eq!(enumerator.next().unwrap(), Some(term(b"a")));
+        let mut postings = enumerator.multi_postings(POSTINGS_ENUM_FREQS).unwrap();
+        assert_eq!(postings.next_doc().unwrap(), 0);
+        assert_eq!(postings.next_doc().unwrap(), 7);
+        assert_eq!(postings.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
+    }
+
+    // ----- LUCENE-2130 seek-optimisation regression tests -----
+    //
+    // `MultiTermsEnum.seekExact` deliberately clears `lastSeek`
+    // (`MultiTermsEnum.java:124`), which disables the LUCENE-2130 skip on the
+    // *next* seek. It must, because a sub whose `seekExact` failed is left
+    // unpositioned: its recorded current term is dropped, so the skip logic
+    // would have no term to compare against and would silently discard the
+    // sub for every following non-decreasing seek. These tests pin that
+    // behaviour: each one loses a whole leaf if `last_seek` survives a
+    // `seek_exact`.
+
+    /// leaf 0 = {a, c}, leaf 1 = {b, c}, with leaf 1 based at global doc 10.
+    fn two_leaves_with_a_shared_trailing_term() -> MultiTerms {
+        let t0 = VecTerms::new(
+            vec![(term(b"a"), 1, 1, vec![0]), (term(b"c"), 1, 1, vec![1])],
+            true,
+            false,
+            false,
+            false,
+        );
+        let t1 = VecTerms::new(
+            vec![(term(b"b"), 1, 1, vec![0]), (term(b"c"), 1, 1, vec![1])],
+            true,
+            false,
+            false,
+            false,
+        );
+        MultiTerms::new(
+            vec![Box::new(t0), Box::new(t1)],
+            vec![ReaderSlice::new(0, 10, 0), ReaderSlice::new(10, 10, 1)],
+        )
+        .unwrap()
+    }
+
+    fn drain_docs(postings: &mut dyn PostingsEnum) -> Vec<i32> {
+        let mut docs = Vec::new();
+        loop {
+            let doc = postings.next_doc().unwrap();
+            if doc == crate::search::NO_MORE_DOCS {
+                return docs;
+            }
+            docs.push(doc);
+        }
+    }
+
+    #[test]
+    fn seek_exact_after_a_failed_seek_exact_still_sees_every_leaf() {
+        let mt = two_leaves_with_a_shared_trailing_term();
+        let mut te = mt.multi_iterator().unwrap().unwrap();
+        // "b" exists only in leaf 1, so leaf 0's seek_exact fails and leaves it
+        // unpositioned.
+        assert!(te.seek_exact(&term(b"b")).unwrap());
+        assert_eq!(te.doc_freq().unwrap(), 1);
+        // "c" exists in both leaves: leaf 0 must be re-seeked from scratch.
+        assert!(te.seek_exact(&term(b"c")).unwrap());
+        assert_eq!(
+            te.doc_freq().unwrap(),
+            2,
+            "leaf 0 was dropped by the seek optimisation"
+        );
+        let mut postings = te.multi_postings(POSTINGS_ENUM_FREQS).unwrap();
+        assert_eq!(drain_docs(&mut postings), vec![1, 11]);
+    }
+
+    #[test]
+    fn seek_ceil_after_a_failed_seek_exact_still_sees_every_leaf() {
+        let mt = two_leaves_with_a_shared_trailing_term();
+        let mut te = mt.multi_iterator().unwrap().unwrap();
+        assert!(te.seek_exact(&term(b"b")).unwrap());
+        assert_eq!(te.seek_ceil(&term(b"c")).unwrap(), SeekStatus::FOUND);
+        assert_eq!(
+            te.doc_freq().unwrap(),
+            2,
+            "leaf 0 was dropped by the seek optimisation"
+        );
+    }
+
+    #[test]
+    fn next_after_a_failed_seek_exact_still_sees_every_leaf() {
+        // leaf 0 = {a, z}, leaf 1 = {b}: "b" is missing from leaf 0, so a naive
+        // seek optimisation would drop leaf 0 and hide "z" for ever.
+        let t0 = VecTerms::new(
+            vec![(term(b"a"), 1, 1, vec![0]), (term(b"z"), 1, 1, vec![1])],
+            true,
+            false,
+            false,
+            false,
+        );
+        let t1 = VecTerms::new(vec![(term(b"b"), 1, 1, vec![0])], true, false, false, false);
+        let mt = MultiTerms::new(
+            vec![Box::new(t0), Box::new(t1)],
+            vec![ReaderSlice::new(0, 10, 0), ReaderSlice::new(10, 10, 1)],
+        )
+        .unwrap();
+        let mut te = mt.multi_iterator().unwrap().unwrap();
+        assert!(te.seek_exact(&term(b"b")).unwrap());
+        assert_eq!(te.next().unwrap(), Some(term(b"z")));
+    }
+
+    #[test]
+    fn seek_exact_after_a_successful_seek_exact_still_sees_every_leaf() {
+        let mt = two_leaves_with_a_shared_trailing_term();
+        let mut te = mt.multi_iterator().unwrap().unwrap();
+        // "a" exists only in leaf 0, so leaf 1's seek_exact fails.
+        assert!(te.seek_exact(&term(b"a")).unwrap());
+        assert!(te.seek_exact(&term(b"c")).unwrap());
+        let mut postings = te.multi_postings(POSTINGS_ENUM_FREQS).unwrap();
+        assert_eq!(
+            drain_docs(&mut postings),
+            vec![1, 11],
+            "leaf 1 was dropped by the seek optimisation"
+        );
+    }
+
+    #[test]
+    fn seek_exact_backwards_re_seeks_every_leaf() {
+        // A decreasing seek term switches the optimisation off explicitly
+        // (`last_seek > text`), which is the other way a sub can be recovered.
+        let mt = two_leaves_with_a_shared_trailing_term();
+        let mut te = mt.multi_iterator().unwrap().unwrap();
+        assert!(te.seek_exact(&term(b"c")).unwrap());
+        assert_eq!(te.doc_freq().unwrap(), 2);
+        assert!(te.seek_exact(&term(b"a")).unwrap());
+        assert_eq!(te.doc_freq().unwrap(), 1);
+        assert_eq!(te.term().unwrap(), term(b"a"));
+        // ... and forwards again, which is the optimised direction.
+        assert!(te.seek_exact(&term(b"b")).unwrap());
+        assert_eq!(te.doc_freq().unwrap(), 1);
+        assert!(te.seek_exact(&term(b"c")).unwrap());
+        assert_eq!(te.doc_freq().unwrap(), 2);
+    }
+
+    #[test]
+    fn seek_ceil_end_then_next_reports_exhaustion() {
+        let mt = two_leaves_with_a_shared_trailing_term();
+        let mut te = mt.multi_iterator().unwrap().unwrap();
+        assert_eq!(te.seek_ceil(&term(b"zzz")).unwrap(), SeekStatus::END);
+        assert!(te.next().unwrap().is_none());
+        // Still exhausted on a second call.
+        assert!(te.next().unwrap().is_none());
+    }
+
+    #[test]
+    fn multi_postings_terminal_state_is_idempotent() {
+        let mt = two_leaves_with_a_shared_trailing_term();
+        let mut te = mt.multi_iterator().unwrap().unwrap();
+        assert!(te.seek_exact(&term(b"c")).unwrap());
+        let mut postings = te.multi_postings(POSTINGS_ENUM_FREQS).unwrap();
+        assert_eq!(drain_docs(&mut postings), vec![1, 11]);
+        // Exhausted: every further call keeps reporting NO_MORE_DOCS and never
+        // rewinds into an earlier sub.
+        assert_eq!(postings.doc_id(), crate::search::NO_MORE_DOCS);
+        assert_eq!(postings.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
+        assert_eq!(postings.doc_id(), crate::search::NO_MORE_DOCS);
+        assert_eq!(postings.advance(0).unwrap(), crate::search::NO_MORE_DOCS);
+        assert_eq!(postings.advance(11).unwrap(), crate::search::NO_MORE_DOCS);
+        assert_eq!(
+            postings.advance(crate::search::NO_MORE_DOCS).unwrap(),
+            crate::search::NO_MORE_DOCS
+        );
+        assert_eq!(postings.doc_id(), crate::search::NO_MORE_DOCS);
+    }
+
+    // ----- LeafFields must expose only fields with a terms dictionary -----
+
+    /// Builds `FieldInfos` describing one postings field and one
+    /// doc-values-only field (`IndexOptions::NONE`).
+    fn postings_and_doc_values_only_field_infos() -> FieldInfos {
+        use crate::index::field_infos::FieldInfo;
+        use crate::index::{DocValuesType, IndexOptions};
+
+        let mut body = FieldInfo::default();
+        body.name = "body".to_string();
+        body.number = 0;
+        body.index_options = IndexOptions::DOCS_AND_FREQS;
+
+        let mut price = FieldInfo::default();
+        price.name = "price".to_string();
+        price.number = 1;
+        // Doc-values only: never inverted, so no terms dictionary exists.
+        price.index_options = IndexOptions::NONE;
+        price.doc_values_type = DocValuesType::NUMERIC;
+
+        FieldInfos::new(vec![body, price]).unwrap()
+    }
+
+    #[test]
+    fn leaf_fields_skips_fields_that_have_no_terms_dictionary() {
+        let body = VecTerms::new(
+            vec![(term(b"apple"), 1, 1, vec![0])],
+            true,
+            false,
+            false,
+            false,
+        );
+        let l: Arc<dyn IndexReader> = Arc::new(StubLeaf::with_fields(
+            2,
+            2,
+            postings_and_doc_values_only_field_infos(),
+            vec![("body", body)],
+        ));
+        let other: Arc<dyn IndexReader> = Arc::new(StubLeaf::new(1, 1));
+        let mr: Arc<dyn IndexReader> = Arc::new(MultiReader::new(vec![l, other], true).unwrap());
+
+        let mf = MultiFields::get_fields(&mr).unwrap();
+        let names: Vec<String> = mf.iterator().collect();
+        assert_eq!(
+            names,
+            vec!["body".to_string()],
+            "a doc-values-only field has no postings and must not be enumerated: \
+             PerFieldPostingsFormat would otherwise stamp a postings format onto \
+             its FieldInfo in the .fnm file"
+        );
+        // And the field is still not reachable through terms().
+        assert!(mf.terms("price").unwrap().is_none());
+        assert!(mf.terms("body").unwrap().is_some());
+    }
+
+    #[test]
+    fn leaf_fields_size_counts_only_fields_with_a_terms_dictionary() {
+        let body = VecTerms::new(
+            vec![(term(b"apple"), 1, 1, vec![0])],
+            true,
+            false,
+            false,
+            false,
+        );
+        let leaf_reader: Arc<dyn LeafReader> = Arc::new(StubLeaf::with_fields(
+            2,
+            2,
+            postings_and_doc_values_only_field_infos(),
+            vec![("body", body)],
+        ));
+        let fields = LeafFields::new(leaf_reader);
+        assert_eq!(fields.size(), 1);
+        assert_eq!(fields.iterator().count(), 1);
+    }
+
+    // ----- per-field MultiTerms memo (MultiFields.java:28, :44-46) -----
+
+    /// `Fields` wrapper that counts how often `terms(field)` is delegated.
+    struct CountingFields {
+        inner: VecFields,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Fields for CountingFields {
+        fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+            self.inner.iterator()
+        }
+
+        fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.terms(field)
+        }
+
+        fn size(&self) -> i32 {
+            self.inner.size()
+        }
+    }
+
+    fn counting_multi_fields() -> (MultiFields, Arc<std::sync::atomic::AtomicUsize>) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let make = |doc: i32| CountingFields {
+            inner: VecFields::new([(
+                "body".to_string(),
+                VecTerms::new(
+                    vec![(term(b"apple"), 1, 1, vec![doc])],
+                    true,
+                    false,
+                    false,
+                    false,
+                ),
+            )]),
+            calls: Arc::clone(&calls),
+        };
+        let mf = MultiFields::new(
+            vec![Box::new(make(0)), Box::new(make(1))],
+            vec![ReaderSlice::new(0, 5, 0), ReaderSlice::new(5, 5, 1)],
+        );
+        (mf, calls)
+    }
+
+    #[test]
+    fn multi_terms_are_memoised_per_field() {
+        let (mf, calls) = counting_multi_fields();
+
+        let first = mf.multi_terms("body").unwrap().unwrap();
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "the first call fans out to every sub"
+        );
+
+        let second = mf.multi_terms("body").unwrap().unwrap();
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "the second call must be served from the memo"
+        );
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "Lucene hands back the same Terms instance for a field"
+        );
+
+        // The trait-object path shares the same memo.
+        assert!(mf.terms("body").unwrap().is_some());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_memoised_multi_terms_is_still_independently_iterable() {
+        let (mf, _calls) = counting_multi_fields();
+        let shared = mf.multi_terms("body").unwrap().unwrap();
+
+        // Two enums over the same shared instance do not interfere.
+        let mut a = shared.iterator().unwrap();
+        let mut b = shared.iterator().unwrap();
+        assert_eq!(a.next().unwrap(), Some(term(b"apple")));
+        assert_eq!(b.next().unwrap(), Some(term(b"apple")));
+        assert!(a.next().unwrap().is_none());
+        assert!(b.next().unwrap().is_none());
+
+        // ... and the Arc handle itself satisfies `Terms`.
+        assert_eq!(Terms::doc_count(&shared), 2);
+        assert_eq!(Terms::sum_doc_freq(&shared), 2);
+        assert!(Terms::has_freqs(&shared));
+        assert_eq!(Terms::min(&shared).unwrap(), Some(term(b"apple")));
+        assert_eq!(Terms::max(&shared).unwrap(), Some(term(b"apple")));
+    }
+
+    #[test]
+    fn a_missing_field_is_not_memoised() {
+        // Mirrors Lucene, whose `terms.put` runs only on the hit path.
+        let (mf, calls) = counting_multi_fields();
+        assert!(mf.multi_terms("nope").unwrap().is_none());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(mf.multi_terms("nope").unwrap().is_none());
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            4,
+            "a miss is recomputed, exactly as in Lucene"
+        );
+    }
+
+    // ----- deliberate divergences pinned by tests -----
+
+    #[test]
+    fn min_and_max_skip_subs_with_no_terms_where_java_throws() {
+        // Lucene's MultiTerms.getMin/getMax dereference each sub's result
+        // unconditionally and would NPE on the empty sub; this port folds only
+        // the terms that exist.
+        let populated = VecTerms::new(
+            vec![
+                (term(b"banana"), 1, 1, vec![0]),
+                (term(b"cherry"), 1, 1, vec![1]),
+            ],
+            true,
+            false,
+            false,
+            false,
+        );
+        let mt = MultiTerms::new(
+            vec![Box::new(EmptyTerms::new()), Box::new(populated)],
+            vec![ReaderSlice::new(0, 2, 0), ReaderSlice::new(2, 2, 1)],
+        )
+        .unwrap();
+        assert_eq!(mt.min().unwrap(), Some(term(b"banana")));
+        assert_eq!(mt.max().unwrap(), Some(term(b"cherry")));
+
+        // Every sub empty: None rather than a panic.
+        let all_empty = MultiTerms::new(
+            vec![Box::new(EmptyTerms::new()), Box::new(EmptyTerms::new())],
+            vec![ReaderSlice::new(0, 1, 0), ReaderSlice::new(1, 1, 1)],
+        )
+        .unwrap();
+        assert_eq!(all_empty.min().unwrap(), None);
+        assert_eq!(all_empty.max().unwrap(), None);
+    }
+
+    #[test]
+    fn a_failed_seek_exact_leaves_the_enum_unpositioned() {
+        // Java leaves `current` stale here; this port honours the TermsEnum
+        // contract and reports the enum as unpositioned.
+        let mt = two_leaves_with_a_shared_trailing_term();
+        let mut te = mt.multi_iterator().unwrap().unwrap();
+        assert!(te.seek_exact(&term(b"a")).unwrap());
+        assert_eq!(te.term().unwrap(), term(b"a"));
+
+        assert!(!te.seek_exact(&term(b"bb")).unwrap());
+        assert!(
+            te.term().is_err(),
+            "a missed seek_exact must not leave the previous term readable"
+        );
+        assert_eq!(te.doc_freq().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_seek_ceil_past_the_end_leaves_the_enum_unpositioned() {
+        // Java leaves `current` stale on SeekStatus::END; this port clears it.
+        let mt = two_leaves_with_a_shared_trailing_term();
+        let mut te = mt.multi_iterator().unwrap().unwrap();
+        assert_eq!(te.seek_ceil(&term(b"a")).unwrap(), SeekStatus::FOUND);
+        assert_eq!(te.term().unwrap(), term(b"a"));
+
+        assert_eq!(te.seek_ceil(&term(b"zzz")).unwrap(), SeekStatus::END);
+        assert!(
+            te.term().is_err(),
+            "SeekStatus::END must not leave the previous term readable"
+        );
+    }
+
+    // ----- ReaderSlice length convention across the two factories -----
+
+    /// Composite reader over two leaves that both carry a `body` postings
+    /// field, sized 3 and 4 documents.
+    fn two_leaf_reader_with_a_body_field() -> Arc<dyn IndexReader> {
+        let make = |docs: Vec<i32>| {
+            VecTerms::new(
+                vec![(term(b"apple"), docs.len() as i32, docs.len() as i64, docs)],
+                true,
+                false,
+                false,
+                false,
+            )
+        };
+        let a: Arc<dyn IndexReader> = Arc::new(StubLeaf::with_fields(
+            3,
+            3,
+            postings_and_doc_values_only_field_infos(),
+            vec![("body", make(vec![0, 2]))],
+        ));
+        let b: Arc<dyn IndexReader> = Arc::new(StubLeaf::with_fields(
+            4,
+            4,
+            postings_and_doc_values_only_field_infos(),
+            vec![("body", make(vec![1]))],
+        ));
+        Arc::new(MultiReader::new(vec![a, b], true).unwrap())
+    }
+
+    #[test]
+    fn get_fields_slices_carry_the_leafs_own_max_doc_as_length() {
+        // The convention documented on ReaderSlice: length is the number of
+        // documents in the slice. This factory honours it.
+        let mr = two_leaf_reader_with_a_body_field();
+        let mf = MultiFields::get_fields(&mr).unwrap();
+        assert_eq!(mf.get_sub_slices()[0], ReaderSlice::new(0, 3, 0));
+        assert_eq!(mf.get_sub_slices()[1], ReaderSlice::new(3, 4, 1));
+        // The MultiTerms built from them inherits the same slices.
+        let terms = mf.multi_terms("body").unwrap().unwrap();
+        assert_eq!(terms.get_sub_slices()[0], ReaderSlice::new(0, 3, 0));
+        assert_eq!(terms.get_sub_slices()[1], ReaderSlice::new(3, 4, 1));
+    }
+
+    #[test]
+    fn get_terms_maps_leaf_doc_ids_into_the_composite_space() {
+        // `MultiTerms::get_terms` builds its slices with the *composite*
+        // maxDoc as `length` (transcribing MultiTerms.java:82). Only `start`
+        // is ever read, and this is what reading it produces.
+        let mr = two_leaf_reader_with_a_body_field();
+        let terms = MultiTerms::get_terms(&mr, "body").unwrap().unwrap();
+        let mut te = terms.iterator().unwrap();
+        assert_eq!(te.next().unwrap(), Some(term(b"apple")));
+        assert_eq!(te.doc_freq().unwrap(), 3);
+        let mut postings = te.postings(None, POSTINGS_ENUM_FREQS).unwrap();
+        assert_eq!(
+            drain_docs(postings.as_mut()),
+            vec![0, 2, 4],
+            "leaf 1's local doc 1 is global doc 4"
+        );
+    }
+
+    #[test]
+    fn get_terms_over_a_single_leaf_returns_the_leafs_own_terms() {
+        let a: Arc<dyn IndexReader> = Arc::new(StubLeaf::with_fields(
+            3,
+            3,
+            postings_and_doc_values_only_field_infos(),
+            vec![(
+                "body",
+                VecTerms::new(
+                    vec![(term(b"apple"), 1, 1, vec![0])],
+                    true,
+                    false,
+                    false,
+                    false,
+                ),
+            )],
+        ));
+        let mr: Arc<dyn IndexReader> = Arc::new(MultiReader::new(vec![a], true).unwrap());
+        let terms = MultiTerms::get_terms(&mr, "body").unwrap().unwrap();
+        // Not wrapped: MultiTerms reports size() == -1, the leaf's VecTerms
+        // reports the real count.
+        assert_eq!(terms.size(), 1);
+        assert!(MultiTerms::get_terms(&mr, "missing").unwrap().is_none());
+    }
+
+    // ----- MultiTerms::getTermPostingsEnum overloads -----
+
+    #[test]
+    fn get_term_postings_enum_all_defaults_to_every_feature() {
+        let mr = two_leaf_reader_with_a_body_field();
+        let mut all = MultiTerms::get_term_postings_enum_all(&mr, "body", &term(b"apple"))
+            .unwrap()
+            .expect("apple exists");
+        assert_eq!(drain_docs(all.as_mut()), vec![0, 2, 4]);
+
+        // Same result as the explicit-flags overload with PostingsEnum.ALL.
+        let mut explicit = MultiTerms::get_term_postings_enum(
+            &mr,
+            "body",
+            &term(b"apple"),
+            crate::index::postings_enum::POSTINGS_ENUM_ALL,
+        )
+        .unwrap()
+        .expect("apple exists");
+        assert_eq!(drain_docs(explicit.as_mut()), vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn get_term_postings_enum_all_is_none_for_a_missing_field_or_term() {
+        let mr = two_leaf_reader_with_a_body_field();
+        assert!(
+            MultiTerms::get_term_postings_enum_all(&mr, "missing", &term(b"apple"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            MultiTerms::get_term_postings_enum_all(&mr, "body", &term(b"durian"))
+                .unwrap()
+                .is_none()
+        );
     }
 }

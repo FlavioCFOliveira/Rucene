@@ -22,6 +22,7 @@ use std::fmt::Debug;
 
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
 use crate::index::terms::{OrdTermState, SeekStatus, TermState, TermsEnum};
+use crate::index::terms_enum_index::{TermsEnumIndex, TermsEnumIndexState};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::util::attribute::AttributeSource;
 use crate::util::extra::{
@@ -1443,8 +1444,8 @@ impl OrdinalMap {
 
             loop {
                 let mut top = queue.pop().unwrap();
-                let segment_ord = top.terms_enum.ord()?;
-                let segment_index = top.sub_index;
+                let segment_ord = top.terms_enum().ord()?;
+                let segment_index = top.sub_index();
                 let delta = global_ord - segment_ord;
                 if segment_index < first_segment_index {
                     first_segment_index = segment_index;
@@ -1562,102 +1563,14 @@ impl SegmentMap {
     }
 }
 
-/// Wrapper around a [`TermsEnum`] and an integer that identifies it.
-///
-/// Equivalent to `org.apache.lucene.index.TermsEnumIndex`.
-struct TermsEnumIndex {
-    terms_enum: Box<dyn TermsEnum>,
-    sub_index: usize,
-    current_term: Option<BytesRef>,
-}
-
-impl TermsEnumIndex {
-    fn new(terms_enum: Box<dyn TermsEnum>, sub_index: usize) -> Self {
-        Self {
-            terms_enum,
-            sub_index,
-            current_term: None,
-        }
-    }
-
-    fn term(&self) -> Option<&BytesRef> {
-        self.current_term.as_ref()
-    }
-
-    fn next(&mut self) -> Result<Option<&BytesRef>> {
-        let term = self.terms_enum.next()?;
-        self.current_term = term;
-        Ok(self.current_term.as_ref())
-    }
-
-    #[allow(dead_code)]
-    fn seek_ceil(&mut self, term: &BytesRef) -> Result<SeekStatus> {
-        let status = self.terms_enum.seek_ceil(term)?;
-        if status == SeekStatus::END {
-            self.current_term = None;
-        } else {
-            self.current_term = Some(self.terms_enum.term()?);
-        }
-        Ok(status)
-    }
-
-    #[allow(dead_code)]
-    fn seek_exact(&mut self, term: &BytesRef) -> Result<bool> {
-        let found = self.terms_enum.seek_exact(term)?;
-        if found {
-            self.current_term = Some(self.terms_enum.term()?);
-        } else {
-            self.current_term = None;
-        }
-        Ok(found)
-    }
-
-    #[allow(dead_code)]
-    fn seek_ord(&mut self, ord: i64) -> Result<()> {
-        self.terms_enum.seek_ord(ord)?;
-        self.current_term = Some(self.terms_enum.term()?);
-        Ok(())
-    }
-
-    fn term_equals(&self, state: &TermsEnumIndexState) -> bool {
-        match &self.current_term {
-            None => false,
-            Some(term) => term == &state.term,
-        }
-    }
-}
-
-/// Saved state of a [`TermsEnumIndex`] for equality checks.
-struct TermsEnumIndexState {
-    term: BytesRef,
-}
-
-impl TermsEnumIndexState {
-    fn copy_from(tei: &TermsEnumIndex) -> Self {
-        Self {
-            term: tei.current_term.clone().unwrap_or_default(),
-        }
-    }
-}
-
-impl Debug for TermsEnumIndexState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TermsEnumIndexState")
-            .field("term", &self.term)
-            .finish()
-    }
-}
-
 /// Priority queue ordering for [`TermsEnumIndex`] by current term.
 struct TermsEnumIndexComparator;
 
 impl PriorityQueueComparator<TermsEnumIndex> for TermsEnumIndexComparator {
     fn less_than(&self, a: &TermsEnumIndex, b: &TermsEnumIndex) -> bool {
-        match (a.term(), b.term()) {
-            (Some(a_term), Some(b_term)) => a_term < b_term,
-            (None, _) => false,
-            (_, None) => true,
-        }
+        // `compare_term_to` already sorts exhausted enums last, so no separate
+        // emptiness check is needed here.
+        a.compare_term_to(b) == Ordering::Less
     }
 }
 

@@ -240,6 +240,41 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
         Ok(Self { subs, state })
     }
 
+    /// Returns every sub-reader handed to this merger, in construction order.
+    ///
+    /// Java's `DocIDMerger` keeps the caller's `List<Sub>` alive and lets the
+    /// caller walk it (for example `MappingMultiPostingsEnum.cost()`); here the
+    /// merger owns the subs, so it exposes them instead.
+    pub fn subs(&self) -> &[T] {
+        &self.subs
+    }
+
+    /// Returns the sub positioned by the most recent [`Self::next_sub`] call,
+    /// or `None` once the merge is exhausted.
+    ///
+    /// Before the first call to [`Self::next_sub`] this reports the first sub,
+    /// which is not yet positioned on a document; callers that need Java's
+    /// "no current sub yet" state must track it themselves, exactly as
+    /// `MappingMultiPostingsEnum` does with its own `current` field.
+    pub fn current_sub(&self) -> Option<&T> {
+        self.current_index().map(|idx| &self.subs[idx])
+    }
+
+    /// Mutable counterpart of [`Self::current_sub`].
+    pub fn current_sub_mut(&mut self) -> Option<&mut T> {
+        self.current_index().map(|idx| &mut self.subs[idx])
+    }
+
+    /// Index into `subs` of the sub returned by the last [`Self::next_sub`].
+    fn current_index(&self) -> Option<usize> {
+        match &self.state {
+            MergerState::Empty => None,
+            MergerState::Sequential { current, .. } | MergerState::Sorted { current, .. } => {
+                *current
+            }
+        }
+    }
+
     /// Resets the merger to the beginning.
     pub fn reset(&mut self) -> Result<()> {
         self.state = if self.subs.is_empty() {
@@ -468,6 +503,39 @@ mod tests {
             order.push(sub.mapped_doc_id());
         }
         assert_eq!(order, vec![0, 2, 3]);
+    }
+
+    #[test]
+    fn current_sub_tracks_the_sub_returned_by_the_last_step() {
+        let subs = vec![
+            VecSub::new(vec![0, 1], identity_doc_map(2, 0)),
+            VecSub::new(vec![0], identity_doc_map(1, 2)),
+        ];
+        let mut merger = DocIDMerger::new(subs, false).unwrap();
+        assert_eq!(merger.subs().len(), 2);
+
+        assert_eq!(merger.next_sub().unwrap().unwrap().mapped_doc_id(), 0);
+        assert_eq!(merger.current_sub().unwrap().mapped_doc_id(), 0);
+        assert_eq!(merger.next_sub().unwrap().unwrap().mapped_doc_id(), 1);
+        assert_eq!(merger.next_sub().unwrap().unwrap().mapped_doc_id(), 2);
+        assert_eq!(
+            merger.current_sub_mut().unwrap().mapped_doc_id(),
+            2,
+            "the mutable accessor sees the same sub"
+        );
+        assert!(merger.next_sub().unwrap().is_none());
+        assert!(
+            merger.current_sub().is_none(),
+            "an exhausted merger has no current sub"
+        );
+    }
+
+    #[test]
+    fn current_sub_is_none_for_an_empty_merger() {
+        let subs: Vec<VecSub> = vec![];
+        let merger = DocIDMerger::new(subs, false).unwrap();
+        assert!(merger.current_sub().is_none());
+        assert!(merger.subs().is_empty());
     }
 
     #[test]

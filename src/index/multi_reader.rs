@@ -61,6 +61,34 @@ use crate::index::{Fields, Term};
 /// global doc ID of the slice, `length` is the number of docs, and
 /// `reader_index` is the ordinal of the owning sub-reader in
 /// [`CompositeReader::get_sequential_sub_readers`].
+///
+/// # The `length` convention, and where Lucene breaks it
+///
+/// `length` means what the Java record's javadoc says it means: *"Number of
+/// documents in this slice."* It is authoritative for exactly one consumer —
+/// [`BitsSlice::new`](crate::index::BitsSlice::new), which narrows a global
+/// [`Bits`](crate::util::Bits) to `start..start + length`. Anything else in
+/// this crate reads only `start` (to offset local doc IDs into the global
+/// space) and `reader_index` (to order the subs).
+///
+/// Lucene's own factories do not all honour the convention, and the ports of
+/// those factories reproduce whatever the Java site does, so that a
+/// side-by-side comparison stays exact:
+///
+/// * [`MultiFields::get_fields`](crate::index::MultiFields::get_fields) sets
+///   `length` to the **leaf's** `maxDoc`. This is the true slice width and
+///   matches `FieldsConsumer.merge`, which builds its slices from
+///   `mergeState.maxDocs[readerIndex]`.
+/// * [`MultiTerms::get_terms`](crate::index::MultiTerms::get_terms) sets
+///   `length` to the **composite** reader's `maxDoc`, transcribing
+///   `new ReaderSlice(ctx.docBase, r.maxDoc(), leafIdx)`
+///   (`MultiTerms.java:82`). Lucene's `SlowCompositeCodecReaderWrapper` is
+///   looser still: it passes `docStarts[i + 1]`, the slice's *end*.
+///
+/// Neither value is ever read, in Lucene or here, which is why the
+/// discrepancy has survived. The rule for this port is therefore: **never feed
+/// a `ReaderSlice` from `MultiTerms::get_terms` to `BitsSlice`** — build one
+/// with the sub-reader's own `max_doc()` instead. `MultiBits` already does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReaderSlice {
     /// First global document ID of this slice.
@@ -101,15 +129,38 @@ pub mod reader_util {
     /// `doc_id`, given the per-sub-reader doc-start table `doc_starts` (where
     /// `doc_starts[i]` is the first global doc ID of sub-reader `i`).
     ///
-    /// Equivalent to `ReaderUtil.subIndex(int n, int[] docStarts)`. The array
-    /// need not carry a trailing sentinel: the binary search returns the last
-    /// index whose start is `<= doc_id`, exactly as the Java original does.
+    /// Ports `ReaderUtil.subIndex(int n, int[] docStarts)`. The array need not
+    /// carry a trailing sentinel: the binary search returns the last index
+    /// whose start is `<= doc_id`.
+    ///
+    /// # Deliberate divergence from Lucene: the "no such sub-reader" result
+    ///
+    /// Java returns `int` and, when the search falls off the left edge, returns
+    /// the raw `hi`, which is **`-1`** — either because `doc_id` is smaller
+    /// than `docStarts[0]` or because the table is empty. Callers treat that as
+    /// a bug signal rather than an index (`MultiBits.get` asserts
+    /// `reader != -1`, `MultiBits.java:92`).
+    ///
+    /// This port returns `usize`, which cannot represent `-1`, so it clamps to
+    /// `0` instead. The two behaviours differ only on inputs that cannot occur
+    /// in a well-formed reader: document IDs are non-negative and a composite
+    /// reader's `starts[0]` is always `0`, so `doc_id < doc_starts[0]` is
+    /// unreachable, and an empty table means there is no sub-reader to return
+    /// an index for at all. Rucene's callers (this module's private
+    /// `resolve_sub`, and `MultiBits::get`) range-check `doc_id` against
+    /// `max_doc` before calling, so the clamped value is never used to index
+    /// anything.
+    ///
+    /// Changing the signature to `Option<usize>` or `isize` would propagate a
+    /// case that cannot happen into every call site; the clamp is documented
+    /// here instead and pinned by
+    /// `sub_index_clamps_to_zero_where_java_returns_minus_one`.
     ///
     /// # Panics
     ///
-    /// Does not panic; out-of-range `doc_id` values simply resolve to the
-    /// nearest boundary index, matching Java. Callers that need strict
-    /// bounds checking should validate `doc_id` before calling.
+    /// Does not panic. Out-of-range `doc_id` values resolve to the nearest
+    /// boundary index; callers that need strict bounds checking must validate
+    /// `doc_id` first.
     pub fn sub_index(doc_id: i32, doc_starts: &[i32]) -> usize {
         // find the sub-reader for doc_id:
         let size = doc_starts.len();
@@ -131,14 +182,18 @@ pub mod reader_util {
                 return mid;
             }
         }
-        // hi < lo: return hi (clamped to 0 when negative)
+        // hi < lo. Java returns `hi` here, which is -1 when the search fell
+        // off the left edge; `usize` cannot express that, so clamp to 0. See
+        // the deliberate-divergence note on this function.
         hi.max(0) as usize
     }
 
     /// Returns the index of the leaf context that owns the global document ID
     /// `doc_id`, using each leaf's `doc_base()` as the start table.
     ///
-    /// Equivalent to `ReaderUtil.subIndex(int n, List<LeafReaderContext> leaves)`.
+    /// Ports `ReaderUtil.subIndex(int n, List<LeafReaderContext> leaves)`, and
+    /// shares [`sub_index`]'s deliberate divergence on the "no such leaf" case:
+    /// Java returns `-1`, this port clamps to `0`.
     pub fn sub_index_from_leaves(doc_id: i32, leaves: &[Arc<LeafReaderContext>]) -> usize {
         let size = leaves.len();
         let mut lo: isize = 0;
@@ -158,6 +213,7 @@ pub mod reader_util {
                 return mid;
             }
         }
+        // See sub_index: Java would return -1 here; `usize` clamps to 0.
         hi.max(0) as usize
     }
 
@@ -166,7 +222,9 @@ pub mod reader_util {
     ///
     /// This is the `ReaderSlice`-driven counterpart of [`sub_index`]; Lucene
     /// does not expose this exact overload but it is the natural mapping when
-    /// the caller already holds a `&[ReaderSlice]`.
+    /// the caller already holds a `&[ReaderSlice]`. It shares [`sub_index`]'s
+    /// deliberate divergence on the "no such slice" case: Java's `subIndex`
+    /// would return `-1`, this port clamps to `0`.
     pub fn index_of(doc_id: i32, slices: &[ReaderSlice]) -> usize {
         let size = slices.len();
         let mut lo: isize = 0;
@@ -186,6 +244,7 @@ pub mod reader_util {
                 return mid;
             }
         }
+        // See sub_index: Java would return -1 here; `usize` clamps to 0.
         hi.max(0) as usize
     }
 
@@ -215,6 +274,15 @@ pub use reader_util::{get_top_level_context, index_of, sub_index, sub_index_from
 // ---------------------------------------------------------------------------
 // MultiReader
 // ---------------------------------------------------------------------------
+
+/// Comparator used to order a composite reader's sub-readers before its
+/// doc-base table is built.
+///
+/// Equivalent to the `Comparator<IndexReader> subReadersSorter` parameter of
+/// `MultiReader`'s three-argument constructor and of
+/// `BaseCompositeReader(R[], Comparator<R>)`.
+pub type SubReadersSorter<'a> =
+    &'a dyn Fn(&Arc<dyn IndexReader>, &Arc<dyn IndexReader>) -> std::cmp::Ordering;
 
 /// A [`CompositeReader`] over an arbitrary in-memory set of sub-`IndexReader`s.
 ///
@@ -266,6 +334,42 @@ impl MultiReader {
     /// is incremented so that the sub-readers outlive this `MultiReader`; on
     /// close, this reader decrements them (instead of closing them outright).
     pub fn new(sub_readers: Vec<Arc<dyn IndexReader>>, close_sub_readers: bool) -> Result<Self> {
+        Self::new_sorted(sub_readers, None, close_sub_readers)
+    }
+
+    /// Creates a `MultiReader` aggregating the given sub-readers, optionally
+    /// ordering them first.
+    ///
+    /// Equivalent to `MultiReader(IndexReader[] subReaders,
+    /// Comparator<IndexReader> subReadersSorter, boolean closeSubReaders)`.
+    /// When `sub_readers_sorter` is `Some`, the sub-readers are sorted with it
+    /// **before** the `starts` doc-base table is built, so the global doc-ID
+    /// space follows the sorted order — exactly as `BaseCompositeReader`'s
+    /// constructor does (`Arrays.sort(subReaders, subReadersSorter)`,
+    /// `BaseCompositeReader.java:76`). The sort is stable, matching
+    /// `Arrays.sort`'s guarantee for object arrays.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the sub-readers' total
+    /// `maxDoc` exceeds the index-wide document limit.
+    pub fn new_sorted(
+        mut sub_readers: Vec<Arc<dyn IndexReader>>,
+        sub_readers_sorter: Option<SubReadersSorter<'_>>,
+        close_sub_readers: bool,
+    ) -> Result<Self> {
+        if let Some(sorter) = sub_readers_sorter {
+            sub_readers.sort_by(|a, b| sorter(a, b));
+        }
+
+        // The core is created up front so that each sub-reader can register it
+        // as a parent while the starts table is built, mirroring the
+        // `r.registerParentReader(this)` call in BaseCompositeReader's
+        // constructor (`BaseCompositeReader.java:86`). Registration is by core
+        // identity because `self` does not exist yet; see
+        // `IndexReaderCore::register_parent_core`.
+        let core = IndexReaderCore::new();
+
         // Build the starts table and the precomputed maxDoc, mirroring
         // BaseCompositeReader's constructor.
         let mut starts = Vec::with_capacity(sub_readers.len());
@@ -273,6 +377,7 @@ impl MultiReader {
         for r in &sub_readers {
             starts.push(max_doc as i32);
             max_doc += r.max_doc() as i64;
+            r.core().register_parent_core(&core);
         }
 
         // Guard against overflow / the IndexWriter.MAX_DOCS ceiling, matching
@@ -299,7 +404,7 @@ impl MultiReader {
         }
 
         Ok(Self {
-            core: IndexReaderCore::new(),
+            core,
             sub_readers,
             starts,
             max_doc,
@@ -886,10 +991,97 @@ mod tests {
     }
 
     #[test]
-    fn sub_index_empty_starts_is_safe() {
-        let starts: [i32; 0] = [];
-        // No readers: the helper clamps to 0 rather than panicking.
+    fn sub_index_clamps_to_zero_where_java_returns_minus_one() {
+        // Pins the documented divergence from `ReaderUtil.subIndex`, which
+        // returns the raw `hi` (= -1) in both of these cases. `usize` cannot
+        // express -1, so this port clamps to 0. Neither input is reachable
+        // through a well-formed composite reader: doc IDs are non-negative and
+        // `starts[0]` is always 0.
+        let empty: [i32; 0] = [];
+        assert_eq!(sub_index(0, &empty), 0, "empty table: Java returns -1");
+        assert_eq!(index_of(0, &[]), 0, "empty table: Java returns -1");
+
+        let starts = [4i32, 9];
+        assert_eq!(
+            sub_index(0, &starts),
+            0,
+            "doc_id below starts[0]: Java returns -1"
+        );
+        assert_eq!(
+            sub_index_from_leaves(0, &[]),
+            0,
+            "empty leaf list: Java returns -1"
+        );
+    }
+
+    #[test]
+    fn sub_index_scans_to_the_last_sub_reader_sharing_a_doc_base() {
+        // Empty sub-readers contribute a zero-width slice, so several entries
+        // of `starts` can carry the same value. `ReaderUtil.subIndex` resolves
+        // such a doc ID to the *last* matching index — the only sub-reader of
+        // the group that can actually contain the document — which is the
+        // "scan to last match" branch of the binary search.
+        //
+        // starts = [0, 1, 1, 2] describes sub-readers with maxDoc 1, 0, 1, ...
+        let starts = [0i32, 1, 1, 2];
         assert_eq!(sub_index(0, &starts), 0);
+        assert_eq!(sub_index(1, &starts), 2, "doc 1 lives in the non-empty sub");
+        assert_eq!(sub_index(2, &starts), 3);
+
+        // A run of empty sub-readers at the very front: every start is 0.
+        let all_empty = [0i32, 0, 0];
+        assert_eq!(sub_index(0, &all_empty), 2);
+
+        // A run in the middle, longer than one.
+        let middle_run = [0i32, 5, 5, 5, 9];
+        assert_eq!(sub_index(5, &middle_run), 3);
+        assert_eq!(sub_index(4, &middle_run), 0);
+        assert_eq!(sub_index(9, &middle_run), 4);
+
+        // A run at the end resolves to the last index.
+        let trailing_run = [0i32, 3, 3];
+        assert_eq!(sub_index(3, &trailing_run), 2);
+    }
+
+    #[test]
+    fn index_of_scans_to_the_last_slice_sharing_a_start() {
+        let slices = [
+            ReaderSlice::new(0, 1, 0),
+            ReaderSlice::new(1, 0, 1),
+            ReaderSlice::new(1, 1, 2),
+            ReaderSlice::new(2, 1, 3),
+        ];
+        assert_eq!(index_of(0, &slices), 0);
+        assert_eq!(index_of(1, &slices), 2);
+        assert_eq!(index_of(2, &slices), 3);
+
+        let all_zero = [
+            ReaderSlice::new(0, 0, 0),
+            ReaderSlice::new(0, 0, 1),
+            ReaderSlice::new(0, 3, 2),
+        ];
+        assert_eq!(index_of(0, &all_zero), 2);
+    }
+
+    #[test]
+    fn sub_index_from_leaves_scans_to_the_last_leaf_sharing_a_doc_base() {
+        // A zero-document leaf between two populated ones makes leaves 1 and 2
+        // share docBase 2.
+        let a = leaf(2, 2);
+        let empty = leaf(0, 0);
+        let c = leaf(3, 3);
+        let mr: Arc<dyn IndexReader> = Arc::new(MultiReader::new(vec![a, empty, c], true).unwrap());
+        let leaves = mr.leaves();
+        assert_eq!(leaves.len(), 3);
+        assert_eq!(leaves[1].doc_base(), 2);
+        assert_eq!(leaves[2].doc_base(), 2);
+        assert_eq!(
+            sub_index_from_leaves(2, &leaves),
+            2,
+            "doc 2 belongs to the last leaf sharing docBase 2"
+        );
+        assert_eq!(sub_index_from_leaves(1, &leaves), 0);
+        assert_eq!(sub_index_from_leaves(4, &leaves), 2);
     }
 
     #[test]
@@ -1174,5 +1366,136 @@ mod tests {
         assert_eq!(mr.get_sequential_sub_readers().len(), 0);
         let leaves = Arc::new(mr).leaves();
         assert_eq!(leaves.len(), 0);
+    }
+
+    // ----- parent-reader registration (BaseCompositeReader.java:86) -----
+
+    #[test]
+    fn closing_a_sub_reader_directly_invalidates_the_parent() {
+        let a = leaf(5, 5);
+        let b = leaf(5, 5);
+        let mr = MultiReader::new(vec![Arc::clone(&a), Arc::clone(&b)], true).unwrap();
+        assert!(mr.ensure_open().is_ok());
+        assert!(!mr.core().is_closed_by_child());
+
+        // Java: every sub-reader registers the composite as a parent, so
+        // closing a child behind the composite's back poisons the composite.
+        a.close().unwrap();
+
+        assert!(mr.core().is_closed_by_child());
+        let err = mr.ensure_open().unwrap_err();
+        assert!(
+            matches!(err, LuceneError::AlreadyClosed(_)),
+            "expected AlreadyClosed, got {err:?}"
+        );
+        // The poisoning reaches the public API, not just ensure_open().
+        assert!(mr.stored_fields().is_err());
+        assert!(mr.term_vectors().is_err());
+    }
+
+    #[test]
+    fn closing_a_sub_reader_propagates_through_nested_composites() {
+        let a = leaf(2, 2);
+        let b = leaf(3, 3);
+        let inner: Arc<dyn IndexReader> =
+            Arc::new(MultiReader::new(vec![Arc::clone(&a), b], true).unwrap());
+        let c = leaf(4, 4);
+        let outer = MultiReader::new(vec![Arc::clone(&inner), c], false).unwrap();
+        assert!(outer.ensure_open().is_ok());
+
+        a.close().unwrap();
+
+        assert!(inner.core().is_closed_by_child());
+        assert!(
+            outer.core().is_closed_by_child(),
+            "the flag must propagate transitively up the reader tree"
+        );
+    }
+
+    #[test]
+    fn registration_does_not_keep_the_parent_alive() {
+        let a = leaf(5, 5);
+        {
+            let mr = MultiReader::new(vec![Arc::clone(&a)], false).unwrap();
+            assert!(mr.ensure_open().is_ok());
+        }
+        // The parent is gone; closing the child must not panic and the weak
+        // link simply fails to upgrade.
+        a.dec_ref().unwrap(); // undo the incRef taken by close_sub_readers=false
+        a.close().unwrap();
+        assert!(a.ensure_open().is_err());
+    }
+
+    #[test]
+    fn a_parent_registered_before_being_moved_is_still_reachable() {
+        // The registration happens inside `new`, while the reader is still a
+        // stack value; moving it into an Arc afterwards must not break the
+        // link, which is exactly why the flag lives behind an Arc.
+        let a = leaf(5, 5);
+        let mr = MultiReader::new(vec![Arc::clone(&a)], true).unwrap();
+        let moved: Arc<dyn IndexReader> = Arc::new(mr);
+        a.close().unwrap();
+        assert!(moved.core().is_closed_by_child());
+    }
+
+    // ----- sub-reader sorting (BaseCompositeReader.java:76) -----
+
+    #[test]
+    fn new_sorted_orders_sub_readers_before_building_the_starts_table() {
+        // Sort by descending maxDoc: the doc-ID space must follow the sorted
+        // order, not the argument order.
+        let a = leaf(2, 2);
+        let b = leaf(7, 7);
+        let c = leaf(4, 4);
+        let sorter =
+            |x: &Arc<dyn IndexReader>, y: &Arc<dyn IndexReader>| y.max_doc().cmp(&x.max_doc());
+        let mr = MultiReader::new_sorted(vec![a, b, c], Some(&sorter), true).unwrap();
+
+        assert_eq!(mr.starts(), &[0, 7, 11]);
+        assert_eq!(mr.max_doc(), 13);
+        let subs = mr.get_sequential_sub_readers();
+        assert_eq!(
+            subs.iter().map(|r| r.max_doc()).collect::<Vec<_>>(),
+            vec![7, 4, 2]
+        );
+        // ... and doc-ID resolution agrees with the sorted table.
+        assert_eq!(mr.reader_index(0).unwrap(), 0);
+        assert_eq!(mr.reader_index(6).unwrap(), 0);
+        assert_eq!(mr.reader_index(7).unwrap(), 1);
+        assert_eq!(mr.reader_index(11).unwrap(), 2);
+    }
+
+    #[test]
+    fn new_sorted_without_a_comparator_preserves_the_argument_order() {
+        let a = leaf(2, 2);
+        let b = leaf(7, 7);
+        let mr = MultiReader::new_sorted(vec![a, b], None, true).unwrap();
+        assert_eq!(mr.starts(), &[0, 2]);
+        assert_eq!(
+            mr.get_sequential_sub_readers()
+                .iter()
+                .map(|r| r.max_doc())
+                .collect::<Vec<_>>(),
+            vec![2, 7]
+        );
+    }
+
+    #[test]
+    fn new_sorted_is_a_stable_sort() {
+        // Three readers that compare equal keep their relative order, matching
+        // Arrays.sort's stability guarantee for object arrays.
+        let a = leaf(5, 1);
+        let b = leaf(5, 2);
+        let c = leaf(5, 3);
+        let sorter =
+            |x: &Arc<dyn IndexReader>, y: &Arc<dyn IndexReader>| x.max_doc().cmp(&y.max_doc());
+        let mr = MultiReader::new_sorted(vec![a, b, c], Some(&sorter), true).unwrap();
+        assert_eq!(
+            mr.get_sequential_sub_readers()
+                .iter()
+                .map(|r| r.num_docs())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
     }
 }

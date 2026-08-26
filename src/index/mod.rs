@@ -24,8 +24,13 @@ pub mod index_reader;
 pub mod index_writer_config;
 pub mod indexing_chain;
 pub mod leaf_reader;
+pub mod mapped_multi_fields;
+pub mod mapping_multi_postings_enum;
 pub mod merge;
+pub mod multi_bits;
+pub mod multi_doc_values;
 pub mod multi_fields;
+pub mod multi_leaf_reader;
 pub mod multi_reader;
 pub mod parallel_reader;
 pub mod point_values;
@@ -37,6 +42,7 @@ pub mod segment_info;
 pub mod segment_infos;
 pub mod segment_reader;
 pub mod terms;
+pub mod terms_enum_index;
 pub mod vector_values;
 
 pub use automaton_terms_enum::AutomatonTermsEnum;
@@ -128,7 +134,13 @@ pub use directory_reader::{
     open_if_changed_with_commit, open_if_changed_with_writer, open_with_commit, DirectoryReader,
     IndexCommit, IndexWriter as DirectoryReaderIndexWriter, StandardDirectoryReader,
 };
-pub use multi_fields::{MultiFields, MultiTerms};
+pub use mapped_multi_fields::MappedMultiFields;
+pub use mapping_multi_postings_enum::MappingMultiPostingsEnum;
+pub use multi_bits::{BitsSlice, MultiBits};
+pub use multi_doc_values::{MultiDocValues, MultiSortedDocValues, MultiSortedSetDocValues};
+pub use multi_fields::{
+    EnumWithSlice, MultiFields, MultiPostingsEnum, MultiTerms, MultiTermsEnum, SlowImpactsEnum,
+};
 pub use multi_reader::{
     get_top_level_context, index_of, sub_index, sub_index_from_leaves, MultiReader, ReaderSlice,
 };
@@ -140,6 +152,9 @@ pub use terms::{
     AcceptStatus, EmptyFields, EmptyTerms, EmptyTermsEnum, Fields, FilteredTermsEnum,
     FilteredTermsEnumFilter, OrdTermState, PrefixCodedTerms, PrefixCodedTermsBuilder,
     PrefixCodedTermsIterator, SeekStatus, SingleTermsEnum, Term, TermState, Terms, TermsEnum,
+};
+pub use terms_enum_index::{
+    prefix8_to_comparable_unsigned_long, TermsEnumIndex, TermsEnumIndexState,
 };
 pub use vector_values::{
     accept_ords, check_byte_field, check_float_field, from_bytes, from_floats, AcceptOrds,
