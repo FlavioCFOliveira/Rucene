@@ -1832,6 +1832,17 @@ impl Debug for TermVectorsReaderWrapper {
 }
 
 impl TermVectors for TermVectorsReaderWrapper {
+    fn prefetch(&mut self, doc_id: i32) -> Result<()> {
+        // Java's `TermVectorsReader` *extends* `TermVectors`, so `CodecReader`
+        // hands the codec reader itself to the caller
+        // (`CodecReader.java:107-114`) and a `prefetch` call reaches the
+        // format's own override. This wrapper stands in for that inheritance
+        // and must forward, exactly as `StoredFieldsReaderWrapper` does;
+        // swallowing the hint would silently disable I/O parallelism for term
+        // vectors the moment a format implements it.
+        self.0.prefetch(doc_id)
+    }
+
     fn get(&self, doc: i32) -> Result<Option<Box<dyn crate::index::Fields>>> {
         self.0.get(doc)
     }
@@ -3192,5 +3203,65 @@ mod tests {
         assert_eq!(field.get_doc_values_type(), DocValuesType::NUMERIC);
         assert!(field.get_point_dimension_count() > 0);
         assert!(field.get_vector_dimension() > 0);
+    }
+
+    /// A codec reader that only counts the prefetch hints it is handed.
+    #[derive(Debug, Default)]
+    struct CountingPrefetchReader {
+        prefetched: std::sync::Mutex<Vec<i32>>,
+    }
+
+    impl TermVectorsReader for CountingPrefetchReader {
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
+            Box::new(Self::default())
+        }
+
+        fn get(&self, _doc: i32) -> Result<Option<Box<dyn crate::index::Fields>>> {
+            Ok(None)
+        }
+
+        fn prefetch(&self, doc_id: i32) -> Result<()> {
+            self.prefetched.lock().unwrap().push(doc_id);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_term_vectors_wrapper_forwards_the_prefetch_hint() {
+        // Java's `TermVectorsReader` *extends* `TermVectors`, so `CodecReader`
+        // hands the codec reader itself to the caller and a prefetch reaches
+        // the format's own override. This wrapper stands in for that
+        // inheritance; swallowing the hint would silently disable I/O
+        // parallelism for term vectors.
+        let inner = Arc::new(CountingPrefetchReader::default());
+        struct Shared(Arc<CountingPrefetchReader>);
+        impl std::fmt::Debug for Shared {
+            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("Shared").finish()
+            }
+        }
+        impl TermVectorsReader for Shared {
+            fn check_integrity(&self) -> Result<()> {
+                self.0.check_integrity()
+            }
+            fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
+                Box::new(Shared(Arc::clone(&self.0)))
+            }
+            fn get(&self, doc: i32) -> Result<Option<Box<dyn crate::index::Fields>>> {
+                self.0.get(doc)
+            }
+            fn prefetch(&self, doc_id: i32) -> Result<()> {
+                self.0.prefetch(doc_id)
+            }
+        }
+
+        let mut wrapper = TermVectorsReaderWrapper(Box::new(Shared(Arc::clone(&inner))));
+        wrapper.prefetch(3).expect("prefetch");
+        wrapper.prefetch(11).expect("prefetch");
+        assert_eq!(*inner.prefetched.lock().unwrap(), vec![3, 11]);
     }
 }

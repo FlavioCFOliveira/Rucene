@@ -94,12 +94,20 @@ name = "portability_stored_fields"
 path = "tests/portability/stored_fields.rs"
 
 [[test]]
+name = "portability_term_vectors"
+path = "tests/portability/term_vectors.rs"
+
+[[test]]
 name = "fuzz_codec_headers"
 path = "tests/fuzz/codec_headers.rs"
 
 [[test]]
 name = "fuzz_stored_fields"
 path = "tests/fuzz/stored_fields.rs"
+
+[[test]]
+name = "fuzz_term_vectors"
+path = "tests/fuzz/term_vectors.rs"
 
 [profile.release]
 lto = true

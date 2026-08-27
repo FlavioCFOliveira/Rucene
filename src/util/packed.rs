@@ -665,6 +665,24 @@ impl DirectReader {
         })
     }
 
+    /// Returns the value at `index`, reporting a read past the end of the
+    /// encoded block instead of panicking.
+    ///
+    /// [`LongValues::get`] cannot fail, so it turns an I/O error into a panic —
+    /// which is right for a caller that has already validated the block, and
+    /// wrong for one decoding a length that came off disk. Java has the same
+    /// split: `DirectReader`'s accessors wrap the `IOException` in an
+    /// `UncheckedIOException`, which a caller reading untrusted bytes must not
+    /// let escape.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error raised when `index` addresses bytes the block does
+    /// not hold.
+    pub fn get_checked(&self, index: i64) -> Result<i64> {
+        self.get_inner(index)
+    }
+
     fn get_inner(&self, index: i64) -> Result<i64> {
         let pos = self.offset
             + match self.bits_per_value {
@@ -902,10 +920,16 @@ impl DirectMonotonicMeta {
         }
         let num_blocks = num_blocks as usize;
 
-        let mut mins = Vec::with_capacity(num_blocks);
-        let mut avgs = Vec::with_capacity(num_blocks);
-        let mut offsets = Vec::with_capacity(num_blocks);
-        let mut bpvs = Vec::with_capacity(num_blocks);
+        // `num_values` comes off disk, so `num_blocks` does too. Java reaches
+        // `new long[(int) numBlocks]` here and answers an absurd value with a
+        // catchable `OutOfMemoryError`; Rust cannot catch a failed allocation,
+        // so nothing is reserved up front. Each block costs 21 bytes of
+        // metadata, so a corrupt count runs out of input long before the four
+        // vectors grow large.
+        let mut mins = Vec::new();
+        let mut avgs = Vec::new();
+        let mut offsets = Vec::new();
+        let mut bpvs = Vec::new();
 
         for _ in 0..num_blocks {
             mins.push(input.read_long()?);
@@ -965,15 +989,50 @@ impl DirectMonotonicReader {
         })
     }
 
-    fn get_inner(&self, index: i64) -> Result<i64> {
+    /// Returns the value at `index`, reporting an index the encoded blocks
+    /// cannot serve instead of panicking.
+    ///
+    /// [`LongValues::get`] cannot fail, so it turns both an out-of-range block
+    /// and an I/O error into a panic — right for a caller that has already
+    /// validated the metadata, wrong for one whose `numValues` came off disk.
+    /// Java's equivalent throws `ArrayIndexOutOfBoundsException` or wraps the
+    /// `IOException` in an `UncheckedIOException`; both are catchable, an abort
+    /// is not.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::CorruptIndex`] when `index` falls outside the
+    /// blocks the metadata describes, and the I/O error when the encoded block
+    /// is shorter than the index it is asked for.
+    pub fn get_checked(&self, index: i64) -> Result<i64> {
+        if index < 0 {
+            return Err(LuceneError::CorruptIndex(format!(
+                "negative index {index} into a monotonic block"
+            )));
+        }
         let block = (index >> self.block_shift) as usize;
+        if block >= self.readers.len() {
+            return Err(LuceneError::CorruptIndex(format!(
+                "index {index} falls in block {block} of {}",
+                self.readers.len()
+            )));
+        }
         let block_index = index & self.block_mask;
-        let delta = if let Some(reader) = &self.readers[block] {
-            reader.get(block_index)
-        } else {
-            0
+        let delta = match &self.readers[block] {
+            Some(reader) => reader.get_checked(block_index)?,
+            None => 0,
         };
-        Ok(self.mins[block] + (self.avgs[block] * block_index as f32) as i64 + delta)
+        // Java composes the value with plain `long` arithmetic
+        // (`DirectMonotonicReader.get`), which wraps; every one of the three
+        // terms comes off disk, so the sum has to wrap here too rather than
+        // abort a debug build on bytes Lucene decodes without complaint.
+        Ok(self.mins[block]
+            .wrapping_add((self.avgs[block] * block_index as f32) as i64)
+            .wrapping_add(delta))
+    }
+
+    fn get_inner(&self, index: i64) -> Result<i64> {
+        self.get_checked(index)
     }
 }
 
@@ -1109,26 +1168,44 @@ impl<'a> BlockPackedWriter<'a> {
     }
 }
 
+/// Writes the variable-length `long` `BlockPackedReaderIterator` reads back.
+///
+/// Equivalent to `AbstractBlockPackedWriter.writeVLong(DataOutput, long)`,
+/// whose loop stops after **eight** continuation bytes so that the encoding
+/// never exceeds nine bytes: the ninth carries the top eight bits whole. An
+/// unbounded loop would spend ten bytes on a negative value — the block minimum
+/// of a delta-encoded block is routinely negative — which Lucene's reader,
+/// bounded to nine, would decode as a different number.
 fn write_block_packed_v_long(out: &mut dyn DataOutput, mut i: i64) -> Result<()> {
-    while (i & !0x7Fi64) != 0 {
+    let mut written = 0;
+    while (i & !0x7Fi64) != 0 && written < 8 {
         out.write_byte(((i & 0x7F) | 0x80) as u8)?;
         i = (i as u64 >> 7) as i64;
+        written += 1;
     }
     out.write_byte(i as u8)?;
     Ok(())
 }
 
+/// Reads the variable-length `long` `BlockPackedWriter` emits.
+///
+/// Equivalent to `BlockPackedReaderIterator.readVLong(DataInput)`, which reads
+/// **at most nine bytes**: eight groups of seven bits, then a ninth byte whose
+/// full eight bits land at bit 56. An unbounded loop instead would shift past
+/// the width of the type on a corrupt stream — undefined in Java, an abort in a
+/// Rust debug build — for a stream Lucene simply stops reading.
 fn read_block_packed_v_long(input: &mut dyn DataInput) -> Result<i64> {
     let mut l: u64 = 0;
     let mut shift: u32 = 0;
-    loop {
-        let b = input.read_byte()? as u64;
-        l |= (b & 0x7F) << shift;
+    while shift < 56 {
+        let b = input.read_byte()?;
+        l |= u64::from(b & 0x7F) << shift;
         if (b & 0x80) == 0 {
             return Ok(l as i64);
         }
         shift += 7;
     }
+    Ok((l | (u64::from(input.read_byte()?) << 56)) as i64)
 }
 
 pub struct BlockPackedReaderIterator<'a> {
@@ -1318,8 +1395,14 @@ impl<'a> BlockPackedReaderIterator<'a> {
             decoder.decode_bytes_to_longs(&self.blocks, 0, &mut self.values, 0, iterations)?;
 
             if min_value != 0 {
+                // `values[i] += minValue` on `long`s in Java
+                // (`BlockPackedReaderIterator.refill`), which wraps. Both the
+                // decoded value and the block minimum come off disk — a corrupt
+                // block header can pair a large `bitsPerValue` with an extreme
+                // zig-zag minimum — so the sum has to wrap here too rather than
+                // abort a debug build on bytes Lucene decodes without complaint.
                 for i in 0..value_count {
-                    self.values[i] += min_value;
+                    self.values[i] = self.values[i].wrapping_add(min_value);
                 }
             }
         }
@@ -1340,7 +1423,9 @@ impl<'a> BlockPackedReaderIterator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{ByteArrayDataInput, ByteArrayDataOutput, ByteBuffersIndexOutput};
+    use crate::store::{
+        ByteArrayDataInput, ByteArrayDataOutput, ByteBuffersDataOutput, ByteBuffersIndexOutput,
+    };
 
     fn lcg_next(state: &mut u64) -> u64 {
         *state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
@@ -1668,5 +1753,69 @@ mod tests {
         assert_eq!(PackedInts::max_value(64), i64::MAX);
 
         assert_eq!(Format::Packed.byte_count(2, 10, 12).unwrap(), 15);
+    }
+
+    // -- Corrupt input ------------------------------------------------------
+
+    #[test]
+    fn a_block_packed_v_long_never_reads_past_nine_bytes() {
+        // `BlockPackedReaderIterator.readVLong` reads eight groups of seven
+        // bits and then one final byte at bit 56. A stream of continuation
+        // bytes must stop there rather than shifting past the width of the
+        // type, which Java leaves undefined and Rust aborts on.
+        let mut input = ByteArrayDataInput::new(vec![0xFF; 64]);
+        let value = read_block_packed_v_long(&mut input).expect("nine bytes are always available");
+        assert_eq!(
+            input.position(),
+            9,
+            "exactly nine bytes may be consumed, whatever the stream holds"
+        );
+        assert_eq!(value, -1, "the ninth byte contributes its full eight bits");
+    }
+
+    #[test]
+    fn a_block_packed_v_long_round_trips_every_width() {
+        for value in [
+            0i64,
+            1,
+            127,
+            128,
+            16_383,
+            16_384,
+            i64::from(i32::MAX),
+            1 << 40,
+            1 << 55,
+            1 << 56,
+            i64::MAX,
+            -1,
+            i64::MIN,
+        ] {
+            let mut out = ByteBuffersDataOutput::new();
+            write_block_packed_v_long(&mut out, value).expect("write");
+            let bytes = out.to_array_copy();
+            assert!(bytes.len() <= 9, "{value} took {} bytes", bytes.len());
+            let mut input = ByteArrayDataInput::new(bytes);
+            assert_eq!(
+                read_block_packed_v_long(&mut input).expect("read"),
+                value,
+                "value {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_direct_reader_reports_a_read_past_its_block() {
+        let mut out = ByteBuffersDataOutput::new();
+        let mut writer = DirectWriter::new(&mut out, 4, 8).expect("writer");
+        for value in 0..4i64 {
+            writer.add(value).expect("add");
+        }
+        writer.finish().expect("finish");
+        let reader = DirectReader::new(out.to_array_copy(), 8).expect("reader");
+        assert_eq!(reader.get_checked(3).expect("in range"), 3);
+        assert!(
+            reader.get_checked(1_000_000).is_err(),
+            "an index the block cannot hold must be an error, not a panic"
+        );
     }
 }

@@ -63,11 +63,22 @@
 //!
 //! # Scope
 //!
-//! Lucene chains a second `TermsHash` (`TermVectorsConsumer`) behind the
-//! postings one and shares the term byte pool between them. Term vectors are not
-//! ported yet, so [`TermsHash`] owns a single pool and exposes no chaining.
+//! Lucene chains a second `TermsHash` — the
+//! [`TermVectorsConsumer`](crate::index::term_vectors_consumer::TermVectorsConsumer)
+//! — behind the postings one, and shares the *term* byte pool between them:
+//! the token text is interned once, here, and the second hash keys on the pool
+//! offset it was interned at. This port keeps the same arrangement without the
+//! inheritance. [`TermsHash`] still owns exactly one pool, the term pool; the
+//! term-vectors consumer owns a second [`TermsHash`] for its own position and
+//! offset streams, and reaches into this one through
+//! [`FreqProxTermsWriter::pool`]. [`FreqProxTermsWriterPerField::add`] returns
+//! the pool offset of the token it just interned, which is exactly the
+//! `textStart` Lucene forwards to `nextPerField.add(int, int)`, and
+//! [`TermsHashPerField::new_chained`] plus
+//! [`TermsHashPerField::intern_by_text_start`] are that secondary entry point.
+//!
 //! Index sorting (`Sorter.DocMap`, `FreqProxTermsWriter.SortingTerms`) is not
-//! ported either.
+//! ported.
 
 #![deny(unsafe_code)]
 
@@ -85,9 +96,10 @@ use crate::index::{
     POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_POSITIONS,
 };
 use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
+use crate::store::DataInput;
 use crate::util::byte_block_pool::{ByteBlockPool, BYTE_BLOCK_MASK, BYTE_BLOCK_SHIFT};
 use crate::util::bytes_ref_hash::BytesRefHash;
-use crate::util::{AttributeSource, BytesRef, FixedBitSet};
+use crate::util::{compare_utf16, AttributeSource, BytesRef, FixedBitSet};
 
 // ---------------------------------------------------------------------------
 // ByteSlicePool
@@ -250,7 +262,17 @@ impl ByteSliceReader {
 
     /// Returns `true` when every byte of the stream was consumed.
     pub fn eof(&self) -> bool {
-        self.upto as i32 + self.block_offset == self.end_index
+        self.remaining() == 0
+    }
+
+    /// Returns how many bytes of the stream are still unread.
+    ///
+    /// Java has no equivalent: `ByteSliceReader` extends `DataInput` and simply
+    /// trusts the caller not to over-read. This port exposes the count so that
+    /// [`PooledSliceReader`] can turn an over-read into an error rather than an
+    /// out-of-bounds panic.
+    pub fn remaining(&self) -> i32 {
+        self.end_index - (self.upto as i32 + self.block_offset)
     }
 
     /// Reads one byte.
@@ -340,6 +362,80 @@ impl ByteSliceReader {
     }
 }
 
+/// A [`ByteSliceReader`] bound to the pool it reads from, so that it can be
+/// consumed as a [`DataInput`].
+///
+/// Lucene's `ByteSliceReader` *is* a `DataInput`, because it owns a reference
+/// to its `ByteBlockPool`. This port keeps the pool out of the reader — several
+/// readers share one pool — so the two are paired here instead, for the one
+/// caller that needs the `DataInput` shape:
+/// [`TermVectorsWriter::add_prox`](crate::codecs::term_vectors::TermVectorsWriter::add_prox).
+///
+/// Unlike the bare reader, this one reports an over-read as
+/// [`LuceneError::CorruptIndex`] instead of panicking, so that a codec reading
+/// more than the indexer wrote fails cleanly.
+#[derive(Debug)]
+pub struct PooledSliceReader<'a> {
+    reader: ByteSliceReader,
+    pool: &'a ByteBlockPool,
+}
+
+impl<'a> PooledSliceReader<'a> {
+    /// Pairs `reader` with the `pool` its slices live in.
+    pub fn new(reader: ByteSliceReader, pool: &'a ByteBlockPool) -> Self {
+        Self { reader, pool }
+    }
+
+    /// Returns `true` when every byte of the stream was consumed.
+    pub fn eof(&self) -> bool {
+        self.reader.eof()
+    }
+
+    fn ensure(&self, len: usize) -> Result<()> {
+        let remaining = self.reader.remaining();
+        if (remaining as i64) < len as i64 {
+            return Err(LuceneError::CorruptIndex(format!(
+                "read past the end of a buffered term stream: {len} bytes requested, \
+                 {remaining} available"
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl DataInput for PooledSliceReader<'_> {
+    fn read_byte(&mut self) -> Result<u8> {
+        self.ensure(1)?;
+        Ok(self.reader.read_byte(self.pool))
+    }
+
+    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+        self.ensure(len)?;
+        self.reader
+            .read_bytes(self.pool, &mut b[offset..offset + len]);
+        Ok(())
+    }
+
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        if num_bytes < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "numBytes must be >= 0, got {num_bytes}"
+            )));
+        }
+        let len = usize::try_from(num_bytes)
+            .map_err(|_| LuceneError::IllegalArgument(format!("cannot skip {num_bytes} bytes")))?;
+        self.ensure(len)?;
+        let mut scratch = [0u8; 64];
+        let mut left = len;
+        while left > 0 {
+            let chunk = std::cmp::min(left, scratch.len());
+            self.reader.read_bytes(self.pool, &mut scratch[..chunk]);
+            left -= chunk;
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Postings slots
 // ---------------------------------------------------------------------------
@@ -349,6 +445,21 @@ impl ByteSliceReader {
 /// Equivalent to the columns of `ParallelPostingsArray` and
 /// `FreqProxTermsWriterPerField.FreqProxPostingsArray` for one term id; see the
 /// module-level notes for why this port uses an array of structs.
+///
+/// One [`TermsHashPerField`] backs both consumers of the terms hash, so this
+/// struct is the union of the two Java posting arrays. The term-vectors
+/// consumer uses exactly the columns of `TermVectorsPostingsArray` —
+/// [`stream_address`](Self::stream_address), [`byte_start`](Self::byte_start),
+/// [`term_freq`](Self::term_freq) (`freqs`),
+/// [`last_position`](Self::last_position) (`lastPositions`) and
+/// [`last_offset`](Self::last_offset) (`lastOffsets`) — and leaves
+/// [`last_doc_id`](Self::last_doc_id) and
+/// [`last_doc_code`](Self::last_doc_code) untouched, because a term vector is
+/// built one document at a time and has no doc list. Note that the two
+/// consumers give `last_offset` different meanings: the postings writer stores
+/// the previous *start* offset there, the term-vectors writer the previous
+/// *end* offset (`FreqProxTermsWriterPerField.java:109` versus
+/// `TermVectorsConsumerPerField.java:242`).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FreqProxPosting {
     /// Next free global pool offset of each of the term's streams. Replaces
@@ -391,9 +502,15 @@ pub struct TermSlot {
 
 /// Buffers shared by every per-field writer of one segment.
 ///
-/// Equivalent to `org.apache.lucene.index.TermsHash`. Lucene chains a second
-/// `TermsHash` for term vectors and shares the term byte pool with it; term
-/// vectors are not ported, so this owns exactly one pool.
+/// Equivalent to `org.apache.lucene.index.TermsHash`. Each instance owns one
+/// [`ByteBlockPool`]: for the postings hash that pool is the *term* pool, where
+/// every token's text is interned and where the doc/freq/prox streams live; for
+/// the second hash of the chain — the
+/// [`TermVectorsConsumer`](crate::index::TermVectorsConsumer), which owns a
+/// `TermsHash` of its own — it holds only that consumer's per-document position
+/// and offset streams, because its term table keys on offsets into the postings
+/// pool instead of interning the bytes a second time
+/// (`TermsHash.java:52-56`).
 #[derive(Debug)]
 pub struct TermsHash {
     pool: ByteBlockPool,
@@ -488,6 +605,36 @@ impl TermsHashPerField {
         }
     }
 
+    /// Creates a table for the *second* term hash of the chain.
+    ///
+    /// Equivalent to constructing a `TermsHashPerField` whose `termBytePool`
+    /// is the primary hash's byte pool: the term text is already interned
+    /// there, so this table keys on the pool offset instead of on the bytes and
+    /// only [`Self::intern_by_text_start`] may feed it. Its own streams still
+    /// live in whichever pool the caller passes to the write methods, which for
+    /// term vectors is the second hash's pool, not the term pool.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index_options` is [`IndexOptions::NONE`] or if `stream_count`
+    /// is not 1 or 2.
+    pub fn new_chained(
+        stream_count: usize,
+        field_name: String,
+        index_options: IndexOptions,
+        bytes_used: Arc<AtomicI64>,
+    ) -> Self {
+        let mut field = Self::new(
+            stream_count,
+            field_name,
+            index_options,
+            Arc::clone(&bytes_used),
+        );
+        field.bytes_hash.release_accounting();
+        field.bytes_hash = BytesRefHash::new_by_pool_offset(bytes_used);
+        field
+    }
+
     /// Returns the field this table belongs to.
     pub fn field_name(&self) -> &str {
         &self.field_name
@@ -510,6 +657,61 @@ impl TermsHashPerField {
         &self.postings[term_id as usize]
     }
 
+    /// Returns the per-term state of `term_id` for mutation.
+    ///
+    /// The consumer driving this table owns the columns it uses; see
+    /// [`FreqProxPosting`] for which consumer owns which.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `term_id` was never returned by [`Self::intern`] or
+    /// [`Self::intern_by_text_start`].
+    pub fn posting_mut(&mut self, term_id: i32) -> &mut FreqProxPosting {
+        &mut self.postings[term_id as usize]
+    }
+
+    /// Returns the offset, in the term pool, of the bytes of `term_id`.
+    ///
+    /// Equivalent to reading `ParallelPostingsArray.textStarts[termID]`, which
+    /// is what Lucene forwards to the next hash of the chain.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `term_id` was never returned by [`Self::intern`] or
+    /// [`Self::intern_by_text_start`].
+    pub fn text_start(&self, term_id: i32) -> i32 {
+        self.bytes_hash.byte_start(term_id)
+    }
+
+    /// Returns every buffered term id ordered by its term bytes, which live in
+    /// `term_pool`.
+    ///
+    /// Equivalent to `TermsHashPerField.sortTerms()` followed by
+    /// `getSortedTermIDs()`. Lucene splits the two because its `BytesRefHash`
+    /// sort is destructive; this one is not, so a single call does both and may
+    /// be repeated.
+    pub fn sorted_term_ids(&self, term_pool: &ByteBlockPool) -> Vec<i32> {
+        self.bytes_hash.sort(term_pool)
+    }
+
+    /// Positions `reader` over `stream` of `term_id`.
+    ///
+    /// Equivalent to `TermsHashPerField.initReader(ByteSliceReader, int, int)`.
+    /// The reader then reads from the pool the streams were written to.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stream` is not below this table's stream count, or if
+    /// `term_id` was never interned.
+    pub fn init_reader(&self, reader: &mut ByteSliceReader, term_id: i32, stream: usize) {
+        assert!(stream < self.stream_count);
+        let slot = &self.postings[term_id as usize];
+        reader.init(
+            slot.byte_start + (stream * FIRST_LEVEL_SIZE) as i32,
+            slot.stream_address[stream],
+        );
+    }
+
     /// Hands every byte this table charged back to the shared counter.
     ///
     /// The table keeps its contents but must not be charged again; callers
@@ -528,8 +730,13 @@ impl TermsHashPerField {
     /// Equivalent to `TermsHashPerField.reset()`. The byte pool is owned by
     /// [`TermsHash`] and is reset separately.
     pub fn reset(&mut self) {
+        let keyed_by_pool_offset = self.bytes_hash.is_keyed_by_pool_offset();
         self.release_accounting();
-        self.bytes_hash = BytesRefHash::new(Arc::clone(&self.bytes_used));
+        self.bytes_hash = if keyed_by_pool_offset {
+            BytesRefHash::new_by_pool_offset(Arc::clone(&self.bytes_used))
+        } else {
+            BytesRefHash::new(Arc::clone(&self.bytes_used))
+        };
         self.last_doc_id = 0;
     }
 
@@ -559,6 +766,45 @@ impl TermsHashPerField {
         let raw = self.bytes_hash.add(pool, term_bytes)?;
         if raw >= 0 {
             self.init_stream_slices(pool, raw)?;
+            Ok(TermSlot {
+                term_id: raw,
+                is_new: true,
+            })
+        } else {
+            Ok(TermSlot {
+                term_id: -raw - 1,
+                is_new: false,
+            })
+        }
+    }
+
+    /// Records an occurrence of the term already interned at `text_start` and,
+    /// for a term this table has not seen yet, allocates its stream slices.
+    ///
+    /// Equivalent to the private `TermsHashPerField.add(int textStart, int
+    /// docID)` — Lucene's *secondary* entry point, taken by every hash but the
+    /// first of the chain — up to the `newTerm`/`addTerm` dispatch, which the
+    /// caller performs on the returned [`TermSlot`].
+    ///
+    /// `streams` is the pool this table writes its streams to, which is *not*
+    /// the pool `text_start` points into.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if the table was not created with
+    /// [`Self::new_chained`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates pool-overflow errors raised while reserving the slices.
+    pub fn intern_by_text_start(
+        &mut self,
+        streams: &mut ByteBlockPool,
+        text_start: i32,
+    ) -> Result<TermSlot> {
+        let raw = self.bytes_hash.add_by_pool_offset(text_start);
+        if raw >= 0 {
+            self.init_stream_slices(streams, raw)?;
             Ok(TermSlot {
                 term_id: raw,
                 is_new: true,
@@ -801,10 +1047,15 @@ impl FreqProxTermsWriterPerField {
         self.saw_payloads = false;
     }
 
-    /// Records one occurrence of `term_bytes` in `doc_id`.
+    /// Records one occurrence of `term_bytes` in `doc_id` and returns the
+    /// offset `term_bytes` was interned at in `pool`.
     ///
     /// Equivalent to `TermsHashPerField.add(BytesRef, int)` followed by
-    /// `FreqProxTermsWriterPerField.newTerm` or `.addTerm`.
+    /// `FreqProxTermsWriterPerField.newTerm` or `.addTerm`. The returned offset
+    /// is `postingsArray.textStarts[termID]`, the value Lucene hands to
+    /// `nextPerField.add(int, int)` so that the next hash of the chain — the
+    /// term-vectors consumer — can key on the already-interned text instead of
+    /// interning it a second time.
     ///
     /// # Errors
     ///
@@ -819,13 +1070,14 @@ impl FreqProxTermsWriterPerField {
         term_bytes: &[u8],
         doc_id: i32,
         token: &InvertedToken<'_>,
-    ) -> Result<()> {
+    ) -> Result<i32> {
         let slot = self.base.intern(pool, term_bytes, doc_id)?;
         if slot.is_new {
-            self.new_term(pool, field_state, slot.term_id, doc_id, token)
+            self.new_term(pool, field_state, slot.term_id, doc_id, token)?;
         } else {
-            self.add_term(pool, field_state, slot.term_id, doc_id, token)
+            self.add_term(pool, field_state, slot.term_id, doc_id, token)?;
         }
+        Ok(self.base.text_start(slot.term_id))
     }
 
     /// Returns the frequency to record for the current token.
@@ -1637,6 +1889,15 @@ impl FreqProxTermsWriter {
         index
     }
 
+    /// Returns the *term* byte pool, where every token's text is interned.
+    ///
+    /// Equivalent to `TermsHash.termBytePool`, which Lucene shares with the
+    /// term-vectors hash: that hash keys on offsets into this pool and reads
+    /// the term bytes back from it at flush time.
+    pub fn pool(&self) -> &ByteBlockPool {
+        self.terms_hash.pool()
+    }
+
     /// Returns the byte pool and the writer of `index` at the same time.
     ///
     /// Splitting the borrow this way is what lets one shared pool serve every
@@ -1707,7 +1968,12 @@ impl FreqProxTermsWriter {
             }));
         }
         self.field_index.clear();
-        frozen.sort_by(|left, right| left.field_name.cmp(&right.field_name));
+        // `CollectionUtil.introSort(allFields)` orders by
+        // `TermsHashPerField.compareTo`, which is `String.compareTo`: UTF-16
+        // code-unit order, not UTF-8 byte order. The two differ above
+        // `U+E000`, and this order is written into the `.tim` file, so the
+        // Java comparator is the one that has to be reproduced.
+        frozen.sort_by(|left, right| compare_utf16(&left.field_name, &right.field_name));
         FreqProxFields::new(frozen)
     }
 
@@ -2714,5 +2980,262 @@ mod tests {
             live_docs.is_none(),
             "no bitset is allocated when nothing is deleted"
         );
+    }
+
+    // -- Chained term hash --------------------------------------------------
+
+    #[test]
+    fn a_chained_table_keys_on_the_offset_the_primary_interned_the_term_at() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut term_pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut streams = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut primary = TermsHashPerField::new(
+            2,
+            "body".to_string(),
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            Arc::clone(&bytes_used),
+        );
+        let mut chained = TermsHashPerField::new_chained(
+            2,
+            "body".to_string(),
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            Arc::clone(&bytes_used),
+        );
+
+        let mut text_starts = Vec::new();
+        for term in ["gamma", "alpha", "gamma", "beta"] {
+            let slot = primary
+                .intern(&mut term_pool, term.as_bytes(), 0)
+                .expect("intern");
+            text_starts.push(primary.text_start(slot.term_id));
+        }
+        // "gamma" was interned once, so it has one offset and one chained id.
+        assert_eq!(text_starts[0], text_starts[2]);
+
+        let ids: Vec<TermSlot> = text_starts
+            .iter()
+            .map(|start| {
+                chained
+                    .intern_by_text_start(&mut streams, *start)
+                    .expect("chained intern")
+            })
+            .collect();
+        assert_eq!(
+            ids[0],
+            TermSlot {
+                term_id: 0,
+                is_new: true
+            }
+        );
+        assert_eq!(
+            ids[1],
+            TermSlot {
+                term_id: 1,
+                is_new: true
+            }
+        );
+        assert_eq!(
+            ids[2],
+            TermSlot {
+                term_id: 0,
+                is_new: false
+            }
+        );
+        assert_eq!(
+            ids[3],
+            TermSlot {
+                term_id: 2,
+                is_new: true
+            }
+        );
+        assert_eq!(chained.num_terms(), 3);
+
+        let sorted: Vec<&[u8]> = chained
+            .sorted_term_ids(&term_pool)
+            .into_iter()
+            .map(|id| term_pool.term_bytes(chained.text_start(id)))
+            .collect();
+        assert_eq!(sorted, vec![&b"alpha"[..], &b"beta"[..], &b"gamma"[..]]);
+    }
+
+    #[test]
+    fn a_chained_table_writes_its_streams_into_its_own_pool() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut term_pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut streams = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut primary = TermsHashPerField::new(
+            1,
+            "body".to_string(),
+            IndexOptions::DOCS,
+            Arc::clone(&bytes_used),
+        );
+        let mut chained = TermsHashPerField::new_chained(
+            2,
+            "body".to_string(),
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            Arc::clone(&bytes_used),
+        );
+        let slot = primary.intern(&mut term_pool, b"alpha", 0).expect("intern");
+        let text_start = primary.text_start(slot.term_id);
+        let term_pool_len_before = term_pool.byte_upto();
+
+        let chained_slot = chained
+            .intern_by_text_start(&mut streams, text_start)
+            .expect("chained intern");
+        for stream in 0..2 {
+            for value in [0, 1, 300, 70_000] {
+                chained
+                    .write_v_int(&mut streams, chained_slot.term_id, stream, value)
+                    .expect("write");
+            }
+        }
+        assert_eq!(
+            term_pool.byte_upto(),
+            term_pool_len_before,
+            "the chained table must not touch the term pool"
+        );
+        for stream in 0..2 {
+            let mut reader = ByteSliceReader::new();
+            chained.init_reader(&mut reader, chained_slot.term_id, stream);
+            for value in [0, 1, 300, 70_000] {
+                assert_eq!(reader.read_v_int(&streams).expect("read"), value);
+            }
+            assert!(reader.eof());
+        }
+    }
+
+    #[test]
+    fn resetting_a_chained_table_keeps_it_keyed_on_pool_offsets() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut term_pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut streams = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
+        let mut chained = TermsHashPerField::new_chained(
+            2,
+            "body".to_string(),
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            bytes_used,
+        );
+        chained
+            .intern_by_text_start(&mut streams, text_start)
+            .expect("first document");
+        chained.reset();
+        assert_eq!(chained.num_terms(), 0);
+        let slot = chained
+            .intern_by_text_start(&mut streams, text_start)
+            .expect("second document");
+        assert!(slot.is_new, "the reset dropped the previous document's ids");
+    }
+
+    // -- PooledSliceReader --------------------------------------------------
+
+    #[test]
+    fn a_pooled_slice_reader_reads_the_stream_as_a_data_input() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut field = TermsHashPerField::new(
+            1,
+            "body".to_string(),
+            IndexOptions::DOCS,
+            Arc::clone(&bytes_used),
+        );
+        let slot = field.intern(&mut pool, b"term", 0).expect("intern");
+        let payload: Vec<u8> = (0..300u32).map(|i| (i % 251) as u8).collect();
+        field
+            .write_v_int(&mut pool, slot.term_id, 0, 12_345)
+            .expect("v int");
+        field
+            .write_bytes(&mut pool, slot.term_id, 0, &payload)
+            .expect("bytes");
+
+        let mut reader = ByteSliceReader::new();
+        field.init_reader(&mut reader, slot.term_id, 0);
+        let mut input = PooledSliceReader::new(reader, &pool);
+        assert_eq!(input.read_v_int().expect("v int"), 12_345);
+        let mut read_back = vec![0u8; payload.len()];
+        input
+            .read_bytes(&mut read_back, 0, payload.len())
+            .expect("bytes");
+        assert_eq!(read_back, payload);
+        assert!(input.eof());
+    }
+
+    #[test]
+    fn a_pooled_slice_reader_reports_an_over_read_instead_of_panicking() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut field = TermsHashPerField::new(
+            1,
+            "body".to_string(),
+            IndexOptions::DOCS,
+            Arc::clone(&bytes_used),
+        );
+        let slot = field.intern(&mut pool, b"term", 0).expect("intern");
+        field
+            .write_byte(&mut pool, slot.term_id, 0, 7)
+            .expect("byte");
+
+        let mut reader = ByteSliceReader::new();
+        field.init_reader(&mut reader, slot.term_id, 0);
+        let mut input = PooledSliceReader::new(reader, &pool);
+        assert_eq!(input.read_byte().expect("byte"), 7);
+        let error = input.read_byte().expect_err("the stream held one byte");
+        assert!(matches!(error, LuceneError::CorruptIndex(_)), "{error:?}");
+
+        let mut reader = ByteSliceReader::new();
+        field.init_reader(&mut reader, slot.term_id, 0);
+        let mut input = PooledSliceReader::new(reader, &pool);
+        let mut buffer = [0u8; 4];
+        let error = input
+            .read_bytes(&mut buffer, 0, 4)
+            .expect_err("the stream held one byte");
+        assert!(matches!(error, LuceneError::CorruptIndex(_)), "{error:?}");
+
+        let mut reader = ByteSliceReader::new();
+        field.init_reader(&mut reader, slot.term_id, 0);
+        let mut input = PooledSliceReader::new(reader, &pool);
+        let error = input.skip_bytes(-1).expect_err("negative skip");
+        assert!(
+            matches!(error, LuceneError::IllegalArgument(_)),
+            "{error:?}"
+        );
+        input.skip_bytes(1).expect("one byte to skip");
+        assert!(input.eof());
+    }
+
+    // -- Field ordering ------------------------------------------------------
+
+    #[test]
+    fn buffered_fields_are_frozen_in_utf16_name_order() {
+        // `U+10000` sorts before `U+FFFF` in Java's `String.compareTo` and
+        // after it in Rust's `str` ordering; the order reaches the `.tim` file.
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut writer = FreqProxTermsWriter::new(Arc::clone(&bytes_used));
+        let names = ["\u{FFFF}", "\u{10000}", "a"];
+        for (number, name) in names.iter().enumerate() {
+            let mut info = FieldInfo::new(*name, number as i32);
+            info.index_options = IndexOptions::DOCS;
+            let index = writer.add_field(&info);
+            let mut state = FieldInvertState::new(10, (*name).to_string(), IndexOptions::DOCS);
+            let (pool, field) = writer.pool_and_field(index);
+            field
+                .add(
+                    pool,
+                    &mut state,
+                    b"token",
+                    0,
+                    &InvertedToken {
+                        start_offset: 0,
+                        end_offset: 5,
+                        payload: None,
+                        term_freq: 1,
+                        has_term_freq_attribute: false,
+                    },
+                )
+                .expect("add");
+        }
+        let fields = writer.freeze();
+        let frozen: Vec<String> = fields.iterator().collect();
+        assert_eq!(frozen, vec!["a", "\u{10000}", "\u{FFFF}"]);
     }
 }

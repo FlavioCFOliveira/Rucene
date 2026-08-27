@@ -25,9 +25,19 @@ use crate::util::BytesRef;
 
 /// A compression mode describing the speed/ratio trade-off.
 ///
-/// Equivalent to `org.apache.lucene.codecs.compressing.CompressionMode`.
+/// Equivalent to `org.apache.lucene.codecs.compressing.CompressionMode`, which
+/// is an **abstract class** with three public constants, not a closed set:
+/// Lucene adds modes by subclassing it, and does so in the codebase —
+/// `DeflateWithPresetDictCompressionMode`, `LZ4WithPresetDictCompressionMode`
+/// and the anonymous `SortingStoredFieldsConsumer.NO_COMPRESSION`. This port
+/// models it as an enum because every mode it needs is known to the crate, but
+/// the set is expected to grow: [`Self::LZ4_WITH_PRESET_DICT`] is already a
+/// variant Java has no constant for, and index sorting will need a
+/// `NO_COMPRESSION`. `#[non_exhaustive]` keeps that growth from breaking a
+/// downstream `match`; inside this crate it changes nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
+#[non_exhaustive]
 pub enum CompressionMode {
     /// LZ4 fast compressor with LZ4 decompressor.
     FAST,

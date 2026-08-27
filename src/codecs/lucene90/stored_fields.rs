@@ -70,7 +70,6 @@ use crate::store::{
     ByteArrayDataInput, ByteBuffersDataOutput, DataInput, DataOutput, Directory, IOContext,
     IndexInput, IndexOutput,
 };
-use crate::util::extra::LongValues;
 use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter};
 use crate::util::Accountable;
 use crate::util::BitUtil;
@@ -448,7 +447,20 @@ impl FieldsIndexReader {
     ) -> Result<Self> {
         let max_doc = meta_in.read_int()?;
         let block_shift = meta_in.read_int()?;
-        let num_values = meta_in.read_int()? as usize;
+        let num_values = meta_in.read_int()?;
+        // Both come off disk. `FieldsIndexWriter.finish` writes `totalChunks + 1`
+        // here (`FieldsIndexWriter.java:120`) and `writeIndex` is called once
+        // per chunk with at least one document, so Lucene's own invariant is
+        // `numValues <= maxDoc + 1`. Checking it turns a corrupt count into an
+        // error instead of a loop that fills two vectors with billions of
+        // entries.
+        if max_doc < 0 || num_values < 0 || i64::from(num_values) > i64::from(max_doc) + 1 {
+            return Err(LuceneError::CorruptIndex(format!(
+                "the fields index of {segment}{suffix}.{extension} claims {num_values} chunk \
+                 boundaries for {max_doc} documents"
+            )));
+        }
+        let num_values = num_values as usize;
         let docs_start_pointer = meta_in.read_long()?;
         let docs_meta = DirectMonotonicMeta::load(meta_in, num_values as i64, block_shift)?;
         let start_pointers_start_pointer = meta_in.read_long()?;
@@ -486,11 +498,15 @@ impl FieldsIndexReader {
         let start_pointers_reader =
             DirectMonotonicReader::new(start_pointers_meta, start_pointers_data)?;
 
-        let mut docs = Vec::with_capacity(num_values);
-        let mut start_pointers = Vec::with_capacity(num_values);
+        // Nothing is reserved up front and every read is checked: `num_values`
+        // is a file value, and the two monotonic readers are built over slices
+        // whose length is a file value too, so an index they cannot serve must
+        // be an error rather than the panic `LongValues::get` would raise.
+        let mut docs = Vec::new();
+        let mut start_pointers = Vec::new();
         for i in 0..num_values {
-            docs.push(docs_reader.get(i as i64));
-            start_pointers.push(start_pointers_reader.get(i as i64));
+            docs.push(docs_reader.get_checked(i as i64)?);
+            start_pointers.push(start_pointers_reader.get_checked(i as i64)?);
         }
 
         Ok(Self {

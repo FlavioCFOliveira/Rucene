@@ -20,6 +20,16 @@
 //!   are dense and monotonically increasing, so this port simply pushes onto a
 //!   `Vec`, and callers push onto their own `Vec` in the same step. No callback,
 //!   no `System.arraycopy`, no possibility of the two arrays disagreeing.
+//! * **The two hash keys are chosen at construction, not per call.** Lucene's
+//!   `BytesRefHash` exposes both `add(BytesRef)`, which hashes the *bytes*, and
+//!   `addByPoolOffset(int)`, which hashes the *pool offset* of bytes some other
+//!   hash already interned (the term-vectors hash uses the latter). The two
+//!   store different things in a slot — the first packs the high bits of the
+//!   byte hash next to the term id, the second stores the bare term id — so a
+//!   table that mixed them would corrupt itself. Java relies on each caller
+//!   picking one and never straying; this port makes the choice explicit in the
+//!   constructor ([`BytesRefHash::new`] versus
+//!   [`BytesRefHash::new_by_pool_offset`]) and asserts it on every entry point.
 //! * **[`BytesRefHash::sort`] is a comparison sort.** Lucene uses an MSB radix
 //!   sort with a comparison fallback. Both produce exactly the same order —
 //!   ascending unsigned byte-wise order — which is all the index format
@@ -53,15 +63,35 @@ pub struct BytesRefHash {
     high_mask: i32,
     count: i32,
     bytes_used: Arc<AtomicI64>,
+    /// `true` when the table is keyed by the pool offset of already-interned
+    /// bytes (`BytesRefHash.addByPoolOffset`) rather than by the bytes
+    /// themselves (`BytesRefHash.add`).
+    keyed_by_pool_offset: bool,
 }
 
 impl BytesRefHash {
-    /// Creates an empty table with [`HASH_INIT_SIZE`] slots.
+    /// Creates an empty table with [`HASH_INIT_SIZE`] slots, keyed by the term
+    /// bytes.
     pub fn new(bytes_used: Arc<AtomicI64>) -> Self {
         Self::with_capacity(HASH_INIT_SIZE, bytes_used)
     }
 
-    /// Creates an empty table with `capacity` slots.
+    /// Creates an empty table with [`HASH_INIT_SIZE`] slots, keyed by the pool
+    /// offset of bytes another table already interned.
+    ///
+    /// This is the table Lucene's secondary term hashes use: the term text has
+    /// already been interned by the primary hash, so the offset alone
+    /// identifies it and neither hashing nor comparing the bytes is needed.
+    /// Only [`Self::add_by_pool_offset`] may add to such a table; the bytes
+    /// themselves stay in the primary hash's pool, which
+    /// [`Self::sort`] and [`Self::byte_start`] still address.
+    pub fn new_by_pool_offset(bytes_used: Arc<AtomicI64>) -> Self {
+        let mut hash = Self::with_capacity(HASH_INIT_SIZE, bytes_used);
+        hash.keyed_by_pool_offset = true;
+        hash
+    }
+
+    /// Creates an empty table with `capacity` slots, keyed by the term bytes.
     ///
     /// # Panics
     ///
@@ -83,7 +113,13 @@ impl BytesRefHash {
             high_mask: !(capacity as i32 - 1),
             count: 0,
             bytes_used,
+            keyed_by_pool_offset: false,
         }
+    }
+
+    /// Returns `true` when this table is keyed by pool offset.
+    pub fn is_keyed_by_pool_offset(&self) -> bool {
+        self.keyed_by_pool_offset
     }
 
     /// Returns the number of distinct terms in this table.
@@ -119,6 +155,10 @@ impl BytesRefHash {
     /// [`crate::error::LuceneError::ResourceLimit`] when the pool runs out of
     /// addressable space.
     pub fn add(&mut self, pool: &mut ByteBlockPool, bytes: &[u8]) -> Result<i32> {
+        debug_assert!(
+            !self.keyed_by_pool_offset,
+            "a pool-offset-keyed table must be fed through add_by_pool_offset"
+        );
         let hashcode = hash_bytes(bytes);
         let hash_pos = self.find_hash(pool, bytes, hashcode);
         let entry = self.ids[hash_pos];
@@ -139,10 +179,59 @@ impl BytesRefHash {
         Ok(term_id)
     }
 
+    /// Records `text_start` — the pool offset of bytes another table already
+    /// interned — and returns its term id.
+    ///
+    /// Equivalent to `BytesRefHash.addByPoolOffset(int)`, with the same sign
+    /// convention as [`Self::add`]: a value seen for the first time yields its
+    /// new term id (always `>= 0`), an offset already in the table yields
+    /// `-(term_id + 1)`. The offset *is* the hash key, so no byte is read and
+    /// no pool is needed.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds when the table is keyed by the term bytes.
+    pub fn add_by_pool_offset(&mut self, text_start: i32) -> i32 {
+        debug_assert!(
+            self.keyed_by_pool_offset,
+            "a bytes-keyed table must be fed through add"
+        );
+        let mut code = text_start;
+        let mut hash_pos = (code & self.hash_mask) as usize;
+        let mut entry = self.ids[hash_pos];
+        while entry != -1 && self.bytes_start[entry as usize] != text_start {
+            code = code.wrapping_add(1);
+            hash_pos = (code & self.hash_mask) as usize;
+            entry = self.ids[hash_pos];
+        }
+        if entry != -1 {
+            return -(entry + 1);
+        }
+
+        let term_id = self.count;
+        self.bytes_start.push(text_start);
+        self.bytes_used
+            .fetch_add(std::mem::size_of::<i32>() as i64, Ordering::AcqRel);
+        // Unlike the bytes-keyed path the slot holds the bare term id: the
+        // probe compares `bytes_start[id]` with the offset, so there are no
+        // high bits to shortcut it with (`BytesRefHash.java`, the `hashOnData
+        // == false` branch of `rehash`).
+        self.ids[hash_pos] = term_id;
+        self.count += 1;
+        if self.count as usize == self.hash_half_size {
+            self.rehash_by_pool_offset(self.ids.len() * 2);
+        }
+        term_id
+    }
+
     /// Returns the term id of `bytes`, or `-1` when it is not in the table.
     ///
     /// Equivalent to `BytesRefHash.find(BytesRef)`.
     pub fn find(&self, pool: &ByteBlockPool, bytes: &[u8]) -> i32 {
+        debug_assert!(
+            !self.keyed_by_pool_offset,
+            "a pool-offset-keyed table cannot be probed by bytes"
+        );
         let hashcode = hash_bytes(bytes);
         let entry = self.ids[self.find_hash(pool, bytes, hashcode)];
         if entry == -1 {
@@ -244,6 +333,34 @@ impl BytesRefHash {
         self.ids = new_ids;
         self.hash_mask = new_mask;
         self.high_mask = new_high_mask;
+        self.hash_half_size = new_size >> 1;
+    }
+
+    /// Grows the slot array to `new_size` and reinserts every term id.
+    ///
+    /// Equivalent to `BytesRefHash.rehash(int, boolean)` with `hashOnData`
+    /// clear: the pool offset is the hash code, so nothing has to be read back
+    /// from the pool and the slot keeps holding the bare term id.
+    fn rehash_by_pool_offset(&mut self, new_size: usize) {
+        debug_assert!(new_size.is_power_of_two());
+        self.bytes_used.fetch_add(
+            ((new_size - self.ids.len()) * std::mem::size_of::<i32>()) as i64,
+            Ordering::AcqRel,
+        );
+        let new_mask = new_size as i32 - 1;
+        let mut new_ids = vec![-1i32; new_size];
+        for term_id in 0..self.count {
+            let mut code = self.bytes_start[term_id as usize];
+            let mut hash_pos = (code & new_mask) as usize;
+            while new_ids[hash_pos] != -1 {
+                code = code.wrapping_add(1);
+                hash_pos = (code & new_mask) as usize;
+            }
+            new_ids[hash_pos] = term_id;
+        }
+        self.ids = new_ids;
+        self.hash_mask = new_mask;
+        self.high_mask = !new_mask;
         self.hash_half_size = new_size >> 1;
     }
 }
@@ -398,6 +515,99 @@ mod tests {
             bytes_used.load(Ordering::Acquire),
             0,
             "releasing twice must not double-count"
+        );
+    }
+
+    // -- Pool-offset keying ------------------------------------------------
+
+    #[test]
+    fn add_by_pool_offset_dedupes_by_offset_and_hands_out_dense_ids() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut primary = BytesRefHash::new(Arc::clone(&bytes_used));
+        let mut secondary = BytesRefHash::new_by_pool_offset(bytes_used);
+        assert!(secondary.is_keyed_by_pool_offset());
+        assert!(!primary.is_keyed_by_pool_offset());
+
+        let alpha = primary.add(&mut pool, b"alpha").expect("alpha");
+        let beta = primary.add(&mut pool, b"beta").expect("beta");
+        let alpha_start = primary.byte_start(alpha);
+        let beta_start = primary.byte_start(beta);
+
+        assert_eq!(secondary.add_by_pool_offset(beta_start), 0);
+        assert_eq!(secondary.add_by_pool_offset(alpha_start), 1);
+        assert_eq!(
+            secondary.add_by_pool_offset(beta_start),
+            -1,
+            "-(id + 1) for an offset already recorded"
+        );
+        assert_eq!(secondary.size(), 2);
+        assert_eq!(secondary.byte_start(0), beta_start);
+        assert_eq!(secondary.byte_start(1), alpha_start);
+    }
+
+    #[test]
+    fn a_pool_offset_table_sorts_by_the_bytes_the_offsets_point_at() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut primary = BytesRefHash::new(Arc::clone(&bytes_used));
+        let mut secondary = BytesRefHash::new_by_pool_offset(bytes_used);
+        for term in ["zeta", "alpha", "mu"] {
+            let id = primary.add(&mut pool, term.as_bytes()).expect("intern");
+            secondary.add_by_pool_offset(primary.byte_start(id));
+        }
+        let sorted: Vec<&[u8]> = secondary
+            .sort(&pool)
+            .into_iter()
+            .map(|id| pool.term_bytes(secondary.byte_start(id)))
+            .collect();
+        assert_eq!(sorted, vec![&b"alpha"[..], &b"mu"[..], &b"zeta"[..]]);
+    }
+
+    #[test]
+    fn a_pool_offset_table_survives_its_rehash() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut primary = BytesRefHash::new(Arc::clone(&bytes_used));
+        let mut secondary = BytesRefHash::new_by_pool_offset(bytes_used);
+
+        // Enough terms to force several doublings of the four-slot table.
+        let mut starts = Vec::new();
+        for term in 0..500 {
+            let id = primary
+                .add(&mut pool, format!("term{term:04}").as_bytes())
+                .expect("intern");
+            starts.push(primary.byte_start(id));
+        }
+        for (expected, start) in starts.iter().enumerate() {
+            assert_eq!(secondary.add_by_pool_offset(*start), expected as i32);
+        }
+        assert_eq!(secondary.size(), 500);
+        for (id, start) in starts.iter().enumerate() {
+            assert_eq!(
+                secondary.add_by_pool_offset(*start),
+                -(id as i32 + 1),
+                "every offset must still be found after the rehash"
+            );
+            assert_eq!(secondary.byte_start(id as i32), *start);
+        }
+    }
+
+    #[test]
+    fn clearing_a_pool_offset_table_lets_it_be_refilled() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut primary = BytesRefHash::new(Arc::clone(&bytes_used));
+        let mut secondary = BytesRefHash::new_by_pool_offset(bytes_used);
+        let id = primary.add(&mut pool, b"alpha").expect("alpha");
+        let start = primary.byte_start(id);
+        assert_eq!(secondary.add_by_pool_offset(start), 0);
+        secondary.clear();
+        assert_eq!(secondary.size(), 0);
+        assert_eq!(
+            secondary.add_by_pool_offset(start),
+            0,
+            "the offset is new again after a clear"
         );
     }
 }

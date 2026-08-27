@@ -1,13 +1,11 @@
 //! Minimal placeholder types consumed by the base codec format traits.
 //!
 //! `FieldInfo`, `FieldInfos`, `SegmentInfo`, `SegmentCommitInfo`,
-//! `StoredFieldVisitor` and the terms hierarchy are now re-exported from
-//! `crate::index` and kept here so that existing codec modules can continue to
-//! import them from `crate::codecs::stub`. Only `BufferedUpdates` and
-//! `TermVectors` remain simple placeholders until their full `crate::index`
-//! equivalents are ported.
-
-use crate::error::Result;
+//! `StoredFieldVisitor`, `TermVectors` and the terms hierarchy are now
+//! re-exported from `crate::index` and kept here so that existing codec modules
+//! can continue to import them from `crate::codecs::stub`. Only
+//! `BufferedUpdates` remains a simple placeholder until its full
+//! `crate::index` equivalent is ported.
 
 pub use crate::index::FieldInfo;
 
@@ -25,13 +23,7 @@ pub use crate::index::{StoredFieldVisitor, StoredFieldVisitorStatus};
 
 pub use crate::index::terms::{Fields, Terms, TermsEnum};
 
-/// Placeholder base for `org.apache.lucene.index.TermVectors`.
-pub trait TermVectors: Send + Sync {
-    /// Returns term vectors for the given document, or `None` if none exist.
-    fn get(&self, _doc: i32) -> Result<Option<Box<dyn Fields>>> {
-        Ok(None)
-    }
-}
+pub use crate::index::{EmptyTermVectors, TermVectors};
 
 #[cfg(test)]
 mod tests {

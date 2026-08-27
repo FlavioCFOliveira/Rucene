@@ -51,7 +51,9 @@ pub use extra::{
     PriorityQueue, PriorityQueueComparator, Version, ZeroesLongValues,
 };
 pub use small_float::SmallFloat;
-pub use string_helper::{read_string, write_string, IntsRef, StringHelper, ID_LENGTH};
+pub use string_helper::{
+    compare_utf16, read_string, write_string, IntsRef, StringHelper, ID_LENGTH,
+};
 pub use vector_util::{
     add, check_finite, cosine_bytes, cosine_f32, dot_product_bytes, dot_product_f32,
     dot_product_score, is_unit_vector, is_zero_vector_bytes, is_zero_vector_f32, l2normalize,

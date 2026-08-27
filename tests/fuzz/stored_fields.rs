@@ -8,7 +8,11 @@
 //! an `Err`, or a wrapped value where Java wraps, but never a panic.
 //!
 //! These tests take a valid segment, corrupt it systematically, and assert
-//! exactly that. They are the regression net for a family of defects — an
+//! exactly that. The byte sweeps try **every one of the 255 other values** at
+//! every position, not a sample: the values that break a decoder are the ones
+//! that name a length, a count or an offset, and those are spread across the
+//! whole range — a four-value probe misses most of them, and a test whose name
+//! claims "every single byte corruption" has to mean it. They are the regression net for a family of defects — an
 //! unsigned subtraction in the LZ4 match decoder, an unsigned subtraction in
 //! the small-integer float form, an overflowing multiply in the `TLong`
 //! scaling step, an overflowing add in the chunk-header bounds check and a
@@ -177,7 +181,7 @@ fn corrupt_copy(
 }
 
 #[test]
-fn every_single_byte_corruption_of_the_data_file_is_survived() {
+fn every_value_at_every_byte_of_the_data_file_is_survived() {
     const DOCS: i32 = 12;
     let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
     let info = segment_info(&directory, DOCS);
@@ -194,7 +198,7 @@ fn every_single_byte_corruption_of_the_data_file_is_survived() {
     // the footer are all attacker-reachable.
     let mut survived = 0;
     for (at, byte) in original.iter().enumerate() {
-        for value in [0x00u8, 0x40, 0x7F, 0xFF] {
+        for value in 0..=u8::MAX {
             if *byte == value {
                 continue;
             }
@@ -229,7 +233,7 @@ fn every_single_byte_corruption_of_the_data_file_is_survived() {
 }
 
 #[test]
-fn every_single_byte_corruption_of_the_index_files_is_survived() {
+fn every_value_at_every_byte_of_the_index_files_is_survived() {
     const DOCS: i32 = 8;
     let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
     let info = segment_info(&directory, DOCS);
@@ -240,7 +244,7 @@ fn every_single_byte_corruption_of_the_index_files_is_survived() {
         let name = format!("_0.{extension}");
         let original = read_file(&directory, &name);
         for (at, byte) in original.iter().enumerate() {
-            for value in [0x00u8, 0xFF] {
+            for value in 0..=u8::MAX {
                 if *byte == value {
                     continue;
                 }

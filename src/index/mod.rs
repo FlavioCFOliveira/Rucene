@@ -47,6 +47,7 @@ pub mod segment_infos;
 pub mod segment_reader;
 pub mod stored_field_visitor;
 pub mod stored_fields_consumer;
+pub mod term_vectors_consumer;
 pub mod terms;
 pub mod terms_enum_index;
 pub mod vector_values;
@@ -84,6 +85,7 @@ pub use leaf_reader::{EmptyTermVectors, LeafMetaData, LeafReader, TermVectors};
 pub use merge::{
     deletion_doc_map, identity_doc_map, DocIDMerger, DocIDMergerSub, DocMap, MergeState,
 };
+pub use term_vectors_consumer::{TermVectorsConsumer, TermVectorsConsumerPerField};
 // The per-reader aggregation helpers (`size`, `doc_count`, `min_packed_value`,
 // `max_packed_value`) and the traversal free functions (`intersect`,
 // `estimate_point_count`, ...) are deliberately not re-exported here: their

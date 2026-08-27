@@ -7,14 +7,26 @@
 //! | `PerField` (private) | `IndexingChain.PerField` |
 //! | [`EmptyNormsProducer`] | the `NormsProducer` the chain passes to the codec |
 //!
-//! The chain turns a [`Document`] into buffered postings and a stored-fields
-//! stream: it registers each field in the segment's [`FieldInfosBuilder`], runs
-//! the analysis pipeline, validates positions and offsets, feeds every token to
-//! [`FreqProxTermsWriter`], and hands every stored value to the
-//! [`StoredFieldsConsumer`]. At flush time it streams the buffered postings
-//! through the codec's postings format, producing the `.doc`, `.pos`, `.pay`,
-//! `.tim`, `.tip` and `.tmd` files of the segment, and finishes the
-//! stored-fields stream, producing `.fdt`, `.fdx` and `.fdm`.
+//! The chain turns a [`Document`] into buffered postings, a stored-fields
+//! stream and a term-vectors stream: it registers each field in the segment's
+//! [`FieldInfosBuilder`], runs the analysis pipeline, validates positions and
+//! offsets, feeds every token to [`FreqProxTermsWriter`] and — for the fields
+//! that ask for them — to the [`TermVectorsConsumer`], and hands every stored
+//! value to the [`StoredFieldsConsumer`]. At flush time it streams the buffered
+//! postings through the codec's postings format, producing the `.doc`, `.pos`,
+//! `.pay`, `.tim`, `.tip` and `.tmd` files of the segment, finishes the
+//! stored-fields stream, producing `.fdt`, `.fdx` and `.fdm`, and finishes the
+//! term-vectors stream, producing `.tvd`, `.tvx` and `.tvm`.
+//!
+//! # The two term hashes
+//!
+//! Lucene chains `FreqProxTermsWriter` and `TermVectorsConsumer` as two
+//! `TermsHash` instances and lets `TermsHashPerField.add` forward each token
+//! from the first to the second. This port makes the chain explicit: the token
+//! loop feeds [`FreqProxTermsWriter`], takes back the pool offset the token was
+//! interned at, and forwards that offset to the [`TermVectorsConsumer`] when the
+//! field asked for vectors — which is precisely the `nextPerField.add(int, int)`
+//! call Lucene makes.
 //!
 //! # Java to Rust adaptations
 //!
@@ -38,15 +50,17 @@
 //!
 //! # Scope
 //!
-//! Lucene's `IndexingChain` also drives doc values, points, vectors, norms and
-//! term vectors. Those consumers are separate ports; this chain implements the
-//! inverted-index and stored-fields paths, so a flushed segment currently
-//! contains its postings files and its stored-fields files and nothing else.
+//! Lucene's `IndexingChain` also drives doc values, points, vectors and norms.
+//! Those consumers are separate ports; this chain implements the
+//! inverted-index, stored-fields and term-vectors paths, so a flushed segment
+//! currently contains its postings files, its stored-fields files and — when a
+//! field asked for them — its term-vectors files, and nothing else.
 //!
-//! Lucene picks `SortingStoredFieldsConsumer` when the segment has an index
-//! sort. Index sorting is a separate port, so this chain always uses the plain
-//! [`StoredFieldsConsumer`]; [`DefaultIndexingChain::bind_segment`] is the one
-//! place that choice will be made.
+//! Lucene picks `SortingStoredFieldsConsumer` and `SortingTermVectorsConsumer`
+//! when the segment has an index sort. Index sorting is a separate port, so this
+//! chain always uses the plain [`StoredFieldsConsumer`] and
+//! [`TermVectorsConsumer`]; [`DefaultIndexingChain::bind_segment`] is the one
+//! place both choices will be made.
 
 #![deny(unsafe_code)]
 
@@ -73,14 +87,23 @@ use crate::index::field_infos::FieldInfosBuilder;
 use crate::index::freq_prox_terms_writer::{FreqProxTermsWriter, InvertedToken};
 use crate::index::index_writer_config::LiveIndexWriterConfig;
 use crate::index::stored_fields_consumer::StoredFieldsConsumer;
-use crate::index::{FieldInfo, IndexOptions, IndexableField, SegmentInfo};
+use crate::index::term_vectors_consumer::TermVectorsConsumer;
+use crate::index::{FieldInfo, IndexOptions, IndexableField, IndexableFieldType, SegmentInfo};
 use crate::store::TrackingDirectoryWrapper;
+use crate::util::byte_block_pool::MAX_TERM_LENGTH;
 use crate::util::{AttributeSource, BytesRef, InfoStream};
 
 /// Highest position a token may occupy.
 ///
 /// Equivalent to `IndexWriter.MAX_POSITION`.
 pub const MAX_POSITION: i32 = i32::MAX - 128;
+
+/// How many bytes of an over-long term are shown in the error message.
+///
+/// Equivalent to the literal `30` both
+/// `ArrayUtil.copyOfSubArray(bigTerm.bytes, bigTerm.offset, bigTerm.offset + 30)`
+/// calls in `IndexingChain` use.
+const IMMENSE_TERM_PREFIX: usize = 30;
 
 // ---------------------------------------------------------------------------
 // FieldInvertState
@@ -283,6 +306,17 @@ struct PerField {
     /// Lucene creates the per-field writer in `PerField.setInvertState()`,
     /// which `initializeFieldInfo` only calls for indexed fields.
     writer_index: Option<usize>,
+    /// Index of this field's table inside the [`TermVectorsConsumer`], or
+    /// `None` for a field that is not indexed or for a chain that is not bound
+    /// to a segment yet.
+    ///
+    /// Lucene creates it in the same `PerField.setInvertState()` call, through
+    /// `TermsHash.addField`, which forwards to the next hash of the chain.
+    vectors_index: Option<usize>,
+    /// Whether the current field instance's tokens must also reach the
+    /// term-vectors consumer. Equivalent to `TermsHashPerField.doNextCall`,
+    /// which Lucene sets from the return value of the next hash's `start`.
+    do_vectors: bool,
     /// Generation of the document this field was last seen in.
     field_gen: i64,
     /// `true` until the first instance of this field is inverted in the current
@@ -470,6 +504,11 @@ pub struct DefaultIndexingChain {
     /// which Lucene builds in the constructor because it already has the
     /// directory and the `SegmentInfo` there.
     stored_fields_consumer: Option<StoredFieldsConsumer>,
+    /// The term-vectors half of the chain, present once the chain knows which
+    /// segment it writes. Equivalent to `IndexingChain.termVectorsWriter`,
+    /// which Lucene builds in the constructor because it already has the
+    /// directory and the `SegmentInfo` there.
+    term_vectors_consumer: Option<TermVectorsConsumer>,
 }
 
 impl DefaultIndexingChain {
@@ -486,6 +525,7 @@ impl DefaultIndexingChain {
             next_field_gen: 0,
             aborting_error: None,
             stored_fields_consumer: None,
+            term_vectors_consumer: None,
         }
     }
 
@@ -509,6 +549,11 @@ impl DefaultIndexingChain {
     /// Returns the stored-fields consumer, if the chain is bound to a segment.
     pub fn stored_fields_consumer(&self) -> Option<&StoredFieldsConsumer> {
         self.stored_fields_consumer.as_ref()
+    }
+
+    /// Returns the term-vectors consumer, if the chain is bound to a segment.
+    pub fn term_vectors_consumer(&self) -> Option<&TermVectorsConsumer> {
+        self.term_vectors_consumer.as_ref()
     }
 
     /// Opens the stored-fields frame of `doc_id`.
@@ -632,10 +677,21 @@ impl DefaultIndexingChain {
         if let Some(index) = self.per_field_index.get(&field_info.name) {
             return *index;
         }
-        let writer_index = if field_info.index_options == IndexOptions::NONE {
-            None
-        } else {
-            Some(self.terms_writer.add_field(field_info))
+        let indexed = field_info.index_options != IndexOptions::NONE;
+        let writer_index = indexed.then(|| self.terms_writer.add_field(field_info));
+        // `PerField.setInvertState()` builds *both* per-field consumers through
+        // `TermsHash.addField`, and tells the term-vectors consumer that the
+        // segment has vectors as soon as a field says so
+        // (`IndexingChain.java:1836-1845`).
+        let vectors_index = match self.term_vectors_consumer.as_mut() {
+            Some(consumer) if indexed => {
+                let index = consumer.add_field(field_info);
+                if field_info.has_term_vectors() {
+                    consumer.set_has_vectors();
+                }
+                Some(index)
+            }
+            _ => None,
         };
         let invert_state = FieldInvertState::new(
             self.config.index_created_version_major(),
@@ -647,6 +703,8 @@ impl DefaultIndexingChain {
             field_info: field_info.clone(),
             invert_state,
             writer_index,
+            vectors_index,
+            do_vectors: false,
             field_gen: -1,
             first: true,
         });
@@ -664,6 +722,9 @@ impl DefaultIndexingChain {
     ) -> Result<FieldInfo> {
         let field_type = field.field_type();
         let name = field.name().to_string();
+        if field_type.index_options() == IndexOptions::NONE {
+            Self::verify_un_indexed_field_type(&name, field_type)?;
+        }
         let soft_deletes = field_infos.soft_deletes_field_name() == Some(name.as_str());
         let parent = field_infos.parent_field_name() == Some(name.as_str());
         FieldInfo::new_full(
@@ -688,15 +749,49 @@ impl DefaultIndexingChain {
         )
     }
 
+    /// Rejects a field type that asks for term vectors without being indexed.
+    ///
+    /// Equivalent to `IndexingChain.verifyUnIndexedFieldType(String,
+    /// IndexableFieldType)`, which `updateDocFieldSchema` runs for every field
+    /// whose index options are `NONE`. Without it the four flags would be
+    /// silently dropped when the `FieldInfo` is built, and a caller asking for
+    /// term vectors on a stored-only field would never learn that it got none.
+    fn verify_un_indexed_field_type(name: &str, field_type: &dyn IndexableFieldType) -> Result<()> {
+        for (requested, what) in [
+            (field_type.store_term_vectors(), "term vectors"),
+            (
+                field_type.store_term_vector_positions(),
+                "term vector positions",
+            ),
+            (
+                field_type.store_term_vector_offsets(),
+                "term vector offsets",
+            ),
+            (
+                field_type.store_term_vector_payloads(),
+                "term vector payloads",
+            ),
+        ] {
+            if requested {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "cannot store {what} for a field that is not indexed (field=\"{name}\")"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Inverts one instance of one field.
     ///
     /// Equivalent to `IndexingChain.PerField.invert`. It takes its collaborators
     /// explicitly so that the borrow checker can see that the per-field state
     /// and the shared byte pool are disjoint.
+    #[allow(clippy::too_many_arguments)]
     fn invert(
         analyzer: &dyn Analyzer,
         info_stream: &dyn InfoStream,
         terms_writer: &mut FreqProxTermsWriter,
+        term_vectors: Option<&mut TermVectorsConsumer>,
         per_field: &mut PerField,
         doc_id: i32,
         field: &dyn IndexableField,
@@ -710,16 +805,24 @@ impl DefaultIndexingChain {
             per_field.invert_state.reset();
         }
         match field.invertable_type() {
-            Some(InvertableType::BINARY) => {
-                Self::invert_term(terms_writer, per_field, doc_id, field)
-            }
+            Some(InvertableType::BINARY) => Self::invert_term(
+                info_stream,
+                terms_writer,
+                term_vectors,
+                per_field,
+                doc_id,
+                field,
+                first,
+            ),
             Some(InvertableType::TOKEN_STREAM) => Self::invert_token_stream(
                 analyzer,
                 info_stream,
                 terms_writer,
+                term_vectors,
                 per_field,
                 doc_id,
                 field,
+                first,
             ),
             None => Err(LuceneError::IllegalArgument(format!(
                 "field \"{}\" is not indexed but reached the inverter",
@@ -731,11 +834,15 @@ impl DefaultIndexingChain {
     /// Inverts a field that indexes its binary value as a single term.
     ///
     /// Equivalent to `IndexingChain.PerField.invertTerm`.
+    #[allow(clippy::too_many_arguments)]
     fn invert_term(
+        info_stream: &dyn InfoStream,
         terms_writer: &mut FreqProxTermsWriter,
+        mut term_vectors: Option<&mut TermVectorsConsumer>,
         per_field: &mut PerField,
         doc_id: i32,
         field: &dyn IndexableField,
+        first: bool,
     ) -> Result<()> {
         let binary_value = field.binary_value().ok_or_else(|| {
             LuceneError::IllegalArgument(format!(
@@ -778,34 +885,186 @@ impl DefaultIndexingChain {
         let writer_index = per_field.writer_index.ok_or_else(|| {
             LuceneError::IllegalState(format!("field \"{}\" has no postings writer", field.name()))
         })?;
+        Self::start_vectors(term_vectors.as_deref_mut(), per_field, field, first)?;
         let (pool, writer) = terms_writer.pool_and_field(writer_index);
-        writer.add(
-            pool,
-            &mut per_field.invert_state,
-            binary_value.slice(),
-            doc_id,
-            &token,
-        )
+        let text_start = writer
+            .add(
+                pool,
+                &mut per_field.invert_state,
+                binary_value.slice(),
+                doc_id,
+                &token,
+            )
+            .map_err(|error| {
+                Self::map_add_error(
+                    info_stream,
+                    field.name(),
+                    binary_value.slice(),
+                    false,
+                    error,
+                )
+            })?;
+        Self::add_to_vectors(term_vectors, per_field, text_start, &token)
+    }
+
+    /// Wraps the error an over-long term raises with the field name and a
+    /// readable prefix of the offending bytes.
+    ///
+    /// Equivalent to the two `catch (MaxBytesLengthExceededException e)` blocks
+    /// of `IndexingChain`: `invertTokenStream` (`:2003-2021`), whose message
+    /// names the UTF-8 encoding and asks the operator to correct the analyzer,
+    /// and `invertTerm` (`:2079-2095`), whose message names the length. Both
+    /// render the first thirty bytes with `Arrays.toString`, i.e. as signed
+    /// decimals, and both log the message to the `IW` info stream before
+    /// throwing. Without the wrapping the operator sees only
+    /// `bytes can be at most 32766 in length; got 40000`, which names neither
+    /// the field nor the term.
+    fn immense_term_error(
+        info_stream: &dyn InfoStream,
+        field_name: &str,
+        term: &[u8],
+        analyzed: bool,
+        original: &LuceneError,
+    ) -> LuceneError {
+        // Java appends `e.getMessage()`, the bare text, not the exception's
+        // `toString()`. Rucene's `Display` prefixes every variant with its kind,
+        // so the carried string is used directly to keep the two messages
+        // identical.
+        let original = match original {
+            LuceneError::IllegalArgument(message) => message.clone(),
+            other => other.to_string(),
+        };
+        let prefix: Vec<String> = term
+            .iter()
+            .take(IMMENSE_TERM_PREFIX)
+            .map(|byte| (*byte as i8).to_string())
+            .collect();
+        let prefix = format!("[{}]", prefix.join(", "));
+        let message = if analyzed {
+            format!(
+                "Document contains at least one immense term in field=\"{field_name}\" (whose \
+                 UTF8 encoding is longer than the max length {MAX_TERM_LENGTH}), all of which \
+                 were skipped.  Please correct the analyzer to not produce such terms.  The \
+                 prefix of the first immense term is: '{prefix}...', original message: {original}"
+            )
+        } else {
+            format!(
+                "Document contains at least one immense term in field=\"{field_name}\" (whose \
+                 length is longer than the max length {MAX_TERM_LENGTH}), all of which were \
+                 skipped. The prefix of the first immense term is: '{prefix}...'"
+            )
+        };
+        if info_stream.is_enabled("IW") {
+            info_stream.message("IW", &format!("ERROR: {message}"));
+        }
+        LuceneError::IllegalArgument(message)
+    }
+
+    /// Rejects a term above [`MAX_TERM_LENGTH`] with Lucene's message.
+    ///
+    /// The per-field writer reports the same condition as
+    /// `MaxBytesLengthExceededException` does — `bytes can be at most … in
+    /// length` — but the useful message is assembled one level up, where the
+    /// field name is known.
+    fn map_add_error(
+        info_stream: &dyn InfoStream,
+        field_name: &str,
+        term: &[u8],
+        analyzed: bool,
+        error: LuceneError,
+    ) -> LuceneError {
+        if term.len() > MAX_TERM_LENGTH {
+            return Self::immense_term_error(info_stream, field_name, term, analyzed, &error);
+        }
+        error
+    }
+
+    /// Opens one field instance on the term-vectors consumer and records
+    /// whether its tokens must be forwarded to it.
+    ///
+    /// Equivalent to the `termsHashPerField.start(field, first)` call, whose
+    /// result Lucene keeps in `TermsHashPerField.doNextCall`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the field-type validation errors of
+    /// `TermVectorsConsumerPerField.start`, which are document-level failures.
+    fn start_vectors(
+        term_vectors: Option<&mut TermVectorsConsumer>,
+        per_field: &mut PerField,
+        field: &dyn IndexableField,
+        first: bool,
+    ) -> Result<()> {
+        per_field.do_vectors = false;
+        let Some(consumer) = term_vectors else {
+            // Without a bound segment there is nowhere to write vectors, so a
+            // field asking for them must not be silently dropped.
+            if field.field_type().store_term_vectors() {
+                return Err(LuceneError::IllegalState(format!(
+                    "the indexing chain is not bound to a segment, so the term vectors of \
+                     field \"{}\" cannot be written; call bind_segment first",
+                    field.name()
+                )));
+            }
+            return Ok(());
+        };
+        let Some(index) = per_field.vectors_index else {
+            return Ok(());
+        };
+        per_field.do_vectors = consumer.start_field(index, field, first)?;
+        Ok(())
+    }
+
+    /// Forwards one token to the term-vectors consumer.
+    ///
+    /// Equivalent to the `nextPerField.add(postingsArray.textStarts[termID],
+    /// docID)` call `TermsHashPerField.add(BytesRef, int)` makes when
+    /// `doNextCall` is set.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the errors of `TermVectorsConsumerPerField.add`.
+    fn add_to_vectors(
+        term_vectors: Option<&mut TermVectorsConsumer>,
+        per_field: &PerField,
+        text_start: i32,
+        token: &InvertedToken<'_>,
+    ) -> Result<()> {
+        if !per_field.do_vectors {
+            return Ok(());
+        }
+        let (Some(consumer), Some(index)) = (term_vectors, per_field.vectors_index) else {
+            return Ok(());
+        };
+        consumer.add(index, &per_field.invert_state, text_start, token)
     }
 
     /// Inverts a field through its token stream.
     ///
     /// Equivalent to `IndexingChain.PerField.invertTokenStream`.
+    #[allow(clippy::too_many_arguments)]
     fn invert_token_stream(
         analyzer: &dyn Analyzer,
         info_stream: &dyn InfoStream,
         terms_writer: &mut FreqProxTermsWriter,
+        term_vectors: Option<&mut TermVectorsConsumer>,
         per_field: &mut PerField,
         doc_id: i32,
         field: &dyn IndexableField,
+        first: bool,
     ) -> Result<()> {
         let analyzed = field.field_type().tokenized();
         let is_term_doc = per_field.field_info.is_term_doc_field();
         let mut stream = field.token_stream(analyzer, None);
+        let mut term_vectors = term_vectors;
 
         let outcome = (|| -> Result<()> {
             stream.reset()?;
             let layout = TokenAttributeLayout::resolve(stream.attribute_source());
+            // Lucene calls `termsHashPerField.start(field, first)` here, right
+            // after `stream.reset()` and `invertState.setAttributeSource`
+            // (`IndexingChain.java:1908-1912`).
+            Self::start_vectors(term_vectors.as_deref_mut(), per_field, field, first)?;
 
             while stream.increment_token()? {
                 let token = read_token(stream.attribute_source(), &layout)?;
@@ -878,11 +1137,27 @@ impl DefaultIndexingChain {
                     ))
                 })?;
                 let (pool, writer) = terms_writer.pool_and_field(writer_index);
-                writer.add(
-                    pool,
-                    &mut per_field.invert_state,
-                    token.term.slice(),
-                    doc_id,
+                let text_start = writer
+                    .add(
+                        pool,
+                        &mut per_field.invert_state,
+                        token.term.slice(),
+                        doc_id,
+                        &inverted,
+                    )
+                    .map_err(|error| {
+                        Self::map_add_error(
+                            info_stream,
+                            field.name(),
+                            token.term.slice(),
+                            true,
+                            error,
+                        )
+                    })?;
+                Self::add_to_vectors(
+                    term_vectors.as_deref_mut(),
+                    per_field,
+                    text_start,
                     &inverted,
                 )?;
             }
@@ -945,6 +1220,13 @@ impl IndexingChain for DefaultIndexingChain {
             doc_fields.push(index);
         }
 
+        // `termsHash.startDocument()` runs before the stored-fields frame is
+        // opened (`IndexingChain.java:604-605`); for the term-vectors half it
+        // only drops whatever the previous document left pending.
+        if let Some(consumer) = self.term_vectors_consumer.as_mut() {
+            consumer.start_document();
+        }
+
         // Lucene opens a stored-fields frame for every document, before any
         // field is processed, and closes it in a `finally` block: a document
         // that stores nothing still occupies its own frame, so the stream stays
@@ -958,19 +1240,27 @@ impl IndexingChain for DefaultIndexingChain {
             // for every field instance, in document order.
             if field.field_type().index_options() != IndexOptions::NONE {
                 let first = self.per_fields[index].first;
-                if first {
-                    self.per_fields[index].first = false;
-                    indexed.push(index);
-                }
                 let result = Self::invert(
                     analyzer.as_ref(),
                     info_stream.as_ref(),
                     &mut self.terms_writer,
+                    self.term_vectors_consumer.as_mut(),
                     &mut self.per_fields[index],
                     doc_id,
                     field.as_ref(),
                     first,
                 );
+                // `pf.first = false` and `indexedField = true` run *after*
+                // `pf.invert(...)` returns normally
+                // (`IndexingChain.java:1411-1418`), so a field that threw is
+                // never finished: its partial term vector is not queued and its
+                // `sawPayloads` flag never reaches the field infos. Marking it
+                // first would put bytes on disk for a document both engines
+                // then delete.
+                if result.is_ok() && first {
+                    self.per_fields[index].first = false;
+                    indexed.push(index);
+                }
                 if let Err(error) = result {
                     // Lucene distinguishes a document-level problem (the
                     // document is dropped, indexing continues) from a corrupt
@@ -999,25 +1289,58 @@ impl IndexingChain for DefaultIndexingChain {
             }
         }
 
-        // `FreqProxTermsWriterPerField.finish` records that the field stores
-        // payloads, which the field infos must carry into the segment.
-        for index in indexed {
-            let per_field = &self.per_fields[index];
-            let Some(writer_index) = per_field.writer_index else {
-                continue;
-            };
-            if self.terms_writer.field(writer_index).saw_payloads() {
-                if let Some(info) = field_infos.field_info_mut(&per_field.field_info.name) {
-                    info.set_store_payloads();
+        // Lucene's `finally` runs the whole tail — finishing every indexed
+        // field, closing the stored-fields frame and finishing the term
+        // vectors — only when no aborting exception was recorded, because in
+        // that case the whole segment is discarded and none of it matters
+        // (`IndexingChain.java:669-686`).
+        if self.aborting_error.is_none() {
+            // `PerField.finish(docID)`: `FreqProxTermsWriterPerField.finish`
+            // records that the field stores payloads, which the field infos
+            // must carry into the segment, and
+            // `TermVectorsConsumerPerField.finish` queues the field's vector.
+            for index in indexed {
+                let per_field = &self.per_fields[index];
+                if let Some(writer_index) = per_field.writer_index {
+                    if self.terms_writer.field(writer_index).saw_payloads() {
+                        if let Some(info) = field_infos.field_info_mut(&per_field.field_info.name) {
+                            info.set_store_payloads();
+                        }
+                    }
+                }
+                if let (Some(consumer), Some(vectors_index)) =
+                    (self.term_vectors_consumer.as_mut(), per_field.vectors_index)
+                {
+                    consumer.finish_field(vectors_index);
                 }
             }
-        }
 
-        // Lucene's `finally` closes the frame unless an aborting exception was
-        // already recorded, in which case the whole segment is discarded and
-        // the stream no longer matters.
-        if self.aborting_error.is_none() {
             self.finish_stored_fields()?;
+
+            // `termsHash.finishDocument(docID)`: a failure here may have left
+            // the on-disk term vectors corrupt, so Lucene routes it straight to
+            // the aborting-exception consumer.
+            if let Some(consumer) = self.term_vectors_consumer.as_mut() {
+                if let Err(error) = consumer.finish_document(doc_id, self.terms_writer.pool()) {
+                    self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+                        "the term vectors of segment may be corrupt after doc {doc_id}: {error}"
+                    )));
+                    return Err(error);
+                }
+                // `TermVectorsConsumerPerField.finishDocument` ends with
+                // `fieldInfo.setStoreTermVectors()`; the field infos this port
+                // writes live in the builder, so the flag is set here instead.
+                for per_field in &self.per_fields {
+                    let Some(vectors_index) = per_field.vectors_index else {
+                        continue;
+                    };
+                    if consumer.field(vectors_index).wrote_vectors() {
+                        if let Some(info) = field_infos.field_info_mut(&per_field.field_info.name) {
+                            info.set_store_term_vectors()?;
+                        }
+                    }
+                }
+            }
         }
         outcome
     }
@@ -1033,13 +1356,20 @@ impl IndexingChain for DefaultIndexingChain {
                 segment_info.name
             )));
         }
-        // Lucene chooses `SortingStoredFieldsConsumer` here when the segment
-        // has an index sort; index sorting is a separate port, so the plain
-        // consumer is the only option for now.
+        // Lucene chooses `SortingStoredFieldsConsumer` and
+        // `SortingTermVectorsConsumer` here when the segment has an index sort;
+        // index sorting is a separate port, so the plain consumers are the only
+        // option for now.
         self.stored_fields_consumer = Some(StoredFieldsConsumer::new(
+            self.config.codec(),
+            Arc::clone(&directory) as Arc<dyn crate::store::Directory>,
+            segment_info.clone(),
+        ));
+        self.term_vectors_consumer = Some(TermVectorsConsumer::new(
             self.config.codec(),
             directory,
             segment_info.clone(),
+            Arc::clone(&self.bytes_used),
         ));
         Ok(())
     }
@@ -1051,7 +1381,12 @@ impl IndexingChain for DefaultIndexingChain {
         if let Some(consumer) = self.stored_fields_consumer.as_mut() {
             consumer.abort();
         }
+        // `TermsHash.abort()` resets the postings buffers and then aborts the
+        // next hash of the chain, which closes the term-vectors writer.
         self.terms_writer.abort();
+        if let Some(consumer) = self.term_vectors_consumer.as_mut() {
+            consumer.abort();
+        }
         self.per_fields.clear();
         self.per_field_index.clear();
         self.bytes_used.store(0, Ordering::Release);
@@ -1063,6 +1398,10 @@ impl IndexingChain for DefaultIndexingChain {
                 .stored_fields_consumer
                 .as_ref()
                 .map_or(0, StoredFieldsConsumer::ram_bytes_used)
+            + self
+                .term_vectors_consumer
+                .as_ref()
+                .map_or(0, TermVectorsConsumer::ram_bytes_used)
     }
 
     fn flush(&mut self, state: &IndexingChainFlushState<'_>) -> Result<IndexingChainFlushResult> {
@@ -1078,11 +1417,19 @@ impl IndexingChain for DefaultIndexingChain {
         write_state.live_docs = state.live_docs.cloned();
         write_state.del_count_on_flush = state.del_count_on_flush;
 
-        // Lucene finishes the stored fields before the postings; the two write
-        // different files, so only the order of the calls is reproduced here.
+        // Lucene finishes the stored fields first, then `termsHash.flush`,
+        // whose `super.flush` finishes the term vectors before the postings
+        // format runs (`IndexingChain.java:340-370`,
+        // `FreqProxTermsWriter.java:118`). The three write different files, so
+        // only the order of the calls is reproduced here.
+        let max_doc = state.segment_info.max_doc()?;
         if let Some(consumer) = self.stored_fields_consumer.as_mut() {
-            consumer.finish(state.segment_info.max_doc()?)?;
+            consumer.finish(max_doc)?;
             consumer.flush(state.segment_info)?;
+        }
+
+        if let Some(consumer) = self.term_vectors_consumer.as_mut() {
+            consumer.flush(max_doc)?;
         }
 
         let norms = EmptyNormsProducer;
@@ -1975,5 +2322,791 @@ mod tests {
         chain.abort();
         assert_eq!(chain.ram_bytes_used(), 0);
         assert!(chain.field_invert_state("body").is_none());
+    }
+
+    // -- Term vectors ------------------------------------------------------
+
+    /// Builds a frozen field type that indexes and, optionally, stores term
+    /// vectors with the requested extras.
+    fn tv_field_type(
+        options: IndexOptions,
+        vectors: bool,
+        positions: bool,
+        offsets: bool,
+        payloads: bool,
+    ) -> FieldType {
+        let mut field_type = FieldType::new();
+        field_type.set_tokenized(true).expect("tokenized");
+        field_type.set_omit_norms(true).expect("omit norms");
+        field_type
+            .set_index_options(options)
+            .expect("index options");
+        field_type
+            .set_store_term_vectors(vectors)
+            .expect("store term vectors");
+        field_type
+            .set_store_term_vector_positions(positions)
+            .expect("store term vector positions");
+        field_type
+            .set_store_term_vector_offsets(offsets)
+            .expect("store term vector offsets");
+        field_type
+            .set_store_term_vector_payloads(payloads)
+            .expect("store term vector payloads");
+        field_type.freeze();
+        field_type
+    }
+
+    fn tv_field(
+        name: &str,
+        options: IndexOptions,
+        vectors: bool,
+        positions: bool,
+        offsets: bool,
+        payloads: bool,
+        tokens: Vec<Tok>,
+    ) -> Box<dyn IndexableField> {
+        let stream: Rc<RefCell<dyn TokenStream>> =
+            Rc::new(RefCell::new(ScriptedTokenStream::new(tokens)));
+        Box::new(
+            Field::new_with_token_stream(
+                name,
+                stream,
+                tv_field_type(options, vectors, positions, offsets, payloads),
+            )
+            .expect("token stream field"),
+        )
+    }
+
+    /// One field of one document's term vector, decoded from the segment.
+    #[derive(Debug, PartialEq, Eq)]
+    struct VectorField {
+        name: String,
+        has_positions: bool,
+        has_offsets: bool,
+        has_payloads: bool,
+        terms: Vec<VectorTerm>,
+    }
+
+    /// One term of one field of one document's term vector.
+    #[derive(Debug, PartialEq, Eq)]
+    struct VectorTerm {
+        term: String,
+        freq: i32,
+        positions: Vec<i32>,
+        offsets: Vec<(i32, i32)>,
+        payloads: Vec<Option<Vec<u8>>>,
+    }
+
+    /// Decodes every term vector of `doc_id`, or `None` when the document has
+    /// none.
+    fn read_vectors(
+        reader: &dyn crate::codecs::term_vectors::TermVectorsReader,
+        doc_id: i32,
+    ) -> Option<Vec<VectorField>> {
+        let fields = reader.get(doc_id).expect("term vectors")?;
+        let mut decoded = Vec::new();
+        for name in fields.iterator() {
+            let terms = fields
+                .terms(&name)
+                .expect("terms")
+                .expect("the iterator only yields present fields");
+            let has_positions = terms.has_positions();
+            let has_offsets = terms.has_offsets();
+            let has_payloads = terms.has_payloads();
+            let mut iterator = terms.iterator().expect("terms enum");
+            let mut decoded_terms = Vec::new();
+            while let Some(term) = iterator.next().expect("next term") {
+                let text = String::from_utf8(term.slice().to_vec()).expect("utf-8 term");
+                let mut postings = iterator
+                    .postings(None, crate::index::POSTINGS_ENUM_ALL)
+                    .expect("postings");
+                assert_eq!(postings.next_doc().expect("next doc"), 0);
+                let freq = postings.freq().expect("freq");
+                let mut positions = Vec::new();
+                let mut offsets = Vec::new();
+                let mut payloads = Vec::new();
+                if has_positions || has_offsets {
+                    for _ in 0..freq {
+                        let position = postings.next_position().expect("next position");
+                        if has_positions {
+                            positions.push(position);
+                        }
+                        if has_offsets {
+                            offsets.push((postings.start_offset(), postings.end_offset()));
+                        }
+                        if has_payloads {
+                            payloads
+                                .push(postings.get_payload().expect("payload").map(<[u8]>::to_vec));
+                        }
+                    }
+                }
+                decoded_terms.push(VectorTerm {
+                    term: text,
+                    freq,
+                    positions,
+                    offsets,
+                    payloads,
+                });
+            }
+            decoded.push(VectorField {
+                name,
+                has_positions,
+                has_offsets,
+                has_payloads,
+                terms: decoded_terms,
+            });
+        }
+        Some(decoded)
+    }
+
+    /// Indexes `documents`, flushes them, and returns the decoded term vectors
+    /// of every document alongside the files the flush created.
+    fn flush_and_read_vectors(
+        documents: Vec<Document>,
+    ) -> (Vec<String>, Vec<Option<Vec<VectorField>>>) {
+        let max_doc = documents.len() as i32;
+        let (mut chain, tracking, segment_info) = bound_chain(max_doc);
+        let mut field_infos = builder();
+        for (doc_id, document) in documents.iter().enumerate() {
+            chain
+                .process_document(doc_id as i32, document, true, &mut field_infos)
+                .expect("process document");
+        }
+        let finished = field_infos.finish().expect("field infos");
+
+        let info_stream = NoOutputInfoStream;
+        let context = flush_io_context(FlushInfo::new(max_doc, 0));
+        let state = IndexingChainFlushState {
+            info_stream: &info_stream,
+            directory: &tracking,
+            segment_info: &segment_info,
+            field_infos: &finished,
+            context: context.as_ref(),
+            live_docs: None,
+            del_count_on_flush: 0,
+            delete_terms: &[],
+        };
+        chain.flush(&state).expect("flush");
+
+        let mut files: Vec<String> = tracking.get_created_files().into_iter().collect();
+        files.sort();
+
+        let vectors = if files.iter().any(|name| name.ends_with(".tvd")) {
+            let codec = ensure_codec();
+            let reader = codec
+                .term_vectors_format()
+                .vectors_reader(
+                    tracking.as_ref(),
+                    &segment_info,
+                    &finished,
+                    &*crate::store::DEFAULT_IO_CONTEXT,
+                )
+                .expect("term vectors reader");
+            (0..max_doc)
+                .map(|doc_id| read_vectors(reader.as_ref(), doc_id))
+                .collect()
+        } else {
+            (0..max_doc).map(|_| None).collect()
+        };
+        (files, vectors)
+    }
+
+    #[test]
+    fn a_segment_without_vector_fields_writes_no_term_vector_file() {
+        let mut document = Document::new();
+        document.add(scripted_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            vec![Tok::new("alpha", 1, 0, 5)],
+        ));
+        let (files, vectors) = flush_and_read_vectors(vec![document]);
+        for extension in ["tvd", "tvx", "tvm"] {
+            assert!(
+                !files.iter().any(|name| name.ends_with(extension)),
+                "no field asked for term vectors, yet {files:?} carries .{extension}"
+            );
+        }
+        assert_eq!(vectors, vec![None]);
+    }
+
+    #[test]
+    fn only_the_fields_that_asked_for_vectors_are_written() {
+        let mut document = Document::new();
+        document.add(tv_field(
+            "with",
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            true,
+            false,
+            false,
+            false,
+            vec![Tok::new("alpha", 1, 0, 5)],
+        ));
+        document.add(scripted_field(
+            "without",
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            vec![Tok::new("beta", 1, 0, 4)],
+        ));
+        let (files, vectors) = flush_and_read_vectors(vec![document]);
+        for extension in ["tvd", "tvx", "tvm"] {
+            assert!(
+                files.iter().any(|name| name.ends_with(extension)),
+                "the flush must create a .{extension} file, got {files:?}"
+            );
+        }
+        let doc = vectors[0].as_ref().expect("doc 0 has vectors");
+        assert_eq!(
+            doc.iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["with"]
+        );
+        assert_eq!(
+            doc[0].terms,
+            vec![VectorTerm {
+                term: "alpha".to_string(),
+                freq: 1,
+                positions: Vec::new(),
+                offsets: Vec::new(),
+                payloads: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn terms_come_back_sorted_with_their_frequency() {
+        let mut document = Document::new();
+        document.add(tv_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            true,
+            false,
+            false,
+            false,
+            vec![
+                Tok::new("gamma", 1, 0, 5),
+                Tok::new("alpha", 1, 6, 11),
+                Tok::new("gamma", 1, 12, 17),
+                Tok::new("beta", 1, 18, 22),
+                Tok::new("gamma", 1, 23, 28),
+            ],
+        ));
+        let (_, vectors) = flush_and_read_vectors(vec![document]);
+        let doc = vectors[0].as_ref().expect("doc 0 has vectors");
+        assert_eq!(
+            doc[0]
+                .terms
+                .iter()
+                .map(|term| (term.term.as_str(), term.freq))
+                .collect::<Vec<_>>(),
+            vec![("alpha", 1), ("beta", 1), ("gamma", 3)],
+            "terms are sorted by their bytes and carry the in-document frequency"
+        );
+    }
+
+    #[test]
+    fn positions_offsets_and_payloads_round_trip_in_every_combination() {
+        // Offsets may be stored without positions, positions without offsets,
+        // payloads only alongside positions.
+        for (positions, offsets, payloads) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (true, true, false),
+            (true, false, true),
+            (true, true, true),
+        ] {
+            let mut document = Document::new();
+            document.add(tv_field(
+                "body",
+                IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+                true,
+                positions,
+                offsets,
+                payloads,
+                vec![
+                    Tok::new("alpha", 1, 0, 5).with_payload(b"one"),
+                    Tok::new("beta", 2, 10, 14).with_payload(b"two"),
+                    Tok::new("alpha", 1, 20, 25),
+                ],
+            ));
+            let (_, vectors) = flush_and_read_vectors(vec![document]);
+            let doc = vectors[0].as_ref().expect("doc 0 has vectors");
+            let field = &doc[0];
+            assert_eq!(field.has_positions, positions, "positions {positions:?}");
+            assert_eq!(field.has_offsets, offsets, "offsets {offsets:?}");
+            assert_eq!(
+                field.has_payloads, payloads,
+                "payloads are only reported once a token actually carried one"
+            );
+
+            let alpha = &field.terms[0];
+            assert_eq!(alpha.term, "alpha");
+            assert_eq!(alpha.freq, 2);
+            if positions {
+                assert_eq!(alpha.positions, vec![0, 3]);
+            }
+            if offsets {
+                assert_eq!(alpha.offsets, vec![(0, 5), (20, 25)]);
+            }
+            if payloads {
+                assert_eq!(
+                    alpha.payloads,
+                    vec![Some(b"one".to_vec()), None],
+                    "only the first occurrence carried a payload"
+                );
+            }
+
+            let beta = &field.terms[1];
+            assert_eq!(beta.term, "beta");
+            if positions {
+                assert_eq!(beta.positions, vec![2]);
+            }
+            if offsets {
+                assert_eq!(beta.offsets, vec![(10, 14)]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_payload_is_ignored_when_the_field_did_not_ask_for_one() {
+        let mut document = Document::new();
+        document.add(tv_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            true,
+            true,
+            false,
+            false,
+            vec![Tok::new("alpha", 1, 0, 5).with_payload(b"dropped")],
+        ));
+        let (_, vectors) = flush_and_read_vectors(vec![document]);
+        let doc = vectors[0].as_ref().expect("doc 0 has vectors");
+        assert!(
+            !doc[0].has_payloads,
+            "storeTermVectorPayloads was false, so the payload must not reach the stream"
+        );
+    }
+
+    #[test]
+    fn fields_are_written_in_name_order_whatever_the_document_order() {
+        let mut document = Document::new();
+        for name in ["zeta", "alpha", "mu"] {
+            document.add(tv_field(
+                name,
+                IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+                true,
+                true,
+                true,
+                false,
+                vec![Tok::new("token", 1, 0, 5)],
+            ));
+        }
+        let (_, vectors) = flush_and_read_vectors(vec![document]);
+        let doc = vectors[0].as_ref().expect("doc 0 has vectors");
+        assert_eq!(
+            doc.iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "mu", "zeta"]
+        );
+    }
+
+    #[test]
+    fn vector_fields_are_ordered_the_way_java_orders_strings() {
+        // `String.compareTo` compares UTF-16 code units, so a supplementary
+        // character sorts *before* `U+FFFF`; Rust's `str` ordering puts it
+        // after. The order reaches the `.tvd` bytes, so the Java comparator is
+        // the one that must be reproduced.
+        let mut document = Document::new();
+        for name in ["\u{FFFF}", "\u{10000}"] {
+            document.add(tv_field(
+                name,
+                IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+                true,
+                true,
+                false,
+                false,
+                vec![Tok::new("token", 1, 0, 5)],
+            ));
+        }
+        let (_, vectors) = flush_and_read_vectors(vec![document]);
+        let doc = vectors[0].as_ref().expect("doc 0 has vectors");
+        assert_eq!(
+            doc.iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["\u{10000}", "\u{FFFF}"]
+        );
+    }
+
+    #[test]
+    fn documents_without_vectors_keep_their_doc_id() {
+        // Only the middle document carries vectors, and it is not the first, so
+        // both the back-fill and the tail padding are exercised.
+        let mut documents = Vec::new();
+        for doc_id in 0..5 {
+            let mut document = Document::new();
+            if doc_id == 2 {
+                document.add(tv_field(
+                    "body",
+                    IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+                    true,
+                    true,
+                    false,
+                    false,
+                    vec![Tok::new("alpha", 1, 0, 5)],
+                ));
+            } else {
+                document.add(scripted_field(
+                    "other",
+                    IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+                    vec![Tok::new("beta", 1, 0, 4)],
+                ));
+            }
+            documents.push(document);
+        }
+        let (_, vectors) = flush_and_read_vectors(documents);
+        assert!(vectors[0].is_none());
+        assert!(vectors[1].is_none());
+        let doc = vectors[2].as_ref().expect("doc 2 has vectors");
+        assert_eq!(doc[0].terms[0].term, "alpha");
+        assert!(vectors[3].is_none());
+        assert!(vectors[4].is_none());
+    }
+
+    #[test]
+    fn an_empty_document_after_a_vector_document_still_occupies_a_frame() {
+        let mut first = Document::new();
+        first.add(tv_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            true,
+            true,
+            true,
+            false,
+            vec![Tok::new("alpha", 1, 0, 5)],
+        ));
+        let (_, vectors) = flush_and_read_vectors(vec![first, Document::new()]);
+        assert!(vectors[0].is_some());
+        assert!(
+            vectors[1].is_none(),
+            "the second document stored nothing, but its frame must exist"
+        );
+    }
+
+    #[test]
+    fn a_vector_field_with_no_token_writes_no_field_but_keeps_the_frame() {
+        let mut first = Document::new();
+        first.add(tv_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            true,
+            true,
+            false,
+            false,
+            vec![Tok::new("alpha", 1, 0, 5)],
+        ));
+        let mut second = Document::new();
+        second.add(tv_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            true,
+            true,
+            false,
+            false,
+            Vec::new(),
+        ));
+        let (_, vectors) = flush_and_read_vectors(vec![first, second]);
+        assert!(vectors[0].is_some());
+        assert!(
+            vectors[1].is_none(),
+            "a field that produced no term is not added to the document's frame"
+        );
+    }
+
+    #[test]
+    fn a_multi_valued_field_accumulates_one_vector() {
+        let mut document = Document::new();
+        for value in 0..2 {
+            document.add(tv_field(
+                "body",
+                IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+                true,
+                true,
+                true,
+                false,
+                vec![Tok::new("alpha", 1, value * 10, value * 10 + 5)],
+            ));
+        }
+        let (_, vectors) = flush_and_read_vectors(vec![document]);
+        let doc = vectors[0].as_ref().expect("doc 0 has vectors");
+        assert_eq!(doc.len(), 1);
+        assert_eq!(doc[0].terms.len(), 1);
+        assert_eq!(doc[0].terms[0].freq, 2);
+        assert_eq!(
+            doc[0].terms[0].positions.len(),
+            2,
+            "both instances contribute to the same vector"
+        );
+    }
+
+    #[test]
+    fn many_documents_span_several_chunks() {
+        // The compressing format flushes a chunk every 4 KiB of term bytes or
+        // every 128 documents, so 400 documents of long terms cross both.
+        let documents: Vec<Document> = (0..400)
+            .map(|doc_id| {
+                let mut document = Document::new();
+                let tokens: Vec<Tok> = (0..8)
+                    .map(|token| {
+                        Tok::new(
+                            &format!("term-{doc_id:04}-{token}-padding-padding"),
+                            1,
+                            token * 30,
+                            token * 30 + 25,
+                        )
+                    })
+                    .collect();
+                document.add(tv_field(
+                    "body",
+                    IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+                    true,
+                    true,
+                    true,
+                    false,
+                    tokens,
+                ));
+                document
+            })
+            .collect();
+        let (_, vectors) = flush_and_read_vectors(documents);
+        for (doc_id, doc) in vectors.iter().enumerate() {
+            let doc = doc.as_ref().unwrap_or_else(|| panic!("doc {doc_id}"));
+            assert_eq!(doc[0].terms.len(), 8, "doc {doc_id}");
+            assert_eq!(
+                doc[0].terms[0].term,
+                format!("term-{doc_id:04}-0-padding-padding")
+            );
+            assert_eq!(doc[0].terms[7].offsets, vec![(210, 235)]);
+        }
+    }
+
+    #[test]
+    fn a_position_delta_past_half_of_i32_round_trips() {
+        // `writeProx` encodes the delta as `delta << 1`, which overflows an
+        // `int` above `Integer.MAX_VALUE / 2`; Java wraps and `addProx` recovers
+        // the value with `>>>`. `MAX_POSITION` still allows such a delta.
+        let far = MAX_POSITION - 1;
+        let mut document = Document::new();
+        document.add(tv_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            true,
+            true,
+            false,
+            false,
+            vec![Tok::new("alpha", 1, 0, 5), Tok::new("alpha", far, 6, 11)],
+        ));
+        let (_, vectors) = flush_and_read_vectors(vec![document]);
+        let doc = vectors[0].as_ref().expect("doc 0 has vectors");
+        assert_eq!(doc[0].terms[0].positions, vec![0, far]);
+    }
+
+    #[test]
+    fn vector_settings_must_not_change_between_instances_of_one_field() {
+        let (mut bound, _tracking, _) = bound_chain(1);
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        document.add(tv_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            true,
+            true,
+            false,
+            false,
+            vec![Tok::new("alpha", 1, 0, 5)],
+        ));
+        document.add(tv_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            true,
+            false,
+            false,
+            false,
+            vec![Tok::new("beta", 1, 6, 10)],
+        ));
+        let error = bound
+            .process_document(0, &document, true, &mut field_infos)
+            .expect_err("the two instances disagree on storeTermVectorPositions");
+        assert!(
+            matches!(error, LuceneError::IllegalArgument(_)),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn payloads_without_positions_are_rejected() {
+        let (mut chain, _tracking, _) = bound_chain(1);
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        document.add(tv_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            true,
+            false,
+            false,
+            true,
+            vec![Tok::new("alpha", 1, 0, 5)],
+        ));
+        let error = chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect_err("payloads need positions");
+        assert!(
+            matches!(&error, LuceneError::IllegalArgument(message)
+                if message.contains("cannot index term vector payloads without term vector positions")),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn vector_extras_without_vectors_are_rejected() {
+        for (positions, offsets, payloads, expected) in [
+            (true, false, false, "positions"),
+            (false, true, false, "offsets"),
+            (false, false, true, "payloads"),
+        ] {
+            let (mut chain, _tracking, _) = bound_chain(1);
+            let mut field_infos = builder();
+            let mut document = Document::new();
+            document.add(tv_field(
+                "body",
+                IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+                false,
+                positions,
+                offsets,
+                payloads,
+                vec![Tok::new("alpha", 1, 0, 5)],
+            ));
+            let error = chain
+                .process_document(0, &document, true, &mut field_infos)
+                .expect_err("term vectors were not requested");
+            assert!(
+                matches!(&error, LuceneError::IllegalArgument(message)
+                    if message.contains(&format!("cannot index term vector {expected} when term vectors are not indexed"))),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn term_vectors_on_a_field_that_is_not_indexed_are_rejected() {
+        let (mut chain, _tracking, _) = bound_chain(1);
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        let mut field_type = FieldType::new();
+        field_type.set_stored(true).expect("stored");
+        field_type
+            .set_store_term_vectors(true)
+            .expect("store term vectors");
+        field_type.freeze();
+        document.add(Box::new(
+            Field::new("title", "value".to_string(), field_type).expect("field"),
+        ));
+        let error = chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect_err("a non-indexed field cannot store term vectors");
+        assert!(
+            matches!(&error, LuceneError::IllegalArgument(message)
+                if message.contains("cannot store term vectors for a field that is not indexed")),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn the_field_infos_record_that_a_field_stores_term_vectors() {
+        let (mut chain, _tracking, _) = bound_chain(1);
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        document.add(tv_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            true,
+            true,
+            false,
+            false,
+            vec![Tok::new("alpha", 1, 0, 5)],
+        ));
+        document.add(scripted_field(
+            "plain",
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            vec![Tok::new("beta", 1, 0, 4)],
+        ));
+        chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect("process document");
+        let finished = field_infos.finish().expect("field infos");
+        assert!(finished.has_term_vectors());
+        assert!(finished
+            .field_info("body")
+            .expect("body")
+            .has_term_vectors());
+        assert!(!finished
+            .field_info("plain")
+            .expect("plain")
+            .has_term_vectors());
+    }
+
+    #[test]
+    fn the_term_vector_files_are_released_on_abort() {
+        let (mut chain, tracking, _) = bound_chain(1);
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        document.add(tv_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            true,
+            true,
+            true,
+            false,
+            vec![Tok::new("alpha", 1, 0, 5)],
+        ));
+        chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect("process document");
+        assert!(chain
+            .term_vectors_consumer()
+            .expect("bound chain")
+            .has_writer());
+        chain.abort();
+        let consumer = chain.term_vectors_consumer().expect("bound chain");
+        assert!(!consumer.has_writer());
+        assert!(consumer.is_aborted());
+        // The files were created and must be dropped by the DWPT, which is why
+        // the tracking wrapper still lists them.
+        assert!(tracking
+            .get_created_files()
+            .iter()
+            .any(|name| name.ends_with(".tvd")));
+    }
+
+    #[test]
+    fn an_unbound_chain_refuses_a_field_that_asks_for_vectors() {
+        let mut chain = DefaultIndexingChain::new(config());
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        document.add(tv_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            true,
+            true,
+            false,
+            false,
+            vec![Tok::new("alpha", 1, 0, 5)],
+        ));
+        let error = chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect_err("silently dropping term vectors would corrupt the segment");
+        assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
     }
 }
