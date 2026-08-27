@@ -101,15 +101,23 @@ types with the same name in different modules stay distinct.
 
 Older syncs registered Rust types under the Java labels (`Class`, `Interface`,
 `Struct`, `Trait`) or under `Component`; those nodes are still present and are
-told apart from the Java ones by a `file` that starts with `src/`.
+told apart from the Java ones by a `file` that starts with `src/`. When such a
+legacy node turns out to be an exact duplicate of a current-convention node —
+same type name, same `src/` file — the sync that touches that file removes the
+legacy one, so that a type is never represented twice. The 2026-08-27 sync did
+this for the four Lucene90 term-vectors types.
 
 ### `Component`
 A named unit of the local crate registered before the `Rust*` labels existed
 (mostly `src/util.rs` and `src/store.rs` items). Identity is `name`. New work
 uses `RustStruct`/`RustTrait`/`RustEnum` for anything that declares a Rust type,
-and keeps `Component` for a module of free functions that declares none — the
-ports of Lucene's static utility classes, such as `ArrayUtil`, `BitUtil`,
-`IOUtils`, `NumericUtils` and `VectorUtil`.
+and keeps `Component` for a crate unit that declares no Rust type: a module of
+free functions — the ports of Lucene's static utility classes, such as
+`ArrayUtil`, `BitUtil`, `IOUtils`, `NumericUtils` and `VectorUtil` — or a single
+free function that is a load-bearing port in its own right, which carries
+`kind: "function"` and a `file`, and reaches its file through `IMPLEMENTED_IN`.
+`compare_utf16` in `src/util/string_helper.rs` is the first of these: it ports
+the `String.compareTo` ordering Lucene writes field names in.
 
 ### `Task`
 An `rmp` task, mirrored into the graph when it is closed.
@@ -175,7 +183,7 @@ A high-level functional capability, used to link packages/types to what they imp
 | `CONTAINS` | `Project` → `Module`, `Module` → `Package`, `Package` → `Package`, `Package` → `Class`/`Interface`/`Enum`/`Exception`/`Annotation`, `Class` → `Method`. |
 | `DECLARES` | `File` → `Class`/`Interface`/`Enum`/`Exception`/`Annotation`/`Method`, and, for local crate files, `File` → `RustStruct`/`RustTrait`/`RustEnum`. |
 | `NESTED_IN` | `Class` (inner type) → `Class` (enclosing top-level type). |
-| `DEPENDS_ON` | `Package` → `Package`, `Class` → `Class`, `Module` → `Module`, and Rucene type → Rucene type (`RustStruct`/`RustTrait`/`RustEnum`/legacy `Trait`), optionally carrying a `note` that says what the dependency is. |
+| `DEPENDS_ON` | `Package` → `Package`, `Class` → `Class`, `Module` → `Module`, and Rucene type → Rucene type (`RustStruct`/`RustTrait`/`RustEnum`/`Component`/legacy `Trait`), optionally carrying a `note` that says what the dependency is. |
 | `EXTENDS` | `Class` → `Class` / `Class` → `Interface`. |
 | `IMPLEMENTS` | `Class` → `Interface`, and Rucene type → `RustTrait` (the Rust type implements that trait). |
 | `EXPORTS` | `Feature` (`module-info`) → `Package` (JPMS exported package). |
@@ -184,7 +192,7 @@ A high-level functional capability, used to link packages/types to what they imp
 | `USES` | `Feature` (`module-info`) → `Class` (SPI service interface). |
 | `PROVIDES` | `Feature` (`module-info`) → `Class` (SPI service interface). |
 | `PROVIDED_BY` | `Class` (SPI interface) → `Class` (implementation). |
-| `TESTS` | `File` / `Class` → `Feature` / `Class` / `RustStruct`/`RustTrait`/`RustEnum`. A portability test file points at the harness `Feature` it belongs to and at the Rucene types whose behaviour it pins down. |
+| `TESTS` | `File` / `Class` → `Feature` / `Class` / `RustStruct`/`RustTrait`/`RustEnum`/`Component`. A portability test file points at the harness `Feature` it belongs to and at the Rucene types whose behaviour it pins down. |
 | `SPECIFIED_IN` | `Feature` → `File` (specification document). |
 | `REFERENCES` | `Project` → `Project` (Rucene references Apache Lucene Core 10.5.0). |
 | `PORTS` | Rucene type (`RustStruct`/`RustTrait`/`RustEnum`/`Component`) → Lucene `Class`/`Interface`/`Enum`. The Rust type is the port of that Lucene type. Optional `note` property records that the port is partial, a placeholder, or a deliberate adaptation, and says what is missing or what was changed and why. |
@@ -212,7 +220,7 @@ Every node and edge carries `gitCommit` (full 40-char hash) and `gitDate` (`YYYY
 | `Class`/`Interface`/`Enum`/`Exception`/`Annotation` | populated (1,196 top-level types from `lucene/core`, including `src/java` and `src/java21` sources); inner classes are not yet modelled |
 | `Method` | target — populated selectively for key APIs |
 | `File` | populated (1,232 source files from `lucene/core` — `src/java`, `src/java21` and `module-info.java` — plus local project files) |
-| `Feature` | populated (35 nodes): JPMS module descriptors, Lucene-side capability groupings, and Rucene features created per synced commit |
+| `Feature` | populated (36 nodes): JPMS module descriptors, Lucene-side capability groupings, and Rucene features created per synced commit |
 | `CONTAINS` | populated (project→module, module→package, package→file) |
 | `DECLARES` | populated (file→top-level type, Java and Rust) |
 | `DEPENDS_ON` | populated (package→package dependencies derived from imports; type→type added per synced commit) |
