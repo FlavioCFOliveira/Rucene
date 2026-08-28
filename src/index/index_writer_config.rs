@@ -28,6 +28,7 @@ use crate::index::index_deletion_policy::{IndexDeletionPolicy, KeepOnlyLastCommi
 use crate::index::leaf_reader::LeafReader;
 use crate::index::IndexCommit;
 use crate::search::Sort;
+pub use crate::search::{BM25Similarity, Similarity};
 use crate::util::extra::Version;
 use crate::util::InfoStream;
 
@@ -46,12 +47,6 @@ pub trait MergePolicy: Send + Sync + Debug {}
 /// Only the minimal trait bounds needed by `IndexWriterConfig` are enforced;
 /// the actual merge scheduling will be added in a later task.
 pub trait MergeScheduler: Send + Sync + Debug {}
-
-/// Placeholder for `org.apache.lucene.search.similarities.Similarity`.
-///
-/// Only the minimal trait bounds needed by `IndexWriterConfig` are enforced;
-/// scoring logic will be added in a later task.
-pub trait Similarity: Send + Sync + Debug {}
 
 /// Placeholder for `org.apache.lucene.index.IndexWriter.IndexReaderWarmer`.
 ///
@@ -85,16 +80,6 @@ impl MergeScheduler for ConcurrentMergeScheduler {}
 pub struct TieredMergePolicy;
 
 impl MergePolicy for TieredMergePolicy {}
-
-/// Default similarity used when no other implementation is supplied.
-///
-/// In Java Lucene 10.5.0 `IndexSearcher.getDefaultSimilarity()` returns a
-/// `BM25Similarity`.  This placeholder preserves the same default semantics
-/// for `IndexWriterConfig` until the full scoring layer is ported.
-#[derive(Debug)]
-pub struct DefaultSimilarity;
-
-impl Similarity for DefaultSimilarity {}
 
 /// Placeholder for `org.apache.lucene.index.MergePolicy.MergeSpecification`.
 ///
@@ -243,7 +228,7 @@ impl LiveIndexWriterConfig {
             commit: None,
             open_mode: OpenMode::CREATE_OR_APPEND,
             created_version_major: Version::LATEST.major as i32,
-            similarity: Arc::new(DefaultSimilarity),
+            similarity: Arc::new(BM25Similarity::new()),
             merge_scheduler: Arc::new(ConcurrentMergeScheduler),
             codec,
             info_stream: Arc::new(crate::util::NoOutputInfoStream),
@@ -382,6 +367,23 @@ impl LiveIndexWriterConfig {
     /// Returns the similarity implementation.
     pub fn similarity(&self) -> Arc<dyn Similarity> {
         Arc::clone(&self.similarity)
+    }
+
+    /// Sets the similarity implementation.
+    ///
+    /// Java declares `setSimilarity` on `IndexWriterConfig`, which *extends*
+    /// `LiveIndexWriterConfig` and therefore assigns the inherited field
+    /// directly. This port composes the two instead of inheriting, so the
+    /// assignment needs a method on the inner config;
+    /// [`IndexWriterConfig::set_similarity`] is the public entry point and
+    /// delegates here.
+    ///
+    /// The similarity is read once per document per indexed field with norms,
+    /// so changing it part-way through a segment would leave that segment with
+    /// norms from two different similarities.
+    pub fn set_similarity(&mut self, similarity: Arc<dyn Similarity>) -> &mut Self {
+        self.similarity = similarity;
+        self
     }
 
     /// Returns the merge scheduler.
@@ -708,9 +710,11 @@ impl IndexWriterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `similarity` is null.
+    /// Java throws `IllegalArgumentException` when `similarity` is null; a
+    /// `Arc<dyn Similarity>` cannot be null, so this never fails. The `Result`
+    /// is kept so that the builder reads uniformly with its siblings.
     pub fn set_similarity(&mut self, similarity: Arc<dyn Similarity>) -> Result<&mut Self> {
-        self.live.similarity = similarity;
+        self.live.set_similarity(similarity);
         Ok(self)
     }
 

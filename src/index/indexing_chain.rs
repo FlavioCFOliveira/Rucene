@@ -86,9 +86,11 @@ use crate::index::documents_writer::{
 use crate::index::field_infos::FieldInfosBuilder;
 use crate::index::freq_prox_terms_writer::{FreqProxTermsWriter, InvertedToken};
 use crate::index::index_writer_config::LiveIndexWriterConfig;
+use crate::index::norms_writer::NormValuesWriter;
 use crate::index::stored_fields_consumer::StoredFieldsConsumer;
 use crate::index::term_vectors_consumer::TermVectorsConsumer;
 use crate::index::{FieldInfo, IndexOptions, IndexableField, IndexableFieldType, SegmentInfo};
+use crate::search::Similarity;
 use crate::store::TrackingDirectoryWrapper;
 use crate::util::byte_block_pool::MAX_TERM_LENGTH;
 use crate::util::{AttributeSource, BytesRef, InfoStream};
@@ -322,6 +324,13 @@ struct PerField {
     /// `true` until the first instance of this field is inverted in the current
     /// document; multi-valued fields see it `false` from the second value on.
     first: bool,
+    /// Buffered norms of this field, or `None` when the field omits norms or is
+    /// not indexed.
+    ///
+    /// Lucene creates it in `PerField.setInvertState()`, guarded by
+    /// `fieldInfo.omitsNorms() == false` (`IndexingChain.java:1837-1841`), and
+    /// keeps it for the whole segment.
+    norms: Option<NormValuesWriter>,
 }
 
 /// Which attributes a field instance's token stream actually carries.
@@ -698,6 +707,15 @@ impl DefaultIndexingChain {
             field_info.name.clone(),
             field_info.index_options,
         );
+        // `PerField.setInvertState()` creates the norms buffer for every
+        // indexed field that does not omit norms, *before* any document is
+        // seen: "Even if no documents actually succeed in setting a norm, we
+        // still write norms for this segment"
+        // (`IndexingChain.java:1837-1841`). `has_norms()` is exactly Java's
+        // `indexOptions != NONE && omitNorms == false`.
+        let norms = field_info
+            .has_norms()
+            .then(|| NormValuesWriter::new(field_info.clone(), Arc::clone(&self.bytes_used)));
         let index = self.per_fields.len();
         self.per_fields.push(PerField {
             field_info: field_info.clone(),
@@ -707,6 +725,7 @@ impl DefaultIndexingChain {
             do_vectors: false,
             field_gen: -1,
             first: true,
+            norms,
         });
         self.per_field_index.insert(field_info.name.clone(), index);
         index
@@ -1190,6 +1209,100 @@ impl DefaultIndexingChain {
         }
         Ok(())
     }
+    /// Writes the buffered norms of every field of the segment.
+    ///
+    /// Equivalent to `IndexingChain.writeNorms(SegmentWriteState,
+    /// Sorter.DocMap)` (`IndexingChain.java:503-532`), without the doc map;
+    /// see [`crate::index::norms_writer`].
+    ///
+    /// Nothing at all is written — not even the two empty files — when no field
+    /// of the segment has norms, which is what `state.fieldInfos.hasNorms()`
+    /// guards. The fields are visited in field-number order, because that is
+    /// the order `FieldInfos` iterates in and the `.nvm` entries follow it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when a field that should have
+    /// norms has no buffer, which would mean the chain never saw the field.
+    fn write_norms(&mut self, state: &SegmentWriteState<'_>, max_doc: i32) -> Result<()> {
+        if !state.field_infos.has_norms() {
+            return Ok(());
+        }
+        let mut consumer = self.config.codec().norms_format().norms_consumer(state)?;
+        // Java's `finally` closes the consumer whether or not a field threw, so
+        // that the two files never leak. The write outcome is held and the
+        // close runs either way.
+        let outcome = (|| -> Result<()> {
+            for info in state.field_infos.iter() {
+                // Java re-reads `omitsNorms()` and `getIndexOptions()` from the
+                // *final* field info rather than trusting the one the writer
+                // was created with; `has_norms()` is exactly that conjunction.
+                if !info.has_norms() {
+                    continue;
+                }
+                let index = *self.per_field_index.get(&info.name).ok_or_else(|| {
+                    LuceneError::IllegalState(format!(
+                        "field \"{}\" has norms but was never seen by the indexing chain",
+                        info.name
+                    ))
+                })?;
+                let norms = self.per_fields[index].norms.as_mut().ok_or_else(|| {
+                    LuceneError::IllegalState(format!(
+                        "field \"{}\" has norms but no norms buffer",
+                        info.name
+                    ))
+                })?;
+                norms.finish(max_doc);
+                norms.flush(consumer.as_mut())?;
+            }
+            Ok(())
+        })();
+        let close_outcome = consumer.close();
+        outcome?;
+        close_outcome
+    }
+
+    /// Buffers the norm of one field of one document.
+    ///
+    /// Equivalent to the norms half of `IndexingChain.PerField.finish(int)`
+    /// (`IndexingChain.java:1853-1869`).
+    ///
+    /// A field that appeared in the document but produced no tokens gets a norm
+    /// of `0` without consulting the similarity — that is how the reader tells
+    /// "present but empty" from "absent". For every other field the similarity
+    /// decides, and a similarity that answers `0` for a non-empty field is
+    /// rejected, because `0` is reserved for the empty case and would make the
+    /// two indistinguishable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the similarity returns `0`
+    /// for a non-empty field, and propagates whatever
+    /// [`Similarity::compute_norm`] and [`NormValuesWriter::add_value`] raise.
+    fn finish_norms(
+        similarity: &dyn Similarity,
+        per_field: &mut PerField,
+        doc_id: i32,
+    ) -> Result<()> {
+        // `fieldInfo.omitsNorms() == false` in Java; a field with no norms
+        // writer is exactly a field that omits them or is not indexed, and
+        // `finish` is only reached for indexed fields.
+        let Some(norms) = per_field.norms.as_mut() else {
+            return Ok(());
+        };
+        let norm_value = if per_field.invert_state.length() == 0 {
+            0
+        } else {
+            let value = similarity.compute_norm(&per_field.invert_state)?;
+            if value == 0 {
+                return Err(LuceneError::IllegalState(format!(
+                    "Similarity {similarity:?} return 0 for non-empty field"
+                )));
+            }
+            value
+        };
+        norms.add_value(doc_id, norm_value)
+    }
 }
 
 impl IndexingChain for DefaultIndexingChain {
@@ -1299,7 +1412,25 @@ impl IndexingChain for DefaultIndexingChain {
             // records that the field stores payloads, which the field infos
             // must carry into the segment, and
             // `TermVectorsConsumerPerField.finish` queues the field's vector.
+            let similarity = self.config.similarity();
             for index in indexed {
+                // `PerField.finish(docID)` computes the norm *before*
+                // `termsHashPerField.finish()` (`IndexingChain.java:1853-1870`).
+                if let Err(error) =
+                    Self::finish_norms(similarity.as_ref(), &mut self.per_fields[index], doc_id)
+                {
+                    // A norm failure is a document-level problem, exactly like
+                    // the validation errors `invert` raises: the document is
+                    // dropped and indexing continues. Java propagates it out of
+                    // its `finally` and so skips the rest of the tail; this port
+                    // keeps running it, because the stored-fields stream must
+                    // stay aligned with the doc ids for the documents that did
+                    // succeed. The error is still returned to the caller, and
+                    // the first failure is the one reported.
+                    if outcome.is_ok() {
+                        outcome = Err(error);
+                    }
+                }
                 let per_field = &self.per_fields[index];
                 if let Some(writer_index) = per_field.writer_index {
                     if self.terms_writer.field(writer_index).saw_payloads() {
@@ -1417,12 +1548,14 @@ impl IndexingChain for DefaultIndexingChain {
         write_state.live_docs = state.live_docs.cloned();
         write_state.del_count_on_flush = state.del_count_on_flush;
 
-        // Lucene finishes the stored fields first, then `termsHash.flush`,
-        // whose `super.flush` finishes the term vectors before the postings
-        // format runs (`IndexingChain.java:340-370`,
-        // `FreqProxTermsWriter.java:118`). The three write different files, so
-        // only the order of the calls is reproduced here.
+        // Lucene writes the norms first, then the stored fields, then
+        // `termsHash.flush`, whose `super.flush` finishes the term vectors
+        // before the postings format runs (`IndexingChain.java:305`, `:340-370`,
+        // `FreqProxTermsWriter.java:118`). They write different files, so only
+        // the order of the calls is reproduced here.
         let max_doc = state.segment_info.max_doc()?;
+        self.write_norms(&write_state, max_doc)?;
+
         if let Some(consumer) = self.stored_fields_consumer.as_mut() {
             consumer.finish(max_doc)?;
             consumer.flush(state.segment_info)?;
@@ -1432,6 +1565,13 @@ impl IndexingChain for DefaultIndexingChain {
             consumer.flush(max_doc)?;
         }
 
+        // Java hands `termsHash.flush` the merge instance of a real norms
+        // producer opened over the files `write_norms` has just written
+        // (`IndexingChain.java:361-370`), because its postings writer folds the
+        // per-document norm into the impact blocks. Rucene's
+        // `Lucene104PostingsWriter` treats every norm as one — see its module
+        // documentation — so the real producer would be opened, read and
+        // ignored. The constant one stays until the postings writer can use it.
         let norms = EmptyNormsProducer;
         self.terms_writer
             .flush(&mut write_state, state.delete_terms, &norms)?;
@@ -2001,6 +2141,494 @@ mod tests {
         let mut files: Vec<String> = tracking.get_created_files().into_iter().collect();
         files.sort();
         (files, result, segment_info, tracking)
+    }
+
+    // -- Norms -------------------------------------------------------------
+
+    /// A field type that keeps norms; the shared [`field_type`] omits them.
+    fn norm_field_type(options: IndexOptions) -> FieldType {
+        let mut field_type = FieldType::new();
+        field_type.set_tokenized(true).expect("tokenized");
+        field_type.set_omit_norms(false).expect("keep norms");
+        field_type
+            .set_index_options(options)
+            .expect("index options");
+        field_type.freeze();
+        field_type
+    }
+
+    fn scripted_norm_field(
+        name: &str,
+        options: IndexOptions,
+        tokens: Vec<Tok>,
+    ) -> Box<dyn IndexableField> {
+        let stream: Rc<RefCell<dyn TokenStream>> =
+            Rc::new(RefCell::new(ScriptedTokenStream::new(tokens)));
+        Box::new(
+            Field::new_with_token_stream(name, stream, norm_field_type(options))
+                .expect("token stream field"),
+        )
+    }
+
+    fn words(count: i32) -> Vec<Tok> {
+        (0..count)
+            .map(|i| Tok::new(&format!("t{i}"), 1, i * 4, i * 4 + 2))
+            .collect()
+    }
+
+    /// Flushes `documents` with `config` and reads every norm back out of the
+    /// segment the chain wrote, as `(field, doc, value)` in field-number order.
+    fn flush_and_read_norms(
+        config: Arc<LiveIndexWriterConfig>,
+        documents: Vec<Document>,
+    ) -> (Vec<String>, Vec<(String, i32, i64)>) {
+        let max_doc = documents.len() as i32;
+        let codec = ensure_codec();
+        let tracking = Arc::new(TrackingDirectoryWrapper::new(Box::new(
+            ByteBuffersDirectory::new(),
+        )));
+        let directory: Arc<dyn Directory> = Arc::clone(&tracking) as Arc<dyn Directory>;
+        let make_info = |max_doc| {
+            SegmentInfo::new(
+                Arc::clone(&directory),
+                Version::LATEST,
+                Some(Version::LATEST),
+                "_0".to_string(),
+                max_doc,
+                false,
+                false,
+                Arc::clone(&codec),
+                HashMap::new(),
+                [7u8; 16],
+                HashMap::new(),
+                Default::default(),
+            )
+            .expect("segment info")
+        };
+        let indexing_info = make_info(-1);
+        let mut chain =
+            DefaultIndexingChain::new_for_segment(config, Arc::clone(&tracking), &indexing_info)
+                .expect("bind segment");
+        let mut field_infos = builder();
+        for (doc_id, document) in documents.iter().enumerate() {
+            chain
+                .process_document(doc_id as i32, document, true, &mut field_infos)
+                .expect("process document");
+        }
+        let finished = field_infos.finish().expect("field infos");
+        let segment_info = make_info(max_doc);
+        let info_stream = NoOutputInfoStream;
+        let context = flush_io_context(FlushInfo::new(max_doc, 0));
+        let state = IndexingChainFlushState {
+            info_stream: &info_stream,
+            directory: &tracking,
+            segment_info: &segment_info,
+            field_infos: &finished,
+            context: context.as_ref(),
+            live_docs: None,
+            del_count_on_flush: 0,
+            delete_terms: &[],
+        };
+        chain.flush(&state).expect("flush");
+
+        let mut files: Vec<String> = tracking.get_created_files().into_iter().collect();
+        files.sort();
+
+        let mut norms = Vec::new();
+        if finished.has_norms() {
+            let read_state = crate::codecs::state::SegmentReadState::new(
+                tracking.as_ref(),
+                &segment_info,
+                &finished,
+                &*crate::store::DEFAULT_IO_CONTEXT,
+            );
+            let producer = codec
+                .norms_format()
+                .norms_producer(&read_state)
+                .expect("norms producer");
+            producer.check_integrity().expect("integrity");
+            for info in finished.iter().filter(|info| info.has_norms()) {
+                let mut values = producer.get_norms(info).expect("norms");
+                loop {
+                    let doc = values.next_doc().expect("next doc");
+                    if doc == crate::search::NO_MORE_DOCS {
+                        break;
+                    }
+                    norms.push((
+                        info.name.clone(),
+                        doc,
+                        values.long_value().expect("long value"),
+                    ));
+                }
+            }
+        }
+        (files, norms)
+    }
+
+    #[test]
+    fn a_stored_only_field_cannot_become_a_field_with_norms_mid_segment() {
+        // The norms buffer is created once, when the field is first seen, so a
+        // field that arrives stored-only and later asks to be indexed would
+        // have none. It cannot: the field infos refuse the schema change first,
+        // the document is dropped, and the segment flushes without norms — so
+        // `write_norms`' "has norms but no norms buffer" guard stays
+        // unreachable through the ordinary path.
+        let mut stored_type = FieldType::new();
+        stored_type.set_stored(true).expect("stored");
+        stored_type.freeze();
+
+        let mut first = Document::new();
+        first.add(Box::new(
+            Field::new("body", "value".to_string(), stored_type).expect("stored field"),
+        ));
+        let mut second = Document::new();
+        second.add(scripted_norm_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS,
+            words(2),
+        ));
+
+        let (mut chain, tracking, segment_info) = bound_chain(2);
+        let mut field_infos = builder();
+        chain
+            .process_document(0, &first, true, &mut field_infos)
+            .expect("the stored-only document is fine");
+        let error = chain
+            .process_document(1, &second, true, &mut field_infos)
+            .expect_err("the schema change must be refused");
+        assert!(
+            matches!(error, LuceneError::IllegalArgument(ref m)
+                if m.contains("index options")),
+            "unexpected error: {error:?}"
+        );
+        assert!(chain.take_aborting_error().is_none());
+
+        let finished = field_infos.finish().expect("field infos");
+        assert!(!finished.has_norms());
+        let info_stream = NoOutputInfoStream;
+        let context = flush_io_context(FlushInfo::new(2, 0));
+        let state = IndexingChainFlushState {
+            info_stream: &info_stream,
+            directory: &tracking,
+            segment_info: &segment_info,
+            field_infos: &finished,
+            context: context.as_ref(),
+            live_docs: None,
+            del_count_on_flush: 0,
+            delete_terms: &[],
+        };
+        chain.flush(&state).expect("the segment still flushes");
+    }
+
+    #[test]
+    fn a_field_with_norms_writes_the_two_norms_files() {
+        let mut document = Document::new();
+        document.add(scripted_norm_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS,
+            words(3),
+        ));
+        let (files, norms) = flush_and_read_norms(config(), vec![document]);
+        for extension in ["nvd", "nvm"] {
+            assert!(
+                files
+                    .iter()
+                    .any(|name| name.ends_with(&format!(".{extension}"))),
+                "the flush must create a .{extension} file, got {files:?}"
+            );
+        }
+        assert_eq!(norms, vec![("body".to_string(), 0, 3)]);
+    }
+
+    #[test]
+    fn a_field_that_omits_norms_writes_no_norms_files() {
+        // `IndexingChain.writeNorms` is guarded by `fieldInfos.hasNorms()`, so a
+        // segment where every field omits them writes neither file.
+        let mut document = Document::new();
+        document.add(scripted_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS,
+            words(3),
+        ));
+        let (files, norms) = flush_and_read_norms(config(), vec![document]);
+        for extension in ["nvd", "nvm"] {
+            assert!(
+                !files
+                    .iter()
+                    .any(|name| name.ends_with(&format!(".{extension}"))),
+                "no .{extension} may be created, got {files:?}"
+            );
+        }
+        assert!(norms.is_empty());
+    }
+
+    #[test]
+    fn each_document_gets_the_norm_the_similarity_computed() {
+        let mut documents = Vec::new();
+        for doc in 0..6 {
+            let mut document = Document::new();
+            document.add(scripted_norm_field(
+                "body",
+                IndexOptions::DOCS_AND_FREQS,
+                words(1 + doc * 5),
+            ));
+            documents.push(document);
+        }
+        let (_, norms) = flush_and_read_norms(config(), documents);
+        let expected: Vec<(String, i32, i64)> = (0..6)
+            .map(|doc| {
+                let mut state =
+                    FieldInvertState::new(10, "body".to_string(), IndexOptions::DOCS_AND_FREQS);
+                state.set_length(1 + doc * 5);
+                (
+                    "body".to_string(),
+                    doc,
+                    crate::search::compute_default_norm(&state, true).expect("norm"),
+                )
+            })
+            .collect();
+        assert_eq!(norms, expected);
+    }
+
+    #[test]
+    fn a_document_that_does_not_carry_the_field_has_no_norm() {
+        // Absent is a value the format can express, and it must not be confused
+        // with a norm of zero.
+        let mut documents = Vec::new();
+        for doc in 0..6 {
+            let mut document = Document::new();
+            if doc % 2 == 0 {
+                document.add(scripted_norm_field(
+                    "body",
+                    IndexOptions::DOCS_AND_FREQS,
+                    words(1 + doc),
+                ));
+            }
+            // Something must be indexed in every document so the segment keeps
+            // its doc ids.
+            document.add(scripted_norm_field(
+                "title",
+                IndexOptions::DOCS_AND_FREQS,
+                words(2),
+            ));
+            documents.push(document);
+        }
+        let (_, norms) = flush_and_read_norms(config(), documents);
+        let body: Vec<i32> = norms
+            .iter()
+            .filter(|(name, _, _)| name == "body")
+            .map(|(_, doc, _)| *doc)
+            .collect();
+        assert_eq!(body, vec![0, 2, 4]);
+        let title: Vec<i32> = norms
+            .iter()
+            .filter(|(name, _, _)| name == "title")
+            .map(|(_, doc, _)| *doc)
+            .collect();
+        assert_eq!(title, vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn a_field_present_with_no_tokens_gets_a_norm_of_zero() {
+        // `PerField.finish` short-circuits to zero when `invertState.length` is
+        // zero, without asking the similarity — which is why a similarity that
+        // answers zero for a *non-empty* field is a bug.
+        let mut documents = Vec::new();
+        for doc in 0..3 {
+            let mut document = Document::new();
+            document.add(scripted_norm_field(
+                "body",
+                IndexOptions::DOCS_AND_FREQS,
+                if doc == 1 { Vec::new() } else { words(4) },
+            ));
+            documents.push(document);
+        }
+        let (_, norms) = flush_and_read_norms(config(), documents);
+        assert_eq!(
+            norms,
+            vec![
+                ("body".to_string(), 0, 4),
+                ("body".to_string(), 1, 0),
+                ("body".to_string(), 2, 4),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_similarity_that_answers_zero_for_a_non_empty_field_is_rejected() {
+        #[derive(Debug)]
+        struct ZeroSimilarity;
+        impl Similarity for ZeroSimilarity {
+            fn compute_norm(&self, _state: &FieldInvertState) -> Result<i64> {
+                Ok(0)
+            }
+        }
+
+        let mut live = LiveIndexWriterConfig::new(Arc::new(StandardAnalyzer::new()));
+        live.set_similarity(Arc::new(ZeroSimilarity));
+        ensure_codec();
+        let config = Arc::new(live);
+
+        let (mut chain, _, _) = {
+            let codec = ensure_codec();
+            let tracking = Arc::new(TrackingDirectoryWrapper::new(Box::new(
+                ByteBuffersDirectory::new(),
+            )));
+            let directory: Arc<dyn Directory> = Arc::clone(&tracking) as Arc<dyn Directory>;
+            let info = SegmentInfo::new(
+                Arc::clone(&directory),
+                Version::LATEST,
+                Some(Version::LATEST),
+                "_0".to_string(),
+                -1,
+                false,
+                false,
+                codec,
+                HashMap::new(),
+                [7u8; 16],
+                HashMap::new(),
+                Default::default(),
+            )
+            .expect("segment info");
+            let chain = DefaultIndexingChain::new_for_segment(config, Arc::clone(&tracking), &info)
+                .expect("bind segment");
+            (chain, tracking, info)
+        };
+
+        let mut document = Document::new();
+        document.add(scripted_norm_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS,
+            words(3),
+        ));
+        let mut field_infos = builder();
+        let error = chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect_err("a zero norm for a non-empty field must be refused");
+        assert!(
+            matches!(error, LuceneError::IllegalState(ref m)
+                if m.contains("return 0 for non-empty field")),
+            "unexpected error: {error:?}"
+        );
+        // The failure is document-level, not a reason to throw the segment away.
+        assert!(chain.take_aborting_error().is_none());
+    }
+
+    #[test]
+    fn overlap_tokens_are_discounted_from_the_norm() {
+        // Two tokens per position: the default `discountOverlaps` subtracts the
+        // ones whose position increment is zero.
+        let mut document = Document::new();
+        document.add(scripted_norm_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS,
+            vec![
+                Tok::new("a", 1, 0, 1),
+                Tok::new("syn", 0, 0, 1),
+                Tok::new("b", 1, 2, 3),
+                Tok::new("syn2", 0, 2, 3),
+            ],
+        ));
+        let (_, norms) = flush_and_read_norms(config(), vec![document]);
+        assert_eq!(norms, vec![("body".to_string(), 0, 2)]);
+
+        let mut live = LiveIndexWriterConfig::new(Arc::new(StandardAnalyzer::new()));
+        live.set_similarity(Arc::new(
+            crate::search::BM25Similarity::with_discount_overlaps(false),
+        ));
+        let mut document = Document::new();
+        document.add(scripted_norm_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS,
+            vec![
+                Tok::new("a", 1, 0, 1),
+                Tok::new("syn", 0, 0, 1),
+                Tok::new("b", 1, 2, 3),
+                Tok::new("syn2", 0, 2, 3),
+            ],
+        ));
+        let (_, norms) = flush_and_read_norms(Arc::new(live), vec![document]);
+        assert_eq!(norms, vec![("body".to_string(), 0, 4)]);
+    }
+
+    #[test]
+    fn a_multi_valued_field_norms_the_sum_of_its_values() {
+        let mut document = Document::new();
+        document.add(scripted_norm_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS,
+            words(3),
+        ));
+        document.add(scripted_norm_field(
+            "body",
+            IndexOptions::DOCS_AND_FREQS,
+            words(4),
+        ));
+        let (_, norms) = flush_and_read_norms(config(), vec![document]);
+        // One norm for the document, not one per value, and it counts every
+        // token of both values.
+        assert_eq!(norms, vec![("body".to_string(), 0, 7)]);
+    }
+
+    #[test]
+    fn a_docs_only_field_norms_its_unique_term_count() {
+        let mut document = Document::new();
+        document.add(scripted_norm_field(
+            "body",
+            IndexOptions::DOCS,
+            vec![
+                Tok::new("a", 1, 0, 1),
+                Tok::new("a", 1, 2, 3),
+                Tok::new("b", 1, 4, 5),
+                Tok::new("a", 1, 6, 7),
+            ],
+        ));
+        let (_, norms) = flush_and_read_norms(config(), vec![document]);
+        // Four tokens, two distinct terms.
+        assert_eq!(norms, vec![("body".to_string(), 0, 2)]);
+    }
+
+    #[test]
+    fn norms_are_written_in_field_number_order() {
+        // `IndexingChain.writeNorms` iterates the field infos, which
+        // `FieldInfos` orders by field number, and the `.nvm` entries follow
+        // that order. The names here are deliberately not in lexical order, so
+        // a writer or reader that sorted by name instead would disagree.
+        let mut document = Document::new();
+        for name in ["zeta", "alpha", "mu"] {
+            document.add(scripted_norm_field(
+                name,
+                IndexOptions::DOCS_AND_FREQS,
+                words(2),
+            ));
+        }
+        let (_, norms) = flush_and_read_norms(config(), vec![document]);
+        let names: Vec<&str> = norms.iter().map(|(name, _, _)| name.as_str()).collect();
+        // Field numbers are assigned in first-seen order, so this is 0, 1, 2 —
+        // and emphatically not "alpha", "mu", "zeta".
+        assert_eq!(names, vec!["zeta", "alpha", "mu"]);
+    }
+
+    #[test]
+    fn the_norms_buffers_are_reported_to_the_shared_ram_counter() {
+        let (mut chain, _, _) = bound_chain(1);
+        let empty = chain.ram_bytes_used();
+        let mut field_infos = builder();
+        for doc in 0..200 {
+            let mut document = Document::new();
+            document.add(scripted_norm_field(
+                "body",
+                IndexOptions::DOCS_AND_FREQS,
+                words(2),
+            ));
+            chain
+                .process_document(doc, &document, true, &mut field_infos)
+                .expect("process document");
+        }
+        assert!(
+            chain.ram_bytes_used() > empty,
+            "two hundred buffered norms must be reported"
+        );
     }
 
     #[test]

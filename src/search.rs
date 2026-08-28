@@ -9,6 +9,7 @@
 pub mod doc_id_set_iterator;
 pub mod knn;
 pub mod reference_manager;
+pub mod similarities;
 pub mod sort;
 
 pub use doc_id_set_iterator::{
@@ -17,4 +18,5 @@ pub use doc_id_set_iterator::{
     IteratorAcceptDocs, RangeDocIdSetIterator, NO_MORE_DOCS,
 };
 pub use reference_manager::{ManagedReference, ReferenceManager, RefreshListener, RefreshSource};
+pub use similarities::{compute_default_norm, BM25Similarity, Similarity};
 pub use sort::{read_sort, write_sort, MissingValue, Sort, SortField, SortFieldType};

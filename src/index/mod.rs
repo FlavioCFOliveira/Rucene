@@ -36,6 +36,7 @@ pub mod multi_doc_values;
 pub mod multi_fields;
 pub mod multi_leaf_reader;
 pub mod multi_reader;
+pub mod norms_writer;
 pub mod parallel_reader;
 pub mod point_values;
 pub mod postings_enum;
@@ -118,7 +119,7 @@ pub use indexing_chain::{
 };
 
 pub use index_writer_config::{
-    ConcurrentMergeScheduler, DefaultSimilarity, IndexWriterConfig, IndexWriterEventListener,
+    BM25Similarity, ConcurrentMergeScheduler, IndexWriterConfig, IndexWriterEventListener,
     LeafComparator, LiveIndexWriterConfig, MergePolicy, MergeScheduler, MergeSpecification,
     MergedSegmentWarmer, NoOpIndexWriterEventListener, OpenMode, Similarity, TieredMergePolicy,
 };
@@ -160,6 +161,7 @@ pub use multi_fields::{
 pub use multi_reader::{
     get_top_level_context, index_of, sub_index, sub_index_from_leaves, MultiReader, ReaderSlice,
 };
+pub use norms_writer::NormValuesWriter;
 pub use parallel_reader::{ParallelCompositeReader, ParallelLeafReader};
 pub use reader_manager::ReaderManager;
 pub use segment_reader::SegmentReader;

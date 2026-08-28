@@ -346,8 +346,19 @@ impl IndexedDISI {
 
     fn read_block_header(&mut self) -> Result<()> {
         let block_short = self.slice.read_short()? as u16;
+        // Java writes `doc >>> 16` as a short and asserts `block >= 0` when it
+        // reads it back (`IndexedDISI.java:520-521`). A document id is a
+        // non-negative `int`, so a legal block index never exceeds 32767 and
+        // the top bit of this short is only ever set by corruption. Java's
+        // assertion is disabled at runtime and it carries on with a negative
+        // block; a `debug_assert!` here would instead abort the process on a
+        // corrupt file, so the invariant is enforced as an error.
+        if block_short > i16::MAX as u16 {
+            return Err(LuceneError::CorruptIndex(format!(
+                "invalid IndexedDISI block index: {block_short}"
+            )));
+        }
         self.block = (block_short as i32) << 16;
-        debug_assert!(self.block >= 0);
         let num_values = 1 + (self.slice.read_short()? as u16 as i32);
         self.index = self.next_block_index;
         self.next_block_index = self.index + num_values;

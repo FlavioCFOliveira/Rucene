@@ -311,6 +311,51 @@ pub fn check_footer(input: &mut dyn ChecksumIndexInput) -> Result<i64> {
     Ok(actual_checksum)
 }
 
+/// Validates the footer of an input whose entries already failed to decode.
+///
+/// Equivalent to `CodecUtil.checkFooter(ChecksumIndexInput, Throwable)`
+/// (`CodecUtil.java:470-510`), which every codec's metadata reader uses inside
+/// a `finally`: the entries are parsed first and the footer is verified
+/// afterwards, whatever happened.
+///
+/// The decision Java makes is which of the two failures explains the file:
+///
+/// * the footer is unreachable, because the entry decoder already read into it
+///   — the file is truncated or the entries claimed lengths that were not
+///   there, and the reported failure says the checksum is indeterminate;
+/// * the footer is corrupt — the file itself is damaged, so that corruption is
+///   reported and `prior` is folded into the message;
+/// * the checksum passes — the bytes are exactly what was written, so the
+///   entries really are wrong and `prior` is reported unchanged.
+///
+/// Returning the error rather than a `Result` mirrors the fact that this is
+/// only ever called when something has already gone wrong.
+pub fn check_footer_with_prior(
+    input: &mut dyn ChecksumIndexInput,
+    prior: LuceneError,
+) -> LuceneError {
+    let remaining = input.length() - input.file_pointer();
+    if remaining < footer_length() as i64 {
+        return LuceneError::CorruptIndex(format!(
+            "checksum status indeterminate: remaining={remaining}; please run \
+             checkindex for more details (prior error: {prior})"
+        ));
+    }
+    // Java skips the unread bytes rather than seeking, because the digest must
+    // cover them; this input's `seek` is the forward-only, checksum-preserving
+    // one for the same reason.
+    let target = input.length() - footer_length() as i64;
+    if let Err(error) = ChecksumIndexInput::seek(input, target) {
+        return error;
+    }
+    match check_footer(input) {
+        Ok(_) => prior,
+        Err(corruption) => {
+            LuceneError::CorruptIndex(format!("{corruption} (prior error: {prior})"))
+        }
+    }
+}
+
 /// Returns the checksum stored in the footer without validating it.
 ///
 /// Equivalent to `CodecUtil.retrieveChecksum(IndexInput)`.

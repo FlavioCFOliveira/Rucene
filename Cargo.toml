@@ -98,6 +98,10 @@ name = "portability_term_vectors"
 path = "tests/portability/term_vectors.rs"
 
 [[test]]
+name = "portability_norms"
+path = "tests/portability/norms.rs"
+
+[[test]]
 name = "fuzz_codec_headers"
 path = "tests/fuzz/codec_headers.rs"
 
@@ -108,6 +112,10 @@ path = "tests/fuzz/stored_fields.rs"
 [[test]]
 name = "fuzz_term_vectors"
 path = "tests/fuzz/term_vectors.rs"
+
+[[test]]
+name = "fuzz_norms"
+path = "tests/fuzz/norms.rs"
 
 [profile.release]
 lto = true

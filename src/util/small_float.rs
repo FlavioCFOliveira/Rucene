@@ -97,13 +97,26 @@ impl SmallFloat {
     }
 
     /// Decodes a value encoded with [`Self::long_to_int4`].
+    ///
+    /// Only the values [`Self::long_to_int4`] produces are meaningful. Java
+    /// answers anything else with whatever its arithmetic happens to yield
+    /// rather than with an exception, and so does this: the two shifts below
+    /// reproduce Java's exactly, so that a caller outside the intended domain
+    /// gets Java's nonsense value instead of a panic.
     pub fn int4_to_long(i: i32) -> i64 {
         let bits = (i & 0x07) as i64;
-        let shift = (i >> 3) - 1;
+        // Java writes `(i >>> 3) - 1`: an *unsigned* shift, so the sign bit of a
+        // negative `i` does not propagate and the result stays positive.
+        let shift = ((i as u32) >> 3) as i32 - 1;
         if shift == -1 {
             bits
         } else {
-            (bits | 0x08) << shift
+            // Java's `<<` on a `long` uses only the low six bits of the shift
+            // count. For every value `long_to_int4` produces the shift is
+            // between 0 and 28, so the mask is a no-op there; it matters only
+            // for the out-of-domain inputs above, where an unmasked shift would
+            // panic in a debug build.
+            (bits | 0x08) << (shift as u32 & 63)
         }
     }
 
@@ -201,6 +214,35 @@ mod tests {
             let enc = SmallFloat::long_to_int4(v).unwrap();
             let dec = SmallFloat::int4_to_long(enc);
             assert_eq!(SmallFloat::long_to_int4(dec).unwrap(), enc);
+        }
+    }
+
+    #[test]
+    fn int4_to_long_is_total_like_java() {
+        // Regression: the decoder used to derive its shift with Rust's
+        // arithmetic `>>`, which turns a negative input into a negative shift
+        // count — a panic in a debug build, where Java carries on with a
+        // nonsense value. The function is public, so an out-of-domain argument
+        // must not be able to abort the process.
+        //
+        // The expected values were produced by running Java's `int4ToLong` body
+        // verbatim on OpenJDK 21, so this pins the arithmetic and not just the
+        // absence of a panic.
+        for (input, expected) in [
+            (-1i32, -4_611_686_018_427_387_904i64),
+            (-2, i64::MIN),
+            (-8, 0),
+            (-100, 13_510_798_882_111_488),
+            (i32::MIN, 0),
+            (i32::MAX, -4_611_686_018_427_387_904),
+            (255, 16_106_127_360),
+            (1_000, i64::MIN),
+        ] {
+            assert_eq!(
+                SmallFloat::int4_to_long(input),
+                expected,
+                "int4ToLong({input}) must match Java"
+            );
         }
     }
 
