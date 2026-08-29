@@ -24,6 +24,7 @@ pub mod field_infos;
 pub mod freq_prox_terms_writer;
 pub mod index_commit;
 pub mod index_deletion_policy;
+pub mod index_file_deleter;
 pub mod index_file_names;
 pub mod index_reader;
 pub mod index_writer_config;
@@ -133,6 +134,7 @@ pub use index_deletion_policy::{
     IndexDeletionPolicy, KeepLastNCommitsDeletionPolicy, KeepOnlyLastCommitDeletionPolicy,
     NoDeletionPolicy, PersistentSnapshotDeletionPolicy, SnapshotDeletionPolicy, SNAPSHOTS_PREFIX,
 };
+pub use index_file_deleter::{inflate_gens, CommitPoint, IndexFileDeleter, WRITE_LOCK_NAME};
 
 // In-memory indexing pipeline exports.
 pub use documents_writer::{

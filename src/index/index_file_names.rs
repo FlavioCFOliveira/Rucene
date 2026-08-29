@@ -207,8 +207,21 @@ pub fn matches_extension(filename: &str, ext: &str) -> bool {
 /// Locates the boundary of the segment name in `filename`, or `None`.
 fn index_of_segment_name(filename: &str) -> Option<usize> {
     // If it is a .del file, there's an '_' after the first character.
-    if let Some(idx) = filename[1..].find('_') {
-        return Some(idx + 1);
+    //
+    // Java writes `filename.substring(1).indexOf('_')`, which skips one
+    // *character*. Slicing `filename[1..]` would instead skip one *byte* and
+    // panic whenever the name begins with a multi-byte UTF-8 character — and
+    // these names are not always well-formed, because `IndexFileDeleter` feeds
+    // this function the directory's pending-deletion set, which is unfiltered.
+    // Skipping one char keeps Java's semantics for every input and never panics.
+    let after_first = {
+        let mut chars = filename.chars();
+        chars.next();
+        chars.as_str()
+    };
+    let offset = filename.len() - after_first.len();
+    if let Some(idx) = after_first.find('_') {
+        return Some(idx + offset);
     }
     filename.find('.')
 }

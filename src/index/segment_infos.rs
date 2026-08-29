@@ -221,6 +221,16 @@ impl SegmentInfos {
         self.segments.iter()
     }
 
+    /// Returns a mutable iterator over the segments in this commit.
+    ///
+    /// Java's `SegmentInfos` implements `Iterable<SegmentCommitInfo>` and hands
+    /// out the live objects, so iteration there is already mutating; Rust needs
+    /// an explicit mutable iterator to express the same access. Used by
+    /// `IndexFileDeleter::inflate_gens`.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut SegmentCommitInfo> {
+        self.segments.iter_mut()
+    }
+
     /// Returns a slice view of the contained segments.
     pub fn as_slice(&self) -> &[SegmentCommitInfo] {
         &self.segments

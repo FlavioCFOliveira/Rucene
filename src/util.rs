@@ -16,6 +16,7 @@ pub mod chars_ref;
 /// LZ4 and lowercase-ASCII compression utilities.
 pub mod compress;
 pub mod extra;
+pub mod file_deleter;
 pub mod packed;
 pub mod small_float;
 pub mod string_helper;

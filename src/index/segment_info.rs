@@ -608,6 +608,13 @@ impl SegmentCommitInfo {
         self.next_write_del_gen += 1;
     }
 
+    /// Sets the next available live docs file generation.
+    ///
+    /// Equivalent to `SegmentCommitInfo.setNextWriteDelGen`.
+    pub fn set_next_write_del_gen(&mut self, v: i64) {
+        self.next_write_del_gen = v;
+    }
+
     /// Returns the field infos update file generation.
     pub fn get_field_infos_gen(&self) -> i64 {
         self.field_infos_gen
@@ -630,6 +637,13 @@ impl SegmentCommitInfo {
         self.next_write_field_infos_gen += 1;
     }
 
+    /// Sets the next available field infos update generation.
+    ///
+    /// Equivalent to `SegmentCommitInfo.setNextWriteFieldInfosGen`.
+    pub fn set_next_write_field_infos_gen(&mut self, v: i64) {
+        self.next_write_field_infos_gen = v;
+    }
+
     /// Returns the doc values update file generation.
     pub fn get_doc_values_gen(&self) -> i64 {
         self.doc_values_gen
@@ -650,6 +664,13 @@ impl SegmentCommitInfo {
     /// Advances the next-write doc values generation after a failed write.
     pub fn advance_next_write_doc_values_gen(&mut self) {
         self.next_write_doc_values_gen += 1;
+    }
+
+    /// Sets the next available doc values update generation.
+    ///
+    /// Equivalent to `SegmentCommitInfo.setNextWriteDocValuesGen`.
+    pub fn set_next_write_doc_values_gen(&mut self, v: i64) {
+        self.next_write_doc_values_gen = v;
     }
 
     /// Returns the per-field doc values update files.
