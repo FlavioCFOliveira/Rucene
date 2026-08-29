@@ -117,7 +117,13 @@ free functions — the ports of Lucene's static utility classes, such as
 free function that is a load-bearing port in its own right, which carries
 `kind: "function"` and a `file`, and reaches its file through `IMPLEMENTED_IN`.
 `compare_utf16` in `src/util/string_helper.rs` is the first of these: it ports
-the `String.compareTo` ordering Lucene writes field names in.
+the `String.compareTo` ordering Lucene writes field names in. The 2026-08-29
+sync added two more: `doc_values_flush_order` in `src/index/indexing_chain.rs`,
+which reproduces the field-hash table order `IndexingChain.writeDocValues`
+flushes in and so fixes the order of the field entries inside the `.dvm`, and
+`register_doc_values_format` in `src/codecs/doc_values.rs`, which fills the
+global registry Rucene uses in place of the Java service loader behind
+`DocValuesFormat.forName`.
 
 ### `Task`
 An `rmp` task, mirrored into the graph when it is closed.
@@ -155,7 +161,7 @@ revisited (see `CLAUDE.md` §13.2). Identity is `name`.
 | Property | Purpose |
 |----------|---------|
 | `name` | Short decision title (identity), e.g. `"flate2 deflate backend for BEST_COMPRESSION"`. |
-| `kind` | `"dependency"`, `"algorithm"`, `"format"`, `"adaptation"`. |
+| `kind` | `"dependency"`, `"algorithm"`, `"format"`, `"adaptation"`, `"principle"`. |
 | `summary` | What was decided, in one or two sentences. |
 | `rationale` | Why, in terms of the component's objective. |
 | `alternatives` | Options considered and why each was rejected. |
@@ -165,6 +171,34 @@ revisited (see `CLAUDE.md` §13.2). Identity is `name`.
 
 A `Decision` reaches the code through `IMPLEMENTED_IN` (→ `File`) and records
 where it landed through `COMMITTED_IN` (→ `Commit`).
+
+`kind: "principle"` is for a project-wide rule recorded in `CLAUDE.md` that
+governs every later task, rather than a choice confined to one component. The
+first is `"Fidelity first - minimise divergences (CLAUDE.md 14.5)"`, added by
+`fd36286`.
+
+### `Defect`
+A bug that was found and fixed, recorded so the finding survives the fix.
+Introduced by the 2026-08-29 sync for the three defects of `fd36286`. Identity
+is `name`. A defect is worth a node when it is non-obvious — a divergence from
+Lucene 10.5.0 that only a portability or fuzz test could have caught, or a
+hazard whose reachability is itself the finding — not for every routine fix.
+
+| Property | Purpose |
+|----------|---------|
+| `name` | Short defect title (identity), e.g. `"read_sorted_set always took the multi-valued SORTED_SET layout"`. |
+| `kind` | `"portability"` (a divergence from Lucene 10.5.0) or `"robustness"` (a panic, abort or unbounded allocation reachable from a corrupt file). |
+| `summary` | What was wrong, in one or two sentences. |
+| `cause` | Why the code behaved that way, and why it was not caught earlier. |
+| `fix` | What changed, with the `file:line` of the corrected code. |
+| `luceneReference` | The Apache Lucene Core 10.5.0 file and lines that define the correct behaviour (required for `kind: "portability"`, per `CLAUDE.md` §14.5). |
+| `foundBy` | The test that exposed it. |
+| `gitCommit` | Commit that fixed it. |
+| `gitDate` | ISO date of `gitCommit`. |
+
+A `Defect` reaches the code through `IMPLEMENTED_IN` (→ `File`, where the fix
+landed), records where it landed through `COMMITTED_IN` (→ `Commit`), and is
+pinned down by the regression test that points at it with `TESTS`.
 
 ### `Feature`
 A high-level functional capability, used to link packages/types to what they implement.
@@ -192,15 +226,16 @@ A high-level functional capability, used to link packages/types to what they imp
 | `USES` | `Feature` (`module-info`) → `Class` (SPI service interface). |
 | `PROVIDES` | `Feature` (`module-info`) → `Class` (SPI service interface). |
 | `PROVIDED_BY` | `Class` (SPI interface) → `Class` (implementation). |
-| `TESTS` | `File` / `Class` → `Feature` / `Class` / `RustStruct`/`RustTrait`/`RustEnum`/`Component`. A portability test file points at the harness `Feature` it belongs to and at the Rucene types whose behaviour it pins down. |
+| `TESTS` | `File` / `Class` → `Feature` / `Class` / `RustStruct`/`RustTrait`/`RustEnum`/`Component`/`Defect`. A portability test file points at the harness `Feature` it belongs to and at the Rucene types whose behaviour it pins down; where it is also the regression test for a fixed bug, it points at the `Defect` too. |
 | `SPECIFIED_IN` | `Feature` → `File` (specification document). |
 | `REFERENCES` | `Project` → `Project` (Rucene references Apache Lucene Core 10.5.0). |
 | `PORTS` | Rucene type (`RustStruct`/`RustTrait`/`RustEnum`/`Component`) → Lucene `Class`/`Interface`/`Enum`. The Rust type is the port of that Lucene type. Optional `note` property records that the port is partial, a placeholder, or a deliberate adaptation, and says what is missing or what was changed and why. |
-| `IMPLEMENTED_IN` | `Component`/`Task`/`Decision` → `File`/`Module`/`Commit` (where the thing lives or landed). |
-| `IMPLEMENTS` | Also used as `Feature` → `File`/`Class`: the file or type that realises the feature. |
-| `COMMITTED_IN` | `File`/`Feature`/`Component`/`Decision` → `Commit`. |
+| `IMPLEMENTED_IN` | `Component`/`Task`/`Decision`/`Defect` → `File`/`Module`/`Commit` (where the thing lives, landed, or was fixed). |
+| `IMPLEMENTS` | Also used as `Feature` → `File`/`Class`: the file or type that realises the feature. This is the current direction; a few early syncs (including `b0e1a75`) wrote it the other way round, as `File` → `Feature`, and those edges are still present. |
+| `COMMITTED_IN` | `File`/`Feature`/`Component`/`Decision`/`Defect` → `Commit`. |
 | `CLOSES_TASK` | `Commit` → `Task`. |
-| `TESTED_BY` / `MODIFIES` / `FULFILLS` / `DELIVERS` | Legacy provenance edges from the first syncs; not used by new work. |
+| `DELIVERS` | `Task` → `Feature`: the capability the task delivered. Reintroduced by `b0e1a75` and used by new work alongside `Task` → `File` `IMPLEMENTED_IN`. |
+| `TESTED_BY` / `MODIFIES` / `FULFILLS` | Legacy provenance edges from the first syncs; not used by new work. |
 
 ---
 
@@ -230,5 +265,6 @@ Every node and edge carries `gitCommit` (full 40-char hash) and `gitDate` (`YYYY
 | `RustStruct` / `RustTrait` / `RustEnum` | populated incrementally, one sync per commit that ports types |
 | `Task` / `Commit` | populated for the commits that have been synced; not a complete history |
 | `Decision` | populated per synced commit, for decisions that constrain the code |
+| `Defect` | populated per synced commit, for non-obvious bugs found and fixed (3 nodes, from `fd36286`) |
 | `PORTS` | populated for every ported Rucene type whose Lucene counterpart is already modelled |
 | `IMPLEMENTED_IN` / `IMPLEMENTS` / `COMMITTED_IN` / `CLOSES_TASK` | populated per synced commit |
