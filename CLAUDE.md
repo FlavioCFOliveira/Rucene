@@ -179,6 +179,8 @@ When deciding what is expected from the project — whether during evaluations a
 
 If conflicts arise between these criteria, or if difficulty arises in following them, ask the user immediately how to proceed, presenting the possible options.
 
+This framework is applied **within** the fidelity principle of 14.5: the port reproduces Lucene Core 10.5.0 unless doing so would be incorrect or unsafe. A faster or more elegant alternative is not, by itself, a reason to diverge.
+
 ---
 
 ## 12. Token economy policy
@@ -239,6 +241,13 @@ If the answer to any of these questions is "no" or "I don't know," the economica
 - Limit command output to what is necessary: use `git log --oneline`, `git diff --stat` before the full diff, `git status --short`, `--name-only`, `-q`/`--quiet` flags, or restrict the result (for example with `head`).
 - Avoid dumping large files into the context or response. Reference `file_path:line_number` instead of reproducing content.
 - Prefer reading text (or the accessibility tree of a page) over capturing images/screenshots, which are substantially more expensive, whenever text is sufficient.
+
+**Waiting for long-running operations**
+
+- **It is forbidden to poll a long-running operation in a loop.** Repeatedly running `grep`, `tail`, `ps`, or any other status check while waiting for a build, a test run, or a background job to finish is pure waste: each check is a round trip that adds no information and consumes tokens for nothing.
+- Arm **one** waiter and then stop issuing calls entirely until it reports. The correct mechanism is a single background command whose body blocks until the condition holds (for example `until <condition>; do sleep N; done`), which notifies exactly once when it exits.
+- Never arm two waiters for the same event.
+- Between arming the waiter and its notification, only perform work that is genuinely independent of the result. If there is none, say so in one line and wait in silence.
 
 **Tests and validation**
 
@@ -345,6 +354,22 @@ Portability tests are treated as first-class citizens: they must pass before a t
 4. Add or update **portability tests** that prove functional parity and index-file compatibility with Lucene Core 10.5.0.
 5. Run `cargo test`, `cargo fmt`, and `cargo clippy`.
 6. Update `README.md` and relevant documentation if there are changes to public behavior.
+
+### 14.5 Fidelity first — minimise divergences
+
+Rucene is a **port**, not a reinterpretation. The governing principle for every design and implementation decision is therefore:
+
+> **Be as faithful as possible to Apache Lucene Core 10.5.0, and keep the number and the size of divergences to a minimum.**
+
+This principle applies to structure, behaviour, contracts, and file formats alike:
+
+- **The default answer is "the same as Lucene".** When Lucene's approach can be reproduced in idiomatic Rust, reproduce it. Do not substitute a different algorithm, a different data structure, a different laziness or ownership strategy, or a different error surface simply because it looks cleaner, simpler, or faster in Rust.
+- **A divergence is an exception that must be earned.** It is only acceptable when Lucene's approach is genuinely impossible or unsafe in Rust (for example, a construct that Rust's ownership or thread-safety rules forbid), or when it would violate rule 11 (correct → safe → fast) in that order. Convenience, taste, and "it was easier" are never sufficient reasons.
+- **Never paper over a divergence with an arbitrary limit.** If the port's own design (rather than Lucene's) creates a hazard, the correct fix is to remove the divergence that caused it, not to add a constant, threshold, or cap that Lucene does not have. Introducing a bound Lucene lacks changes which indexes the crate accepts and is itself a new divergence.
+- **A divergence must be minimal in blast radius.** Where one is unavoidable, confine it to the smallest possible surface and keep everything around it faithful.
+- **Every divergence must be declared.** Document it at the point of divergence (module or item docs), stating exactly what Lucene does, what this port does instead, and why the Lucene approach could not be used. Record it in the Knowledge Graph as well, citing the Lucene 10.5.0 source file and lines that define the original behaviour.
+- **Any new divergence requires prior user approval** (see rule 1). Present the options and the reasoning; never introduce one unilaterally.
+- **Existing divergences are debt.** When a task touches code that already diverges, re-evaluate whether the divergence is still justified, and propose removing it when it is not.
 
 ---
 

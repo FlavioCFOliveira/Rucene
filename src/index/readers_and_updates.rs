@@ -1399,7 +1399,7 @@ impl<'a> std::fmt::Debug for MergedDvProducer<'a> {
 }
 
 impl<'a> DocValuesProducer for MergedDvProducer<'a> {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues + Send + Sync>> {
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
         if field.name != self.field_info.name {
             return Ok(Box::new(EmptyNumericDocValues::new()));
         }
@@ -1422,7 +1422,7 @@ impl<'a> DocValuesProducer for MergedDvProducer<'a> {
         )))
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues + Send + Sync>> {
+    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
         if field.name != self.field_info.name {
             return Ok(Box::new(EmptyBinaryDocValues::new()));
         }
@@ -1445,31 +1445,25 @@ impl<'a> DocValuesProducer for MergedDvProducer<'a> {
         )))
     }
 
-    fn get_sorted(
-        &self,
-        _field: &FieldInfo,
-    ) -> Result<Box<dyn crate::index::SortedDocValues + Send + Sync>> {
+    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn crate::index::SortedDocValues>> {
         Ok(Box::new(EmptySortedDocValues::new()))
     }
 
     fn get_sorted_numeric(
         &self,
         _field: &FieldInfo,
-    ) -> Result<Box<dyn crate::index::SortedNumericDocValues + Send + Sync>> {
+    ) -> Result<Box<dyn crate::index::SortedNumericDocValues>> {
         Ok(Box::new(EmptySortedNumericDocValues::new()))
     }
 
     fn get_sorted_set(
         &self,
         _field: &FieldInfo,
-    ) -> Result<Box<dyn crate::index::SortedSetDocValues + Send + Sync>> {
+    ) -> Result<Box<dyn crate::index::SortedSetDocValues>> {
         Ok(Box::new(EmptySortedSetDocValues::new()))
     }
 
-    fn get_skipper(
-        &self,
-        _field: &FieldInfo,
-    ) -> Result<Box<dyn crate::index::DocValuesSkipper + Send + Sync>> {
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn crate::index::DocValuesSkipper>> {
         Ok(Box::new(EmptyDocValuesSkipper))
     }
 
@@ -1488,7 +1482,7 @@ impl<'a> DocValuesProducer for MergedDvProducer<'a> {
 
 /// Merged numeric doc values: on-disk values overlaid with in-memory updates.
 struct MergedNumericDocValues {
-    on_disk: Option<Box<dyn NumericDocValues + Send + Sync>>,
+    on_disk: Option<Box<dyn NumericDocValues>>,
     updates: HashMap<i32, Option<i64>>,
     doc_id: i32,
     current_long: i64,
@@ -1497,7 +1491,7 @@ struct MergedNumericDocValues {
 
 impl MergedNumericDocValues {
     fn new(
-        on_disk: Option<Box<dyn NumericDocValues + Send + Sync>>,
+        on_disk: Option<Box<dyn NumericDocValues>>,
         updates: &HashMap<i32, Option<i64>>,
     ) -> Self {
         Self {
@@ -1606,7 +1600,7 @@ impl NumericDocValues for MergedNumericDocValues {
 
 /// Merged binary doc values: on-disk values overlaid with in-memory updates.
 struct MergedBinaryDocValues {
-    on_disk: Option<Box<dyn BinaryDocValues + Send + Sync>>,
+    on_disk: Option<Box<dyn BinaryDocValues>>,
     updates: HashMap<i32, Option<BytesRef>>,
     doc_id: i32,
     current_binary: BytesRef,
@@ -1615,7 +1609,7 @@ struct MergedBinaryDocValues {
 
 impl MergedBinaryDocValues {
     fn new(
-        on_disk: Option<Box<dyn BinaryDocValues + Send + Sync>>,
+        on_disk: Option<Box<dyn BinaryDocValues>>,
         updates: &HashMap<i32, Option<BytesRef>>,
     ) -> Self {
         Self {

@@ -18,6 +18,7 @@ pub mod automaton_terms_enum;
 pub mod directory_reader;
 pub mod doc_values;
 pub mod doc_values_field_updates;
+pub mod doc_values_writer;
 pub mod documents_writer;
 pub mod field_infos;
 pub mod freq_prox_terms_writer;
@@ -150,6 +151,10 @@ pub use directory_reader::{
     index_exists, list_commits, open as open_directory_reader, open_if_changed,
     open_if_changed_with_commit, open_if_changed_with_writer, open_with_commit, DirectoryReader,
     IndexWriter as DirectoryReaderIndexWriter, StandardDirectoryReader,
+};
+pub use doc_values_writer::{
+    BinaryDocValuesWriter, DocValuesWriter, NumericDocValuesWriter, SortedDocValuesWriter,
+    SortedNumericDocValuesWriter, SortedSetDocValuesWriter,
 };
 pub use mapped_multi_fields::MappedMultiFields;
 pub use mapping_multi_postings_enum::MappingMultiPostingsEnum;

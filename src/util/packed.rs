@@ -652,6 +652,20 @@ impl DirectReader {
         })
     }
 
+    /// Builds a reader over a live input instead of a copy of its bytes.
+    ///
+    /// Equivalent to `DirectReader.getInstance(RandomAccessInput slice, int
+    /// bitsPerValue, long offset)`. `slice` is shared because one monotonic
+    /// reader owns several block readers over the same region, exactly as
+    /// `DirectMonotonicReader.getInstance` does in Java.
+    pub fn with_random_access(
+        input: Rc<RefCell<Box<dyn RandomAccessInput>>>,
+        bits_per_value: i32,
+        offset: i64,
+    ) -> Result<Self> {
+        Self::with_input(input, bits_per_value, offset)
+    }
+
     fn with_input(
         input: Rc<RefCell<Box<dyn RandomAccessInput>>>,
         bits_per_value: i32,
@@ -887,7 +901,7 @@ impl<'a> DirectMonotonicWriter<'a> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DirectMonotonicMeta {
     pub block_shift: i32,
     pub num_blocks: usize,
@@ -964,7 +978,18 @@ impl DirectMonotonicReader {
         let input = Rc::new(RefCell::new(
             Box::new(index_input) as Box<dyn RandomAccessInput>
         ));
+        Self::with_random_access(meta, input)
+    }
 
+    /// Builds a reader over a live input instead of a copy of its bytes.
+    ///
+    /// Equivalent to `DirectMonotonicReader.getInstance(Meta meta,
+    /// RandomAccessInput data)`: the block readers all address the same slice,
+    /// so nothing is copied out of the file to answer a lookup.
+    pub fn with_random_access(
+        meta: DirectMonotonicMeta,
+        input: Rc<RefCell<Box<dyn RandomAccessInput>>>,
+    ) -> Result<Self> {
         let mut readers = Vec::with_capacity(meta.num_blocks);
         for i in 0..meta.num_blocks {
             if meta.bpvs[i] == 0 {

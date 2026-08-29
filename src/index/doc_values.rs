@@ -1289,33 +1289,27 @@ impl SortedSetDocValues for FilterSortedSetDocValues {
 pub struct EmptyDocValuesProducer;
 
 impl DocValuesProducer for EmptyDocValuesProducer {
-    fn get_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues + Send + Sync>> {
+    fn get_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
         Ok(Box::new(EmptyNumericDocValues::new()))
     }
 
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues + Send + Sync>> {
+    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
         Ok(Box::new(EmptyBinaryDocValues::new()))
     }
 
-    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn SortedDocValues + Send + Sync>> {
+    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
         Ok(Box::new(EmptySortedDocValues::new()))
     }
 
-    fn get_sorted_numeric(
-        &self,
-        _field: &FieldInfo,
-    ) -> Result<Box<dyn SortedNumericDocValues + Send + Sync>> {
+    fn get_sorted_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
         Ok(Box::new(EmptySortedNumericDocValues::new()))
     }
 
-    fn get_sorted_set(
-        &self,
-        _field: &FieldInfo,
-    ) -> Result<Box<dyn SortedSetDocValues + Send + Sync>> {
+    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
         Ok(Box::new(EmptySortedSetDocValues::new()))
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper + Send + Sync>> {
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
         Ok(Box::new(EmptyDocValuesSkipper))
     }
 

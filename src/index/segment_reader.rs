@@ -508,7 +508,7 @@ impl Drop for DocValuesProducerHolder {
 }
 
 impl DocValuesProducer for DocValuesProducerHolder {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues + Send + Sync>> {
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
         let guard = self.producer.lock().map_err(|_| {
             LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
         })?;
@@ -521,7 +521,7 @@ impl DocValuesProducer for DocValuesProducerHolder {
         }
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues + Send + Sync>> {
+    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
         let guard = self.producer.lock().map_err(|_| {
             LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
         })?;
@@ -534,7 +534,7 @@ impl DocValuesProducer for DocValuesProducerHolder {
         }
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues + Send + Sync>> {
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
         let guard = self.producer.lock().map_err(|_| {
             LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
         })?;
@@ -547,10 +547,7 @@ impl DocValuesProducer for DocValuesProducerHolder {
         }
     }
 
-    fn get_sorted_numeric(
-        &self,
-        field: &FieldInfo,
-    ) -> Result<Box<dyn SortedNumericDocValues + Send + Sync>> {
+    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
         let guard = self.producer.lock().map_err(|_| {
             LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
         })?;
@@ -563,10 +560,7 @@ impl DocValuesProducer for DocValuesProducerHolder {
         }
     }
 
-    fn get_sorted_set(
-        &self,
-        field: &FieldInfo,
-    ) -> Result<Box<dyn SortedSetDocValues + Send + Sync>> {
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
         let guard = self.producer.lock().map_err(|_| {
             LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
         })?;
@@ -579,7 +573,7 @@ impl DocValuesProducer for DocValuesProducerHolder {
         }
     }
 
-    fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper + Send + Sync>> {
+    fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
         let guard = self.producer.lock().map_err(|_| {
             LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
         })?;
@@ -712,7 +706,7 @@ impl SegmentDocValuesProducer {
 }
 
 impl DocValuesProducer for SegmentDocValuesProducer {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues + Send + Sync>> {
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
         self.dv_producers_by_field
             .get(&field.number)
             .ok_or_else(|| {
@@ -724,7 +718,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
             .get_numeric(field)
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues + Send + Sync>> {
+    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
         self.dv_producers_by_field
             .get(&field.number)
             .ok_or_else(|| {
@@ -736,7 +730,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
             .get_binary(field)
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues + Send + Sync>> {
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
         self.dv_producers_by_field
             .get(&field.number)
             .ok_or_else(|| {
@@ -748,10 +742,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
             .get_sorted(field)
     }
 
-    fn get_sorted_numeric(
-        &self,
-        field: &FieldInfo,
-    ) -> Result<Box<dyn SortedNumericDocValues + Send + Sync>> {
+    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
         self.dv_producers_by_field
             .get(&field.number)
             .ok_or_else(|| {
@@ -763,10 +754,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
             .get_sorted_numeric(field)
     }
 
-    fn get_sorted_set(
-        &self,
-        field: &FieldInfo,
-    ) -> Result<Box<dyn SortedSetDocValues + Send + Sync>> {
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
         self.dv_producers_by_field
             .get(&field.number)
             .ok_or_else(|| {
@@ -778,7 +766,7 @@ impl DocValuesProducer for SegmentDocValuesProducer {
             .get_sorted_set(field)
     }
 
-    fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper + Send + Sync>> {
+    fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
         self.dv_producers_by_field
             .get(&field.number)
             .ok_or_else(|| {
@@ -2523,39 +2511,27 @@ mod tests {
     }
 
     impl DocValuesProducer for RecordingDocValuesProducer {
-        fn get_numeric(
-            &self,
-            field: &FieldInfo,
-        ) -> Result<Box<dyn NumericDocValues + Send + Sync>> {
+        fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
             self.inner.get_numeric(field)
         }
 
-        fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues + Send + Sync>> {
+        fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
             self.inner.get_binary(field)
         }
 
-        fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues + Send + Sync>> {
+        fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
             self.inner.get_sorted(field)
         }
 
-        fn get_sorted_numeric(
-            &self,
-            field: &FieldInfo,
-        ) -> Result<Box<dyn SortedNumericDocValues + Send + Sync>> {
+        fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
             self.inner.get_sorted_numeric(field)
         }
 
-        fn get_sorted_set(
-            &self,
-            field: &FieldInfo,
-        ) -> Result<Box<dyn SortedSetDocValues + Send + Sync>> {
+        fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
             self.inner.get_sorted_set(field)
         }
 
-        fn get_skipper(
-            &self,
-            field: &FieldInfo,
-        ) -> Result<Box<dyn DocValuesSkipper + Send + Sync>> {
+        fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
             self.inner.get_skipper(field)
         }
 

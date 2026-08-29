@@ -75,10 +75,12 @@ use crate::analysis::tokenattributes::{
     TermToBytesRefAttribute,
 };
 use crate::analysis::Analyzer;
+use crate::codecs::doc_values::DocValuesConsumer;
 use crate::codecs::postings::{NormsProducer, NumericDocValues};
 use crate::codecs::state::SegmentWriteState;
 use crate::document::{Document, InvertableType, StoredValueType};
 use crate::error::{LuceneError, Result};
+use crate::index::doc_values_writer::DocValuesWriter;
 use crate::index::documents_writer::{
     IndexingChain, IndexingChainFlushResult, IndexingChainFlushState, SharedIndexingScratch,
     MAX_STORED_STRING_LENGTH,
@@ -89,7 +91,9 @@ use crate::index::index_writer_config::LiveIndexWriterConfig;
 use crate::index::norms_writer::NormValuesWriter;
 use crate::index::stored_fields_consumer::StoredFieldsConsumer;
 use crate::index::term_vectors_consumer::TermVectorsConsumer;
-use crate::index::{FieldInfo, IndexOptions, IndexableField, IndexableFieldType, SegmentInfo};
+use crate::index::{
+    DocValuesType, FieldInfo, IndexOptions, IndexableField, IndexableFieldType, SegmentInfo,
+};
 use crate::search::Similarity;
 use crate::store::TrackingDirectoryWrapper;
 use crate::util::byte_block_pool::MAX_TERM_LENGTH;
@@ -99,6 +103,68 @@ use crate::util::{AttributeSource, BytesRef, InfoStream};
 ///
 /// Equivalent to `IndexWriter.MAX_POSITION`.
 pub const MAX_POSITION: i32 = i32::MAX - 128;
+
+/// Computes the hash bucket Lucene's open `PerField[] fieldHash` uses for
+/// `name`, exactly `fieldName.hashCode() & hashMask`: Java hashes the string's
+/// UTF-16 code units with `h = 31*h + unit`, in 32-bit wrapping arithmetic.
+fn java_string_hashcode(name: &str) -> i32 {
+    name.encode_utf16().fold(0i32, |hash, unit| {
+        hash.wrapping_mul(31).wrapping_add(i32::from(unit))
+    })
+}
+
+/// Replays Lucene's `PerField[] fieldHash` over the per-field state and
+/// returns the per-field indices in the order `writeDocValues` visits them.
+///
+/// `IndexingChain` starts with two buckets (`fieldHash = new PerField[2],
+/// hashMask = 1`), chains a new field at the *head* of its bucket
+/// (`IndexingChain.java:1466-1467`), doubles the table once
+/// `totalFieldCount >= fieldHash.length / 2` and rehashes by walking the old
+/// buckets in order, head to tail, re-inserting each field at the head of its
+/// new bucket — which reverses the within-bucket order
+/// (`IndexingChain.java:546-566`). The flush loop visits buckets in order and
+/// each chain head to tail, and the resulting sequence fixes the order of the
+/// field entries inside the `.dvm` file.
+fn doc_values_flush_order(fields: &[PerField]) -> Vec<usize> {
+    let names: Vec<&str> = fields
+        .iter()
+        .map(|per_field| per_field.field_info.name.as_str())
+        .collect();
+    field_hash_order(&names)
+}
+
+/// The core of [`doc_values_flush_order`], over the field names alone.
+///
+/// Split out so the order can be asserted directly: it depends on nothing but
+/// the names and the sequence they were first seen in, and getting it wrong
+/// reorders the metadata entries of the `.dvm` without changing a single value.
+fn field_hash_order(names: &[&str]) -> Vec<usize> {
+    let mut table: Vec<Vec<usize>> = vec![Vec::new(); 2];
+    let mut total_field_count = 0usize;
+    for (index, name) in names.iter().enumerate() {
+        // `hashMask` is re-read from the live table on every insert, because
+        // `rehash` replaces both the array and the mask
+        // (`IndexingChain.java:565-566`). Holding the initial mask across a
+        // growth would bucket every later field as if the table were still two
+        // wide, which changes the order the entries reach the `.dvm`.
+        let mask = table.len() - 1;
+        table[java_string_hashcode(name) as u32 as usize & mask].insert(0, index);
+        total_field_count += 1;
+        // At most 50% load factor: grow *after* the insert, as Lucene does.
+        if total_field_count >= table.len() / 2 {
+            let mut new_table: Vec<Vec<usize>> = vec![Vec::new(); table.len() * 2];
+            let new_mask = new_table.len() - 1;
+            for chain in &table {
+                for &index in chain {
+                    new_table[java_string_hashcode(names[index]) as u32 as usize & new_mask]
+                        .insert(0, index);
+                }
+            }
+            table = new_table;
+        }
+    }
+    table.into_iter().flatten().collect()
+}
 
 /// How many bytes of an over-long term are shown in the error message.
 ///
@@ -331,6 +397,13 @@ struct PerField {
     /// `fieldInfo.omitsNorms() == false` (`IndexingChain.java:1837-1841`), and
     /// keeps it for the whole segment.
     norms: Option<NormValuesWriter>,
+    /// Buffered doc values of this field, or `None` when the field declares no
+    /// doc-values type.
+    ///
+    /// Lucene creates it in `PerField.setFieldInfo()` — the `DocValuesType`
+    /// switch of `initializeFieldInfo` (`IndexingChain.java:1351-1369`) — and
+    /// keeps it for the whole segment.
+    doc_values: Option<DocValuesWriter>,
 }
 
 /// Which attributes a field instance's token stream actually carries.
@@ -716,6 +789,17 @@ impl DefaultIndexingChain {
         let norms = field_info
             .has_norms()
             .then(|| NormValuesWriter::new(field_info.clone(), Arc::clone(&self.bytes_used)));
+        // `initializeFieldInfo`'s `DocValuesType` switch creates the doc-values
+        // writer of every field that declares one, indexed or not
+        // (`IndexingChain.java:1351-1369`); the `NONE` arm creates nothing and
+        // the `default` arm is unreachable for a valid [`DocValuesType`].
+        let doc_values = match field_info.doc_values_type {
+            DocValuesType::NONE => None,
+            _ => Some(DocValuesWriter::new(
+                field_info.clone(),
+                Arc::clone(&self.bytes_used),
+            )),
+        };
         let index = self.per_fields.len();
         self.per_fields.push(PerField {
             field_info: field_info.clone(),
@@ -726,6 +810,7 @@ impl DefaultIndexingChain {
             field_gen: -1,
             first: true,
             norms,
+            doc_values,
         });
         self.per_field_index.insert(field_info.name.clone(), index);
         index
@@ -1262,6 +1347,97 @@ impl DefaultIndexingChain {
         close_outcome
     }
 
+    /// Writes the buffered doc values of the segment through the codec's
+    /// doc-values format, producing the `.dvd` and `.dvm` files.
+    ///
+    /// Equivalent to `IndexingChain.writeDocValues`
+    /// (`IndexingChain.java:439-497`). Lucene walks its open `PerField[]
+    /// fieldHash` bucket by bucket, newest instance first within a bucket, and
+    /// that *table order* — not field-number order — decides the order of the
+    /// field entries inside the `.dvm`. This port stores its fields in a
+    /// [`Vec`], so the layout is reproduced by replaying the table's insert
+    /// and rehash rules over the field names in registration order.
+    ///
+    /// Like Java, the consumer is created lazily at the first field that has
+    /// values and closed once after the last one, whether or not a field
+    /// threw. The "BUG" guards below are ports of Lucene's `AssertionError`
+    /// checks: they detect a per-field state inconsistent with the field
+    /// infos the segment will carry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] for a per-field state that
+    /// disagrees with the segment's field infos, and propagates whatever the
+    /// format's consumer raises while writing the fields.
+    fn write_doc_values(&mut self, state: &SegmentWriteState<'_>) -> Result<()> {
+        if !state.field_infos.has_doc_values() {
+            return Ok(());
+        }
+        // `fieldHash` starts at two buckets, chains newest-first and doubles
+        // once the table is half full, reversing every chain it moves; the
+        // flush walks buckets in order and each chain head to tail.
+        let mut consumer: Option<Box<dyn DocValuesConsumer + '_>> = None;
+        let outcome: Result<()> = (|| {
+            for index in doc_values_flush_order(&self.per_fields) {
+                let per_field = &mut self.per_fields[index];
+                let Some(writer) = per_field.doc_values.as_mut() else {
+                    if per_field.field_info.doc_values_type != DocValuesType::NONE {
+                        return Err(LuceneError::IllegalState(format!(
+                            "segment={}: field=\"{}\" has docValues but did not write them",
+                            state.segment_info.name, per_field.field_info.name
+                        )));
+                    }
+                    continue;
+                };
+                if per_field.field_info.doc_values_type == DocValuesType::NONE {
+                    return Err(LuceneError::IllegalState(format!(
+                        "segment={}: field=\"{}\" has no docValues but wrote them",
+                        state.segment_info.name, per_field.field_info.name
+                    )));
+                }
+                if consumer.is_none() {
+                    // Lazy init, exactly as `writeDocValues` does.
+                    consumer = Some(
+                        self.config
+                            .codec()
+                            .doc_values_format()
+                            .fields_consumer(state)?,
+                    );
+                }
+                let consumer = consumer
+                    .as_mut()
+                    .expect("INVARIANT: the consumer was just created if it was missing");
+                writer.flush(&mut **consumer)?;
+                // Java nulls `perField.docValuesWriter` here; this port drops
+                // the whole per-field table at the end of `flush` instead.
+            }
+            Ok(())
+        })();
+        let close_outcome = match consumer.as_mut() {
+            Some(consumer) => consumer.close(),
+            None => Ok(()),
+        };
+        // Lucene re-checks the field infos after the `finally` that closes the
+        // consumer: writing doc values without the segment declaring them, or
+        // declaring them without writing, is a bug in the chain.
+        let wrote_values = consumer.is_some();
+        if !state.field_infos.has_doc_values() {
+            if wrote_values {
+                return Err(LuceneError::IllegalState(format!(
+                    "segment={}: fieldInfos has no docValues but wrote them",
+                    state.segment_info.name
+                )));
+            }
+        } else if !wrote_values {
+            return Err(LuceneError::IllegalState(format!(
+                "segment={}: fieldInfos has docValues but did not write them",
+                state.segment_info.name
+            )));
+        }
+        outcome?;
+        close_outcome
+    }
+
     /// Buffers the norm of one field of one document.
     ///
     /// Equivalent to the norms half of `IndexingChain.PerField.finish(int)`
@@ -1396,6 +1572,29 @@ impl IndexingChain for DefaultIndexingChain {
 
             if field.field_type().stored() {
                 if let Err(error) = self.store_field(index, field.as_ref()) {
+                    outcome = Err(error);
+                    break;
+                }
+            }
+
+            // `processField` runs `indexDocValue` for every instance of a
+            // field that declares doc values, after the invert-and-store half
+            // (`IndexingChain.java:1386-1391`); a validation failure is a
+            // document-level problem exactly like the ones `invert` raises.
+            if field.field_type().doc_values_type() != DocValuesType::NONE {
+                let result = self.per_fields[index].doc_values.as_mut().expect(
+                    "INVARIANT: every field with a doc-values type gets a writer in get_or_add_per_field",
+                ).add_value(doc_id, field.as_ref());
+                if let Err(error) = result {
+                    if !matches!(
+                        error,
+                        LuceneError::IllegalArgument(_) | LuceneError::IllegalState(_)
+                    ) {
+                        self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+                            "indexing chain buffers may be corrupt after field \"{}\": {error}",
+                            field.name()
+                        )));
+                    }
                     outcome = Err(error);
                     break;
                 }
@@ -1548,13 +1747,14 @@ impl IndexingChain for DefaultIndexingChain {
         write_state.live_docs = state.live_docs.cloned();
         write_state.del_count_on_flush = state.del_count_on_flush;
 
-        // Lucene writes the norms first, then the stored fields, then
-        // `termsHash.flush`, whose `super.flush` finishes the term vectors
-        // before the postings format runs (`IndexingChain.java:305`, `:340-370`,
-        // `FreqProxTermsWriter.java:118`). They write different files, so only
-        // the order of the calls is reproduced here.
+        // Lucene writes the norms first, then the doc values, then the stored
+        // fields, then `termsHash.flush`, whose `super.flush` finishes the term
+        // vectors before the postings format runs (`IndexingChain.java:305`,
+        // `:340-370`, `FreqProxTermsWriter.java:118`). They write different
+        // files, so only the order of the calls is reproduced here.
         let max_doc = state.segment_info.max_doc()?;
         self.write_norms(&write_state, max_doc)?;
+        self.write_doc_values(&write_state)?;
 
         if let Some(consumer) = self.stored_fields_consumer.as_mut() {
             consumer.finish(max_doc)?;
@@ -3736,5 +3936,45 @@ mod tests {
             .process_document(0, &document, true, &mut field_infos)
             .expect_err("silently dropping term vectors would corrupt the segment");
         assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
+    }
+
+    #[test]
+    fn java_string_hash_codes_match_java() {
+        // `String.hashCode` is specified rather than merely implemented, and
+        // these values were read back from a JDK 21 `javac`-compiled program
+        // rather than derived from the formula a second time.
+        for (name, expected) in [
+            ("", 0),
+            ("a", 97),
+            ("mnum", 3_356_665),
+            ("mbin", 3_344_762),
+            ("msort", 104_200_075),
+            ("msnum", 104_199_200),
+            ("mss", 108_429),
+            ("sparse", -896_177_632),
+            ("konst", 102_232_939),
+        ] {
+            assert_eq!(java_string_hashcode(name), expected, "hashCode({name:?})");
+        }
+    }
+
+    #[test]
+    fn doc_values_flush_order_follows_the_java_field_hash() {
+        // Regression: the mask was read once, before the table had grown, so
+        // every field inserted after the first rehash landed in the wrong
+        // bucket. Nothing below three fields can show it — the table only
+        // doubles twice by then — which is why a single mixed-type case is what
+        // caught it. The expected orders here are the ones Lucene 10.5.0 itself
+        // produced for the same names, read back out of the `.dvm` it wrote
+        // (see `tests/portability/doc_values.rs`).
+        assert_eq!(field_hash_order(&["sort"]), vec![0]);
+        assert_eq!(field_hash_order(&["sparse", "all"]), vec![0, 1]);
+        assert_eq!(field_hash_order(&["bin", "sbin"]), vec![1, 0]);
+        assert_eq!(field_hash_order(&["num", "gcd", "konst"]), vec![1, 2, 0]);
+        assert_eq!(
+            field_hash_order(&["mnum", "mbin", "msort", "msnum", "mss"]),
+            vec![3, 0, 1, 2, 4],
+            "the stale-mask bug produced [3, 4, 0, 1, 2] here"
+        );
     }
 }
