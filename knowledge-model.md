@@ -123,7 +123,10 @@ which reproduces the field-hash table order `IndexingChain.writeDocValues`
 flushes in and so fixes the order of the field entries inside the `.dvm`, and
 `register_doc_values_format` in `src/codecs/doc_values.rs`, which fills the
 global registry Rucene uses in place of the Java service loader behind
-`DocValuesFormat.forName`.
+`DocValuesFormat.forName`. `0dfc12d` added `inflate_gens` in
+`src/index/index_file_deleter.rs`, the port of the private static
+`IndexFileDeleter.inflateGens`, which pushes a `SegmentInfos` name counter and
+its per-segment generations past everything already present in the directory.
 
 ### `Task`
 An `rmp` task, mirrored into the graph when it is closed.
@@ -161,7 +164,7 @@ revisited (see `CLAUDE.md` §13.2). Identity is `name`.
 | Property | Purpose |
 |----------|---------|
 | `name` | Short decision title (identity), e.g. `"flate2 deflate backend for BEST_COMPRESSION"`. |
-| `kind` | `"dependency"`, `"algorithm"`, `"format"`, `"adaptation"`, `"principle"`. |
+| `kind` | `"dependency"`, `"algorithm"`, `"format"`, `"adaptation"`, `"principle"`, `"gap"`. |
 | `summary` | What was decided, in one or two sentences. |
 | `rationale` | Why, in terms of the component's objective. |
 | `alternatives` | Options considered and why each was rejected. |
@@ -177,12 +180,22 @@ governs every later task, rather than a choice confined to one component. The
 first is `"Fidelity first - minimise divergences (CLAUDE.md 14.5)"`, added by
 `fd36286`.
 
+`kind: "gap"` is for a **declared gap**: a part of a task's acceptance criteria
+that could not be verified end to end, recorded when the task closes so that it
+stays queryable instead of being lost in a commit message. It uses the same
+properties as any other decision — `summary` says what is not verified,
+`rationale` why it could not be, `alternatives` what was rejected, and `evidence`
+what *is* proven — and it points at the follow-up work through `DEPENDS_ON`
+(→ `Task`). The first is the `IndexFileDeleter` NRT-reader and post-merge
+deletion gap, added by `0dfc12d`, which depends on task #137.
+
 ### `Defect`
 A bug that was found and fixed, recorded so the finding survives the fix.
-Introduced by the 2026-08-29 sync for the three defects of `fd36286`. Identity
-is `name`. A defect is worth a node when it is non-obvious — a divergence from
-Lucene 10.5.0 that only a portability or fuzz test could have caught, or a
-hazard whose reachability is itself the finding — not for every routine fix.
+Introduced by the 2026-08-29 sync for the three defects of `fd36286`; `0dfc12d`
+added a fourth. Identity is `name`. A defect is worth a node when it is
+non-obvious — a divergence from Lucene 10.5.0 that only a portability or fuzz
+test could have caught, or a hazard whose reachability is itself the finding —
+not for every routine fix.
 
 | Property | Purpose |
 |----------|---------|
@@ -198,7 +211,9 @@ hazard whose reachability is itself the finding — not for every routine fix.
 
 A `Defect` reaches the code through `IMPLEMENTED_IN` (→ `File`, where the fix
 landed), records where it landed through `COMMITTED_IN` (→ `Commit`), and is
-pinned down by the regression test that points at it with `TESTS`.
+pinned down by the regression test that points at it with `TESTS`. That test is
+normally a file under `tests/`; when it is a `#[cfg(test)]` unit test inside the
+module itself, the `src/` file is the `TESTS` origin instead.
 
 ### `Feature`
 A high-level functional capability, used to link packages/types to what they implement.
@@ -217,7 +232,7 @@ A high-level functional capability, used to link packages/types to what they imp
 | `CONTAINS` | `Project` → `Module`, `Module` → `Package`, `Package` → `Package`, `Package` → `Class`/`Interface`/`Enum`/`Exception`/`Annotation`, `Class` → `Method`. |
 | `DECLARES` | `File` → `Class`/`Interface`/`Enum`/`Exception`/`Annotation`/`Method`, and, for local crate files, `File` → `RustStruct`/`RustTrait`/`RustEnum`. |
 | `NESTED_IN` | `Class` (inner type) → `Class` (enclosing top-level type). |
-| `DEPENDS_ON` | `Package` → `Package`, `Class` → `Class`, `Module` → `Module`, and Rucene type → Rucene type (`RustStruct`/`RustTrait`/`RustEnum`/`Component`/legacy `Trait`), optionally carrying a `note` that says what the dependency is. |
+| `DEPENDS_ON` | `Package` → `Package`, `Class` → `Class`, `Module` → `Module`, and Rucene type → Rucene type (`RustStruct`/`RustTrait`/`RustEnum`/`Component`/legacy `Trait`/legacy `Interface`), optionally carrying a `note` that says what the dependency is. Also `Task` → `Task`, mirroring the dependency `rmp` records, and `Decision` → `Task`, which a `kind: "gap"` decision uses to name the task that will close it. |
 | `EXTENDS` | `Class` → `Class` / `Class` → `Interface`. |
 | `IMPLEMENTS` | `Class` → `Interface`, and Rucene type → `RustTrait` (the Rust type implements that trait). |
 | `EXPORTS` | `Feature` (`module-info`) → `Package` (JPMS exported package). |
@@ -226,7 +241,7 @@ A high-level functional capability, used to link packages/types to what they imp
 | `USES` | `Feature` (`module-info`) → `Class` (SPI service interface). |
 | `PROVIDES` | `Feature` (`module-info`) → `Class` (SPI service interface). |
 | `PROVIDED_BY` | `Class` (SPI interface) → `Class` (implementation). |
-| `TESTS` | `File` / `Class` → `Feature` / `Class` / `RustStruct`/`RustTrait`/`RustEnum`/`Component`/`Defect`. A portability test file points at the harness `Feature` it belongs to and at the Rucene types whose behaviour it pins down; where it is also the regression test for a fixed bug, it points at the `Defect` too. |
+| `TESTS` | `File` / `Class` → `Feature` / `Class` / `RustStruct`/`RustTrait`/`RustEnum`/`Component`/`Defect`. A portability test file points at the harness `Feature` it belongs to and at the Rucene types whose behaviour it pins down; where it is also the regression test for a fixed bug, it points at the `Defect` too. The origin is normally a file under `tests/`; a `src/` file is the origin when the regression test for a `Defect` is a `#[cfg(test)]` unit test in the module itself. |
 | `SPECIFIED_IN` | `Feature` → `File` (specification document). |
 | `REFERENCES` | `Project` → `Project` (Rucene references Apache Lucene Core 10.5.0). |
 | `PORTS` | Rucene type (`RustStruct`/`RustTrait`/`RustEnum`/`Component`) → Lucene `Class`/`Interface`/`Enum`. The Rust type is the port of that Lucene type. Optional `note` property records that the port is partial, a placeholder, or a deliberate adaptation, and says what is missing or what was changed and why. |
@@ -264,7 +279,7 @@ Every node and edge carries `gitCommit` (full 40-char hash) and `gitDate` (`YYYY
 | `TESTS` / `SPECIFIED_IN` | populated for the portability harness and the components it validates; extended per synced commit |
 | `RustStruct` / `RustTrait` / `RustEnum` | populated incrementally, one sync per commit that ports types |
 | `Task` / `Commit` | populated for the commits that have been synced; not a complete history |
-| `Decision` | populated per synced commit, for decisions that constrain the code |
-| `Defect` | populated per synced commit, for non-obvious bugs found and fixed (3 nodes, from `fd36286`) |
+| `Decision` | populated per synced commit, for decisions that constrain the code, including `kind: "gap"` declared gaps |
+| `Defect` | populated per synced commit, for non-obvious bugs found and fixed (4 nodes, from `fd36286` and `0dfc12d`) |
 | `PORTS` | populated for every ported Rucene type whose Lucene counterpart is already modelled |
 | `IMPLEMENTED_IN` / `IMPLEMENTS` / `COMMITTED_IN` / `CLOSES_TASK` | populated per synced commit |
