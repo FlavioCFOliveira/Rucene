@@ -18,6 +18,7 @@ pub mod compress;
 pub mod extra;
 pub mod file_deleter;
 pub mod packed;
+pub mod quantization;
 pub mod selector;
 pub mod small_float;
 pub mod string_helper;

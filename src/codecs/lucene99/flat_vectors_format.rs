@@ -29,6 +29,7 @@ use crate::codecs::knn_vectors::{
     KnnVectorsReader, KnnVectorsWriter, SorterDocMap,
 };
 use crate::codecs::lucene90::indexed_disi::{write_bit_set, IndexedDISI, DEFAULT_DENSE_RANK_POWER};
+use crate::codecs::lucene95::OrdToDocDISIReaderConfiguration;
 use crate::codecs::postings::MergeState;
 use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
@@ -623,7 +624,13 @@ fn write_meta(
 
     let count = docs_with_field.cardinality();
     meta.write_int(count)?;
-    OrdToDocConfig::write_stored_meta(meta, vector_data, count, max_doc, docs_with_field)
+    OrdToDocDISIReaderConfiguration::write_stored_meta(
+        meta,
+        vector_data,
+        count,
+        max_doc,
+        docs_with_field,
+    )
 }
 
 fn vector_encoding_ordinal(encoding: VectorEncoding) -> i32 {
@@ -665,136 +672,6 @@ fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
 }
 
 // -----------------------------------------------------------------------------
-// OrdToDoc configuration
-// -----------------------------------------------------------------------------
-
-struct OrdToDocConfig {
-    size: i32,
-    jump_table_entry_count: i16,
-    addresses_offset: i64,
-    addresses_length: i64,
-    docs_with_field_offset: i64,
-    docs_with_field_length: i64,
-    dense_rank_power: i8,
-    meta: DirectMonotonicMeta,
-}
-
-impl Clone for OrdToDocConfig {
-    fn clone(&self) -> Self {
-        Self {
-            size: self.size,
-            jump_table_entry_count: self.jump_table_entry_count,
-            addresses_offset: self.addresses_offset,
-            addresses_length: self.addresses_length,
-            docs_with_field_offset: self.docs_with_field_offset,
-            docs_with_field_length: self.docs_with_field_length,
-            dense_rank_power: self.dense_rank_power,
-            meta: DirectMonotonicMeta {
-                block_shift: self.meta.block_shift,
-                num_blocks: self.meta.num_blocks,
-                mins: self.meta.mins.clone(),
-                avgs: self.meta.avgs.clone(),
-                offsets: self.meta.offsets.clone(),
-                bpvs: self.meta.bpvs.clone(),
-            },
-        }
-    }
-}
-
-impl OrdToDocConfig {
-    fn is_empty(&self) -> bool {
-        self.docs_with_field_offset == -2
-    }
-
-    fn is_dense(&self) -> bool {
-        self.docs_with_field_offset == -1
-    }
-
-    fn write_stored_meta(
-        meta_out: &mut dyn IndexOutput,
-        vector_data: &mut dyn IndexOutput,
-        count: i32,
-        max_doc: i32,
-        docs_with_field: &DocsWithFieldSet,
-    ) -> Result<()> {
-        if count == 0 {
-            meta_out.write_long(-2)?;
-            meta_out.write_long(0)?;
-            meta_out.write_short(-1)?;
-            meta_out.write_byte((-1i8) as u8)?;
-        } else if count == max_doc {
-            meta_out.write_long(-1)?;
-            meta_out.write_long(0)?;
-            meta_out.write_short(-1)?;
-            meta_out.write_byte((-1i8) as u8)?;
-        } else {
-            let offset = vector_data.file_pointer();
-            meta_out.write_long(offset)?;
-            let jump_table_entry_count = {
-                let mut iter = docs_with_field.iterator()?;
-                write_bit_set(iter.as_mut(), vector_data, DEFAULT_DENSE_RANK_POWER)?
-            };
-            meta_out.write_long(vector_data.file_pointer() - offset)?;
-            meta_out.write_short(jump_table_entry_count)?;
-            meta_out.write_byte(DEFAULT_DENSE_RANK_POWER as u8)?;
-
-            let start = vector_data.file_pointer();
-            meta_out.write_long(start)?;
-            meta_out.write_v_int(DIRECT_MONOTONIC_BLOCK_SHIFT)?;
-            let mut writer = DirectMonotonicWriter::new(
-                meta_out,
-                vector_data,
-                count as i64,
-                DIRECT_MONOTONIC_BLOCK_SHIFT,
-            )?;
-            let mut iter = docs_with_field.iterator()?;
-            while iter.next_doc()? != NO_MORE_DOCS {
-                writer.add(iter.doc_id() as i64)?;
-            }
-            writer.finish()?;
-            meta_out.write_long(vector_data.file_pointer() - start)?;
-        }
-        Ok(())
-    }
-
-    fn read_stored_meta(input: &mut dyn DataInput, size: i32) -> Result<Self> {
-        let docs_with_field_offset = input.read_long()?;
-        let docs_with_field_length = input.read_long()?;
-        let jump_table_entry_count = input.read_short()?;
-        let dense_rank_power = input.read_byte()? as i8;
-
-        let mut addresses_offset = 0i64;
-        let mut addresses_length = 0i64;
-        let mut meta = DirectMonotonicMeta {
-            block_shift: 0,
-            num_blocks: 0,
-            mins: Vec::new(),
-            avgs: Vec::new(),
-            offsets: Vec::new(),
-            bpvs: Vec::new(),
-        };
-
-        if docs_with_field_offset > -1 {
-            addresses_offset = input.read_long()?;
-            let block_shift = input.read_v_int()?;
-            meta = DirectMonotonicMeta::load(input, size as i64, block_shift)?;
-            addresses_length = input.read_long()?;
-        }
-
-        Ok(Self {
-            size,
-            jump_table_entry_count,
-            addresses_offset,
-            addresses_length,
-            docs_with_field_offset,
-            docs_with_field_length,
-            dense_rank_power,
-            meta,
-        })
-    }
-}
-
-// -----------------------------------------------------------------------------
 // Lucene99FlatVectorsReader
 // -----------------------------------------------------------------------------
 
@@ -827,7 +704,7 @@ struct FieldEntry {
     vector_data_length: i64,
     dimension: i32,
     size: i32,
-    ord_to_doc: OrdToDocConfig,
+    ord_to_doc: OrdToDocDISIReaderConfiguration,
 }
 
 impl Lucene99FlatVectorsReader {
@@ -1058,7 +935,7 @@ impl FieldEntry {
         let vector_data_length = input.read_v_long()?;
         let dimension = input.read_v_int()?;
         let size = input.read_int()?;
-        let ord_to_doc = OrdToDocConfig::read_stored_meta(input, size)?;
+        let ord_to_doc = OrdToDocDISIReaderConfiguration::read_stored_meta(input, size)?;
 
         if similarity_function != field_info.vector_similarity_function {
             return Err(LuceneError::CorruptIndex(format!(
@@ -1112,14 +989,14 @@ struct OffHeapFloatVectorValues {
     size: i32,
     byte_size: i32,
     slice: Mutex<Box<dyn IndexInput>>,
-    config: Option<OrdToDocConfig>,
+    config: Option<OrdToDocDISIReaderConfiguration>,
     data_input: Option<Box<dyn IndexInput>>,
     ord_to_doc_data: Vec<u8>,
 }
 
 impl OffHeapFloatVectorValues {
     fn load(
-        config: &OrdToDocConfig,
+        config: &OrdToDocDISIReaderConfiguration,
         dimension: i32,
         vector_data_offset: i64,
         vector_data_length: i64,
@@ -1267,14 +1144,14 @@ struct OffHeapByteVectorValues {
     size: i32,
     byte_size: i32,
     slice: Mutex<Box<dyn IndexInput>>,
-    config: Option<OrdToDocConfig>,
+    config: Option<OrdToDocDISIReaderConfiguration>,
     data_input: Option<Box<dyn IndexInput>>,
     ord_to_doc_data: Vec<u8>,
 }
 
 impl OffHeapByteVectorValues {
     fn load(
-        config: &OrdToDocConfig,
+        config: &OrdToDocDISIReaderConfiguration,
         dimension: i32,
         vector_data_offset: i64,
         vector_data_length: i64,
@@ -1417,7 +1294,10 @@ impl ByteVectorValues for OffHeapByteVectorValues {
     }
 }
 
-fn read_ord_to_doc_data(vector_data: &dyn IndexInput, config: &OrdToDocConfig) -> Result<Vec<u8>> {
+fn read_ord_to_doc_data(
+    vector_data: &dyn IndexInput,
+    config: &OrdToDocDISIReaderConfiguration,
+) -> Result<Vec<u8>> {
     if config.addresses_length <= 0 {
         return Ok(Vec::new());
     }

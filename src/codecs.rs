@@ -19,6 +19,7 @@ pub mod lucene90;
 
 /// Bundled Lucene 9.4 sub-formats reused by the default `Lucene104` codec.
 pub mod lucene94;
+pub mod lucene95;
 
 /// Bundled Lucene 9.9 sub-formats reused by the default `Lucene104` codec.
 pub mod lucene99;
