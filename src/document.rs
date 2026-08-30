@@ -9,6 +9,7 @@
 pub mod column;
 pub mod doc_values_queries;
 pub mod feature_field;
+pub mod geo_fields;
 pub mod range_fields;
 
 use std::cell::RefCell;

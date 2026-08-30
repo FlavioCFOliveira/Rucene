@@ -13,6 +13,7 @@ pub mod analysis;
 pub mod codecs;
 pub mod document;
 pub mod error;
+pub mod geo;
 pub mod index;
 pub mod search;
 pub mod store;
