@@ -2161,6 +2161,7 @@ mod tests {
         Field, FieldType, IntField, KnnFloatVectorField, Store, StoredField, StringField, TextField,
     };
     use crate::index::documents_writer::TermDelete;
+    use crate::search::similarities::{CollectionStatistics, SimScorer, TermStatistics};
     use crate::index::field_infos::FieldNumbers;
     use crate::index::{SegmentInfo, Term, VectorEncoding, VectorSimilarityFunction};
     use crate::store::{
@@ -3238,6 +3239,23 @@ mod tests {
         impl Similarity for ZeroSimilarity {
             fn compute_norm(&self, _state: &FieldInvertState) -> Result<i64> {
                 Ok(0)
+            }
+
+            fn scorer<'a>(
+                &'a self,
+                boost: f32,
+                _collection_stats: &CollectionStatistics,
+                _term_stats: &[TermStatistics],
+            ) -> Box<dyn SimScorer + 'a> {
+                // Java declares `scorer` abstract, so a `Similarity` double has
+                // to answer it too. This fixture only exercises `computeNorm`.
+                struct ConstantScorer(f32);
+                impl SimScorer for ConstantScorer {
+                    fn score(&self, _freq: f32, _norm: i64) -> f32 {
+                        self.0
+                    }
+                }
+                Box::new(ConstantScorer(boost))
             }
         }
 

@@ -59,7 +59,10 @@ use rucene::index::field_infos::{FieldInfosBuilder, FieldNumbers};
 use rucene::index::index_writer_config::LiveIndexWriterConfig;
 use rucene::index::indexing_chain::{DefaultIndexingChain, FieldInvertState};
 use rucene::index::{FieldInfos, IndexOptions, SegmentInfo, SegmentInfos};
-use rucene::search::similarities::{compute_default_norm, BM25Similarity, Similarity};
+use rucene::search::similarities::{
+    compute_default_norm, BM25Similarity, CollectionStatistics, SimScorer, Similarity,
+    TermStatistics,
+};
 use rucene::search::{DocIdSetIterator, NO_MORE_DOCS};
 use rucene::store::{
     flush_io_context, Directory, FSDirectory, FlushInfo, TrackingDirectoryWrapper,
@@ -189,6 +192,23 @@ struct ScaledSimilarity {
 impl Similarity for ScaledSimilarity {
     fn compute_norm(&self, state: &FieldInvertState) -> rucene::error::Result<i64> {
         Ok(state.length() as i64 * self.factor)
+    }
+
+    fn scorer<'a>(
+        &'a self,
+        boost: f32,
+        _collection_stats: &CollectionStatistics,
+        _term_stats: &[TermStatistics],
+    ) -> Box<dyn SimScorer + 'a> {
+        // Java declares `scorer` abstract, so a `Similarity` double has to
+        // answer it too. This fixture only exercises `computeNorm`.
+        struct ConstantScorer(f32);
+        impl SimScorer for ConstantScorer {
+            fn score(&self, _freq: f32, _norm: i64) -> f32 {
+                self.0
+            }
+        }
+        Box::new(ConstantScorer(boost))
     }
 }
 
