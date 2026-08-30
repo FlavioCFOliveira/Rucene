@@ -110,6 +110,10 @@ name = "portability_index_file_deleter"
 path = "tests/portability/index_file_deleter.rs"
 
 [[test]]
+name = "portability_points"
+path = "tests/portability/points.rs"
+
+[[test]]
 name = "fuzz_codec_headers"
 path = "tests/fuzz/codec_headers.rs"
 
@@ -132,6 +136,10 @@ path = "tests/fuzz/doc_values.rs"
 [[test]]
 name = "fuzz_index_file_deleter"
 path = "tests/fuzz/index_file_deleter.rs"
+
+[[test]]
+name = "fuzz_points"
+path = "tests/fuzz/points.rs"
 
 [profile.release]
 lto = true

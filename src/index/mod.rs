@@ -41,6 +41,7 @@ pub mod multi_reader;
 pub mod norms_writer;
 pub mod parallel_reader;
 pub mod point_values;
+pub mod point_values_writer;
 pub mod postings_enum;
 pub mod reader_context;
 pub mod reader_manager;
@@ -96,8 +97,8 @@ pub use term_vectors_consumer::{TermVectorsConsumer, TermVectorsConsumerPerField
 // `crate::index::point_values::`, which is the exact analogue of Java's
 // `PointValues.size(reader, field)` static call.
 pub use point_values::{
-    EmptyPointValues, InMemoryPointTree, InMemoryPointValues, IntersectVisitor, PointTree,
-    PointValues, Relation, MAX_DIMENSIONS, MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
+    EmptyPointValues, InMemoryPointTree, InMemoryPointValues, IntersectVisitor, MutablePointTree,
+    PointTree, PointValues, Relation, MAX_DIMENSIONS, MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
 };
 pub use postings_enum::{
     feature_requested, DocAndFloatFeatureBuffer, EmptyPostingsEnum, FreqAndNormBuffer, Impacts,

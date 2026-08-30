@@ -118,9 +118,11 @@ free function that is a load-bearing port in its own right, which carries
 `kind: "function"` and a `file`, and reaches its file through `IMPLEMENTED_IN`.
 `compare_utf16` in `src/util/string_helper.rs` is the first of these: it ports
 the `String.compareTo` ordering Lucene writes field names in. The 2026-08-29
-sync added two more: `doc_values_flush_order` in `src/index/indexing_chain.rs`,
-which reproduces the field-hash table order `IndexingChain.writeDocValues`
-flushes in and so fixes the order of the field entries inside the `.dvm`, and
+sync added two more: `field_hash_flush_order` in `src/index/indexing_chain.rs`
+(named `doc_values_flush_order` until the points writer landed and made it serve
+`writePoints` too), which reproduces the field-hash table order
+`IndexingChain.writeDocValues` and `IndexingChain.writePoints` flush in and so
+fixes the order of the field entries inside the `.dvm` and the `.kdm`, and
 `register_doc_values_format` in `src/codecs/doc_values.rs`, which fills the
 global registry Rucene uses in place of the Java service loader behind
 `DocValuesFormat.forName`. `0dfc12d` added `inflate_gens` in

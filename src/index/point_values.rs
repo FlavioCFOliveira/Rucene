@@ -298,6 +298,89 @@ pub trait PointTree {
     ///
     /// Propagates reader and visitor errors.
     fn visit_doc_values(&mut self, visitor: &mut dyn IntersectVisitor) -> Result<()>;
+
+    /// Returns this cursor as a [`MutablePointTree`] when it is one.
+    ///
+    /// This is the Rust stand-in for Java's `values instanceof MutablePointTree`
+    /// test in `Lucene90PointsWriter.writeField`
+    /// (`Lucene90PointsWriter.java:159`), which is how a codec discovers that
+    /// it may reorder the points in place instead of buffering them through
+    /// `BKDWriter.add`. The default returns `None`, matching every tree that is
+    /// not mutable — in particular the BKD-backed cursor, which reads from
+    /// immutable files.
+    fn as_mutable(&mut self) -> Option<&mut dyn MutablePointTree> {
+        None
+    }
+}
+
+/// One leaf [`PointTree`] whose point order can be changed.
+///
+/// Equivalent to `org.apache.lucene.codecs.MutablePointTree`. Lucene declares
+/// it in the codec package; this crate declares it beside [`PointTree`], its
+/// supertrait, and re-exports it from [`crate::codecs::points`] — the same
+/// arrangement that module already uses for [`PointValues`],
+/// [`IntersectVisitor`] and [`Relation`], which Java also splits across the
+/// `index` and `codecs` packages.
+///
+/// The point of the trait is that a codec can **sort through it**: the BKD
+/// writer partitions and orders the points by calling
+/// [`byte_at`](Self::byte_at), [`swap`](Self::swap), [`save`](Self::save) and
+/// [`restore`](Self::restore), never touching the underlying buffer. Any
+/// deviation in these six methods changes the tree the codec builds, and
+/// therefore the bytes of the `.kdd`/`.kdi`/`.kdm` files.
+///
+/// # The `save`/`restore` contract
+///
+/// Java documents them as *"Save the i-th value into the j-th position in
+/// temporary storage"* and *"Restore values between i-th and j-th (excluding)
+/// in temporary storage into original storage"*
+/// (`MutablePointTree.java:46` and `:49`). They are **not** symmetric: `save` copies
+/// one element from position `i` of the live order to position `j` of the
+/// scratch, while `restore` copies the half-open range `[i, j)` from the
+/// *same* positions of the scratch back over the live order. The stable
+/// MSB radix sort relies on exactly that asymmetry.
+///
+/// # What Java makes final
+///
+/// `MutablePointTree` is an abstract class that finalises the navigation half
+/// of `PointTree`: `clone()`, `getMinPackedValue()`, `getMaxPackedValue()` and
+/// `visitDocIDs()` throw `UnsupportedOperationException`, and `moveToChild()`,
+/// `moveToSibling()` and `moveToParent()` return `false` — a mutable tree is
+/// always a single leaf that is also its own root. Rust traits cannot finalise
+/// a supertrait's methods, so each implementation supplies that behaviour and
+/// documents it.
+pub trait MutablePointTree: PointTree {
+    /// Returns the packed bytes of the `i`-th value.
+    ///
+    /// Equivalent to `MutablePointTree.getValue(int, BytesRef)`, which fills a
+    /// `BytesRef` pointing into the buffer; returning a borrowed slice is the
+    /// same thing without the out-parameter.
+    fn value(&self, i: i32) -> &[u8];
+
+    /// Returns the `k`-th byte of the `i`-th value.
+    ///
+    /// Equivalent to `MutablePointTree.getByteAt(int, int)`.
+    fn byte_at(&self, i: i32, k: i32) -> u8;
+
+    /// Returns the doc ID of the `i`-th value.
+    ///
+    /// Equivalent to `MutablePointTree.getDocID(int)`.
+    fn doc_id(&self, i: i32) -> i32;
+
+    /// Swaps the `i`-th and `j`-th values.
+    ///
+    /// Equivalent to `MutablePointTree.swap(int, int)`.
+    fn swap(&mut self, i: i32, j: i32);
+
+    /// Saves the `i`-th value into the `j`-th position of temporary storage.
+    ///
+    /// Equivalent to `MutablePointTree.save(int, int)`.
+    fn save(&mut self, i: i32, j: i32);
+
+    /// Restores the values in `[i, j)` from temporary storage.
+    ///
+    /// Equivalent to `MutablePointTree.restore(int, int)`.
+    fn restore(&mut self, i: i32, j: i32);
 }
 
 // -----------------------------------------------------------------------------

@@ -172,19 +172,58 @@ pub trait DataInput {
     }
 
     /// Reads a string written as a VInt length followed by UTF-8 bytes.
+    ///
+    /// Equivalent to `DataInput.readString()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::CorruptIndex`] when the length is negative: Java
+    /// reaches `new byte[length]` with it and throws
+    /// `NegativeArraySizeException` (`DataInput.java:230-234`), which is a
+    /// failure, not a value, so this port reports one too.
+    ///
+    /// Otherwise propagates the end of file the underlying input raises when
+    /// the length is longer than what is left to read. Java allocates the
+    /// whole length up front, so it fails the same way for a length that fits
+    /// in memory but not in the file, and throws `OutOfMemoryError` for one
+    /// that does not fit at all. This port never allocates more than the input
+    /// actually delivers, so it reports the end of file in both cases. The
+    /// chunk below is an I/O buffer, not a bound on what is accepted: no
+    /// length Java could read is refused here.
     fn read_string(&mut self) -> Result<String> {
-        let length = self.read_v_int()? as usize;
-        let mut bytes = vec![0u8; length];
-        self.read_bytes(&mut bytes, 0, length)?;
+        /// How much is allocated before any of it has been read.
+        const CHUNK: usize = 16 * 1024;
+        let length = self.read_v_int()?;
+        if length < 0 {
+            return Err(LuceneError::CorruptIndex(format!(
+                "invalid string length: {length}"
+            )));
+        }
+        let mut remaining = length as usize;
+        let mut bytes: Vec<u8> = Vec::new();
+        while remaining > 0 {
+            let take = remaining.min(CHUNK);
+            let filled = bytes.len();
+            bytes.resize(filled + take, 0u8);
+            self.read_bytes(&mut bytes, filled, take)?;
+            remaining -= take;
+        }
         String::from_utf8(bytes)
             .map_err(|e| LuceneError::IllegalArgument(format!("invalid UTF-8 reading string: {e}")))
     }
 
     /// Reads a `HashMap<String, String>` previously written with
     /// [`DataOutput::write_map_of_strings`].
+    ///
+    /// Equivalent to `DataInput.readMapOfStrings()`, which sizes nothing from
+    /// the count — it builds a plain `HashMap`/`TreeMap` and lets the entries
+    /// grow it (`DataInput.java:261-276`) — and whose loop runs zero times for
+    /// a negative count, returning an empty map. Reserving the count instead
+    /// would allocate whatever a corrupt file names before a single entry has
+    /// been read.
     fn read_map_of_strings(&mut self) -> Result<HashMap<String, String>> {
-        let count = self.read_v_int()? as usize;
-        let mut map = HashMap::with_capacity(count);
+        let count = self.read_v_int()?;
+        let mut map = HashMap::new();
         for _ in 0..count {
             let key = self.read_string()?;
             let value = self.read_string()?;
@@ -195,9 +234,13 @@ pub trait DataInput {
 
     /// Reads a `HashSet<String>` previously written with
     /// [`DataOutput::write_set_of_strings`].
+    ///
+    /// Equivalent to `DataInput.readSetOfStrings()`; see
+    /// [`read_map_of_strings`](Self::read_map_of_strings) for why neither the
+    /// capacity nor the loop trusts the count.
     fn read_set_of_strings(&mut self) -> Result<HashSet<String>> {
-        let count = self.read_v_int()? as usize;
-        let mut set = HashSet::with_capacity(count);
+        let count = self.read_v_int()?;
+        let mut set = HashSet::new();
         for _ in 0..count {
             set.insert(self.read_string()?);
         }
@@ -10270,5 +10313,78 @@ mod tests {
             let mut input = ByteArrayDataInput::new(out.into_inner());
             assert_eq!(input.read_v_long().unwrap(), value, "vLong {value}");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: lengths and counts read off disk must not size an allocation
+    // -----------------------------------------------------------------------
+
+    /// Encodes `value` the way `DataOutput.writeVInt` does, including the
+    /// five-byte form a negative value takes.
+    fn v_int(value: i32) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut i = value as u32;
+        while (i & !0x7f) != 0 {
+            out.push(((i & 0x7f) | 0x80) as u8);
+            i >>= 7;
+        }
+        out.push(i as u8);
+        out
+    }
+
+    #[test]
+    fn a_negative_string_length_is_refused_not_allocated() {
+        // Java reaches `new byte[length]` with it and throws
+        // `NegativeArraySizeException` (`DataInput.java:230-234`). Before this
+        // was fixed the cast to `usize` turned -1 into 2^64-1 and the
+        // allocation aborted the process.
+        for length in [-1i32, -2, i32::MIN] {
+            let mut input = ByteArrayDataInput::new(v_int(length));
+            let error = input
+                .read_string()
+                .expect_err("a negative length is not a string");
+            assert!(
+                matches!(error, LuceneError::CorruptIndex(_)),
+                "length={length}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_over_long_string_length_ends_at_the_end_of_file() {
+        // A length far larger than the input must fail as end-of-file after
+        // allocating only what the input could deliver, never by trying to
+        // reserve the length itself.
+        let mut bytes = v_int(i32::MAX);
+        bytes.extend_from_slice(b"abc");
+        let mut input = ByteArrayDataInput::new(bytes);
+        assert!(
+            input.read_string().is_err(),
+            "a length the file cannot back must fail"
+        );
+    }
+
+    #[test]
+    fn a_negative_map_or_set_count_reads_nothing() {
+        // `DataInput.readMapOfStrings` and `readSetOfStrings` loop
+        // `for (int i = 0; i < count; i++)`, which runs zero times for a
+        // negative count and returns an empty collection
+        // (`DataInput.java:261-296`). Before this was fixed the cast to
+        // `usize` turned the count into 2^64-1 and `with_capacity` aborted.
+        let mut input = ByteArrayDataInput::new(v_int(-1));
+        assert!(input.read_map_of_strings().expect("empty map").is_empty());
+        let mut input = ByteArrayDataInput::new(v_int(-7));
+        assert!(input.read_set_of_strings().expect("empty set").is_empty());
+    }
+
+    #[test]
+    fn strings_longer_than_one_read_chunk_round_trip() {
+        // The chunked read must reassemble a string that spans several chunks
+        // exactly, or every long field name in a `.fnm` would come back cut.
+        let text: String = std::iter::repeat_n('a', 40_000).collect();
+        let mut out = ByteArrayDataOutput::new();
+        out.write_string(&text).expect("write");
+        let mut input = ByteArrayDataInput::new(out.into_inner());
+        assert_eq!(input.read_string().expect("read"), text);
     }
 }

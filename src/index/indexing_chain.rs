@@ -76,6 +76,7 @@ use crate::analysis::tokenattributes::{
 };
 use crate::analysis::Analyzer;
 use crate::codecs::doc_values::DocValuesConsumer;
+use crate::codecs::points::PointsWriter;
 use crate::codecs::postings::{NormsProducer, NumericDocValues};
 use crate::codecs::state::SegmentWriteState;
 use crate::document::{Document, InvertableType, StoredValueType};
@@ -89,6 +90,7 @@ use crate::index::field_infos::FieldInfosBuilder;
 use crate::index::freq_prox_terms_writer::{FreqProxTermsWriter, InvertedToken};
 use crate::index::index_writer_config::LiveIndexWriterConfig;
 use crate::index::norms_writer::NormValuesWriter;
+use crate::index::point_values_writer::PointValuesWriter;
 use crate::index::stored_fields_consumer::StoredFieldsConsumer;
 use crate::index::term_vectors_consumer::TermVectorsConsumer;
 use crate::index::{
@@ -114,7 +116,7 @@ fn java_string_hashcode(name: &str) -> i32 {
 }
 
 /// Replays Lucene's `PerField[] fieldHash` over the per-field state and
-/// returns the per-field indices in the order `writeDocValues` visits them.
+/// returns the per-field indices in the order the flush loops visit them.
 ///
 /// `IndexingChain` starts with two buckets (`fieldHash = new PerField[2],
 /// hashMask = 1`), chains a new field at the *head* of its bucket
@@ -122,10 +124,15 @@ fn java_string_hashcode(name: &str) -> i32 {
 /// `totalFieldCount >= fieldHash.length / 2` and rehashes by walking the old
 /// buckets in order, head to tail, re-inserting each field at the head of its
 /// new bucket — which reverses the within-bucket order
-/// (`IndexingChain.java:546-566`). The flush loop visits buckets in order and
-/// each chain head to tail, and the resulting sequence fixes the order of the
-/// field entries inside the `.dvm` file.
-fn doc_values_flush_order(fields: &[PerField]) -> Vec<usize> {
+/// (`IndexingChain.java:546-566`).
+///
+/// Both `writeDocValues` (`IndexingChain.java:439-497`) and `writePoints`
+/// (`IndexingChain.java:396-435`) walk that same table, buckets in order and
+/// each chain head to tail, so one function serves both. The resulting
+/// sequence fixes the order of the per-field entries inside the `.dvm` and the
+/// `.kdm`. `writeNorms` is different: it iterates the field infos, so norms
+/// are in field-number order.
+fn field_hash_flush_order(fields: &[PerField]) -> Vec<usize> {
     let names: Vec<&str> = fields
         .iter()
         .map(|per_field| per_field.field_info.name.as_str())
@@ -133,7 +140,7 @@ fn doc_values_flush_order(fields: &[PerField]) -> Vec<usize> {
     field_hash_order(&names)
 }
 
-/// The core of [`doc_values_flush_order`], over the field names alone.
+/// The core of [`field_hash_flush_order`], over the field names alone.
 ///
 /// Split out so the order can be asserted directly: it depends on nothing but
 /// the names and the sequence they were first seen in, and getting it wrong
@@ -404,6 +411,13 @@ struct PerField {
     /// switch of `initializeFieldInfo` (`IndexingChain.java:1351-1369`) — and
     /// keeps it for the whole segment.
     doc_values: Option<DocValuesWriter>,
+    /// Buffered point values of this field, or `None` when the field declares
+    /// no point dimensions.
+    ///
+    /// Lucene creates it in `initializeFieldInfo` when
+    /// `fi.getPointDimensionCount() != 0` (`IndexingChain.java:1372-1374`) and
+    /// keeps it for the whole segment.
+    point_values: Option<PointValuesWriter>,
 }
 
 /// Which attributes a field instance's token stream actually carries.
@@ -800,6 +814,17 @@ impl DefaultIndexingChain {
                 Arc::clone(&self.bytes_used),
             )),
         };
+        // `initializeFieldInfo` creates the point-values writer for every field
+        // that declares point dimensions, indexed or not
+        // (`IndexingChain.java:1372-1374`).
+        let point_values = if field_info.point_dimension_count != 0 {
+            Some(PointValuesWriter::new(
+                field_info.clone(),
+                Arc::clone(&self.bytes_used),
+            ))
+        } else {
+            None
+        };
         let index = self.per_fields.len();
         self.per_fields.push(PerField {
             field_info: field_info.clone(),
@@ -811,6 +836,7 @@ impl DefaultIndexingChain {
             first: true,
             norms,
             doc_values,
+            point_values,
         });
         self.per_field_index.insert(field_info.name.clone(), index);
         index
@@ -1378,7 +1404,7 @@ impl DefaultIndexingChain {
         // flush walks buckets in order and each chain head to tail.
         let mut consumer: Option<Box<dyn DocValuesConsumer + '_>> = None;
         let outcome: Result<()> = (|| {
-            for index in doc_values_flush_order(&self.per_fields) {
+            for index in field_hash_flush_order(&self.per_fields) {
                 let per_field = &mut self.per_fields[index];
                 let Some(writer) = per_field.doc_values.as_mut() else {
                     if per_field.field_info.doc_values_type != DocValuesType::NONE {
@@ -1434,6 +1460,74 @@ impl DefaultIndexingChain {
                 state.segment_info.name
             )));
         }
+        outcome?;
+        close_outcome
+    }
+
+    /// Writes the buffered point values of the segment through the codec's
+    /// points format, producing the `.kdd`, `.kdi` and `.kdm` files.
+    ///
+    /// Equivalent to `IndexingChain.writePoints`
+    /// (`IndexingChain.java:396-435`). Like `writeDocValues` it walks Lucene's
+    /// open `PerField[] fieldHash` bucket by bucket, newest instance first
+    /// within a bucket, and that *table order* — not field-number order —
+    /// decides the order of the per-field entries inside the `.kdm`; see
+    /// [`field_hash_flush_order`].
+    ///
+    /// The writer is created lazily at the first field that declares points,
+    /// `finish()` is called once after the last field, and the writer is closed
+    /// whether or not a field threw — which is what Lucene's `success` flag and
+    /// its `IOUtils.close` / `closeWhileHandlingException` pair express.
+    ///
+    /// Java skips a field whose writer exists but whose field info reports no
+    /// dimensions ("We could have initialized pointValuesWriter, but failed to
+    /// write even a single doc"), and clears the writer either way. This port
+    /// drops the whole per-field table at the end of `flush` instead.
+    ///
+    /// Java also throws `IllegalStateException` for a field that declares
+    /// points when `codec.pointsFormat()` returns `null`
+    /// (`IndexingChain.java:409-415`). That state cannot exist here:
+    /// `Codec::points_format` returns `&dyn PointsFormat`, not an `Option`,
+    /// so every codec this crate can hold has one. The check is therefore not
+    /// ported, and no [`LuceneError::IllegalState`] can come from this method.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the points format raises while creating the writer,
+    /// flushing a field, finishing or closing.
+    fn write_points(&mut self, state: &SegmentWriteState<'_>) -> Result<()> {
+        let mut writer: Option<Box<dyn PointsWriter>> = None;
+        let outcome: Result<()> = (|| {
+            for index in field_hash_flush_order(&self.per_fields) {
+                let per_field = &mut self.per_fields[index];
+                let Some(points) = per_field.point_values.as_mut() else {
+                    continue;
+                };
+                // Lucene re-reads the *field info*, not the writer: a field
+                // that was registered with points but never got a value can
+                // still end the segment with no dimensions.
+                if per_field.field_info.point_dimension_count == 0 {
+                    continue;
+                }
+                if writer.is_none() {
+                    // Lazy init, exactly as `writePoints` does.
+                    let codec = self.config.codec();
+                    writer = Some(codec.points_format().fields_writer(state)?);
+                }
+                let writer = writer
+                    .as_mut()
+                    .expect("INVARIANT: the writer was just created if it was missing");
+                points.flush(&mut **writer)?;
+            }
+            if let Some(writer) = writer.as_mut() {
+                writer.finish()?;
+            }
+            Ok(())
+        })();
+        let close_outcome = match writer.as_mut() {
+            Some(writer) => writer.close(),
+            None => Ok(()),
+        };
         outcome?;
         close_outcome
     }
@@ -1599,6 +1693,41 @@ impl IndexingChain for DefaultIndexingChain {
                     break;
                 }
             }
+
+            // `processField` then buffers the packed point value of every
+            // instance of a field that declares point dimensions
+            // (`IndexingChain.java:1393-1395`). Java reads
+            // `field.binaryValue()` and lets `addPackedValue` reject a null
+            // with "point value must not be null"; here the absent value is an
+            // `Option`, and the same message is raised for it.
+            if field.field_type().point_dimension_count() != 0 {
+                let result = match field.binary_value() {
+                    Some(value) => self.per_fields[index]
+                        .point_values
+                        .as_mut()
+                        .expect(
+                            "INVARIANT: every field with point dimensions gets a writer in get_or_add_per_field",
+                        )
+                        .add_packed_value(doc_id, &value),
+                    None => Err(LuceneError::IllegalArgument(format!(
+                        "field=\"{}\": point value must not be null",
+                        field.name()
+                    ))),
+                };
+                if let Err(error) = result {
+                    if !matches!(
+                        error,
+                        LuceneError::IllegalArgument(_) | LuceneError::IllegalState(_)
+                    ) {
+                        self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+                            "indexing chain buffers may be corrupt after field \"{}\": {error}",
+                            field.name()
+                        )));
+                    }
+                    outcome = Err(error);
+                    break;
+                }
+            }
         }
 
         // Lucene's `finally` runs the whole tail — finishing every indexed
@@ -1747,14 +1876,16 @@ impl IndexingChain for DefaultIndexingChain {
         write_state.live_docs = state.live_docs.cloned();
         write_state.del_count_on_flush = state.del_count_on_flush;
 
-        // Lucene writes the norms first, then the doc values, then the stored
-        // fields, then `termsHash.flush`, whose `super.flush` finishes the term
-        // vectors before the postings format runs (`IndexingChain.java:305`,
-        // `:340-370`, `FreqProxTermsWriter.java:118`). They write different
-        // files, so only the order of the calls is reproduced here.
+        // Lucene writes the norms first, then the doc values, then the points,
+        // then the stored fields, then `termsHash.flush`, whose `super.flush`
+        // finishes the term vectors before the postings format runs
+        // (`IndexingChain.java:305`, `:319`, `:326`, `:340-370`,
+        // `FreqProxTermsWriter.java:118`). They write different files, so only
+        // the order of the calls is reproduced here.
         let max_doc = state.segment_info.max_doc()?;
         self.write_norms(&write_state, max_doc)?;
         self.write_doc_values(&write_state)?;
+        self.write_points(&write_state)?;
 
         if let Some(consumer) = self.stored_fields_consumer.as_mut() {
             consumer.finish(max_doc)?;
@@ -3959,7 +4090,7 @@ mod tests {
     }
 
     #[test]
-    fn doc_values_flush_order_follows_the_java_field_hash() {
+    fn field_hash_flush_order_follows_the_java_field_hash() {
         // Regression: the mask was read once, before the table had grown, so
         // every field inserted after the first rehash landed in the wrong
         // bucket. Nothing below three fields can show it — the table only

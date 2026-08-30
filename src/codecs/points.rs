@@ -17,7 +17,9 @@ use crate::error::Result;
 // whose `intersect` takes `PointValues.IntersectVisitor`. The codec re-exports the
 // single canonical `PointValues`/`IntersectVisitor`/`Relation`/`DocValuesVisitor`
 // definitions from the index layer.
-pub use crate::index::point_values::{DocValuesVisitor, IntersectVisitor, PointValues, Relation};
+pub use crate::index::point_values::{
+    DocValuesVisitor, IntersectVisitor, MutablePointTree, PointTree, PointValues, Relation,
+};
 
 use super::postings::MergeState;
 use super::state::{SegmentReadState, SegmentWriteState};

@@ -272,18 +272,53 @@ impl PointsWriter for Lucene90PointsWriter {
             Lucene90PointsFormat::with_version(self.version)?.bkd_version(),
         )?;
 
-        // Collect all points through the codec visitor API. This is the Rust
-        // equivalent of Java's PointValues.visitDocValues(IntersectVisitor).
-        // The MutablePointTree fast-path used by Java is not ported here; the
-        // general visitor path is sufficient for the current phase.
+        let meta_out = self.meta_out.as_mut().unwrap();
+        let index_out = self.index_out.as_mut().unwrap();
+        let data_out = self.data_out.as_mut().unwrap();
+
+        // Java tests `values instanceof MutablePointTree` and, when it holds,
+        // hands the tree straight to `BKDWriter.writeField`, which sorts and
+        // partitions the points in place rather than buffering them through
+        // `BKDWriter.add` and re-sorting them offline
+        // (`Lucene90PointsWriter.java:157-167`). `PointTree::as_mutable` is
+        // this port's `instanceof`: it answers `Some` for the indexing
+        // buffer's tree and `None` for the BKD-backed cursor, which reads from
+        // immutable files.
+        let mut tree = values.point_tree()?;
+        if tree.as_mutable().is_some() {
+            if tree.size() == 0 {
+                // Java's `writeField` returns a null finalizer for an empty
+                // tree and the caller then writes nothing at all — no field
+                // number, no meta block (`Lucene90PointsWriter.java:159-167`).
+                // The field number must therefore be written only once the
+                // tree is known to be non-empty.
+                return Ok(());
+            }
+            // The field number precedes the BKD meta block so the reader can
+            // read one tree per field number in the same order. Java writes it
+            // after `writeField` returns and before running the finalizer that
+            // writes the meta block; this port writes the meta block inline, so
+            // the field number goes first. The bytes land in the same order.
+            meta_out.write_int(field_info.number)?;
+            let mutable = tree
+                .as_mutable()
+                .expect("INVARIANT: as_mutable answered Some one line above");
+            writer.write_field(
+                meta_out.as_mut(),
+                index_out.as_mut(),
+                data_out.as_mut(),
+                mutable,
+            )?;
+            writer.close()?;
+            return Ok(());
+        }
+
+        // Otherwise collect the points through the visitor API, which is the
+        // Rust equivalent of Java's `PointValues.visitDocValues`.
         let mut add_visitor = AddToBkdWriter {
             writer: &mut writer,
         };
         values.visit_doc_values(&mut add_visitor)?;
-
-        let meta_out = self.meta_out.as_mut().unwrap();
-        let index_out = self.index_out.as_mut().unwrap();
-        let data_out = self.data_out.as_mut().unwrap();
 
         // Write the field number before the BKD meta block so that the reader
         // can read one BKD tree per field number in the same order.
