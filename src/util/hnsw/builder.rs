@@ -7,8 +7,12 @@
 
 use std::f32;
 
+use std::sync::Arc;
+
 use crate::error::{LuceneError, Result};
+use crate::internal::hppc::IntHashSet;
 use crate::search::knn::KnnCollector;
+use crate::util::hnsw::hnsw_lock::HnswLock;
 use crate::util::hnsw::on_heap::OnHeapHnswGraph;
 use crate::util::hnsw::scorer::{RandomVectorScorerSupplier, UpdateableRandomVectorScorer};
 use crate::util::hnsw::searcher::HnswGraphSearcher;
@@ -35,26 +39,55 @@ pub trait HnswBuilder {
     /// Inserts a single node.
     fn add_graph_node(&mut self, node: i32) -> Result<()>;
 
+    /// Inserts a single node, searching level 0 with the provided entry points.
+    ///
+    /// Equivalent to `HnswBuilder.addGraphNode(int, IntHashSet)`.
+    fn add_graph_node_with_eps(&mut self, node: i32, eps: &IntHashSet) -> Result<()>;
+
     /// Returns the partially built graph.
     fn get_graph(&self) -> &OnHeapHnswGraph;
+
+    /// Freezes the builder and returns the finished graph.
+    ///
+    /// Once this method is called, no further updates to the graph are accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the final modifications to the graph fail.
+    fn get_completed_graph(&mut self) -> Result<&OnHeapHnswGraph>;
+
+    /// Consumes the builder and hands back the finished graph.
+    ///
+    /// Java returns the graph by reference from `getCompletedGraph()` and lets the
+    /// garbage collector keep the builder alive; Rust needs an explicit way to move
+    /// the graph out of a boxed builder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the final modifications to the graph fail.
+    fn into_completed_graph(self: Box<Self>) -> Result<OnHeapHnswGraph>;
 }
 
 /// Builds an in-memory HNSW graph.
 ///
 /// Equivalent to `org.apache.lucene.util.hnsw.HnswGraphBuilder`.
 pub struct HnswGraphBuilder {
-    m: i32,
+    pub(crate) m: i32,
     ml: f64,
     bulk_score_nodes: [i32; MAX_BULK_SCORE_NODES],
     bulk_scores: [f32; MAX_BULK_SCORE_NODES],
     random: SplittableRandom,
-    scorer: Box<dyn UpdateableRandomVectorScorer>,
-    graph_searcher: HnswGraphSearcher,
+    pub(crate) scorer: Box<dyn UpdateableRandomVectorScorer>,
+    pub(crate) graph_searcher: HnswGraphSearcher,
     entry_candidates: GraphBuilderKnnCollector,
-    beam_candidates: GraphBuilderKnnCollector,
+    pub(crate) beam_candidates: GraphBuilderKnnCollector,
     beam_candidates0: GraphBuilderKnnCollector,
-    hnsw: OnHeapHnswGraph,
-    frozen: bool,
+    pub(crate) hnsw: OnHeapHnswGraph,
+    pub(crate) frozen: bool,
+    /// Striped locks guarding the shared graph, or `None` for a single-writer build.
+    ///
+    /// Equivalent to `HnswGraphBuilder.hnswLock`.
+    pub(crate) hnsw_lock: Option<Arc<HnswLock>>,
 }
 
 impl HnswGraphBuilder {
@@ -107,6 +140,7 @@ impl HnswGraphBuilder {
             beam_candidates0: GraphBuilderKnnCollector::new((beam_width / 2).min(m * 3)),
             hnsw,
             frozen: false,
+            hnsw_lock: None,
         })
     }
 
@@ -118,8 +152,13 @@ impl HnswGraphBuilder {
         self.hnsw
     }
 
-    fn finish(&mut self) {
+    pub(crate) fn finish(&mut self) {
         self.frozen = true;
+    }
+
+    /// Installs the striped locks used while several workers share this graph.
+    pub(crate) fn set_hnsw_lock(&mut self, lock: Arc<HnswLock>) {
+        self.hnsw_lock = Some(lock);
     }
 }
 
@@ -139,16 +178,35 @@ impl HnswBuilder for HnswGraphBuilder {
 
     fn add_graph_node(&mut self, node: i32) -> Result<()> {
         self.scorer.set_scoring_ordinal(node)?;
-        self.add_graph_node_internal(node)
+        self.add_graph_node_internal(node, None)
+    }
+
+    fn add_graph_node_with_eps(&mut self, node: i32, eps: &IntHashSet) -> Result<()> {
+        self.scorer.set_scoring_ordinal(node)?;
+        self.add_graph_node_internal(node, Some(eps))
     }
 
     fn get_graph(&self) -> &OnHeapHnswGraph {
         &self.hnsw
     }
+
+    fn get_completed_graph(&mut self) -> Result<&OnHeapHnswGraph> {
+        if !self.frozen {
+            self.finish();
+        }
+        Ok(&self.hnsw)
+    }
+
+    fn into_completed_graph(self: Box<Self>) -> Result<OnHeapHnswGraph> {
+        Ok((*self).into_graph())
+    }
 }
 
 impl HnswGraphBuilder {
-    fn add_vectors(&mut self, min_ord: i32, max_ord: i32) -> Result<()> {
+    /// Adds every node in `[min_ord, max_ord)` to the graph.
+    ///
+    /// Equivalent to `HnswGraphBuilder.addVectors`.
+    pub fn add_vectors(&mut self, min_ord: i32, max_ord: i32) -> Result<()> {
         if self.frozen {
             return Err(LuceneError::IllegalState(
                 "This HnswGraphBuilder is frozen and cannot be updated".to_string(),
@@ -160,7 +218,7 @@ impl HnswGraphBuilder {
         Ok(())
     }
 
-    fn add_graph_node_internal(&mut self, node: i32) -> Result<()> {
+    fn add_graph_node_internal(&mut self, node: i32, eps0: Option<&IntHashSet>) -> Result<()> {
         if self.frozen {
             return Err(LuceneError::IllegalState(
                 "Graph builder is already frozen".to_string(),
@@ -201,9 +259,20 @@ impl HnswGraphBuilder {
             let scratch_levels = (node_level.min(cur_max_level) - lowest_unset_level + 1) as usize;
             let mut scratch_per_level: Vec<NeighborArray> = Vec::with_capacity(scratch_levels);
             let mut best_eps = eps_local;
+            // Java keeps `candidates = beamCandidates` and only switches to
+            // `beamCandidates0` on level 0 when explicit entry points were supplied.
+            let mut use_beam0 = false;
             for i in (0..scratch_levels).rev() {
                 let level = i as i32 + lowest_unset_level;
-                let candidates_ref = if level == 0 {
+                if level == 0 {
+                    if let Some(eps0) = eps0 {
+                        if eps0.size() > 0 {
+                            best_eps = eps0.to_array();
+                            use_beam0 = true;
+                        }
+                    }
+                }
+                let candidates_ref = if use_beam0 {
                     &mut self.beam_candidates0
                 } else {
                     &mut self.beam_candidates
@@ -218,8 +287,7 @@ impl HnswGraphBuilder {
                     None,
                 )?;
                 best_eps = candidates_ref.pop_until_nearest_k_nodes();
-                let max_conn = if level == 0 { self.m * 2 } else { self.m };
-                let mut scratch = NeighborArray::new(candidates_ref.k().max(max_conn + 1), false);
+                let mut scratch = NeighborArray::new(candidates_ref.k().max(self.m + 1), false);
                 pop_to_scratch(candidates_ref, &mut scratch);
                 scratch_per_level.push(scratch);
             }
@@ -227,7 +295,19 @@ impl HnswGraphBuilder {
 
             // Connect from bottom to top.
             for (i, scratch) in scratch_per_level.iter_mut().enumerate() {
-                self.add_diverse_neighbors(i as i32 + lowest_unset_level, node, scratch)?;
+                let level = i as i32 + lowest_unset_level;
+                Self::add_diverse_neighbors_inner(
+                    &mut self.hnsw,
+                    self.scorer.as_mut(),
+                    &mut self.bulk_score_nodes,
+                    &mut self.bulk_scores,
+                    self.hnsw_lock.as_deref(),
+                    self.m,
+                    level,
+                    node,
+                    scratch,
+                    false,
+                )?;
             }
             lowest_unset_level += scratch_levels as i32;
             debug_assert_eq!(lowest_unset_level, node_level.min(cur_max_level) + 1);
@@ -250,43 +330,121 @@ impl HnswGraphBuilder {
         }
     }
 
-    fn add_diverse_neighbors(
+    /// Links `node` to the diverse subset of `candidates` on `level`, and links
+    /// those neighbours back.
+    ///
+    /// Equivalent to `HnswGraphBuilder.addDiverseNeighbors`. `is_link_repair` marks
+    /// the call as repairing the links of a node that already has neighbours, in
+    /// which case the selected candidates are appended out of order and duplicates
+    /// are filtered.
+    pub(crate) fn add_diverse_neighbors(
         &mut self,
         level: i32,
         node: i32,
         candidates: &mut NeighborArray,
+        is_link_repair: bool,
     ) -> Result<()> {
-        let max_conn_on_level = if level == 0 { self.m * 2 } else { self.m };
-        let mask = self.select_and_link_diverse(level, node, candidates, max_conn_on_level)?;
+        Self::add_diverse_neighbors_inner(
+            &mut self.hnsw,
+            self.scorer.as_mut(),
+            &mut self.bulk_score_nodes,
+            &mut self.bulk_scores,
+            self.hnsw_lock.as_deref(),
+            self.m,
+            level,
+            node,
+            candidates,
+            is_link_repair,
+        )
+    }
 
+    #[allow(clippy::too_many_arguments)]
+    fn add_diverse_neighbors_inner(
+        hnsw: &mut OnHeapHnswGraph,
+        scorer: &mut dyn UpdateableRandomVectorScorer,
+        bulk_score_nodes: &mut [i32; MAX_BULK_SCORE_NODES],
+        bulk_scores: &mut [f32; MAX_BULK_SCORE_NODES],
+        hnsw_lock: Option<&HnswLock>,
+        m: i32,
+        level: i32,
+        node: i32,
+        candidates: &mut NeighborArray,
+        is_link_repair: bool,
+    ) -> Result<()> {
+        // For each of the beamWidth nearest candidates (going from best to worst),
+        // select it only if it is closer to the target than it is to any of the
+        // already-selected neighbours.
+        let max_conn_on_level = if level == 0 { m * 2 } else { m };
+        let mask = Self::select_and_link_diverse(
+            hnsw,
+            scorer,
+            bulk_score_nodes,
+            bulk_scores,
+            level,
+            node,
+            candidates,
+            max_conn_on_level,
+            is_link_repair,
+        )?;
+
+        // Link the selected nodes to the new node, and the new node to the selected
+        // nodes (again applying the diversity heuristic).
         for (i, keep) in mask.iter().enumerate().take(candidates.size() as usize) {
             if !keep {
                 continue;
             }
             let nbr = candidates.nodes()[i];
             let score = candidates.score(i as i32);
-            self.scorer.set_scoring_ordinal(nbr)?;
-            let nbrs_of_nbr = self.hnsw.get_neighbors(level, nbr)?;
-            // We cannot mutate through the immutable reference returned by
-            // get_neighbors, so clone it, update, and write back.
-            let mut nbrs_of_nbr_clone = nbrs_of_nbr.clone();
-            nbrs_of_nbr_clone.add_and_ensure_diversity(node, score, nbr, self.scorer.as_mut())?;
-            let _ = self.hnsw.set_neighbors(level, nbr, nbrs_of_nbr_clone);
+            let _guard = hnsw_lock.map(|lock| lock.write(level, nbr));
+            Self::update_neighbor(hnsw, scorer, level, node, score, nbr, is_link_repair)?;
         }
         Ok(())
     }
 
+    /// Equivalent to `HnswGraphBuilder.updateNeighbor`.
+    fn update_neighbor(
+        hnsw: &mut OnHeapHnswGraph,
+        scorer: &mut dyn UpdateableRandomVectorScorer,
+        level: i32,
+        node: i32,
+        score: f32,
+        nbr: i32,
+        is_link_repair: bool,
+    ) -> Result<()> {
+        scorer.set_scoring_ordinal(nbr)?;
+        // We cannot mutate through the immutable reference returned by
+        // `get_neighbors`, so clone it, update, and write back.
+        let mut nbrs_of_nbr = hnsw.get_neighbors(level, nbr)?.clone();
+        // Only check for duplicates during link repair, to avoid the performance
+        // overhead during normal construction.
+        if is_link_repair {
+            for j in 0..nbrs_of_nbr.size() as usize {
+                if nbrs_of_nbr.nodes()[j] == node {
+                    return Ok(());
+                }
+            }
+        }
+        nbrs_of_nbr.add_and_ensure_diversity(node, score, nbr, scorer)?;
+        let _ = hnsw.set_neighbors(level, nbr, nbrs_of_nbr);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn select_and_link_diverse(
-        &mut self,
+        hnsw: &mut OnHeapHnswGraph,
+        scorer: &mut dyn UpdateableRandomVectorScorer,
+        bulk_score_nodes: &mut [i32; MAX_BULK_SCORE_NODES],
+        bulk_scores: &mut [f32; MAX_BULK_SCORE_NODES],
         level: i32,
         node: i32,
         candidates: &mut NeighborArray,
         max_conn_on_level: i32,
+        is_link_repair: bool,
     ) -> Result<Vec<bool>> {
         let mut mask = vec![false; candidates.size() as usize];
-        // candidates are sorted ascending (worst to best), so iterate backward.
+        // Candidates are sorted ascending (worst to best), so iterate backward.
         for i in (0..candidates.size() as usize).rev() {
-            if self.hnsw.get_neighbors(level, node)?.size() >= max_conn_on_level {
+            if hnsw.get_neighbors(level, node)?.size() >= max_conn_on_level {
                 break;
             }
             let c_node = candidates.nodes()[i];
@@ -294,30 +452,38 @@ impl HnswGraphBuilder {
                 continue;
             }
             let c_score = candidates.score(i as i32);
-            self.scorer.set_scoring_ordinal(c_node)?;
-            let neighbors = self.hnsw.get_neighbors(level, node)?.clone();
-            if self.diversity_check(c_score, &neighbors)? {
+            scorer.set_scoring_ordinal(c_node)?;
+            let neighbors = hnsw.get_neighbors(level, node)?.clone();
+            if Self::diversity_check(scorer, bulk_score_nodes, bulk_scores, c_score, &neighbors)? {
                 mask[i] = true;
-                let mut node_neighbors = self.hnsw.get_neighbors(level, node)?.clone();
-                node_neighbors.add_in_order(c_node, c_score)?;
-                let _ = self.hnsw.set_neighbors(level, node, node_neighbors);
+                // Here we don't need to lock, because there's no incoming link, so
+                // no one else is able to discover this node.
+                let mut node_neighbors = hnsw.get_neighbors(level, node)?.clone();
+                if is_link_repair {
+                    node_neighbors.add_out_of_order(c_node, c_score)?;
+                } else {
+                    node_neighbors.add_in_order(c_node, c_score)?;
+                }
+                let _ = hnsw.set_neighbors(level, node, node_neighbors);
             }
         }
         Ok(mask)
     }
 
-    fn diversity_check(&mut self, score: f32, neighbors: &NeighborArray) -> Result<bool> {
+    fn diversity_check(
+        scorer: &mut dyn UpdateableRandomVectorScorer,
+        bulk_score_nodes: &mut [i32; MAX_BULK_SCORE_NODES],
+        bulk_scores: &mut [f32; MAX_BULK_SCORE_NODES],
+        score: f32,
+        neighbors: &NeighborArray,
+    ) -> Result<bool> {
         let bulk_chunk = ((neighbors.size() + 1) / 2).min(MAX_BULK_SCORE_NODES as i32) as usize;
         let mut scored = 0usize;
         while scored < neighbors.size() as usize {
             let chunk_size = bulk_chunk.min(neighbors.size() as usize - scored);
-            self.bulk_score_nodes[..chunk_size]
+            bulk_score_nodes[..chunk_size]
                 .copy_from_slice(&neighbors.nodes()[scored..scored + chunk_size]);
-            let max_score = self.scorer.bulk_score(
-                &self.bulk_score_nodes,
-                &mut self.bulk_scores,
-                chunk_size as i32,
-            )?;
+            let max_score = scorer.bulk_score(bulk_score_nodes, bulk_scores, chunk_size as i32)?;
             if max_score >= score {
                 return Ok(false);
             }
@@ -338,7 +504,13 @@ impl HnswGraphBuilder {
     }
 }
 
-fn pop_to_scratch(candidates: &mut GraphBuilderKnnCollector, scratch: &mut NeighborArray) {
+/// Drains `candidates` into `scratch`, worst score first.
+///
+/// Equivalent to `HnswGraphBuilder.popToScratch`.
+pub(crate) fn pop_to_scratch(
+    candidates: &mut GraphBuilderKnnCollector,
+    scratch: &mut NeighborArray,
+) {
     scratch.clear();
     let candidate_count = candidates.size();
     for _ in 0..candidate_count {
@@ -403,7 +575,7 @@ impl GraphBuilderKnnCollector {
         self.visited_count = 0;
     }
 
-    fn as_collector(&mut self) -> &mut dyn KnnCollector {
+    pub(crate) fn as_collector(&mut self) -> &mut dyn KnnCollector {
         self
     }
 }
@@ -469,7 +641,7 @@ impl KnnCollector for GraphBuilderKnnCollector {
 /// through the Murmur3 64-bit finalizer — and `nextDouble()` takes the top 53
 /// bits of it.
 #[derive(Debug, Clone, Copy)]
-struct SplittableRandom {
+pub(crate) struct SplittableRandom {
     seed: u64,
 }
 
@@ -477,7 +649,7 @@ impl SplittableRandom {
     /// `SplittableRandom.GOLDEN_GAMMA`, the increment of the Weyl sequence.
     const GOLDEN_GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;
 
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Self { seed }
     }
 
@@ -495,7 +667,7 @@ impl SplittableRandom {
         z ^ (z >> 31)
     }
 
-    fn next_f64(&mut self) -> f64 {
+    pub(crate) fn next_f64(&mut self) -> f64 {
         let mixed = Self::mix64(self.next_seed());
         // `DOUBLE_UNIT` is `0x1.0p-53`; the multiplication is exact.
         (mixed >> 11) as f64 * f64::from_bits(0x3ca0_0000_0000_0000)

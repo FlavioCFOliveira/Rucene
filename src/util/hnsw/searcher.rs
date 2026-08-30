@@ -11,16 +11,17 @@ use crate::search::knn::{KnnCollector, TopKnnCollector};
 use crate::search::NO_MORE_DOCS;
 use crate::util::{Bits, FixedBitSet};
 
+use super::abstract_searcher::AbstractHnswGraphSearcher;
 use super::neighbor::{NeighborArray, NeighborQueue};
 use super::on_heap::OnHeapHnswGraph;
 use super::scorer::RandomVectorScorer;
 use super::{HnswGraph, Result};
 
-const UNK_EP: i32 = -1;
+pub(crate) use super::abstract_searcher::UNK_EP;
 
 /// Returns the next representable float after `x`, matching Java's
 /// `Math.nextUp(float)` and safe for negative infinity / zero / NaN.
-fn next_up_f32(x: f32) -> f32 {
+pub(crate) fn next_up_f32(x: f32) -> f32 {
     if x.is_nan() || x == f32::INFINITY {
         return x;
     }
@@ -91,7 +92,10 @@ impl HnswGraphSearcher {
         self.search_level(results, scorer, 0, &eps, graph, accept_ords)
     }
 
-    fn find_best_entry_point(
+    /// Finds the best entry points from which to search the zeroth graph layer.
+    ///
+    /// Equivalent to `HnswGraphSearcher.findBestEntryPoint`.
+    pub fn find_best_entry_point(
         &mut self,
         scorer: &mut dyn RandomVectorScorer,
         graph: &mut dyn HnswGraph,
@@ -259,10 +263,13 @@ impl HnswGraphSearcher {
     }
 }
 
-fn score_entry_points(
+/// Scores the entry points and seeds the candidate queue with them.
+///
+/// Equivalent to `AbstractHnswGraphSearcher.scoreEntryPoints`.
+pub(crate) fn score_entry_points(
     results: &mut dyn KnnCollector,
     scorer: &mut dyn RandomVectorScorer,
-    visited: &mut FixedBitSet,
+    visited: &mut dyn crate::util::bit_set::BitSet,
     eps: &[i32],
     accept_ords: Option<&dyn Bits>,
     candidates: &mut NeighborQueue,
@@ -504,5 +511,28 @@ impl OnHeapSearcher {
             }
         }
         Ok(())
+    }
+}
+
+impl AbstractHnswGraphSearcher for HnswGraphSearcher {
+    fn search_level(
+        &mut self,
+        results: &mut dyn KnnCollector,
+        scorer: &mut dyn RandomVectorScorer,
+        level: i32,
+        eps: &[i32],
+        graph: &mut dyn HnswGraph,
+        accept_ords: Option<&dyn Bits>,
+    ) -> Result<()> {
+        HnswGraphSearcher::search_level(self, results, scorer, level, eps, graph, accept_ords)
+    }
+
+    fn find_best_entry_point(
+        &mut self,
+        scorer: &mut dyn RandomVectorScorer,
+        graph: &mut dyn HnswGraph,
+        collector: &mut dyn KnnCollector,
+    ) -> Result<Vec<i32>> {
+        HnswGraphSearcher::find_best_entry_point(self, scorer, graph, collector)
     }
 }

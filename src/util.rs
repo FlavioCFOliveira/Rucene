@@ -26,6 +26,7 @@ pub mod doc_id_set;
 pub mod extra;
 pub mod file_deleter;
 pub mod fst;
+pub mod graph;
 pub mod info_stream;
 pub mod int_block_pool;
 pub mod io_function;
@@ -33,6 +34,7 @@ pub mod jvm;
 pub mod long_heap;
 pub mod math_util;
 pub mod misc;
+pub mod mutable;
 pub mod offline_sorter;
 pub mod packed;
 pub mod paged_bytes;
@@ -82,6 +84,9 @@ pub use doc_id_set::{
     BitDocIdSet, BulkAdder, DocIdSetBuilder, IntArrayDocIdSet, IntArrayDocIdSetIterator,
     NotDocIdSet,
 };
+pub use graph::{
+    FiniteStringsTokenStream, FiniteStringsTokenStreams, GraphTokenStreamFiniteStrings,
+};
 pub use info_stream::{JavaLoggingInfoStream, PrintStreamInfoStream};
 pub use int_block_pool::{
     ByteBlockAllocator, DirectIntAllocator, IntBlockAllocator, IntBlockPool,
@@ -95,6 +100,10 @@ pub use jvm::{HotspotVMOptions, MethodClass, VirtualMethod};
 pub use long_heap::{LongHeap, TernaryLongHeap};
 pub use math_util::MathUtil;
 pub use misc::{MapOfSets, SentinelIntSet, StrictStringTokenizer, TermAndVector, ToStringUtils};
+pub use mutable::{
+    MutableValue, MutableValueBool, MutableValueDate, MutableValueDouble, MutableValueFloat,
+    MutableValueInt, MutableValueLong, MutableValueObject, MutableValueStr,
+};
 pub use offline_sorter::{
     BufferSize, ByteSequencesReader, ByteSequencesWriter, OfflineSorter, OfflineSorterComparator,
     SortInfo,
@@ -122,8 +131,15 @@ pub use attribute::{
     AttributeSource, CapturedState, CloseableThreadLocal, DefaultAttributeFactory, Unwrappable,
 };
 pub use automaton::{
-    automata, operations, Automaton, AutomatonType, ByteRunAutomaton, ByteRunnable,
-    CompiledAutomaton, RunAutomaton, Transition, TransitionAccessor,
+    automata, operations, Automata, Automaton, AutomatonBuilder, AutomatonProvider, AutomatonType,
+    ByteRunAutomaton, ByteRunnable, CaseFolding, CharacterRunAutomaton, CompiledAutomaton,
+    DeterminizeResult, FiniteStringsIterator, FrozenIntSet, IntSet, Lev1ParametricDescription,
+    Lev1TParametricDescription, Lev2ParametricDescription, Lev2TParametricDescription,
+    LevenshteinAutomata, LimitedFiniteStringsIterator, NFARunAutomaton, Operations,
+    ParametricDescription, RegExp, RegExpKind, RunAutomaton, StatePair, StateSet,
+    StringsToAutomaton, TooComplexToDeterminizeException, Transition, TransitionAccessor,
+    UTF32ToUTF8, DEFAULT_DETERMINIZE_WORK_LIMIT, MAXIMUM_SUPPORTED_DISTANCE,
+    MAX_STRING_UNION_TERM_LENGTH,
 };
 pub use bit_sets::{DenseLiveDocs, RoaringDocIdSet, SparseFixedBitSet, SparseLiveDocs};
 pub use byte_block_pool::{

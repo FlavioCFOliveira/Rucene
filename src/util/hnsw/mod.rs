@@ -4,28 +4,87 @@
 //!
 //! These types provide the in-memory graph representation and construction
 //! primitives used by the KNN-vectors codecs (`Lucene99HnswVectorsFormat`).
+//!
+//! | Rucene | Apache Lucene Core 10.5.0 |
+//! | --- | --- |
+//! | [`AbstractHnswGraphSearcher`] | `AbstractHnswGraphSearcher` |
+//! | [`BlockingFloatHeap`] | `BlockingFloatHeap` |
+//! | [`ConcurrentHnswMerger`] | `ConcurrentHnswMerger` |
+//! | [`FilteredHnswGraphSearcher`] | `FilteredHnswGraphSearcher` |
+//! | [`FloatHeap`] | `FloatHeap` |
+//! | [`HasKnnVectorValues`] | `HasKnnVectorValues` |
+//! | [`HnswBuilder`] | `HnswBuilder` |
+//! | [`HnswConcurrentMergeBuilder`] | `HnswConcurrentMergeBuilder` |
+//! | [`HnswGraph`] | `HnswGraph` |
+//! | [`HnswGraphBuilder`] | `HnswGraphBuilder` |
+//! | [`HnswGraphMerger`] | `HnswGraphMerger` |
+//! | [`HnswGraphSearcher`] | `HnswGraphSearcher` |
+//! | [`HnswLock`] | `HnswLock` |
+//! | [`HnswUtil`] | `HnswUtil` |
+//! | [`IncrementalHnswGraphMerger`] | `IncrementalHnswGraphMerger` |
+//! | [`GraphReader`] | `IncrementalHnswGraphMerger.GraphReader` |
+//! | [`InitializedHnswGraphBuilder`] | `InitializedHnswGraphBuilder` |
+//! | [`IntToIntFunction`] | `IntToIntFunction` |
+//! | [`MergingHnswGraphBuilder`] | `MergingHnswGraphBuilder` |
+//! | [`NeighborArray`] | `NeighborArray` |
+//! | [`NeighborQueue`] | `NeighborQueue` |
+//! | [`OnHeapHnswGraph`] | `OnHeapHnswGraph` |
+//! | [`OrdinalTranslatedKnnCollector`] | `OrdinalTranslatedKnnCollector` |
+//! | [`RandomVectorScorer`] | `RandomVectorScorer` |
+//! | [`RandomVectorScorerSupplier`] | `RandomVectorScorerSupplier` |
+//! | [`SeededHnswGraphSearcher`] | `SeededHnswGraphSearcher` |
+//! | [`UpdateGraphsUtils`] | `UpdateGraphsUtils` |
+//! | [`UpdateableRandomVectorScorer`] | `UpdateableRandomVectorScorer` |
 
 #![deny(unsafe_code)]
 
 use crate::error::Result;
 
+pub mod abstract_searcher;
+pub mod blocking_float_heap;
 pub mod builder;
+pub mod concurrent_merge_builder;
+pub mod filtered_searcher;
+pub mod float_heap;
+pub mod has_knn_vector_values;
+pub mod hnsw_lock;
+pub mod incremental_merger;
+pub mod initialized_builder;
+pub mod int_to_int_function;
 pub mod merger;
+pub mod merging_builder;
 pub mod neighbor;
 pub mod on_heap;
+pub mod ordinal_translated_knn_collector;
 pub mod scorer;
 pub mod searcher;
+pub mod seeded_searcher;
+pub mod update_graphs_utils;
 pub mod util;
 
+pub use abstract_searcher::{AbstractHnswGraphSearcher, UNK_EP};
+pub use blocking_float_heap::BlockingFloatHeap;
 pub use builder::{HnswBuilder, HnswGraphBuilder};
-pub use merger::HnswGraphMerger;
+pub use concurrent_merge_builder::HnswConcurrentMergeBuilder;
+pub use filtered_searcher::FilteredHnswGraphSearcher;
+pub use float_heap::FloatHeap;
+pub use has_knn_vector_values::HasKnnVectorValues;
+pub use hnsw_lock::HnswLock;
+pub use incremental_merger::{GraphReader, IncrementalHnswGraphMerger};
+pub use initialized_builder::InitializedHnswGraphBuilder;
+pub use int_to_int_function::IntToIntFunction;
+pub use merger::{ConcurrentHnswMerger, HnswGraphMerger};
+pub use merging_builder::MergingHnswGraphBuilder;
 pub use neighbor::{NeighborArray, NeighborQueue};
 pub use on_heap::{EmptyHnswGraph, OnHeapHnswGraph};
+pub use ordinal_translated_knn_collector::OrdinalTranslatedKnnCollector;
 pub use scorer::{
     CloseableRandomVectorScorerSupplier, RandomVectorScorer, RandomVectorScorerSupplier,
     UpdateableRandomVectorScorer,
 };
 pub use searcher::HnswGraphSearcher;
+pub use seeded_searcher::SeededHnswGraphSearcher;
+pub use update_graphs_utils::UpdateGraphsUtils;
 pub use util::{Component, HnswUtil};
 
 /// Iterator over the node ordinals present on a given graph level.
@@ -231,6 +290,7 @@ mod tests {
     use super::searcher::HnswGraphSearcher;
     use super::util::HnswUtil;
     use super::{HnswGraph, Result};
+    use crate::util::hnsw::concurrent_merge_builder::HnswConcurrentMergeBuilder;
 
     fn dot(a: &[Vec<f32>], i: usize, j: usize) -> f32 {
         a[i].iter().zip(&a[j]).map(|(x, y)| x * y).sum()
@@ -374,9 +434,17 @@ mod tests {
         merged_vectors.extend(vectors_b.iter().cloned());
 
         let supplier = TestVectorScorerSupplier::new(merged_vectors.clone());
-        let mut merger = ConcurrentHnswMerger::new(4, 20);
-        let mut merged = merger
-            .merge(&supplier, merged_vectors.len() as i32)
+        // With no source graph readers registered, `ConcurrentHnswMerger` builds a
+        // fresh graph through `HnswConcurrentMergeBuilder`; drive that builder
+        // directly, so the test does not need a `KnnVectorsReader` to merge from.
+        let graph = OnHeapHnswGraph::new(4, merged_vectors.len() as i32);
+        let mut builder =
+            HnswConcurrentMergeBuilder::new(2, &supplier, 4, 20, graph, None).expect("builder");
+        builder
+            .build(merged_vectors.len() as i32)
+            .expect("merge failed");
+        let mut merged = Box::new(builder)
+            .into_completed_graph()
             .expect("merge failed");
 
         assert_eq!(merged.size(), merged_vectors.len() as i32);

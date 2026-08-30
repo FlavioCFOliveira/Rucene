@@ -32,10 +32,36 @@
 //!   splitting at the median, which may choose different split values than the
 //!   reference radix selector when duplicate values straddle the cut point.
 //!   The produced tree and leaf blocks are internally consistent and readable by
-//!   `BKDReader`.
+//!   `BKDReader`. [`BKDRadixSelector`] is now ported and reproduces Lucene's
+//!   partitioning exactly; `BKDWriter` has not yet been switched over to it.
+//!
+//! | Rucene | Apache Lucene Core 10.5.0 |
+//! | --- | --- |
+//! | [`BKDConfig`] | `BKDConfig` |
+//! | [`BKDRadixSelector`] | `BKDRadixSelector` |
+//! | [`PathSlice`] | `BKDRadixSelector.PathSlice` |
+//! | [`BKDReader`] | `BKDReader` |
+//! | [`BKDUtil`] | `BKDUtil` |
+//! | [`BKDWriter`] | `BKDWriter` |
+//! | [`DocIdsWriter`] | `DocIdsWriter` |
+//! | [`HeapPointReader`] | `HeapPointReader` |
+//! | [`HeapPointWriter`] | `HeapPointWriter` |
+//! | [`MutablePointTreeReaderUtils`] | `MutablePointTreeReaderUtils` |
+//! | [`OfflinePointReader`] | `OfflinePointReader` |
+//! | [`OfflinePointWriter`] | `OfflinePointWriter` |
+//! | [`PointReader`] | `PointReader` |
+//! | [`PointValue`] | `PointValue` |
+//! | [`PointWriter`] | `PointWriter` |
 
 #![deny(unsafe_code)]
 
+pub mod bkd_radix_selector;
+pub mod mutable_point_tree_reader_utils;
+
+pub use bkd_radix_selector::{BKDRadixSelector, PathSlice};
+pub use mutable_point_tree_reader_utils::MutablePointTreeReaderUtils;
+
+use std::sync::Arc;
 use std::{cmp::Ordering, collections::HashSet};
 
 use crate::index::point_values::MutablePointTree;
@@ -399,8 +425,21 @@ impl PointValue {
 
     fn read_from_buffer(buffer: &[u8], packed_len: usize) -> Self {
         let packed = buffer[..packed_len].to_vec();
-        let doc_id = BitUtil::read_le_int(buffer, packed_len);
+        let doc_id = BitUtil::read_be_int(buffer, packed_len);
         Self { packed, doc_id }
+    }
+
+    /// Writes the packed value followed by the doc ID into `dst`, the layout
+    /// [`HeapPointWriter`] and [`OfflinePointWriter`] store a point in.
+    ///
+    /// Equivalent to `PointValue.packedValueDocIDBytes()`. The doc ID is stored
+    /// big-endian (`BitUtil.VH_BE_INT` in `HeapPointWriter.append`, and
+    /// `out.writeInt(Integer.reverseBytes(docID))` in `OfflinePointWriter.append`)
+    /// precisely so that `BKDRadixSelector` can radix-sort the tie-break on the
+    /// doc ID by reading those four bytes most-significant first.
+    pub fn write_packed_value_doc_id_bytes(&self, dst: &mut [u8]) {
+        dst[..self.packed.len()].copy_from_slice(&self.packed);
+        BitUtil::write_be_int(dst, self.packed.len(), self.doc_id);
     }
 }
 
@@ -426,6 +465,13 @@ pub trait PointReader {
 ///
 /// Equivalent to `org.apache.lucene.util.bkd.PointWriter`.
 pub trait PointWriter {
+    /// Returns this writer as `&mut dyn Any`.
+    ///
+    /// [`BKDRadixSelector`](crate::util::bkd::BKDRadixSelector) branches on whether
+    /// the writer is a [`HeapPointWriter`], which Java expresses as
+    /// `points.writer instanceof HeapPointWriter`.
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+
     /// Appends a new point value.
     fn append(&mut self, value: &PointValue) -> Result<()>;
 
@@ -503,7 +549,7 @@ impl HeapPointWriter {
     fn doc_id(&self, index: usize) -> i32 {
         let pos = index * self.config.bytes_per_doc() as usize
             + self.config.packed_bytes_length() as usize;
-        BitUtil::read_le_int(&self.block, pos)
+        BitUtil::read_be_int(&self.block, pos)
     }
 
     fn point_value_at(&self, index: usize) -> PointValue {
@@ -528,12 +574,106 @@ impl HeapPointWriter {
         self.block[i * self.config.bytes_per_doc() as usize + k]
     }
 
-    /// Compares dimension `dim` of points `i` and `j` as unsigned bytes.
+    /// The maximum number of points this writer can hold.
+    ///
+    /// Equivalent to the package-private `HeapPointWriter.size` field.
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// How many bytes the data dimensions plus the doc ID occupy.
+    ///
+    /// Equivalent to `HeapPointWriter.dataDimsAndDocLength`.
+    fn data_dims_and_doc_length(&self) -> usize {
+        (self.config.bytes_per_doc() - self.config.packed_index_bytes_length()) as usize
+    }
+
+    /// Returns the point at `index`.
+    ///
+    /// Equivalent to `HeapPointWriter.getPackedValueSlice(int)`, which hands back a
+    /// view into the block; this port returns an owned value because Rust cannot
+    /// hand out a mutable view and keep the writer usable at the same time.
+    pub fn get_packed_value_slice(&self, index: usize) -> PointValue {
+        debug_assert!(index < self.next_write);
+        self.point_value_at(index)
+    }
+
+    /// Copies the dimension starting at byte offset `dim` of the point at `i` into
+    /// `bytes` at `offset`.
+    ///
+    /// Equivalent to `HeapPointWriter.copyDim(int, int, byte[], int)`.
+    pub fn copy_dim(&self, i: usize, dim: usize, bytes: &mut [u8], offset: usize) {
+        let bytes_per_dim = self.config.bytes_per_dim as usize;
+        let src = i * self.config.bytes_per_doc() as usize + dim;
+        bytes[offset..offset + bytes_per_dim]
+            .copy_from_slice(&self.block[src..src + bytes_per_dim]);
+    }
+
+    /// Copies the data dimensions and doc ID of the point at `i` into `bytes` at
+    /// `offset`.
+    ///
+    /// Equivalent to `HeapPointWriter.copyDataDimsAndDoc(int, byte[], int)`.
+    pub fn copy_data_dims_and_doc(&self, i: usize, bytes: &mut [u8], offset: usize) {
+        let len = self.data_dims_and_doc_length();
+        let src = i * self.config.bytes_per_doc() as usize
+            + self.config.packed_index_bytes_length() as usize;
+        bytes[offset..offset + len].copy_from_slice(&self.block[src..src + len]);
+    }
+
+    /// Compares the dimension starting at byte offset `dim` of points `i` and `j` as
+    /// unsigned bytes.
+    ///
+    /// Equivalent to `HeapPointWriter.compareDim(int, int, int)`, where `dim` is a
+    /// byte offset into the packed value, not a dimension index.
     pub fn compare_dim(&self, i: usize, j: usize, dim: usize) -> Ordering {
         let bytes_per_dim = self.config.bytes_per_dim as usize;
-        let i_off = i * self.config.bytes_per_doc() as usize + dim * bytes_per_dim;
-        let j_off = j * self.config.bytes_per_doc() as usize + dim * bytes_per_dim;
+        let i_off = i * self.config.bytes_per_doc() as usize + dim;
+        let j_off = j * self.config.bytes_per_doc() as usize + dim;
         BKDUtil::unsigned_compare(&self.block, i_off, &self.block, j_off, bytes_per_dim)
+    }
+
+    /// Compares the dimension starting at byte offset `dim` of the point at `j`
+    /// against the value held in `dim_value` at `offset`.
+    ///
+    /// Equivalent to `HeapPointWriter.compareDim(int, byte[], int, int)`, which
+    /// compares `dimValue` **against** the stored point, in that order.
+    pub fn compare_dim_to(
+        &self,
+        j: usize,
+        dim_value: &[u8],
+        offset: usize,
+        dim: usize,
+    ) -> Ordering {
+        let bytes_per_dim = self.config.bytes_per_dim as usize;
+        let j_off = j * self.config.bytes_per_doc() as usize + dim;
+        BKDUtil::unsigned_compare(dim_value, offset, &self.block, j_off, bytes_per_dim)
+    }
+
+    /// Compares the data dimensions and doc ID of points `i` and `j`.
+    ///
+    /// Equivalent to `HeapPointWriter.compareDataDimsAndDoc(int, int)`.
+    pub fn compare_data_dims_and_doc(&self, i: usize, j: usize) -> Ordering {
+        let len = self.data_dims_and_doc_length();
+        let index = self.config.packed_index_bytes_length() as usize;
+        let i_off = i * self.config.bytes_per_doc() as usize + index;
+        let j_off = j * self.config.bytes_per_doc() as usize + index;
+        self.block[i_off..i_off + len].cmp(&self.block[j_off..j_off + len])
+    }
+
+    /// Compares the data dimensions and doc ID of the point at `j` against the value
+    /// held in `data_dims_and_docs` at `offset`.
+    ///
+    /// Equivalent to `HeapPointWriter.compareDataDimsAndDoc(int, byte[], int)`.
+    pub fn compare_data_dims_and_doc_to(
+        &self,
+        j: usize,
+        data_dims_and_docs: &[u8],
+        offset: usize,
+    ) -> Ordering {
+        let len = self.data_dims_and_doc_length();
+        let j_off = j * self.config.bytes_per_doc() as usize
+            + self.config.packed_index_bytes_length() as usize;
+        data_dims_and_docs[offset..offset + len].cmp(&self.block[j_off..j_off + len])
     }
 
     /// Computes the cardinality of the points in `[from, to)` using the
@@ -578,6 +718,10 @@ impl HeapPointWriter {
 }
 
 impl PointWriter for HeapPointWriter {
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn append(&mut self, value: &PointValue) -> Result<()> {
         self.ensure_open()?;
         self.assert_space()?;
@@ -590,7 +734,7 @@ impl PointWriter for HeapPointWriter {
         }
         let pos = self.next_write * self.config.bytes_per_doc() as usize;
         self.block[pos..pos + value.packed.len()].copy_from_slice(&value.packed);
-        BitUtil::write_le_int(&mut self.block, pos + value.packed.len(), value.doc_id);
+        BitUtil::write_be_int(&mut self.block, pos + value.packed.len(), value.doc_id);
         self.next_write += 1;
         Ok(())
     }
@@ -673,7 +817,7 @@ impl<'a> HeapPointReader<'a> {
 /// Equivalent to `org.apache.lucene.util.bkd.OfflinePointWriter`.
 pub struct OfflinePointWriter {
     config: BKDConfig,
-    temp_dir: Box<dyn Directory>,
+    temp_dir: Arc<dyn Directory>,
     out: Box<dyn IndexOutput>,
     name: String,
     count: usize,
@@ -684,7 +828,7 @@ impl OfflinePointWriter {
     /// Creates a new offline point writer in `temp_dir`.
     pub fn new(
         config: BKDConfig,
-        temp_dir: Box<dyn Directory>,
+        temp_dir: Arc<dyn Directory>,
         temp_file_name_prefix: &str,
         desc: &str,
     ) -> Result<Self> {
@@ -711,6 +855,10 @@ impl OfflinePointWriter {
 }
 
 impl PointWriter for OfflinePointWriter {
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn append(&mut self, value: &PointValue) -> Result<()> {
         self.ensure_open()?;
         if value.packed.len() != self.config.packed_bytes_length() as usize {
@@ -721,7 +869,10 @@ impl PointWriter for OfflinePointWriter {
             )));
         }
         self.out.write_bytes(&value.packed, 0, value.packed.len())?;
-        self.out.write_int(value.doc_id)?;
+        // `IndexOutput::write_int` is little-endian, as in Lucene 9+; reversing the
+        // bytes first stores the doc ID big-endian, exactly as
+        // `OfflinePointWriter.append` does with `Integer.reverseBytes(docID)`.
+        self.out.write_int(value.doc_id.swap_bytes())?;
         self.count += 1;
         Ok(())
     }
@@ -780,7 +931,7 @@ impl OfflinePointWriter {
                 let value = reader.point_value().clone();
                 let mut record = vec![0u8; bytes_per_doc];
                 record[..value.packed.len()].copy_from_slice(&value.packed);
-                BitUtil::write_le_int(&mut record, value.packed.len(), value.doc_id);
+                BitUtil::write_be_int(&mut record, value.packed.len(), value.doc_id);
                 records.push(record);
             }
             reader.close()?;
@@ -791,8 +942,8 @@ impl OfflinePointWriter {
             if packed_cmp != Ordering::Equal {
                 return packed_cmp;
             }
-            let a_doc = BitUtil::read_le_int(a, packed_len);
-            let b_doc = BitUtil::read_le_int(b, packed_len);
+            let a_doc = BitUtil::read_be_int(a, packed_len);
+            let b_doc = BitUtil::read_be_int(b, packed_len);
             a_doc.cmp(&b_doc)
         });
 
@@ -2665,8 +2816,11 @@ fn read_min_max(
     min_packed: &mut [u8],
     max_packed: &mut [u8],
 ) -> Result<()> {
-    for dim in 0..config.num_index_dims as usize {
-        let prefix = common_prefix_lengths[dim];
+    for (dim, &prefix) in common_prefix_lengths
+        .iter()
+        .enumerate()
+        .take(config.num_index_dims as usize)
+    {
         let off = dim * config.bytes_per_dim as usize + prefix;
         let suffix = config.bytes_per_dim as usize - prefix;
         in_.read_bytes(min_packed, off, suffix)?;
@@ -3078,7 +3232,7 @@ fn apply_permutation(points: &mut dyn BuildPoints, from: usize, order: &[usize])
 #[allow(dead_code)]
 pub struct BKDWriter {
     max_doc: i32,
-    temp_dir: Box<dyn Directory>,
+    temp_dir: Arc<dyn Directory>,
     temp_prefix: String,
     config: BKDConfig,
     max_mb_sort_in_heap: f64,
@@ -3183,7 +3337,9 @@ impl BKDWriter {
         let init_config = config.clone();
         Ok(Self {
             max_doc,
-            temp_dir,
+            // `Arc` rather than `Box` so that `BKDRadixSelector` can open several
+            // temporary point writers on the same directory, as Lucene does.
+            temp_dir: Arc::from(temp_dir),
             temp_prefix: temp_prefix.to_string(),
             config,
             max_mb_sort_in_heap,
@@ -5425,7 +5581,7 @@ mod tests {
 
     #[test]
     fn offline_point_writer_sorted_reader() {
-        let dir = Box::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
         let config = BKDConfig::of(1, 1, 4, 512).unwrap();
         let mut writer = OfflinePointWriter::new(config.clone(), dir, "test", "unsorted").unwrap();
         let values = vec![(30, 1), (10, 2), (20, 0), (10, 5), (40, 3)];

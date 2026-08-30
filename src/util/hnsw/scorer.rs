@@ -7,6 +7,31 @@
 
 use super::Result;
 
+/// `Math.max(float, float)` as specified by the JLS.
+///
+/// `f32::max` cannot be used: it returns the non-NaN operand when exactly one
+/// operand is NaN, whereas Java propagates NaN. A cosine similarity against a
+/// zero vector is NaN, so `f32::max` would silently hide a score Lucene
+/// surfaces. Java also specifies that `max(-0.0, +0.0)` is `+0.0`, which
+/// `a >= b` alone does not give.
+///
+/// The semantics are the same as the `java_math_max` helper in
+/// `internal::vectorization`, which exists for exactly this reason.
+#[inline]
+fn java_math_max(a: f32, b: f32) -> f32 {
+    if a.is_nan() {
+        return a;
+    }
+    if a == 0.0 && b == 0.0 && a.is_sign_negative() {
+        return b;
+    }
+    if a >= b {
+        a
+    } else {
+        b
+    }
+}
+
 /// Scores random graph nodes against an abstract query.
 ///
 /// Equivalent to `org.apache.lucene.util.hnsw.RandomVectorScorer`.
@@ -26,7 +51,7 @@ pub trait RandomVectorScorer {
         let mut max = f32::NEG_INFINITY;
         for i in 0..n {
             scores[i] = self.score(nodes[i])?;
-            max = max.max(scores[i]);
+            max = java_math_max(max, scores[i]);
         }
         Ok(max)
     }
