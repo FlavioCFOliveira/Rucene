@@ -7,3 +7,5 @@
 #![deny(unsafe_code)]
 
 pub mod hppc;
+pub mod tests_hooks;
+pub mod vectorization;

@@ -1825,11 +1825,11 @@ impl Tessellation {
                     let split_node = self.split_polygon(search_node, diagonal, edge_from_polygon);
                     // Filter the resulting polygon.
                     let search_next = self.nodes[search_node].next;
-                    let mut search_node = self
+                    let search_node = self
                         .filter_points(Some(search_node), Some(search_next))
                         .expect("INVARIANT: filterPoints returns a node for a non-null start");
                     let split_next = self.nodes[split_node].next;
-                    let mut split_node = self
+                    let split_node = self
                         .filter_points(Some(split_node), Some(split_next))
                         .expect("INVARIANT: filterPoints returns a node for a non-null start");
                     // Attempt to earcut both of the resulting polygons
@@ -1846,10 +1846,8 @@ impl Tessellation {
                         monitor,
                         depth,
                     )?;
-                    // The recursive call cannot move nodes in the arena, but it can relink them;
-                    // re-read is unnecessary, the local indices stay valid.
-                    search_node = search_node;
-                    split_node = split_node;
+                    // The recursive call cannot move nodes in the arena, but it can relink
+                    // them; re-reading is unnecessary, the local indices stay valid.
                     self.earcut_linked_list(
                         Some(split_node),
                         tessellation,
