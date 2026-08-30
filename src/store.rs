@@ -6,8 +6,43 @@
 
 #![deny(unsafe_code)]
 
+pub mod exceptions;
+pub mod lock_stress_test;
+pub mod lock_validating_directory_wrapper;
+pub mod lock_verify_server;
+#[cfg(feature = "mmap")]
+pub mod memory_segment;
+#[cfg(feature = "mmap")]
+pub mod memory_segment_index_input;
+#[cfg(feature = "mmap")]
+pub mod memory_segment_index_input_provider;
 #[cfg(feature = "mmap")]
 pub mod mmap;
+#[cfg(feature = "mmap")]
+pub mod native_access;
+pub mod rate_limited_index_output;
+pub mod sleeping_lock_wrapper;
+pub mod verifying_lock_factory;
+
+pub use exceptions::{
+    AlreadyClosedException, LockObtainFailedException, LockReleaseFailedException,
+};
+pub use lock_stress_test::LockStressTest;
+pub use lock_validating_directory_wrapper::LockValidatingDirectoryWrapper;
+pub use lock_verify_server::LockVerifyServer;
+#[cfg(feature = "mmap")]
+pub use memory_segment::{Arena, MemorySegment, RefCountedSharedArena, Scope};
+#[cfg(feature = "mmap")]
+pub use memory_segment_index_input::{
+    MemorySegmentAccessInput, MemorySegmentIndexInput, ToReadAdvice,
+};
+#[cfg(feature = "mmap")]
+pub use memory_segment_index_input_provider::MemorySegmentIndexInputProvider;
+#[cfg(feature = "mmap")]
+pub use native_access::{NativeAccess, PosixNativeAccess};
+pub use rate_limited_index_output::RateLimitedIndexOutput;
+pub use sleeping_lock_wrapper::SleepingLockWrapper;
+pub use verifying_lock_factory::VerifyingLockFactory;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -1730,6 +1765,18 @@ impl FilterIndexOutput {
         self.inner.as_ref()
     }
 
+    /// Returns the wrapped output for mutation.
+    ///
+    /// Java exposes the delegate as the `protected final IndexOutput out`
+    /// field, which subclasses such as
+    /// [`RateLimitedIndexOutput`](crate::store::RateLimitedIndexOutput) write
+    /// through directly. Rust has no protected fields, so this accessor takes
+    /// its place; `get_delegate` remains the read-only equivalent of
+    /// `getDelegate()`.
+    pub fn get_delegate_mut(&mut self) -> &mut dyn IndexOutput {
+        self.inner.as_mut()
+    }
+
     /// Unwraps nested `FilterIndexOutput` wrappers and returns the first
     /// non-filter output.
     ///
@@ -2385,7 +2432,14 @@ pub trait FileOpenHint: AsAny + std::fmt::Debug + Send + Sync {
     fn same_type(&self, other: &dyn FileOpenHint) -> bool;
 }
 
-macro_rules! impl_singleton_hint {
+/// Implements [`FileOpenHint`] for a hint type whose identity, for the
+/// "at most one hint of each type" rule, is its own concrete type.
+///
+/// This is the Rust counterpart of Java grouping hints by
+/// `FileOpenHint::getClass()` in `DefaultIOContext`: because every Lucene hint
+/// is an `enum`, all constants of one hint enum share a class and therefore
+/// count as the same type.
+macro_rules! impl_file_open_hint {
     ($name:ident) => {
         impl FileOpenHint for $name {
             fn same_type(&self, other: &dyn FileOpenHint) -> bool {
@@ -2395,35 +2449,26 @@ macro_rules! impl_singleton_hint {
     };
 }
 
-/// Hint that the file access pattern is completely random.
+/// Hint on the data access pattern likely to be used.
 ///
-/// Equivalent to `org.apache.lucene.store.DataAccessHint.RANDOM`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct RandomHint;
-
-impl_singleton_hint!(RandomHint);
-
-impl RandomHint {
-    /// Returns the singleton instance.
-    pub fn instance() -> Self {
-        Self
-    }
+/// Equivalent to `org.apache.lucene.store.DataAccessHint`.
+///
+/// Both variants are the *same* hint type, so an [`IOContext`] may carry only
+/// one of them: supplying both to [`DefaultIOContext::new`] is rejected, just
+/// as Lucene rejects two constants of one hint enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DataAccessHint {
+    /// The access pattern is completely random.
+    ///
+    /// Equivalent to `DataAccessHint.RANDOM`.
+    Random,
+    /// The access pattern is only sequential (forwards-only).
+    ///
+    /// Equivalent to `DataAccessHint.SEQUENTIAL`.
+    Sequential,
 }
 
-/// Hint that the file access pattern is only sequential.
-///
-/// Equivalent to `org.apache.lucene.store.DataAccessHint.SEQUENTIAL`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct SequentialHint;
-
-impl_singleton_hint!(SequentialHint);
-
-impl SequentialHint {
-    /// Returns the singleton instance.
-    pub fn instance() -> Self {
-        Self
-    }
-}
+impl_file_open_hint!(DataAccessHint);
 
 /// Hint that the file will only be read once, sequentially.
 ///
@@ -2431,7 +2476,7 @@ impl SequentialHint {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ReadOnceHint;
 
-impl_singleton_hint!(ReadOnceHint);
+impl_file_open_hint!(ReadOnceHint);
 
 impl ReadOnceHint {
     /// Returns the singleton instance.
@@ -2446,7 +2491,7 @@ impl ReadOnceHint {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PreloadHint;
 
-impl_singleton_hint!(PreloadHint);
+impl_file_open_hint!(PreloadHint);
 
 impl PreloadHint {
     /// Returns the singleton instance.
@@ -2455,65 +2500,49 @@ impl PreloadHint {
     }
 }
 
-/// Hint that the file contains index data.
+/// Hint on the type of file being opened.
 ///
-/// Equivalent to `org.apache.lucene.store.FileTypeHint.INDEX`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct IndexFileHint;
-
-impl_singleton_hint!(IndexFileHint);
-
-impl IndexFileHint {
-    /// Returns the singleton instance.
-    pub fn instance() -> Self {
-        Self
-    }
+/// Equivalent to `org.apache.lucene.store.FileTypeHint`.
+///
+/// There is no variant for metadata files: those are opened with
+/// [`Directory::open_checksum_input`], which takes no hints.
+///
+/// Both variants are the *same* hint type, so an [`IOContext`] may carry only
+/// one of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FileTypeHint {
+    /// The file contains indexes. It is small (~1% or less of the data size)
+    /// and generally fits in the page cache.
+    ///
+    /// Equivalent to `FileTypeHint.INDEX`.
+    Index,
+    /// The file contains field data.
+    ///
+    /// Equivalent to `FileTypeHint.DATA`.
+    Data,
 }
 
-/// Hint that the file contains field data.
+impl_file_open_hint!(FileTypeHint);
+
+/// Hint on the type of data stored in the file.
 ///
-/// Equivalent to `org.apache.lucene.store.FileTypeHint.DATA`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct DataFileHint;
-
-impl_singleton_hint!(DataFileHint);
-
-impl DataFileHint {
-    /// Returns the singleton instance.
-    pub fn instance() -> Self {
-        Self
-    }
+/// Equivalent to `org.apache.lucene.store.FileDataHint`.
+///
+/// Both variants are the *same* hint type, so an [`IOContext`] may carry only
+/// one of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FileDataHint {
+    /// The file contains postings data.
+    ///
+    /// Equivalent to `FileDataHint.POSTINGS`.
+    Postings,
+    /// The file contains vector data for kNN search.
+    ///
+    /// Equivalent to `FileDataHint.KNN_VECTORS`.
+    KnnVectors,
 }
 
-/// Hint that the file contains postings data.
-///
-/// Equivalent to `org.apache.lucene.store.FileDataHint.POSTINGS`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct PostingsHint;
-
-impl_singleton_hint!(PostingsHint);
-
-impl PostingsHint {
-    /// Returns the singleton instance.
-    pub fn instance() -> Self {
-        Self
-    }
-}
-
-/// Hint that the file contains vector data for kNN search.
-///
-/// Equivalent to `org.apache.lucene.store.FileDataHint.KNN_VECTORS`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct KnnVectorsHint;
-
-impl_singleton_hint!(KnnVectorsHint);
-
-impl KnnVectorsHint {
-    /// Returns the singleton instance.
-    pub fn instance() -> Self {
-        Self
-    }
-}
+impl_file_open_hint!(FileDataHint);
 
 /// Metadata associated with a merge [`Context`].
 ///
@@ -2663,7 +2692,7 @@ pub static DEFAULT_IO_CONTEXT: std::sync::LazyLock<DefaultIOContext> =
 pub static READONCE_IO_CONTEXT: std::sync::LazyLock<DefaultIOContext> =
     std::sync::LazyLock::new(|| {
         DefaultIOContext::new(vec![
-            Arc::new(SequentialHint::instance()),
+            Arc::new(DataAccessHint::Sequential),
             Arc::new(ReadOnceHint::instance()),
         ])
         .expect("READONCE hints are unique")
@@ -9061,7 +9090,7 @@ mod tests {
         assert!(merge.flush_info().is_none());
         assert!(merge.hints().is_empty());
         // Merge context ignores hint changes.
-        let merge_with_hint = merge.with_hints(&[Arc::new(RandomHint::instance())]);
+        let merge_with_hint = merge.with_hints(&[Arc::new(DataAccessHint::Random)]);
         assert_eq!(merge_with_hint.context(), Context::Merge);
         assert!(merge_with_hint.hints().is_empty());
 
@@ -9070,7 +9099,7 @@ mod tests {
         assert_eq!(flush.flush_info().unwrap().num_docs, 10);
         assert!(flush.merge_info().is_none());
         // Flush context ignores hint changes too.
-        let flush_with_hint = flush.with_hints(&[Arc::new(SequentialHint::instance())]);
+        let flush_with_hint = flush.with_hints(&[Arc::new(DataAccessHint::Sequential)]);
         assert_eq!(flush_with_hint.context(), Context::Flush);
         assert!(flush_with_hint.hints().is_empty());
     }
@@ -9079,14 +9108,22 @@ mod tests {
     #[test]
     fn default_io_context_rejects_duplicate_hints() {
         let hints: Vec<Arc<dyn FileOpenHint>> = vec![
-            Arc::new(RandomHint::instance()),
-            Arc::new(RandomHint::instance()),
+            Arc::new(DataAccessHint::Random),
+            Arc::new(DataAccessHint::Random),
         ];
         assert!(DefaultIOContext::new(hints).is_err());
 
+        // `RANDOM` and `SEQUENTIAL` are two constants of the same hint enum, so
+        // Lucene's `getClass()` grouping rejects them together as well.
+        let both: Vec<Arc<dyn FileOpenHint>> = vec![
+            Arc::new(DataAccessHint::Random),
+            Arc::new(DataAccessHint::Sequential),
+        ];
+        assert!(DefaultIOContext::new(both).is_err());
+
         let ok = DefaultIOContext::new(vec![
-            Arc::new(RandomHint::instance()),
-            Arc::new(SequentialHint::instance()),
+            Arc::new(DataAccessHint::Random),
+            Arc::new(ReadOnceHint::instance()) as Arc<dyn FileOpenHint>,
         ])
         .unwrap();
         assert_eq!(ok.hints().len(), 2);

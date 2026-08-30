@@ -33,6 +33,43 @@ use crate::error::{LuceneError, Result};
 use crate::store::DataInput;
 use std::collections::HashSet;
 
+/// Maps `len` bytes of `file`, starting at byte `offset`, read-only.
+///
+/// This is the crate's single memory-mapping primitive: every other module that
+/// needs a mapping — including
+/// [`memory_segment`](super::memory_segment), the port of Lucene's Java 21
+/// `java.lang.foreign` implementation — goes through it, so that the one
+/// `unsafe` call the operation requires lives in exactly one place.
+///
+/// # Safety of the call site
+///
+/// `memmap2::MmapOptions::map` is `unsafe` because a memory mapping aliases a
+/// file that another process may truncate or overwrite while it is mapped, and
+/// Rust cannot express that hazard in the type system. This is Lucene's own
+/// trust model: `MMapDirectory` assumes the index files it maps are not
+/// modified behind its back, and the same assumption applies here. Callers must
+/// only map files inside a `Directory` they control.
+///
+/// `offset` need not be page-aligned: `memmap2` maps from the enclosing page
+/// boundary and adjusts the returned pointer.
+///
+/// # Errors
+///
+/// Returns the underlying `mmap` failure, including the refusal of `memmap2` to
+/// create a zero-length mapping; callers that need an empty region must not
+/// call this function.
+pub(crate) fn map_read_only(file: &fs::File, offset: u64, len: usize) -> io::Result<Mmap> {
+    // SAFETY: see the "Safety of the call site" section above. The caller
+    // guarantees the mapped file is not concurrently modified; nothing else can
+    // be guaranteed statically for any memory mapping.
+    unsafe {
+        memmap2::MmapOptions::new()
+            .offset(offset)
+            .len(len)
+            .map(file)
+    }
+}
+
 /// Maximum chunk size for memory mapping.
 ///
 /// Lucene 10.5.0 uses 16 GiB on 64-bit JVMs and 256 MiB on 32-bit JVMs. For
