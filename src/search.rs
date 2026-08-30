@@ -7,6 +7,19 @@
 #![deny(unsafe_code)]
 
 pub mod abstract_doc_id_set_iterator;
+pub mod bit_set_util;
+pub mod conjunction_disi;
+pub mod conjunction_scorer;
+pub mod conjunction_utils;
+pub mod disi_priority_queue;
+pub mod disjunction_disi_approximation;
+pub mod disjunction_score_block_boundary_propagator;
+pub mod disjunction_max_scorer;
+pub mod disjunction_scorer;
+pub mod disjunction_sum_scorer;
+pub mod disi_wrapper;
+pub mod index_priority_queue;
+pub mod multiset;
 pub mod boolean_clause;
 pub mod bulk_scorer;
 pub mod collection_terminated_exception;
@@ -19,12 +32,18 @@ pub mod doc_id_set_bulk_iterator;
 pub mod doc_id_set_iterator;
 pub mod doc_id_stream;
 pub mod hit_queue;
+pub mod impacts_disi;
 pub mod index_searcher;
 pub mod knn;
 pub mod matches;
+pub mod max_score_bulk_scorer;
+pub mod max_score_cache;
 pub mod max_score_accumulator;
 pub mod pruning;
 pub mod query;
+pub mod req_excl_bulk_scorer;
+pub mod req_excl_scorer;
+pub mod req_opt_sum_scorer;
 pub mod query_cache;
 pub mod query_visitor;
 pub mod reference_manager;
@@ -47,6 +66,7 @@ pub mod top_score_doc_collector_manager;
 pub mod total_hit_count_collector;
 pub mod total_hits;
 pub mod two_phase_iterator;
+pub mod wand_scorer;
 pub mod weight;
 
 pub use doc_id_set_iterator::{
@@ -74,6 +94,20 @@ pub use similarities::{
 pub use sort::{read_sort, write_sort, MissingValue, Sort, SortField, SortFieldType};
 
 pub use abstract_doc_id_set_iterator::{AbstractDocIdSetIterator, FilterDocIdSetIterator};
+pub use conjunction_disi::{create_conjunction, ConjunctionDISI, ConjunctionMember};
+pub use conjunction_scorer::ConjunctionScorer;
+pub use conjunction_utils::ConjunctionUtils;
+pub use disjunction_disi_approximation::DisjunctionDISIApproximation;
+pub use disjunction_score_block_boundary_propagator::{
+    DisjunctionScoreBlockBoundaryPropagator, SubScorers,
+};
+pub use disjunction_max_scorer::DisjunctionMaxScorer;
+pub use disjunction_scorer::{ByMatchCost, DisjunctionScorer};
+pub use disjunction_sum_scorer::DisjunctionSumScorer;
+pub use disi_priority_queue::{DisiPriorityQueue, DisiPriorityQueue2, DisiPriorityQueueN};
+pub use disi_wrapper::DisiWrapper;
+pub use index_priority_queue::{IndexOrder, IndexPriorityQueue};
+pub use multiset::Multiset;
 pub use boolean_clause::{BooleanClause, Occur};
 pub use bulk_scorer::{BulkScorer, DefaultBulkScorer};
 pub use collection_terminated_exception::{
@@ -95,9 +129,15 @@ pub use index_searcher::{
     IndexSearcher, LeafReaderContextPartition, LeafSlice, TooManyClauses, TooManyNestedClauses,
 };
 pub use matches::{MatchWithNoTerms, Matches, MatchesIterator, MatchesUtils};
+pub use impacts_disi::ImpactsDISI;
 pub use max_score_accumulator::MaxScoreAccumulator;
+pub use max_score_bulk_scorer::{MaxScoreBulkScorer, INNER_WINDOW_SIZE};
+pub use max_score_cache::MaxScoreCache;
 pub use pruning::Pruning;
-pub use query::{query_to_string, Query};
+pub use query::{query_to_string, Query, QueryKey};
+pub use req_excl_bulk_scorer::ReqExclBulkScorer;
+pub use req_excl_scorer::ReqExclScorer;
+pub use req_opt_sum_scorer::ReqOptSumScorer;
 pub use query_cache::{QueryCache, QueryCachingPolicy};
 pub use query_visitor::{EmptyQueryVisitor, QueryVisitor, TermCollectorVisitor};
 pub use scorable::{ChildScorable, FilterScorable, Scorable, SimpleScorable};
@@ -123,4 +163,5 @@ pub use total_hits::{TotalHits, TotalHitsRelation};
 pub use two_phase_iterator::{
     ScorerIterator, TwoPhaseIterator, TwoPhaseIteratorAsDocIdSetIterator,
 };
+pub use wand_scorer::{scale_max_score, scaling_factor, WANDScorer, FLOAT_MANTISSA_BITS};
 pub use weight::{DefaultScorerSupplier, FilterWeight, Weight};

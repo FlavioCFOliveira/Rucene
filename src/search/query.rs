@@ -139,3 +139,53 @@ pub trait Query: Debug + Send + Sync + 'static {
 pub fn query_to_string(query: &dyn Query) -> String {
     query.to_query_string("")
 }
+
+/// A hashable, comparable handle on a [`Query`].
+///
+/// **Divergence from Lucene 10.5.0.** Java puts `Query` instances straight into
+/// a `HashSet` or a `HashMap`, because `Query` declares `equals` and
+/// `hashCode`. Rust's `Hash` and `Eq` cannot be implemented for
+/// `Arc<dyn Query>` from this crate, so the standard collections need a
+/// newtype; it forwards to [`Query::query_eq`] and [`Query::query_hash`], which
+/// are the very methods Java's `equals`/`hashCode` are. Wherever Lucene writes
+/// `Set<Query>`, `Map<Query, ?>` or `Multiset<Query>`, this port writes the
+/// same collection over `QueryKey`.
+#[derive(Debug, Clone)]
+pub struct QueryKey(pub Arc<dyn Query>);
+
+impl QueryKey {
+    /// Wraps a query so that it can be put into a hashed collection.
+    pub fn new(query: Arc<dyn Query>) -> Self {
+        Self(query)
+    }
+
+    /// Returns the wrapped query.
+    pub fn query(&self) -> &Arc<dyn Query> {
+        &self.0
+    }
+
+    /// Unwraps this handle.
+    pub fn into_query(self) -> Arc<dyn Query> {
+        self.0
+    }
+}
+
+impl PartialEq for QueryKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.query_eq(&*other.0)
+    }
+}
+
+impl Eq for QueryKey {}
+
+impl Hash for QueryKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u64(self.0.query_hash());
+    }
+}
+
+impl From<Arc<dyn Query>> for QueryKey {
+    fn from(query: Arc<dyn Query>) -> Self {
+        Self(query)
+    }
+}
