@@ -212,6 +212,8 @@ impl OffHeapScalarQuantizedVectorValues {
                 self.entry.size
             )));
         }
+        // The slice starts at the field's data, so the ordinal indexes it
+        // directly, as Java's `slice.seek(targetOrd * byteSize)` does.
         let offset = self.entry.vector_data_offset + i64::from(ord) * self.byte_size as i64;
         self.slice.seek(offset)?;
         let len = self.vector.len();
@@ -220,7 +222,7 @@ impl OffHeapScalarQuantizedVectorValues {
             lower_interval: f32::from_bits(self.slice.read_int()? as u32),
             upper_interval: f32::from_bits(self.slice.read_int()? as u32),
             additional_correction: f32::from_bits(self.slice.read_int()? as u32),
-            quantized_component_sum: i32::from(self.slice.read_short()?) & 0xFFFF,
+            quantized_component_sum: self.slice.read_int()?,
         };
         self.loaded_ord = ord;
         Ok(())
@@ -707,5 +709,164 @@ impl Lucene104HnswScalarQuantizedVectorsFormat {
     /// Returns the largest dimension the format accepts.
     pub fn get_max_dimensions(&self, _field_name: &str) -> i32 {
         MAX_DIMS
+    }
+}
+
+/// Writes the quantized vectors of a segment.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorsWriter`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's writer is a `FlatVectorsWriter`
+/// that buffers each field's vectors through a delegate, and on flush computes
+/// the centroid, quantizes, and writes both files. This port carries the two
+/// steps that define the file format — computing the centroid and writing the
+/// vectors and the metadata — and takes the buffered vectors from the caller,
+/// because the `FlatVectorsWriter` buffering surface is a separate piece.
+pub struct Lucene104ScalarQuantizedVectorsWriter {
+    encoding: ScalarEncoding,
+}
+
+impl std::fmt::Debug for Lucene104ScalarQuantizedVectorsWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Lucene104ScalarQuantizedVectorsWriter")
+            .field("encoding", &self.encoding)
+            .finish()
+    }
+}
+
+impl Lucene104ScalarQuantizedVectorsWriter {
+    /// Creates a writer using `encoding`.
+    pub fn new(encoding: ScalarEncoding) -> Self {
+        Self { encoding }
+    }
+
+    /// Computes the centroid every vector of a field is quantized against: the
+    /// componentwise mean, normalised when the similarity is cosine.
+    ///
+    /// Equivalent to the cluster-centre computation in
+    /// `Lucene104ScalarQuantizedVectorsWriter.flush`.
+    pub fn cluster_center(
+        vectors: &[Vec<f32>],
+        dimension: usize,
+        similarity_function: VectorSimilarityFunction,
+    ) -> Result<Vec<f32>> {
+        let mut center = vec![0f32; dimension];
+        if vectors.is_empty() {
+            return Ok(center);
+        }
+        for vector in vectors {
+            for (i, &v) in vector.iter().enumerate() {
+                center[i] += v;
+            }
+        }
+        let count = vectors.len() as f32;
+        for slot in center.iter_mut() {
+            *slot /= count;
+        }
+        if similarity_function == VectorSimilarityFunction::COSINE {
+            crate::util::vector_util::l2normalize(&mut center, true)?;
+        }
+        Ok(center)
+    }
+
+    /// Writes one field's quantized vectors into the data file.
+    ///
+    /// Equivalent to `Lucene104ScalarQuantizedVectorsWriter.writeVectors`. Each
+    /// entry is the packed components, then the lower and upper interval, the
+    /// additional correction, and the component sum.
+    pub fn write_vectors(
+        &self,
+        vectors: &mut [Vec<f32>],
+        cluster_center: &[f32],
+        quantizer: &OptimizedScalarQuantizer,
+        vector_data: &mut dyn crate::store::IndexOutput,
+    ) -> Result<()> {
+        let bits = self.encoding.get_bits();
+        for vector in vectors.iter_mut() {
+            let mut scratch = vec![0u8; vector.len()];
+            let corrections =
+                quantizer.scalar_quantize(vector, &mut scratch, bits, cluster_center)?;
+
+            let packed = match self.encoding {
+                ScalarEncoding::PackedNibble => {
+                    // Two components share a byte, high nibble first.
+                    let mut packed = vec![0u8; scratch.len().div_ceil(2)];
+                    for (i, chunk) in scratch.chunks(2).enumerate() {
+                        let hi = chunk[0] & 0x0F;
+                        let lo = chunk.get(1).copied().unwrap_or(0) & 0x0F;
+                        packed[i] = (hi << 4) | lo;
+                    }
+                    packed
+                }
+                _ => scratch,
+            };
+
+            vector_data.write_bytes(&packed, 0, packed.len())?;
+            vector_data.write_int(corrections.lower_interval.to_bits() as i32)?;
+            vector_data.write_int(corrections.upper_interval.to_bits() as i32)?;
+            vector_data.write_int(corrections.additional_correction.to_bits() as i32)?;
+            vector_data.write_int(corrections.quantized_component_sum)?;
+        }
+        Ok(())
+    }
+
+    /// Writes one field's entry into the metadata file.
+    ///
+    /// Equivalent to `Lucene104ScalarQuantizedVectorsWriter.writeMeta`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_meta(
+        &self,
+        field: &crate::index::FieldInfo,
+        max_doc: i32,
+        vector_data_offset: i64,
+        vector_data_length: i64,
+        cluster_center: &[f32],
+        centroid_dp: f32,
+        count: i32,
+        docs_with_field: &crate::codecs::hnsw::flat_vectors::DocsWithFieldSet,
+        meta: &mut dyn crate::store::IndexOutput,
+        vector_data: &mut dyn crate::store::IndexOutput,
+    ) -> Result<()> {
+        meta.write_int(field.number)?;
+        meta.write_int(match field.vector_encoding {
+            VectorEncoding::BYTE => 0,
+            VectorEncoding::FLOAT32 => 1,
+        })?;
+        meta.write_int(match field.vector_similarity_function {
+            VectorSimilarityFunction::EUCLIDEAN => 0,
+            VectorSimilarityFunction::DOT_PRODUCT => 1,
+            VectorSimilarityFunction::COSINE => 2,
+            VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT => 3,
+        })?;
+        meta.write_v_int(field.vector_dimension)?;
+        meta.write_v_long(vector_data_offset)?;
+        meta.write_v_long(vector_data_length)?;
+        meta.write_v_int(count)?;
+
+        if count > 0 {
+            meta.write_v_int(self.encoding.code())?;
+            // The centroid is written as little-endian floats.
+            for &c in cluster_center {
+                meta.write_int(c.to_bits() as i32)?;
+            }
+            meta.write_int(centroid_dp.to_bits() as i32)?;
+        }
+
+        OrdToDocDISIReaderConfiguration::write_stored_meta(
+            meta,
+            vector_data,
+            count,
+            max_doc,
+            docs_with_field,
+        )
+    }
+
+    /// Writes the end-of-fields marker.
+    ///
+    /// Equivalent to the `meta.writeInt(-1)` in
+    /// `Lucene104ScalarQuantizedVectorsWriter.finish`.
+    pub fn finish(&self, meta: &mut dyn crate::store::IndexOutput) -> Result<()> {
+        meta.write_int(-1)
     }
 }
