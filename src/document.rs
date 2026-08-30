@@ -6,6 +6,8 @@
 
 #![deny(unsafe_code)]
 
+pub mod column;
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
