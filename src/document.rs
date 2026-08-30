@@ -11,6 +11,7 @@ pub mod doc_values_queries;
 pub mod feature_field;
 pub mod geo_fields;
 pub mod range_fields;
+pub mod shape_field;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
