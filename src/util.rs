@@ -25,6 +25,7 @@ pub mod concurrent;
 pub mod doc_id_set;
 pub mod extra;
 pub mod file_deleter;
+pub mod fst;
 pub mod info_stream;
 pub mod int_block_pool;
 pub mod io_function;
