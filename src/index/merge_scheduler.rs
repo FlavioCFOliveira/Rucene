@@ -4,7 +4,7 @@
 //! `NoMergeScheduler`, `ConcurrentMergeScheduler` and `MergeRateLimiter`.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::error::{LuceneError, Result};
@@ -362,5 +362,54 @@ impl MergeRateLimiter {
         let paused_ns = paused.as_nanos() as i64;
         self.total_paused_ns.fetch_add(paused_ns, Ordering::Relaxed);
         Ok(paused_ns)
+    }
+}
+
+/// Runs the merges of several indexes through one shared scheduler.
+///
+/// Equivalent to `org.apache.lucene.index.MultiIndexMergeScheduler`, which lets
+/// a host running many indexes bound the total number of merge threads instead
+/// of bounding each index separately.
+///
+/// **Divergence from Lucene 10.5.0.** Java routes merges through a
+/// `CombinedMergeScheduler` singleton that tags each `MergeSource` with its
+/// directory and interleaves the tagged sources across one thread pool. This
+/// port shares a single [`ConcurrentMergeScheduler`] between the writers instead
+/// of tagging: the bound on concurrent merges is shared, which is the point of
+/// the class, but merges are not interleaved fairly across indexes.
+pub struct MultiIndexMergeScheduler {
+    shared: Arc<ConcurrentMergeScheduler>,
+    directory_name: String,
+}
+
+impl MultiIndexMergeScheduler {
+    /// Creates a scheduler for one index, sharing `shared` with the others.
+    pub fn new(directory_name: impl Into<String>, shared: Arc<ConcurrentMergeScheduler>) -> Self {
+        Self {
+            shared,
+            directory_name: directory_name.into(),
+        }
+    }
+
+    /// Returns the name identifying this scheduler's index.
+    pub fn get_directory_name(&self) -> &str {
+        &self.directory_name
+    }
+
+    /// Returns the scheduler shared with the other indexes.
+    pub fn get_combined_merge_scheduler(&self) -> &Arc<ConcurrentMergeScheduler> {
+        &self.shared
+    }
+}
+
+impl MergeScheduler for MultiIndexMergeScheduler {
+    fn merge(&self, merge_source: &dyn MergeSource, trigger: MergeTrigger) -> Result<()> {
+        self.shared.merge(merge_source, trigger)
+    }
+
+    fn close(&self) -> Result<()> {
+        // The shared scheduler outlives any one index, so closing this view does
+        // not close it.
+        Ok(())
     }
 }

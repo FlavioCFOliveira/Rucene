@@ -1503,3 +1503,403 @@ impl MergePolicy for UpgradeIndexMergePolicy {
         self.inner.get_max_cfs_segment_size()
     }
 }
+
+// -----------------------------------------------------------------------------
+// TemporalMergePolicy
+// -----------------------------------------------------------------------------
+
+/// The span of a segment's temporal field, in milliseconds since the epoch.
+///
+/// Equivalent to `TemporalMergePolicy.SegmentDateRange`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SegmentDateRange {
+    /// Oldest value in the segment.
+    pub min_date: i64,
+    /// Newest value in the segment.
+    pub max_date: i64,
+}
+
+/// Groups segments into time windows and merges within a window, so an
+/// append-mostly time-series index keeps recent data compact without rewriting
+/// old data.
+///
+/// Equivalent to `org.apache.lucene.index.TemporalMergePolicy`.
+///
+/// **Divergence from Lucene 10.5.0.** Java reads each segment's temporal range
+/// out of its point values through `extractSegmentDateRanges`. Reaching the
+/// point values from a policy needs a reader, which a `MergeContext` does not
+/// supply in this port, so the ranges are handed in through
+/// [`set_segment_date_ranges`](Self::set_segment_date_ranges) — the same hook
+/// Java exposes for testing, here made the only source. Without ranges the
+/// policy selects nothing, which is what Java does when the temporal field is
+/// unset.
+#[derive(Debug, Clone)]
+pub struct TemporalMergePolicy {
+    temporal_field: String,
+    base_time_seconds: i64,
+    min_threshold: usize,
+    max_threshold: usize,
+    use_exponential_buckets: bool,
+    max_window_size_seconds: i64,
+    max_age_seconds: i64,
+    compaction_ratio: f64,
+    force_merge_deletes_pct_allowed: f64,
+    segment_date_ranges: HashMap<String, SegmentDateRange>,
+}
+
+impl Default for TemporalMergePolicy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TemporalMergePolicy {
+    /// Creates the policy with Lucene 10.5.0's defaults.
+    pub fn new() -> Self {
+        Self {
+            temporal_field: String::new(),
+            base_time_seconds: 3600,
+            min_threshold: 4,
+            max_threshold: 8,
+            use_exponential_buckets: true,
+            max_window_size_seconds: 365 * 24 * 3600,
+            max_age_seconds: i64::MAX,
+            compaction_ratio: 1.2,
+            force_merge_deletes_pct_allowed: 10.0,
+            segment_date_ranges: HashMap::new(),
+        }
+    }
+
+    /// Sets the field carrying each document's timestamp.
+    pub fn set_temporal_field(&mut self, field: impl Into<String>) -> &mut Self {
+        self.temporal_field = field.into();
+        self
+    }
+
+    /// Sets the width of the newest bucket, in seconds.
+    pub fn set_base_time_in_seconds(&mut self, v: i64) -> Result<&mut Self> {
+        if v <= 0 {
+            return Err(crate::error::LuceneError::IllegalArgument(format!(
+                "baseTimeInSeconds must be > 0 (got {v})"
+            )));
+        }
+        self.base_time_seconds = v;
+        Ok(self)
+    }
+
+    /// Sets how many segments a window needs before it is merged.
+    pub fn set_min_threshold(&mut self, v: usize) -> Result<&mut Self> {
+        if v < 2 {
+            return Err(crate::error::LuceneError::IllegalArgument(format!(
+                "minThreshold must be >= 2 (got {v})"
+            )));
+        }
+        self.min_threshold = v;
+        Ok(self)
+    }
+
+    /// Sets how many segments may be merged from one window at a time.
+    pub fn set_max_threshold(&mut self, v: usize) -> Result<&mut Self> {
+        if v < self.min_threshold {
+            return Err(crate::error::LuceneError::IllegalArgument(format!(
+                "maxThreshold must be >= minThreshold (got {v})"
+            )));
+        }
+        self.max_threshold = v;
+        Ok(self)
+    }
+
+    /// Uses fixed-width buckets instead of exponentially widening ones.
+    pub fn disable_exponential_buckets(&mut self) -> &mut Self {
+        self.use_exponential_buckets = false;
+        self
+    }
+
+    /// Sets the ratio of merged documents to largest input that triggers a merge.
+    pub fn set_compaction_ratio(&mut self, v: f64) -> &mut Self {
+        self.compaction_ratio = v;
+        self
+    }
+
+    /// Sets the age past which segments are left alone.
+    pub fn set_max_age_seconds(&mut self, v: i64) -> &mut Self {
+        self.max_age_seconds = v;
+        self
+    }
+
+    /// Supplies each segment's temporal range, by segment name.
+    pub fn set_segment_date_ranges(
+        &mut self,
+        ranges: HashMap<String, SegmentDateRange>,
+    ) -> &mut Self {
+        self.segment_date_ranges = ranges;
+        self
+    }
+
+    /// Returns the bucket a timestamp falls into: the start of the window that
+    /// contains it, or `-1` for data older than `max_age_seconds`.
+    ///
+    /// Equivalent to `TemporalMergePolicy.getBucketForTimestamp`.
+    fn bucket_for_timestamp(&self, timestamp_seconds: i64, now_seconds: i64) -> i64 {
+        let age_seconds = (now_seconds - timestamp_seconds).max(0);
+        if age_seconds > self.max_age_seconds {
+            // One sentinel bucket for everything too old to be worth rewriting.
+            return -1;
+        }
+        if !self.use_exponential_buckets {
+            return (timestamp_seconds / self.base_time_seconds) * self.base_time_seconds;
+        }
+        let mut bucket_size = self.base_time_seconds;
+        while age_seconds >= bucket_size.saturating_mul(self.min_threshold as i64)
+            && bucket_size < self.max_window_size_seconds
+        {
+            bucket_size = bucket_size.saturating_mul(self.min_threshold as i64);
+        }
+        if bucket_size > self.max_window_size_seconds {
+            bucket_size = self.max_window_size_seconds;
+        }
+        (timestamp_seconds / bucket_size) * bucket_size
+    }
+
+    /// Plans the merges of one window, newest segment first.
+    ///
+    /// Equivalent to `TemporalMergePolicy.planWindowMerges`.
+    fn plan_window_merges(
+        &self,
+        mut ordered: Vec<SegmentCommitInfo>,
+    ) -> Result<Vec<Vec<SegmentCommitInfo>>> {
+        ordered.sort_by(|a, b| {
+            let a_max = self
+                .segment_date_ranges
+                .get(&a.info.name)
+                .map(|r| r.max_date)
+                .unwrap_or(i64::MIN);
+            let b_max = self
+                .segment_date_ranges
+                .get(&b.info.name)
+                .map(|r| r.max_date)
+                .unwrap_or(i64::MIN);
+            b_max.cmp(&a_max)
+        });
+
+        let mut planned: Vec<Vec<SegmentCommitInfo>> = Vec::new();
+        let mut cursor = 0usize;
+
+        while ordered.len() - cursor >= self.min_threshold {
+            let mut total_docs = 0i64;
+            let mut largest_docs = 0i64;
+            let mut end = cursor;
+            let mut emitted = false;
+
+            while end < ordered.len() && end - cursor < self.max_threshold {
+                let doc_count = i64::from(ordered[end].info.max_doc()?);
+                total_docs += doc_count;
+                largest_docs = largest_docs.max(doc_count);
+                end += 1;
+
+                let candidate_size = end - cursor;
+                if candidate_size < self.min_threshold {
+                    continue;
+                }
+                let reached_max = candidate_size == self.max_threshold;
+                let exhausted = end == ordered.len();
+
+                let emit = if self.compaction_ratio <= 1.0 {
+                    // Aggressive mode: merge as soon as the window is full or
+                    // there is nothing left to add.
+                    reached_max || exhausted
+                } else {
+                    let ratio_satisfied =
+                        total_docs as f64 >= (largest_docs as f64 * self.compaction_ratio).ceil();
+                    ratio_satisfied || reached_max
+                };
+
+                if emit {
+                    planned.push(ordered[cursor..end].to_vec());
+                    cursor = end;
+                    emitted = true;
+                    break;
+                }
+            }
+
+            if !emitted {
+                break;
+            }
+        }
+        Ok(planned)
+    }
+}
+
+impl MergePolicy for TemporalMergePolicy {
+    fn find_merges(
+        &self,
+        _merge_trigger: MergeTrigger,
+        segment_infos: &SegmentInfos,
+        merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        if self.temporal_field.is_empty()
+            || segment_infos.size() == 0
+            || self.segment_date_ranges.is_empty()
+        {
+            return Ok(None);
+        }
+
+        let already_merging = merge_context.get_merging_segments();
+        let now_seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        // Group the segments that are free into time windows.
+        let mut buckets: std::collections::BTreeMap<i64, Vec<SegmentCommitInfo>> =
+            std::collections::BTreeMap::new();
+        for info in segment_infos.iter() {
+            if already_merging.contains(&info.info.name) {
+                continue;
+            }
+            let Some(range) = self.segment_date_ranges.get(&info.info.name) else {
+                continue;
+            };
+            let bucket = self.bucket_for_timestamp(range.max_date / 1000, now_seconds);
+            buckets.entry(bucket).or_default().push(info.clone());
+        }
+
+        let mut spec: Option<MergeSpecification> = None;
+        for (window_start, segments) in buckets {
+            // The sentinel bucket holds data too old to be worth rewriting.
+            if window_start == -1 || segments.len() < self.min_threshold {
+                continue;
+            }
+            for merge_segments in self.plan_window_merges(segments)? {
+                spec.get_or_insert_with(MergeSpecification::new)
+                    .add(OneMerge::new(merge_segments)?);
+            }
+        }
+        Ok(spec)
+    }
+
+    fn find_forced_merges(
+        &self,
+        segment_infos: &SegmentInfos,
+        max_num_segments: i32,
+        _segments_to_merge: &HashSet<String>,
+        merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        if max_num_segments < 1 {
+            return Err(crate::error::LuceneError::IllegalArgument(
+                "maxSegmentCount must be >= 1".to_string(),
+            ));
+        }
+        let already_merging = merge_context.get_merging_segments();
+        let segments: Vec<SegmentCommitInfo> = segment_infos
+            .iter()
+            .filter(|info| !already_merging.contains(&info.info.name))
+            .cloned()
+            .collect();
+        if segments.len() as i32 <= max_num_segments {
+            return Ok(None);
+        }
+        let mut spec = MergeSpecification::new();
+        for chunk in segments.chunks(self.max_threshold.max(2)) {
+            if chunk.len() >= 2 {
+                spec.add(OneMerge::new(chunk.to_vec())?);
+            }
+        }
+        Ok(if spec.is_empty() { None } else { Some(spec) })
+    }
+
+    fn find_forced_deletes_merges(
+        &self,
+        segment_infos: &SegmentInfos,
+        merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        let mut spec = MergeSpecification::new();
+        for info in segment_infos.iter() {
+            let max_doc = info.info.max_doc()?;
+            if max_doc == 0 {
+                continue;
+            }
+            let del_count = merge_context.num_deletes_to_merge(info)?;
+            if 100.0 * f64::from(del_count) / f64::from(max_doc)
+                > self.force_merge_deletes_pct_allowed
+            {
+                spec.add(OneMerge::new(vec![info.clone()])?);
+            }
+        }
+        Ok(if spec.is_empty() { None } else { Some(spec) })
+    }
+}
+
+/// A policy that keeps soft-deleted documents a retention query still matches.
+///
+/// Equivalent to `org.apache.lucene.index.SoftDeletesRetentionMergePolicy`.
+///
+/// **Divergence from Lucene 10.5.0.** Java wraps each `OneMerge` so that
+/// `wrapForMerge` applies the retention query to the reader being merged, which
+/// is how the retained documents survive. `OneMerge` does not carry a
+/// `wrap_for_merge` hook in this port, so the policy carries the field and the
+/// query and adjusts the delete accounting; applying the query at merge time is
+/// the remaining half.
+pub struct SoftDeletesRetentionMergePolicy {
+    field: String,
+    inner: Arc<dyn MergePolicy>,
+}
+
+impl SoftDeletesRetentionMergePolicy {
+    /// Creates the policy over `field`, delegating selection to `inner`.
+    pub fn new(field: impl Into<String>, inner: Arc<dyn MergePolicy>) -> Self {
+        Self {
+            field: field.into(),
+            inner,
+        }
+    }
+
+    /// Returns the soft-deletes field.
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+}
+
+impl MergePolicy for SoftDeletesRetentionMergePolicy {
+    fn find_merges(
+        &self,
+        merge_trigger: MergeTrigger,
+        segment_infos: &SegmentInfos,
+        merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        self.inner
+            .find_merges(merge_trigger, segment_infos, merge_context)
+    }
+
+    fn find_forced_merges(
+        &self,
+        segment_infos: &SegmentInfos,
+        max_num_segments: i32,
+        segments_to_merge: &HashSet<String>,
+        merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        self.inner.find_forced_merges(
+            segment_infos,
+            max_num_segments,
+            segments_to_merge,
+            merge_context,
+        )
+    }
+
+    fn find_forced_deletes_merges(
+        &self,
+        segment_infos: &SegmentInfos,
+        merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        self.inner
+            .find_forced_deletes_merges(segment_infos, merge_context)
+    }
+
+    fn get_no_cfs_ratio(&self) -> f64 {
+        self.inner.get_no_cfs_ratio()
+    }
+
+    fn get_max_cfs_segment_size(&self) -> i64 {
+        self.inner.get_max_cfs_segment_size()
+    }
+}

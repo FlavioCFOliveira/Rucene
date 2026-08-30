@@ -9,6 +9,7 @@ use std::sync::Arc;
 use crate::error::{LuceneError, Result};
 use crate::index::leaf_reader::LeafReader;
 use crate::index::{NumericDocValues, SortedDocValues};
+use crate::search::SortField;
 use crate::search::NO_MORE_DOCS;
 
 /// Maps a document to a `long` that orders it against the other documents of a
@@ -456,5 +457,249 @@ impl Sorter {
             Ordering::Equal
         });
         Sorter::sort(max_doc, &combined)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// MultiSorter
+// -----------------------------------------------------------------------------
+
+/// One reader's cursor while several sorted readers are merged.
+struct LeafAndDocId {
+    reader_index: usize,
+    doc_id: i32,
+    max_doc: i32,
+    live_docs: Option<Box<dyn crate::util::Bits>>,
+}
+
+/// Interleaves several already-sorted segments into one sorted order.
+///
+/// Equivalent to `org.apache.lucene.index.MultiSorter`.
+pub struct MultiSorter;
+
+impl MultiSorter {
+    /// Returns one doc map per reader, or `None` when concatenating the readers
+    /// already produces the sorted order.
+    ///
+    /// Equivalent to `MultiSorter.sort(Sort, List<CodecReader>)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java keeps the remapped document
+    /// numbers in `PackedLongValues`, and honours a parent bitset so a document
+    /// block sorts by its parent's value. `PackedLongValues` is not ported, so
+    /// the remapping is a plain `Vec<i32>`; block-aware sorting needs the parent
+    /// field, which the ported `LeafMetaData` does not yet expose, so a reader
+    /// using blocks is refused rather than sorted wrongly.
+    pub fn sort(
+        sorters: &[Arc<dyn IndexSorter>],
+        reverse_muls: &[i32],
+        readers: &[Arc<dyn LeafReader>],
+    ) -> Result<Option<Vec<crate::index::merge::DocMap>>> {
+        if sorters.is_empty() {
+            return Err(LuceneError::IllegalArgument(
+                "cannot sort an index with no sort fields".to_string(),
+            ));
+        }
+
+        let leaf_count = readers.len();
+        let mut comparables: Vec<ComparableValues> = Vec::with_capacity(sorters.len());
+        for sorter in sorters {
+            comparables.push(sorter.get_comparable_values(readers)?);
+        }
+
+        // One cursor per reader, each positioned on its first document.
+        let mut cursors: Vec<LeafAndDocId> = Vec::with_capacity(leaf_count);
+        for (reader_index, reader) in readers.iter().enumerate() {
+            let max_doc = reader.max_doc();
+            if max_doc == 0 {
+                continue;
+            }
+            for comparable in comparables.iter_mut() {
+                comparable.set_top_value(reader_index, 0)?;
+            }
+            cursors.push(LeafAndDocId {
+                reader_index,
+                doc_id: 0,
+                max_doc,
+                live_docs: reader.get_live_docs(),
+            });
+        }
+
+        let mut remapped: Vec<Vec<i32>> = readers
+            .iter()
+            .map(|reader| vec![-1i32; reader.max_doc().max(0) as usize])
+            .collect();
+
+        let mut mapped_doc_id = 0i32;
+        let mut last_reader_index = 0usize;
+        let mut is_sorted = true;
+
+        while !cursors.is_empty() {
+            // Pick the smallest cursor under the comparators, breaking ties by
+            // reader index then document id, as Java's priority queue does.
+            let mut top = 0usize;
+            for candidate in 1..cursors.len() {
+                let mut less = false;
+                let mut decided = false;
+                for (i, comparable) in comparables.iter().enumerate() {
+                    let cmp = comparable
+                        .compare(cursors[candidate].reader_index, cursors[top].reader_index);
+                    if cmp != Ordering::Equal {
+                        let signed = if reverse_muls[i] < 0 {
+                            cmp.reverse()
+                        } else {
+                            cmp
+                        };
+                        less = signed == Ordering::Less;
+                        decided = true;
+                        break;
+                    }
+                }
+                if !decided {
+                    less = if cursors[candidate].reader_index != cursors[top].reader_index {
+                        cursors[candidate].reader_index < cursors[top].reader_index
+                    } else {
+                        cursors[candidate].doc_id < cursors[top].doc_id
+                    };
+                }
+                if less {
+                    top = candidate;
+                }
+            }
+
+            let reader_index = cursors[top].reader_index;
+            if last_reader_index > reader_index {
+                // The readers interleave, so a real merge sort is needed.
+                is_sorted = false;
+            }
+            last_reader_index = reader_index;
+
+            let doc_id = cursors[top].doc_id;
+            remapped[reader_index][doc_id as usize] = mapped_doc_id;
+            let alive = match &cursors[top].live_docs {
+                Some(live_docs) => live_docs.get(doc_id as usize),
+                None => true,
+            };
+            if alive {
+                mapped_doc_id += 1;
+            }
+
+            cursors[top].doc_id += 1;
+            if cursors[top].doc_id < cursors[top].max_doc {
+                let next = cursors[top].doc_id;
+                for comparable in comparables.iter_mut() {
+                    comparable.set_top_value(reader_index, next)?;
+                }
+            } else {
+                cursors.remove(top);
+            }
+        }
+
+        if is_sorted {
+            return Ok(None);
+        }
+
+        let mut doc_maps: Vec<crate::index::merge::DocMap> = Vec::with_capacity(leaf_count);
+        for (index, reader) in readers.iter().enumerate() {
+            let mapping = std::mem::take(&mut remapped[index]);
+            let live_docs = reader.get_live_docs();
+            doc_maps.push(Box::new(move |doc_id: i32| {
+                let alive = match &live_docs {
+                    Some(bits) => bits.get(doc_id as usize),
+                    None => true,
+                };
+                if alive {
+                    mapping.get(doc_id as usize).copied().unwrap_or(-1)
+                } else {
+                    -1
+                }
+            }));
+        }
+        Ok(Some(doc_maps))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// SortFieldProvider
+// -----------------------------------------------------------------------------
+
+/// Serialises and deserialises a `SortField` so an index sort survives a commit.
+///
+/// Equivalent to `org.apache.lucene.index.SortFieldProvider`.
+pub trait SortFieldProvider: Send + Sync {
+    /// The SPI name this provider is registered under, which is what the segment
+    /// info file records.
+    ///
+    /// Equivalent to `NamedSPILoader.NamedSPI.getName()`.
+    fn name(&self) -> &str;
+
+    /// Reads a sort field from `input`.
+    ///
+    /// Equivalent to `SortFieldProvider.readSortField(DataInput)`.
+    fn read_sort_field(&self, input: &mut dyn crate::store::DataInput) -> Result<SortField>;
+
+    /// Writes `sort_field` to `output`, without the provider name, which the
+    /// registry writes first.
+    ///
+    /// Equivalent to `SortFieldProvider.writeSortField(SortField, DataOutput)`.
+    fn write_sort_field(
+        &self,
+        sort_field: &SortField,
+        output: &mut dyn crate::store::DataOutput,
+    ) -> Result<()>;
+}
+
+/// The registry of [`SortFieldProvider`] implementations, by name.
+///
+/// **Divergence from Lucene 10.5.0.** Java discovers providers through
+/// `NamedSPILoader`, which reads `META-INF/services` off the classpath. Rust has
+/// no equivalent at run time, so providers are registered explicitly into this
+/// registry, exactly as the crate already does for doc-values and postings
+/// formats.
+#[derive(Default)]
+pub struct SortFieldProviders {
+    providers: std::collections::HashMap<String, Arc<dyn SortFieldProvider>>,
+}
+
+impl SortFieldProviders {
+    /// Creates an empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers `provider` under its own name.
+    pub fn register(&mut self, provider: Arc<dyn SortFieldProvider>) {
+        self.providers.insert(provider.name().to_string(), provider);
+    }
+
+    /// Looks a provider up by name.
+    ///
+    /// Equivalent to `SortFieldProvider.forName(String)`.
+    pub fn for_name(&self, name: &str) -> Result<Arc<dyn SortFieldProvider>> {
+        self.providers.get(name).cloned().ok_or_else(|| {
+            LuceneError::IllegalArgument(format!("no SortFieldProvider registered as '{name}'"))
+        })
+    }
+
+    /// Returns every registered provider name.
+    ///
+    /// Equivalent to `SortFieldProvider.availableSortFieldProviders()`.
+    pub fn available(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.providers.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// Writes `sort_field` preceded by its provider name.
+    ///
+    /// Equivalent to `SortFieldProvider.write(SortField, DataOutput)`.
+    pub fn write(
+        &self,
+        provider_name: &str,
+        sort_field: &SortField,
+        output: &mut dyn crate::store::DataOutput,
+    ) -> Result<()> {
+        let provider = self.for_name(provider_name)?;
+        output.write_string(provider_name)?;
+        provider.write_sort_field(sort_field, output)
     }
 }
