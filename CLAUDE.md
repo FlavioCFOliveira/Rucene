@@ -148,6 +148,8 @@ The Knowledge Graph holds a **central responsibility in coordinating the porting
 
 The KG also holds a **central role in coordinating development tasks**, so that it can always present the **most optimised paths** through the remaining work, and the work proceeds as quickly and efficiently as possible.
 
+**The KG is the right instrument for setting priorities because it holds the widest view of the port** — it is the only place that knows, at the same time, the **current state** of the project and the **target state** the port is trying to reach: the structure of Apache Lucene Core 10.5.0. A priority decided from either half alone is a guess about the other. Seen from the graph, the distance between the two states is a measurable thing, and the ordering of the work follows from it.
+
 - Dependencies between components, and between tasks and the components they need, must be modelled so that the graph can compute what unlocks the most work.
 - **Use the graph to plan**, in the sense of rule 5.1: identify foundational tasks, tasks that unblock others, and the shortest route to a solid deliverable. The prioritisation stated in 5.1 is meant to be *derived from the graph*, not asserted from memory or from reading files.
 - When the graph cannot yet answer such a question, say so plainly and treat closing that gap as work in its own right, rather than substituting an impression for an answer (see rule 7).
