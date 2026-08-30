@@ -16,6 +16,8 @@
 
 pub mod automaton_terms_enum;
 pub mod base_composite_reader;
+pub mod buffered_updates_stream;
+pub mod check_index;
 pub mod codec_reader;
 pub mod directory_reader;
 pub mod doc_values;
@@ -64,6 +66,7 @@ pub mod stored_fields_consumer;
 pub mod term_vectors_consumer;
 pub mod terms;
 pub mod terms_enum_index;
+pub mod two_phase_commit;
 pub mod vector_values;
 pub mod vector_values_consumer;
 

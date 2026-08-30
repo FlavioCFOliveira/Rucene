@@ -5,7 +5,7 @@
 //! `FilterMergePolicy`, `OneMergeWrappingMergePolicy`, `LogMergePolicy`,
 //! `LogByteSizeMergePolicy` and `LogDocMergePolicy`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::error::Result;
@@ -979,5 +979,527 @@ impl MergePolicy for TieredMergePolicy {
 
     fn get_max_cfs_segment_size(&self) -> i64 {
         self.max_cfs_segment_size
+    }
+}
+
+// -----------------------------------------------------------------------------
+// LogMergePolicy
+// -----------------------------------------------------------------------------
+
+/// Default number of segments merged at once by a [`LogMergePolicy`].
+pub const DEFAULT_MERGE_FACTOR: i32 = 10;
+/// Default cap on the documents a merged segment may hold.
+pub const DEFAULT_MAX_MERGE_DOCS: i32 = i32::MAX;
+/// Default ratio above which a log policy stops using compound files.
+pub const LOG_DEFAULT_NO_CFS_RATIO: f64 = 0.1;
+/// Width of one level, in log units: with a merge factor of 10 the largest and
+/// smallest segment of a merge differ by at most about 5.6x.
+pub const LEVEL_LOG_SPAN: f64 = 0.75;
+
+/// How a [`LogMergePolicy`] measures a segment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogSizeKind {
+    /// Measure by bytes on disk, as `LogByteSizeMergePolicy` does.
+    Bytes,
+    /// Measure by document count, as `LogDocMergePolicy` does.
+    Docs,
+}
+
+/// A segment paired with its quantised level.
+struct SegmentInfoAndLevel {
+    index: usize,
+    level: f64,
+}
+
+/// Merges segments of roughly equal size, in levels.
+///
+/// Equivalent to `org.apache.lucene.index.LogMergePolicy`, whose two concrete
+/// subclasses differ only in how they measure a segment.
+///
+/// **Divergence from Lucene 10.5.0.** Java splits this into the abstract
+/// `LogMergePolicy` plus `LogByteSizeMergePolicy` and `LogDocMergePolicy`, which
+/// override the single method `size`. Rust has no implementation inheritance, so
+/// the measurement is selected by [`LogSizeKind`] and the two subclasses are
+/// constructors. The level arithmetic and merge selection are unchanged.
+#[derive(Debug, Clone)]
+pub struct LogMergePolicy {
+    merge_factor: i32,
+    min_merge_size: i64,
+    max_merge_size: i64,
+    max_merge_size_for_forced_merge: i64,
+    max_merge_docs: i32,
+    calibrate_size_by_deletes: bool,
+    target_search_concurrency: i32,
+    size_kind: LogSizeKind,
+    no_cfs_ratio: f64,
+    max_cfs_segment_size: i64,
+}
+
+impl LogMergePolicy {
+    /// Creates a policy measuring segments by bytes.
+    ///
+    /// Equivalent to `org.apache.lucene.index.LogByteSizeMergePolicy`.
+    pub fn by_byte_size() -> Self {
+        Self {
+            merge_factor: DEFAULT_MERGE_FACTOR,
+            min_merge_size: 16 * 1024 * 1024,
+            max_merge_size: 2048 * 1024 * 1024,
+            max_merge_size_for_forced_merge: i64::MAX,
+            max_merge_docs: DEFAULT_MAX_MERGE_DOCS,
+            calibrate_size_by_deletes: true,
+            target_search_concurrency: 1,
+            size_kind: LogSizeKind::Bytes,
+            no_cfs_ratio: LOG_DEFAULT_NO_CFS_RATIO,
+            max_cfs_segment_size: DEFAULT_MAX_CFS_SEGMENT_SIZE,
+        }
+    }
+
+    /// Creates a policy measuring segments by document count.
+    ///
+    /// Equivalent to `org.apache.lucene.index.LogDocMergePolicy`.
+    pub fn by_doc_count() -> Self {
+        Self {
+            min_merge_size: 1000,
+            max_merge_size: i64::MAX,
+            size_kind: LogSizeKind::Docs,
+            ..Self::by_byte_size()
+        }
+    }
+
+    /// Sets how many segments are merged at once.
+    pub fn set_merge_factor(&mut self, v: i32) -> Result<&mut Self> {
+        if v < 2 {
+            return Err(crate::error::LuceneError::IllegalArgument(format!(
+                "mergeFactor cannot be less than 2 (got {v})"
+            )));
+        }
+        self.merge_factor = v;
+        Ok(self)
+    }
+
+    /// Returns the merge factor.
+    pub fn get_merge_factor(&self) -> i32 {
+        self.merge_factor
+    }
+
+    /// Sets the cap on documents in a merged segment.
+    pub fn set_max_merge_docs(&mut self, v: i32) -> &mut Self {
+        self.max_merge_docs = v;
+        self
+    }
+
+    /// Sets whether a segment's size discounts its deleted documents.
+    pub fn set_calibrate_size_by_deletes(&mut self, v: bool) -> &mut Self {
+        self.calibrate_size_by_deletes = v;
+        self
+    }
+
+    /// Returns the live document count of `info`, or its full `max_doc` when
+    /// deletes are not calibrated.
+    ///
+    /// Equivalent to `LogMergePolicy.sizeDocs`.
+    fn size_docs(&self, info: &SegmentCommitInfo, merge_context: &dyn MergeContext) -> Result<i64> {
+        let max_doc = i64::from(info.info.max_doc()?);
+        if self.calibrate_size_by_deletes {
+            Ok(max_doc - i64::from(merge_context.num_deletes_to_merge(info)?))
+        } else {
+            Ok(max_doc)
+        }
+    }
+
+    /// Returns the on-disk size of `info`, pro-rated by live documents when
+    /// deletes are calibrated.
+    ///
+    /// Equivalent to `LogMergePolicy.sizeBytes`.
+    fn size_bytes(
+        &self,
+        info: &SegmentCommitInfo,
+        merge_context: &dyn MergeContext,
+    ) -> Result<i64> {
+        let bytes = info.size_in_bytes_uncached()?;
+        if !self.calibrate_size_by_deletes {
+            return Ok(bytes);
+        }
+        let max_doc = info.info.max_doc()?;
+        if max_doc <= 0 {
+            return Ok(bytes);
+        }
+        let del_count = merge_context.num_deletes_to_merge(info)?;
+        let live_ratio = f64::from((max_doc - del_count).max(0)) / f64::from(max_doc);
+        Ok((bytes as f64 * live_ratio) as i64)
+    }
+
+    /// Returns the size of `info` in this policy's unit.
+    ///
+    /// Equivalent to `LogMergePolicy.size`, which each subclass overrides.
+    fn size(&self, info: &SegmentCommitInfo, merge_context: &dyn MergeContext) -> Result<i64> {
+        match self.size_kind {
+            LogSizeKind::Bytes => self.size_bytes(info, merge_context),
+            LogSizeKind::Docs => self.size_docs(info, merge_context),
+        }
+    }
+}
+
+impl MergePolicy for LogMergePolicy {
+    fn find_merges(
+        &self,
+        _merge_trigger: MergeTrigger,
+        segment_infos: &SegmentInfos,
+        merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        let num_segments = segment_infos.size();
+        if num_segments == 0 {
+            return Ok(None);
+        }
+        let merging = merge_context.get_merging_segments();
+
+        // A segment's level is the log of its size, base mergeFactor.
+        let norm = f64::from(self.merge_factor).ln();
+        let mut levels: Vec<SegmentInfoAndLevel> = Vec::with_capacity(num_segments);
+        let mut total_doc_count = 0i64;
+        for index in 0..num_segments {
+            let info = segment_infos.info(index);
+            total_doc_count += self.size_docs(info, merge_context)?;
+            let size = self.size(info, merge_context)?.max(1);
+            levels.push(SegmentInfoAndLevel {
+                index,
+                level: (size as f64).ln() / norm,
+            });
+        }
+
+        let level_floor = if self.min_merge_size <= 0 {
+            0.0
+        } else {
+            (self.min_merge_size as f64).ln() / norm
+        };
+
+        let n = levels.len();
+        // The maximum level to the right of each position, so a level can be
+        // defined by looking forward only once.
+        let mut max_levels = vec![-1.0f64; n + 1];
+        for i in (0..n).rev() {
+            max_levels[i] = levels[i].level.max(max_levels[i + 1]);
+        }
+
+        let mut spec: Option<MergeSpecification> = None;
+        let mut start = 0usize;
+        while start < n {
+            let max_level = max_levels[start];
+            let level_bottom = if max_level > level_floor {
+                max_level - LEVEL_LOG_SPAN
+            } else {
+                // Below the floor size, allow more unbalanced merges.
+                f64::MIN
+            };
+
+            let mut upto = n as i64 - 1;
+            while upto >= start as i64 {
+                if levels[upto as usize].level >= level_bottom {
+                    break;
+                }
+                upto -= 1;
+            }
+
+            let concurrency = self.target_search_concurrency.max(1);
+            let per_slice = total_doc_count.div_euclid(i64::from(concurrency))
+                + i64::from(total_doc_count.rem_euclid(i64::from(concurrency)) != 0);
+            let max_merge_docs = i64::from(self.max_merge_docs).min(per_slice);
+
+            let mut end = start + self.merge_factor as usize;
+            while end as i64 <= 1 + upto {
+                let mut any_merging = false;
+                let mut merge_size = 0i64;
+                let mut merge_docs = 0i64;
+
+                let mut i = start;
+                while i < end {
+                    let info = segment_infos.info(levels[i].index);
+                    if merging.contains(&info.info.name) {
+                        any_merging = true;
+                        break;
+                    }
+                    let segment_size = self.size(info, merge_context)?;
+                    let segment_docs = self.size_docs(info, merge_context)?;
+                    if merge_size + segment_size > self.max_merge_size
+                        || merge_docs + segment_docs > max_merge_docs
+                    {
+                        // The merge is full; stop adding to it.
+                        end = if i == start { i + 1 } else { i };
+                        break;
+                    }
+                    merge_size += segment_size;
+                    merge_docs += segment_docs;
+                    i += 1;
+                }
+
+                if end - start >= self.merge_factor as usize
+                    && self.min_merge_size < self.max_merge_size
+                    && merge_size < self.min_merge_size
+                    && !any_merging
+                {
+                    // Still under the minimum merged size: keep packing.
+                    while (end as i64) < 1 + upto {
+                        let info = segment_infos.info(levels[end].index);
+                        if merging.contains(&info.info.name) {
+                            any_merging = true;
+                            break;
+                        }
+                        let segment_size = self.size(info, merge_context)?;
+                        let segment_docs = self.size_docs(info, merge_context)?;
+                        if merge_size + segment_size > self.max_merge_size
+                            || merge_docs + segment_docs > max_merge_docs
+                        {
+                            break;
+                        }
+                        merge_size += segment_size;
+                        merge_docs += segment_docs;
+                        end += 1;
+                    }
+                }
+
+                if !any_merging && end - start > 1 {
+                    let segments: Vec<SegmentCommitInfo> = (start..end)
+                        .map(|i| segment_infos.info(levels[i].index).clone())
+                        .collect();
+                    spec.get_or_insert_with(MergeSpecification::new)
+                        .add(OneMerge::new(segments)?);
+                }
+
+                start = end;
+                end = start + self.merge_factor as usize;
+            }
+            start = (1 + upto) as usize;
+        }
+
+        Ok(spec)
+    }
+
+    fn find_forced_merges(
+        &self,
+        segment_infos: &SegmentInfos,
+        max_num_segments: i32,
+        _segments_to_merge: &HashSet<String>,
+        merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        let merging = merge_context.get_merging_segments();
+        let eligible: Vec<usize> = (0..segment_infos.size())
+            .filter(|&i| !merging.contains(&segment_infos.info(i).info.name))
+            .collect();
+        if eligible.len() as i32 <= max_num_segments {
+            return Ok(None);
+        }
+
+        let mut spec = MergeSpecification::new();
+        let mut start = 0usize;
+        // Merge the oldest segments first, mergeFactor at a time, until the
+        // count is down to the target.
+        let mut remaining = eligible.len() as i32;
+        while remaining > max_num_segments && start < eligible.len() {
+            let end = (start + self.merge_factor as usize).min(eligible.len());
+            if end - start < 2 {
+                break;
+            }
+            let mut segments = Vec::with_capacity(end - start);
+            let mut merge_size = 0i64;
+            for &i in &eligible[start..end] {
+                let info = segment_infos.info(i);
+                let size = self.size(info, merge_context)?;
+                if merge_size + size > self.max_merge_size_for_forced_merge && !segments.is_empty()
+                {
+                    break;
+                }
+                merge_size += size;
+                segments.push(info.clone());
+            }
+            if segments.len() < 2 {
+                break;
+            }
+            remaining -= segments.len() as i32 - 1;
+            start += segments.len();
+            spec.add(OneMerge::new(segments)?);
+        }
+
+        Ok(if spec.is_empty() { None } else { Some(spec) })
+    }
+
+    fn find_forced_deletes_merges(
+        &self,
+        segment_infos: &SegmentInfos,
+        merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        let merging = merge_context.get_merging_segments();
+        let mut spec = MergeSpecification::new();
+        let mut batch: Vec<SegmentCommitInfo> = Vec::new();
+        for i in 0..segment_infos.size() {
+            let info = segment_infos.info(i);
+            if merging.contains(&info.info.name) {
+                continue;
+            }
+            if merge_context.num_deletes_to_merge(info)? > 0 {
+                batch.push(info.clone());
+                if batch.len() as i32 == self.merge_factor {
+                    spec.add(OneMerge::new(std::mem::take(&mut batch))?);
+                }
+            }
+        }
+        if !batch.is_empty() {
+            spec.add(OneMerge::new(batch)?);
+        }
+        Ok(if spec.is_empty() { None } else { Some(spec) })
+    }
+
+    fn get_no_cfs_ratio(&self) -> f64 {
+        self.no_cfs_ratio
+    }
+
+    fn get_max_cfs_segment_size(&self) -> i64 {
+        self.max_cfs_segment_size
+    }
+}
+
+/// A [`MergeContext`] that remembers each segment's delete count.
+///
+/// Equivalent to `org.apache.lucene.index.CachingMergeContext`. Counting the
+/// deletes to merge can be expensive, and a policy asks for the same segment
+/// many times while it searches.
+pub struct CachingMergeContext<'a> {
+    inner: &'a dyn MergeContext,
+    cached: std::sync::Mutex<HashMap<String, i32>>,
+}
+
+impl<'a> CachingMergeContext<'a> {
+    /// Wraps `inner`.
+    pub fn new(inner: &'a dyn MergeContext) -> Self {
+        Self {
+            inner,
+            cached: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl MergeContext for CachingMergeContext<'_> {
+    fn num_deletes_to_merge(&self, info: &SegmentCommitInfo) -> Result<i32> {
+        if let Ok(cache) = self.cached.lock() {
+            if let Some(count) = cache.get(&info.info.name) {
+                return Ok(*count);
+            }
+        }
+        let count = self.inner.num_deletes_to_merge(info)?;
+        if let Ok(mut cache) = self.cached.lock() {
+            cache.insert(info.info.name.clone(), count);
+        }
+        Ok(count)
+    }
+
+    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32 {
+        self.inner.num_deleted_docs(info)
+    }
+
+    fn get_merging_segments(&self) -> HashSet<String> {
+        self.inner.get_merging_segments()
+    }
+}
+
+/// A policy that forces old-format segments to be rewritten by a forced merge.
+///
+/// Equivalent to `org.apache.lucene.index.UpgradeIndexMergePolicy`, which
+/// `IndexUpgrader` uses. Natural merges pass straight through to the wrapped
+/// policy; a forced merge additionally sweeps up every segment written by an
+/// older Lucene release.
+pub struct UpgradeIndexMergePolicy {
+    inner: Arc<dyn MergePolicy>,
+}
+
+impl UpgradeIndexMergePolicy {
+    /// Wraps `inner`.
+    pub fn new(inner: Arc<dyn MergePolicy>) -> Self {
+        Self { inner }
+    }
+
+    /// Returns whether `info` was written by an older release and so needs
+    /// rewriting.
+    ///
+    /// Equivalent to `UpgradeIndexMergePolicy.shouldUpgradeSegment`.
+    pub fn should_upgrade_segment(info: &SegmentCommitInfo) -> bool {
+        info.info.version() != crate::util::extra::Version::LATEST
+    }
+}
+
+impl MergePolicy for UpgradeIndexMergePolicy {
+    fn find_merges(
+        &self,
+        merge_trigger: MergeTrigger,
+        segment_infos: &SegmentInfos,
+        merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        self.inner
+            .find_merges(merge_trigger, segment_infos, merge_context)
+    }
+
+    fn find_forced_merges(
+        &self,
+        segment_infos: &SegmentInfos,
+        max_num_segments: i32,
+        segments_to_merge: &HashSet<String>,
+        merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        let mut old_segments: HashSet<String> = segment_infos
+            .iter()
+            .filter(|info| {
+                segments_to_merge.contains(&info.info.name) && Self::should_upgrade_segment(info)
+            })
+            .map(|info| info.info.name.clone())
+            .collect();
+        if old_segments.is_empty() {
+            return Ok(None);
+        }
+
+        let mut spec = self.inner.find_forced_merges(
+            segment_infos,
+            max_num_segments,
+            &old_segments,
+            merge_context,
+        )?;
+
+        if let Some(spec) = spec.as_ref() {
+            for merge in &spec.merges {
+                for segment in &merge.segments {
+                    old_segments.remove(&segment.info.name);
+                }
+            }
+        }
+
+        // Whatever the wrapped policy left behind still has to be rewritten, so
+        // gather it into one extra merge.
+        if !old_segments.is_empty() {
+            let leftovers: Vec<SegmentCommitInfo> = segment_infos
+                .iter()
+                .filter(|info| old_segments.contains(&info.info.name))
+                .cloned()
+                .collect();
+            if !leftovers.is_empty() {
+                spec.get_or_insert_with(MergeSpecification::new)
+                    .add(OneMerge::new(leftovers)?);
+            }
+        }
+
+        Ok(spec)
+    }
+
+    fn find_forced_deletes_merges(
+        &self,
+        segment_infos: &SegmentInfos,
+        merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        self.inner
+            .find_forced_deletes_merges(segment_infos, merge_context)
+    }
+
+    fn get_no_cfs_ratio(&self) -> f64 {
+        self.inner.get_no_cfs_ratio()
+    }
+
+    fn get_max_cfs_segment_size(&self) -> i64 {
+        self.inner.get_max_cfs_segment_size()
     }
 }
