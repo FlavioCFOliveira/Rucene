@@ -428,3 +428,284 @@ impl RandomVectorScorer for Lucene104ScalarQuantizedRandomVectorScorer {
         self.values.size()
     }
 }
+
+/// Reads the quantized vectors of a segment.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorsReader`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's reader also implements the full
+/// `FlatVectorsReader` surface, forwarding the raw float vectors to a wrapped
+/// `Lucene99FlatVectorsReader` and answering searches from the quantized form.
+/// This port reads the metadata and hands out the quantized values and their
+/// scorer; the `FlatVectorsReader` surface stays with the raw delegate, because
+/// the search path this format plugs into is not ported yet.
+pub struct Lucene104ScalarQuantizedVectorsReader {
+    /// One entry per field that has quantized vectors, by field name.
+    fields: std::collections::BTreeMap<String, FieldEntry>,
+    vector_data: Arc<dyn IndexInput>,
+    scorer: Arc<Lucene104ScalarQuantizedVectorScorer>,
+}
+
+impl std::fmt::Debug for Lucene104ScalarQuantizedVectorsReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Lucene104ScalarQuantizedVectorsReader")
+            .field("fields", &self.fields.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Lucene104ScalarQuantizedVectorsReader {
+    /// Builds a reader over the metadata already read from the `.vemq` file.
+    pub fn new(
+        fields: std::collections::BTreeMap<String, FieldEntry>,
+        vector_data: Arc<dyn IndexInput>,
+        scorer: Arc<Lucene104ScalarQuantizedVectorScorer>,
+    ) -> Self {
+        Self {
+            fields,
+            vector_data,
+            scorer,
+        }
+    }
+
+    /// Reads the per-field entries of a `.vemq` metadata file.
+    ///
+    /// Equivalent to `Lucene104ScalarQuantizedVectorsReader.readFields`. The
+    /// list ends with the sentinel field number `-1`.
+    pub fn read_fields(
+        meta: &mut dyn IndexInput,
+        field_infos: &crate::index::FieldInfos,
+    ) -> Result<std::collections::BTreeMap<String, FieldEntry>> {
+        let mut fields = std::collections::BTreeMap::new();
+        loop {
+            let field_number = meta.read_int()?;
+            if field_number == -1 {
+                break;
+            }
+            let info = field_infos
+                .field_info_by_number(field_number)
+                .ok_or_else(|| {
+                    LuceneError::corrupt_index(
+                        format!("invalid field number: {field_number}"),
+                        "quantized vectors metadata",
+                    )
+                })?
+                .clone();
+
+            let encoding_ordinal = meta.read_int()?;
+            let vector_encoding = match encoding_ordinal {
+                0 => VectorEncoding::BYTE,
+                1 => VectorEncoding::FLOAT32,
+                other => {
+                    return Err(LuceneError::corrupt_index(
+                        format!("invalid vector encoding ordinal: {other}"),
+                        "quantized vectors metadata",
+                    ))
+                }
+            };
+            let similarity_ordinal = meta.read_int()?;
+            let similarity_function = match similarity_ordinal {
+                0 => VectorSimilarityFunction::EUCLIDEAN,
+                1 => VectorSimilarityFunction::DOT_PRODUCT,
+                2 => VectorSimilarityFunction::COSINE,
+                3 => VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
+                other => {
+                    return Err(LuceneError::corrupt_index(
+                        format!("invalid vector similarity ordinal: {other}"),
+                        "quantized vectors metadata",
+                    ))
+                }
+            };
+            if similarity_function != info.vector_similarity_function {
+                return Err(LuceneError::IllegalState(format!(
+                    "Inconsistent vector similarity function for field=\"{}\"",
+                    info.name
+                )));
+            }
+
+            let entry = FieldEntry::create(meta, vector_encoding, similarity_function)?;
+            fields.insert(info.name.clone(), entry);
+        }
+        Ok(fields)
+    }
+
+    /// Returns the quantized vectors of `field`.
+    ///
+    /// Equivalent to
+    /// `Lucene104ScalarQuantizedVectorsReader.getQuantizedVectorValues`.
+    pub fn get_quantized_vector_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<OffHeapScalarQuantizedVectorValues>> {
+        let Some(entry) = self.fields.get(field) else {
+            return Ok(None);
+        };
+        if entry.vector_encoding != VectorEncoding::FLOAT32 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "field=\"{field}\" is encoded as {:?}, expected FLOAT32",
+                entry.vector_encoding
+            )));
+        }
+        let slice = self.vector_data.clone_input()?;
+        Ok(Some(OffHeapScalarQuantizedVectorValues::load(
+            entry.clone(),
+            slice,
+        )))
+    }
+
+    /// Returns the metadata entry of `field`.
+    pub fn field_entry(&self, field: &str) -> Option<&FieldEntry> {
+        self.fields.get(field)
+    }
+
+    /// Returns the scorer this reader uses.
+    pub fn scorer(&self) -> &Arc<Lucene104ScalarQuantizedVectorScorer> {
+        &self.scorer
+    }
+}
+
+/// The scalar-quantized vectors format.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorsFormat`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's format extends `FlatVectorsFormat`
+/// and builds a reader and a writer that wrap a `Lucene99FlatVectorsFormat`
+/// delegate. This port carries the format's identity, its file names and its
+/// encoding choice, and reads the metadata through
+/// [`Lucene104ScalarQuantizedVectorsReader`]; plugging it in as a
+/// `FlatVectorsFormat` needs the writer half, which is the remaining piece.
+#[derive(Clone, Copy, Debug)]
+pub struct Lucene104ScalarQuantizedVectorsFormat {
+    encoding: ScalarEncoding,
+}
+
+impl Default for Lucene104ScalarQuantizedVectorsFormat {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Lucene104ScalarQuantizedVectorsFormat {
+    /// Creates the format with Lucene's default one-byte encoding.
+    pub fn new() -> Self {
+        Self {
+            encoding: ScalarEncoding::UnsignedByte,
+        }
+    }
+
+    /// Creates the format with an explicit encoding.
+    pub fn with_encoding(encoding: ScalarEncoding) -> Self {
+        Self { encoding }
+    }
+
+    /// Returns the SPI name of the format.
+    pub fn name(&self) -> &str {
+        NAME
+    }
+
+    /// Returns how the components are packed.
+    pub fn encoding(&self) -> ScalarEncoding {
+        self.encoding
+    }
+
+    /// Returns the largest dimension the format accepts.
+    ///
+    /// Equivalent to `getMaxDimensions(String)`.
+    pub fn get_max_dimensions(&self, _field_name: &str) -> i32 {
+        MAX_DIMS
+    }
+
+    /// Returns the quantizer this format uses for `similarity_function`.
+    pub fn quantizer(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+    ) -> OptimizedScalarQuantizer {
+        OptimizedScalarQuantizer::new(similarity_function)
+    }
+}
+
+impl std::fmt::Display for Lucene104ScalarQuantizedVectorsFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Lucene104ScalarQuantizedVectorsFormat(name={NAME}, encoding={:?})",
+            self.encoding
+        )
+    }
+}
+
+/// An HNSW format whose vectors are scalar-quantized.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene104.Lucene104HnswScalarQuantizedVectorsFormat`,
+/// which pairs the graph parameters of the HNSW format with the quantized flat
+/// format above.
+#[derive(Clone, Copy, Debug)]
+pub struct Lucene104HnswScalarQuantizedVectorsFormat {
+    max_conn: i32,
+    beam_width: i32,
+    flat: Lucene104ScalarQuantizedVectorsFormat,
+}
+
+/// Default number of connections per graph node.
+pub const DEFAULT_MAX_CONN: i32 = 16;
+/// Default beam width used while building the graph.
+pub const DEFAULT_BEAM_WIDTH: i32 = 100;
+
+impl Default for Lucene104HnswScalarQuantizedVectorsFormat {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Lucene104HnswScalarQuantizedVectorsFormat {
+    /// Creates the format with Lucene's default graph parameters.
+    pub fn new() -> Self {
+        Self {
+            max_conn: DEFAULT_MAX_CONN,
+            beam_width: DEFAULT_BEAM_WIDTH,
+            flat: Lucene104ScalarQuantizedVectorsFormat::new(),
+        }
+    }
+
+    /// Creates the format with explicit graph parameters and encoding.
+    pub fn with_params(max_conn: i32, beam_width: i32, encoding: ScalarEncoding) -> Result<Self> {
+        if max_conn <= 0 || max_conn > 512 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "maxConn must be in [1, 512], got {max_conn}"
+            )));
+        }
+        if beam_width <= 0 || beam_width > 3200 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "beamWidth must be in [1, 3200], got {beam_width}"
+            )));
+        }
+        Ok(Self {
+            max_conn,
+            beam_width,
+            flat: Lucene104ScalarQuantizedVectorsFormat::with_encoding(encoding),
+        })
+    }
+
+    /// Returns how many connections each graph node keeps.
+    pub fn max_conn(&self) -> i32 {
+        self.max_conn
+    }
+
+    /// Returns the beam width used while building the graph.
+    pub fn beam_width(&self) -> i32 {
+        self.beam_width
+    }
+
+    /// Returns the flat format storing the quantized vectors.
+    pub fn flat_format(&self) -> &Lucene104ScalarQuantizedVectorsFormat {
+        &self.flat
+    }
+
+    /// Returns the largest dimension the format accepts.
+    pub fn get_max_dimensions(&self, _field_name: &str) -> i32 {
+        MAX_DIMS
+    }
+}

@@ -2,6 +2,7 @@
 
 pub mod flat_vectors_format;
 pub mod hnsw_vectors_format;
+pub mod scalar_quantized_scorer;
 pub mod segment_info_format;
 
 pub use flat_vectors_format::{
