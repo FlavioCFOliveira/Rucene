@@ -8,9 +8,13 @@
 
 #![deny(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
+use crate::codecs::codec_util;
 use crate::codecs::codec_util::{write_footer, write_index_header};
+use crate::codecs::lucene103::field_reader::{BlockTreeShared, FieldReader};
 use crate::codecs::postings::{
     Fields, FieldsConsumer, FieldsProducer, MergeState, NormsProducer, PostingsReaderBase,
     PostingsWriterBase, Terms, TermsEnum,
@@ -22,7 +26,9 @@ use crate::error::{LuceneError, Result};
 use crate::index::index_file_names::segment_file_name;
 use crate::index::IndexOptions;
 use crate::index::SegmentInfo;
-use crate::store::{ByteBuffersDataOutput, DataOutput, Directory, IOContext, IndexOutput};
+use crate::store::{
+    ByteBuffersDataOutput, DataInput, DataOutput, Directory, IOContext, IndexOutput,
+};
 use crate::util::compress::{LowercaseAsciiCompression, Lz4, Lz4HashTable};
 use crate::util::{BytesRef, BytesRefBuilder, FixedBitSet, StringHelper};
 
@@ -382,25 +388,6 @@ impl TrieBuilder {
             v >>= 8;
         }
         Ok(())
-    }
-}
-
-/// Reader for the blocktree term index trie.
-///
-/// This is a minimal skeleton for the current checkpoint. It records the file
-/// pointer of the trie root so that later work can load the on-disk nodes.
-///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.TrieReader`.
-#[derive(Debug, Default, Clone)]
-pub struct TrieReader {
-    /// File pointer in the `.tip` file where this field's trie root is stored.
-    pub root_fp: i64,
-}
-
-impl TrieReader {
-    /// Creates a trie reader rooted at `root_fp`.
-    pub fn new(root_fp: i64) -> Self {
-        Self { root_fp }
     }
 }
 
@@ -1319,6 +1306,9 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
 /// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.Lucene103BlockTreeTermsReader`.
 pub struct Lucene103BlockTreeTermsReader {
     postings_reader: Box<dyn PostingsReaderBase>,
+    shared: Arc<BlockTreeShared>,
+    /// One reader per field that has terms, keyed by field name.
+    fields: BTreeMap<String, FieldReader>,
     segment: String,
     segment_suffix: String,
     version: i32,
@@ -1330,21 +1320,162 @@ impl std::fmt::Debug for Lucene103BlockTreeTermsReader {
             .field("segment", &self.segment)
             .field("segment_suffix", &self.segment_suffix)
             .field("version", &self.version)
+            .field("fields", &self.fields.len())
             .finish_non_exhaustive()
     }
 }
 
 impl Lucene103BlockTreeTermsReader {
-    /// Creates a new skeleton reader.
+    /// Opens the terms dictionary of a segment.
+    ///
+    /// Equivalent to the `Lucene103BlockTreeTermsReader` constructor: it opens
+    /// the `.tim` and `.tip` files, then reads the per-field entries out of the
+    /// `.tmd` file, each of which names a field's statistics and its offsets
+    /// into the other two.
     pub fn new(
-        postings_reader: Box<dyn PostingsReaderBase>,
+        mut postings_reader: Box<dyn PostingsReaderBase>,
         state: &SegmentReadState,
     ) -> Result<Self> {
+        let segment = state.segment_info.name.clone();
+        let segment_suffix = state.segment_suffix.clone();
+
+        let terms_name = segment_file_name(&segment, &segment_suffix, TERMS_EXTENSION);
+        let mut terms_in = state.directory.open_input(&terms_name, state.context)?;
+        let version = codec_util::check_index_header(
+            terms_in.as_mut(),
+            TERMS_CODEC_NAME,
+            VERSION_START,
+            VERSION_CURRENT,
+            &state.segment_info.id(),
+            &segment_suffix,
+        )?;
+
+        let index_name = segment_file_name(&segment, &segment_suffix, TERMS_INDEX_EXTENSION);
+        let mut index_in = state.directory.open_input(&index_name, state.context)?;
+        codec_util::check_index_header(
+            index_in.as_mut(),
+            TERMS_INDEX_CODEC_NAME,
+            version,
+            version,
+            &state.segment_info.id(),
+            &segment_suffix,
+        )?;
+
+        let shared = Arc::new(BlockTreeShared {
+            terms_in: Arc::from(terms_in),
+            index_in: Arc::from(index_in),
+            segment: segment.clone(),
+            version,
+        });
+
+        let meta_name = segment_file_name(&segment, &segment_suffix, TERMS_META_EXTENSION);
+        let mut meta_in = state.directory.open_checksum_input(&meta_name)?;
+        codec_util::check_index_header(
+            meta_in.as_mut(),
+            TERMS_META_CODEC_NAME,
+            version,
+            version,
+            &state.segment_info.id(),
+            &segment_suffix,
+        )?;
+        postings_reader.init(meta_in.as_mut(), state)?;
+
+        let num_fields = meta_in.read_v_int()?;
+        if num_fields < 0 {
+            return Err(LuceneError::corrupt_index(
+                format!("invalid numFields: {num_fields}"),
+                &meta_name,
+            ));
+        }
+
+        let max_doc = state.segment_info.max_doc()?;
+        let mut fields = BTreeMap::new();
+        for _ in 0..num_fields {
+            let field_number = meta_in.read_v_int()?;
+            let num_terms = meta_in.read_v_long()?;
+            if num_terms <= 0 {
+                return Err(LuceneError::corrupt_index(
+                    format!("illegal numTerms for field number {field_number}"),
+                    &meta_name,
+                ));
+            }
+            let field_info = state
+                .field_infos
+                .field_info_by_number(field_number)
+                .ok_or_else(|| {
+                    LuceneError::corrupt_index(
+                        format!("invalid field number: {field_number}"),
+                        &meta_name,
+                    )
+                })?
+                .clone();
+
+            let sum_total_term_freq = meta_in.read_v_long()?;
+            // With frequencies omitted the two sums are equal and only one is
+            // written.
+            let sum_doc_freq = if field_info.index_options == IndexOptions::DOCS {
+                sum_total_term_freq
+            } else {
+                meta_in.read_v_long()?
+            };
+            let doc_count = meta_in.read_v_int()?;
+            let min_term = read_bytes_ref(meta_in.as_mut(), &meta_name)?;
+            let max_term = if num_terms == 1 {
+                min_term.clone()
+            } else {
+                read_bytes_ref(meta_in.as_mut(), &meta_name)?
+            };
+
+            if doc_count < 0 || doc_count > max_doc {
+                return Err(LuceneError::corrupt_index(
+                    format!("invalid docCount: {doc_count} maxDoc: {max_doc}"),
+                    &meta_name,
+                ));
+            }
+            if sum_doc_freq < i64::from(doc_count) {
+                return Err(LuceneError::corrupt_index(
+                    format!("invalid sumDocFreq: {sum_doc_freq} docCount: {doc_count}"),
+                    &meta_name,
+                ));
+            }
+            if sum_total_term_freq < sum_doc_freq {
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "invalid sumTotalTermFreq: {sum_total_term_freq} sumDocFreq: {sum_doc_freq}"
+                    ),
+                    &meta_name,
+                ));
+            }
+
+            let name = field_info.name.clone();
+            let reader = FieldReader::new(
+                Arc::clone(&shared),
+                field_info,
+                num_terms,
+                sum_total_term_freq,
+                sum_doc_freq,
+                doc_count,
+                min_term,
+                max_term,
+                meta_in.as_mut(),
+            )?;
+            if fields.insert(name.clone(), reader).is_some() {
+                return Err(LuceneError::corrupt_index(
+                    format!("duplicate field: {name}"),
+                    &meta_name,
+                ));
+            }
+        }
+
+        codec_util::check_footer(meta_in.as_mut())?;
+
         Ok(Self {
             postings_reader,
-            segment: state.segment_info.name.clone(),
-            segment_suffix: state.segment_suffix.clone(),
-            version: VERSION_CURRENT,
+            shared,
+            fields,
+            segment,
+            segment_suffix,
+            version,
         })
     }
 
@@ -1362,30 +1493,60 @@ impl Lucene103BlockTreeTermsReader {
     pub fn version(&self) -> i32 {
         self.version
     }
+
+    /// Returns the shared file handles the field readers use.
+    pub fn shared(&self) -> &Arc<BlockTreeShared> {
+        &self.shared
+    }
+
+    /// Returns the postings reader that decodes each term's metadata.
+    pub fn postings_reader(&mut self) -> &mut dyn PostingsReaderBase {
+        self.postings_reader.as_mut()
+    }
+}
+
+/// Reads a length-prefixed byte string, as the metadata file stores the minimum
+/// and maximum term of each field.
+///
+/// Equivalent to `Lucene103BlockTreeTermsReader.readBytesRef`.
+fn read_bytes_ref(input: &mut dyn DataInput, resource: &str) -> Result<BytesRef> {
+    let num_bytes = input.read_v_int()?;
+    if num_bytes < 0 {
+        return Err(LuceneError::corrupt_index(
+            format!("invalid bytes length: {num_bytes}"),
+            resource,
+        ));
+    }
+    let mut bytes = vec![0u8; num_bytes as usize];
+    input.read_bytes(&mut bytes, 0, num_bytes as usize)?;
+    Ok(BytesRef::new(bytes))
 }
 
 impl Fields for Lucene103BlockTreeTermsReader {
     fn size(&self) -> i32 {
-        0
+        self.fields.len() as i32
     }
 
-    fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
-        Ok(None)
+    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        Ok(self
+            .fields
+            .get(field)
+            .map(|reader| Box::new(reader.clone()) as Box<dyn Terms>))
     }
 
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
-        Box::new(std::iter::empty::<String>())
+        Box::new(self.fields.keys().cloned())
     }
 }
 
 impl FieldsProducer for Lucene103BlockTreeTermsReader {
     fn check_integrity(&self) -> Result<()> {
-        Ok(())
+        self.postings_reader.check_integrity()
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
         Err(LuceneError::UnsupportedOperation(
-            "Lucene103BlockTreeTermsReader skeleton does not support merge instances".to_string(),
+            "Lucene103BlockTreeTermsReader does not build a separate merge instance".to_string(),
         ))
     }
 
