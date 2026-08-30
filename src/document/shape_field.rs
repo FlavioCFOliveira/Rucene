@@ -29,10 +29,18 @@ pub enum QueryRelation {
 
 /// Which degenerate form a decoded triangle takes.
 ///
-/// Equivalent to `ShapeField.DecodedTriangle.TYPE`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Equivalent to `ShapeField.DecodedTriangle.TYPE`, declared in the same order:
+/// the ordinal is written to the shape doc-values stream by
+/// [`ShapeDocValues`](crate::document::ShapeDocValues), so the order is part of
+/// the file format.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TriangleType {
     /// All three vertices coincide.
+    ///
+    /// Also the default, because a default-constructed
+    /// [`DecodedTriangle`] has all six coordinates at zero, which is exactly
+    /// what [`DecodedTriangle::resolve_triangle_type`] resolves to a point.
+    #[default]
     Point,
     /// The first and third vertices coincide.
     Line,
@@ -40,11 +48,52 @@ pub enum TriangleType {
     Triangle,
 }
 
+impl TriangleType {
+    /// Returns the ordinal this type is written with.
+    ///
+    /// Equivalent to `ShapeField.DecodedTriangle.TYPE.ordinal()`.
+    pub fn ordinal(self) -> i32 {
+        match self {
+            Self::Point => 0,
+            Self::Line => 1,
+            Self::Triangle => 2,
+        }
+    }
+
+    /// Returns the type with the given ordinal.
+    ///
+    /// Equivalent to `ShapeField.DecodedTriangle.TYPE.values()[ordinal]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::CorruptIndex`] for an ordinal outside `[0, 2]`,
+    /// where Java throws `ArrayIndexOutOfBoundsException`.
+    pub fn from_ordinal(ordinal: i32) -> Result<Self> {
+        match ordinal {
+            0 => Ok(Self::Point),
+            1 => Ok(Self::Line),
+            2 => Ok(Self::Triangle),
+            other => Err(LuceneError::corrupt_index(
+                format!("invalid triangle type ordinal {other}"),
+                "shape doc values",
+            )),
+        }
+    }
+}
+
 /// A triangle read back out of the index.
 ///
 /// Equivalent to `ShapeField.DecodedTriangle`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct DecodedTriangle {
+    /// Which degenerate form the triangle takes.
+    ///
+    /// Equivalent to the `DecodedTriangle.type` field, which
+    /// [`resolve_triangle_type`](Self::resolve_triangle_type) sets. Note that
+    /// Java excludes it from `equals`/`hashCode`, which compare only the
+    /// coordinates and the edge flags; `PartialEq` here includes it, and cannot
+    /// disagree, because the type is a function of the coordinates.
+    pub triangle_type: TriangleType,
     /// X of the first vertex.
     pub a_x: i32,
     /// Y of the first vertex.
@@ -66,20 +115,74 @@ pub struct DecodedTriangle {
 }
 
 impl DecodedTriangle {
-    /// Returns which degenerate form the triangle takes.
+    /// Sets the six coordinates and the three edge flags.
     ///
-    /// Equivalent to `DecodedTriangle.type`.
-    pub fn triangle_type(&self) -> TriangleType {
-        if self.a_x == self.b_x
-            && self.a_y == self.b_y
-            && self.a_x == self.c_x
-            && self.a_y == self.c_y
-        {
-            TriangleType::Point
+    /// Equivalent to `DecodedTriangle.setValues(...)`, which takes its
+    /// arguments in the same `(x, y, edge)` triples per vertex. It does *not*
+    /// set the type: call
+    /// [`resolve_triangle_type`](Self::resolve_triangle_type) afterwards, as
+    /// `ShapeField.decodeTriangle` does.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_values(
+        &mut self,
+        a_x: i32,
+        a_y: i32,
+        ab: bool,
+        b_x: i32,
+        b_y: i32,
+        bc: bool,
+        c_x: i32,
+        c_y: i32,
+        ca: bool,
+    ) {
+        self.a_x = a_x;
+        self.a_y = a_y;
+        self.ab = ab;
+        self.b_x = b_x;
+        self.b_y = b_y;
+        self.bc = bc;
+        self.c_x = c_x;
+        self.c_y = c_y;
+        self.ca = ca;
+    }
+
+    /// Resolves the triangle's type, **normalising its vertices and edge flags
+    /// in the process**.
+    ///
+    /// Equivalent to the package-private static
+    /// `ShapeField.resolveTriangleType(DecodedTriangle)`. A triangle with two
+    /// coincident vertices is a line segment, and Lucene rewrites it into the
+    /// canonical line form — `a`→`b` with `c` repeating `a` — merging the edge
+    /// flags of the two edges that collapse into one. Callers of
+    /// [`ShapeField::decode_triangle`] therefore see the same `b`/`c`
+    /// coordinates and the same `ab` flag Java's do; skipping this step changes
+    /// which documents a shape query matches, and what a shape doc value
+    /// serialises to.
+    pub fn resolve_triangle_type(&mut self) {
+        if self.a_x == self.b_x && self.a_y == self.b_y {
+            if self.a_x == self.c_x && self.a_y == self.c_y {
+                self.triangle_type = TriangleType::Point;
+            } else {
+                // `a` and `b` are identical: remove `ab`, and merge `bc` and `ca`.
+                self.ab = self.bc | self.ca;
+                self.b_x = self.c_x;
+                self.b_y = self.c_y;
+                self.c_x = self.a_x;
+                self.c_y = self.a_y;
+                self.triangle_type = TriangleType::Line;
+            }
         } else if self.a_x == self.c_x && self.a_y == self.c_y {
-            TriangleType::Line
+            // `a` and `c` are identical: remove `ac`, and merge `ab` and `bc`.
+            self.ab |= self.bc;
+            self.triangle_type = TriangleType::Line;
+        } else if self.b_x == self.c_x && self.b_y == self.c_y {
+            // `b` and `c` are identical: remove `bc`, and merge `ab` and `ca`.
+            self.ab |= self.ca;
+            self.c_x = self.a_x;
+            self.c_y = self.a_y;
+            self.triangle_type = TriangleType::Line;
         } else {
-            TriangleType::Triangle
+            self.triangle_type = TriangleType::Triangle;
         }
     }
 }
@@ -349,6 +452,9 @@ impl ShapeField {
                 ))
             }
         }
+        // Java's `decodeTriangle` finishes with `resolveTriangleType(triangle)`,
+        // which both classifies the triangle and normalises a degenerate one.
+        t.resolve_triangle_type();
         Ok(t)
     }
 }
@@ -394,10 +500,51 @@ impl Triangle {
         &self.field_type
     }
 
+    /// Creates the field from a tessellated triangle, carrying over which of
+    /// its edges belong to the original polygon.
+    ///
+    /// Equivalent to `ShapeField.Triangle(String, Tessellator.Triangle)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`ShapeField::encode_triangle`] raises.
+    pub fn from_tessellator_triangle(
+        name: impl Into<String>,
+        t: &crate::geo::tessellator::Triangle,
+    ) -> Result<Self> {
+        let mut bytes = vec![0u8; 7 * BYTES];
+        ShapeField::encode_triangle(
+            &mut bytes,
+            t.get_encoded_y(0),
+            t.get_encoded_x(0),
+            t.is_edge_from_polygon(0),
+            t.get_encoded_y(1),
+            t.get_encoded_x(1),
+            t.is_edge_from_polygon(1),
+            t.get_encoded_y(2),
+            t.get_encoded_x(2),
+            t.is_edge_from_polygon(2),
+        )?;
+        Ok(Self {
+            name: name.into(),
+            field_type: ShapeField::field_type()?,
+            fields_data: FieldData::Bytes(BytesRef::new(bytes)),
+        })
+    }
+
     /// Returns the packed triangle.
     pub fn packed_value(&self) -> Option<&[u8]> {
         match &self.fields_data {
             FieldData::Bytes(bytes) => Some(bytes.slice()),
+            _ => None,
+        }
+    }
+
+    /// Returns the packed triangle as a `BytesRef`, which is what
+    /// `Field.binaryValue()` answers for a shape field.
+    pub fn binary_value(&self) -> Option<&BytesRef> {
+        match &self.fields_data {
+            FieldData::Bytes(bytes) => Some(bytes),
             _ => None,
         }
     }
@@ -519,268 +666,5 @@ impl LateInteractionField {
             value.push(vector);
         }
         Ok(value)
-    }
-}
-
-/// Builds the indexable fields of a geographic shape.
-///
-/// Equivalent to `org.apache.lucene.document.LatLonShape`.
-///
-/// **Divergence from Lucene 10.5.0.** A polygon is indexed by first
-/// decomposing it into triangles with `Tessellator`, an earcut implementation
-/// in the `geo` package that is not ported yet, so `create_indexable_fields` for
-/// a polygon is refused rather than approximated. Points, lines and boxes need
-/// no tessellation — each is a degenerate triangle, or a fan of them — and are
-/// ported here.
-pub struct LatLonShape;
-
-impl LatLonShape {
-    /// Returns the one degenerate triangle a point is indexed as.
-    ///
-    /// Equivalent to `LatLonShape.createIndexableFields(String, double, double)`.
-    pub fn create_indexable_fields_point(
-        field_name: &str,
-        lat: f64,
-        lon: f64,
-    ) -> Result<Vec<Triangle>> {
-        let x = crate::geo::encoding::GeoEncodingUtils::encode_longitude(lon)?;
-        let y = crate::geo::encoding::GeoEncodingUtils::encode_latitude(lat)?;
-        Ok(vec![Triangle::new(field_name, x, y, x, y, x, y)?])
-    }
-
-    /// Returns the flat triangles a line is indexed as, one per segment.
-    ///
-    /// Equivalent to `LatLonShape.createIndexableFields(String, Line)`.
-    pub fn create_indexable_fields_line(
-        field_name: &str,
-        line: &crate::geo::geometry::Line,
-    ) -> Result<Vec<Triangle>> {
-        let lats = line.lats();
-        let lons = line.lons();
-        let mut fields = Vec::with_capacity(lats.len().saturating_sub(1));
-        for i in 0..lats.len().saturating_sub(1) {
-            let j = i + 1;
-            let a_x = crate::geo::encoding::GeoEncodingUtils::encode_longitude(lons[i])?;
-            let a_y = crate::geo::encoding::GeoEncodingUtils::encode_latitude(lats[i])?;
-            let b_x = crate::geo::encoding::GeoEncodingUtils::encode_longitude(lons[j])?;
-            let b_y = crate::geo::encoding::GeoEncodingUtils::encode_latitude(lats[j])?;
-            // A segment is a triangle whose third vertex repeats the first.
-            fields.push(Triangle::new(field_name, a_x, a_y, b_x, b_y, a_x, a_y)?);
-        }
-        Ok(fields)
-    }
-
-    /// Returns the two triangles a box is indexed as.
-    ///
-    /// Equivalent to `LatLonShape.createIndexableFields(String, Rectangle)`.
-    pub fn create_indexable_fields_box(
-        field_name: &str,
-        rectangle: &crate::geo::geometry::Rectangle,
-    ) -> Result<Vec<Triangle>> {
-        use crate::geo::encoding::GeoEncodingUtils;
-        let min_x = GeoEncodingUtils::encode_longitude(rectangle.min_lon())?;
-        let max_x = GeoEncodingUtils::encode_longitude(rectangle.max_lon())?;
-        let min_y = GeoEncodingUtils::encode_latitude(rectangle.min_lat())?;
-        let max_y = GeoEncodingUtils::encode_latitude(rectangle.max_lat())?;
-        Ok(vec![
-            Triangle::new(field_name, min_x, min_y, max_x, min_y, max_x, max_y)?,
-            Triangle::new(field_name, min_x, min_y, max_x, max_y, min_x, max_y)?,
-        ])
-    }
-
-    /// Refuses to index a polygon, naming what is missing.
-    ///
-    /// Equivalent to `LatLonShape.createIndexableFields(String, Polygon)`,
-    /// which decomposes the polygon with `Tessellator` first.
-    pub fn create_indexable_fields_polygon(
-        _field_name: &str,
-        _polygon: &crate::geo::geometry::Polygon,
-    ) -> Result<Vec<Triangle>> {
-        Err(LuceneError::UnsupportedOperation(
-            "indexing a polygon needs geo::Tessellator, which is not ported yet".to_string(),
-        ))
-    }
-}
-
-/// Builds the indexable fields of a cartesian shape.
-///
-/// Equivalent to `org.apache.lucene.document.XYShape`. The same divergence as
-/// [`LatLonShape`] applies to polygons.
-pub struct XYShape;
-
-impl XYShape {
-    /// Returns the one degenerate triangle a point is indexed as.
-    pub fn create_indexable_fields_point(
-        field_name: &str,
-        x: f32,
-        y: f32,
-    ) -> Result<Vec<Triangle>> {
-        use crate::geo::encoding::XYEncodingUtils;
-        let x = XYEncodingUtils::encode(x)?;
-        let y = XYEncodingUtils::encode(y)?;
-        Ok(vec![Triangle::new(field_name, x, y, x, y, x, y)?])
-    }
-
-    /// Returns the flat triangles a line is indexed as, one per segment.
-    pub fn create_indexable_fields_line(
-        field_name: &str,
-        line: &crate::geo::geometry::XYLine,
-    ) -> Result<Vec<Triangle>> {
-        use crate::geo::encoding::XYEncodingUtils;
-        let xs = line.get_x();
-        let ys = line.get_y();
-        let mut fields = Vec::with_capacity(xs.len().saturating_sub(1));
-        for i in 0..xs.len().saturating_sub(1) {
-            let j = i + 1;
-            let a_x = XYEncodingUtils::encode(xs[i])?;
-            let a_y = XYEncodingUtils::encode(ys[i])?;
-            let b_x = XYEncodingUtils::encode(xs[j])?;
-            let b_y = XYEncodingUtils::encode(ys[j])?;
-            fields.push(Triangle::new(field_name, a_x, a_y, b_x, b_y, a_x, a_y)?);
-        }
-        Ok(fields)
-    }
-
-    /// Returns the two triangles a box is indexed as.
-    pub fn create_indexable_fields_box(
-        field_name: &str,
-        rectangle: &crate::geo::geometry::XYRectangle,
-    ) -> Result<Vec<Triangle>> {
-        use crate::geo::encoding::XYEncodingUtils;
-        let min_x = XYEncodingUtils::encode(rectangle.min_x())?;
-        let max_x = XYEncodingUtils::encode(rectangle.max_x())?;
-        let min_y = XYEncodingUtils::encode(rectangle.min_y())?;
-        let max_y = XYEncodingUtils::encode(rectangle.max_y())?;
-        Ok(vec![
-            Triangle::new(field_name, min_x, min_y, max_x, min_y, max_x, max_y)?,
-            Triangle::new(field_name, min_x, min_y, max_x, max_y, min_x, max_y)?,
-        ])
-    }
-}
-
-/// A shape stored as binary doc values: the triangles it decomposes into,
-/// packed one after another.
-///
-/// Equivalent to `org.apache.lucene.document.ShapeDocValues`.
-///
-/// **Divergence from Lucene 10.5.0.** Java's class also holds the shape's
-/// bounding box, its centroid and its `ShapeType`, computed while tessellating,
-/// and serves the spatial relation queries from them. Those need `Tessellator`
-/// and `Component2D`, so this port carries the triangle list and its
-/// serialisation, which is the file format.
-#[derive(Clone, Debug)]
-pub struct ShapeDocValues {
-    triangles: Vec<DecodedTriangle>,
-}
-
-impl ShapeDocValues {
-    /// Creates the value from the triangles a shape decomposes into.
-    pub fn new(triangles: Vec<DecodedTriangle>) -> Result<Self> {
-        if triangles.is_empty() {
-            return Err(LuceneError::IllegalArgument(
-                "a shape must decompose into at least one triangle".to_string(),
-            ));
-        }
-        Ok(Self { triangles })
-    }
-
-    /// Returns the triangles.
-    pub fn triangles(&self) -> &[DecodedTriangle] {
-        &self.triangles
-    }
-
-    /// Returns how many triangles the shape has.
-    pub fn num_triangles(&self) -> usize {
-        self.triangles.len()
-    }
-
-    /// Packs the triangles into the stored form.
-    ///
-    /// Equivalent to `ShapeDocValues.binaryValue()`.
-    pub fn binary_value(&self) -> Result<BytesRef> {
-        let mut bytes = Vec::with_capacity(self.triangles.len() * 7 * BYTES);
-        let mut scratch = vec![0u8; 7 * BYTES];
-        for t in &self.triangles {
-            ShapeField::encode_triangle(
-                &mut scratch,
-                t.a_y,
-                t.a_x,
-                t.ab,
-                t.b_y,
-                t.b_x,
-                t.bc,
-                t.c_y,
-                t.c_x,
-                t.ca,
-            )?;
-            bytes.extend_from_slice(&scratch);
-        }
-        Ok(BytesRef::new(bytes))
-    }
-
-    /// Unpacks what [`binary_value`](Self::binary_value) wrote.
-    pub fn from_binary_value(value: &BytesRef) -> Result<Self> {
-        let bytes = value.slice();
-        let stride = 7 * BYTES;
-        if bytes.is_empty() || bytes.len() % stride != 0 {
-            return Err(LuceneError::corrupt_index(
-                format!(
-                    "shape doc value length {} is not a multiple of {stride}",
-                    bytes.len()
-                ),
-                "shape doc values",
-            ));
-        }
-        let mut triangles = Vec::with_capacity(bytes.len() / stride);
-        for chunk in bytes.chunks(stride) {
-            triangles.push(ShapeField::decode_triangle(chunk)?);
-        }
-        Self::new(triangles)
-    }
-}
-
-/// A shape as an indexable doc-values field.
-///
-/// Equivalent to `org.apache.lucene.document.ShapeDocValuesField`, and to its
-/// two subclasses `LatLonShapeDocValuesField` and `XYShapeDocValuesField`,
-/// which differ only in the coordinate system their triangles were encoded in.
-#[derive(Clone, Debug)]
-pub struct ShapeDocValuesField {
-    name: String,
-    shape_doc_values: ShapeDocValues,
-}
-
-impl ShapeDocValuesField {
-    /// Creates the field.
-    pub fn new(name: impl Into<String>, shape_doc_values: ShapeDocValues) -> Self {
-        Self {
-            name: name.into(),
-            shape_doc_values,
-        }
-    }
-
-    /// Returns the field's name.
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Returns the shape.
-    pub fn shape_doc_values(&self) -> &ShapeDocValues {
-        &self.shape_doc_values
-    }
-
-    /// Returns the stored bytes.
-    pub fn binary_value(&self) -> Result<BytesRef> {
-        self.shape_doc_values.binary_value()
-    }
-
-    /// Builds the field type a shape doc-values field uses: binary doc values
-    /// with norms omitted.
-    pub fn field_type() -> Result<FieldType> {
-        let mut ft = FieldType::new();
-        ft.set_doc_values_type(crate::index::DocValuesType::BINARY)?;
-        ft.set_omit_norms(true)?;
-        ft.freeze();
-        Ok(ft)
     }
 }

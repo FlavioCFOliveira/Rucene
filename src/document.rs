@@ -7,11 +7,20 @@
 #![deny(unsafe_code)]
 
 pub mod column;
+pub mod distance_feature_queries;
+pub mod distance_sort;
 pub mod doc_values_queries;
 pub mod feature_field;
 pub mod geo_fields;
+pub mod nearest_neighbor;
+pub mod point_queries;
+pub mod range_bulk_scorer;
+pub mod range_doc_values_fields;
 pub mod range_fields;
+pub mod shape;
+pub mod shape_doc_values;
 pub mod shape_field;
+pub mod spatial_query;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -28,6 +37,47 @@ use crate::index::{
 };
 use crate::store::DataInput;
 use crate::util::BytesRef;
+
+// -----------------------------------------------------------------------------
+// Re-exports
+// -----------------------------------------------------------------------------
+//
+// Java places every one of these types directly in `org.apache.lucene.document`.
+// This port groups them into submodules for readability, and re-exports them
+// here so that a name that is `org.apache.lucene.document.X` in Java is
+// `crate::document::X` in Rust.
+
+pub use distance_feature_queries::{
+    LatLonPointDistanceFeatureQuery, LatLonPointDistanceScorer, LongDistanceFeatureQuery,
+    LongDistanceScorer,
+};
+pub use distance_sort::{
+    LatLonPointDistanceComparator, LatLonPointSortField, XYPointDistanceComparator,
+    XYPointSortField,
+};
+pub use nearest_neighbor::{nearest, NearestHit, NearestNeighbor};
+pub use point_queries::{
+    LatLonDocValuesBoxQuery, LatLonDocValuesQuery, LatLonPointDistanceQuery, LatLonPointQuery,
+    XYDocValuesPointInGeometryQuery, XYPointInGeometryQuery,
+};
+pub use range_bulk_scorer::RangeBulkScorer;
+pub use range_doc_values_fields::{
+    DoubleRangeDocValuesField, DoubleRangeSlowRangeQuery, FloatRangeDocValuesField,
+    FloatRangeSlowRangeQuery, IntRangeDocValuesField, IntRangeSlowRangeQuery,
+    LongRangeDocValuesField, LongRangeSlowRangeQuery,
+};
+pub use shape::{
+    LatLonShape, LatLonShapeDocValuesBoxPlan, LatLonShapeQueryPlan, XYShape, XYShapeQueryPlan,
+};
+pub use shape_doc_values::{
+    LatLonShapeDocValues, LatLonShapeDocValuesField, ShapeDocValues, ShapeDocValuesField,
+    XYShapeDocValues, XYShapeDocValuesField,
+};
+pub use spatial_query::{
+    BaseShapeDocValuesQuery, EncodedRectangle, LatLonGeometryValue, LatLonShapeBoundingBoxQuery,
+    LatLonShapeDocValuesQuery, LatLonShapeQuery, SpatialQuery, SpatialVisitor, XYGeometryValue,
+    XYShapeDocValuesQuery, XYShapeQuery,
+};
 
 /// Describes how an `IndexableField` should be inverted for indexing terms and
 /// postings.
@@ -4110,6 +4160,30 @@ impl KnnFloatVectorField {
         Self::new(name, vector, VectorSimilarityFunction::EUCLIDEAN)
     }
 
+    /// Builds the field type a float-vector field of `dimension` dimensions
+    /// uses.
+    ///
+    /// Equivalent to the static
+    /// `KnnFloatVectorField.createFieldType(int, VectorSimilarityFunction)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the dimension is not
+    /// positive or exceeds [`MAX_DIMENSIONS`].
+    pub fn create_field_type(
+        dimension: i32,
+        similarity_function: VectorSimilarityFunction,
+    ) -> Result<FieldType> {
+        let mut field_type = FieldType::new();
+        field_type.set_vector_attributes(
+            dimension,
+            VectorEncoding::FLOAT32,
+            similarity_function,
+        )?;
+        field_type.freeze();
+        Ok(field_type)
+    }
+
     /// Creates a float-vector field under a caller-supplied field type.
     ///
     /// # Errors
@@ -4262,6 +4336,26 @@ impl KnnByteVectorField {
     /// As [`KnnByteVectorField::new`].
     pub fn with_euclidean(name: &str, vector: &[u8]) -> Result<Self> {
         Self::new(name, vector, VectorSimilarityFunction::EUCLIDEAN)
+    }
+
+    /// Builds the field type a byte-vector field of `dimension` dimensions
+    /// uses.
+    ///
+    /// Equivalent to the static
+    /// `KnnByteVectorField.createFieldType(int, VectorSimilarityFunction)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the dimension is not
+    /// positive or exceeds [`MAX_DIMENSIONS`].
+    pub fn create_field_type(
+        dimension: i32,
+        similarity_function: VectorSimilarityFunction,
+    ) -> Result<FieldType> {
+        let mut field_type = FieldType::new();
+        field_type.set_vector_attributes(dimension, VectorEncoding::BYTE, similarity_function)?;
+        field_type.freeze();
+        Ok(field_type)
     }
 
     /// Creates a byte-vector field under a caller-supplied field type.

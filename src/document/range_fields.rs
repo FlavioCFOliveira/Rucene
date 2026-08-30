@@ -470,16 +470,14 @@ impl BinaryRangeDocValues {
 
 /// A range query answered by scanning doc values rather than a BKD tree.
 ///
-/// Equivalent to `org.apache.lucene.document.BinaryRangeFieldRangeQuery`, and
-/// to the four typed `*RangeSlowRangeQuery` classes, which differ only in how
-/// they encode their bounds before handing them to this comparison.
-///
-/// **Divergence from Lucene 10.5.0.** Java has one abstract binary query plus
-/// `IntRangeSlowRangeQuery`, `LongRangeSlowRangeQuery`,
-/// `FloatRangeSlowRangeQuery` and `DoubleRangeSlowRangeQuery`, each a thin
-/// subclass that encodes its bounds and delegates. This port keeps the encoding
-/// on the range field types above and expresses the query once, because the
-/// comparison itself is byte-wise and identical for all four.
+/// Equivalent to `org.apache.lucene.document.BinaryRangeFieldRangeQuery`, the
+/// base of the four typed queries
+/// [`IntRangeSlowRangeQuery`](crate::document::IntRangeSlowRangeQuery),
+/// [`LongRangeSlowRangeQuery`](crate::document::LongRangeSlowRangeQuery),
+/// [`FloatRangeSlowRangeQuery`](crate::document::FloatRangeSlowRangeQuery) and
+/// [`DoubleRangeSlowRangeQuery`](crate::document::DoubleRangeSlowRangeQuery),
+/// which differ only in how they encode their bounds before handing them to
+/// this comparison.
 #[derive(Clone, Debug)]
 pub struct BinaryRangeFieldRangeQuery {
     field: String,

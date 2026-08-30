@@ -92,6 +92,21 @@ impl LatLonPoint {
         }
     }
 
+    /// Checks that `field_info` describes a field this point type can read.
+    ///
+    /// Equivalent to the package-private static
+    /// `LatLonPoint.checkCompatible(FieldInfo)`. The point properties may be
+    /// *unset* when, for instance, only a `StoredField` of the same name was
+    /// written into the segment, so a zero is accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field was indexed with
+    /// a different number of dimensions or a different width.
+    pub fn check_compatible(field_info: &crate::index::FieldInfo) -> Result<()> {
+        check_point_compatible(field_info, "LatLonPoint")
+    }
+
     /// Encodes a bounding box into the packed form a range query compares
     /// against.
     ///
@@ -172,6 +187,22 @@ impl LatLonDocValuesField {
         self.value
     }
 
+    /// Checks that `field_info` describes a field this doc-values type can
+    /// read.
+    ///
+    /// Equivalent to the package-private static
+    /// `LatLonDocValuesField.checkCompatible(FieldInfo)`. The doc-values type
+    /// may be *unset* when, for instance, only a `StoredField` of the same name
+    /// was written into the segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field was indexed with
+    /// a different doc-values type.
+    pub fn check_compatible(field_info: &crate::index::FieldInfo) -> Result<()> {
+        check_doc_values_compatible(field_info, "LatLonDocValuesField")
+    }
+
     /// Returns the latitude a packed value encodes.
     pub fn decode_latitude(value: i64) -> f64 {
         GeoEncodingUtils::decode_latitude((value >> 32) as i32)
@@ -237,6 +268,19 @@ impl XYPointField {
             FieldData::Bytes(bytes) => Some(bytes.slice()),
             _ => None,
         }
+    }
+
+    /// Checks that `field_info` describes a field this point type can read.
+    ///
+    /// Equivalent to the package-private static
+    /// `XYPointField.checkCompatible(FieldInfo)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field was indexed with
+    /// a different number of dimensions or a different width.
+    pub fn check_compatible(field_info: &crate::index::FieldInfo) -> Result<()> {
+        check_point_compatible(field_info, "XYPoint")
     }
 
     /// Encodes a bounding box into the packed form a range query compares
@@ -311,6 +355,20 @@ impl XYDocValuesField {
     /// Returns the packed value.
     pub fn numeric_value(&self) -> i64 {
         self.value
+    }
+
+    /// Checks that `field_info` describes a field this doc-values type can
+    /// read.
+    ///
+    /// Equivalent to the package-private static
+    /// `XYDocValuesField.checkCompatible(FieldInfo)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field was indexed with
+    /// a different doc-values type.
+    pub fn check_compatible(field_info: &crate::index::FieldInfo) -> Result<()> {
+        check_doc_values_compatible(field_info, "XYDocValuesField")
     }
 
     /// Returns the x coordinate a packed value encodes.
@@ -494,4 +552,49 @@ impl InetAddressRange {
             _ => None,
         }
     }
+}
+
+/// The body shared by `LatLonPoint.checkCompatible` and
+/// `XYPointField.checkCompatible`, which differ only in the type name they
+/// report.
+///
+/// Both point types declare two dimensions of [`COORDINATE_BYTES`] bytes each.
+fn check_point_compatible(field_info: &crate::index::FieldInfo, type_name: &str) -> Result<()> {
+    let dimension_count = 2;
+    let num_bytes = COORDINATE_BYTES as i32;
+    if field_info.point_dimension_count != 0 && field_info.point_dimension_count != dimension_count
+    {
+        return Err(LuceneError::IllegalArgument(format!(
+            "field=\"{}\" was indexed with numDims={} but this point type has \
+             numDims={dimension_count}, is the field really a {type_name}?",
+            field_info.name, field_info.point_dimension_count
+        )));
+    }
+    if field_info.point_num_bytes != 0 && field_info.point_num_bytes != num_bytes {
+        return Err(LuceneError::IllegalArgument(format!(
+            "field=\"{}\" was indexed with bytesPerDim={} but this point type has \
+             bytesPerDim={num_bytes}, is the field really a {type_name}?",
+            field_info.name, field_info.point_num_bytes
+        )));
+    }
+    Ok(())
+}
+
+/// The body shared by `LatLonDocValuesField.checkCompatible` and
+/// `XYDocValuesField.checkCompatible`, which differ only in the type name they
+/// report. Both declare [`DocValuesType::SORTED_NUMERIC`].
+fn check_doc_values_compatible(
+    field_info: &crate::index::FieldInfo,
+    type_name: &str,
+) -> Result<()> {
+    if field_info.doc_values_type != DocValuesType::NONE
+        && field_info.doc_values_type != DocValuesType::SORTED_NUMERIC
+    {
+        return Err(LuceneError::IllegalArgument(format!(
+            "field=\"{}\" was indexed with docValuesType={:?} but this type has \
+             docValuesType=SORTED_NUMERIC, is the field really a {type_name}?",
+            field_info.name, field_info.doc_values_type
+        )));
+    }
+    Ok(())
 }
