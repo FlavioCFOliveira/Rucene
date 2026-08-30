@@ -1190,7 +1190,7 @@ mod tests {
         let field_infos_b = FieldInfos::new(vec![fi1.clone(), fi2.clone()]).unwrap();
         let merged = FieldInfos::new(vec![fi1, fi2]).unwrap();
 
-        let mut merge_state = MergeState::new(vec![], vec![0, 0]);
+        let mut merge_state = MergeState::from_fields_producers(vec![], vec![0, 0]);
         merge_state.field_infos = vec![field_infos_a, field_infos_b];
         merge_state.merge_field_infos = merged;
 
@@ -1204,7 +1204,7 @@ mod tests {
         let fi_b0 = FieldInfo::new("x", 0);
         let merged = FieldInfos::new(vec![FieldInfo::new("a", 0)]).unwrap();
 
-        let mut merge_state = MergeState::new(vec![], vec![0]);
+        let mut merge_state = MergeState::from_fields_producers(vec![], vec![0]);
         merge_state.field_infos = vec![FieldInfos::new(vec![fi_b0]).unwrap()];
         merge_state.merge_field_infos = merged;
 

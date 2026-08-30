@@ -236,6 +236,14 @@ impl SegmentMerger {
         Ok(())
     }
 
+    /// Consumes the merger and returns the merged segment's info.
+    ///
+    /// The merged `SegmentInfo` lives on the write state, so this is how a
+    /// caller recovers it once the merge has run.
+    pub fn into_segment_info(self) -> SegmentInfo {
+        self.write_state.segment_info
+    }
+
     /// Writes the merged field infos.
     ///
     /// Equivalent to `SegmentMerger.mergeFieldInfos`.

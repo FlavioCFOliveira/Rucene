@@ -1538,8 +1538,8 @@ mod tests {
         let merge_field_infos = FieldInfos::new(vec![body.clone(), title.clone()]).unwrap();
         let segment_field_infos = FieldInfos::new(vec![body, title]).unwrap();
 
-        let producer_a = Box::new(NamedFieldsProducer("A")) as Box<dyn FieldsProducer>;
-        let merge_state = MergeState::new(vec![Some(producer_a)], vec![10])
+        let producer_a = Arc::new(NamedFieldsProducer("A")) as Arc<dyn FieldsProducer>;
+        let merge_state = MergeState::from_fields_producers(vec![Some(producer_a)], vec![10])
             .with_field_infos(vec![segment_field_infos], merge_field_infos);
 
         let restricted =

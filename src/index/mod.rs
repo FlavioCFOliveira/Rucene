@@ -33,6 +33,7 @@ pub mod index_file_names;
 pub mod index_reader;
 pub mod index_sorter;
 pub mod index_utilities;
+pub mod index_writer;
 pub mod index_writer_config;
 pub mod indexing_chain;
 pub mod leaf_reader;

@@ -26,6 +26,8 @@ use crate::index::directory_reader::IndexWriter as IndexWriterTrait;
 use crate::index::documents_writer::{FlushByRamOrCountsPolicy, FlushPolicy};
 use crate::index::index_deletion_policy::{IndexDeletionPolicy, KeepOnlyLastCommitDeletionPolicy};
 use crate::index::leaf_reader::LeafReader;
+pub use crate::index::merge_policy::{MergePolicy, MergeSpecification, TieredMergePolicy};
+pub use crate::index::merge_scheduler::{ConcurrentMergeScheduler, MergeScheduler};
 use crate::index::IndexCommit;
 use crate::search::Sort;
 pub use crate::search::{BM25Similarity, Similarity};
@@ -35,18 +37,6 @@ use crate::util::InfoStream;
 // -----------------------------------------------------------------------------
 // Placeholder traits for subsystems that have not been ported yet.
 // -----------------------------------------------------------------------------
-
-/// Placeholder for `org.apache.lucene.index.MergePolicy`.
-///
-/// Only the minimal trait bounds needed by `IndexWriterConfig` are enforced;
-/// the actual merge-selection logic will be added in a later task.
-pub trait MergePolicy: Send + Sync + Debug {}
-
-/// Placeholder for `org.apache.lucene.index.MergeScheduler`.
-///
-/// Only the minimal trait bounds needed by `IndexWriterConfig` are enforced;
-/// the actual merge scheduling will be added in a later task.
-pub trait MergeScheduler: Send + Sync + Debug {}
 
 /// Placeholder for `org.apache.lucene.index.IndexWriter.IndexReaderWarmer`.
 ///
@@ -60,32 +50,6 @@ pub trait LeafComparator: Send + Sync + Debug {
     /// Compares two leaf readers.
     fn compare(&self, a: &dyn LeafReader, b: &dyn LeafReader) -> Ordering;
 }
-
-// -----------------------------------------------------------------------------
-// Default placeholder implementations.
-// -----------------------------------------------------------------------------
-
-/// Default merge scheduler.
-///
-/// Equivalent to `org.apache.lucene.index.ConcurrentMergeScheduler`.
-#[derive(Debug)]
-pub struct ConcurrentMergeScheduler;
-
-impl MergeScheduler for ConcurrentMergeScheduler {}
-
-/// Default merge policy.
-///
-/// Equivalent to `org.apache.lucene.index.TieredMergePolicy`.
-#[derive(Debug)]
-pub struct TieredMergePolicy;
-
-impl MergePolicy for TieredMergePolicy {}
-
-/// Placeholder for `org.apache.lucene.index.MergePolicy.MergeSpecification`.
-///
-/// Carries no data until the full `MergePolicy` subsystem is ported.
-#[derive(Debug, Clone)]
-pub struct MergeSpecification;
 
 // -----------------------------------------------------------------------------
 // Open mode
@@ -229,10 +193,10 @@ impl LiveIndexWriterConfig {
             open_mode: OpenMode::CREATE_OR_APPEND,
             created_version_major: Version::LATEST.major as i32,
             similarity: Arc::new(BM25Similarity::new()),
-            merge_scheduler: Arc::new(ConcurrentMergeScheduler),
+            merge_scheduler: Arc::new(ConcurrentMergeScheduler::new()),
             codec,
             info_stream: Arc::new(crate::util::NoOutputInfoStream),
-            merge_policy: Arc::new(TieredMergePolicy),
+            merge_policy: Arc::new(TieredMergePolicy::new()),
             reader_pooling: Self::DEFAULT_READER_POOLING,
             flush_policy: Arc::new(FlushByRamOrCountsPolicy::new()),
             per_thread_hard_limit_mb: Self::DEFAULT_RAM_PER_THREAD_HARD_LIMIT_MB,
@@ -643,6 +607,15 @@ impl IndexWriterConfig {
     /// Returns a mutable reference to the live config.
     pub fn live_mut(&mut self) -> &mut LiveIndexWriterConfig {
         &mut self.live
+    }
+
+    /// Consumes this config and returns the live config it wraps.
+    ///
+    /// `IndexWriter` takes ownership of the live config at construction, which
+    /// is what makes a config unusable with a second writer, as Java enforces
+    /// through its `writer` field.
+    pub fn into_live(self) -> LiveIndexWriterConfig {
+        self.live
     }
 
     // -------------------------------------------------------------------------
@@ -1363,7 +1336,7 @@ mod tests {
             Arc::clone(&listener) as Arc<dyn IndexWriterEventListener>
         );
 
-        let spec = MergeSpecification;
+        let spec = MergeSpecification::new();
         config
             .index_writer_event_listener()
             .begin_merge_on_full_flush(&spec);
@@ -1379,7 +1352,7 @@ mod tests {
     fn no_op_listener_is_default() {
         let config = new_config();
         let listener = config.index_writer_event_listener();
-        let spec = MergeSpecification;
+        let spec = MergeSpecification::new();
         listener.begin_merge_on_full_flush(&spec);
         listener.end_merge_on_full_flush(&spec);
         // No observable state change; the call simply must not panic.

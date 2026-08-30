@@ -1175,7 +1175,10 @@ mod tests {
         let mut consumer = format.fields_consumer(&write_state).unwrap();
         consumer.write(&StubFields, &StubNormsProducer).unwrap();
         consumer
-            .merge(&MergeState::default(), &StubNormsProducer)
+            .merge(
+                &MergeState::from_fields_producers(Vec::new(), Vec::new()),
+                &StubNormsProducer,
+            )
             .unwrap();
         consumer.close().unwrap();
 

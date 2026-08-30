@@ -764,6 +764,23 @@ impl SegmentCommitInfo {
         Ok(files)
     }
 
+    /// Returns the total size in bytes of all files for this segment without
+    /// caching the result.
+    ///
+    /// Java's `sizeInBytes()` memoises into a mutable field, which needs
+    /// `&mut self` here. A merge policy inspects segments through a shared
+    /// reference, so it uses this form instead; the value returned is identical.
+    pub fn size_in_bytes_uncached(&self) -> Result<i64> {
+        if self.size_in_bytes != -1 {
+            return Ok(self.size_in_bytes);
+        }
+        let mut sum = 0i64;
+        for file in self.files()? {
+            sum += self.info.directory.file_length(&file)?;
+        }
+        Ok(sum)
+    }
+
     /// Returns the total size in bytes of all files for this segment.
     ///
     /// Equivalent to `SegmentCommitInfo.sizeInBytes()`.
