@@ -136,6 +136,22 @@ The Knowledge Graph (KG) must be managed with the help of the `knowledge-authori
 - **This graph is the single source of truth about the project.** Keep it as up to date as possible, so that before reading files you can consult the graph and obtain what you need.
 - Create the nodes and edges that make the most sense for the project. Use the graph together with tasks and sprints to coordinate work.
 
+### 6.1 The KG coordinates the port
+
+The Knowledge Graph holds a **central responsibility in coordinating the porting work**. It is not a passive record of what happened; it is the instrument that says what to do next.
+
+- **The KG must know, at any moment, what is already ported and what is still missing.** It must therefore model *both* sides in depth — the structure of Apache Lucene Core 10.5.0 and the structure of Rucene — and the mapping between them, so that the port's coverage can be answered by a query rather than by reading code.
+- **Coverage must be answerable and defensible.** The set of Lucene elements that are *in scope* for the port must be explicit in the graph; a ratio computed against an implicit or unstated denominator is not an answer. Every component must carry a status that reflects reality.
+- The graph must record not only what exists, but what each missing piece **blocks** — so that the cost and the consequence of a gap are both visible.
+
+### 6.2 The KG coordinates development
+
+The KG also holds a **central role in coordinating development tasks**, so that it can always present the **most optimised paths** through the remaining work, and the work proceeds as quickly and efficiently as possible.
+
+- Dependencies between components, and between tasks and the components they need, must be modelled so that the graph can compute what unlocks the most work.
+- **Use the graph to plan**, in the sense of rule 5.1: identify foundational tasks, tasks that unblock others, and the shortest route to a solid deliverable. The prioritisation stated in 5.1 is meant to be *derived from the graph*, not asserted from memory or from reading files.
+- When the graph cannot yet answer such a question, say so plainly and treat closing that gap as work in its own right, rather than substituting an impression for an answer (see rule 7).
+
 ---
 
 ## 7. Never guess
