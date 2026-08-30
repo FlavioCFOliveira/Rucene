@@ -131,7 +131,14 @@ global registry Rucene uses in place of the Java service loader behind
 its per-segment generations past everything already present in the directory.
 
 ### `Task`
-An `rmp` task, mirrored into the graph when it is closed.
+An `rmp` task, mirrored into the graph when it is closed. A `kind: "gap"`
+`Decision` that names a follow-up task as its `DEPENDS_ON` target is the one
+exception: that task is mirrored too, whatever its live status, so the gap
+stays queryable even though the task itself is not done. `0dfc12d` did this
+first for task #137 (status `BACKLOG` at sync time); the 2026-08-30 sync for
+`4015b12` did it again for task #138 (status `SPRINT`). Such a node carries
+only `id`, `name`, `status`, `gitCommit` and `gitDate` — no `components`, since
+no code has landed for it yet.
 
 | Property | Purpose |
 |----------|---------|
@@ -139,7 +146,7 @@ An `rmp` task, mirrored into the graph when it is closed.
 | `name` | Task title. |
 | `status` | `rmp` status at the time of the sync, e.g. `"COMPLETED"`. |
 | `components` | Comma-separated Rust paths (`rucene::<module>::<Type>`) delivered by the task. |
-| `gitCommit` | Commit that closed the task. |
+| `gitCommit` | Commit that closed the task, or last confirmed it for an open gap-dependency task. |
 | `gitDate` | ISO date of `gitCommit`. |
 
 ### `Commit`
@@ -282,6 +289,6 @@ Every node and edge carries `gitCommit` (full 40-char hash) and `gitDate` (`YYYY
 | `RustStruct` / `RustTrait` / `RustEnum` | populated incrementally, one sync per commit that ports types |
 | `Task` / `Commit` | populated for the commits that have been synced; not a complete history |
 | `Decision` | populated per synced commit, for decisions that constrain the code, including `kind: "gap"` declared gaps |
-| `Defect` | populated per synced commit, for non-obvious bugs found and fixed (4 nodes, from `fd36286` and `0dfc12d`) |
+| `Defect` | populated per synced commit, for non-obvious bugs found and fixed (9 nodes, from `fd36286`, `0dfc12d` and `4015b12`) |
 | `PORTS` | populated for every ported Rucene type whose Lucene counterpart is already modelled |
 | `IMPLEMENTED_IN` / `IMPLEMENTS` / `COMMITTED_IN` / `CLOSES_TASK` | populated per synced commit |
