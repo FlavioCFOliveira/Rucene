@@ -165,12 +165,29 @@ impl Terms for FieldReader {
 
     fn intersect(
         &self,
-        _compiled: &crate::util::automaton::CompiledAutomaton,
-        _start_term: Option<&BytesRef>,
+        compiled: &crate::util::automaton::CompiledAutomaton,
+        start_term: Option<&BytesRef>,
     ) -> Result<Box<dyn TermsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
-            "FieldReader::intersect needs IntersectTermsEnum, which walks the term index trie"
-                .to_string(),
+        use crate::util::automaton::AutomatonType;
+        if compiled.automaton_type != AutomatonType::Normal {
+            return Err(LuceneError::IllegalArgument(
+                "please use CompiledAutomaton.get_terms_enum instead".to_string(),
+            ));
+        }
+        let automaton = compiled.automaton.clone().ok_or_else(|| {
+            LuceneError::IllegalArgument("compiled automaton has no transitions".to_string())
+        })?;
+        let run_automaton = compiled.run_automaton.clone().ok_or_else(|| {
+            LuceneError::IllegalArgument("compiled automaton has no runnable form".to_string())
+        })?;
+        Ok(Box::new(
+            crate::codecs::lucene103::intersect_terms_enum::IntersectTermsEnum::new(
+                self.clone(),
+                Box::new(automaton),
+                Box::new(run_automaton),
+                compiled.common_suffix_ref.clone(),
+                start_term.cloned(),
+            )?,
         ))
     }
 

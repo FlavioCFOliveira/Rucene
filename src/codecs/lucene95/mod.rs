@@ -50,6 +50,15 @@ pub struct OrdToDocDISIReaderConfiguration {
     pub meta: DirectMonotonicMeta,
 }
 
+impl std::fmt::Debug for OrdToDocDISIReaderConfiguration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrdToDocDISIReaderConfiguration")
+            .field("size", &self.size)
+            .field("docs_with_field_offset", &self.docs_with_field_offset)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Clone for OrdToDocDISIReaderConfiguration {
     fn clone(&self) -> Self {
         Self {
