@@ -139,6 +139,22 @@ def scan_lucene(lucene_root: str):
 # ---------------------------------------------------------------------------
 
 
+def overridden_set(roadmap):
+    """Os tipos cujo `portState` foi corrigido a mao, identificados por
+    `portStateNote`.
+
+    Ver `knowledge-model.md`: `portStateNote` existe exactamente para registar
+    porque e que o `portState` mecanico foi substituido. Enquanto a nota estiver
+    la, a passagem automatica respeita-a.
+    """
+    rows = read(
+        roadmap,
+        "MATCH (c:Class) WHERE c.portScope = 'in' AND c.portStateNote IS NOT NULL "
+        "RETURN c.qualifiedName AS qn",
+    )
+    return {r["qn"] for r in rows}
+
+
 def phase_scope(roadmap, top_level, commit, date, batch_size):
     print("phase: scope", file=sys.stderr)
     nodes = read(
@@ -196,7 +212,16 @@ def phase_scope(roadmap, top_level, commit, date, batch_size):
         file=sys.stderr,
     )
 
-    # portState: tem, ou nao, um porte registado
+    # portState: tem, ou nao, um porte registado.
+    #
+    # Um tipo que carregue `portStateNote` foi verificado a mao: a nota diz
+    # porque e que a heuristica errou (tipo gerado por macro, declaracao com
+    # parametro de tempo de vida, classe Java sem membros). Essa verificacao e
+    # evidencia mais forte do que a regra mecanica, por isso a passagem
+    # automatica nao lhe toca -- sem isto, cada sincronizacao apagava-a e o
+    # grafo voltava a mentir sobre o que esta portado.
+    overridden = overridden_set(roadmap)
+
     ported = read(
         roadmap,
         "MATCH (x)-[:PORTS]->(c:Class) WHERE c.portScope = 'in' "
@@ -214,12 +239,21 @@ def phase_scope(roadmap, top_level, commit, date, batch_size):
     run_unwind(
         "update",
         roadmap,
-        [{"qn": r["qn"]} for r in rows_in if r["qn"] not in ported_set],
+        [
+            {"qn": r["qn"]}
+            for r in rows_in
+            if r["qn"] not in ported_set and r["qn"] not in overridden
+        ],
         f"MATCH (c:Class {{qualifiedName:row.qn}}) SET c.portState = 'unported', "
         f"{stamp}",
         batch_size,
         "portState = unported",
     )
+    if overridden:
+        print(
+            f"  portState preservado por verificacao manual: {len(overridden)}",
+            file=sys.stderr,
+        )
 
 
 def phase_deps(roadmap, deps, commit, date, batch_size):
@@ -273,6 +307,7 @@ def phase_candidates(roadmap, survey_path, commit, date, batch_size):
     unported = read(
         roadmap,
         "MATCH (c:Class) WHERE c.portScope = 'in' AND c.portState <> 'ported' "
+        "AND c.portStateNote IS NULL "
         "RETURN c.qualifiedName AS qn, c.name AS name",
     )
     label_of = {
