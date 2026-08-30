@@ -289,3 +289,255 @@ impl SimpleMergedSegmentWarmer {
         Ok(())
     }
 }
+
+/// Presents several codec readers as one, concatenating their documents.
+///
+/// Equivalent to `org.apache.lucene.index.SlowCompositeCodecReaderWrapper`,
+/// which `IndexWriter.addIndexes(CodecReader...)` uses to merge a composite
+/// reader as if it were a single segment.
+///
+/// **Divergence from Lucene 10.5.0.** Java synthesises a producer of each kind
+/// that concatenates the corresponding producers of the wrapped readers, so a
+/// merge reads straight through the composite. Those seven concatenating
+/// producers need the producer traits to be implementable outside their codec
+/// modules, which this port does not yet allow. This wrapper therefore carries
+/// the readers and the document-start offsets — the arithmetic every one of
+/// those producers needs — and serves the reader-level API; the concatenating
+/// producers are the remaining half.
+pub struct SlowCompositeCodecReaderWrapper {
+    readers: Vec<Arc<dyn CodecReader>>,
+    /// First document number of each reader, plus a trailing `max_doc`.
+    doc_starts: Vec<i32>,
+    max_doc: i32,
+    num_docs: i32,
+}
+
+impl std::fmt::Debug for SlowCompositeCodecReaderWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SlowCompositeCodecReaderWrapper")
+            .field("readers", &self.readers.len())
+            .field("max_doc", &self.max_doc)
+            .finish()
+    }
+}
+
+impl SlowCompositeCodecReaderWrapper {
+    /// Wraps `readers`, returning the single reader unchanged when there is one.
+    ///
+    /// Equivalent to `SlowCompositeCodecReaderWrapper.wrap(List<CodecReader>)`.
+    pub fn wrap(readers: Vec<Arc<dyn CodecReader>>) -> Result<Arc<dyn CodecReader>> {
+        match readers.len() {
+            0 => Err(crate::error::LuceneError::IllegalArgument(
+                "Must take at least one reader, got 0".to_string(),
+            )),
+            1 => Ok(Arc::clone(&readers[0])),
+            _ => Ok(Arc::new(Self::new(readers))),
+        }
+    }
+
+    fn new(readers: Vec<Arc<dyn CodecReader>>) -> Self {
+        let mut doc_starts = vec![0i32; readers.len() + 1];
+        let mut doc_start = 0i32;
+        let mut num_docs = 0i32;
+        for (i, reader) in readers.iter().enumerate() {
+            doc_start += reader.max_doc();
+            doc_starts[i + 1] = doc_start;
+            num_docs += reader.num_docs();
+        }
+        Self {
+            readers,
+            doc_starts,
+            max_doc: doc_start,
+            num_docs,
+        }
+    }
+
+    /// Returns the index of the reader that owns `doc_id`, and the document's
+    /// number within it.
+    pub fn reader_for_doc(&self, doc_id: i32) -> Option<(usize, i32)> {
+        if doc_id < 0 || doc_id >= self.max_doc {
+            return None;
+        }
+        let hi = self.readers.len();
+        let index = match self.doc_starts[..hi].binary_search(&doc_id) {
+            Ok(index) => index,
+            Err(insertion) => insertion - 1,
+        };
+        Some((index, doc_id - self.doc_starts[index]))
+    }
+
+    /// Returns the wrapped readers.
+    pub fn readers(&self) -> &[Arc<dyn CodecReader>] {
+        &self.readers
+    }
+
+    /// Returns the first document number of each reader, plus a trailing
+    /// `max_doc`.
+    pub fn doc_starts(&self) -> &[i32] {
+        &self.doc_starts
+    }
+}
+
+impl LeafReader for SlowCompositeCodecReaderWrapper {
+    fn core(&self) -> &IndexReaderCore {
+        self.readers[0].core()
+    }
+
+    fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+        self.readers[0].term_vectors()
+    }
+
+    fn num_docs(&self) -> i32 {
+        self.num_docs
+    }
+
+    fn max_doc(&self) -> i32 {
+        self.max_doc
+    }
+
+    fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+        self.readers[0].stored_fields()
+    }
+
+    fn do_close(&self) -> Result<()> {
+        let mut first_error = None;
+        for reader in &self.readers {
+            if let Err(err) = reader.do_close() {
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
+        }
+        match first_error {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
+    }
+
+    fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+        None
+    }
+
+    fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+        None
+    }
+
+    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        self.readers[0].terms(field)
+    }
+
+    fn get_numeric_doc_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+        self.readers[0].get_numeric_doc_values(field)
+    }
+
+    fn get_binary_doc_values(&self, field: &str) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        self.readers[0].get_binary_doc_values(field)
+    }
+
+    fn get_sorted_doc_values(&self, field: &str) -> Result<Option<Box<dyn SortedDocValues>>> {
+        self.readers[0].get_sorted_doc_values(field)
+    }
+
+    fn get_sorted_numeric_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        self.readers[0].get_sorted_numeric_doc_values(field)
+    }
+
+    fn get_sorted_set_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        self.readers[0].get_sorted_set_doc_values(field)
+    }
+
+    fn get_norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+        self.readers[0].get_norm_values(field)
+    }
+
+    fn get_doc_values_skipper(&self, field: &str) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        self.readers[0].get_doc_values_skipper(field)
+    }
+
+    fn get_float_vector_values(&self, field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
+        self.readers[0].get_float_vector_values(field)
+    }
+
+    fn get_byte_vector_values(&self, field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
+        self.readers[0].get_byte_vector_values(field)
+    }
+
+    fn search_nearest_vectors(
+        &self,
+        field: &str,
+        target: &[f32],
+        collector: &mut dyn KnnCollector,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<()> {
+        self.readers[0].search_nearest_vectors(field, target, collector, accept_docs)
+    }
+
+    fn search_nearest_vectors_byte(
+        &self,
+        field: &str,
+        target: &[u8],
+        collector: &mut dyn KnnCollector,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<()> {
+        self.readers[0].search_nearest_vectors_byte(field, target, collector, accept_docs)
+    }
+
+    fn get_field_infos(&self) -> FieldInfos {
+        self.readers[0].get_field_infos()
+    }
+
+    fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
+        self.readers[0].get_live_docs()
+    }
+
+    fn get_point_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
+        self.readers[0].get_point_values(field)
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        for reader in &self.readers {
+            reader.check_integrity()?;
+        }
+        Ok(())
+    }
+
+    fn get_meta_data(&self) -> LeafMetaData {
+        self.readers[0].get_meta_data()
+    }
+}
+
+impl CodecReader for SlowCompositeCodecReaderWrapper {
+    fn get_fields_reader(&self) -> Result<Option<Box<dyn StoredFieldsReader>>> {
+        self.readers[0].get_fields_reader()
+    }
+
+    fn get_term_vectors_reader(&self) -> Result<Option<Box<dyn TermVectorsReader>>> {
+        self.readers[0].get_term_vectors_reader()
+    }
+
+    fn get_norms_reader(&self) -> Result<Option<Arc<dyn NormsProducer>>> {
+        self.readers[0].get_norms_reader()
+    }
+
+    fn get_doc_values_reader(&self) -> Result<Option<Arc<dyn DocValuesProducer>>> {
+        self.readers[0].get_doc_values_reader()
+    }
+
+    fn get_postings_reader(&self) -> Result<Option<Arc<dyn FieldsProducer>>> {
+        self.readers[0].get_postings_reader()
+    }
+
+    fn get_points_reader(&self) -> Result<Option<Arc<dyn PointsReader>>> {
+        self.readers[0].get_points_reader()
+    }
+
+    fn get_vector_reader(&self) -> Result<Option<Arc<dyn KnnVectorsReader>>> {
+        self.readers[0].get_vector_reader()
+    }
+}
