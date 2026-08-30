@@ -15,6 +15,49 @@ use crate::store::{
 };
 use crate::util::{BitUtil, LongValues};
 
+pub mod block_packed;
+pub mod bulk_operation;
+pub mod direct_packed_reader;
+pub mod growable_writer;
+pub mod packed64;
+pub mod packed_data_io;
+pub mod packed_long_values;
+pub mod packed_writer;
+pub mod paged_mutable;
+pub mod reader;
+
+pub use block_packed::{
+    AbstractBlockPackedWriter, AbstractBlockPackedWriterOps, MonotonicBlockPackedReader,
+    MonotonicBlockPackedWriter,
+};
+pub use bulk_operation::{
+    bulk_operation_of, BulkOperation, BulkOperationPacked, BulkOperationPacked1,
+    BulkOperationPacked10, BulkOperationPacked11, BulkOperationPacked12, BulkOperationPacked13,
+    BulkOperationPacked14, BulkOperationPacked15, BulkOperationPacked16, BulkOperationPacked17,
+    BulkOperationPacked18, BulkOperationPacked19, BulkOperationPacked2, BulkOperationPacked20,
+    BulkOperationPacked21, BulkOperationPacked22, BulkOperationPacked23, BulkOperationPacked24,
+    BulkOperationPacked3, BulkOperationPacked4, BulkOperationPacked5, BulkOperationPacked6,
+    BulkOperationPacked7, BulkOperationPacked8, BulkOperationPacked9,
+    BulkOperationPackedSingleBlock, PackedIntsBlockCounts, PackedIntsDecoder, PackedIntsEncoder,
+    SharedBulkOperation,
+};
+pub use direct_packed_reader::{DirectPacked64SingleBlockReader, DirectPackedReader};
+pub use growable_writer::GrowableWriter;
+pub use packed64::{Packed64, Packed64SingleBlock};
+pub use packed_data_io::{PackedDataInput, PackedDataOutput};
+pub use packed_long_values::{
+    DeltaPackedLongValues, DeltaPackedLongValuesBuilder, MonotonicLongValues,
+    MonotonicLongValuesBuilder, PackedLongValues, PackedLongValuesAccess, PackedLongValuesBuilder,
+    PackedLongValuesBuilderOps, PackedLongValuesBuilderState, PackedLongValuesIterator,
+};
+pub use packed_writer::{PackedReaderIterator, PackedWriter};
+pub use paged_mutable::{
+    AbstractPagedMutable, AbstractPagedMutableOps, PagedGrowableWriter, PagedMutable,
+};
+pub use reader::{
+    NullReader, PackedIntsMutable, PackedIntsReader, PackedIntsReaderIterator, PackedIntsWriter,
+};
+
 // -----------------------------------------------------------------------------
 // PackedInts helpers
 // -----------------------------------------------------------------------------
@@ -26,6 +69,71 @@ impl PackedInts {
     pub const VERSION_START: i32 = 2;
     pub const VERSION_MONOTONIC_WITHOUT_ZIGZAG: i32 = 2;
     pub const VERSION_CURRENT: i32 = 2;
+
+    /// At most 700% memory overhead: always select a direct implementation.
+    ///
+    /// Equivalent to `PackedInts.FASTEST`.
+    pub const FASTEST: f32 = 7f32;
+    /// At most 50% memory overhead: always select a reasonably fast
+    /// implementation.
+    ///
+    /// Equivalent to `PackedInts.FAST`.
+    pub const FAST: f32 = 0.5f32;
+    /// At most 25% memory overhead.
+    ///
+    /// Equivalent to `PackedInts.DEFAULT`.
+    pub const DEFAULT: f32 = 0.25f32;
+    /// No memory overhead at all, at the cost of speed.
+    ///
+    /// Equivalent to `PackedInts.COMPACT`.
+    pub const COMPACT: f32 = 0f32;
+    /// The codec name a packed-integer stream carries in its header.
+    ///
+    /// Equivalent to `PackedInts.CODEC_NAME`.
+    pub const CODEC_NAME: &'static str = "PackedInts";
+
+    /// Returns the format and width that restore the fastest reader whose
+    /// overhead stays under `acceptable_overhead_ratio`.
+    ///
+    /// Equivalent to `PackedInts.fastestFormatAndBits(int, int, float)`. A
+    /// `value_count` of `-1` means the count is not known in advance.
+    ///
+    /// The ratio matters for random-access readers; a stream that will only be
+    /// read sequentially should ask for [`PackedInts::COMPACT`].
+    pub fn fastest_format_and_bits(
+        value_count: i32,
+        bits_per_value: i32,
+        acceptable_overhead_ratio: f32,
+    ) -> FormatAndBits {
+        // Lucene rewrites a `valueCount` of -1 to `Integer.MAX_VALUE` here and
+        // then never reads it again; the count plays no part in the choice.
+        let _ = value_count;
+
+        let acceptable_overhead_ratio = acceptable_overhead_ratio.max(Self::COMPACT);
+        let acceptable_overhead_ratio = acceptable_overhead_ratio.min(Self::FASTEST);
+        // in bits
+        let acceptable_overhead_per_value = acceptable_overhead_ratio * bits_per_value as f32;
+
+        let max_bits_per_value = bits_per_value + acceptable_overhead_per_value as i32;
+
+        // rounded number of bits per value are usually the fastest
+        let actual_bits_per_value = if bits_per_value <= 8 && max_bits_per_value >= 8 {
+            8
+        } else if bits_per_value <= 16 && max_bits_per_value >= 16 {
+            16
+        } else if bits_per_value <= 32 && max_bits_per_value >= 32 {
+            32
+        } else if bits_per_value <= 64 && max_bits_per_value >= 64 {
+            64
+        } else {
+            bits_per_value
+        };
+
+        FormatAndBits {
+            format: Format::Packed,
+            bits_per_value: actual_bits_per_value,
+        }
+    }
 
     pub fn check_version(version: i32) -> Result<()> {
         if version < Self::VERSION_START {
@@ -129,15 +237,99 @@ impl PackedInts {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+/// The layouts a packed-integer stream can use.
+///
+/// Equivalent to the nested enum
+/// `org.apache.lucene.util.packed.PackedInts.Format`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Format {
+    /// Compact format: all bits are written contiguously.
+    ///
+    /// Equivalent to `PackedInts.Format.PACKED`, whose id is `0`.
     Packed,
+    /// A format that may insert padding bits so that a value never straddles
+    /// two blocks.
+    ///
+    /// Equivalent to `PackedInts.Format.PACKED_SINGLE_BLOCK`, whose id is `1`.
+    /// Lucene deprecates it in favour of [`Format::Packed`]: it does not
+    /// support every width, so it must never be selected directly.
+    PackedSingleBlock,
 }
 
 impl Format {
-    pub fn byte_count(&self, _version: i32, value_count: i32, bits_per_value: i32) -> Result<i64> {
+    /// Returns the format with the given id.
+    ///
+    /// Equivalent to `PackedInts.Format.byId(int)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when no format has that id.
+    pub fn by_id(id: i32) -> Result<Self> {
+        match id {
+            0 => Ok(Format::Packed),
+            1 => Ok(Format::PackedSingleBlock),
+            _ => Err(LuceneError::IllegalArgument(format!(
+                "Unknown format id: {id}"
+            ))),
+        }
+    }
+
+    /// Returns the id this format is stored under.
+    ///
+    /// Equivalent to `PackedInts.Format.getId()`.
+    pub fn id(&self) -> i32 {
+        match self {
+            Format::Packed => 0,
+            Format::PackedSingleBlock => 1,
+        }
+    }
+
+    /// Returns how many bytes are needed to store `value_count` values of
+    /// `bits_per_value` bits.
+    ///
+    /// Equivalent to `PackedInts.Format.byteCount(int, int, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `value_count` is negative
+    /// or `bits_per_value` is outside `[0, 64]`, the range Lucene asserts.
+    pub fn byte_count(&self, version: i32, value_count: i32, bits_per_value: i32) -> Result<i64> {
+        if value_count < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "valueCount must be non-negative, got {value_count}"
+            )));
+        }
+        if !(0..=64).contains(&bits_per_value) {
+            return Err(LuceneError::IllegalArgument(format!(
+                "bitsPerValue must be in [0, 64], got {bits_per_value}"
+            )));
+        }
+        match self {
+            Format::Packed => Ok(((value_count as i64) * (bits_per_value as i64) + 7) / 8),
+            // assume long-aligned
+            Format::PackedSingleBlock => {
+                Ok(8 * i64::from(self.long_count(version, value_count, bits_per_value)?))
+            }
+        }
+    }
+
+    /// Returns how many 64-bit blocks are needed to store `value_count` values
+    /// of `bits_per_value` bits.
+    ///
+    /// Equivalent to `PackedInts.Format.longCount(int, int, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `value_count` is negative
+    /// or `bits_per_value` is outside `[0, 64]`, and, for
+    /// [`Format::PackedSingleBlock`], when `bits_per_value` is zero.
+    pub fn long_count(&self, version: i32, value_count: i32, bits_per_value: i32) -> Result<i32> {
         match self {
             Format::Packed => {
+                let byte_count = self.byte_count(version, value_count, bits_per_value)?;
+                Ok(((byte_count + 7) >> 3) as i32)
+            }
+            Format::PackedSingleBlock => {
                 if value_count < 0 {
                     return Err(LuceneError::IllegalArgument(format!(
                         "valueCount must be non-negative, got {value_count}"
@@ -145,13 +337,59 @@ impl Format {
                 }
                 if !(1..=64).contains(&bits_per_value) {
                     return Err(LuceneError::IllegalArgument(format!(
-                        "bitsPerValue must be in [1, 64], got {bits_per_value}"
+                        "bitsPerValue must be in [1, 64] for the single-block format, \
+                         got {bits_per_value}"
                     )));
                 }
-                Ok(((value_count as i64) * (bits_per_value as i64) + 7) / 8)
+                let values_per_block = 64 / bits_per_value;
+                Ok((value_count as u64).div_ceil(values_per_block as u64) as i32)
             }
         }
     }
+
+    /// Returns whether this format supports `bits_per_value`.
+    ///
+    /// Equivalent to `PackedInts.Format.isSupported(int)`.
+    pub fn is_supported(&self, bits_per_value: i32) -> bool {
+        match self {
+            Format::Packed => (1..=64).contains(&bits_per_value),
+            Format::PackedSingleBlock => Packed64SingleBlock::is_supported(bits_per_value),
+        }
+    }
+
+    /// Returns the padding this format spends per value, in bits.
+    ///
+    /// Equivalent to `PackedInts.Format.overheadPerValue(int)`.
+    pub fn overhead_per_value(&self, bits_per_value: i32) -> f32 {
+        debug_assert!(self.is_supported(bits_per_value));
+        match self {
+            Format::Packed => 0f32,
+            Format::PackedSingleBlock => {
+                let values_per_block = 64 / bits_per_value;
+                let overhead = 64 % bits_per_value;
+                overhead as f32 / values_per_block as f32
+            }
+        }
+    }
+
+    /// Returns the padding per value divided by the width.
+    ///
+    /// Equivalent to `PackedInts.Format.overheadRatio(int)`.
+    pub fn overhead_ratio(&self, bits_per_value: i32) -> f32 {
+        debug_assert!(self.is_supported(bits_per_value));
+        self.overhead_per_value(bits_per_value) / bits_per_value as f32
+    }
+}
+
+/// A format paired with a number of bits per value.
+///
+/// Equivalent to the record `PackedInts.FormatAndBits`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct FormatAndBits {
+    /// The layout to use.
+    pub format: Format,
+    /// The number of bits each value occupies.
+    pub bits_per_value: i32,
 }
 
 /// Write `values` using the `Format::Packed` bit-packed encoding, without a
@@ -186,7 +424,7 @@ pub fn write_packed_ints_no_header(
     padded.resize(total_values, 0);
 
     let mut blocks = vec![0u8; total_blocks];
-    encoder.encode_longs_to_bytes(&padded, 0, &mut blocks, 0, iterations)?;
+    encoder.encode_longs_to_byte_blocks(&padded, 0, &mut blocks, 0, iterations)?;
 
     let byte_count = ((num_values * bits_per_value as i64 + 7) / 8) as usize;
     out.write_bytes(&blocks, 0, byte_count)?;
@@ -229,180 +467,9 @@ pub fn read_packed_ints_no_header(
     input.read_bytes(&mut blocks, 0, byte_count)?;
 
     let mut values = vec![0i64; iterations * values_per_block];
-    decoder.decode_bytes_to_longs(&blocks, 0, &mut values, 0, iterations)?;
+    decoder.decode_byte_blocks_to_longs(&blocks, 0, &mut values, 0, iterations)?;
     values.truncate(num_values as usize);
     Ok(values)
-}
-
-// -----------------------------------------------------------------------------
-// Generic bit-packed encoder/decoder (Format.PACKED)
-// -----------------------------------------------------------------------------
-
-pub(crate) struct BulkOperationPacked {
-    bits_per_value: usize,
-    byte_block_count: usize,
-    byte_value_count: usize,
-    mask: u64,
-}
-
-impl BulkOperationPacked {
-    pub fn new(bits_per_value: usize) -> Result<Self> {
-        if !(1..=64).contains(&bits_per_value) {
-            return Err(LuceneError::IllegalArgument(format!(
-                "bitsPerValue must be in [1, 64], got {bits_per_value}"
-            )));
-        }
-
-        let mut long_block_count = bits_per_value;
-        while (long_block_count & 1) == 0 {
-            long_block_count >>= 1;
-        }
-        let long_value_count = 64 * long_block_count / bits_per_value;
-
-        let mut byte_block_count = 8 * long_block_count;
-        let mut byte_value_count = long_value_count;
-        while (byte_block_count & 1) == 0 && (byte_value_count & 1) == 0 {
-            byte_block_count >>= 1;
-            byte_value_count >>= 1;
-        }
-
-        let mask = if bits_per_value == 64 {
-            u64::MAX
-        } else {
-            (1u64 << bits_per_value) - 1
-        };
-
-        Ok(Self {
-            bits_per_value,
-            byte_block_count,
-            byte_value_count,
-            mask,
-        })
-    }
-
-    pub fn byte_block_count(&self) -> usize {
-        self.byte_block_count
-    }
-
-    pub fn byte_value_count(&self) -> usize {
-        self.byte_value_count
-    }
-
-    pub fn encode_longs_to_bytes(
-        &self,
-        values: &[i64],
-        values_offset: usize,
-        blocks: &mut [u8],
-        blocks_offset: usize,
-        iterations: usize,
-    ) -> Result<()> {
-        let total_values = iterations * self.byte_value_count;
-        let total_blocks = iterations * self.byte_block_count;
-
-        if values_offset + total_values > values.len() {
-            return Err(LuceneError::IllegalArgument(
-                "value buffer too small for encoding".to_string(),
-            ));
-        }
-        if blocks_offset + total_blocks > blocks.len() {
-            return Err(LuceneError::IllegalArgument(
-                "block buffer too small for encoding".to_string(),
-            ));
-        }
-
-        let bpv = self.bits_per_value;
-        let mut next_block: u8 = 0;
-        let mut bits_left: usize = 8;
-        let mut block_off = blocks_offset;
-
-        for i in 0..total_values {
-            let v = (values[values_offset + i] as u64) & self.mask;
-
-            if bpv < bits_left {
-                next_block |= (v << (bits_left - bpv)) as u8;
-                bits_left -= bpv;
-            } else {
-                let mut bits = bpv - bits_left;
-                blocks[block_off] = next_block | (v >> bits) as u8;
-                block_off += 1;
-
-                while bits >= 8 {
-                    bits -= 8;
-                    blocks[block_off] = (v >> bits) as u8;
-                    block_off += 1;
-                }
-
-                bits_left = 8 - bits;
-                next_block = if bits == 0 {
-                    0
-                } else {
-                    ((v & ((1u64 << bits) - 1)) << bits_left) as u8
-                };
-            }
-        }
-
-        debug_assert_eq!(block_off, blocks_offset + total_blocks);
-        debug_assert_eq!(bits_left, 8);
-        Ok(())
-    }
-
-    pub fn decode_bytes_to_longs(
-        &self,
-        blocks: &[u8],
-        blocks_offset: usize,
-        values: &mut [i64],
-        values_offset: usize,
-        iterations: usize,
-    ) -> Result<()> {
-        let total_blocks = iterations * self.byte_block_count;
-        let total_values = iterations * self.byte_value_count;
-
-        if blocks_offset + total_blocks > blocks.len() {
-            return Err(LuceneError::IllegalArgument(
-                "block buffer too small for decoding".to_string(),
-            ));
-        }
-        if values_offset + total_values > values.len() {
-            return Err(LuceneError::IllegalArgument(
-                "value buffer too small for decoding".to_string(),
-            ));
-        }
-
-        let bpv = self.bits_per_value;
-        let mut next_value: u64 = 0;
-        let mut bits_left: usize = bpv;
-        let mut value_off = values_offset;
-
-        for byte in blocks.iter().skip(blocks_offset).take(total_blocks) {
-            let byte = *byte as u64;
-
-            if bits_left > 8 {
-                next_value |= byte << (bits_left - 8);
-                bits_left -= 8;
-            } else {
-                let mut bits = 8 - bits_left;
-                values[value_off] = (next_value | (byte >> bits)) as i64;
-                value_off += 1;
-
-                while bits >= bpv {
-                    bits -= bpv;
-                    values[value_off] = ((byte >> bits) & self.mask) as i64;
-                    value_off += 1;
-                }
-
-                bits_left = bpv - bits;
-                next_value = if bits == 0 {
-                    0
-                } else {
-                    (byte & ((1u64 << bits) - 1)) << bits_left
-                };
-            }
-        }
-
-        debug_assert_eq!(bits_left, bpv);
-        debug_assert_eq!(next_value, 0);
-        Ok(())
-    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1072,75 +1139,94 @@ impl LongValues for DirectMonotonicReader {
 // BlockPackedWriter / BlockPackedReaderIterator
 // -----------------------------------------------------------------------------
 
+/// Writes large sequences of longs, block by block.
+///
+/// Equivalent to `org.apache.lucene.util.packed.BlockPackedWriter`.
+///
+/// The sequence is divided into fixed-size blocks; each block stores the
+/// difference between every value and the block minimum in as few bits as
+/// possible. Each block costs between one and ten bytes of header.
+///
+/// The format of each block is a token byte whose upper seven bits hold the
+/// number of bits per value and whose lowest bit says the minimum is zero,
+/// then, when it is not, a zig-zag encoded variable-length minimum, then the
+/// packed differences — or nothing at all when the block needs no bits.
+///
+/// See [`BlockPackedReaderIterator`] for the reading side.
 pub struct BlockPackedWriter<'a> {
-    out: &'a mut dyn DataOutput,
-    values: Vec<i64>,
-    blocks: Vec<u8>,
-    off: usize,
-    ord: i64,
-    finished: bool,
-    block_size: usize,
+    base: AbstractBlockPackedWriter<'a>,
 }
 
-const MIN_BLOCK_SIZE: usize = 64;
-const MAX_BLOCK_SIZE: usize = 1 << 27;
-const MIN_VALUE_EQUALS_0: i32 = 1;
-const BPV_SHIFT: i32 = 1;
+const MIN_BLOCK_SIZE: usize = block_packed::MIN_BLOCK_SIZE;
+const MAX_BLOCK_SIZE: usize = block_packed::MAX_BLOCK_SIZE;
+const MIN_VALUE_EQUALS_0: i32 = block_packed::MIN_VALUE_EQUALS_0;
+const BPV_SHIFT: i32 = block_packed::BPV_SHIFT;
 
 impl<'a> BlockPackedWriter<'a> {
+    /// Creates a writer over blocks of `block_size` values.
+    ///
+    /// Equivalent to `new BlockPackedWriter(DataOutput, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `block_size` is not a
+    /// power of two in `[64, 1 << 27]`.
     pub fn new(out: &'a mut dyn DataOutput, block_size: usize) -> Result<Self> {
-        PackedInts::check_block_size(block_size, MIN_BLOCK_SIZE, MAX_BLOCK_SIZE)?;
         Ok(Self {
-            out,
-            values: vec![0i64; block_size],
-            blocks: Vec::new(),
-            off: 0,
-            ord: 0,
-            finished: false,
-            block_size,
+            base: AbstractBlockPackedWriter::new(out, block_size)?,
         })
     }
 
+    /// Appends a value.
+    ///
+    /// Equivalent to `AbstractBlockPackedWriter.add(long)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] once the writer is finished, or
+    /// the I/O error raised while flushing a full block.
     pub fn add(&mut self, value: i64) -> Result<()> {
-        if self.finished {
-            return Err(LuceneError::IllegalState(
-                "BlockPackedWriter is already finished".to_string(),
-            ));
-        }
-        if self.off == self.values.len() {
-            self.flush()?;
-        }
-        self.values[self.off] = value;
-        self.off += 1;
-        self.ord += 1;
-        Ok(())
+        AbstractBlockPackedWriterOps::add(self, value)
     }
 
+    /// Flushes everything buffered and closes the stream.
+    ///
+    /// Equivalent to `AbstractBlockPackedWriter.finish()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when already finished, or the I/O
+    /// error raised while flushing.
     pub fn finish(&mut self) -> Result<()> {
-        if self.finished {
-            return Err(LuceneError::IllegalState(
-                "BlockPackedWriter is already finished".to_string(),
-            ));
-        }
-        if self.off > 0 {
-            self.flush()?;
-        }
-        self.finished = true;
-        Ok(())
+        AbstractBlockPackedWriterOps::finish(self)
     }
 
+    /// Returns the number of values added so far.
+    ///
+    /// Equivalent to `AbstractBlockPackedWriter.ord()`.
     pub fn ord(&self) -> i64 {
-        self.ord
+        self.base.ord()
+    }
+}
+
+impl<'a> AbstractBlockPackedWriterOps<'a> for BlockPackedWriter<'a> {
+    fn base(&self) -> &AbstractBlockPackedWriter<'a> {
+        &self.base
+    }
+
+    fn base_mut(&mut self) -> &mut AbstractBlockPackedWriter<'a> {
+        &mut self.base
     }
 
     fn flush(&mut self) -> Result<()> {
-        debug_assert!(self.off > 0);
+        debug_assert!(self.base.off > 0);
+        let off = self.base.off;
 
         let mut min = i64::MAX;
         let mut max = i64::MIN;
-        for i in 0..self.off {
-            min = cmp::min(min, self.values[i]);
-            max = cmp::max(max, self.values[i]);
+        for i in 0..off {
+            min = cmp::min(min, self.base.values[i]);
+            max = cmp::max(max, self.base.values[i]);
         }
 
         let delta = max.wrapping_sub(min);
@@ -1151,44 +1237,32 @@ impl<'a> BlockPackedWriter<'a> {
         };
 
         if bits_required == 64 {
+            // no need to delta-encode
             min = 0;
         } else if min > 0 {
+            // make min as small as possible so that writeVLong requires fewer bytes
             let candidate = max.saturating_sub(PackedInts::max_value(bits_required));
             min = cmp::max(0, candidate);
         }
 
         let token = (bits_required << BPV_SHIFT) | if min == 0 { MIN_VALUE_EQUALS_0 } else { 0 };
-        self.out.write_byte(token as u8)?;
+        self.base.out.write_byte(token as u8)?;
 
         if min != 0 {
             let encoded = BitUtil::zig_zag_encode_long(min).wrapping_sub(1);
-            write_block_packed_v_long(self.out, encoded)?;
+            write_block_packed_v_long(self.base.out, encoded)?;
         }
 
         if bits_required > 0 {
             if min != 0 {
-                for i in 0..self.off {
-                    self.values[i] -= min;
+                for i in 0..off {
+                    self.base.values[i] -= min;
                 }
             }
-            self.write_values(bits_required)?;
+            self.base.write_values(bits_required)?;
         }
 
-        self.off = 0;
-        Ok(())
-    }
-
-    fn write_values(&mut self, bits_required: i32) -> Result<()> {
-        let encoder = BulkOperationPacked::new(bits_required as usize)?;
-        let iterations = self.block_size / encoder.byte_value_count();
-        let blocks_size = iterations * encoder.byte_block_count();
-        self.blocks.resize(blocks_size, 0);
-
-        self.values[self.off..].fill(0);
-        encoder.encode_longs_to_bytes(&self.values, 0, &mut self.blocks, 0, iterations)?;
-
-        let block_count = (self.off * (bits_required as usize)).div_ceil(8);
-        self.out.write_bytes(&self.blocks, 0, block_count)?;
+        self.base.off = 0;
         Ok(())
     }
 }
@@ -1201,15 +1275,8 @@ impl<'a> BlockPackedWriter<'a> {
 /// unbounded loop would spend ten bytes on a negative value — the block minimum
 /// of a delta-encoded block is routinely negative — which Lucene's reader,
 /// bounded to nine, would decode as a different number.
-fn write_block_packed_v_long(out: &mut dyn DataOutput, mut i: i64) -> Result<()> {
-    let mut written = 0;
-    while (i & !0x7Fi64) != 0 && written < 8 {
-        out.write_byte(((i & 0x7F) | 0x80) as u8)?;
-        i = (i as u64 >> 7) as i64;
-        written += 1;
-    }
-    out.write_byte(i as u8)?;
-    Ok(())
+fn write_block_packed_v_long(out: &mut dyn DataOutput, i: i64) -> Result<()> {
+    block_packed::write_v_long(out, i)
 }
 
 /// Reads the variable-length `long` `BlockPackedWriter` emits.
@@ -1417,7 +1484,13 @@ impl<'a> BlockPackedReaderIterator<'a> {
             )? as usize;
             self.input.read_bytes(&mut self.blocks, 0, blocks_count)?;
 
-            decoder.decode_bytes_to_longs(&self.blocks, 0, &mut self.values, 0, iterations)?;
+            decoder.decode_byte_blocks_to_longs(
+                &self.blocks,
+                0,
+                &mut self.values,
+                0,
+                iterations,
+            )?;
 
             if min_value != 0 {
                 // `values[i] += minValue` on `long`s in Java
