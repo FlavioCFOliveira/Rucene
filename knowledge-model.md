@@ -361,17 +361,31 @@ RETURN c.portState AS state, count(c) AS types
 ORDER BY types DESC
 ```
 
-At `5ab413c` (2026-08-30): `unported` 672, `candidate` 294, `ported` 230, over an in-scope
+At `a17a6d9` (2026-08-30): `unported` 581, `candidate` 293, `ported` 322, over an in-scope
 surface of 1,196 top-level `lucene/core` types.
 
 To list what is missing in one package, add `AND c.package = '…'` and return
 `c.qualifiedName`.
 
-`org.apache.lucene.index` is the package the port has driven furthest: at
-`5ab413c` it stands at 162 `ported`, 40 `candidate` and **1 `unported`**
-(`VectorValuesConsumer`, which task #109 is delivering). Sixteen of those ports
-carry a `note` on their `PORTS` edge recording a declared divergence — read them
-before assuming a type is complete.
+Five package trees now have **no `unported` type left**: `org.apache.lucene.index`
+(one remaining, `VectorValuesConsumer`, which task #109 is delivering), every
+`org.apache.lucene.codecs.*` package, `org.apache.lucene.util.quantization`,
+`org.apache.lucene.analysis` and `org.apache.lucene.analysis.standard`.
+
+The dominant gap is `org.apache.lucene.search`: **221 types, 2 ported**. It is
+the largest package of the core and is essentially unstarted, which is why the
+ported `document` queries carry a predicate rather than a `Weight`/`Scorer` —
+there is no query hierarchy to attach them to. Behind it sit the packages
+`search` will need: `util.packed` (44 unported), `util.fst` (24),
+`internal.hppc` (27), `util.automaton` (21) and `internal.vectorization` (21).
+
+**Around sixty ports carry a `note` on their `PORTS` edge recording a declared
+divergence** — read them before assuming a type is complete. Query them with:
+
+```cypher
+MATCH (t)-[e:PORTS]->(c:Class) WHERE e.note IS NOT NULL
+RETURN c.qualifiedName AS lucene, e.note AS divergence
+```
 
 ### What to do next
 
