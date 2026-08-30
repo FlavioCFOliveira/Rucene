@@ -361,11 +361,17 @@ RETURN c.portState AS state, count(c) AS types
 ORDER BY types DESC
 ```
 
-At `7af30c2` (2026-08-30): `unported` 726, `candidate` 298, `ported` 172, over an in-scope
+At `5ab413c` (2026-08-30): `unported` 672, `candidate` 294, `ported` 230, over an in-scope
 surface of 1,196 top-level `lucene/core` types.
 
 To list what is missing in one package, add `AND c.package = '…'` and return
 `c.qualifiedName`.
+
+`org.apache.lucene.index` is the package the port has driven furthest: at
+`5ab413c` it stands at 162 `ported`, 40 `candidate` and **1 `unported`**
+(`VectorValuesConsumer`, which task #109 is delivering). Sixteen of those ports
+carry a `note` on their `PORTS` edge recording a declared divergence — read them
+before assuming a type is complete.
 
 ### What to do next
 
