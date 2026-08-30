@@ -6,6 +6,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod doc_id_set;
 pub mod doc_id_set_iterator;
 pub mod knn;
 pub mod reference_manager;

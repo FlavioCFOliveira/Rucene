@@ -15,6 +15,7 @@ pub mod document;
 pub mod error;
 pub mod geo;
 pub mod index;
+pub mod internal;
 pub mod search;
 pub mod store;
 pub mod util;

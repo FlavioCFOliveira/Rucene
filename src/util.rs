@@ -8,20 +8,44 @@
 
 #![deny(unsafe_code)]
 
+pub mod accountables;
+pub mod annotations;
 pub mod attribute;
 pub mod automaton;
+pub mod bit_set;
 pub mod byte_block_pool;
+pub mod bytes_ref_array;
 pub mod bytes_ref_hash;
 pub mod chars_ref;
+pub mod collection_util;
+pub mod command_line_util;
 /// LZ4 and lowercase-ASCII compression utilities.
 pub mod compress;
+pub mod concurrent;
+pub mod doc_id_set;
 pub mod extra;
 pub mod file_deleter;
+pub mod info_stream;
+pub mod int_block_pool;
+pub mod io_function;
+pub mod jvm;
+pub mod long_heap;
+pub mod math_util;
+pub mod misc;
+pub mod offline_sorter;
 pub mod packed;
+pub mod paged_bytes;
 pub mod quantization;
+pub mod refs;
+pub mod resource_loader;
+pub mod ring_buffer;
 pub mod selector;
+pub mod sloppy_math;
 pub mod small_float;
+pub mod sorter;
+pub mod spi;
 pub mod string_helper;
+pub mod unicode_util;
 
 /// Block KD-tree utilities ported from `org.apache.lucene.util.bkd`.
 pub mod bkd;
@@ -34,6 +58,63 @@ pub mod hnsw;
 
 /// Vector arithmetic primitives ported from `org.apache.lucene.util.VectorUtil`.
 pub mod vector_util;
+
+pub use accountables::{AccountableTree, Accountables, NamedAccountable};
+pub use annotations::{IgnoreRandomChains, SuppressForbidden};
+pub use bit_set::{
+    bit_set_of, check_unpositioned, BitSet, BitSetIterator, DocBaseBitSetIterator, FixedBits,
+    LiveDocs,
+};
+pub use bytes_ref_array::{
+    BytesRefArray, BytesRefBlockPool, BytesRefIterator, EmptyBytesRefIterator,
+    FixedLengthBytesRefArray, IndexedBytesRefIterator, SortState, SortableBytesRefArray,
+};
+pub use collection_util::{
+    intro_sort as collection_intro_sort, intro_sort_by, new_hash_map, new_hash_set,
+    tim_sort as collection_tim_sort, tim_sort_by,
+};
+pub use command_line_util::{CommandLineUtil, FSDirectoryKind};
+pub use concurrent::{
+    Counter, NamedThreadFactory, SameThreadExecutorService, SetOnce, WeakIdentityMap,
+};
+pub use doc_id_set::{
+    BitDocIdSet, BulkAdder, DocIdSetBuilder, IntArrayDocIdSet, IntArrayDocIdSetIterator,
+    NotDocIdSet,
+};
+pub use info_stream::{JavaLoggingInfoStream, PrintStreamInfoStream};
+pub use int_block_pool::{
+    ByteBlockAllocator, DirectIntAllocator, IntBlockAllocator, IntBlockPool,
+    RecyclingByteBlockAllocator, RecyclingIntBlockAllocator, INT_BLOCK_MASK, INT_BLOCK_SHIFT,
+    INT_BLOCK_SIZE,
+};
+pub use io_function::{
+    FilterIterator, FloatToFloatFunction, IOBooleanSupplier, IOConsumer, IOFunction, IOSupplier,
+};
+pub use jvm::{HotspotVMOptions, MethodClass, VirtualMethod};
+pub use long_heap::{LongHeap, TernaryLongHeap};
+pub use math_util::MathUtil;
+pub use misc::{MapOfSets, SentinelIntSet, StrictStringTokenizer, TermAndVector, ToStringUtils};
+pub use offline_sorter::{
+    BufferSize, ByteSequencesReader, ByteSequencesWriter, OfflineSorter, OfflineSorterComparator,
+    SortInfo,
+};
+pub use paged_bytes::{PagedBytes, PagedBytesDataInput, PagedBytesDataOutput, PagedBytesReader};
+pub use refs::{CharsRefBuilder, IntsRefBuilder, LongsRef, EMPTY_LONGS};
+pub use resource_loader::{
+    ClassLoader, ClassLoaderUtils, ClassRegistry, ClasspathResourceLoader, ModuleResourceLoader,
+    ResourceLoader, ResourceLoaderAware,
+};
+pub use ring_buffer::{FrequencyTrackingRingBuffer, Resettable, RollingBuffer};
+pub use sloppy_math::SloppyMath;
+pub use sorter::{
+    ArrayInPlaceMergeSorter, ArrayIntroSorter, ArrayTimSorter, BytesRefComparator,
+    InPlaceMergeSorter, LSBRadixSorter, MSBRadixSorter, MSBRadixSorterOps, MergeSorter,
+    NaturalBytesRefComparator, Sorter, StableMSBRadixSorter, StableMSBRadixSorterOps,
+    StableStringSorter, StableStringSorterOps, StringSorter, StringSorterComparator,
+    StringSorterOps, TimSorter, TimSorterState,
+};
+pub use spi::{NamedSPI, NamedSPILoader};
+pub use unicode_util::{UTF8CodePoint, UnicodeUtil};
 
 pub use attribute::{
     unwrap_all, AsUnwrappable, Attribute, AttributeFactory, AttributeImpl, AttributeReflector,
