@@ -2,17 +2,18 @@
 //! `MatchesIterator` and the part of `MatchesUtils` that the query-execution
 //! spine needs.
 //!
-//! Only the two interfaces and the `MATCH_WITH_NO_TERMS` singleton are ported
-//! here, because they are what [`Weight::matches`](crate::search::Weight::matches)
-//! is defined in terms of. The rest of `MatchesUtils` — the amalgamating and
-//! disjunction helpers — belongs with the queries that build composite matches
-//! and is not part of the execution spine.
+//! The two interfaces, the `MATCH_WITH_NO_TERMS` singleton and
+//! `MatchesUtils.fromSubMatches` are ported here: the first two are what
+//! [`Weight::matches`](crate::search::Weight::matches) is defined in terms of,
+//! and the third is what the boolean and disjunction-max weights amalgamate
+//! their clauses with. The rest of `MatchesUtils` belongs with the queries that
+//! build composite matches.
 
 #![deny(unsafe_code)]
 
 use std::sync::{Arc, LazyLock};
 
-use crate::error::Result;
+use crate::error::{LuceneError, Result};
 use crate::search::query::Query;
 
 /// Reports the positions, and optionally the offsets, of all the matching terms
@@ -160,5 +161,84 @@ impl MatchesUtils {
     /// value is built behind a [`LazyLock`].
     pub fn match_with_no_terms() -> Arc<dyn Matches> {
         Arc::clone(&MATCH_WITH_NO_TERMS)
+    }
+
+    /// Amalgamates a collection of [`Matches`] into a single object, or returns
+    /// `None` when the collection is empty.
+    ///
+    /// Equivalent to `MatchesUtils.fromSubMatches(List<Matches>)`, which
+    /// `BooleanWeight.matches` and `DisjunctionMaxQuery`'s weight call. Java
+    /// filters the shared `MATCH_WITH_NO_TERMS` singleton out by reference
+    /// identity; [`Arc::ptr_eq`] against
+    /// [`match_with_no_terms`](Self::match_with_no_terms) is exactly that test.
+    pub fn from_sub_matches(sub_matches: Vec<Arc<dyn Matches>>) -> Option<Arc<dyn Matches>> {
+        if sub_matches.is_empty() {
+            return None;
+        }
+        let no_terms = Self::match_with_no_terms();
+        let sm: Vec<Arc<dyn Matches>> = sub_matches
+            .iter()
+            .filter(|m| !Arc::ptr_eq(m, &no_terms))
+            .map(Arc::clone)
+            .collect();
+        if sm.is_empty() {
+            return Some(no_terms);
+        }
+        if sm.len() == 1 {
+            return Some(Arc::clone(&sm[0]));
+        }
+        Some(Arc::new(CompositeMatches { sm, sub_matches }))
+    }
+}
+
+/// The amalgamation of several [`Matches`].
+///
+/// Equivalent to the anonymous class `MatchesUtils.fromSubMatches` returns when
+/// more than one sub-match survives the filtering.
+struct CompositeMatches {
+    /// The sub-matches that carry terms.
+    sm: Vec<Arc<dyn Matches>>,
+    /// Every sub-match, including the term-less ones; this is what
+    /// `getSubMatches()` returns.
+    sub_matches: Vec<Arc<dyn Matches>>,
+}
+
+impl Matches for CompositeMatches {
+    fn get_matches(&self, field: &str) -> Result<Option<Box<dyn MatchesIterator>>> {
+        let mut sub_iterators = Vec::with_capacity(self.sm.len());
+        for matches in &self.sm {
+            if let Some(iterator) = matches.get_matches(field)? {
+                sub_iterators.push(iterator);
+            }
+        }
+        // Equivalent to `DisjunctionMatchesIterator.fromSubIterators`, whose
+        // empty and single-iterator cases are these two.
+        match sub_iterators.len() {
+            0 => Ok(None),
+            1 => Ok(sub_iterators.pop()),
+            _ => Err(LuceneError::UnsupportedOperation(
+                "combining the match positions of several clauses needs \
+                 org.apache.lucene.search.DisjunctionMatchesIterator, which is not ported yet"
+                    .to_string(),
+            )),
+        }
+    }
+
+    fn get_sub_matches(&self) -> Vec<Arc<dyn Matches>> {
+        self.sub_matches.clone()
+    }
+
+    fn fields(&self) -> Vec<String> {
+        // For each sub-match, iterate its fields and return the distinct set,
+        // in first-seen order.
+        let mut fields: Vec<String> = Vec::new();
+        for matches in &self.sm {
+            for field in matches.fields() {
+                if !fields.contains(&field) {
+                    fields.push(field);
+                }
+            }
+        }
+        fields
     }
 }

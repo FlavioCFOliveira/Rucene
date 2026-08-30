@@ -49,7 +49,13 @@ impl DisjunctionMaxScorer {
         lead_cost: i64,
     ) -> Result<Self> {
         let mut base = DisjunctionScorer::new(sub_scorers, score_mode, lead_cost)?;
-        if !(0.0..=1.0).contains(&tie_breaker_multiplier) {
+        // Spelled as Lucene spells it (`DisjunctionMaxScorer.java:49`) rather
+        // than with a range `contains`: Java's `< 0 || > 1` lets a NaN tie
+        // breaker through, because every comparison against NaN is false, while
+        // `(0.0..=1.0).contains` would reject it. Same guard as
+        // `DisjunctionMaxQuery::new`.
+        #[allow(clippy::manual_range_contains)]
+        if tie_breaker_multiplier < 0.0 || tie_breaker_multiplier > 1.0 {
             return Err(LuceneError::IllegalArgument(
                 "tieBreakerMultiplier must be in [0, 1]".to_string(),
             ));
@@ -98,7 +104,10 @@ impl Scorable for DisjunctionMaxScorer {
                 other_score_sum += f64::from(sub_score);
             }
         }
-        Ok((f64::from(score_max) + other_score_sum * f64::from(self.tie_breaker_multiplier)) as f32)
+        Ok(
+            (f64::from(score_max) + other_score_sum * f64::from(self.tie_breaker_multiplier))
+                as f32,
+        )
     }
 
     fn set_min_competitive_score(&mut self, min_score: f32) -> Result<()> {
@@ -177,7 +186,8 @@ impl Scorer for DisjunctionMaxScorer {
             // up. In order to avoid this issue, we compute an upper bound of the
             // value that the sum may take. If the max relative error is b, then
             // it means that two sums are always within 2*b of each other.
-            other_score_sum *= 1.0 + 2.0 * MathUtil::sum_relative_error_bound(num_clauses as i32 - 1);
+            other_score_sum *=
+                1.0 + 2.0 * MathUtil::sum_relative_error_bound(num_clauses as i32 - 1);
             Ok(
                 (f64::from(score_max) + other_score_sum * f64::from(self.tie_breaker_multiplier))
                     as f32,

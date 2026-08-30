@@ -87,7 +87,11 @@ impl<T, O: IndexOrder<T>> IndexPriorityQueue<T, O> {
     /// Panics when `i` is not less than [`size`](Self::size), matching
     /// `Objects.checkIndex`.
     pub fn get(&self, i: usize) -> usize {
-        assert!(i < self.size, "index {i} out of bounds for size {}", self.size);
+        assert!(
+            i < self.size,
+            "index {i} out of bounds for size {}",
+            self.size
+        );
         self.heap[1 + i]
     }
 

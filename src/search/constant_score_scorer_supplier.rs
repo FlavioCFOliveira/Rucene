@@ -7,7 +7,12 @@ use std::fmt::Debug;
 
 use crate::error::{LuceneError, Result};
 use crate::search::bulk_scorer::{BulkScorer, DefaultBulkScorer};
+use crate::search::conjunction_disi::ConjunctionMember;
+use crate::search::constant_score_bulk_scorer::ConstantScoreBulkScorer;
 use crate::search::constant_score_scorer::ConstantScoreScorer;
+use crate::search::dense_conjunction_bulk_scorer::{
+    DenseConjunctionBulkScorer, DENSITY_THRESHOLD_INVERSE, WINDOW_SIZE,
+};
 use crate::search::doc_id_set_iterator::{self, DocIdSetIterator};
 use crate::search::score_mode::ScoreMode;
 use crate::search::scorer::Scorer;
@@ -45,13 +50,6 @@ pub trait ConstantScoreIteratorSupplier: Debug {
 /// `org.apache.lucene.search.ConstantScoreScorerSupplier`. Supply the iteration
 /// as a [`ConstantScoreIteratorSupplier`] and wrap it here.
 ///
-/// **Divergence from Lucene 10.5.0.** Java's `bulkScorer()` picks between
-/// `DenseConjunctionBulkScorer`, `ConstantScoreBulkScorer` and
-/// `Weight.DefaultBulkScorer` depending on the density of the iterator and on
-/// whether scores are needed. The first two are bulk-scoring specialisations
-/// that are not part of the query-execution spine and are not ported yet, so
-/// this port always uses [`DefaultBulkScorer`]. The hits collected and their
-/// scores are identical; only the throughput on very dense iterators differs.
 #[derive(Debug)]
 pub struct ConstantScoreScorerSupplier<I: ConstantScoreIteratorSupplier> {
     score_mode: ScoreMode,
@@ -187,6 +185,47 @@ impl<I: ConstantScoreIteratorSupplier> ScorerSupplier for ConstantScoreScorerSup
     }
 
     fn bulk_scorer(&mut self) -> Result<Box<dyn BulkScorer>> {
-        Ok(Box::new(DefaultBulkScorer::new(self.get(i64::MAX)?)))
+        let iterator = self.inner.iterator(i64::MAX)?;
+        if self.max_doc >= WINDOW_SIZE / 2
+            && iterator.cost() >= i64::from(self.max_doc / DENSITY_THRESHOLD_INVERSE)
+        {
+            let member = match iterator {
+                ScorerIterator::Simple(iterator) => ConjunctionMember::from_iterator(iterator),
+                ScorerIterator::TwoPhase(two_phase) => ConjunctionMember::from_two_phase(two_phase),
+            };
+            return Ok(Box::new(DenseConjunctionBulkScorer::new(
+                vec![member],
+                self.max_doc,
+                self.score,
+            )?));
+        }
+        if !self.score_mode.needs_scores() {
+            // Collect window by window through `into_bit_set`. For a two-phase
+            // iterator this confirms matches in its (possibly bulk)
+            // `into_bit_set`; the only overhead over a plain leap-frog is the
+            // reusable window bit set, which buys batched live-docs masking and
+            // bulk collection in return.
+            let bulk_scorer = match iterator {
+                ScorerIterator::Simple(iterator) => {
+                    ConstantScoreBulkScorer::from_iterator(self.score, self.score_mode, iterator)?
+                }
+                ScorerIterator::TwoPhase(two_phase) => {
+                    ConstantScoreBulkScorer::from_two_phase(self.score, self.score_mode, two_phase)?
+                }
+            };
+            return Ok(Box::new(bulk_scorer));
+        }
+        let scorer: Box<dyn Scorer> =
+            match iterator {
+                ScorerIterator::Simple(iterator) => Box::new(ConstantScoreScorer::from_iterator(
+                    self.score,
+                    self.score_mode,
+                    iterator,
+                )),
+                ScorerIterator::TwoPhase(two_phase) => Box::new(
+                    ConstantScoreScorer::from_two_phase(self.score, self.score_mode, two_phase),
+                ),
+            };
+        Ok(Box::new(DefaultBulkScorer::new(scorer)))
     }
 }

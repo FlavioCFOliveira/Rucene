@@ -83,7 +83,8 @@ impl MaxScoreCache {
             let old_length = self.max_score_cache.len();
             // `ArrayUtil.grow` over-allocates; the exact capacity does not
             // change any observable behaviour, only the number of resizes.
-            self.max_score_cache.resize(size.max(old_length * 2 + 1), 0.0);
+            self.max_score_cache
+                .resize(size.max(old_length * 2 + 1), 0.0);
             self.max_score_cache_up_to
                 .resize(self.max_score_cache.len(), -1);
         }

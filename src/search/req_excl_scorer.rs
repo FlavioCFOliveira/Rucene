@@ -220,7 +220,8 @@ impl ReqExclScorer {
 
         // Equivalent to the branch `ReqExclScorer.twoPhaseIterator()` takes to
         // pick which clause it confirms first.
-        let check_req_first = !req_two_phase || (excl_two_phase && req_match_cost <= excl_match_cost);
+        let check_req_first =
+            !req_two_phase || (excl_two_phase && req_match_cost <= excl_match_cost);
 
         Self {
             inner: ReqExclTwoPhase {

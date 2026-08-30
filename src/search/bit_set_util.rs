@@ -200,7 +200,12 @@ pub fn apply_mask(accept_docs: &dyn Bits, bit_set: &mut FixedBitSet, offset: i32
 ///
 /// Never fails; the signature mirrors [`for_each`] so that call sites read the
 /// same.
-pub fn collect_set_bits(bit_set: &FixedBitSet, from: usize, to: usize, base: i32) -> Result<Vec<i32>> {
+pub fn collect_set_bits(
+    bit_set: &FixedBitSet,
+    from: usize,
+    to: usize,
+    base: i32,
+) -> Result<Vec<i32>> {
     let mut docs = Vec::new();
     let to = to.min(bit_set.length());
     let mut doc = next_set_bit(bit_set, from);

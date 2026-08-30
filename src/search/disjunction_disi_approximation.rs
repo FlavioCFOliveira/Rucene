@@ -84,8 +84,7 @@ impl DisjunctionDISIApproximation {
         // Sort by descending cost. Java uses a stable sort, and so does this.
         order.sort_by(|a, b| sub_iterators[*b].cost.cmp(&sub_iterators[*a].cost));
 
-        let mut wrappers: Vec<Option<DisiWrapper>> =
-            sub_iterators.into_iter().map(Some).collect();
+        let mut wrappers: Vec<Option<DisiWrapper>> = sub_iterators.into_iter().map(Some).collect();
         let mut sorted: Vec<DisiWrapper> = Vec::with_capacity(wrappers.len());
         // `original_order[i]` is where the i-th supplied clause landed.
         let mut original_order = vec![0usize; wrappers.len()];
@@ -105,7 +104,8 @@ impl DisjunctionDISIApproximation {
             reorder_threshold = i64::MAX;
         }
 
-        let mut cost: i64 = 0; // track total cost
+        // track total cost
+        let mut cost: i64 = 0;
         // Split `wrappers` into those that will remain out of the PQ, and those
         // that will go in (PQ entries at the end). `last_idx` is the last index
         // of the wrappers that will remain out.
@@ -266,7 +266,9 @@ impl DocIdSetIterator for DisjunctionDISIApproximation {
 
     fn advance(&mut self, target: i32) -> Result<i32> {
         while self.wrappers[self.lead_top].doc < target {
-            let next = self.wrappers[self.lead_top].approximation().advance(target)?;
+            let next = self.wrappers[self.lead_top]
+                .approximation()
+                .advance(target)?;
             self.wrappers[self.lead_top].doc = next;
             self.lead_top = self
                 .lead_iterators

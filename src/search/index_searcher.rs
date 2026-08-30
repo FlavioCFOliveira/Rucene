@@ -14,6 +14,7 @@ use crate::index::{
 use crate::search::boolean_clause::Occur;
 use crate::search::collection_terminated_exception::CollectionError;
 use crate::search::collector::{Collector, CollectorManager};
+use crate::search::constant_score_query::ConstantScoreQuery;
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::query::Query;
 use crate::search::query_cache::{QueryCache, QueryCachingPolicy};
@@ -936,20 +937,24 @@ impl IndexSearcher {
     /// counting the number of hits by collecting all matches, because the count
     /// is retrieved from the index statistics whenever possible.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java first rewrites
-    /// `new ConstantScoreQuery(query)` to pick up that query's extra rewrite
-    /// rules, and then applies a two-clause pure-disjunction optimisation that
-    /// inspects a `BooleanQuery`. Neither `ConstantScoreQuery` nor
-    /// `BooleanQuery` is part of the query-execution spine and neither is
-    /// ported yet, so this port rewrites the query as given and always counts
-    /// through [`TotalHitCountCollectorManager`]. The count returned is the
-    /// same; only the two optimisations are missing.
+    /// **Scope note.** Java also applies a two-clause pure-disjunction
+    /// optimisation, which answers `a OR b` from `count(a) + count(b) -
+    /// count(a AND b)` when both clauses are term queries and the intersection
+    /// is small. It rests on
+    /// `BooleanQuery.isTwoClausePureDisjunctionWithTerms()` and
+    /// `rewriteTwoClauseDisjunctionWithTermsForCount(IndexSearcher)`, both of
+    /// which are defined in terms of `TermQuery`; that query is not ported yet,
+    /// so the optimisation is absent. The count returned is the same.
     ///
     /// # Errors
     ///
     /// Propagates any I/O error raised while rewriting, weighting or counting.
     pub fn count(&self, query: Arc<dyn Query>) -> Result<i32> {
-        let query = self.rewrite(query)?;
+        // CSQ.rewrite may simplify the query -- don't need scores
+        let query = self.rewrite(Arc::new(ConstantScoreQuery::new(query)))?;
+
+        // Use the already-rewritten query directly, avoiding a redundant
+        // rewrite in `search_with_collector`.
         let collector_manager = TotalHitCountCollectorManager::new(self.get_slices()?);
         let first_collector = collector_manager.new_collector()?;
         let weight = self.create_weight(query, first_collector.score_mode(), 1.0)?;
@@ -1297,19 +1302,18 @@ impl IndexSearcher {
     /// when scores are not needed.
     ///
     /// Equivalent to the private `IndexSearcher.rewrite(Query, boolean)`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** When scores are not needed Java
-    /// rewrites `new ConstantScoreQuery(original)` instead of `original`, which
-    /// unlocks that query's extra rewrite rules. `ConstantScoreQuery` belongs to
-    /// the query package and is not ported yet, so this port rewrites the query
-    /// as given. The rewritten query matches the same documents; only some
-    /// simplifications are missed.
     fn rewrite_for_score_mode(
         &self,
         original: Arc<dyn Query>,
-        _needs_scores: bool,
+        needs_scores: bool,
     ) -> Result<Arc<dyn Query>> {
-        self.rewrite(original)
+        if needs_scores {
+            self.rewrite(original)
+        } else {
+            // Take advantage of the few extra rewrite rules of
+            // ConstantScoreQuery.
+            self.rewrite(Arc::new(ConstantScoreQuery::new(original)))
+        }
     }
 
     /// Returns an explanation of how `doc` scored against `query`.

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::error::Result;
 use crate::index::LeafReaderContext;
-use crate::search::matches::Matches;
+use crate::search::matches::{Matches, MatchesUtils};
 use crate::search::query::Query;
 use crate::search::scorer_supplier::ScorerSupplier;
 use crate::search::segment_cacheable::SegmentCacheable;
@@ -23,7 +23,11 @@ use crate::search::weight::Weight;
 /// `1.0E-10`. The same rendering exists in
 /// `crate::search::similarities::java_fmt`, but that module is private to the
 /// similarities package and cannot be reached from here without changing it.
-fn java_float_to_string(value: f32) -> String {
+///
+/// It is `pub(crate)` because `BoostQuery.toString` and
+/// `DisjunctionMaxQuery.toString` concatenate a float the same way, and their
+/// modules cannot reach the similarities package either.
+pub(crate) fn java_float_to_string(value: f32) -> String {
     if value.is_nan() {
         return "NaN".to_string();
     }
@@ -92,6 +96,42 @@ pub trait ConstantScoreWeightImpl: Send + Sync + Debug {
     fn count(&self, _context: &LeafReaderContext) -> Result<i32> {
         Ok(-1)
     }
+
+    /// Returns the [`Matches`] for a specific document, or `None` when the
+    /// document does not match.
+    ///
+    /// Equivalent to `Weight.matches(LeafReaderContext, int)`, which
+    /// `ConstantScoreWeight` does not override but some of its subclasses do —
+    /// `ConstantScoreQuery`'s weight delegates it to the wrapped weight. The
+    /// default reproduces `Weight`'s own.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while positioning the scorer.
+    fn matches(&self, context: &LeafReaderContext, doc: i32) -> Result<Option<Arc<dyn Matches>>> {
+        let scorer_supplier = self.scorer_supplier(context)?;
+        let Some(mut scorer_supplier) = scorer_supplier else {
+            return Ok(None);
+        };
+        let mut scorer = scorer_supplier.get(1)?;
+        if scorer.two_phase_iterator().is_some() {
+            let two_phase = scorer
+                .two_phase_iterator()
+                .expect("INVARIANT: the two-phase view was just observed to be present");
+            if two_phase.approximation().advance(doc)? != doc {
+                return Ok(None);
+            }
+            let two_phase = scorer
+                .two_phase_iterator()
+                .expect("INVARIANT: the two-phase view was just observed to be present");
+            if !two_phase.matches()? {
+                return Ok(None);
+            }
+        } else if scorer.iterator().advance(doc)? != doc {
+            return Ok(None);
+        }
+        Ok(Some(MatchesUtils::match_with_no_terms()))
+    }
 }
 
 /// A weight with a constant score equal to the boost of the wrapped query.
@@ -157,33 +197,7 @@ impl<I: ConstantScoreWeightImpl> Weight for ConstantScoreWeight<I> {
     }
 
     fn matches(&self, context: &LeafReaderContext, doc: i32) -> Result<Option<Arc<dyn Matches>>> {
-        // Reproduces Weight's default, which ConstantScoreWeight does not
-        // override; spelled out because a Rust trait's default body is not
-        // reachable as `super.matches(...)`.
-        let scorer_supplier = self.scorer_supplier(context)?;
-        let Some(mut scorer_supplier) = scorer_supplier else {
-            return Ok(None);
-        };
-        let mut scorer = scorer_supplier.get(1)?;
-        if scorer.two_phase_iterator().is_some() {
-            let two_phase = scorer
-                .two_phase_iterator()
-                .expect("INVARIANT: the two-phase view was just observed to be present");
-            if two_phase.approximation().advance(doc)? != doc {
-                return Ok(None);
-            }
-            let two_phase = scorer
-                .two_phase_iterator()
-                .expect("INVARIANT: the two-phase view was just observed to be present");
-            if !two_phase.matches()? {
-                return Ok(None);
-            }
-        } else if scorer.iterator().advance(doc)? != doc {
-            return Ok(None);
-        }
-        Ok(Some(
-            crate::search::matches::MatchesUtils::match_with_no_terms(),
-        ))
+        self.inner.matches(context, doc)
     }
 
     fn explain(&self, context: &LeafReaderContext, doc: i32) -> Result<Explanation> {

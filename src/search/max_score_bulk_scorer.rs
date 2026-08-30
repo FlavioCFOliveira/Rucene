@@ -129,9 +129,7 @@ impl MaxScoreBulkScorer {
                 //    than the filter, so the candidate stream is dense enough to
                 //    favor bulk bit-set gating over per-candidate filter
                 //    advance()
-                if min_scorer_cost >= filter.cost
-                    || (num_scorers > 4 && cost >= filter.cost)
-                {
+                if min_scorer_cost >= filter.cost || (num_scorers > 4 && cost >= filter.cost) {
                     filter_matches = Some(FixedBitSet::new(INNER_WINDOW_SIZE as usize));
                 }
             }
@@ -602,8 +600,9 @@ impl MaxScoreBulkScorer {
                         .scorer()
                         .advance_shallow(window_min)?;
                 }
-                self.wrappers[position].max_window_score =
-                    self.wrappers[position].scorer().get_max_score(window_max - 1)?;
+                self.wrappers[position].max_window_score = self.wrappers[position]
+                    .scorer()
+                    .get_max_score(window_max - 1)?;
             } else {
                 // This scorer has no documents in the considered window.
                 self.wrappers[position].max_window_score = 0.0;
@@ -700,8 +699,7 @@ impl MaxScoreBulkScorer {
         self.next_min_competitive_score = f32::INFINITY;
         for i in 0..len {
             let w = self.scratch[i];
-            let new_max_score_sum =
-                max_score_sum + f64::from(self.wrappers[w].max_window_score);
+            let new_max_score_sum = max_score_sum + f64::from(self.wrappers[w].max_window_score);
             let max_score_sum_float = MathUtil::sum_upper_bound(
                 new_max_score_sum,
                 self.first_essential_scorer as i32 + 1,
@@ -726,7 +724,8 @@ impl MaxScoreBulkScorer {
 
         self.essential_queue.clear();
         for i in self.first_essential_scorer..len {
-            self.essential_queue.add(&self.wrappers, self.all_scorers[i]);
+            self.essential_queue
+                .add(&self.wrappers, self.all_scorers[i]);
         }
 
         if self.first_essential_scorer == len - 1 {
@@ -737,8 +736,9 @@ impl MaxScoreBulkScorer {
             // competitive match, then we know that hits must match both the
             // essential clause and the best non-essential clause.
             self.first_required_scorer = len - 1;
-            let mut max_required_score =
-                f64::from(self.wrappers[self.all_scorers[self.first_essential_scorer]].max_window_score);
+            let mut max_required_score = f64::from(
+                self.wrappers[self.all_scorers[self.first_essential_scorer]].max_window_score,
+            );
 
             while self.first_required_scorer > 0 {
                 let mut max_possible_score_without_previous_clause = max_required_score;

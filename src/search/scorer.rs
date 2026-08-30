@@ -7,7 +7,7 @@ use crate::error::Result;
 use crate::index::DocAndFloatFeatureBuffer;
 use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::search::scorable::{ChildScorable, Scorable};
-use crate::search::two_phase_iterator::TwoPhaseIterator;
+use crate::search::two_phase_iterator::{ScorerIterator, TwoPhaseIterator};
 use crate::util::Bits;
 
 /// Common scoring functionality for the different types of queries.
@@ -125,6 +125,223 @@ pub trait Scorer: Scorable {
         }
         buffer.size = size;
         Ok(())
+    }
+}
+
+/// A [`DocIdSetIterator`] that owns the [`Scorer`] it iterates.
+///
+/// **Divergence from Lucene 10.5.0.** Java writes `scorer.iterator()` and hands
+/// the result to a `ConstantScoreScorer`, because the scorer stays alive
+/// independently of the iterator it lent out. Rust needs whoever iterates to own
+/// the iteration, so this adapter takes the scorer and forwards every call to
+/// `scorer.iterator()`. The one behaviour it cannot forward is
+/// [`DocIdSetIterator::doc_id_run_end`], which the port declares on `&self`
+/// while [`Scorer::iterator`] needs `&mut self`; it therefore falls back to the
+/// trait's default, `doc_id() + 1`. That is always a legal answer — the contract
+/// only requires the end of *a* run of matching doc IDs containing the current
+/// one — so it can cost a bulk scorer a larger window, never a different set of
+/// matches.
+pub struct ScorerAsIterator {
+    scorer: Box<dyn Scorer>,
+    cost: i64,
+}
+
+impl std::fmt::Debug for ScorerAsIterator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScorerAsIterator")
+            .field("cost", &self.cost)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ScorerAsIterator {
+    /// Takes ownership of the given scorer and iterates it.
+    ///
+    /// Equivalent to `scorer.iterator()`.
+    pub fn new(mut scorer: Box<dyn Scorer>) -> Self {
+        let cost = scorer.iterator().cost();
+        Self { scorer, cost }
+    }
+
+    /// Unwraps this view, returning the scorer it was built from.
+    pub fn into_scorer(self) -> Box<dyn Scorer> {
+        self.scorer
+    }
+}
+
+impl DocIdSetIterator for ScorerAsIterator {
+    fn doc_id(&self) -> i32 {
+        self.scorer.doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.scorer.iterator().next_doc()
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.scorer.iterator().advance(target)
+    }
+
+    fn cost(&self) -> i64 {
+        self.cost
+    }
+
+    fn into_bit_set(
+        &mut self,
+        up_to: i32,
+        bit_set: &mut crate::util::FixedBitSet,
+        offset: i32,
+    ) -> Result<()> {
+        self.scorer.iterator().into_bit_set(up_to, bit_set, offset)
+    }
+}
+
+/// A [`TwoPhaseIterator`] that owns the [`Scorer`] whose two-phase view it
+/// exposes.
+///
+/// **Divergence from Lucene 10.5.0.** The counterpart of [`ScorerAsIterator`]
+/// for `scorer.twoPhaseIterator()`; see that type for why the scorer has to be
+/// owned. This adapter is its own approximation, so that
+/// [`TwoPhaseIterator::approximation_ref`], which the port declares on `&self`,
+/// can be answered without borrowing the scorer mutably.
+pub struct ScorerAsTwoPhaseIterator {
+    scorer: Box<dyn Scorer>,
+    cost: i64,
+    match_cost: f32,
+}
+
+impl std::fmt::Debug for ScorerAsTwoPhaseIterator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScorerAsTwoPhaseIterator")
+            .field("cost", &self.cost)
+            .field("match_cost", &self.match_cost)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Message used where the two-phase view is known to be present because it was
+/// observed once at construction and a scorer returns a stable view.
+const TWO_PHASE_INVARIANT: &str =
+    "INVARIANT: the two-phase view was observed at construction and a Scorer returns a stable view";
+
+impl ScorerAsTwoPhaseIterator {
+    /// Takes ownership of the given scorer and exposes its two-phase view.
+    ///
+    /// Equivalent to `scorer.twoPhaseIterator()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the scorer has no two-phase view; use
+    /// [`into_scorer_iterator`] rather than calling this directly.
+    pub fn new(mut scorer: Box<dyn Scorer>) -> Self {
+        let view = scorer
+            .two_phase_iterator()
+            .expect("a ScorerAsTwoPhaseIterator requires a scorer with a two-phase view");
+        let match_cost = view.match_cost();
+        let cost = view.approximation_ref().cost();
+        Self {
+            scorer,
+            cost,
+            match_cost,
+        }
+    }
+
+    /// Unwraps this view, returning the scorer it was built from.
+    pub fn into_scorer(self) -> Box<dyn Scorer> {
+        self.scorer
+    }
+}
+
+impl DocIdSetIterator for ScorerAsTwoPhaseIterator {
+    fn doc_id(&self) -> i32 {
+        self.scorer.doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.scorer
+            .two_phase_iterator()
+            .expect(TWO_PHASE_INVARIANT)
+            .approximation()
+            .next_doc()
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.scorer
+            .two_phase_iterator()
+            .expect(TWO_PHASE_INVARIANT)
+            .approximation()
+            .advance(target)
+    }
+
+    fn cost(&self) -> i64 {
+        self.cost
+    }
+
+    fn into_bit_set(
+        &mut self,
+        up_to: i32,
+        bit_set: &mut crate::util::FixedBitSet,
+        offset: i32,
+    ) -> Result<()> {
+        self.scorer
+            .two_phase_iterator()
+            .expect(TWO_PHASE_INVARIANT)
+            .approximation()
+            .into_bit_set(up_to, bit_set, offset)
+    }
+}
+
+impl TwoPhaseIterator for ScorerAsTwoPhaseIterator {
+    fn approximation(&mut self) -> &mut dyn DocIdSetIterator {
+        self
+    }
+
+    fn approximation_ref(&self) -> &dyn DocIdSetIterator {
+        self
+    }
+
+    fn matches(&mut self) -> Result<bool> {
+        self.scorer
+            .two_phase_iterator()
+            .expect(TWO_PHASE_INVARIANT)
+            .matches()
+    }
+
+    fn match_cost(&self) -> f32 {
+        self.match_cost
+    }
+
+    fn doc_id_run_end(&mut self) -> Result<i32> {
+        self.scorer
+            .two_phase_iterator()
+            .expect(TWO_PHASE_INVARIANT)
+            .doc_id_run_end()
+    }
+
+    fn into_bit_set(
+        &mut self,
+        up_to: i32,
+        bit_set: &mut crate::util::FixedBitSet,
+        offset: i32,
+    ) -> Result<()> {
+        self.scorer
+            .two_phase_iterator()
+            .expect(TWO_PHASE_INVARIANT)
+            .into_bit_set(up_to, bit_set, offset)
+    }
+}
+
+/// Splits an owned scorer into the iteration shape it exposes.
+///
+/// Equivalent to the `scorer.twoPhaseIterator() != null ? scorer.twoPhaseIterator()
+/// : scorer.iterator()` choice Lucene writes wherever it builds a
+/// [`ConstantScoreScorer`](crate::search::ConstantScoreScorer) around another
+/// scorer's iteration.
+pub fn into_scorer_iterator(mut scorer: Box<dyn Scorer>) -> ScorerIterator {
+    if scorer.two_phase_iterator().is_some() {
+        ScorerIterator::TwoPhase(Box::new(ScorerAsTwoPhaseIterator::new(scorer)))
+    } else {
+        ScorerIterator::Simple(Box::new(ScorerAsIterator::new(scorer)))
     }
 }
 

@@ -123,6 +123,17 @@ impl DefaultBulkScorer {
         }
     }
 
+    /// Unwraps this bulk scorer, returning the scorer it was built from.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java has no such accessor because a
+    /// caller that needs both shapes simply keeps its own reference to the
+    /// scorer beside the `DefaultBulkScorer` it built —
+    /// `BatchScoreBulkScorer.score` does exactly that. Rust cannot alias an
+    /// owned `Box<dyn Scorer>`, so the scorer is handed over and taken back.
+    pub fn into_scorer(self) -> Box<dyn Scorer> {
+        self.scorer
+    }
+
     /// The doc ID of the iterator that drives collection: the approximation
     /// when this scorer is two-phase, the scorer's own iterator otherwise.
     fn lead_doc_id(&mut self) -> i32 {

@@ -74,6 +74,23 @@ pub trait Collector {
     fn set_weight(&mut self, _weight: Arc<dyn Weight>) {}
 }
 
+impl<T: Collector + ?Sized> Collector for Box<T> {
+    fn get_leaf_collector<'a>(
+        &'a mut self,
+        context: &LeafReaderContext,
+    ) -> CollectionResult<Box<dyn LeafCollector + 'a>> {
+        (**self).get_leaf_collector(context)
+    }
+
+    fn score_mode(&self) -> ScoreMode {
+        (**self).score_mode()
+    }
+
+    fn set_weight(&mut self, weight: Arc<dyn Weight>) {
+        (**self).set_weight(weight);
+    }
+}
+
 /// Decouples the score from the collected doc: the score computation is skipped
 /// entirely if it is not needed.
 ///
