@@ -811,7 +811,7 @@ impl Debug for SegmentCommitInfo {
 
 impl Clone for SegmentCommitInfo {
     fn clone(&self) -> Self {
-        let mut other = Self {
+        let other = Self {
             info: self.info.clone(),
             id: self.id,
             del_count: self.del_count,

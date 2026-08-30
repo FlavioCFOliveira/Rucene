@@ -28,7 +28,7 @@ use crate::codecs::knn_vectors::{
     BufferingKnnVectorsWriter, FieldVectorWriter, KnnFieldVectorsWriter, KnnVectorsFormat,
     KnnVectorsReader, KnnVectorsWriter, SorterDocMap,
 };
-use crate::codecs::lucene90::indexed_disi::{write_bit_set, IndexedDISI, DEFAULT_DENSE_RANK_POWER};
+use crate::codecs::lucene90::indexed_disi::IndexedDISI;
 use crate::codecs::lucene95::OrdToDocDISIReaderConfiguration;
 use crate::codecs::postings::MergeState;
 use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
@@ -43,7 +43,7 @@ use crate::search::{AcceptDocs, DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{DataInput, IndexInput, IndexOutput};
 use crate::util::extra::LongValues;
 use crate::util::hnsw::RandomVectorScorer;
-use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter};
+use crate::util::packed::DirectMonotonicReader;
 
 // -----------------------------------------------------------------------------
 // Format constants

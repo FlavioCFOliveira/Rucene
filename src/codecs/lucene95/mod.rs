@@ -4,8 +4,8 @@
 //! and the slice accessor a reader exposes so a caller can prefetch its data.
 
 use crate::codecs::hnsw::flat_vectors::DocsWithFieldSet;
-use crate::codecs::lucene90::indexed_disi::{write_bit_set, IndexedDISI, DEFAULT_DENSE_RANK_POWER};
-use crate::error::{LuceneError, Result};
+use crate::codecs::lucene90::indexed_disi::{write_bit_set, DEFAULT_DENSE_RANK_POWER};
+use crate::error::Result;
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::DocIdSetIterator;
 use crate::store::{DataInput, DataOutput, IndexInput, IndexOutput};
@@ -14,7 +14,7 @@ use crate::store::{DataInput, DataOutput, IndexInput, IndexOutput};
 ///
 /// Equivalent to `Lucene99FlatVectorsFormat.DIRECT_MONOTONIC_BLOCK_SHIFT`.
 pub const DIRECT_MONOTONIC_BLOCK_SHIFT: i32 = 16;
-use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter};
+use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicWriter};
 
 /// A reader that can hand out the input slice holding its data.
 ///

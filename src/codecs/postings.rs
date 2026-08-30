@@ -28,7 +28,7 @@ use crate::codecs::knn_vectors::KnnVectorsReader;
 use crate::codecs::points::PointsReader;
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stored_fields::StoredFieldsReader;
-use crate::codecs::stub::{FieldInfo, FieldInfos};
+use crate::codecs::stub::FieldInfo;
 use crate::codecs::term_vectors::TermVectorsReader;
 use crate::error::{LuceneError, Result};
 use crate::index::IndexOptions;
