@@ -654,9 +654,9 @@ impl FieldType {
     ) -> Result<()> {
         self.check_if_frozen()?;
         if num_dimensions <= 0 {
-            return Err(LuceneError::IllegalArgument(
-                "vector numDimensions must be > 0".to_string(),
-            ));
+            return Err(LuceneError::IllegalArgument(format!(
+                "vector numDimensions must be > 0; got {num_dimensions}"
+            )));
         }
         self.vector_dimension = num_dimensions;
         self.vector_encoding = encoding;
@@ -3982,6 +3982,385 @@ impl DateTools {
             17 => "%Y%m%d%H%M%S%3f",
             _ => "%Y%m%d%H%M%S%3f",
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KNN vector fields
+// ---------------------------------------------------------------------------
+
+/// Builds the frozen field type a `Knn*VectorField` constructor derives from
+/// its vector, shared by both encodings.
+///
+/// Equivalent to the `createType` of `KnnFloatVectorField`
+/// (`KnnFloatVectorField.java:42-61`) and of `KnnByteVectorField`
+/// (`KnnByteVectorField.java:42-61`), which differ only in the encoding they
+/// pass and in the zero check they run. The null checks Java performs on the
+/// vector and on the similarity function have no Rust counterpart: neither can
+/// be null here.
+fn knn_vector_field_type(
+    dimension: usize,
+    encoding: VectorEncoding,
+    similarity: VectorSimilarityFunction,
+    zero: bool,
+) -> Result<FieldType> {
+    if dimension == 0 {
+        return Err(LuceneError::IllegalArgument(
+            "cannot index an empty vector".to_string(),
+        ));
+    }
+    if similarity == VectorSimilarityFunction::COSINE && zero {
+        return Err(LuceneError::IllegalArgument(
+            "zero vector not allowed with cosine similarity function".to_string(),
+        ));
+    }
+    let mut field_type = FieldType::new();
+    field_type.set_vector_attributes(dimension as i32, encoding, similarity)?;
+    field_type.freeze();
+    Ok(field_type)
+}
+
+/// Rejects a vector that does not fit the field type it is being written under.
+///
+/// Equivalent to the body the three-argument constructors of
+/// `KnnFloatVectorField` (`KnnFloatVectorField.java:132-152`) and
+/// `KnnByteVectorField` (`KnnByteVectorField.java:132-152`) share.
+fn check_knn_vector_against_type(
+    name: &str,
+    field_type: &FieldType,
+    expected: VectorEncoding,
+    length: usize,
+    zero: bool,
+) -> Result<()> {
+    if field_type.vector_encoding() != expected {
+        let used = match expected {
+            VectorEncoding::FLOAT32 => "float[]",
+            VectorEncoding::BYTE => "byte[]",
+        };
+        return Err(LuceneError::IllegalArgument(format!(
+            "Attempt to create a vector for field {name} using {used} but the field encoding is {:?}",
+            field_type.vector_encoding()
+        )));
+    }
+    if length as i32 != field_type.vector_dimension() {
+        return Err(LuceneError::IllegalArgument(
+            "The number of vector dimensions does not match the field type".to_string(),
+        ));
+    }
+    if field_type.vector_similarity_function() == VectorSimilarityFunction::COSINE && zero {
+        return Err(LuceneError::IllegalArgument(
+            "zero vector not allowed with cosine similarity function".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// A field that indexes a `f32` vector for nearest-neighbour search.
+///
+/// Equivalent to `org.apache.lucene.document.KnnFloatVectorField`.
+///
+/// The field is neither inverted nor stored: it carries its value straight to
+/// the segment's KNN-vectors writer through
+/// [`IndexableField::float_vector_value`], which is this port's stand-in for
+/// the downcast `IndexingChain.indexVectorValue` performs.
+#[derive(Debug, Clone)]
+pub struct KnnFloatVectorField {
+    name: String,
+    field_type: FieldType,
+    vector: Vec<f32>,
+}
+
+impl KnnFloatVectorField {
+    /// Creates a float-vector field with the given similarity function.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for an empty vector, for a zero
+    /// vector under [`VectorSimilarityFunction::COSINE`], and for a vector with
+    /// a non-finite component.
+    pub fn new(name: &str, vector: &[f32], similarity: VectorSimilarityFunction) -> Result<Self> {
+        let field_type = knn_vector_field_type(
+            vector.len(),
+            VectorEncoding::FLOAT32,
+            similarity,
+            crate::util::vector_util::is_zero_vector_f32(vector),
+        )?;
+        crate::util::vector_util::check_finite(vector)?;
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            vector: vector.to_vec(),
+        })
+    }
+
+    /// Creates a float-vector field scored by
+    /// [`VectorSimilarityFunction::EUCLIDEAN`].
+    ///
+    /// # Errors
+    ///
+    /// As [`KnnFloatVectorField::new`].
+    pub fn with_euclidean(name: &str, vector: &[f32]) -> Result<Self> {
+        Self::new(name, vector, VectorSimilarityFunction::EUCLIDEAN)
+    }
+
+    /// Creates a float-vector field under a caller-supplied field type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the type does not declare
+    /// [`VectorEncoding::FLOAT32`], when the vector's length does not match the
+    /// type's dimension count, when the vector is zero under
+    /// [`VectorSimilarityFunction::COSINE`], and when a component is
+    /// non-finite.
+    pub fn with_field_type(name: &str, vector: &[f32], field_type: FieldType) -> Result<Self> {
+        check_knn_vector_against_type(
+            name,
+            &field_type,
+            VectorEncoding::FLOAT32,
+            vector.len(),
+            crate::util::vector_util::is_zero_vector_f32(vector),
+        )?;
+        crate::util::vector_util::check_finite(vector)?;
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            vector: vector.to_vec(),
+        })
+    }
+
+    /// Returns this field's vector value.
+    pub fn vector_value(&self) -> &[f32] {
+        &self.vector
+    }
+
+    /// Replaces this field's vector value.
+    ///
+    /// Equivalent to `KnnFloatVectorField.setVectorValue`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the length does not match
+    /// the field's dimension count, when the value is zero under
+    /// [`VectorSimilarityFunction::COSINE`], and when a component is
+    /// non-finite.
+    pub fn set_vector_value(&mut self, value: &[f32]) -> Result<()> {
+        if value.len() as i32 != self.field_type.vector_dimension() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "value length {} must match field dimension {}",
+                value.len(),
+                self.field_type.vector_dimension()
+            )));
+        }
+        if self.field_type.vector_similarity_function() == VectorSimilarityFunction::COSINE
+            && crate::util::vector_util::is_zero_vector_f32(value)
+        {
+            return Err(LuceneError::IllegalArgument(
+                "zero vector not allowed with cosine similarity function".to_string(),
+            ));
+        }
+        crate::util::vector_util::check_finite(value)?;
+        self.vector.clear();
+        self.vector.extend_from_slice(value);
+        Ok(())
+    }
+}
+
+impl IndexableField for KnnFloatVectorField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        // A vector field is never inverted: its `indexOptions` is `NONE`, so
+        // `IndexingChain.invertAndStore` skips it and never asks for a stream.
+        Box::new(crate::analysis::StringTokenStream::new(String::new()).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        None
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
+    }
+
+    fn float_vector_value(&self) -> Option<&[f32]> {
+        Some(&self.vector)
+    }
+}
+
+/// A field that indexes a `u8` vector for nearest-neighbour search.
+///
+/// Equivalent to `org.apache.lucene.document.KnnByteVectorField`.
+///
+/// Java's vector is a signed `byte[]`; the bytes reach the index unchanged, so
+/// this port carries the same bytes as `u8` and the on-disk value is identical.
+#[derive(Debug, Clone)]
+pub struct KnnByteVectorField {
+    name: String,
+    field_type: FieldType,
+    vector: Vec<u8>,
+}
+
+impl KnnByteVectorField {
+    /// Creates a byte-vector field with the given similarity function.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for an empty vector and for a
+    /// zero vector under [`VectorSimilarityFunction::COSINE`].
+    pub fn new(name: &str, vector: &[u8], similarity: VectorSimilarityFunction) -> Result<Self> {
+        let field_type = knn_vector_field_type(
+            vector.len(),
+            VectorEncoding::BYTE,
+            similarity,
+            crate::util::vector_util::is_zero_vector_bytes(vector),
+        )?;
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            vector: vector.to_vec(),
+        })
+    }
+
+    /// Creates a byte-vector field scored by
+    /// [`VectorSimilarityFunction::EUCLIDEAN`].
+    ///
+    /// # Errors
+    ///
+    /// As [`KnnByteVectorField::new`].
+    pub fn with_euclidean(name: &str, vector: &[u8]) -> Result<Self> {
+        Self::new(name, vector, VectorSimilarityFunction::EUCLIDEAN)
+    }
+
+    /// Creates a byte-vector field under a caller-supplied field type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the type does not declare
+    /// [`VectorEncoding::BYTE`], when the vector's length does not match the
+    /// type's dimension count, and when the vector is zero under
+    /// [`VectorSimilarityFunction::COSINE`].
+    pub fn with_field_type(name: &str, vector: &[u8], field_type: FieldType) -> Result<Self> {
+        check_knn_vector_against_type(
+            name,
+            &field_type,
+            VectorEncoding::BYTE,
+            vector.len(),
+            crate::util::vector_util::is_zero_vector_bytes(vector),
+        )?;
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            vector: vector.to_vec(),
+        })
+    }
+
+    /// Returns this field's vector value.
+    pub fn vector_value(&self) -> &[u8] {
+        &self.vector
+    }
+
+    /// Replaces this field's vector value.
+    ///
+    /// Equivalent to `KnnByteVectorField.setVectorValue`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the length does not match
+    /// the field's dimension count and when the value is zero under
+    /// [`VectorSimilarityFunction::COSINE`].
+    pub fn set_vector_value(&mut self, value: &[u8]) -> Result<()> {
+        if value.len() as i32 != self.field_type.vector_dimension() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "value length {} must match field dimension {}",
+                value.len(),
+                self.field_type.vector_dimension()
+            )));
+        }
+        if self.field_type.vector_similarity_function() == VectorSimilarityFunction::COSINE
+            && crate::util::vector_util::is_zero_vector_bytes(value)
+        {
+            return Err(LuceneError::IllegalArgument(
+                "zero vector not allowed with cosine similarity function".to_string(),
+            ));
+        }
+        self.vector.clear();
+        self.vector.extend_from_slice(value);
+        Ok(())
+    }
+}
+
+impl IndexableField for KnnByteVectorField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        Box::new(crate::analysis::StringTokenStream::new(String::new()).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        // Java answers null here too: `KnnByteVectorField.fieldsData` is a bare
+        // `byte[]`, and `Field.binaryValue()` only unwraps a `BytesRef`
+        // (`Field.java:428-434`).
+        None
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
+    }
+
+    fn byte_vector_value(&self) -> Option<&[u8]> {
+        Some(&self.vector)
     }
 }
 

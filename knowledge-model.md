@@ -69,6 +69,7 @@ Identity is `qualifiedName`.
 | `portScope` | **The port scope marker.** `"in"`, `"nested"` — see below. |
 | `portScopeRule` | The mechanical rule that assigned `portScope`. |
 | `portState` | `"ported"`, `"candidate"`, `"unported"` — see below. |
+| `portStateNote` | Why the mechanical `portState` was overridden by hand. Present only on the types where the heuristic was verified wrong. |
 | `gitCommit` / `gitDate` | Provenance stamp. |
 
 #### `portScope` — which Lucene types the port has to cover
@@ -97,6 +98,23 @@ top-level type of lucene/core 10.5.0"*, with its alternatives and evidence.
 | `ported` | A curated `PORTS` edge points at this type from a Rucene node. |
 | `candidate` | No `PORTS` edge, but exactly one Rucene type carries the same simple name, recorded as a `PORTS_CANDIDATE` edge. A port that is very probably done and **not yet confirmed in the graph** — the to-do list for the graph itself. |
 | `unported` | Neither. |
+
+**The heuristic is evidence, not truth, and it fails in both directions.** Three failures were
+verified by hand on 2026-08-30 and corrected in the graph:
+
+* **False positive.** `IndexWriter` was `candidate` because `src/index/directory_reader.rs:43`
+  declares a Rust trait of that name. That trait is the NRT hook `DirectoryReader.open` takes,
+  not a port of the class — the class is unported. Corrected, with the reason in
+  `portStateNote`.
+* **False negative from ambiguity.** `MergeState` and `BufferedUpdates` each have **two** Rust
+  nodes of the same simple name (one under `src/codecs/`, one under `src/index/`), so the
+  "exactly one" rule declined to propose either and left the type `unported` although it is
+  ported. Curated `PORTS` edges now record the real one.
+* **False negative from an empty class.** `MultiLeafReader` is declared by Lucene 10.5.0 with
+  nothing but a private constructor, so the faithful port declares no Rust type and the
+  heuristic could never see it. It is now a `Component` carrying a `PORTS` edge.
+
+When a coverage number is quoted, `candidate` must be quoted as unverified for this reason.
 
 `candidate` exists because `CLAUDE.md` §14.1 requires Rucene to keep Lucene's names,
 which makes an exact name match strong evidence — but still evidence, not a fact.
@@ -188,10 +206,11 @@ and functions nested inside another function.
 
 ### `Component`
 A crate unit that **declares no Rust type**: a module of free functions, the port of
-one of Lucene's static utility classes. Identity is `name`. Three nodes at
-`2855d29`: `IndexFileNames` (`src/index/index_file_names.rs`), `VectorUtil`
-(`src/util/vector_util.rs`) and `reader_util` (the inline `pub mod reader_util` in
-`src/index/multi_reader.rs`).
+one of Lucene's static utility classes — or of a Lucene class that declares no members at
+all. Identity is `name`. Four nodes: `IndexFileNames` (`src/index/index_file_names.rs`),
+`VectorUtil` (`src/util/vector_util.rs`), `reader_util` (the inline `pub mod reader_util` in
+`src/index/multi_reader.rs`), and `MultiLeafReader` (`src/index/multi_leaf_reader.rs`), added
+2026-08-30 for the empty-class case described under `portState`.
 
 | Property | Purpose |
 |----------|---------|
@@ -342,7 +361,7 @@ RETURN c.portState AS state, count(c) AS types
 ORDER BY types DESC
 ```
 
-At `2855d29`: `unported` 727, `candidate` 300, `ported` 169, over an in-scope
+At `7af30c2` (2026-08-30): `unported` 726, `candidate` 298, `ported` 172, over an in-scope
 surface of 1,196 top-level `lucene/core` types.
 
 To list what is missing in one package, add `AND c.package = '…'` and return
@@ -389,6 +408,33 @@ RETURN f.path, labels(t)[0], t.qualifiedName
 MATCH (a:File {path:'src/index/point_values_writer.rs'})-[:DEPENDS_ON]->(b:File)
 RETURN b.path
 ```
+
+---
+
+## Query pitfalls
+
+**`NOT EXISTS { MATCH … WHERE … }` returns the wrong answer on this engine.** Asking which
+in-scope unported types have no open task with
+
+```cypher
+WHERE NOT EXISTS { MATCH (t:Task)-[:REQUIRES_PORT]->(u) WHERE t.status <> 'COMPLETED' }
+```
+
+returned **all 56** types of `org.apache.lucene.index`, including ones a direct `MATCH` proves
+are required by an open task. Verified 2026-08-30. Use `OPTIONAL MATCH` and count instead:
+
+```cypher
+MATCH (u:Class) WHERE u.portScope='in' AND u.portState='unported'
+OPTIONAL MATCH (t:Task)-[:REQUIRES_PORT]->(u) WHERE t.status <> 'COMPLETED'
+RETURN u.name AS type, count(DISTINCT t) AS openTasks
+```
+
+That form gives 50 covered and 6 orphaned, which matches the task texts.
+
+**`REQUIRES_PORT` misses ambiguous simple names.** The edge is derived from unambiguous simple
+names of at least four characters, so a type whose name collides across packages — `Sorter`,
+for instance, which blocks 27 in-scope types — carries no edge even when a task's text names
+it. An apparent orphan must be checked against the task texts before a task is created for it.
 
 ---
 

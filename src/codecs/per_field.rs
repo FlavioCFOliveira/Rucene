@@ -28,7 +28,7 @@ use super::postings::{
     postings_for_name, Fields, FieldsConsumer, FieldsProducer, MergeState, NormsProducer,
     PostingsFormat, Terms,
 };
-use super::state::{SegmentReadState, SegmentWriteState};
+use super::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use super::stub::FieldInfo;
 
 // -----------------------------------------------------------------------------
@@ -915,10 +915,7 @@ impl KnnVectorsFormat for PerFieldKnnVectorsFormat {
         PER_FIELD_KNN_VECTORS_NAME
     }
 
-    fn fields_writer<'a>(
-        &self,
-        state: &SegmentWriteState<'a>,
-    ) -> Result<Box<dyn KnnVectorsWriter + 'a>> {
+    fn fields_writer(&self, state: &OwnedSegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>> {
         Ok(Box::new(KnnFieldsWriter::new(state, self.resolver.clone())))
     }
 
@@ -931,20 +928,28 @@ impl KnnVectorsFormat for PerFieldKnnVectorsFormat {
     }
 }
 
-struct WriterAndSuffix<'a> {
+struct WriterAndSuffix {
     suffix: i32,
-    writer: Box<dyn KnnVectorsWriter + 'a>,
-    _phantom: std::marker::PhantomData<&'a ()>,
+    writer: Box<dyn KnnVectorsWriter>,
 }
 
-struct KnnFieldsWriter<'a> {
-    segment_write_state: SegmentWriteState<'a>,
+/// Equivalent to `PerFieldKnnVectorsFormat.FieldsWriter`.
+///
+/// Java's writer stores the `SegmentWriteState` it was built from and derives a
+/// suffixed copy of it for every field it dispatches
+/// (`PerFieldKnnVectorsFormat.java:96-136`). This one does the same, over the
+/// owned [`OwnedSegmentWriteState`]: unlike the postings and doc-values
+/// per-field writers, which live and die inside one flush call, this writer is
+/// created when the first vector field of the first document is indexed and
+/// must survive until the segment flushes, so it cannot borrow the state.
+struct KnnFieldsWriter {
+    segment_write_state: OwnedSegmentWriteState,
     resolver: Arc<dyn Fn(&str) -> Arc<dyn KnnVectorsFormat> + Send + Sync>,
-    formats: HashMap<String, WriterAndSuffix<'a>>,
+    formats: HashMap<String, WriterAndSuffix>,
     suffixes: HashMap<String, i32>,
 }
 
-impl<'a> std::fmt::Debug for KnnFieldsWriter<'a> {
+impl std::fmt::Debug for KnnFieldsWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KnnFieldsWriter")
             .field("segment_suffix", &self.segment_write_state.segment_suffix)
@@ -953,20 +958,21 @@ impl<'a> std::fmt::Debug for KnnFieldsWriter<'a> {
     }
 }
 
-impl<'a> KnnFieldsWriter<'a> {
+impl KnnFieldsWriter {
     fn new(
-        segment_write_state: &SegmentWriteState<'a>,
+        segment_write_state: &OwnedSegmentWriteState,
         resolver: Arc<dyn Fn(&str) -> Arc<dyn KnnVectorsFormat> + Send + Sync>,
     ) -> Self {
         Self {
-            segment_write_state: segment_write_state.clone(),
+            segment_write_state: segment_write_state
+                .with_new_suffix(segment_write_state.segment_suffix.clone()),
             resolver,
             formats: HashMap::new(),
             suffixes: HashMap::new(),
         }
     }
 
-    fn get_instance(&mut self, field: &FieldInfo) -> Result<&mut Box<dyn KnnVectorsWriter + 'a>> {
+    fn get_instance(&mut self, field: &FieldInfo) -> Result<&mut Box<dyn KnnVectorsWriter>> {
         let format = (self.resolver)(&field.name);
         let format_name = format.name().to_string();
 
@@ -981,14 +987,8 @@ impl<'a> KnnFieldsWriter<'a> {
             );
             let state = self.segment_write_state.with_new_suffix(segment_suffix);
             let writer = format.fields_writer(&state)?;
-            self.formats.insert(
-                format_name.clone(),
-                WriterAndSuffix {
-                    suffix,
-                    writer,
-                    _phantom: std::marker::PhantomData,
-                },
-            );
+            self.formats
+                .insert(format_name.clone(), WriterAndSuffix { suffix, writer });
         }
 
         let entry = self
@@ -1000,7 +1000,7 @@ impl<'a> KnnFieldsWriter<'a> {
     }
 }
 
-impl<'a> KnnVectorsWriter for KnnFieldsWriter<'a> {
+impl KnnVectorsWriter for KnnFieldsWriter {
     fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
         self.get_instance(field_info)?.add_field(field_info)
     }
@@ -1037,6 +1037,16 @@ impl<'a> KnnVectorsWriter for KnnFieldsWriter<'a> {
             entry.writer.close()?;
         }
         Ok(())
+    }
+
+    /// Equivalent to `PerFieldKnnVectorsFormat.FieldsWriter.ramBytesUsed()`
+    /// (`PerFieldKnnVectorsFormat.java:182-189`), which sums the delegates and
+    /// counts nothing for itself.
+    fn ram_bytes_used(&self) -> i64 {
+        self.formats
+            .values()
+            .map(|entry| entry.writer.ram_bytes_used())
+            .sum()
     }
 }
 
@@ -1150,7 +1160,7 @@ impl KnnVectorsReader for KnnFieldsReader {
     }
 
     fn search(
-        &mut self,
+        &self,
         field: &str,
         target: &[f32],
         knn_collector: &mut dyn KnnCollector,
@@ -1167,14 +1177,14 @@ impl KnnVectorsReader for KnnFieldsReader {
                 })?
                 .clone()
         };
-        let reader = self.formats.get_mut(&suffix).ok_or_else(|| {
+        let reader = self.formats.get(&suffix).ok_or_else(|| {
             LuceneError::IllegalState(format!("missing KNN-vectors reader for suffix {suffix}"))
         })?;
         reader.search(field, target, knn_collector, accept_docs)
     }
 
     fn search_byte(
-        &mut self,
+        &self,
         field: &str,
         target: &[u8],
         knn_collector: &mut dyn KnnCollector,
@@ -1191,7 +1201,7 @@ impl KnnVectorsReader for KnnFieldsReader {
                 })?
                 .clone()
         };
-        let reader = self.formats.get_mut(&suffix).ok_or_else(|| {
+        let reader = self.formats.get(&suffix).ok_or_else(|| {
             LuceneError::IllegalState(format!("missing KNN-vectors reader for suffix {suffix}"))
         })?;
         reader.search_byte(field, target, knn_collector, accept_docs)
@@ -1266,8 +1276,14 @@ impl PerFieldMergeState {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let mut restricted = MergeState::new(fields_producers, merge_state.max_docs.clone())
-            .with_field_infos(field_infos, merge_field_infos);
+        let mut restricted = MergeState::from_fields_producers(
+            fields_producers
+                .into_iter()
+                .map(|p| p.map(Arc::from))
+                .collect(),
+            merge_state.max_docs.clone(),
+        )
+        .with_field_infos(field_infos, merge_field_infos);
         // The remaining reader arrays are not needed by the per-field postings
         // merge path; concrete doc-values/points/vectors consumers that do need
         // them are responsible for sharing the original merge state directly.

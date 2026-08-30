@@ -161,8 +161,18 @@ pub const DEFAULT_BEAM_WIDTH: i32 = 100;
 ///
 /// Equivalent to `org.apache.lucene.util.hnsw.HnswGraph`.
 ///
-/// The graph may be searched concurrently, but updates are not thread-safe.
-pub trait HnswGraph: Send + Sync {
+/// # Not `Send + Sync`, as in Lucene
+///
+/// Every method that moves the cursor takes `&mut self`, so an instance is
+/// inherently single-threaded: Java's `HnswGraph` carries the same cursor state
+/// (`arcCount`, `arcUpTo`, `arc`) and the same rule — one instance per search,
+/// never shared. This port used to require `Send + Sync` here, which Lucene
+/// does not, and that bound had a cost: `Lucene99HnswVectorsReader`'s off-heap
+/// graph could not hold the `DirectMonotonicReader` Java holds for its node
+/// offsets, and materialised every offset into a `Vec` sized by a count read
+/// out of the `.vem` instead. Dropping the bound removes the divergence and the
+/// unbounded allocation with it.
+pub trait HnswGraph {
     /// Positions the neighbor iterator on `target` at `level`.
     fn seek(&mut self, level: i32, target: i32) -> Result<()>;
 

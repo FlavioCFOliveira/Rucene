@@ -30,7 +30,7 @@ use crate::codecs::knn_vectors::{
 };
 use crate::codecs::lucene90::indexed_disi::{write_bit_set, IndexedDISI, DEFAULT_DENSE_RANK_POWER};
 use crate::codecs::postings::MergeState;
-use crate::codecs::state::{SegmentReadState, SegmentWriteState};
+use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, Result};
 use crate::index::vector_values::{
@@ -109,11 +109,8 @@ impl KnnVectorsFormat for Lucene99FlatVectorsFormat {
         NAME
     }
 
-    fn fields_writer<'a>(
-        &self,
-        state: &SegmentWriteState<'a>,
-    ) -> Result<Box<dyn KnnVectorsWriter + 'a>> {
-        Ok(Box::new(self.create_writer(state)?))
+    fn fields_writer(&self, state: &OwnedSegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>> {
+        Ok(Box::new(self.create_writer(&state.borrow())?))
     }
 
     fn fields_reader<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn KnnVectorsReader>> {
@@ -153,7 +150,23 @@ pub struct Lucene99FlatVectorsWriter {
     vector_data: Option<Box<dyn IndexOutput>>,
     vector_scorer: DefaultFlatVectorScorer,
     fields: Vec<FieldWriterEntry>,
-    segment_max_doc: i32,
+    /// `maxDoc` of the segment being written, or `None` when it was not set
+    /// yet at the moment this writer was created.
+    ///
+    /// Java holds the whole `SegmentWriteState` and reads
+    /// `segmentWriteState.segmentInfo.maxDoc()` lazily, at the one place that
+    /// needs it — `mergeOneField` (`Lucene99FlatVectorsWriter.java:288`).
+    /// Reading it eagerly in the constructor, as this port used to, made the
+    /// writer unconstructible on the flush path: `VectorValuesConsumer` builds
+    /// it while the first document is being indexed
+    /// (`VectorValuesConsumer.java:52-71`) and `DocumentsWriterPerThread` only
+    /// calls `segmentInfo.setMaxDoc` at flush
+    /// (`DocumentsWriterPerThread.java:446`), so `maxDoc()` raises
+    /// `IllegalStateException("maxDoc isn't set yet")` at that point. The
+    /// merge path always creates the writer after `maxDoc` is set, so it still
+    /// sees the same value Java sees; the flush path never reads this field,
+    /// because `flush(maxDoc, ..)` is given `maxDoc` by its caller.
+    segment_max_doc: Option<i32>,
     finished: bool,
 }
 
@@ -201,6 +214,13 @@ impl<T: Clone + Send + Sync + 'static> KnnFieldVectorsWriter<T> for SharedFieldW
 
     fn copy_value(&self, vector_value: T) -> T {
         vector_value
+    }
+
+    fn ram_bytes_used(&self) -> i64 {
+        // The shared handle owns nothing: the buffer it locks is accounted by
+        // the writer that also holds it, and counting it here would count it
+        // twice in `KnnVectorsWriter::ram_bytes_used`.
+        0
     }
 }
 
@@ -258,7 +278,7 @@ impl Lucene99FlatVectorsWriter {
                 vector_data: vector_data_opt.take(),
                 vector_scorer: vectors_scorer,
                 fields: Vec::new(),
-                segment_max_doc: state.segment_info.max_doc()?,
+                segment_max_doc: state.segment_info.max_doc().ok(),
                 finished: false,
             })
         })();
@@ -339,7 +359,9 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
         }
         match field_info.vector_encoding {
             VectorEncoding::FLOAT32 => {
-                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<f32>>::new()));
+                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<f32>>::new(
+                    field_info.clone(),
+                )));
                 self.fields.push(FieldWriterEntry::Float(
                     Arc::clone(&writer),
                     field_info.clone(),
@@ -349,7 +371,9 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
                 })))
             }
             VectorEncoding::BYTE => {
-                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<u8>>::new()));
+                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<u8>>::new(
+                    field_info.clone(),
+                )));
                 self.fields.push(FieldWriterEntry::Byte(
                     Arc::clone(&writer),
                     field_info.clone(),
@@ -417,6 +441,29 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
     fn close(&mut self) -> Result<()> {
         close_outputs(&mut self.meta, &mut self.vector_data)
     }
+
+    /// Equivalent to `Lucene99FlatVectorsWriter.ramBytesUsed()`
+    /// (`Lucene99FlatVectorsWriter.java:174-181`): a shallow size plus the
+    /// footprint of every field writer it holds.
+    fn ram_bytes_used(&self) -> i64 {
+        let mut total = crate::util::RamUsageEstimator::align_object_size(
+            crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+                + 6 * crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+        );
+        for entry in &self.fields {
+            total += match entry {
+                FieldWriterEntry::Float(writer, _) => writer
+                    .lock()
+                    .map(|guard| guard.ram_bytes_used())
+                    .unwrap_or(0),
+                FieldWriterEntry::Byte(writer, _) => writer
+                    .lock()
+                    .map(|guard| guard.ram_bytes_used())
+                    .unwrap_or(0),
+            };
+        }
+        total
+    }
 }
 
 impl BufferingKnnVectorsWriter for Lucene99FlatVectorsWriter {
@@ -426,7 +473,7 @@ impl BufferingKnnVectorsWriter for Lucene99FlatVectorsWriter {
         values: &dyn FloatVectorValues,
         max_doc: i32,
     ) -> Result<()> {
-        let mut writer = DefaultFlatFieldVectorsWriter::<Vec<f32>>::new();
+        let mut writer = DefaultFlatFieldVectorsWriter::<Vec<f32>>::new(field_info.clone());
         let mut iter = values.iterator()?;
         while iter.next_doc()? != NO_MORE_DOCS {
             let ord = iter.index();
@@ -444,7 +491,7 @@ impl BufferingKnnVectorsWriter for Lucene99FlatVectorsWriter {
         values: &dyn ByteVectorValues,
         max_doc: i32,
     ) -> Result<()> {
-        let mut writer = DefaultFlatFieldVectorsWriter::<Vec<u8>>::new();
+        let mut writer = DefaultFlatFieldVectorsWriter::<Vec<u8>>::new(field_info.clone());
         let mut iter = values.iterator()?;
         while iter.next_doc()? != NO_MORE_DOCS {
             let ord = iter.index();
@@ -511,11 +558,17 @@ impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
         let meta = self.meta.as_mut().ok_or_else(|| {
             LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
         })?;
+        // Java reads `segmentWriteState.segmentInfo.maxDoc()` here, which
+        // raises `IllegalStateException("maxDoc isn't set yet")` when it was
+        // never set; this reproduces that error at the same place.
+        let segment_max_doc = self
+            .segment_max_doc
+            .ok_or_else(|| LuceneError::IllegalState("maxDoc isn't set yet".to_string()))?;
         write_meta(
             meta.as_mut(),
             vector_data.as_mut(),
             field_info,
-            self.segment_max_doc,
+            segment_max_doc,
             vector_data_offset,
             vector_data_length,
             &docs_with_field,
@@ -898,7 +951,7 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
     }
 
     fn search(
-        &mut self,
+        &self,
         _field: &str,
         _target: &[f32],
         _knn_collector: &mut dyn crate::codecs::knn_vectors::KnnCollector,
@@ -908,7 +961,7 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
     }
 
     fn search_byte(
-        &mut self,
+        &self,
         _field: &str,
         _target: &[u8],
         _knn_collector: &mut dyn crate::codecs::knn_vectors::KnnCollector,

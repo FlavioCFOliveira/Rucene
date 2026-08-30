@@ -47,7 +47,7 @@ pub struct HnswGraphBuilder {
     ml: f64,
     bulk_score_nodes: [i32; MAX_BULK_SCORE_NODES],
     bulk_scores: [f32; MAX_BULK_SCORE_NODES],
-    random: SimpleRng,
+    random: SplittableRandom,
     scorer: Box<dyn UpdateableRandomVectorScorer>,
     graph_searcher: HnswGraphSearcher,
     entry_candidates: GraphBuilderKnnCollector,
@@ -99,7 +99,7 @@ impl HnswGraphBuilder {
             ml,
             bulk_score_nodes: [0; MAX_BULK_SCORE_NODES],
             bulk_scores: [0.0; MAX_BULK_SCORE_NODES],
-            random: SimpleRng::new(seed),
+            random: SplittableRandom::new(seed),
             scorer,
             graph_searcher,
             entry_candidates: GraphBuilderKnnCollector::new(1),
@@ -450,29 +450,126 @@ impl KnnCollector for GraphBuilderKnnCollector {
     }
 }
 
-/// A tiny deterministic RNG used for graph level assignment.
+/// The `java.util.SplittableRandom` stream, which fixes every graph level.
+///
+/// Equivalent to `java.util.SplittableRandom`, seeded exactly as
+/// `HnswGraphBuilder` seeds it (`HnswGraphBuilder.java:202-203`). This is not a
+/// stylistic choice of RNG: `HnswGraphBuilder.getRandomGraphLevel` turns each
+/// `nextDouble()` into the level a node is inserted at, so the draw sequence
+/// decides how many levels the graph has and which nodes live on each. Any
+/// other generator produces a different graph and therefore different `.vex`
+/// and `.vem` bytes, and an index that is no longer byte-compatible with
+/// Apache Lucene Core 10.5.0.
+///
+/// The algorithm was **measured** against a JDK 21 `SplittableRandom` rather
+/// than transcribed: `HnswRandomFixture` in the Java harness prints the raw
+/// bits of the first draws from seed 42, and
+/// [`splittable_random_matches_the_jdk`] pins them here. The stream is
+/// SplitMix64 — a Weyl sequence stepped by the golden-ratio gamma, passed
+/// through the Murmur3 64-bit finalizer — and `nextDouble()` takes the top 53
+/// bits of it.
 #[derive(Debug, Clone, Copy)]
-struct SimpleRng {
-    state: u64,
+struct SplittableRandom {
+    seed: u64,
 }
 
-impl SimpleRng {
+impl SplittableRandom {
+    /// `SplittableRandom.GOLDEN_GAMMA`, the increment of the Weyl sequence.
+    const GOLDEN_GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;
+
     fn new(seed: u64) -> Self {
-        let state = if seed == 0 { 0x9E3779B97F4A7C15 } else { seed };
-        Self { state }
+        Self { seed }
     }
 
-    fn next_u64(&mut self) -> u64 {
-        // xorshift64*
-        self.state ^= self.state >> 12;
-        self.state ^= self.state << 25;
-        self.state ^= self.state >> 27;
-        self.state.wrapping_mul(0x2545F4914F6CDD1D)
+    /// `SplittableRandom.nextSeed()`: the seed advances *before* it is mixed,
+    /// so the first value drawn from seed `s` mixes `s + GOLDEN_GAMMA`.
+    fn next_seed(&mut self) -> u64 {
+        self.seed = self.seed.wrapping_add(Self::GOLDEN_GAMMA);
+        self.seed
+    }
+
+    /// The SplitMix64 mixing function, with the Murmur3 finalizer constants.
+    fn mix64(mut z: u64) -> u64 {
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
     }
 
     fn next_f64(&mut self) -> f64 {
-        // Return a value in (0, 1).
-        let u = self.next_u64();
-        (u >> 11) as f64 / (1u64 << 53) as f64
+        let mixed = Self::mix64(self.next_seed());
+        // `DOUBLE_UNIT` is `0x1.0p-53`; the multiplication is exact.
+        (mixed >> 11) as f64 * f64::from_bits(0x3ca0_0000_0000_0000)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SplittableRandom;
+
+    /// The first draws of `java.util.SplittableRandom(42)`, as a JDK 21
+    /// `SplittableRandom` produced them.
+    ///
+    /// Captured with the Java harness:
+    /// `mvn exec:java -Dexec.mainClass=org.apache.lucene.rucene.codec.HnswRandomFixture
+    /// -Dexec.args="42 12 16"`. These are the raw bits of each `nextDouble()`,
+    /// not a decimal rendering, so the comparison cannot be blurred by
+    /// formatting.
+    ///
+    /// This is a load-bearing constant of the HNSW format: each draw becomes
+    /// one node's graph level, so a wrong stream writes a different `.vex` and
+    /// a different `.vem` while every other byte of the segment stays right.
+    #[test]
+    fn splittable_random_matches_the_jdk() {
+        const JDK_DRAWS: [u64; 12] = [
+            0x3fe7_bae6_44c5_fd6d,
+            0x3fc4_77f1_99d9_3378,
+            0x3fd1_d499_d5c4_c3e6,
+            0x3fd6_0738_7fc3_92b8,
+            0x3fa3_78b0_b448_9040,
+            0x3feb_c886_3f47_901b,
+            0x3fcb_f4b3_8e22_9bb4,
+            0x3fe9_9ec6_bdd3_d3c5,
+            0x3fd5_c16e_1dc2_cf5e,
+            0x3fe3_ca9a_e705_2fee,
+            0x3fca_3a39_253b_ad8c,
+            0x3fdf_8d22_8391_4594,
+        ];
+        let mut random = SplittableRandom::new(42);
+        for (index, expected) in JDK_DRAWS.iter().enumerate() {
+            let drawn = random.next_f64().to_bits();
+            assert_eq!(
+                drawn, *expected,
+                "draw {index}: got {drawn:#x}, the JDK produced {expected:#x}"
+            );
+        }
+    }
+
+    /// The level each of those draws maps to, for the default `M` of 16.
+    ///
+    /// `HnswGraphBuilder.getRandomGraphLevel` computes
+    /// `(int)(-log(randDouble) * ml)` with `ml = 1 / log(M)`. Pinning the levels
+    /// as well as the draws catches a correct generator paired with a wrong
+    /// `ml` or a wrong truncation, which the draws alone would not.
+    #[test]
+    fn graph_levels_match_the_jdk_for_the_default_m() {
+        const JDK_LEVELS: [i32; 12] = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0];
+        let ml = 1.0 / (16.0f64).ln();
+        assert_eq!(
+            ml.to_bits(),
+            0x3fd7_1547_652b_82fe,
+            "ml must be the double the JDK computed"
+        );
+        let mut random = SplittableRandom::new(42);
+        for (index, expected) in JDK_LEVELS.iter().enumerate() {
+            let mut rand_double;
+            loop {
+                rand_double = random.next_f64();
+                if rand_double != 0.0 {
+                    break;
+                }
+            }
+            let level = ((-rand_double.ln()) * ml) as i32;
+            assert_eq!(level, *expected, "level {index}");
+        }
     }
 }

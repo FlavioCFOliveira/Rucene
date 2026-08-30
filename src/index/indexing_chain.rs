@@ -76,6 +76,7 @@ use crate::analysis::tokenattributes::{
 };
 use crate::analysis::Analyzer;
 use crate::codecs::doc_values::DocValuesConsumer;
+use crate::codecs::knn_vectors::FieldVectorWriter;
 use crate::codecs::points::PointsWriter;
 use crate::codecs::postings::{NormsProducer, NumericDocValues};
 use crate::codecs::state::SegmentWriteState;
@@ -93,6 +94,7 @@ use crate::index::norms_writer::NormValuesWriter;
 use crate::index::point_values_writer::PointValuesWriter;
 use crate::index::stored_fields_consumer::StoredFieldsConsumer;
 use crate::index::term_vectors_consumer::TermVectorsConsumer;
+use crate::index::vector_values_consumer::VectorValuesConsumer;
 use crate::index::{
     DocValuesType, FieldInfo, IndexOptions, IndexableField, IndexableFieldType, SegmentInfo,
 };
@@ -418,6 +420,16 @@ struct PerField {
     /// `fi.getPointDimensionCount() != 0` (`IndexingChain.java:1372-1374`) and
     /// keeps it for the whole segment.
     point_values: Option<PointValuesWriter>,
+    /// The codec's per-field vectors writer, or `None` when the field declares
+    /// no vector dimensions.
+    ///
+    /// Equivalent to `IndexingChain.PerField.knnFieldVectorsWriter`, which
+    /// Lucene obtains from `vectorValuesConsumer.addField(fi)` in
+    /// `initializeFieldInfo` (`IndexingChain.java:1375-1382`). Unlike the norms,
+    /// doc-values and point buffers beside it, this one is **not** a buffer this
+    /// crate owns: it is a handle into the codec's vectors writer, which does
+    /// the buffering itself.
+    knn_field_vectors_writer: Option<FieldVectorWriter>,
 }
 
 /// Which attributes a field instance's token stream actually carries.
@@ -605,6 +617,10 @@ pub struct DefaultIndexingChain {
     /// which Lucene builds in the constructor because it already has the
     /// directory and the `SegmentInfo` there.
     term_vectors_consumer: Option<TermVectorsConsumer>,
+    /// The KNN-vectors half of the chain, present once the chain knows which
+    /// segment it writes. Equivalent to `IndexingChain.vectorValuesConsumer`,
+    /// which Lucene builds in the constructor (`IndexingChain.java:134-135`).
+    vector_values_consumer: Option<VectorValuesConsumer>,
 }
 
 impl DefaultIndexingChain {
@@ -622,6 +638,7 @@ impl DefaultIndexingChain {
             aborting_error: None,
             stored_fields_consumer: None,
             term_vectors_consumer: None,
+            vector_values_consumer: None,
         }
     }
 
@@ -769,9 +786,24 @@ impl DefaultIndexingChain {
     }
 
     /// Registers `field_info` and returns the index of its [`PerField`].
-    fn get_or_add_per_field(&mut self, field_info: &FieldInfo) -> usize {
+    ///
+    /// This is the body of `IndexingChain.initializeFieldInfo`
+    /// (`IndexingChain.java:1302-1384`) that runs once per field per segment:
+    /// Lucene reaches it from the first pass of `processDocument`, for every
+    /// field it has not seen in this segment yet, in **document field order**.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever
+    /// [`VectorValuesConsumer::add_field`](crate::index::vector_values_consumer::VectorValuesConsumer::add_field)
+    /// raises for a field that declares vector dimensions. Java wraps exactly
+    /// that one call in `try { .. } catch (Throwable th) { onAbortingException(th); throw th; }`
+    /// (`IndexingChain.java:1375-1381`): it is the only part of
+    /// `initializeFieldInfo` that can leave a half-written file behind, because
+    /// it is the only part that opens one.
+    fn get_or_add_per_field(&mut self, field_info: &FieldInfo) -> Result<usize> {
         if let Some(index) = self.per_field_index.get(&field_info.name) {
-            return *index;
+            return Ok(*index);
         }
         let indexed = field_info.index_options != IndexOptions::NONE;
         let writer_index = indexed.then(|| self.terms_writer.add_field(field_info));
@@ -825,6 +857,35 @@ impl DefaultIndexingChain {
         } else {
             None
         };
+        // `initializeFieldInfo` ends by asking the vectors consumer for this
+        // field's writer, which creates the codec's vectors writer — and with
+        // it the segment's vector files — the first time any field asks
+        // (`IndexingChain.java:1375-1382`). A failure here is aborting: the
+        // consumer may have created and half-written a `.vec`, `.vemf`, `.vex`
+        // or `.vem` that only `abort()` can remove.
+        let knn_field_vectors_writer = if field_info.vector_dimension != 0 {
+            let Some(consumer) = self.vector_values_consumer.as_mut() else {
+                // Without a bound segment there is nowhere to write vectors.
+                // The term-vectors path raises the same kind of error for the
+                // same reason.
+                return Err(LuceneError::IllegalState(format!(
+                    "the indexing chain is not bound to a segment, so the vectors of field \"{}\" cannot be written",
+                    field_info.name
+                )));
+            };
+            match consumer.add_field(field_info) {
+                Ok(writer) => Some(writer),
+                Err(error) => {
+                    self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+                        "the vectors of segment may be corrupt after field \"{}\": {error}",
+                        field_info.name
+                    )));
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
         let index = self.per_fields.len();
         self.per_fields.push(PerField {
             field_info: field_info.clone(),
@@ -837,9 +898,10 @@ impl DefaultIndexingChain {
             norms,
             doc_values,
             point_values,
+            knn_field_vectors_writer,
         });
         self.per_field_index.insert(field_info.name.clone(), index);
-        index
+        Ok(index)
     }
 
     /// Builds the [`FieldInfo`] a document field implies.
@@ -849,11 +911,27 @@ impl DefaultIndexingChain {
     fn describe_field(
         field: &dyn IndexableField,
         field_infos: &FieldInfosBuilder,
+        codec: &dyn crate::codecs::Codec,
     ) -> Result<FieldInfo> {
         let field_type = field.field_type();
         let name = field.name().to_string();
         if field_type.index_options() == IndexOptions::NONE {
             Self::verify_un_indexed_field_type(&name, field_type)?;
+        }
+        // `initializeFieldInfo` asks the codec how many dimensions it can take
+        // for this field name and rejects anything larger, *before* the
+        // `FieldInfo` is built and registered (`IndexingChain.java:1316-1321`).
+        // Java runs it once per field per segment and this runs it once per
+        // field instance; the predicate reads only the field type, which is
+        // fixed for a given instance, and a multi-valued field whose instances
+        // disagree is rejected by the schema check either way, so the two
+        // reject exactly the same documents.
+        if field_type.vector_dimension() != 0 {
+            Self::validate_max_vector_dimension(
+                &name,
+                field_type.vector_dimension(),
+                codec.knn_vectors_format().get_max_dimensions(&name),
+            )?;
         }
         let soft_deletes = field_infos.soft_deletes_field_name() == Some(name.as_str());
         let parent = field_infos.parent_field_name() == Some(name.as_str());
@@ -877,6 +955,28 @@ impl DefaultIndexingChain {
             soft_deletes,
             parent,
         )
+    }
+
+    /// Rejects a vector field whose dimension count the codec cannot store.
+    ///
+    /// Equivalent to `IndexingChain.validateMaxVectorDimension`
+    /// (`IndexingChain.java:1552-1562`); the message is Java's, verbatim.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `vector_dim` exceeds
+    /// `max_vector_dim`.
+    fn validate_max_vector_dimension(
+        field_name: &str,
+        vector_dim: i32,
+        max_vector_dim: i32,
+    ) -> Result<()> {
+        if vector_dim > max_vector_dim {
+            return Err(LuceneError::IllegalArgument(format!(
+                "Field [{field_name}] vector's dimensions must be <= [{max_vector_dim}]; got {vector_dim}"
+            )));
+        }
+        Ok(())
     }
 
     /// Rejects a field type that asks for term vectors without being indexed.
@@ -1532,6 +1632,51 @@ impl DefaultIndexingChain {
         close_outcome
     }
 
+    /// Hands one field instance's vector to the codec's per-field writer.
+    ///
+    /// Equivalent to `IndexingChain.indexVectorValue`
+    /// (`IndexingChain.java:1694-1707`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field carries no
+    /// vector of the encoding its type declares — the state Java reaches as a
+    /// `ClassCastException` — and propagates whatever the codec's field writer
+    /// raises, which is how a document that repeats a vector field, or that
+    /// arrives out of doc-id order, is rejected.
+    fn index_vector_value(
+        doc_id: i32,
+        per_field: &mut PerField,
+        field: &dyn IndexableField,
+    ) -> Result<()> {
+        let name = field.name();
+        let Some(writer) = per_field.knn_field_vectors_writer.as_mut() else {
+            return Err(LuceneError::IllegalState(format!(
+                "field=\"{name}\" declares vector dimensions but has no vectors writer"
+            )));
+        };
+        match writer {
+            FieldVectorWriter::Float(writer) => {
+                let Some(value) = field.float_vector_value() else {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "field=\"{name}\" is indexed with FLOAT32 vectors but carries no float vector value"
+                    )));
+                };
+                let value = value.to_vec();
+                writer.add_value(doc_id, value)
+            }
+            FieldVectorWriter::Byte(writer) => {
+                let Some(value) = field.byte_vector_value() else {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "field=\"{name}\" is indexed with BYTE vectors but carries no byte vector value"
+                    )));
+                };
+                let value = value.to_vec();
+                writer.add_value(doc_id, value)
+            }
+        }
+    }
+
     /// Buffers the norm of one field of one document.
     ///
     /// Equivalent to the norms half of `IndexingChain.PerField.finish(int)`
@@ -1585,6 +1730,7 @@ impl IndexingChain for DefaultIndexingChain {
     ) -> Result<()> {
         let analyzer = self.config.analyzer_arc();
         let info_stream = self.config.info_stream();
+        let codec = self.config.codec();
         let field_gen = self.next_field_gen;
         self.next_field_gen += 1;
 
@@ -1593,9 +1739,18 @@ impl IndexingChain for DefaultIndexingChain {
         // across fields.
         let mut doc_fields: Vec<usize> = Vec::with_capacity(doc.get_fields().len());
         for field in doc.get_fields() {
-            let described = Self::describe_field(field.as_ref(), field_infos)?;
-            let registered = field_infos.add(&described)?.clone();
-            let index = self.get_or_add_per_field(&registered);
+            let described = Self::describe_field(field.as_ref(), field_infos, codec.as_ref())?;
+            // The *live* entry of the builder, not a copy of it. Java's
+            // `initializeFieldInfo` hands `pf.setFieldInfo` the very object
+            // `fieldInfos.add` returned (`IndexingChain.java:1324-1345`), and
+            // the codec writes into it: `PerFieldKnnVectorsFormat.FieldsWriter`
+            // stamps `PerFieldKnnVectorsFormat.format` and `.suffix` onto the
+            // field info it is given, and the reader refuses a segment whose
+            // `.fnm` lacks them. Registering a clone here would leave those
+            // attributes on a copy nobody writes out, and produce an index
+            // Lucene cannot open.
+            let registered = field_infos.add(&described)?;
+            let index = self.get_or_add_per_field(registered)?;
             if self.per_fields[index].field_gen != field_gen {
                 self.per_fields[index].field_gen = field_gen;
                 self.per_fields[index].first = true;
@@ -1728,6 +1883,33 @@ impl IndexingChain for DefaultIndexingChain {
                     break;
                 }
             }
+
+            // `processField` ends with `indexVectorValue` for every instance of
+            // a field that declares vector dimensions
+            // (`IndexingChain.java:1396-1398`). Java switches on the encoding
+            // and downcasts the field to `KnnByteVectorField` or
+            // `KnnFloatVectorField` to read its array
+            // (`IndexingChain.java:1695-1707`); this reads the matching sibling
+            // accessor, and an absent value is the `ClassCastException` Java
+            // would raise for a field whose type promises a vector its class
+            // cannot produce.
+            if field.field_type().vector_dimension() != 0 {
+                let result =
+                    Self::index_vector_value(doc_id, &mut self.per_fields[index], field.as_ref());
+                if let Err(error) = result {
+                    if !matches!(
+                        error,
+                        LuceneError::IllegalArgument(_) | LuceneError::IllegalState(_)
+                    ) {
+                        self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+                            "the vectors of segment may be corrupt after field \"{}\": {error}",
+                            field.name()
+                        )));
+                    }
+                    outcome = Err(error);
+                    break;
+                }
+            }
         }
 
         // Lucene's `finally` runs the whole tail — finishing every indexed
@@ -1826,9 +2008,19 @@ impl IndexingChain for DefaultIndexingChain {
         ));
         self.term_vectors_consumer = Some(TermVectorsConsumer::new(
             self.config.codec(),
-            directory,
+            Arc::clone(&directory) as Arc<dyn crate::store::Directory>,
             segment_info.clone(),
             Arc::clone(&self.bytes_used),
+        ));
+        // `IndexingChain`'s constructor builds the vectors consumer before the
+        // stored-fields and term-vectors ones (`IndexingChain.java:134-135`);
+        // none of the three writes anything here, so only the objects differ in
+        // age.
+        self.vector_values_consumer = Some(VectorValuesConsumer::new(
+            self.config.codec(),
+            directory as Arc<dyn crate::store::Directory>,
+            segment_info.clone(),
+            self.config.info_stream(),
         ));
         Ok(())
     }
@@ -1846,6 +2038,12 @@ impl IndexingChain for DefaultIndexingChain {
         if let Some(consumer) = self.term_vectors_consumer.as_mut() {
             consumer.abort();
         }
+        // `IndexingChain.abort` closes the vectors writer inside the same
+        // finalizer chain (`IndexingChain.java:537-541`), swallowing whatever
+        // the close raises: the segment is going away either way.
+        if let Some(consumer) = self.vector_values_consumer.as_mut() {
+            consumer.abort();
+        }
         self.per_fields.clear();
         self.per_field_index.clear();
         self.bytes_used.store(0, Ordering::Release);
@@ -1861,6 +2059,13 @@ impl IndexingChain for DefaultIndexingChain {
                 .term_vectors_consumer
                 .as_ref()
                 .map_or(0, TermVectorsConsumer::ram_bytes_used)
+            // `IndexingChain.ramBytesUsed` ends with
+            // `vectorValuesConsumer.getAccountable().ramBytesUsed()`
+            // (`IndexingChain.java:1720-1724`).
+            + self
+                .vector_values_consumer
+                .as_ref()
+                .map_or(0, VectorValuesConsumer::ram_bytes_used)
     }
 
     fn flush(&mut self, state: &IndexingChainFlushState<'_>) -> Result<IndexingChainFlushResult> {
@@ -1886,6 +2091,13 @@ impl IndexingChain for DefaultIndexingChain {
         self.write_norms(&write_state, max_doc)?;
         self.write_doc_values(&write_state)?;
         self.write_points(&write_state)?;
+
+        // `vectorValuesConsumer.flush(state, sortMap)` runs between the points
+        // and the stored fields (`IndexingChain.java:333`). Index sorting is a
+        // separate port, so the doc map is always absent.
+        if let Some(consumer) = self.vector_values_consumer.as_mut() {
+            consumer.flush(max_doc, None)?;
+        }
 
         if let Some(consumer) = self.stored_fields_consumer.as_mut() {
             consumer.finish(max_doc)?;
@@ -1945,10 +2157,12 @@ mod tests {
     };
     use crate::analysis::{default_token_attribute_factory, StandardAnalyzer, TokenStream};
     use crate::codecs::{register_codec, Codec, Lucene104Codec};
-    use crate::document::{Field, FieldType, IntField, Store, StoredField, StringField, TextField};
+    use crate::document::{
+        Field, FieldType, IntField, KnnFloatVectorField, Store, StoredField, StringField, TextField,
+    };
     use crate::index::documents_writer::TermDelete;
     use crate::index::field_infos::FieldNumbers;
-    use crate::index::{SegmentInfo, Term};
+    use crate::index::{SegmentInfo, Term, VectorEncoding, VectorSimilarityFunction};
     use crate::store::{
         flush_io_context, ByteBuffersDirectory, Directory, FlushInfo, TrackingDirectoryWrapper,
     };
@@ -2377,6 +2591,238 @@ mod tests {
             "a field that is not indexed is never inverted"
         );
         drop(document);
+    }
+
+    // -- Vectors -----------------------------------------------------------
+
+    /// A field type that promises a vector its field cannot produce.
+    ///
+    /// Java reaches this state as a `ClassCastException` inside
+    /// `IndexingChain.indexVectorValue`, which downcasts to
+    /// `KnnFloatVectorField`. Rust has no downcast, so the state is reachable
+    /// through the trait's default accessors — and the chain has to reject it
+    /// rather than index nothing.
+    #[derive(Debug)]
+    struct VectorlessVectorField {
+        name: String,
+        field_type: FieldType,
+    }
+
+    impl VectorlessVectorField {
+        fn new(name: &str, encoding: VectorEncoding) -> Self {
+            let mut field_type = FieldType::new();
+            field_type
+                .set_vector_attributes(3, encoding, VectorSimilarityFunction::EUCLIDEAN)
+                .expect("vector attributes");
+            field_type.freeze();
+            Self {
+                name: name.to_string(),
+                field_type,
+            }
+        }
+    }
+
+    impl IndexableField for VectorlessVectorField {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn field_type(&self) -> &dyn IndexableFieldType {
+            &self.field_type
+        }
+        fn token_stream(
+            &self,
+            _analyzer: &dyn Analyzer,
+            _reuse: Option<&mut dyn crate::analysis::TokenStream>,
+        ) -> Box<dyn crate::analysis::TokenStream> {
+            Box::new(crate::analysis::StringTokenStream::new(String::new()).expect("stream"))
+        }
+        fn binary_value(&self) -> Option<BytesRef> {
+            None
+        }
+        fn string_value(&self) -> Option<String> {
+            None
+        }
+        fn reader_value(&mut self) -> Option<&mut dyn std::io::Read> {
+            None
+        }
+        fn numeric_value(&self) -> Option<crate::document::NumericValue> {
+            None
+        }
+        fn stored_value(&self) -> Result<Option<crate::document::StoredValue>> {
+            Ok(None)
+        }
+        fn invertable_type(&self) -> Option<InvertableType> {
+            None
+        }
+    }
+
+    /// The vector reaches the codec's per-field writer, and the segment gains
+    /// the four vector files. This is the whole point of the seam, so it is
+    /// asserted before any of the guards around it.
+    #[test]
+    fn a_vector_field_reaches_the_codec_and_writes_the_segment_files() {
+        let (mut chain, tracking, _info) = bound_chain(2);
+        let mut field_infos = builder();
+        for doc in 0..2 {
+            let mut document = Document::new();
+            document.add(Box::new(
+                KnnFloatVectorField::with_euclidean("v", &[doc as f32 + 1.0, 2.0, 3.0])
+                    .expect("float vector field"),
+            ));
+            chain
+                .process_document(doc, &document, true, &mut field_infos)
+                .expect("process document");
+        }
+        let created = tracking.get_created_files();
+        for extension in ["vec", "vemf", "vex", "vem"] {
+            assert!(
+                created
+                    .iter()
+                    .any(|name| name.ends_with(&format!(".{extension}"))),
+                "no .{extension} was created; the chain wrote {created:?}"
+            );
+        }
+        assert!(
+            chain.ram_bytes_used() > 0,
+            "the buffered vectors must be reported to the segment's RAM total"
+        );
+    }
+
+    /// The vectors consumer is created lazily, so a chain that never sees a
+    /// vector field must leave no vector file behind.
+    #[test]
+    fn a_chain_without_vector_fields_writes_no_vector_file() {
+        let (mut chain, tracking, _info) = bound_chain(1);
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        document.add(scripted_field(
+            "body",
+            IndexOptions::DOCS,
+            vec![Tok::new("a", 1, 0, 1)],
+        ));
+        chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect("process document");
+        for name in tracking.get_created_files() {
+            for extension in [".vec", ".vemf", ".vex", ".vem"] {
+                assert!(
+                    !name.ends_with(extension),
+                    "a segment with no vector field wrote {name}"
+                );
+            }
+        }
+    }
+
+    /// Lucene rejects a document that offers two values for one vector field,
+    /// with a message that names the field. The rejection is document-level:
+    /// indexing continues afterwards.
+    #[test]
+    fn a_document_may_not_repeat_a_vector_field() {
+        let (mut chain, _tracking, _info) = bound_chain(1);
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        document.add(Box::new(
+            KnnFloatVectorField::with_euclidean("v", &[1.0, 2.0]).expect("first"),
+        ));
+        document.add(Box::new(
+            KnnFloatVectorField::with_euclidean("v", &[3.0, 4.0]).expect("second"),
+        ));
+        let error = chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect_err("a repeated vector field must be rejected");
+        assert!(
+            matches!(&error, LuceneError::IllegalArgument(message)
+                if message.contains("appears more than once in this document")
+                    && message.contains('v')),
+            "unexpected error: {error:?}"
+        );
+        assert!(
+            chain.take_aborting_error().is_none(),
+            "a repeated vector field is a document-level problem, not an aborting one"
+        );
+    }
+
+    /// A dimension count the codec cannot store is rejected before the field
+    /// info is built, with Java's message.
+    #[test]
+    fn a_vector_field_wider_than_the_codec_allows_is_rejected() {
+        let (mut chain, _tracking, _info) = bound_chain(1);
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        // 1025 is one past `Lucene99HnswVectorsFormat.getMaxDimensions`.
+        document.add(Box::new(
+            KnnFloatVectorField::with_euclidean("v", &vec![1.0f32; 1025]).expect("wide vector"),
+        ));
+        let error = chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect_err("an over-wide vector field must be rejected");
+        assert!(
+            matches!(&error, LuceneError::IllegalArgument(message)
+                if message == "Field [v] vector's dimensions must be <= [1024]; got 1025"),
+            "unexpected error: {error:?}"
+        );
+        assert!(
+            field_infos.field_info("v").is_none(),
+            "a rejected field must not reach the field infos"
+        );
+    }
+
+    /// Exactly 1024 dimensions is the largest the codec accepts, so the guard
+    /// above must not reject it. Without this the guard could be off by one in
+    /// the strict direction and nothing would notice.
+    #[test]
+    fn the_maximum_dimension_count_is_accepted() {
+        let (mut chain, _tracking, _info) = bound_chain(1);
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        document.add(Box::new(
+            KnnFloatVectorField::with_euclidean("v", &vec![1.0f32; 1024]).expect("wide vector"),
+        ));
+        chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect("1024 dimensions must be accepted");
+    }
+
+    /// A field whose type promises a vector but whose value is absent is the
+    /// state Java reaches as a `ClassCastException`.
+    #[test]
+    fn a_vector_field_without_a_vector_value_is_rejected() {
+        for encoding in [VectorEncoding::FLOAT32, VectorEncoding::BYTE] {
+            let (mut chain, _tracking, _info) = bound_chain(1);
+            let mut field_infos = builder();
+            let mut document = Document::new();
+            document.add(Box::new(VectorlessVectorField::new("v", encoding)));
+            let error = chain
+                .process_document(0, &document, true, &mut field_infos)
+                .expect_err("a vector field with no value must be rejected");
+            assert!(
+                matches!(&error, LuceneError::IllegalArgument(message)
+                    if message.contains("carries no")),
+                "unexpected error for {encoding:?}: {error:?}"
+            );
+        }
+    }
+
+    /// A chain that was never bound to a segment has nowhere to write vectors,
+    /// so a vector field must be refused rather than silently dropped.
+    #[test]
+    fn an_unbound_chain_refuses_a_vector_field() {
+        let mut chain = DefaultIndexingChain::new(Arc::new(LiveIndexWriterConfig::new(Arc::new(
+            StandardAnalyzer::new(),
+        ))));
+        let mut field_infos = builder();
+        let mut document = Document::new();
+        document.add(Box::new(
+            KnnFloatVectorField::with_euclidean("v", &[1.0, 2.0]).expect("vector field"),
+        ));
+        let error = chain
+            .process_document(0, &document, true, &mut field_infos)
+            .expect_err("an unbound chain must refuse a vector field");
+        assert!(
+            matches!(&error, LuceneError::IllegalState(message)
+                if message.contains("not bound to a segment")),
+            "unexpected error: {error:?}"
+        );
     }
 
     // -- Flush -------------------------------------------------------------

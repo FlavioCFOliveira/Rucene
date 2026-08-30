@@ -12,9 +12,8 @@
 
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
-use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::codecs::compound::CompoundDirectory;
 use crate::codecs::doc_values::{
@@ -30,6 +29,7 @@ use crate::codecs::stub::StoredFieldVisitor;
 use crate::codecs::term_vectors::TermVectorsReader;
 use crate::codecs::DocValuesSkipper;
 use crate::error::{LuceneError, Result};
+use crate::index::codec_reader::CodecReader;
 use crate::index::index_reader::{
     CacheHelper, CacheKey, ClosedListener, IndexReaderCore, StoredFields,
 };
@@ -56,12 +56,12 @@ use crate::util::Bits;
 ///
 /// Equivalent to `org.apache.lucene.index.SegmentCoreReaders`.
 pub struct SegmentCoreReaders {
-    fields: RwLock<Option<Box<dyn FieldsProducer>>>,
-    norms_producer: RwLock<Option<Box<dyn NormsProducer>>>,
+    fields: RwLock<Option<Arc<dyn FieldsProducer>>>,
+    norms_producer: RwLock<Option<Arc<dyn NormsProducer>>>,
     fields_reader_orig: RwLock<Option<Box<dyn StoredFieldsReader>>>,
     term_vectors_reader_orig: RwLock<Option<Box<dyn TermVectorsReader>>>,
-    points_reader: RwLock<Option<Box<dyn PointsReader>>>,
-    knn_vectors_reader: RwLock<Option<Box<dyn KnnVectorsReader>>>,
+    points_reader: RwLock<Option<Arc<dyn PointsReader>>>,
+    knn_vectors_reader: RwLock<Option<Arc<dyn KnnVectorsReader>>>,
     cfs_reader: RwLock<Option<Box<dyn CompoundDirectory>>>,
     segment: String,
     core_field_infos: FieldInfos,
@@ -141,17 +141,19 @@ impl SegmentCoreReaders {
             if core.core_field_infos.has_postings() {
                 *core.fields.write().map_err(|_| {
                     LuceneError::IllegalState("fields producer lock poisoned".to_string())
-                })? = Some(
+                })? = Some(Arc::from(
                     codec
                         .postings_format()
                         .fields_producer(&segment_read_state)?,
-                );
+                ));
             }
 
             if core.core_field_infos.has_norms() {
                 *core.norms_producer.write().map_err(|_| {
                     LuceneError::IllegalState("norms producer lock poisoned".to_string())
-                })? = Some(codec.norms_format().norms_producer(&segment_read_state)?);
+                })? = Some(Arc::from(
+                    codec.norms_format().norms_producer(&segment_read_state)?,
+                ));
             }
 
             *core.fields_reader_orig.write().map_err(|_| {
@@ -177,17 +179,19 @@ impl SegmentCoreReaders {
             if core.core_field_infos.has_point_values() {
                 *core.points_reader.write().map_err(|_| {
                     LuceneError::IllegalState("points reader lock poisoned".to_string())
-                })? = Some(codec.points_format().fields_reader(&segment_read_state)?);
+                })? = Some(Arc::from(
+                    codec.points_format().fields_reader(&segment_read_state)?,
+                ));
             }
 
             if core.core_field_infos.has_vector_values() {
                 *core.knn_vectors_reader.write().map_err(|_| {
                     LuceneError::IllegalState("knn vectors reader lock poisoned".to_string())
-                })? = Some(
+                })? = Some(Arc::from(
                     codec
                         .knn_vectors_format()
                         .fields_reader(&segment_read_state)?,
-                );
+                ));
             }
 
             drop(cfs_dir_guard);
@@ -265,8 +269,8 @@ impl SegmentCoreReaders {
             }
         };
 
-        record(close_lock(&self.fields, |producer| producer.close()));
-        record(close_lock(&self.norms_producer, |producer| {
+        record(close_lock_arc(&self.fields, |producer| producer.close()));
+        record(close_lock_arc(&self.norms_producer, |producer| {
             producer.close()
         }));
         record(close_lock(&self.fields_reader_orig, |reader| {
@@ -275,8 +279,10 @@ impl SegmentCoreReaders {
         record(close_lock(&self.term_vectors_reader_orig, |reader| {
             reader.close()
         }));
-        record(close_lock(&self.points_reader, |producer| producer.close()));
-        record(close_lock(&self.knn_vectors_reader, |producer| {
+        record(close_lock_arc(&self.points_reader, |producer| {
+            producer.close()
+        }));
+        record(close_lock_arc(&self.knn_vectors_reader, |producer| {
             producer.close()
         }));
 
@@ -317,6 +323,28 @@ fn close_lock<T>(
         .map_err(|_| LuceneError::IllegalState("codec reader lock poisoned".to_string()))?;
     if let Some(mut value) = guard.take() {
         close(&mut value)?;
+    }
+    Ok(())
+}
+
+/// Closes a producer held behind an `Arc`, taking it out of `lock` first.
+///
+/// The producers a `SegmentCoreReaders` owns are shared through `Arc` so that
+/// [`CodecReader`](crate::index::CodecReader) can hand them out, which mirrors
+/// Java's sharing of the producer object. Closing therefore needs sole
+/// ownership: when another `Arc` is still outstanding the close is skipped, as
+/// the producer is still in use.
+fn close_lock_arc<T: ?Sized>(
+    lock: &RwLock<Option<Arc<T>>>,
+    mut close: impl FnMut(&mut T) -> Result<()>,
+) -> Result<()> {
+    let mut guard = lock
+        .write()
+        .map_err(|_| LuceneError::IllegalState("codec reader lock poisoned".to_string()))?;
+    if let Some(mut value) = guard.take() {
+        if let Some(inner) = Arc::get_mut(&mut value) {
+            close(inner)?;
+        }
     }
     Ok(())
 }
@@ -1341,16 +1369,13 @@ impl SegmentReader {
     }
 
     /// Returns the underlying postings reader.
-    pub fn get_postings_reader(&self) -> Result<Option<FieldsProducerGuard<'_>>> {
+    pub fn get_postings_reader(&self) -> Result<Option<Arc<dyn FieldsProducer>>> {
         self.ensure_open()?;
         let guard =
             self.core_readers.fields.read().map_err(|_| {
                 LuceneError::IllegalState("fields producer lock poisoned".to_string())
             })?;
-        match guard.as_ref() {
-            Some(_) => Ok(Some(FieldsProducerGuard(guard))),
-            None => Ok(None),
-        }
+        Ok(guard.as_ref().map(Arc::clone))
     }
 
     /// Returns the underlying stored-fields reader.
@@ -1376,16 +1401,13 @@ impl SegmentReader {
     }
 
     /// Returns the underlying norms producer.
-    pub fn get_norms_reader(&self) -> Result<Option<NormsProducerGuard<'_>>> {
+    pub fn get_norms_reader(&self) -> Result<Option<Arc<dyn NormsProducer>>> {
         self.ensure_open()?;
         let guard =
             self.core_readers.norms_producer.read().map_err(|_| {
                 LuceneError::IllegalState("norms producer lock poisoned".to_string())
             })?;
-        match guard.as_ref() {
-            Some(_) => Ok(Some(NormsProducerGuard(guard))),
-            None => Ok(None),
-        }
+        Ok(guard.as_ref().map(Arc::clone))
     }
 
     /// Returns the underlying doc-values producer.
@@ -1395,28 +1417,22 @@ impl SegmentReader {
     }
 
     /// Returns the underlying points reader.
-    pub fn get_points_reader(&self) -> Result<Option<PointsReaderGuard<'_>>> {
+    pub fn get_points_reader(&self) -> Result<Option<Arc<dyn PointsReader>>> {
         self.ensure_open()?;
         let guard =
             self.core_readers.points_reader.read().map_err(|_| {
                 LuceneError::IllegalState("points reader lock poisoned".to_string())
             })?;
-        match guard.as_ref() {
-            Some(_) => Ok(Some(PointsReaderGuard(guard))),
-            None => Ok(None),
-        }
+        Ok(guard.as_ref().map(Arc::clone))
     }
 
     /// Returns the underlying KNN vectors reader.
-    pub fn get_vector_reader(&self) -> Result<Option<KnnVectorsReaderGuard<'_>>> {
+    pub fn get_vector_reader(&self) -> Result<Option<Arc<dyn KnnVectorsReader>>> {
         self.ensure_open()?;
         let guard = self.core_readers.knn_vectors_reader.read().map_err(|_| {
             LuceneError::IllegalState("knn vectors reader lock poisoned".to_string())
         })?;
-        match guard.as_ref() {
-            Some(_) => Ok(Some(KnnVectorsReaderGuard(guard))),
-            None => Ok(None),
-        }
+        Ok(guard.as_ref().map(Arc::clone))
     }
 }
 
@@ -1994,87 +2010,6 @@ impl CacheHelper for SegmentReaderCoreCacheHelper {
 }
 
 // -----------------------------------------------------------------------------
-// Reader guards
-// -----------------------------------------------------------------------------
-
-/// Read guard that dereferences to the stored postings reader.
-///
-/// This lets the expert `get_postings_reader` API return the actual reader
-/// held by `SegmentCoreReaders` without copying or creating a merge instance.
-pub struct FieldsProducerGuard<'a>(RwLockReadGuard<'a, Option<Box<dyn FieldsProducer>>>);
-
-impl<'a> Deref for FieldsProducerGuard<'a> {
-    type Target = dyn FieldsProducer;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.as_ref().unwrap().as_ref()
-    }
-}
-
-impl<'a> Debug for FieldsProducerGuard<'a> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FieldsProducerGuard")
-            .finish_non_exhaustive()
-    }
-}
-
-/// Read guard that dereferences to the stored norms producer.
-pub struct NormsProducerGuard<'a>(RwLockReadGuard<'a, Option<Box<dyn NormsProducer>>>);
-
-impl<'a> Deref for NormsProducerGuard<'a> {
-    type Target = dyn NormsProducer;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.as_ref().unwrap().as_ref()
-    }
-}
-
-impl<'a> Debug for NormsProducerGuard<'a> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NormsProducerGuard").finish_non_exhaustive()
-    }
-}
-
-/// Read guard that dereferences to the stored points reader.
-pub struct PointsReaderGuard<'a>(RwLockReadGuard<'a, Option<Box<dyn PointsReader>>>);
-
-impl<'a> Deref for PointsReaderGuard<'a> {
-    type Target = dyn PointsReader;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.as_ref().unwrap().as_ref()
-    }
-}
-
-impl<'a> Debug for PointsReaderGuard<'a> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PointsReaderGuard").finish_non_exhaustive()
-    }
-}
-
-/// Read guard that dereferences to the stored KNN vectors reader.
-///
-/// Note: the underlying reader's `search` methods require `&mut self`. Use
-/// `SegmentReader::search_nearest_vectors` for searching; this guard is intended
-/// for read-only inspection of the stored reader.
-pub struct KnnVectorsReaderGuard<'a>(RwLockReadGuard<'a, Option<Box<dyn KnnVectorsReader>>>);
-
-impl<'a> Deref for KnnVectorsReaderGuard<'a> {
-    type Target = dyn KnnVectorsReader;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.as_ref().unwrap().as_ref()
-    }
-}
-
-impl<'a> Debug for KnnVectorsReaderGuard<'a> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KnnVectorsReaderGuard")
-            .finish_non_exhaustive()
-    }
-}
-
-// -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
 
@@ -2457,7 +2392,7 @@ mod tests {
         }
 
         fn search(
-            &mut self,
+            &self,
             field: &str,
             target: &[f32],
             knn_collector: &mut dyn KnnCollector,
@@ -2467,7 +2402,7 @@ mod tests {
         }
 
         fn search_byte(
-            &mut self,
+            &self,
             field: &str,
             target: &[u8],
             knn_collector: &mut dyn KnnCollector,
@@ -2883,10 +2818,10 @@ mod tests {
             <DummyFormat as KnnVectorsFormat>::name(&self.delegate)
         }
 
-        fn fields_writer<'a>(
+        fn fields_writer(
             &self,
-            state: &SegmentWriteState<'a>,
-        ) -> Result<Box<dyn KnnVectorsWriter + 'a>> {
+            state: &crate::codecs::state::OwnedSegmentWriteState,
+        ) -> Result<Box<dyn KnnVectorsWriter>> {
             <DummyFormat as KnnVectorsFormat>::fields_writer(&self.delegate, state)
         }
 
@@ -3239,5 +3174,35 @@ mod tests {
         wrapper.prefetch(3).expect("prefetch");
         wrapper.prefetch(11).expect("prefetch");
         assert_eq!(*inner.prefetched.lock().unwrap(), vec![3, 11]);
+    }
+}
+
+impl CodecReader for SegmentReader {
+    fn get_fields_reader(&self) -> Result<Option<Box<dyn StoredFieldsReader>>> {
+        SegmentReader::get_fields_reader(self)
+    }
+
+    fn get_term_vectors_reader(&self) -> Result<Option<Box<dyn TermVectorsReader>>> {
+        SegmentReader::get_term_vectors_reader(self)
+    }
+
+    fn get_norms_reader(&self) -> Result<Option<Arc<dyn NormsProducer>>> {
+        SegmentReader::get_norms_reader(self)
+    }
+
+    fn get_doc_values_reader(&self) -> Result<Option<Arc<dyn DocValuesProducer>>> {
+        SegmentReader::get_doc_values_reader(self)
+    }
+
+    fn get_postings_reader(&self) -> Result<Option<Arc<dyn FieldsProducer>>> {
+        SegmentReader::get_postings_reader(self)
+    }
+
+    fn get_points_reader(&self) -> Result<Option<Arc<dyn PointsReader>>> {
+        SegmentReader::get_points_reader(self)
+    }
+
+    fn get_vector_reader(&self) -> Result<Option<Arc<dyn KnnVectorsReader>>> {
+        SegmentReader::get_vector_reader(self)
     }
 }

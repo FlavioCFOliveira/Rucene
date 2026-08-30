@@ -864,9 +864,9 @@ pub(crate) mod tests {
             self.0
         }
 
-        fn fields_writer<'a>(
+        fn fields_writer(
             &self,
-            _state: &SegmentWriteState<'a>,
+            _state: &crate::codecs::state::OwnedSegmentWriteState,
         ) -> crate::error::Result<Box<dyn KnnVectorsWriter>> {
             Ok(Box::new(EmptyKnnVectorsWriter))
         }

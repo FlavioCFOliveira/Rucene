@@ -10,7 +10,10 @@ use crate::codecs::{
     DocValuesProducer, FieldsProducer, KnnVectorsReader, NormsProducer, PointsReader,
     StoredFieldsReader, TermVectorsReader,
 };
+use std::sync::Arc;
+
 use crate::error::{LuceneError, Result};
+use crate::index::codec_reader::CodecReader;
 use crate::index::{FieldInfos, SegmentInfo};
 use crate::search::NO_MORE_DOCS;
 use crate::util::Bits;
@@ -60,7 +63,7 @@ pub struct MergeState {
     /// Maps document IDs from each source segment to the merged segment.
     pub doc_maps: Vec<DocMap>,
     /// Segment info for the newly merged segment.
-    pub segment_info: SegmentInfo,
+    pub segment_info: Option<SegmentInfo>,
     /// Field infos for the newly merged segment.
     pub merge_field_infos: FieldInfos,
     /// Stored-fields readers for each source segment.
@@ -68,19 +71,19 @@ pub struct MergeState {
     /// Term-vectors readers for each source segment.
     pub term_vectors_readers: Vec<Option<Box<dyn TermVectorsReader>>>,
     /// Norms producers for each source segment.
-    pub norms_producers: Vec<Option<Box<dyn NormsProducer>>>,
+    pub norms_producers: Vec<Option<Arc<dyn NormsProducer>>>,
     /// Doc-values producers for each source segment.
-    pub doc_values_producers: Vec<Option<Box<dyn DocValuesProducer>>>,
+    pub doc_values_producers: Vec<Option<Arc<dyn DocValuesProducer>>>,
     /// Field infos for each source segment.
     pub field_infos: Vec<FieldInfos>,
     /// Live docs for each source segment.
     pub live_docs: Vec<Option<Box<dyn Bits>>>,
     /// Postings producers for each source segment.
-    pub fields_producers: Vec<Option<Box<dyn FieldsProducer>>>,
+    pub fields_producers: Vec<Option<Arc<dyn FieldsProducer>>>,
     /// Points readers for each source segment.
-    pub points_readers: Vec<Option<Box<dyn PointsReader>>>,
+    pub points_readers: Vec<Option<Arc<dyn PointsReader>>>,
     /// Vector readers for each source segment.
-    pub knn_vectors_readers: Vec<Option<Box<dyn KnnVectorsReader>>>,
+    pub knn_vectors_readers: Vec<Option<Arc<dyn KnnVectorsReader>>>,
     /// Maximum document count (exclusive) for each source segment.
     pub max_docs: Vec<i32>,
     /// Whether the merged segment needs to preserve index sort order.
@@ -96,19 +99,19 @@ impl MergeState {
         merge_field_infos: FieldInfos,
         stored_fields_readers: Vec<Option<Box<dyn StoredFieldsReader>>>,
         term_vectors_readers: Vec<Option<Box<dyn TermVectorsReader>>>,
-        norms_producers: Vec<Option<Box<dyn NormsProducer>>>,
-        doc_values_producers: Vec<Option<Box<dyn DocValuesProducer>>>,
+        norms_producers: Vec<Option<Arc<dyn NormsProducer>>>,
+        doc_values_producers: Vec<Option<Arc<dyn DocValuesProducer>>>,
         field_infos: Vec<FieldInfos>,
         live_docs: Vec<Option<Box<dyn Bits>>>,
-        fields_producers: Vec<Option<Box<dyn FieldsProducer>>>,
-        points_readers: Vec<Option<Box<dyn PointsReader>>>,
-        knn_vectors_readers: Vec<Option<Box<dyn KnnVectorsReader>>>,
+        fields_producers: Vec<Option<Arc<dyn FieldsProducer>>>,
+        points_readers: Vec<Option<Arc<dyn PointsReader>>>,
+        knn_vectors_readers: Vec<Option<Arc<dyn KnnVectorsReader>>>,
         max_docs: Vec<i32>,
         needs_index_sort: bool,
     ) -> Self {
         Self {
             doc_maps,
-            segment_info,
+            segment_info: Some(segment_info),
             merge_field_infos,
             stored_fields_readers,
             term_vectors_readers,
@@ -125,6 +128,108 @@ impl MergeState {
     }
 
     /// Returns the number of source segments.
+    /// Creates a merge state carrying only the postings producers and document
+    /// counts, for a codec that merges one kind of data.
+    pub fn from_fields_producers(
+        fields_producers: Vec<Option<Arc<dyn FieldsProducer>>>,
+        max_docs: Vec<i32>,
+    ) -> Self {
+        let n = fields_producers.len();
+        Self {
+            doc_maps: Vec::new(),
+            segment_info: None,
+            merge_field_infos: FieldInfos::default(),
+            stored_fields_readers: (0..n).map(|_| None).collect(),
+            term_vectors_readers: (0..n).map(|_| None).collect(),
+            norms_producers: (0..n).map(|_| None).collect(),
+            doc_values_producers: (0..n).map(|_| None).collect(),
+            field_infos: Vec::new(),
+            live_docs: (0..n).map(|_| None).collect(),
+            fields_producers,
+            points_readers: (0..n).map(|_| None).collect(),
+            knn_vectors_readers: (0..n).map(|_| None).collect(),
+            max_docs,
+            needs_index_sort: false,
+        }
+    }
+
+    /// Attaches per-segment and merged field metadata to this merge state.
+    pub fn with_field_infos(
+        mut self,
+        field_infos: Vec<FieldInfos>,
+        merge_field_infos: FieldInfos,
+    ) -> Self {
+        self.field_infos = field_infos;
+        self.merge_field_infos = merge_field_infos;
+        self
+    }
+
+    /// Called periodically by a long-running merge so it can stop early.
+    ///
+    /// Equivalent to `MergeState.checkAborted()`, which raises
+    /// `MergePolicy.MergeAbortedException` once the writer has aborted the
+    /// merge. Nothing aborts a merge yet, so this always succeeds.
+    pub fn check_aborted(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Builds a `MergeState` from the readers being merged.
+    ///
+    /// Equivalent to Lucene 10.5.0's package-private
+    /// `MergeState(List<CodecReader> readers, SegmentInfo segmentInfo, InfoStream
+    /// infoStream, Executor intraMergeTaskExecutor)`: it pulls each producer off
+    /// the reader rather than making the caller thread fourteen parallel vectors
+    /// through by hand.
+    pub fn from_readers(
+        readers: &[Arc<dyn CodecReader>],
+        doc_maps: Vec<DocMap>,
+        segment_info: Option<SegmentInfo>,
+        merge_field_infos: FieldInfos,
+        needs_index_sort: bool,
+    ) -> Result<Self> {
+        let n = readers.len();
+        let mut stored_fields_readers = Vec::with_capacity(n);
+        let mut term_vectors_readers = Vec::with_capacity(n);
+        let mut norms_producers = Vec::with_capacity(n);
+        let mut doc_values_producers = Vec::with_capacity(n);
+        let mut field_infos = Vec::with_capacity(n);
+        let mut live_docs = Vec::with_capacity(n);
+        let mut fields_producers = Vec::with_capacity(n);
+        let mut points_readers = Vec::with_capacity(n);
+        let mut knn_vectors_readers = Vec::with_capacity(n);
+        let mut max_docs = Vec::with_capacity(n);
+
+        for reader in readers {
+            stored_fields_readers.push(reader.get_fields_reader()?);
+            term_vectors_readers.push(reader.get_term_vectors_reader()?);
+            norms_producers.push(reader.get_norms_reader()?);
+            doc_values_producers.push(reader.get_doc_values_reader()?);
+            fields_producers.push(reader.get_postings_reader()?);
+            points_readers.push(reader.get_points_reader()?);
+            knn_vectors_readers.push(reader.get_vector_reader()?);
+            field_infos.push(reader.get_field_infos().clone());
+            live_docs.push(reader.get_live_docs());
+            max_docs.push(reader.max_doc());
+        }
+
+        Ok(Self {
+            doc_maps,
+            segment_info,
+            merge_field_infos,
+            stored_fields_readers,
+            term_vectors_readers,
+            norms_producers,
+            doc_values_producers,
+            field_infos,
+            live_docs,
+            fields_producers,
+            points_readers,
+            knn_vectors_readers,
+            max_docs,
+            needs_index_sort,
+        })
+    }
+
     pub fn num_readers(&self) -> usize {
         self.max_docs.len()
     }

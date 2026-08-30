@@ -15,24 +15,32 @@
 #![deny(unsafe_code)]
 
 pub mod automaton_terms_enum;
+pub mod base_composite_reader;
+pub mod codec_reader;
 pub mod directory_reader;
 pub mod doc_values;
 pub mod doc_values_field_updates;
+pub mod doc_values_update;
 pub mod doc_values_writer;
 pub mod documents_writer;
 pub mod field_infos;
+pub mod filter_reader;
 pub mod freq_prox_terms_writer;
 pub mod index_commit;
 pub mod index_deletion_policy;
 pub mod index_file_deleter;
 pub mod index_file_names;
 pub mod index_reader;
+pub mod index_sorter;
+pub mod index_utilities;
 pub mod index_writer_config;
 pub mod indexing_chain;
 pub mod leaf_reader;
 pub mod mapped_multi_fields;
 pub mod mapping_multi_postings_enum;
 pub mod merge;
+pub mod merge_policy;
+pub mod merge_scheduler;
 pub mod multi_bits;
 pub mod multi_doc_values;
 pub mod multi_fields;
@@ -48,6 +56,7 @@ pub mod reader_manager;
 pub mod readers_and_updates;
 pub mod segment_info;
 pub mod segment_infos;
+pub mod segment_merger;
 pub mod segment_reader;
 pub mod stored_field_visitor;
 pub mod stored_fields_consumer;
@@ -55,8 +64,10 @@ pub mod term_vectors_consumer;
 pub mod terms;
 pub mod terms_enum_index;
 pub mod vector_values;
+pub mod vector_values_consumer;
 
 pub use automaton_terms_enum::AutomatonTermsEnum;
+pub use codec_reader::CodecReader;
 pub use doc_values::{
     BinaryDocValues, DocValues, DocValuesIterator, DocValuesSkipper, EmptyBinaryDocValues,
     EmptyDocValuesProducer, EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
@@ -84,6 +95,11 @@ pub use index_file_names::{
 pub use index_reader::{
     CacheHelper, CacheKey, ClosedListener, CompositeReader, IndexReader, IndexReaderCore,
     StoredFields,
+};
+pub use index_utilities::{
+    ApproximatePriorityQueue, ConcurrentApproximatePriorityQueue,
+    LockableConcurrentApproximatePriorityQueue, QueryTimeout, QueryTimeoutImpl,
+    TrackingTmpOutputDirectoryWrapper, TryLockable,
 };
 pub use leaf_reader::{EmptyTermVectors, LeafMetaData, LeafReader, TermVectors};
 pub use merge::{
@@ -485,6 +501,33 @@ pub trait IndexableField {
 
     /// Non-null if this field has a numeric value.
     fn numeric_value(&self) -> Option<NumericValue>;
+
+    /// The float vector this field carries, or `None` when it carries none.
+    ///
+    /// Java has no such method on `IndexableField`:
+    /// `IndexingChain.indexVectorValue` downcasts the field to
+    /// `KnnFloatVectorField` and calls `vectorValue()`
+    /// (`IndexingChain.java:1695-1707`). Rust has no downcast, so the two
+    /// accessors Java reaches by casting are sibling methods here, defaulting
+    /// to `None` for every field that carries no vector — which is exactly the
+    /// set of fields Java never casts, because it only casts when
+    /// `fieldType.vectorDimension() != 0`.
+    fn float_vector_value(&self) -> Option<&[f32]> {
+        None
+    }
+
+    /// The byte vector this field carries, or `None` when it carries none.
+    ///
+    /// The `VectorEncoding::BYTE` sibling of [`Self::float_vector_value`];
+    /// Java's `KnnByteVectorField.vectorValue()`.
+    ///
+    /// Note that Java's `Field.binaryValue()` answers `null` for a
+    /// `KnnByteVectorField` (`Field.java:428-434`): its `fieldsData` is a bare
+    /// `byte[]`, not a `BytesRef`. A byte vector is therefore reachable only
+    /// through this accessor, in both implementations.
+    fn byte_vector_value(&self) -> Option<&[u8]> {
+        None
+    }
 
     /// The value this field contributes to the stored-fields stream, or `None`
     /// when the field is not stored.

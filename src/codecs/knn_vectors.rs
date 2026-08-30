@@ -25,7 +25,7 @@ pub use crate::search::knn::{KnnCollector, KnnSearchStrategy, TopDocs};
 use crate::search::AcceptDocs;
 
 use super::postings::MergeState;
-use super::state::{SegmentReadState, SegmentWriteState};
+use super::state::{OwnedSegmentWriteState, SegmentReadState};
 use super::stub::FieldInfo;
 
 // -----------------------------------------------------------------------------
@@ -42,6 +42,16 @@ pub trait KnnFieldVectorsWriter<T>: Send + Sync {
 
     /// Copies a vector value being indexed to internal storage.
     fn copy_value(&self, vector_value: T) -> T;
+
+    /// Returns the RAM this field writer currently holds.
+    ///
+    /// Java's `KnnFieldVectorsWriter` implements `Accountable`
+    /// (`KnnFieldVectorsWriter.java:28`); the indexing chain adds this to the
+    /// segment's footprint through `VectorValuesConsumer.getAccountable`, and
+    /// that total is what decides when the `DocumentsWriterPerThread` flushes.
+    /// There is deliberately no default: a writer that answered zero would make
+    /// a segment full of vectors look free.
+    fn ram_bytes_used(&self) -> i64;
 }
 
 // -----------------------------------------------------------------------------
@@ -57,6 +67,25 @@ pub enum FieldVectorWriter {
     Float(Box<dyn KnnFieldVectorsWriter<Vec<f32>>>),
     /// Byte-vector field writer.
     Byte(Box<dyn KnnFieldVectorsWriter<Vec<u8>>>),
+}
+
+impl fmt::Debug for FieldVectorWriter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Float(_) => f.write_str("FieldVectorWriter::Float"),
+            Self::Byte(_) => f.write_str("FieldVectorWriter::Byte"),
+        }
+    }
+}
+
+impl FieldVectorWriter {
+    /// Returns the RAM the underlying field writer holds.
+    pub fn ram_bytes_used(&self) -> i64 {
+        match self {
+            Self::Float(writer) => writer.ram_bytes_used(),
+            Self::Byte(writer) => writer.ram_bytes_used(),
+        }
+    }
 }
 
 /// Writes vectors to an index.
@@ -95,6 +124,13 @@ pub trait KnnVectorsWriter: Send + Sync + fmt::Debug {
 
     /// Closes this writer, releasing all resources.
     fn close(&mut self) -> Result<()>;
+
+    /// Returns the RAM this writer and every field writer it owns hold.
+    ///
+    /// Java's `KnnVectorsWriter` implements `Accountable`
+    /// (`KnnVectorsWriter.java:46`) and this is the value
+    /// `VectorValuesConsumer.getAccountable` exposes to the indexing chain.
+    fn ram_bytes_used(&self) -> i64;
 }
 
 /// Document-id mapping produced by index sorting.
@@ -157,7 +193,7 @@ pub trait KnnVectorsReader: Send + Sync + fmt::Debug {
 
     /// Searches the float vector field for the k nearest neighbors to `target`.
     fn search(
-        &mut self,
+        &self,
         field: &str,
         target: &[f32],
         knn_collector: &mut dyn KnnCollector,
@@ -166,7 +202,7 @@ pub trait KnnVectorsReader: Send + Sync + fmt::Debug {
 
     /// Searches the byte vector field for the k nearest neighbors to `target`.
     fn search_byte(
-        &mut self,
+        &self,
         field: &str,
         target: &[u8],
         knn_collector: &mut dyn KnnCollector,
@@ -202,10 +238,20 @@ pub trait KnnVectorsFormat: Send + Sync + fmt::Debug {
     fn name(&self) -> &str;
 
     /// Returns a writer to write vectors to the index.
-    fn fields_writer<'a>(
-        &self,
-        state: &SegmentWriteState<'a>,
-    ) -> Result<Box<dyn KnnVectorsWriter + 'a>>;
+    ///
+    /// # The state is owned, not borrowed
+    ///
+    /// Every other format factory in this crate takes a borrowed
+    /// [`SegmentWriteState`] because its writer is created inside the flush
+    /// call and dies there. This one is different: `VectorValuesConsumer`
+    /// creates its writer on the first vector field of the first document and
+    /// keeps it until the segment flushes, and
+    /// [`PerFieldKnnVectorsFormat`](crate::codecs::per_field::PerFieldKnnVectorsFormat)
+    /// stores the state so it can build a suffixed sub-state for every field
+    /// it later meets. Both need the state to outlive the call, which is what
+    /// [`OwnedSegmentWriteState`] is for; see its documentation for the
+    /// divergence this records.
+    fn fields_writer(&self, state: &OwnedSegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>>;
 
     /// Returns a reader to read vectors from the index.
     fn fields_reader<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn KnnVectorsReader>>;
@@ -378,6 +424,10 @@ impl KnnFieldVectorsWriter<Vec<f32>> for EmptyKnnFieldVectorsWriter {
     fn copy_value(&self, vector_value: Vec<f32>) -> Vec<f32> {
         vector_value
     }
+
+    fn ram_bytes_used(&self) -> i64 {
+        0
+    }
 }
 
 /// A no-op KNN vectors writer.
@@ -407,6 +457,10 @@ impl KnnVectorsWriter for EmptyKnnVectorsWriter {
     fn close(&mut self) -> Result<()> {
         Ok(())
     }
+
+    fn ram_bytes_used(&self) -> i64 {
+        0
+    }
 }
 
 /// A no-op byte-vector field writer.
@@ -420,6 +474,10 @@ impl KnnFieldVectorsWriter<Vec<u8>> for EmptyByteKnnFieldVectorsWriter {
 
     fn copy_value(&self, vector_value: Vec<u8>) -> Vec<u8> {
         vector_value
+    }
+
+    fn ram_bytes_used(&self) -> i64 {
+        0
     }
 }
 
@@ -449,6 +507,10 @@ impl KnnVectorsWriter for EmptyBufferingKnnVectorsWriter {
 
     fn close(&mut self) -> Result<()> {
         Ok(())
+    }
+
+    fn ram_bytes_used(&self) -> i64 {
+        0
     }
 }
 
@@ -490,7 +552,7 @@ impl KnnVectorsReader for EmptyKnnVectorsReader {
     }
 
     fn search(
-        &mut self,
+        &self,
         _field: &str,
         _target: &[f32],
         _knn_collector: &mut dyn KnnCollector,
@@ -500,7 +562,7 @@ impl KnnVectorsReader for EmptyKnnVectorsReader {
     }
 
     fn search_byte(
-        &mut self,
+        &self,
         _field: &str,
         _target: &[u8],
         _knn_collector: &mut dyn KnnCollector,
@@ -536,10 +598,7 @@ impl KnnVectorsFormat for EmptyKnnVectorsFormat {
         &self.name
     }
 
-    fn fields_writer<'a>(
-        &self,
-        _state: &SegmentWriteState<'a>,
-    ) -> Result<Box<dyn KnnVectorsWriter + 'a>> {
+    fn fields_writer(&self, _state: &OwnedSegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>> {
         Ok(Box::new(EmptyKnnVectorsWriter))
     }
 
@@ -652,21 +711,21 @@ mod tests {
         assert_eq!(format.name(), "EmptyKnn");
         assert_eq!(format.get_max_dimensions("field"), 1024);
 
-        let dir = crate::store::RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(crate::store::RamDirectory::default());
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
         let field_infos = FieldInfos::default();
         let segment_info = crate::codecs::tests::test_segment_info("test", 10);
-        let write_state = SegmentWriteState::new(
-            crate::util::default_info_stream(),
-            dir_ref,
-            &segment_info,
-            &field_infos,
-            &BufferedUpdates,
-            context,
+        let write_state = OwnedSegmentWriteState::new(
+            Arc::new(crate::util::NoOutputInfoStream),
+            Arc::clone(&dir),
+            segment_info.clone(),
+            field_infos.clone(),
+            BufferedUpdates,
+            Arc::new(crate::store::DefaultIOContext::default()),
         );
         let _writer = format.fields_writer(&write_state).unwrap();
 
+        let dir_ref: &dyn crate::store::Directory = &*dir;
         let read_state = SegmentReadState::new(dir_ref, &segment_info, &field_infos, context);
         let _reader = format.fields_reader(&read_state).unwrap();
     }
