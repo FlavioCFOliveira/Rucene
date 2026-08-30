@@ -14,6 +14,7 @@ pub mod char_array_set;
 pub mod character_utils;
 pub mod factories;
 pub mod filtering_token_filter;
+pub mod graph_token_filter;
 pub mod lower_case_filter;
 pub mod reusable_string_reader;
 pub mod standard;

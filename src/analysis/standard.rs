@@ -812,3 +812,62 @@ mod tests {
         );
     }
 }
+
+// -----------------------------------------------------------------------------
+// StandardTokenizerFactory
+// -----------------------------------------------------------------------------
+
+/// Builds a [`StandardTokenizer`] from a configuration.
+///
+/// Equivalent to
+/// `org.apache.lucene.analysis.standard.StandardTokenizerFactory`.
+#[derive(Clone, Debug)]
+pub struct StandardTokenizerFactory {
+    max_token_length: usize,
+}
+
+/// SPI name this factory is registered under.
+///
+/// Equivalent to `StandardTokenizerFactory.NAME`.
+pub const STANDARD_TOKENIZER_FACTORY_NAME: &str = "standard";
+
+impl StandardTokenizerFactory {
+    /// Builds the factory from `args`, consuming every argument it recognises.
+    ///
+    /// Equivalent to `StandardTokenizerFactory(Map<String, String>)`, including
+    /// its refusal of any argument left over.
+    pub fn new(args: &mut std::collections::HashMap<String, String>) -> crate::error::Result<Self> {
+        use crate::analysis::factories::AbstractAnalysisFactory;
+        AbstractAnalysisFactory::new(args)?;
+        let max_token_length = AbstractAnalysisFactory::get_int(
+            args,
+            "maxTokenLength",
+            DEFAULT_MAX_TOKEN_LENGTH as i32,
+        )?
+        .max(0) as usize;
+        if !args.is_empty() {
+            return Err(crate::error::LuceneError::IllegalArgument(format!(
+                "Unknown parameters: {:?}",
+                args.keys().collect::<Vec<_>>()
+            )));
+        }
+        Ok(Self { max_token_length })
+    }
+
+    /// Returns the configured maximum token length.
+    pub fn max_token_length(&self) -> usize {
+        self.max_token_length
+    }
+}
+
+impl crate::analysis::factories::TokenizerFactory for StandardTokenizerFactory {
+    fn name(&self) -> &str {
+        STANDARD_TOKENIZER_FACTORY_NAME
+    }
+
+    fn create(&self) -> crate::error::Result<Box<dyn crate::analysis::TokenizerLogic>> {
+        let mut logic = StandardTokenizerLogic::new();
+        logic.set_max_token_length(self.max_token_length)?;
+        Ok(Box::new(logic))
+    }
+}
