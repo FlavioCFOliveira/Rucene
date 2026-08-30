@@ -12,8 +12,8 @@ pub mod scalar_quantizer;
 
 pub use optimized_scalar_quantizer::{OptimizedScalarQuantizer, QuantizationResult};
 pub use quantized_byte_vector_values::{
-    BaseQuantizedByteVectorValues, QuantizedByteVectorValues, QuantizedVectorsReader,
-    ScalarEncoding,
+    BaseQuantizedByteVectorValues, LegacyQuantizedByteVectorValues, QuantizedByteVectorValues,
+    QuantizedVectorsReader, ScalarEncoding,
 };
 pub use scalar_quantized_vector_similarity::ScalarQuantizedVectorSimilarity;
 pub use scalar_quantizer::{ScalarQuantizer, SCALAR_QUANTIZATION_SAMPLE_SIZE};

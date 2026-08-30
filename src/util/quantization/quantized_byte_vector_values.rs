@@ -131,3 +131,21 @@ pub trait QuantizedVectorsReader {
     /// Equivalent to `QuantizedVectorsReader.getQuantizationState(String)`.
     fn get_quantization_state(&self, field: &str) -> Result<Option<ScalarQuantizer>>;
 }
+
+/// Quantized vectors written by the Lucene 9.9 format, which stores one
+/// corrective constant per vector rather than the four terms the 10.4 format
+/// stores.
+///
+/// Equivalent to
+/// `org.apache.lucene.util.quantization.LegacyQuantizedByteVectorValues`, which
+/// Java makes an abstract class over `BaseQuantizedByteVectorValues`. Rust has
+/// no implementation inheritance, so the port is a trait carrying the two
+/// methods that class adds: the quantizer, which the legacy format does store,
+/// and the per-vector correction.
+pub trait LegacyQuantizedByteVectorValues: QuantizedByteVectorValues {
+    /// Returns the quantizer these vectors were compressed with.
+    ///
+    /// Equivalent to `LegacyQuantizedByteVectorValues.getScalarQuantizer()`,
+    /// which the base class refuses; a legacy reader always has one.
+    fn scalar_quantizer(&self) -> &ScalarQuantizer;
+}
