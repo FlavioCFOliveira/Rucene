@@ -7,6 +7,7 @@
 #![deny(unsafe_code)]
 
 pub mod column;
+pub mod range_fields;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
