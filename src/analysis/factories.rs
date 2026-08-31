@@ -5,7 +5,7 @@
 //! can be assembled without naming Rust types.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, RwLock};
 
 use crate::analysis::{CharFilter, TokenFilterLogic, TokenizerLogic};
 use crate::error::{LuceneError, Result};
@@ -462,7 +462,10 @@ pub trait CharFilterFactory: Send + Sync + std::fmt::Debug {
 /// preserved, unknown name refused with the available names listed — are the
 /// same.
 pub struct AnalysisSPILoader<T: ?Sized> {
+    /// Keyed by the lower-cased name, as Java's `services` map is.
     services: HashMap<String, Arc<T>>,
+    /// The names as they were registered, which `availableServices` returns.
+    original_names: Vec<String>,
     /// What the loader holds, for the error message.
     kind: &'static str,
 }
@@ -481,35 +484,317 @@ impl<T: ?Sized> AnalysisSPILoader<T> {
     pub fn new(kind: &'static str) -> Self {
         Self {
             services: HashMap::new(),
+            original_names: Vec::new(),
             kind,
         }
     }
 
     /// Registers `service` under `name`.
-    pub fn register(&mut self, name: impl Into<String>, service: Arc<T>) {
-        self.services.insert(name.into(), service);
+    ///
+    /// This is what Java's `reload(ClassLoader)` does for one discovered
+    /// service: it refuses a name the pattern rejects, keys the map by the
+    /// lower-cased name, keeps the original spelling for
+    /// [`available_services`](Self::available_services), and ignores a name
+    /// that is already taken so that the first registration wins.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `name` is not a valid SPI
+    /// name, standing in for Java's `ServiceConfigurationError`.
+    pub fn register(&mut self, name: impl Into<String>, service: Arc<T>) -> Result<()> {
+        let original_name = name.into();
+        if !Self::is_valid_name(&original_name) {
+            return Err(LuceneError::IllegalArgument(format!(
+                "The name {original_name} for {} is invalid: Allowed characters are (English) \
+                 alphabet, digits, and underscore. It should be started with an alphabet.",
+                self.kind
+            )));
+        }
+        let name = original_name.to_lowercase();
+        // Only the first service for each name is added; later ones are
+        // ignored, which is what lets one be placed ahead of another.
+        if !self.services.contains_key(&name) {
+            self.services.insert(name, service);
+            self.original_names.push(original_name);
+        }
+        Ok(())
+    }
+
+    /// Returns whether `name` is a valid SPI name.
+    ///
+    /// Equivalent to the private `AnalysisSPILoader.isValidName(String)`, which
+    /// matches `^[a-zA-Z][a-zA-Z0-9_]+$`: a letter, then at least one more
+    /// letter, digit or underscore.
+    pub fn is_valid_name(name: &str) -> bool {
+        let mut chars = name.chars();
+        match chars.next() {
+            Some(c) if c.is_ascii_alphabetic() => {}
+            _ => return false,
+        }
+        let mut rest = 0;
+        for c in chars {
+            if !(c.is_ascii_alphanumeric() || c == '_') {
+                return false;
+            }
+            rest += 1;
+        }
+        rest >= 1
+    }
+
+    /// Looks a factory up by name, case-insensitively.
+    ///
+    /// Equivalent to `AnalysisSPILoader.lookupClass(String)`, which lower-cases
+    /// the name before consulting the map. Java returns the `Class`; the
+    /// registry holds instances, so this returns the instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] naming the available services,
+    /// as Java does.
+    pub fn lookup_class(&self, name: &str) -> Result<Arc<T>> {
+        self.services
+            .get(&name.to_lowercase())
+            .map(Arc::clone)
+            .ok_or_else(|| {
+                LuceneError::IllegalArgument(format!(
+                    "A SPI class of type {} with name '{name}' does not exist. You need to add \
+                     the corresponding registration. Currently registered: {:?}",
+                    self.kind,
+                    self.available_services()
+                ))
+            })
     }
 
     /// Looks a factory up by name.
     ///
-    /// Equivalent to `AnalysisSPILoader.lookupClass(String)`.
+    /// Equivalent to `AnalysisSPILoader.newInstance(String, Map)`, which looks
+    /// the class up and then constructs it. The registry holds constructed
+    /// factories, so the two steps collapse into
+    /// [`lookup_class`](Self::lookup_class).
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever [`lookup_class`](Self::lookup_class) returns.
     pub fn lookup(&self, name: &str) -> Result<Arc<T>> {
-        self.services.get(name).map(Arc::clone).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
-                "A SPI class of type {} with name '{name}' does not exist. You need to add the \
-                 corresponding registration. Currently registered: {:?}",
-                self.kind,
-                self.available_services()
-            ))
-        })
+        self.lookup_class(name)
     }
 
-    /// Returns every registered name.
+    /// Returns every registered name, in registration order and with its
+    /// original spelling.
     ///
     /// Equivalent to `AnalysisSPILoader.availableServices()`.
     pub fn available_services(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.services.keys().cloned().collect();
-        names.sort();
-        names
+        self.original_names.clone()
     }
+}
+
+// ---------------------------------------------------------------------------
+// The global loaders behind the factories' static entry points
+// ---------------------------------------------------------------------------
+
+/// The loader behind [`TokenizerFactory`]'s static entry points.
+///
+/// Equivalent to `TokenizerFactory.Holder.LOADER`, which Java hides in a
+/// holder class so the factories are only discovered when first needed. A
+/// `LazyLock` gives the same deferred initialisation; the `RwLock` is what lets
+/// [`reload_tokenizers`] add to it afterwards, which in Java is `reload`'s
+/// `synchronized`.
+static TOKENIZER_LOADER: LazyLock<RwLock<AnalysisSPILoader<dyn TokenizerFactory>>> =
+    LazyLock::new(|| RwLock::new(AnalysisSPILoader::new("TokenizerFactory")));
+
+/// The loader behind [`TokenFilterFactory`]'s static entry points.
+///
+/// Equivalent to `TokenFilterFactory.Holder.LOADER`.
+static TOKEN_FILTER_LOADER: LazyLock<RwLock<AnalysisSPILoader<dyn TokenFilterFactory>>> =
+    LazyLock::new(|| RwLock::new(AnalysisSPILoader::new("TokenFilterFactory")));
+
+/// The loader behind [`CharFilterFactory`]'s static entry points.
+///
+/// Equivalent to `CharFilterFactory.Holder.LOADER`.
+static CHAR_FILTER_LOADER: LazyLock<RwLock<AnalysisSPILoader<dyn CharFilterFactory>>> =
+    LazyLock::new(|| RwLock::new(AnalysisSPILoader::new("CharFilterFactory")));
+
+/// Looks up a tokenizer factory by name.
+///
+/// Equivalent to `TokenizerFactory.forName(String, Map)`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when no factory is registered under
+/// `name`.
+pub fn tokenizer_for_name(name: &str) -> Result<Arc<dyn TokenizerFactory>> {
+    tokenizer_lookup_class(name)
+}
+
+/// Looks a tokenizer factory up by name.
+///
+/// Equivalent to `TokenizerFactory.lookupClass(String)`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when no factory is registered under
+/// `name`.
+pub fn tokenizer_lookup_class(name: &str) -> Result<Arc<dyn TokenizerFactory>> {
+    TOKENIZER_LOADER
+        .read()
+        .expect("INVARIANT: the tokenizer loader lock is never poisoned")
+        .lookup_class(name)
+}
+
+/// Returns the names of every registered tokenizer factory.
+///
+/// Equivalent to `TokenizerFactory.availableTokenizers()`.
+pub fn available_tokenizers() -> Vec<String> {
+    TOKENIZER_LOADER
+        .read()
+        .expect("INVARIANT: the tokenizer loader lock is never poisoned")
+        .available_services()
+}
+
+/// Returns the SPI name a tokenizer factory declares.
+///
+/// Equivalent to `TokenizerFactory.findSPIName(Class)`, which reads the class's
+/// `public static final String NAME` field by reflection. The trait declares
+/// [`TokenizerFactory::name`] instead, so the name is read from the factory.
+pub fn find_tokenizer_spi_name(service: &dyn TokenizerFactory) -> &str {
+    service.name()
+}
+
+/// Adds `factory` to the tokenizer registry under its own SPI name.
+///
+/// Equivalent to `TokenizerFactory.reloadTokenizers(ClassLoader)`, which
+/// rescans a classloader for factories it has not seen. Rust has no run-time
+/// service discovery, so the caller supplies the factory; as in Java, only new
+/// names are added and an existing one is never replaced.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when the factory's name is not a
+/// valid SPI name.
+pub fn reload_tokenizers(factory: Arc<dyn TokenizerFactory>) -> Result<()> {
+    let name = factory.name().to_string();
+    TOKENIZER_LOADER
+        .write()
+        .expect("INVARIANT: the tokenizer loader lock is never poisoned")
+        .register(name, factory)
+}
+
+/// Looks up a token-filter factory by name.
+///
+/// Equivalent to `TokenFilterFactory.forName(String, Map)`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when no factory is registered under
+/// `name`.
+pub fn token_filter_for_name(name: &str) -> Result<Arc<dyn TokenFilterFactory>> {
+    token_filter_lookup_class(name)
+}
+
+/// Looks a token-filter factory up by name.
+///
+/// Equivalent to `TokenFilterFactory.lookupClass(String)`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when no factory is registered under
+/// `name`.
+pub fn token_filter_lookup_class(name: &str) -> Result<Arc<dyn TokenFilterFactory>> {
+    TOKEN_FILTER_LOADER
+        .read()
+        .expect("INVARIANT: the token-filter loader lock is never poisoned")
+        .lookup_class(name)
+}
+
+/// Returns the names of every registered token-filter factory.
+///
+/// Equivalent to `TokenFilterFactory.availableTokenFilters()`.
+pub fn available_token_filters() -> Vec<String> {
+    TOKEN_FILTER_LOADER
+        .read()
+        .expect("INVARIANT: the token-filter loader lock is never poisoned")
+        .available_services()
+}
+
+/// Returns the SPI name a token-filter factory declares.
+///
+/// Equivalent to `TokenFilterFactory.findSPIName(Class)`.
+pub fn find_token_filter_spi_name(service: &dyn TokenFilterFactory) -> &str {
+    service.name()
+}
+
+/// Adds `factory` to the token-filter registry under its own SPI name.
+///
+/// Equivalent to `TokenFilterFactory.reloadTokenFilters(ClassLoader)`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when the factory's name is not a
+/// valid SPI name.
+pub fn reload_token_filters(factory: Arc<dyn TokenFilterFactory>) -> Result<()> {
+    let name = factory.name().to_string();
+    TOKEN_FILTER_LOADER
+        .write()
+        .expect("INVARIANT: the token-filter loader lock is never poisoned")
+        .register(name, factory)
+}
+
+/// Looks up a character-filter factory by name.
+///
+/// Equivalent to `CharFilterFactory.forName(String, Map)`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when no factory is registered under
+/// `name`.
+pub fn char_filter_for_name(name: &str) -> Result<Arc<dyn CharFilterFactory>> {
+    char_filter_lookup_class(name)
+}
+
+/// Looks a character-filter factory up by name.
+///
+/// Equivalent to `CharFilterFactory.lookupClass(String)`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when no factory is registered under
+/// `name`.
+pub fn char_filter_lookup_class(name: &str) -> Result<Arc<dyn CharFilterFactory>> {
+    CHAR_FILTER_LOADER
+        .read()
+        .expect("INVARIANT: the char-filter loader lock is never poisoned")
+        .lookup_class(name)
+}
+
+/// Returns the names of every registered character-filter factory.
+///
+/// Equivalent to `CharFilterFactory.availableCharFilters()`.
+pub fn available_char_filters() -> Vec<String> {
+    CHAR_FILTER_LOADER
+        .read()
+        .expect("INVARIANT: the char-filter loader lock is never poisoned")
+        .available_services()
+}
+
+/// Returns the SPI name a character-filter factory declares.
+///
+/// Equivalent to `CharFilterFactory.findSPIName(Class)`.
+pub fn find_char_filter_spi_name(service: &dyn CharFilterFactory) -> &str {
+    service.name()
+}
+
+/// Adds `factory` to the character-filter registry under its own SPI name.
+///
+/// Equivalent to `CharFilterFactory.reloadCharFilters(ClassLoader)`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when the factory's name is not a
+/// valid SPI name.
+pub fn reload_char_filters(factory: Arc<dyn CharFilterFactory>) -> Result<()> {
+    let name = factory.name().to_string();
+    CHAR_FILTER_LOADER
+        .write()
+        .expect("INVARIANT: the char-filter loader lock is never poisoned")
+        .register(name, factory)
 }
