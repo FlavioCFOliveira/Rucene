@@ -46,6 +46,64 @@ pub struct ApplyDeletesResult {
     pub all_deleted: Vec<SegmentCommitInfo>,
 }
 
+/// One segment held open while a packet of deletes is resolved against it.
+///
+/// Equivalent to `BufferedUpdatesStream.SegmentState`. It pins the segment's
+/// pooled reader for the duration, and remembers the deletion count the segment
+/// started with so the caller can tell how many this packet added.
+pub struct SegmentState {
+    /// The buffered-deletes generation of the segment.
+    pub del_gen: i64,
+    /// The pooled reader and updates of the segment.
+    pub rld: std::sync::Arc<crate::index::readers_and_updates::ReadersAndUpdates>,
+    /// The reader opened over the segment, released when this state closes.
+    pub reader: std::sync::Arc<crate::index::segment_reader::SegmentReader>,
+    /// The deletion count before this packet was applied.
+    pub start_del_count: i32,
+}
+
+impl std::fmt::Debug for SegmentState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SegmentState({})", self.rld.segment_name())
+    }
+}
+
+impl SegmentState {
+    /// Opens the segment's reader and records where its deletions stood.
+    ///
+    /// Equivalent to `SegmentState(ReadersAndUpdates, IOConsumer, SegmentCommitInfo)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the segment's reader raises.
+    pub fn new(
+        rld: std::sync::Arc<crate::index::readers_and_updates::ReadersAndUpdates>,
+        info: &SegmentCommitInfo,
+    ) -> Result<Self> {
+        let reader = rld.get_reader(&*crate::store::DEFAULT_IO_CONTEXT)?;
+        let start_del_count = rld.get_del_count();
+        Ok(Self {
+            del_gen: info.get_buffered_deletes_gen(),
+            rld,
+            reader,
+            start_del_count,
+        })
+    }
+
+    /// Releases the reader this state pinned.
+    ///
+    /// Equivalent to `SegmentState.close()`, whose `IOConsumer` half —
+    /// returning the `ReadersAndUpdates` to the writer's pool — is the caller's
+    /// to run, because only the writer owns the pool.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever releasing the reader raises.
+    pub fn close(&self) -> Result<()> {
+        self.rld.release(&self.reader)
+    }
+}
+
 /// Tracks which delete generations have finished being applied.
 ///
 /// Equivalent to `BufferedUpdatesStream.FinishedSegments`.

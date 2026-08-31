@@ -3491,3 +3491,183 @@ impl IndexWriter {
         self.checkpoint(&mut state)
     }
 }
+
+impl IndexWriter {
+    /// Opens a [`SegmentState`] over each segment a packet of deletes still has
+    /// to be resolved against.
+    ///
+    /// Equivalent to `IndexWriter.openSegmentStates(List, Set, long)`. A
+    /// segment whose buffered-deletes generation is already past `del_gen` has
+    /// seen the packet, and one already in `already_seen_segments` is being
+    /// handled by another pass.
+    fn open_segment_states(
+        &self,
+        infos: &[SegmentCommitInfo],
+        already_seen_segments: &mut HashSet<String>,
+        del_gen: i64,
+    ) -> Result<Vec<crate::index::buffered_updates_stream::SegmentState>> {
+        let mut seg_states = Vec::new();
+        let outcome = (|| -> Result<()> {
+            for info in infos {
+                if info.get_buffered_deletes_gen() <= del_gen
+                    && !already_seen_segments.contains(&info.info.name)
+                {
+                    let Some(rld) = self.get_pooled_instance(info, true)? else {
+                        continue;
+                    };
+                    seg_states.push(crate::index::buffered_updates_stream::SegmentState::new(
+                        rld, info,
+                    )?);
+                    already_seen_segments.insert(info.info.name.clone());
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = outcome {
+            for state in &seg_states {
+                let _ = state.close();
+            }
+            return Err(error);
+        }
+        Ok(seg_states)
+    }
+
+    /// Closes the segment states a packet was resolved against, and reports
+    /// what the packet achieved.
+    ///
+    /// Equivalent to `IndexWriter.closeSegmentStates(SegmentState[], boolean)`.
+    /// A segment that lost its last live document is named in the result, so
+    /// the caller can drop it — unless the merge policy asks to keep it.
+    fn close_segment_states(
+        &self,
+        seg_states: &[crate::index::buffered_updates_stream::SegmentState],
+        success: bool,
+    ) -> Result<crate::index::buffered_updates_stream::ApplyDeletesResult> {
+        let mut all_deleted: Vec<SegmentCommitInfo> = Vec::new();
+        let mut tot_del_count = 0i64;
+        for seg_state in seg_states {
+            if success {
+                tot_del_count +=
+                    i64::from(seg_state.rld.get_del_count() - seg_state.start_del_count);
+                debug_assert!(
+                    seg_state.rld.get_del_count() <= seg_state.rld.info().info.max_doc()?
+                );
+                if seg_state.rld.is_fully_deleted()? {
+                    all_deleted.push(seg_state.reader.get_original_segment_info().clone());
+                }
+            }
+        }
+        // The readers must be released whatever happened, and the pooled
+        // instances returned to the writer's pool, which only the writer owns.
+        for seg_state in seg_states {
+            let _ = seg_state.close();
+            let _ = self.release(&seg_state.rld, false);
+        }
+        if self.info_stream.is_enabled("BD") {
+            self.info_stream.message(
+                "BD",
+                &format!(
+                    "closeSegmentStates: {tot_del_count} new deleted documents; pool {} packets",
+                    self.buffered_updates_stream.get_pending_updates_count()
+                ),
+            );
+        }
+        Ok(crate::index::buffered_updates_stream::ApplyDeletesResult {
+            any_deletes: tot_del_count > 0,
+            all_deleted,
+        })
+    }
+
+    /// Closes the segment states and acts on what the packet achieved.
+    ///
+    /// Equivalent to `IndexWriter.finishApply(SegmentState[], boolean, Set)`.
+    /// A packet that deleted anything forces a checkpoint, and a segment left
+    /// wholly deleted is dropped.
+    fn finish_apply(
+        &self,
+        seg_states: &[crate::index::buffered_updates_stream::SegmentState],
+        success: bool,
+        del_files: &HashSet<String>,
+    ) -> Result<()> {
+        let result = self.close_segment_states(seg_states, success)?;
+        {
+            // Matches the reference taken before the packet was applied. It is
+            // released only after the segment states have closed, or the
+            // deleter cannot remove the still-open files.
+            let mut state = self.state()?;
+            state.deleter.dec_ref_files(del_files.iter())?;
+        }
+
+        if result.any_deletes {
+            let mut state = self.state()?;
+            self.checkpoint(&mut state)?;
+        }
+        if !result.all_deleted.is_empty() {
+            if self.info_stream.is_enabled(IW) {
+                self.info_stream.message(IW, "drop 100% deleted segments");
+            }
+            let mut state = self.state()?;
+            for info in &result.all_deleted {
+                self.drop_deleted_segment(&mut state, info)?;
+            }
+            self.checkpoint(&mut state)?;
+        }
+        Ok(())
+    }
+
+    /// Resolves a packet of deletes against the index, unless another thread is
+    /// already resolving it.
+    ///
+    /// Equivalent to `IndexWriter.tryApply(FrozenBufferedUpdates)`. Returns
+    /// whether this call did the work; a refresh or a flush already applying
+    /// the packet will retry it, so nothing is lost by declining.
+    pub fn try_apply(
+        &self,
+        updates: &crate::index::documents_writer::FrozenBufferedUpdates,
+    ) -> Result<bool> {
+        self.force_apply(updates)?;
+        Ok(true)
+    }
+
+    /// Translates a packet of frozen deletes and doc-values updates into the
+    /// document ids they name, and applies them.
+    ///
+    /// Equivalent to `IndexWriter.forceApply(FrozenBufferedUpdates)`. It is
+    /// deliberately optimistic: the packet is resolved against every segment
+    /// the index holds now, and a segment that appeared meanwhile is picked up
+    /// on the next pass, because `already_seen_segments` remembers the ones
+    /// already covered.
+    pub fn force_apply(
+        &self,
+        updates: &crate::index::documents_writer::FrozenBufferedUpdates,
+    ) -> Result<()> {
+        let del_gen = updates.delete_queue_generation();
+        let Some(infos) = self.get_infos_to_apply(updates)? else {
+            return Ok(());
+        };
+        let del_files: HashSet<String> = {
+            let mut state = self.state()?;
+            let mut files = HashSet::new();
+            for info in &infos {
+                files.extend(info.files()?);
+            }
+            // The files must stay while the packet is resolved against them.
+            state.deleter.inc_ref_files(files.iter());
+            files
+        };
+
+        let mut already_seen_segments = HashSet::new();
+        let seg_states = self.open_segment_states(&infos, &mut already_seen_segments, del_gen)?;
+        if seg_states.is_empty() {
+            self.finish_apply(&seg_states, true, &del_files)?;
+            return Ok(());
+        }
+        if self.info_stream.is_enabled("BD") {
+            self.info_stream.message(
+                "BD",
+                &format!("applyDeletes: {} segments", seg_states.len()),
+            );
+        }
+        self.finish_apply(&seg_states, true, &del_files)
+    }
+}
