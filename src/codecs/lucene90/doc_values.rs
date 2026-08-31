@@ -1323,35 +1323,7 @@ impl Lucene90DocValuesProducer {
         // or mismatched skip-index file goes undetected here. Closing that gap
         // belongs with porting the skipper itself.
         let max_doc = state.segment_info.max_doc()?;
-        let mut entries = HashMap::new();
-        loop {
-            let field_number = meta.read_int()?;
-            if field_number == -1 {
-                break;
-            }
-            // `readFields` resolves the number against the field infos and
-            // refuses one it does not know, before a single offset of the entry
-            // is used (`Lucene90DocValuesProducer.java:275-280`).
-            if state
-                .field_infos
-                .field_info_by_number(field_number)
-                .is_none()
-            {
-                return corrupt(format!("Invalid field number: {field_number}"));
-            }
-            let kind = meta.read_byte()?;
-            let entry = match kind {
-                TYPE_NUMERIC => FieldEntry::Numeric(Self::read_numeric(&mut *meta)?),
-                TYPE_BINARY => FieldEntry::Binary(Self::read_binary(&mut *meta)?),
-                TYPE_SORTED => FieldEntry::Sorted(Self::read_sorted(&mut *meta)?),
-                TYPE_SORTED_SET => FieldEntry::SortedSet(Self::read_sorted_set(&mut *meta)?),
-                TYPE_SORTED_NUMERIC => {
-                    FieldEntry::SortedNumeric(Self::read_sorted_numeric(&mut *meta)?)
-                }
-                _ => return corrupt(format!("invalid type: {kind}")),
-            };
-            entries.insert(field_number, entry);
-        }
+        let entries = Self::read_fields(&mut *meta, state.field_infos)?;
 
         let _ = retrieve_checksum(&mut *meta)?;
         Ok(Self {
@@ -1364,6 +1336,264 @@ impl Lucene90DocValuesProducer {
     // -------------------------------------------------------------------------
     // Metadata parsing — no data file access at all
     // -------------------------------------------------------------------------
+
+    /// Reads one metadata entry per field, until the terminating `-1`.
+    ///
+    /// Equivalent to `Lucene90DocValuesProducer.readFields(IndexInput, FieldInfos)`.
+    /// The field number is resolved against the field infos, and one the
+    /// segment does not declare is refused before a single offset of its entry
+    /// is used.
+    fn read_fields(
+        meta: &mut dyn IndexInput,
+        field_infos: &crate::index::FieldInfos,
+    ) -> Result<HashMap<i32, FieldEntry>> {
+        let mut entries = HashMap::new();
+        loop {
+            let field_number = meta.read_int()?;
+            if field_number == -1 {
+                break;
+            }
+            if field_infos.field_info_by_number(field_number).is_none() {
+                return corrupt(format!("Invalid field number: {field_number}"));
+            }
+            let kind = meta.read_byte()?;
+            let entry = match kind {
+                TYPE_NUMERIC => FieldEntry::Numeric(Self::read_numeric(meta)?),
+                TYPE_BINARY => FieldEntry::Binary(Self::read_binary(meta)?),
+                TYPE_SORTED => FieldEntry::Sorted(Self::read_sorted(meta)?),
+                TYPE_SORTED_SET => FieldEntry::SortedSet(Self::read_sorted_set(meta)?),
+                TYPE_SORTED_NUMERIC => FieldEntry::SortedNumeric(Self::read_sorted_numeric(meta)?),
+                _ => return corrupt(format!("invalid type: {kind}")),
+            };
+            entries.insert(field_number, entry);
+        }
+        Ok(entries)
+    }
+
+    /// Returns whether an entry's values can be read a whole byte at a time.
+    ///
+    /// Equivalent to `Lucene90DocValuesProducer.canBulkDecodeByteAligned(NumericEntry)`:
+    /// only a single-block entry whose width is a positive multiple of eight
+    /// bits sits on byte boundaries.
+    fn can_bulk_decode_byte_aligned(entry: &NumericEntry) -> bool {
+        entry.block_shift < 0 && entry.bits_per_value > 0 && (entry.bits_per_value & 0x07) == 0
+    }
+
+    /// Returns whether `docs[docs_offset..docs_offset + size]` is a run of
+    /// consecutive document numbers.
+    ///
+    /// Equivalent to `Lucene90DocValuesProducer.isContiguous(int, int[], int)`.
+    /// Only a contiguous run maps onto a contiguous byte range, which is what
+    /// makes a bulk read possible.
+    fn is_contiguous(size: usize, docs: &[i32], docs_offset: usize) -> bool {
+        size == 0 || docs[docs_offset + size - 1] - docs[docs_offset] == size as i32 - 1
+    }
+
+    /// Returns how many bytes past the values a bulk decode may read.
+    ///
+    /// Equivalent to `Lucene90DocValuesProducer.paddingBytesNeededForBulkDecode(int)`.
+    /// The decoder reads a whole `long` for the wider widths and a whole `int`
+    /// for 24 bits, so the tail must be padded to keep the last read in bounds.
+    fn padding_bytes_needed_for_bulk_decode(bits_per_value: i32) -> i32 {
+        match bits_per_value {
+            24 => 1,
+            40 | 48 | 56 => std::mem::size_of::<i64>() as i32 - bits_per_value / 8,
+            _ => 0,
+        }
+    }
+
+    /// Replaces each decoded ordinal with the table value it stands for.
+    ///
+    /// Equivalent to `Lucene90DocValuesProducer.applyTable(long[], int, long[], int)`,
+    /// the last step of reading a table-compressed numeric field.
+    fn apply_table(values: &mut [i64], values_offset: usize, table: &[i64], size: usize) {
+        for value in values.iter_mut().skip(values_offset).take(size) {
+            *value = table[*value as usize];
+        }
+    }
+
+    /// Undoes the GCD and minimum-value compression of a numeric field.
+    ///
+    /// Equivalent to `Lucene90DocValuesProducer.applyGcdDelta(long[], int, long, long, int)`.
+    fn apply_gcd_delta(
+        values: &mut [i64],
+        values_offset: usize,
+        mul: i64,
+        delta: i64,
+        size: usize,
+    ) {
+        for value in values.iter_mut().skip(values_offset).take(size) {
+            *value = mul.wrapping_mul(*value).wrapping_add(delta);
+        }
+    }
+
+    /// Returns the fixed number of values every document of a sorted-numeric
+    /// field holds, or `-1` when it varies.
+    ///
+    /// Equivalent to `Lucene90DocValuesProducer.fixedCardinality(SortedNumericEntry, DocValuesSkipperEntry)`.
+    /// A fixed cardinality is what lets the range scan address a document's
+    /// values by multiplication rather than through the offsets.
+    fn fixed_cardinality(
+        num_values: i64,
+        num_docs_with_field: i32,
+        skipper_max_value_count: Option<i32>,
+    ) -> i32 {
+        let Some(max_value_count) = skipper_max_value_count else {
+            return -1;
+        };
+        if max_value_count <= 1 || num_docs_with_field == 0 {
+            return -1;
+        }
+        let num_docs = i64::from(num_docs_with_field);
+        if num_values % num_docs != 0 {
+            return -1;
+        }
+        let cardinality = num_values / num_docs;
+        if cardinality > i64::from(i32::MAX) || cardinality != i64::from(max_value_count) {
+            return -1;
+        }
+        cardinality as i32
+    }
+
+    /// Returns whether any value in `[start, end)` falls in `[min_value, max_value]`.
+    ///
+    /// Equivalent to `Lucene90DocValuesProducer.sortedNumericMatchesRange(LongValues, long, long, long, long)`.
+    /// The values of a document are sorted, so the first one at or above the
+    /// lower bound decides the answer.
+    fn sorted_numeric_matches_range(
+        values: &dyn crate::util::LongValues,
+        start: i64,
+        end: i64,
+        min_value: i64,
+        max_value: i64,
+    ) -> bool {
+        for value_offset in start..end {
+            let value = values.get(value_offset);
+            if value >= min_value {
+                return value <= max_value;
+            }
+        }
+        false
+    }
+
+    /// Sets a bit for every document in `[from_doc, to_doc)` whose sorted
+    /// numeric values reach the range, when every document holds exactly
+    /// `cardinality` values.
+    ///
+    /// Equivalent to `Lucene90DocValuesProducer.sortedNumericScalarRangeIntoBitSet(LongValues, int, int, int, long, long, FixedBitSet, int)`.
+    #[allow(clippy::too_many_arguments)]
+    fn sorted_numeric_scalar_range_into_bit_set(
+        values: &dyn crate::util::LongValues,
+        from_doc: i32,
+        to_doc: i32,
+        cardinality: i32,
+        min_value: i64,
+        max_value: i64,
+        bit_set: &mut crate::util::FixedBitSet,
+        offset: i32,
+    ) {
+        for doc in from_doc..to_doc {
+            let value_offset = i64::from(doc) * i64::from(cardinality);
+            for i in 0..i64::from(cardinality) {
+                let value = values.get(value_offset + i);
+                if value >= min_value {
+                    if value <= max_value {
+                        bit_set.set((doc - offset) as usize);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Sets a bit for every document in `[from_doc, to_doc)` whose single value
+    /// falls in `[min_value, max_value]`.
+    ///
+    /// Equivalent to `Lucene90DocValuesProducer.rangeIntoBitSet(LongValues, int, int, long, long, FixedBitSet, int)`,
+    /// which Java forwards to the vectorised `DocValuesRangeSupport`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** That support has a Panama path over
+    /// vector lanes; stable Rust has no portable SIMD, so the scalar loop —
+    /// which is what Java's own fallback runs — is the whole of it here. The
+    /// bits set are identical either way.
+    #[allow(clippy::too_many_arguments)]
+    fn range_into_bit_set(
+        values: &dyn crate::util::LongValues,
+        from_doc: i32,
+        to_doc: i32,
+        min_value: i64,
+        max_value: i64,
+        bit_set: &mut crate::util::FixedBitSet,
+        offset: i32,
+    ) {
+        for doc in from_doc..to_doc {
+            let value = values.get(i64::from(doc));
+            if value >= min_value && value <= max_value {
+                bit_set.set((doc - offset) as usize);
+            }
+        }
+    }
+
+    /// Reads a contiguous run of byte-aligned values in one go, decoding them
+    /// into `values`.
+    ///
+    /// Equivalent to `Lucene90DocValuesProducer.bulkDecodeByteAlignedValues(RandomAccessInput, NumericEntry, int, int[], int, long[], int, byte[])`.
+    /// Returns `None` — and leaves `values` untouched — whenever the fast path
+    /// does not apply, so the caller falls back to reading one value per
+    /// document. The scratch buffer is returned so the caller can keep it.
+    #[allow(clippy::too_many_arguments)]
+    fn bulk_decode_byte_aligned_values(
+        slice: &mut dyn RandomAccessInput,
+        bits_per_value: i32,
+        block_shift: i32,
+        size: usize,
+        docs: &[i32],
+        docs_offset: usize,
+        values: &mut [i64],
+        values_offset: usize,
+        bytes: &mut Vec<u8>,
+    ) -> Result<bool> {
+        let byte_aligned = block_shift < 0 && bits_per_value > 0 && (bits_per_value & 0x07) == 0;
+        if !byte_aligned || !Self::is_contiguous(size, docs, docs_offset) {
+            return Ok(false);
+        }
+        let bytes_per_value = (bits_per_value / 8) as i64;
+        let byte_count_long = size as i64 * bytes_per_value;
+        if byte_count_long > i64::from(i32::MAX) {
+            return Ok(false);
+        }
+        let byte_count = byte_count_long as usize;
+        let read_byte_count = if byte_count == 0 {
+            0
+        } else {
+            byte_count + Self::padding_bytes_needed_for_bulk_decode(bits_per_value) as usize
+        };
+        let offset = if byte_count == 0 {
+            0
+        } else {
+            i64::from(docs[docs_offset]) * bytes_per_value
+        };
+        if offset + read_byte_count as i64 > slice.length() {
+            return Ok(false);
+        }
+        if bytes.len() < read_byte_count {
+            bytes.resize(read_byte_count, 0);
+        }
+        if byte_count != 0 {
+            slice.read_bytes_at(offset, bytes, 0, read_byte_count)?;
+            crate::internal::vectorization::get_instance()
+                .get_doc_values_bulk_decode_support()
+                .decode_byte_aligned(
+                    bytes,
+                    0,
+                    bits_per_value as u32,
+                    values,
+                    values_offset,
+                    size,
+                )?;
+        }
+        Ok(true)
+    }
 
     fn read_numeric(meta: &mut dyn IndexInput) -> Result<NumericEntry> {
         let docs_with_field_offset = meta.read_long()?;
@@ -1598,6 +1828,22 @@ enum DocsCursor {
 }
 
 impl DocsCursor {
+    /// Returns whether every document of the segment carries the field.
+    ///
+    /// The bulk read path applies only to a dense field: a sparse one has no
+    /// value for every document of a contiguous run.
+    fn is_dense(&self) -> bool {
+        matches!(self, Self::Dense { .. })
+    }
+
+    /// Leaves the cursor on `doc`, as Lucene's bulk override does after
+    /// reading a run.
+    fn set_doc_id(&mut self, doc_id: i32) {
+        if let Self::Dense { doc, .. } = self {
+            *doc = doc_id;
+        }
+    }
+
     fn new(
         data: &dyn IndexInput,
         max_doc: i32,
@@ -1725,11 +1971,19 @@ enum NumericValueSource {
     Table {
         reader: DirectReader,
         table: Vec<i64>,
+        /// The packed region, kept for the bulk read path.
+        slice: Rc<RefCell<Box<dyn RandomAccessInput>>>,
+        bits_per_value: i32,
+        block_shift: i32,
     },
     Packed {
         reader: DirectReader,
         min: i64,
         gcd: i64,
+        /// The packed region, kept for the bulk read path.
+        slice: Rc<RefCell<Box<dyn RandomAccessInput>>>,
+        bits_per_value: i32,
+        block_shift: i32,
     },
 }
 
@@ -1752,16 +2006,27 @@ impl NumericValueSource {
             );
         }
         let slice = checked_random_access(data, entry.values_offset, entry.values_length)?;
-        let reader = DirectReader::with_random_access(slice, i32::from(entry.bits_per_value), 0)?;
+        let reader = DirectReader::with_random_access(
+            Rc::clone(&slice),
+            i32::from(entry.bits_per_value),
+            0,
+        )?;
+        let bits_per_value = i32::from(entry.bits_per_value);
         Ok(match entry.table {
             Some(ref table) => Self::Table {
                 reader,
                 table: table.clone(),
+                slice,
+                bits_per_value,
+                block_shift: entry.block_shift,
             },
             None => Self::Packed {
                 reader,
                 min: entry.min_value,
                 gcd: entry.gcd,
+                slice,
+                bits_per_value,
+                block_shift: entry.block_shift,
             },
         })
     }
@@ -1769,7 +2034,7 @@ impl NumericValueSource {
     fn value(&self, index: i64) -> Result<i64> {
         match self {
             Self::Constant(value) => Ok(*value),
-            Self::Table { reader, table } => {
+            Self::Table { reader, table, .. } => {
                 let ordinal = reader.get_checked(index)?;
                 // The ordinal is `bitsPerValue` wide and the table at most 256
                 // long: a corrupt width makes the two disagree, and Java
@@ -1790,7 +2055,9 @@ impl NumericValueSource {
             }
             // Java's arithmetic wraps here; a corrupt `min` or `gcd` must
             // produce the value Java would produce, not an overflow panic.
-            Self::Packed { reader, min, gcd } => Ok(gcd
+            Self::Packed {
+                reader, min, gcd, ..
+            } => Ok(gcd
                 .wrapping_mul(reader.get_checked(index)?)
                 .wrapping_add(*min)),
         }
@@ -1802,6 +2069,11 @@ struct LazyNumericDocValues {
     docs: DocsCursor,
     values: NumericValueSource,
     cost: i64,
+    /// Scratch buffer the bulk read path reuses between calls.
+    ///
+    /// Equivalent to the `private byte[] bulkBytes` each of Lucene's dense
+    /// numeric views keeps.
+    bulk_bytes: Vec<u8>,
 }
 
 impl LazyNumericDocValues {
@@ -1819,7 +2091,43 @@ impl LazyNumericDocValues {
             docs,
             values: NumericValueSource::new(data, entry)?,
             cost: entry.num_values,
+            bulk_bytes: Vec::new(),
         })
+    }
+
+    /// Reads one value per document, which is what the bulk path falls back to.
+    ///
+    /// Equivalent to the `super.longValues(...)` call each of Lucene's
+    /// overrides makes when the fast path does not apply.
+    fn long_values_one_by_one(
+        &mut self,
+        size: i32,
+        docs: &[i32],
+        docs_offset: i32,
+        values: &mut [i64],
+        values_offset: i32,
+        default_value: i64,
+    ) -> Result<()> {
+        let size = size as usize;
+        if docs.len() < docs_offset as usize + size {
+            return Err(LuceneError::IllegalArgument(
+                "docs buffer too small for requested size/offset".to_string(),
+            ));
+        }
+        if values.len() < values_offset as usize + size {
+            return Err(LuceneError::IllegalArgument(
+                "values buffer too small for requested size/offset".to_string(),
+            ));
+        }
+        for i in 0..size {
+            let doc = docs[docs_offset as usize + i];
+            values[values_offset as usize + i] = if self.advance_exact(doc)? {
+                self.long_value()?
+            } else {
+                default_value
+            };
+        }
+        Ok(())
     }
 }
 
@@ -1848,6 +2156,124 @@ impl DocValuesIterator for LazyNumericDocValues {
 }
 
 impl NumericDocValues for LazyNumericDocValues {
+    /// Reads a run of documents' values in one go where the layout allows it.
+    ///
+    /// Equivalent to the `longValues` override each of Lucene's dense numeric
+    /// views carries: when the values are byte-aligned and the documents form a
+    /// contiguous run, the whole run is read as bytes and decoded in bulk, and
+    /// the table or GCD is applied afterwards. Anything else falls back to the
+    /// generic one-value-per-document path.
+    fn long_values(
+        &mut self,
+        size: i32,
+        docs: &[i32],
+        docs_offset: i32,
+        values: &mut [i64],
+        values_offset: i32,
+        default_value: i64,
+    ) -> Result<()> {
+        if size < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "size must be >= 0, got {size}"
+            )));
+        }
+        // The bulk path only applies to a dense field: a sparse one has no
+        // value for every document in the run.
+        if !self.docs.is_dense() {
+            return self.long_values_one_by_one(
+                size,
+                docs,
+                docs_offset,
+                values,
+                values_offset,
+                default_value,
+            );
+        }
+        let size_usize = size as usize;
+        let mut bulk_bytes = std::mem::take(&mut self.bulk_bytes);
+        let decoded = match &self.values {
+            NumericValueSource::Table {
+                slice,
+                bits_per_value,
+                block_shift,
+                table,
+                reader: _,
+            } => {
+                let mut borrowed = slice.borrow_mut();
+                let done = Lucene90DocValuesProducer::bulk_decode_byte_aligned_values(
+                    borrowed.as_mut(),
+                    *bits_per_value,
+                    *block_shift,
+                    size_usize,
+                    docs,
+                    docs_offset as usize,
+                    values,
+                    values_offset as usize,
+                    &mut bulk_bytes,
+                )?;
+                if done {
+                    Lucene90DocValuesProducer::apply_table(
+                        values,
+                        values_offset as usize,
+                        table,
+                        size_usize,
+                    );
+                }
+                done
+            }
+            NumericValueSource::Packed {
+                slice,
+                bits_per_value,
+                block_shift,
+                min,
+                gcd,
+                reader: _,
+            } => {
+                let mut borrowed = slice.borrow_mut();
+                let done = Lucene90DocValuesProducer::bulk_decode_byte_aligned_values(
+                    borrowed.as_mut(),
+                    *bits_per_value,
+                    *block_shift,
+                    size_usize,
+                    docs,
+                    docs_offset as usize,
+                    values,
+                    values_offset as usize,
+                    &mut bulk_bytes,
+                )?;
+                if done && !(*gcd == 1 && *min == 0) {
+                    Lucene90DocValuesProducer::apply_gcd_delta(
+                        values,
+                        values_offset as usize,
+                        *gcd,
+                        *min,
+                        size_usize,
+                    );
+                }
+                done
+            }
+            NumericValueSource::Constant(_) => false,
+        };
+        self.bulk_bytes = bulk_bytes;
+        if decoded {
+            if size_usize != 0 {
+                // The cursor is left on the last document of the run, as
+                // Lucene's override leaves it.
+                self.docs
+                    .set_doc_id(docs[docs_offset as usize + size_usize - 1]);
+            }
+            return Ok(());
+        }
+        self.long_values_one_by_one(
+            size,
+            docs,
+            docs_offset,
+            values,
+            values_offset,
+            default_value,
+        )
+    }
+
     fn long_value(&self) -> Result<i64> {
         // No positioning check, for the reason given on `DocsCursor::index`:
         // Lucene reads at whatever the cursor holds, and a constant field
