@@ -253,14 +253,71 @@ impl LongValues for FieldLongValues {
 }
 
 impl SegmentCacheable for FieldValuesSource {
-    /// Equivalent to `DocValues.isCacheable(ctx, field)`, whose body is inlined
-    /// because `crate::index::DocValues` does not expose that static.
+    /// Equivalent to `DocValues.isCacheable(ctx, field)`.
     fn is_cacheable(&self, ctx: &LeafReaderContext) -> bool {
-        let field_infos = ctx.leaf_reader().get_field_infos();
-        match field_infos.field_info(&self.field) {
-            Some(info) => info.doc_values_gen <= -1,
-            None => true,
-        }
+        crate::index::doc_values::DocValues::is_cacheable(ctx, &[&self.field])
+    }
+}
+
+/// Presents a [`LongValues`] as a [`NumericDocValues`].
+///
+/// Equivalent to the anonymous `NumericDocValues` of the private static
+/// `LongValuesSource.asNumericDocValues(LongValuesHolder)`, whose iteration
+/// methods all throw: the comparator only ever positions it with
+/// `advanceExact` and reads `longValue`.
+pub struct LongValuesAsNumericDocValues<'a> {
+    values: Box<dyn LongValues + 'a>,
+}
+
+impl std::fmt::Debug for LongValuesAsNumericDocValues<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LongValuesAsNumericDocValues")
+    }
+}
+
+/// Presents `values` as a [`NumericDocValues`].
+///
+/// Equivalent to the private static
+/// `LongValuesSource.asNumericDocValues(LongValuesHolder)`.
+pub fn as_numeric_doc_values<'a>(
+    values: Box<dyn LongValues + 'a>,
+) -> LongValuesAsNumericDocValues<'a> {
+    LongValuesAsNumericDocValues { values }
+}
+
+impl crate::search::DocIdSetIterator for LongValuesAsNumericDocValues<'_> {
+    fn doc_id(&self) -> i32 {
+        unimplemented!("LongValuesSource.asNumericDocValues does not iterate")
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        Err(crate::error::LuceneError::UnsupportedOperation(
+            "LongValuesSource.asNumericDocValues does not iterate".to_string(),
+        ))
+    }
+
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Err(crate::error::LuceneError::UnsupportedOperation(
+            "LongValuesSource.asNumericDocValues does not iterate".to_string(),
+        ))
+    }
+
+    fn cost(&self) -> i64 {
+        unimplemented!("LongValuesSource.asNumericDocValues does not iterate")
+    }
+}
+
+impl crate::index::DocValuesIterator for LongValuesAsNumericDocValues<'_> {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        self.values.advance_exact(target)
+    }
+}
+
+impl crate::index::NumericDocValues for LongValuesAsNumericDocValues<'_> {
+    fn long_value(&self) -> Result<i64> {
+        Err(crate::error::LuceneError::UnsupportedOperation(
+            "LongValuesSource.asNumericDocValues reads through long_value_mut".to_string(),
+        ))
     }
 }
 

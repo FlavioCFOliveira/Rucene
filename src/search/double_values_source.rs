@@ -454,11 +454,7 @@ impl SegmentCacheable for FieldValuesSource {
     /// cacheable once the field's doc values have been updated" — is inlined
     /// because `crate::index::DocValues` does not expose that static.
     fn is_cacheable(&self, ctx: &LeafReaderContext) -> bool {
-        let field_infos = ctx.leaf_reader().get_field_infos();
-        match field_infos.field_info(&self.field) {
-            Some(info) => info.doc_values_gen <= -1,
-            None => true,
-        }
+        crate::index::doc_values::DocValues::is_cacheable(ctx, &[&self.field])
     }
 }
 
@@ -1028,4 +1024,46 @@ pub(crate) fn hash_of<T: std::hash::Hash>(value: &T) -> u64 {
     let mut hasher = DefaultHasher::new();
     value.hash(&mut hasher);
     hasher.finish()
+}
+
+/// Returns the per-document similarity of a byte query vector to a field's
+/// vectors.
+///
+/// Equivalent to the static `DoubleValuesSource.similarityToQueryVector(
+/// LeafReaderContext, byte[], String)`.
+///
+/// # Errors
+///
+/// Propagates whatever opening the vector values raises.
+pub fn similarity_to_byte_query_vector<'a>(
+    ctx: &LeafReaderContext,
+    query_vector: Vec<u8>,
+    vector_field: &str,
+) -> Result<Box<dyn DoubleValues + 'a>> {
+    let source = Arc::new(crate::search::ByteVectorSimilarityValuesSource::new(
+        query_vector,
+        vector_field,
+    ));
+    source.get_values(ctx, None)
+}
+
+/// Returns the per-document similarity of a float query vector to a field's
+/// vectors.
+///
+/// Equivalent to the static `DoubleValuesSource.similarityToQueryVector(
+/// LeafReaderContext, float[], String)`.
+///
+/// # Errors
+///
+/// Propagates whatever opening the vector values raises.
+pub fn similarity_to_float_query_vector<'a>(
+    ctx: &LeafReaderContext,
+    query_vector: Vec<f32>,
+    vector_field: &str,
+) -> Result<Box<dyn DoubleValues + 'a>> {
+    let source = Arc::new(crate::search::FloatVectorSimilarityValuesSource::new(
+        query_vector,
+        vector_field,
+    ));
+    source.get_values(ctx, None)
 }

@@ -112,6 +112,46 @@ impl SeededKnnVectorQuery {
         self.seed_weight.as_ref()
     }
 
+    /// Seeds a float-vector kNN query.
+    ///
+    /// Equivalent to `SeededKnnVectorQuery.fromFloatQuery(KnnFloatVectorQuery,
+    /// Query)`, which reads the wrapped query's own field, k, filter and search
+    /// strategy.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn from_float_query(
+        knn_query: Arc<dyn AbstractKnnVectorQueryImpl>,
+        seed: Arc<dyn Query>,
+    ) -> Result<Self> {
+        let base = knn_query.knn_base().clone();
+        Self::new(
+            knn_query,
+            seed,
+            None,
+            base.get_field(),
+            base.get_k(),
+            base.get_filter().cloned(),
+            base.get_search_strategy().cloned(),
+        )
+    }
+
+    /// Seeds a byte-vector kNN query.
+    ///
+    /// Equivalent to `SeededKnnVectorQuery.fromByteQuery(KnnByteVectorQuery,
+    /// Query)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn from_byte_query(
+        knn_query: Arc<dyn AbstractKnnVectorQueryImpl>,
+        seed: Arc<dyn Query>,
+    ) -> Result<Self> {
+        Self::from_float_query(knn_query, seed)
+    }
+
     /// Returns the wrapped kNN query.
     pub fn delegate(&self) -> &Arc<dyn AbstractKnnVectorQueryImpl> {
         &self.delegate

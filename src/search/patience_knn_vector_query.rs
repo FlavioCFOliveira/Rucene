@@ -89,6 +89,58 @@ impl PatienceKnnVectorQuery {
         Self::new(knn_query, DEFAULT_SATURATION_THRESHOLD, patience)
     }
 
+    /// Wraps a float-vector kNN query with an explicit saturation threshold
+    /// and patience.
+    ///
+    /// Equivalent to `PatienceKnnVectorQuery.fromFloatQuery(KnnFloatVectorQuery,
+    /// double, int)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn from_float_query(
+        knn_query: Arc<dyn AbstractKnnVectorQueryImpl>,
+        saturation_threshold: f64,
+        patience: i32,
+    ) -> Result<Self> {
+        Self::new(knn_query, saturation_threshold, patience)
+    }
+
+    /// Wraps a byte-vector kNN query with an explicit saturation threshold and
+    /// patience.
+    ///
+    /// Equivalent to `PatienceKnnVectorQuery.fromByteQuery(KnnByteVectorQuery,
+    /// double, int)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn from_byte_query(
+        knn_query: Arc<dyn AbstractKnnVectorQueryImpl>,
+        saturation_threshold: f64,
+        patience: i32,
+    ) -> Result<Self> {
+        Self::new(knn_query, saturation_threshold, patience)
+    }
+
+    /// Wraps a seeded kNN query with an explicit saturation threshold and
+    /// patience.
+    ///
+    /// Equivalent to
+    /// `PatienceKnnVectorQuery.fromSeededQuery(SeededKnnVectorQuery, double,
+    /// int)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn from_seeded_query(
+        knn_query: Arc<dyn AbstractKnnVectorQueryImpl>,
+        saturation_threshold: f64,
+        patience: i32,
+    ) -> Result<Self> {
+        Self::new(knn_query, saturation_threshold, patience)
+    }
+
     /// Returns the wrapped kNN query.
     pub fn delegate(&self) -> &Arc<dyn AbstractKnnVectorQueryImpl> {
         &self.delegate
