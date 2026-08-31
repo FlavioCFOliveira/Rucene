@@ -98,6 +98,15 @@ impl MergeScheduler for NoMergeScheduler {
 pub const DEFAULT_MAX_MERGE_COUNT: usize = 6;
 /// Default number of merge threads.
 pub const DEFAULT_MAX_THREAD_COUNT: usize = 3;
+/// Sentinel telling `set_max_merges_and_threads` to derive both counts from the
+/// machine's core count.
+///
+/// Equivalent to `ConcurrentMergeScheduler.AUTO_DETECT_MERGES_AND_THREADS`.
+pub const AUTO_DETECT_MERGES_AND_THREADS: i32 = -1;
+/// Initial IO throttle rate once auto-throttling is enabled.
+///
+/// Equivalent to `ConcurrentMergeScheduler.START_MB_PER_SEC`.
+const START_MB_PER_SEC: f64 = 20.0;
 
 /// A scheduler that runs merges on background threads.
 ///
@@ -114,6 +123,19 @@ pub struct ConcurrentMergeScheduler {
     max_merge_count: usize,
     /// Merges currently running, for `merge_thread_count()`.
     running: AtomicU64,
+    /// Per-merge IO throttle rate for a forced merge.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.forceMergeMBPerSec`.
+    force_merge_mb_per_sec: Mutex<f64>,
+    /// Whether dynamic IO throttling is on.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.doAutoIOThrottle`.
+    do_auto_io_throttle: AtomicBool,
+    /// Current auto-throttle target, meaningful only while
+    /// `do_auto_io_throttle` is set.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.targetMBPerSec`.
+    target_mb_per_sec: Mutex<f64>,
 }
 
 impl Default for ConcurrentMergeScheduler {
@@ -129,25 +151,151 @@ impl ConcurrentMergeScheduler {
             max_thread_count: DEFAULT_MAX_THREAD_COUNT,
             max_merge_count: DEFAULT_MAX_MERGE_COUNT,
             running: AtomicU64::new(0),
+            force_merge_mb_per_sec: Mutex::new(f64::INFINITY),
+            do_auto_io_throttle: AtomicBool::new(false),
+            target_mb_per_sec: Mutex::new(START_MB_PER_SEC),
         }
     }
 
     /// Sets how many merges may run at once and how many may be queued.
     ///
     /// Equivalent to `ConcurrentMergeScheduler.setMaxMergesAndThreads(int, int)`.
+    /// Pass [`AUTO_DETECT_MERGES_AND_THREADS`] for both arguments to derive them
+    /// from the machine's core count, exactly as
+    /// [`set_default_max_merges_and_threads`](Self::set_default_max_merges_and_threads)
+    /// does for non-rotational storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when only one argument is the
+    /// auto-detect sentinel, when either count is below 1, or when
+    /// `max_thread_count` exceeds `max_merge_count`.
     pub fn set_max_merges_and_threads(
         &mut self,
-        max_merge_count: usize,
-        max_thread_count: usize,
+        max_merge_count: i32,
+        max_thread_count: i32,
     ) -> Result<()> {
+        if max_merge_count == AUTO_DETECT_MERGES_AND_THREADS
+            && max_thread_count == AUTO_DETECT_MERGES_AND_THREADS
+        {
+            self.set_default_max_merges_and_threads(false);
+            return Ok(());
+        }
+        if max_merge_count == AUTO_DETECT_MERGES_AND_THREADS
+            || max_thread_count == AUTO_DETECT_MERGES_AND_THREADS
+        {
+            return Err(LuceneError::IllegalArgument(
+                "both maxMergeCount and maxThreadCount must be AUTO_DETECT_MERGES_AND_THREADS"
+                    .to_string(),
+            ));
+        }
+        if max_thread_count < 1 {
+            return Err(LuceneError::IllegalArgument(
+                "maxThreadCount should be at least 1".to_string(),
+            ));
+        }
+        if max_merge_count < 1 {
+            return Err(LuceneError::IllegalArgument(
+                "maxMergeCount should be at least 1".to_string(),
+            ));
+        }
         if max_thread_count > max_merge_count {
             return Err(LuceneError::IllegalArgument(format!(
-                "maxThreadCount ({max_thread_count}) should be <= maxMergeCount ({max_merge_count})"
+                "maxThreadCount should be <= maxMergeCount (= {max_merge_count})"
             )));
         }
-        self.max_merge_count = max_merge_count;
-        self.max_thread_count = max_thread_count;
+        self.max_thread_count = max_thread_count as usize;
+        self.max_merge_count = max_merge_count as usize;
         Ok(())
+    }
+
+    /// Sets `max_merge_count`/`max_thread_count` to the defaults appropriate for
+    /// the storage kind.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.setDefaultMaxMergesAndThreads(boolean)`.
+    /// `spins` selects the conservative defaults for rotational storage; `false`
+    /// derives both counts from [`std::thread::available_parallelism`], mirroring
+    /// Java's `Runtime.availableProcessors()`.
+    pub fn set_default_max_merges_and_threads(&mut self, spins: bool) {
+        if spins {
+            self.max_thread_count = 1;
+            self.max_merge_count = 6;
+            return;
+        }
+        let core_count = std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1);
+        // If indexing at full throttle, merging costs about as much work as
+        // indexing/flushing overall for some data structures (kNN vectors), so
+        // half the cores go to merges, exactly as Java's comment explains.
+        self.max_thread_count = (core_count / 2).max(1);
+        self.max_merge_count = self.max_thread_count + 5;
+    }
+
+    /// Sets the per-merge IO throttle rate for a forced merge.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.setForceMergeMBPerSec(double)`.
+    pub fn set_force_merge_mb_per_sec(&self, v: f64) {
+        if let Ok(mut guard) = self.force_merge_mb_per_sec.lock() {
+            *guard = v;
+        }
+    }
+
+    /// Returns the per-merge IO throttle rate for a forced merge.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.getForceMergeMBPerSec()`.
+    pub fn get_force_merge_mb_per_sec(&self) -> f64 {
+        self.force_merge_mb_per_sec
+            .lock()
+            .map(|guard| *guard)
+            .unwrap_or(f64::INFINITY)
+    }
+
+    /// Turns on dynamic IO throttling.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.enableAutoIOThrottle()`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `updateMergeThreads()` measures
+    /// each running merge thread's actual write rate and raises or lowers
+    /// `targetMBPerSec` to the minimum that keeps merges from falling behind
+    /// indexing. This port's [`merge`](MergeScheduler::merge) spawns one
+    /// scoped thread per merge and does not yet retarget a running merge's
+    /// rate limiter, so enabling this flag records the starting rate but does
+    /// not adapt it; see the type's own divergence note for why the underlying
+    /// thread model differs.
+    pub fn enable_auto_io_throttle(&self) {
+        self.do_auto_io_throttle.store(true, Ordering::Release);
+        if let Ok(mut guard) = self.target_mb_per_sec.lock() {
+            *guard = START_MB_PER_SEC;
+        }
+    }
+
+    /// Turns off dynamic IO throttling.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.disableAutoIOThrottle()`.
+    pub fn disable_auto_io_throttle(&self) {
+        self.do_auto_io_throttle.store(false, Ordering::Release);
+    }
+
+    /// Returns whether dynamic IO throttling is on.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.getAutoIOThrottle()`.
+    pub fn get_auto_io_throttle(&self) -> bool {
+        self.do_auto_io_throttle.load(Ordering::Acquire)
+    }
+
+    /// Returns the currently active per-merge IO rate limit.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.getIORateLimitMBPerSec()`.
+    pub fn get_io_rate_limit_mb_per_sec(&self) -> f64 {
+        if self.get_auto_io_throttle() {
+            self.target_mb_per_sec
+                .lock()
+                .map(|guard| *guard)
+                .unwrap_or(START_MB_PER_SEC)
+        } else {
+            f64::INFINITY
+        }
     }
 
     /// Returns how many merges are running right now.
