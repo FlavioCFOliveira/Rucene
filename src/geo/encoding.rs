@@ -1,6 +1,9 @@
 //! Coordinate encodings ported from `org.apache.lucene.geo`.
 
+use std::sync::Arc;
+
 use crate::error::{LuceneError, Result};
+use crate::geo::component2d::Component2D;
 use crate::geo::geometry::Rectangle;
 use crate::index::point_values::Relation;
 use crate::util::{NumericUtils, SloppyMath};
@@ -179,6 +182,182 @@ impl GeoEncodingUtils {
     }
 
     /// Smallest encoded longitude.
+    /// Creates a predicate that answers whether an encoded point lies within
+    /// `radius_meters` of `(lat, lon)`.
+    ///
+    /// Equivalent to `GeoEncodingUtils.createDistancePredicate(double, double,
+    /// double)`. The predicate pre-computes the relation of every cell of a
+    /// coarse grid to the query circle, so that most points are answered by one
+    /// array lookup and only the cells the circle crosses need the distance.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the bounding box or encoding it raises.
+    pub fn create_distance_predicate(
+        lat: f64,
+        lon: f64,
+        radius_meters: f64,
+    ) -> Result<DistancePredicate> {
+        let bounding_box = Rectangle::from_point_distance(lat, lon, radius_meters)?;
+        let axis_lat = Rectangle::axis_lat(lat, radius_meters);
+        let distance_sort_key = GeoUtils::distance_query_sort_key(radius_meters);
+        let sub_boxes = Self::create_sub_boxes(
+            bounding_box.min_lat(),
+            bounding_box.max_lat(),
+            bounding_box.min_lon(),
+            bounding_box.max_lon(),
+            &|min_lat, max_lat, min_lon, max_lon| {
+                GeoUtils::relate(
+                    min_lat,
+                    max_lat,
+                    min_lon,
+                    max_lon,
+                    lat,
+                    lon,
+                    distance_sort_key,
+                    axis_lat,
+                )
+            },
+        )?;
+        Ok(DistancePredicate {
+            grid: sub_boxes,
+            lat,
+            lon,
+            distance_key: distance_sort_key,
+        })
+    }
+
+    /// Creates a predicate that answers whether an encoded point lies within a
+    /// geometry.
+    ///
+    /// Equivalent to `GeoEncodingUtils.createComponentPredicate(Component2D)`,
+    /// which works the same way as
+    /// [`create_distance_predicate`](Self::create_distance_predicate).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever encoding the geometry's bounds raises.
+    pub fn create_component_predicate(tree: Arc<dyn Component2D>) -> Result<Component2DPredicate> {
+        let bounds = (
+            tree.get_min_y(),
+            tree.get_max_y(),
+            tree.get_min_x(),
+            tree.get_max_x(),
+        );
+        let relate_tree = Arc::clone(&tree);
+        let sub_boxes = Self::create_sub_boxes(
+            bounds.0,
+            bounds.1,
+            bounds.2,
+            bounds.3,
+            &|min_lat, max_lat, min_lon, max_lon| {
+                Ok(relate_tree.relate(min_lon, max_lon, min_lat, max_lat))
+            },
+        )?;
+        Ok(Component2DPredicate {
+            grid: sub_boxes,
+            tree,
+        })
+    }
+
+    /// Builds the coarse grid both predicates test against.
+    ///
+    /// Equivalent to the private `GeoEncodingUtils.createSubBoxes(double,
+    /// double, double, double, Function<Rectangle, Relation>)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever encoding a coordinate raises.
+    fn create_sub_boxes(
+        shape_min_lat: f64,
+        shape_max_lat: f64,
+        shape_min_lon: f64,
+        shape_max_lon: f64,
+        box_to_relation: &dyn Fn(f64, f64, f64, f64) -> Result<Relation>,
+    ) -> Result<Grid> {
+        let min_lat = Self::encode_latitude_ceil(shape_min_lat)?;
+        let max_lat = Self::encode_latitude(shape_max_lat)?;
+        let min_lon = Self::encode_longitude_ceil(shape_min_lon)?;
+        let max_lon = Self::encode_longitude(shape_max_lon)?;
+
+        if max_lat < min_lat || (shape_max_lon >= shape_min_lon && max_lon < min_lon) {
+            // The box cannot match any quantized point.
+            return Ok(Grid {
+                lat_shift: 1,
+                lon_shift: 1,
+                lat_base: 0,
+                lon_base: 0,
+                max_lat_delta: 0,
+                max_lon_delta: 0,
+                relations: Vec::new(),
+            });
+        }
+
+        let min_lat2 = i64::from(min_lat) - i64::from(i32::MIN);
+        let max_lat2 = i64::from(max_lat) - i64::from(i32::MIN);
+        let lat_shift = Self::compute_shift(min_lat2, max_lat2);
+        let lat_base = (min_lat2 >> lat_shift) as i32;
+        let max_lat_delta = (max_lat2 >> lat_shift) as i32 - lat_base + 1;
+        debug_assert!(max_lat_delta > 0);
+
+        let min_lon2 = i64::from(min_lon) - i64::from(i32::MIN);
+        let mut max_lon2 = i64::from(max_lon) - i64::from(i32::MIN);
+        if shape_max_lon < shape_min_lon {
+            // Crosses the dateline: wrap.
+            max_lon2 += 1i64 << 32;
+        }
+        let lon_shift = Self::compute_shift(min_lon2, max_lon2);
+        let lon_base = (min_lon2 >> lon_shift) as i32;
+        let max_lon_delta = (max_lon2 >> lon_shift) as i32 - lon_base + 1;
+        debug_assert!(max_lon_delta > 0);
+
+        let mut relations = vec![0u8; (max_lat_delta * max_lon_delta) as usize];
+        for i in 0..max_lat_delta {
+            for j in 0..max_lon_delta {
+                let box_min_lat = ((lat_base + i) << lat_shift).wrapping_add(i32::MIN);
+                let box_min_lon = ((lon_base + j) << lon_shift).wrapping_add(i32::MIN);
+                let box_max_lat = box_min_lat + (1 << lat_shift) - 1;
+                let box_max_lon = box_min_lon + (1 << lon_shift) - 1;
+                let relation = box_to_relation(
+                    Self::decode_latitude(box_min_lat),
+                    Self::decode_latitude(box_max_lat),
+                    Self::decode_longitude(box_min_lon),
+                    Self::decode_longitude(box_max_lon),
+                )?;
+                relations[(i * max_lon_delta + j) as usize] = relation_ordinal(relation);
+            }
+        }
+
+        Ok(Grid {
+            lat_shift,
+            lon_shift,
+            lat_base,
+            lon_base,
+            max_lat_delta,
+            max_lon_delta,
+            relations,
+        })
+    }
+
+    /// Returns the smallest shift for which `(b >> shift) - (a >> shift)` is
+    /// under [`GRID_ARITY`].
+    ///
+    /// Equivalent to the private `GeoEncodingUtils.computeShift(long, long)`.
+    /// The shift is at least one so that, working with unsigned values through
+    /// `value - i32::MIN`, the sign bit is already clear and a comparison of
+    /// the shifted values needs no further care.
+    fn compute_shift(a: i64, b: i64) -> u32 {
+        debug_assert!(a <= b);
+        let mut shift = 1u32;
+        loop {
+            let delta = (b >> shift) - (a >> shift);
+            if delta >= 0 && delta < i64::from(GRID_ARITY) {
+                return shift;
+            }
+            shift += 1;
+        }
+    }
+
     pub fn min_lon_encoded() -> i32 {
         Self::encode_longitude(GeoUtils::MIN_LON_INCL).unwrap_or(i32::MIN)
     }
@@ -499,4 +678,129 @@ pub(crate) fn next_up_f32(value: f32) -> f32 {
     }
     let bits = value.to_bits();
     f32::from_bits(if value > 0.0 { bits + 1 } else { bits - 1 })
+}
+
+/// How many cells a grid dimension may hold.
+///
+/// Equivalent to `GeoEncodingUtils.Grid.ARITY`.
+const GRID_ARITY: i32 = 64;
+
+/// Renders a [`Relation`] the way Java's `Relation.ordinal()` does, which is
+/// how the grid stores it.
+fn relation_ordinal(relation: Relation) -> u8 {
+    match relation {
+        Relation::CellInsideQuery => 0,
+        Relation::CellOutsideQuery => 1,
+        Relation::CellCrossesQuery => 2,
+    }
+}
+
+/// The coarse grid a [`DistancePredicate`] or [`Component2DPredicate`] tests
+/// against.
+///
+/// Equivalent to the private `GeoEncodingUtils.Grid`.
+#[derive(Clone, Debug)]
+pub struct Grid {
+    lat_shift: u32,
+    lon_shift: u32,
+    lat_base: i32,
+    lon_base: i32,
+    max_lat_delta: i32,
+    max_lon_delta: i32,
+    relations: Vec<u8>,
+}
+
+impl Grid {
+    /// Returns the cell `(lat, lon)` falls in, or `None` when the point is
+    /// outside the grid entirely.
+    ///
+    /// This is the head both predicates' `test` share.
+    fn cell_relation(&self, lat: i32, lon: i32) -> Option<u8> {
+        let lat2 = ((lat.wrapping_sub(i32::MIN)) as u32 >> self.lat_shift) as i32;
+        if lat2 < self.lat_base || lat2 - self.lat_base >= self.max_lat_delta {
+            return None;
+        }
+        let mut lon2 = ((lon.wrapping_sub(i32::MIN)) as u32 >> self.lon_shift) as i32;
+        if lon2 < self.lon_base {
+            // Wrap.
+            lon2 += 1 << (32 - self.lon_shift);
+        }
+        debug_assert!(lon2 - self.lon_base >= 0);
+        if lon2 - self.lon_base >= self.max_lon_delta {
+            return None;
+        }
+        Some(
+            self.relations
+                [((lat2 - self.lat_base) * self.max_lon_delta + (lon2 - self.lon_base)) as usize],
+        )
+    }
+}
+
+/// Answers whether an encoded point lies within a distance of another.
+///
+/// Equivalent to `GeoEncodingUtils.DistancePredicate`.
+#[derive(Clone, Debug)]
+pub struct DistancePredicate {
+    grid: Grid,
+    lat: f64,
+    lon: f64,
+    distance_key: f64,
+}
+
+impl DistancePredicate {
+    /// Returns whether the point lies within the query distance.
+    ///
+    /// Equivalent to `DistancePredicate.test(int, int)`, which operates
+    /// directly on the encoded representation.
+    pub fn test(&self, lat: i32, lon: i32) -> bool {
+        let Some(relation) = self.grid.cell_relation(lat, lon) else {
+            return false;
+        };
+        if relation == relation_ordinal(Relation::CellCrossesQuery) {
+            SloppyMath::haversin_sort_key(
+                GeoEncodingUtils::decode_latitude(lat),
+                GeoEncodingUtils::decode_longitude(lon),
+                self.lat,
+                self.lon,
+            ) <= self.distance_key
+        } else {
+            relation == relation_ordinal(Relation::CellInsideQuery)
+        }
+    }
+}
+
+/// Answers whether an encoded point lies within a geometry.
+///
+/// Equivalent to `GeoEncodingUtils.Component2DPredicate`.
+#[derive(Clone)]
+pub struct Component2DPredicate {
+    grid: Grid,
+    tree: Arc<dyn Component2D>,
+}
+
+impl std::fmt::Debug for Component2DPredicate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Component2DPredicate")
+            .field("grid", &self.grid)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Component2DPredicate {
+    /// Returns whether the point lies within the geometry.
+    ///
+    /// Equivalent to `Component2DPredicate.test(int, int)`.
+    pub fn test(&self, lat: i32, lon: i32) -> bool {
+        let Some(relation) = self.grid.cell_relation(lat, lon) else {
+            return false;
+        };
+        if relation == relation_ordinal(Relation::CellCrossesQuery) {
+            self.tree.contains(
+                GeoEncodingUtils::decode_longitude(lon),
+                GeoEncodingUtils::decode_latitude(lat),
+            )
+        } else {
+            relation == relation_ordinal(Relation::CellInsideQuery)
+        }
+    }
 }
