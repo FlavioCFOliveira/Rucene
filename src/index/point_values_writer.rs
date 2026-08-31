@@ -73,15 +73,10 @@
 //!   map and `MutableSortingPointValues` is not ported either. It is the same
 //!   seam [`crate::index::NormValuesWriter`] and the doc-values writers leave
 //!   open, and it is the single place a doc map would be threaded through.
-//! * The three dense batch paths (`addDense1DIntValues`,
-//!   `addDense1DLongValues`, `addDenseNDValues`) take a `LongValuesCursor` or a
-//!   `BytesRefValuesCursor` from `org.apache.lucene.document.column`. That
-//!   column-batch indexing path does not exist in this crate, so there is no
-//!   cursor to accept and no caller to serve; the per-instance path is the only
-//!   one, exactly as for the doc-values writers. The static assertion those
-//!   paths carry — that `SharedIndexingScratch.BYTES_SCRATCH_SIZE` is at least
-//!   `PointValues.MAX_NUM_BYTES * BKDConfig.MAX_DIMS` — guards only the dense
-//!   staging buffer, so it has nothing to guard here.
+//! * Java stages the dense batch paths through the writer's shared
+//!   `SharedIndexingScratch.bytesScratch()` buffer; this port allocates the
+//!   staging buffer per call. The buffer never leaves the call, and its size
+//!   and the chunking over it are Lucene's.
 //! * Java's anonymous `PointsReader.getValues` returns a `PointValues` that
 //!   throws `UnsupportedOperationException` for everything except
 //!   `getPointTree()`, because the codec calls nothing else
@@ -170,12 +165,24 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::codecs::points::{PointsReader, PointsWriter};
+use crate::document::column::{BytesRefValuesCursor, LongValuesCursor};
 use crate::error::{LuceneError, Result};
 use crate::index::point_values::{
     IntersectVisitor, MutablePointTree, PointTree, PointValues, Relation,
 };
 use crate::index::FieldInfo;
+use crate::index::BYTES_SCRATCH_SIZE;
 use crate::util::BytesRef;
+
+/// How many four-byte points the shared scratch buffer stages at a time.
+///
+/// Equivalent to `PointValuesWriter.POINTS_BUFFER_INT_VALUES`.
+const POINTS_BUFFER_INT_VALUES: usize = BYTES_SCRATCH_SIZE / 4;
+
+/// How many eight-byte points the shared scratch buffer stages at a time.
+///
+/// Equivalent to `PointValuesWriter.POINTS_BUFFER_LONG_VALUES`.
+const POINTS_BUFFER_LONG_VALUES: usize = BYTES_SCRATCH_SIZE / 8;
 
 /// Initial capacity of the doc-ID buffer.
 ///
@@ -280,6 +287,170 @@ impl PointValuesWriter {
         self.num_points += 1;
         self.update_bytes_used();
         Ok(())
+    }
+
+    /// Buffers one four-byte point per value of `cursor`, for the consecutive
+    /// documents starting at `first_doc_id`.
+    ///
+    /// Equivalent to `PointValuesWriter.addDense1DIntValues(int,
+    /// LongValuesCursor)`, the bulk path a dense `IntColumn` or `FloatColumn`
+    /// takes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field is not a
+    /// single-dimension four-byte point field, and whatever reading the cursor
+    /// raises.
+    pub fn add_dense_1d_int_values(
+        &mut self,
+        first_doc_id: i32,
+        cursor: &mut dyn LongValuesCursor,
+    ) -> Result<()> {
+        self.validate_1d_packed(4)?;
+        let size = cursor.size();
+        if size == 0 {
+            return Ok(());
+        }
+        self.reserve_dense_range(first_doc_id, size)?;
+        let mut buffer = vec![0u8; BYTES_SCRATCH_SIZE];
+        let mut remaining = size as usize;
+        while remaining > 0 {
+            let chunk = POINTS_BUFFER_INT_VALUES.min(remaining);
+            cursor.fill_int_points(&mut buffer, 0, chunk)?;
+            self.values.extend_from_slice(&buffer[..chunk * 4]);
+            remaining -= chunk;
+        }
+        self.commit_dense_range(first_doc_id, size);
+        Ok(())
+    }
+
+    /// Buffers one eight-byte point per value of `cursor`, for the consecutive
+    /// documents starting at `first_doc_id`.
+    ///
+    /// Equivalent to `PointValuesWriter.addDense1DLongValues(int,
+    /// LongValuesCursor)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field is not a
+    /// single-dimension eight-byte point field, and whatever reading the cursor
+    /// raises.
+    pub fn add_dense_1d_long_values(
+        &mut self,
+        first_doc_id: i32,
+        cursor: &mut dyn LongValuesCursor,
+    ) -> Result<()> {
+        self.validate_1d_packed(8)?;
+        let size = cursor.size();
+        if size == 0 {
+            return Ok(());
+        }
+        self.reserve_dense_range(first_doc_id, size)?;
+        let mut buffer = vec![0u8; BYTES_SCRATCH_SIZE];
+        let mut remaining = size as usize;
+        while remaining > 0 {
+            let chunk = POINTS_BUFFER_LONG_VALUES.min(remaining);
+            cursor.fill_long_points(&mut buffer, 0, chunk)?;
+            self.values.extend_from_slice(&buffer[..chunk * 8]);
+            remaining -= chunk;
+        }
+        self.commit_dense_range(first_doc_id, size);
+        Ok(())
+    }
+
+    /// Buffers one packed point per value of `cursor`, for the consecutive
+    /// documents starting at `first_doc_id`.
+    ///
+    /// Equivalent to `PointValuesWriter.addDenseNDValues(int,
+    /// BytesRefValuesCursor)`, the bulk path a dense `BinaryColumn` takes. The
+    /// caller is responsible for producing sort-encoded bytes of the field's
+    /// packed width.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the cursor raises, including a value of the
+    /// wrong width.
+    pub fn add_dense_nd_values(
+        &mut self,
+        first_doc_id: i32,
+        cursor: &mut dyn BytesRefValuesCursor,
+    ) -> Result<()> {
+        let size = cursor.size();
+        if size == 0 {
+            return Ok(());
+        }
+        self.reserve_dense_range(first_doc_id, size)?;
+        let width = self.packed_bytes_length;
+        let per_chunk = BYTES_SCRATCH_SIZE / width;
+        let mut buffer = vec![0u8; BYTES_SCRATCH_SIZE];
+        let mut remaining = size as usize;
+        while remaining > 0 {
+            let chunk = per_chunk.min(remaining);
+            cursor.fill_packed_points(&mut buffer, 0, chunk, width)?;
+            self.values.extend_from_slice(&buffer[..chunk * width]);
+            remaining -= chunk;
+        }
+        self.commit_dense_range(first_doc_id, size);
+        Ok(())
+    }
+
+    /// Refuses a field the one-dimensional dense paths cannot serve.
+    ///
+    /// Equivalent to the private `PointValuesWriter.validate1DPacked(int)`.
+    fn validate_1d_packed(&self, byte_width: i32) -> Result<()> {
+        if self.field_info.point_dimension_count != 1
+            || self.field_info.point_num_bytes != byte_width
+        {
+            return Err(LuceneError::IllegalArgument(format!(
+                "field={}: 1D dense path requires pointDimensionCount=1 and pointNumBytes={} , \
+                 got pointDimensionCount={} pointNumBytes={}",
+                self.field_info.name,
+                byte_width,
+                self.field_info.point_dimension_count,
+                self.field_info.point_num_bytes
+            )));
+        }
+        Ok(())
+    }
+
+    /// Records the document id of each point a dense range is about to write.
+    ///
+    /// Equivalent to the private `PointValuesWriter.reserveDenseRange(int,
+    /// int)`, which returns the buffer's footprint so the caller can charge the
+    /// growth; the crate's [`update_bytes_used`](Self::update_bytes_used)
+    /// reports the whole footprint instead, so nothing needs carrying across.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the field has already been
+    /// flushed, and [`LuceneError::IllegalArgument`] when the range does not
+    /// start after the last document written.
+    fn reserve_dense_range(&mut self, first_doc_id: i32, size: i32) -> Result<()> {
+        if self.flushed {
+            return Err(LuceneError::IllegalState(format!(
+                "the point values of field \"{}\" have already been flushed",
+                self.field_info.name
+            )));
+        }
+        if first_doc_id <= self.last_doc_id {
+            return Err(LuceneError::IllegalArgument(format!(
+                "field=\"{}\": firstDocID={first_doc_id} must be > lastDocID={}",
+                self.field_info.name, self.last_doc_id
+            )));
+        }
+        self.doc_ids.extend((0..size).map(|i| first_doc_id + i));
+        Ok(())
+    }
+
+    /// Accounts for a dense range once its points are written.
+    ///
+    /// Equivalent to the private `PointValuesWriter.commitDenseRange(int, int,
+    /// long)`.
+    fn commit_dense_range(&mut self, first_doc_id: i32, size: i32) {
+        self.num_docs += size;
+        self.last_doc_id = first_doc_id + size - 1;
+        self.num_points += size;
+        self.update_bytes_used();
     }
 
     /// Number of buffered points.

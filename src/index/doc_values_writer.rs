@@ -99,6 +99,9 @@ use std::sync::Arc;
 
 use crate::codecs::doc_values::{DocValuesConsumer, DocValuesProducer};
 use crate::codecs::DocsWithFieldSet;
+use crate::document::column::{
+    BytesRefValuesCursor, LongValuesCursor, OrdinalsCursor, OrdinalsTupleCursor,
+};
 use crate::error::{LuceneError, Result};
 use crate::index::doc_values::{
     BinaryDocValues, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
@@ -1057,6 +1060,82 @@ impl NumericDocValuesWriter {
         Ok(())
     }
 
+    /// Buffers `value` as the doc value of `count` consecutive documents
+    /// starting at `first_doc_id`.
+    ///
+    /// Equivalent to `NumericDocValuesWriter.addRepeatValues(int, long, int)`,
+    /// which the column path uses for the parent field: every document of a
+    /// batch is its own parent, so they all take the same value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `first_doc_id` is not
+    /// strictly greater than the last document added, and
+    /// [`LuceneError::IllegalState`] when the field has already been flushed.
+    pub fn add_repeat_values(&mut self, first_doc_id: i32, value: i64, count: i32) -> Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        self.check_appendable(first_doc_id)?;
+        self.pending
+            .extend(std::iter::repeat_n(value, count as usize));
+        self.docs_with_field
+            .add_range(first_doc_id, first_doc_id + count)?;
+        self.update_bytes_used();
+        self.last_doc_id = first_doc_id + count - 1;
+        Ok(())
+    }
+
+    /// Buffers every value of `cursor` as the doc values of the consecutive
+    /// documents starting at `first_doc_id`.
+    ///
+    /// Equivalent to `NumericDocValuesWriter.addDenseValues(int,
+    /// LongValuesCursor)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `first_doc_id` is not
+    /// strictly greater than the last document added,
+    /// [`LuceneError::IllegalState`] when the field has already been flushed,
+    /// and whatever reading the cursor raises.
+    pub fn add_dense_values(
+        &mut self,
+        first_doc_id: i32,
+        cursor: &mut dyn LongValuesCursor,
+    ) -> Result<()> {
+        let num_values = cursor.size();
+        if num_values == 0 {
+            return Ok(());
+        }
+        self.check_appendable(first_doc_id)?;
+        let start = self.pending.len();
+        self.pending.resize(start + num_values as usize, 0);
+        cursor.fill_doc_values(&mut self.pending, start, num_values as usize)?;
+        self.docs_with_field
+            .add_range(first_doc_id, first_doc_id + num_values)?;
+        self.update_bytes_used();
+        self.last_doc_id = first_doc_id + num_values - 1;
+        Ok(())
+    }
+
+    /// The two checks every `add*` runs before buffering: the field must not
+    /// have been flushed, and the document must come after the last one.
+    fn check_appendable(&self, doc_id: i32) -> Result<()> {
+        if self.flushed {
+            return Err(LuceneError::IllegalState(format!(
+                "the doc values of field \"{}\" have already been flushed",
+                self.field_info.name
+            )));
+        }
+        if doc_id <= self.last_doc_id {
+            return Err(LuceneError::IllegalArgument(format!(
+                "DocValuesField \"{}\" appears more than once in this document (only one value is allowed per field)",
+                self.field_info.name
+            )));
+        }
+        Ok(())
+    }
+
     /// Number of documents that have a value buffered.
     pub fn num_docs_with_field(&self) -> i32 {
         self.docs_with_field.cardinality()
@@ -1851,6 +1930,157 @@ impl SortedDocValuesWriter {
         Ok(())
     }
 
+    /// Buffers one dictionary-encoded value per document the tuple cursor
+    /// names, at `base_doc_id` plus the batch-local id.
+    ///
+    /// Equivalent to `SortedDocValuesWriter.addOrdinalTuples(int, List,
+    /// OrdinalsTupleCursor)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when a document repeats or an
+    /// ordinal is out of range, [`LuceneError::IllegalState`] when the field
+    /// has already been flushed, and whatever reading the cursor raises.
+    pub fn add_ordinal_tuples(
+        &mut self,
+        base_doc_id: i32,
+        dictionary: &[BytesRef],
+        cursor: &mut dyn OrdinalsTupleCursor,
+    ) -> Result<()> {
+        if self.flushed {
+            return Err(LuceneError::IllegalState(format!(
+                "the doc values of field \"{}\" have already been flushed",
+                self.field_info.name
+            )));
+        }
+        let mut ord_to_hash = vec![-1i32; dictionary.len()];
+        loop {
+            let batch_doc_id = cursor.next_doc()?;
+            if batch_doc_id == NO_MORE_DOCS {
+                break;
+            }
+            let doc_id = base_doc_id + batch_doc_id;
+            if doc_id <= self.last_doc_id {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "DocValuesField \"{}\" appears more than once in this document (only one value is allowed per field)",
+                    self.field_info.name
+                )));
+            }
+            let ord = cursor.ord_value();
+            let id = self.lookup_or_translate(ord, dictionary, &mut ord_to_hash)?;
+            self.pending.push(id);
+            self.docs_with_field.add(doc_id)?;
+            self.last_doc_id = doc_id;
+        }
+        self.update_bytes_used();
+        Ok(())
+    }
+
+    /// Buffers one dictionary-encoded value per consecutive document starting
+    /// at `first_doc_id`.
+    ///
+    /// Equivalent to `SortedDocValuesWriter.addDenseOrdinalValues(int, List,
+    /// OrdinalsCursor)`, which does one hash lookup per distinct dictionary
+    /// entry actually used rather than one per document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the range does not start
+    /// after the last document written or an ordinal is out of range,
+    /// [`LuceneError::IllegalState`] when the field has already been flushed,
+    /// and whatever reading the cursor raises.
+    pub fn add_dense_ordinal_values(
+        &mut self,
+        first_doc_id: i32,
+        dictionary: &[BytesRef],
+        cursor: &mut dyn OrdinalsCursor,
+    ) -> Result<()> {
+        let n = cursor.size();
+        if n == 0 {
+            return Ok(());
+        }
+        if self.flushed {
+            return Err(LuceneError::IllegalState(format!(
+                "the doc values of field \"{}\" have already been flushed",
+                self.field_info.name
+            )));
+        }
+        if first_doc_id <= self.last_doc_id {
+            return Err(LuceneError::IllegalArgument(format!(
+                "DocValuesField \"{}\": firstDocID={first_doc_id} must be > lastDocID={}",
+                self.field_info.name, self.last_doc_id
+            )));
+        }
+        let mut ord_to_hash = vec![-1i32; dictionary.len()];
+        let mut processed = 0i32;
+        // Java commits whatever was processed even when a lookup throws, in a
+        // `finally`; the same is done here by recording the range before the
+        // error is returned.
+        let mut outcome = Ok(());
+        while processed < n {
+            let ord = match cursor.next_ord() {
+                Ok(ord) => ord,
+                Err(e) => {
+                    outcome = Err(e);
+                    break;
+                }
+            };
+            match self.lookup_or_translate(ord, dictionary, &mut ord_to_hash) {
+                Ok(id) => self.pending.push(id),
+                Err(e) => {
+                    outcome = Err(e);
+                    break;
+                }
+            }
+            processed += 1;
+        }
+        if processed > 0 {
+            self.docs_with_field
+                .add_range(first_doc_id, first_doc_id + processed)?;
+            self.last_doc_id = first_doc_id + processed - 1;
+        }
+        self.update_bytes_used();
+        outcome
+    }
+
+    /// Interns the dictionary entry `ord` names, remembering the term id it was
+    /// given so the same entry costs one hash lookup per batch.
+    ///
+    /// Equivalent to the private `SortedDocValuesWriter.lookupOrTranslate(int,
+    /// List, int[])`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `ord` is outside the
+    /// dictionary, and whatever interning the value raises.
+    fn lookup_or_translate(
+        &mut self,
+        ord: i32,
+        dictionary: &[BytesRef],
+        ord_to_hash: &mut [i32],
+    ) -> Result<i32> {
+        if ord < 0 || ord as usize >= dictionary.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "DocValuesField \"{}\": ordinal {ord} is out of range [0, {})",
+                self.field_info.name,
+                dictionary.len()
+            )));
+        }
+        let mut id = ord_to_hash[ord as usize];
+        if id < 0 {
+            id = self
+                .hash
+                .add(&mut self.pool, dictionary[ord as usize].slice())?;
+            if id < 0 {
+                id = -id - 1;
+            } else {
+                self.ord_map_charge += 2 * std::mem::size_of::<i32>() as i64;
+            }
+            ord_to_hash[ord as usize] = id;
+        }
+        Ok(id)
+    }
+
     /// Equivalent to `SortedDocValuesWriter.addOneValue`.
     fn add_one_value(&mut self, value: &[u8]) -> Result<()> {
         let term_id = self.hash.add(&mut self.pool, value)?;
@@ -2079,12 +2309,75 @@ impl SortedNumericDocValuesWriter {
         Ok(())
     }
 
+    /// Buffers every value of `cursor` as the single value of each consecutive
+    /// document starting at `first_doc_id`.
+    ///
+    /// Equivalent to `SortedNumericDocValuesWriter.addDenseValues(int,
+    /// LongValuesCursor)`. Each value is one document's whole value list, so
+    /// nothing needs buffering or sorting; a count of one is recorded per
+    /// document when some earlier document was multi-valued.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `first_doc_id` is not
+    /// strictly greater than the current document,
+    /// [`LuceneError::IllegalState`] when the field has already been flushed,
+    /// and whatever reading the cursor raises.
+    pub fn add_dense_values(
+        &mut self,
+        first_doc_id: i32,
+        cursor: &mut dyn LongValuesCursor,
+    ) -> Result<()> {
+        let num_values = cursor.size();
+        if num_values == 0 {
+            return Ok(());
+        }
+        if self.flushed {
+            return Err(LuceneError::IllegalState(format!(
+                "the doc values of field \"{}\" have already been flushed",
+                self.field_info.name
+            )));
+        }
+        if first_doc_id <= self.current_doc {
+            return Err(LuceneError::IllegalArgument(format!(
+                "DocValuesField \"{}\" values must be added in increasing document order (doc {first_doc_id} after {})",
+                self.field_info.name, self.current_doc
+            )));
+        }
+        self.finish_current_doc()?;
+
+        // Write the values straight to the flat stream: each is one document's
+        // whole list, so there is nothing to buffer and nothing to sort.
+        let start = self.pending.len();
+        self.pending.resize(start + num_values as usize, 0);
+        cursor.fill_doc_values(&mut self.pending, start, num_values as usize)?;
+
+        // When the per-document counts are already being tracked — because some
+        // earlier document was multi-valued — record one per dense document.
+        if let Some(counts) = &mut self.pending_counts {
+            counts.extend(std::iter::repeat_n(1i32, num_values as usize));
+        }
+
+        let end_doc_id = first_doc_id + num_values;
+        self.docs_with_field.add_range(first_doc_id, end_doc_id)?;
+
+        // Leave `current_doc` on the last document written, so ordering holds;
+        // `current_values` stays empty, because nothing was buffered.
+        self.current_doc = end_doc_id - 1;
+        self.update_bytes_used();
+        Ok(())
+    }
+
     /// Equivalent to `SortedNumericDocValuesWriter.finishCurrentDoc`: sorts the
     /// current document's values, commits them to the flat stream and records
     /// the count — backfilling one count per already-seen document when the
     /// first multi-valued document appears.
     fn finish_current_doc(&mut self) -> Result<()> {
         if self.current_doc == -1 {
+            return Ok(());
+        }
+        if self.current_values.is_empty() {
+            // The document was committed directly, by `add_dense_values`.
             return Ok(());
         }
         let count = self.current_values.len();
@@ -2296,6 +2589,73 @@ impl SortedSetDocValuesWriter {
         }
         let term_id = if term_id < 0 { -term_id - 1 } else { term_id };
         self.current_values.push(term_id);
+        self.update_bytes_used();
+        Ok(())
+    }
+
+    /// Buffers one dictionary-encoded value per tuple the cursor names, at
+    /// `base_doc_id` plus the batch-local id.
+    ///
+    /// Equivalent to `SortedSetDocValuesWriter.addOrdinalTuples(int, List,
+    /// OrdinalsTupleCursor)`. Several tuples may name the same document; their
+    /// values accumulate and are deduplicated when the document is committed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when a document goes backwards
+    /// or an ordinal is out of range, [`LuceneError::IllegalState`] when the
+    /// field has already been flushed, and whatever reading the cursor raises.
+    pub fn add_ordinal_tuples(
+        &mut self,
+        base_doc_id: i32,
+        dictionary: &[BytesRef],
+        cursor: &mut dyn OrdinalsTupleCursor,
+    ) -> Result<()> {
+        if self.flushed {
+            return Err(LuceneError::IllegalState(format!(
+                "the doc values of field \"{}\" have already been flushed",
+                self.field_info.name
+            )));
+        }
+        let mut ord_to_hash = vec![-1i32; dictionary.len()];
+        loop {
+            let batch_doc_id = cursor.next_doc()?;
+            if batch_doc_id == NO_MORE_DOCS {
+                break;
+            }
+            let doc_id = base_doc_id + batch_doc_id;
+            if doc_id < self.current_doc {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "DocValuesField \"{}\" values must be added in increasing document order (doc {doc_id} after {})",
+                    self.field_info.name, self.current_doc
+                )));
+            }
+            if doc_id != self.current_doc {
+                self.finish_current_doc()?;
+                self.current_doc = doc_id;
+            }
+            let ord = cursor.ord_value();
+            if ord < 0 || ord as usize >= dictionary.len() {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "DocValuesField \"{}\": ordinal {ord} is out of range [0, {})",
+                    self.field_info.name,
+                    dictionary.len()
+                )));
+            }
+            let mut hash_id = ord_to_hash[ord as usize];
+            if hash_id < 0 {
+                hash_id = self
+                    .hash
+                    .add(&mut self.pool, dictionary[ord as usize].slice())?;
+                if hash_id < 0 {
+                    hash_id = -hash_id - 1;
+                } else {
+                    self.ord_map_charge += 2 * std::mem::size_of::<i32>() as i64;
+                }
+                ord_to_hash[ord as usize] = hash_id;
+            }
+            self.current_values.push(hash_id);
+        }
         self.update_bytes_used();
         Ok(())
     }
