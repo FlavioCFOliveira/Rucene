@@ -171,23 +171,10 @@ impl StandardDirectoryReader {
     fn open_from_infos(
         directory: Arc<dyn Directory>,
         infos: SegmentInfos,
-        _old_readers: Option<&[Arc<SegmentReader>]>,
+        old_readers: Option<&[Arc<SegmentReader>]>,
         writer: Option<Arc<dyn IndexWriter>>,
     ) -> Result<Arc<dyn DirectoryReader>> {
-        let index_created_version = infos.index_created_version_major();
-        let mut segment_readers = Vec::with_capacity(infos.size());
-        for i in 0..infos.size() {
-            let sci = infos.info(i);
-            let reader = Arc::new(SegmentReader::new(
-                sci.clone(),
-                index_created_version,
-                &*DEFAULT_IO_CONTEXT,
-            )?);
-            segment_readers.push(reader);
-        }
-
-        // TODO(task 93): reuse old readers when delGen/fieldInfosGen are unchanged.
-
+        let segment_readers = Self::create_segment_readers(&infos, old_readers)?;
         Ok(Arc::new(StandardDirectoryReader::new(
             directory,
             segment_readers,
@@ -196,6 +183,177 @@ impl StandardDirectoryReader {
             false,
             false,
         )?))
+    }
+
+    /// Builds one reader per segment, reusing an old reader wherever the
+    /// segment has not changed.
+    ///
+    /// Equivalent to `StandardDirectoryReader.createSegmentReaders(SegmentInfos, List, ExecutorService)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java opens the readers on an
+    /// `ExecutorService` when one is configured, newest segment first, and
+    /// falls back to the calling thread otherwise. This port always takes the
+    /// sequential path; the reuse decision, which is what makes a reopen cheap,
+    /// is identical either way.
+    fn create_segment_readers(
+        infos: &SegmentInfos,
+        old_readers: Option<&[Arc<SegmentReader>]>,
+    ) -> Result<Vec<Arc<SegmentReader>>> {
+        // The old readers go into a map so one can be looked up by segment name.
+        let previous_segment_readers = Self::map_previous_readers(old_readers);
+        let index_created_version = infos.index_created_version_major();
+        let mut readers = Vec::with_capacity(infos.size());
+        for i in 0..infos.size() {
+            let commit_info = infos.info(i);
+            let old_reader = Self::get_old_segment_reader(
+                old_readers,
+                previous_segment_readers
+                    .get(&commit_info.info.name)
+                    .copied(),
+                commit_info,
+            )?;
+            readers.push(Arc::new(Self::create_or_reuse_segment_reader(
+                commit_info,
+                old_reader,
+                index_created_version,
+            )?));
+        }
+        Ok(readers)
+    }
+
+    /// Indexes the old readers by segment name.
+    ///
+    /// Equivalent to `StandardDirectoryReader.mapPreviousReaders(List)`.
+    fn map_previous_readers(old_readers: Option<&[Arc<SegmentReader>]>) -> HashMap<String, usize> {
+        let Some(old_readers) = old_readers else {
+            return HashMap::new();
+        };
+        old_readers
+            .iter()
+            .enumerate()
+            .map(|(i, reader)| (reader.get_segment_name().to_string(), i))
+            .collect()
+    }
+
+    /// Returns the old reader for a segment, when there is one that can be
+    /// reopened.
+    ///
+    /// Equivalent to `StandardDirectoryReader.getOldSegmentReader(List, Integer, SegmentCommitInfo)`.
+    /// The identifier check is Lucene's best-effort detection of an index that
+    /// was deleted and rebuilt underneath an open reader.
+    fn get_old_segment_reader<'a>(
+        old_readers: Option<&'a [Arc<SegmentReader>]>,
+        old_reader_index: Option<usize>,
+        commit_info: &crate::index::segment_info::SegmentCommitInfo,
+    ) -> Result<Option<&'a Arc<SegmentReader>>> {
+        // No entry means this is a new segment, so no old reader can be reused.
+        let Some((old_readers, index)) = old_readers.zip(old_reader_index) else {
+            return Ok(None);
+        };
+        let old_reader = &old_readers[index];
+        if commit_info.info.id() != old_reader.get_segment_info().info.id() {
+            return Err(LuceneError::IllegalState(format!(
+                "same segment {} has invalid doc count change; likely you are re-opening a reader \
+                 after illegally removing index files yourself and building a new index in their \
+                 place.  Use IndexWriter.deleteAll or open a new IndexWriter using OpenMode.CREATE \
+                 instead",
+                commit_info.info.name
+            )));
+        }
+        Ok(Some(old_reader))
+    }
+
+    /// Reopens `old_reader` over `commit_info` when it can be reused, and opens
+    /// a fresh reader when it cannot.
+    ///
+    /// Equivalent to `StandardDirectoryReader.createOrReuseSegmentReader(SegmentCommitInfo, SegmentReader, int)`.
+    /// Reuse shares the segment's core readers — the postings, norms, points
+    /// and vectors, which have not changed — and reloads only the live docs and
+    /// the doc-values generations, which have.
+    fn create_or_reuse_segment_reader(
+        commit_info: &crate::index::segment_info::SegmentCommitInfo,
+        old_reader: Option<&Arc<SegmentReader>>,
+        index_created_version_major: i32,
+    ) -> Result<SegmentReader> {
+        let Some(old_reader) = old_reader else {
+            return SegmentReader::new(
+                commit_info.clone(),
+                index_created_version_major,
+                &*DEFAULT_IO_CONTEXT,
+            );
+        };
+        if commit_info.info.get_use_compound_file()
+            != old_reader.get_segment_info().info.get_use_compound_file()
+        {
+            // The segment was rewritten into (or out of) a compound file, so
+            // nothing of the old reader can be shared.
+            return SegmentReader::new(
+                commit_info.clone(),
+                index_created_version_major,
+                &*DEFAULT_IO_CONTEXT,
+            );
+        }
+
+        let del_gen_unchanged =
+            commit_info.get_del_gen() == old_reader.get_segment_info().get_del_gen();
+        let dv_gen_unchanged = commit_info.get_field_infos_gen()
+            == old_reader.get_segment_info().get_field_infos_gen()
+            && commit_info.get_doc_values_gen()
+                == old_reader.get_segment_info().get_doc_values_gen();
+
+        if del_gen_unchanged && dv_gen_unchanged && !old_reader.is_nrt() {
+            // Nothing changed: reuse the reader's live docs as they are.
+            return SegmentReader::new_shared(
+                commit_info.clone(),
+                old_reader,
+                old_reader.get_live_docs(),
+                old_reader.get_hard_live_docs(),
+                LeafReader::num_docs(old_reader.as_ref()),
+                false,
+            );
+        }
+
+        if del_gen_unchanged && !old_reader.is_nrt() {
+            // Only the doc values changed; the live docs carry over.
+            return SegmentReader::new_shared(
+                commit_info.clone(),
+                old_reader,
+                old_reader.get_live_docs(),
+                old_reader.get_hard_live_docs(),
+                LeafReader::num_docs(old_reader.as_ref()),
+                false,
+            );
+        }
+
+        // The live docs changed, or the old reader was an NRT one whose live
+        // docs live in memory: both must be read from disk.
+        let live_docs: Option<Box<dyn crate::util::Bits>> = if commit_info.has_deletions() {
+            let codec = commit_info.info.codec().ok_or_else(|| {
+                LuceneError::IllegalState(format!("segment {} has no codec", commit_info.info.name))
+            })?;
+            Some(codec.live_docs_format().read_live_docs(
+                commit_info.info.directory.as_ref(),
+                commit_info,
+                &*crate::store::READONCE_IO_CONTEXT,
+            )?)
+        } else {
+            None
+        };
+        let num_docs = commit_info.info.max_doc()? - commit_info.get_del_count();
+        // Java hands the same `liveDocs` object in as both the live and the
+        // hard live docs; the shared handle is how that sharing is expressed
+        // here, so the bits are read once and not copied.
+        let live_docs = live_docs.map(crate::index::segment_reader::SharedBits::new);
+        SegmentReader::new_shared(
+            commit_info.clone(),
+            old_reader,
+            live_docs
+                .clone()
+                .map(|bits| Box::new(bits) as Box<dyn crate::util::Bits>),
+            live_docs.map(|bits| Box::new(bits) as Box<dyn crate::util::Bits>),
+            num_docs,
+            false,
+        )
     }
 
     /// Returns the `SegmentInfos` for this reader.

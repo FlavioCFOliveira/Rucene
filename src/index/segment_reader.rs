@@ -1362,6 +1362,16 @@ impl SegmentReader {
     }
 
     /// Returns the live docs that are not hard-deleted, if any.
+    /// Returns whether this reader was opened over an in-memory segment that
+    /// the writer may still be changing.
+    ///
+    /// Equivalent to reading `SegmentReader.isNRT`, which
+    /// `StandardDirectoryReader.createOrReuseSegmentReader` consults to decide
+    /// whether the live docs must be re-read from disk.
+    pub fn is_nrt(&self) -> bool {
+        self.is_nrt
+    }
+
     pub fn get_hard_live_docs(&self) -> Option<Box<dyn Bits>> {
         self.hard_live_docs
             .as_ref()
@@ -1858,10 +1868,16 @@ impl TermVectors for TermVectorsReaderWrapper {
 
 /// `Bits` implementation that shares an underlying `Arc<dyn Bits>`.
 #[derive(Clone)]
-struct SharedBits(Arc<dyn Bits>);
+/// A [`Bits`] one reader can hand to several owners.
+///
+/// Java shares the `liveDocs` object by reference — `SegmentReader`'s
+/// reopen constructor is given the same instance as both `liveDocs` and
+/// `hardLiveDocs`. Rust needs the sharing named, so the bits go behind an
+/// `Arc` and each owner takes a clone of the handle rather than of the data.
+pub(crate) struct SharedBits(Arc<dyn Bits>);
 
 impl SharedBits {
-    fn new(bits: Box<dyn Bits>) -> Self {
+    pub(crate) fn new(bits: Box<dyn Bits>) -> Self {
         Self(Arc::from(bits))
     }
 }
