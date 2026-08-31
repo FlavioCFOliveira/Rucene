@@ -335,6 +335,63 @@ impl SegmentInfos {
         Ok(())
     }
 
+    /// Replaces the segments a merge consumed with the merged one, in place.
+    ///
+    /// Equivalent to `SegmentInfos.applyMergeChanges(OneMerge, boolean)`. The
+    /// merged segment takes the position of the first segment it replaced, so
+    /// the segment order — which an index sort relies on — is preserved. When
+    /// `drop_segment` is set the merged segment is not inserted at all, which
+    /// is what happens when every document it would hold has been deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the merged segment records
+    /// no minimum version and the index was created by Lucene 7 or later, which
+    /// requires one.
+    pub fn apply_merge_changes(
+        &mut self,
+        merged: &SegmentCommitInfo,
+        merged_away: &[SegmentCommitInfo],
+        drop_segment: bool,
+    ) -> Result<()> {
+        if self.index_created_version_major >= 7 && merged.info.min_version().is_none() {
+            return Err(LuceneError::IllegalArgument(
+                "All segments must record the minVersion for indices created on or after Lucene 7"
+                    .to_string(),
+            ));
+        }
+        let merged_away: HashSet<&str> = merged_away
+            .iter()
+            .map(|info| info.info.name.as_str())
+            .collect();
+
+        let mut inserted = false;
+        let mut new_seg_idx = 0usize;
+        for seg_idx in 0..self.segments.len() {
+            if merged_away.contains(self.segments[seg_idx].info.name.as_str()) {
+                if !inserted && !drop_segment {
+                    self.segments[seg_idx] = merged.clone();
+                    inserted = true;
+                    new_seg_idx += 1;
+                }
+            } else {
+                self.segments.swap(new_seg_idx, seg_idx);
+                new_seg_idx += 1;
+            }
+        }
+        // Whatever is left past `new_seg_idx` duplicates something already kept.
+        self.segments.truncate(new_seg_idx);
+
+        // Either a place was found for the merged segment, or every segment it
+        // replaced was deleted while the merge ran — in which case the merged
+        // segment is itself fully deleted, and is inserted at the front only if
+        // it is not being dropped.
+        if !inserted && !drop_segment {
+            self.segments.insert(0, merged.clone());
+        }
+        Ok(())
+    }
+
     /// Returns the sum of all segment `max_doc` values.
     ///
     /// Deletions are not included.
