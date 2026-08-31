@@ -2392,6 +2392,40 @@ impl DocumentsWriterPerThread {
         }
     }
 
+    /// Reserves `n` document ids atomically, rolling back fully on failure.
+    ///
+    /// Equivalent to the private `DocumentsWriterPerThread.reserveDocs(int)`,
+    /// which the column-batch path uses to take every id of the batch up front,
+    /// so that a failure never leaves an orphaned reservation behind.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the reservation would take
+    /// the index past its document limit.
+    fn reserve_docs(&self, n: i32) -> Result<()> {
+        debug_assert!(n >= 0);
+        if n == 0 {
+            return Ok(());
+        }
+        let max_docs = i64::from(self.max_docs.load(Ordering::Acquire));
+        loop {
+            let current = self.pending_num_docs.load(Ordering::Acquire);
+            let next = current + i64::from(n);
+            if next > max_docs {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "number of documents in the index cannot exceed {max_docs}"
+                )));
+            }
+            if self
+                .pending_num_docs
+                .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+    }
+
     fn reserve_one_doc(&self) -> Result<()> {
         let max_docs = i64::from(self.max_docs.load(Ordering::Acquire));
         if self.pending_num_docs.fetch_add(1, Ordering::AcqRel) + 1 > max_docs {
@@ -2547,6 +2581,85 @@ impl DwptGuard {
         let outcome = self.update_documents_inner(docs, del_node, on_new_doc_on_ram);
         self.maybe_abort("updateDocuments", notifications);
         outcome
+    }
+
+    /// Indexes a column-oriented batch of documents, optionally deleting first.
+    ///
+    /// Equivalent to `DocumentsWriterPerThread.updateBatch(ColumnBatch,
+    /// DocumentsWriterDeleteQueue.Node, FlushNotifications, IntConsumer)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the document limit would
+    /// be exceeded, and propagates any error raised by the indexing chain.
+    pub fn update_batch<F>(
+        &mut self,
+        column_batch: &dyn crate::document::column::ColumnBatch,
+        del_node: Option<Arc<DeleteNode>>,
+        notifications: &dyn FlushNotifications,
+        on_new_docs_on_ram: F,
+    ) -> Result<i64>
+    where
+        F: Fn(i32),
+    {
+        let outcome = self.update_batch_inner(column_batch, del_node, on_new_docs_on_ram);
+        self.maybe_abort("updateBatch", notifications);
+        outcome
+    }
+
+    fn update_batch_inner<F>(
+        &mut self,
+        column_batch: &dyn crate::document::column::ColumnBatch,
+        del_node: Option<Arc<DeleteNode>>,
+        on_new_docs_on_ram: F,
+    ) -> Result<i64>
+    where
+        F: Fn(i32),
+    {
+        self.dwpt
+            .test_point("DocumentsWriterPerThread addBatch start");
+        debug_assert!(
+            !self.dwpt.is_aborted(),
+            "DWPT has hit aborting exception but is still indexing"
+        );
+
+        let docs_in_ram_before = self.dwpt.num_docs_in_ram();
+        let num_docs = column_batch.num_docs();
+        // Reserve every document id up front, atomically: `reserve_docs` rolls
+        // back fully on failure, so the pending count is never left holding an
+        // orphaned reservation. This runs before the recovery path below,
+        // because nothing has been accounted for yet.
+        self.dwpt.reserve_docs(num_docs)?;
+        self.dwpt
+            .num_docs_in_ram
+            .fetch_add(num_docs, Ordering::AcqRel);
+        on_new_docs_on_ram(num_docs);
+
+        let result = {
+            let state = self
+                .state
+                .as_mut()
+                .expect("INVARIANT: state is only taken in Drop");
+            state.indexing_chain.process_batch(
+                docs_in_ram_before,
+                column_batch,
+                &mut state.field_infos,
+            )
+        };
+
+        match result {
+            // A batch is N independent documents, not a parent-child block, so
+            // `setHasBlocks` is deliberately not called here.
+            Ok(()) => self.finish_documents(del_node, docs_in_ram_before),
+            Err(error) => {
+                if !self.dwpt.is_aborted() {
+                    // The batch threw an error that is not aborting: mark every
+                    // document of it deleted.
+                    self.delete_last_docs(self.dwpt.num_docs_in_ram() - docs_in_ram_before);
+                }
+                Err(error)
+            }
+        }
     }
 
     fn update_documents_inner<F>(
@@ -4167,6 +4280,54 @@ impl DocumentsWriter {
                 del_node,
                 self.flush_notifications.as_ref(),
                 move || shared.increment_num_docs(),
+            );
+            if guard.is_aborted() {
+                self.flush_control.do_on_abort(&guard);
+            }
+            let seq_no = indexed?;
+            Ok((seq_no, self.flush_control.do_after_document(&mut guard)))
+        })();
+
+        self.flush_control.release_dwpt(guard);
+
+        let (mut seq_no, flushing_dwpt) = outcome?;
+        if self.post_update(flushing_dwpt, has_events)? {
+            seq_no = -seq_no;
+        }
+        Ok(seq_no)
+    }
+
+    /// Indexes a column-oriented batch of documents, optionally replacing the
+    /// documents matched by `del_node`.
+    ///
+    /// Equivalent to `DocumentsWriter.updateBatch(ColumnBatch,
+    /// DocumentsWriterDeleteQueue.Node)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates indexing, delete-queue and flush errors.
+    pub fn update_batch(
+        &self,
+        column_batch: &dyn crate::document::column::ColumnBatch,
+        del_node: Option<Arc<DeleteNode>>,
+    ) -> Result<i64> {
+        let has_events = self.pre_update()?;
+        let mut guard = self.flush_control.obtain_and_lock()?;
+
+        let outcome: Result<(i64, Option<Arc<DocumentsWriterPerThread>>)> = (|| {
+            // This must happen after the DWPT has been taken, because closing
+            // the writer waits for every DWPT to be released.
+            self.ensure_open()?;
+            let shared = Arc::clone(&self.shared);
+            let indexed = guard.update_batch(
+                column_batch,
+                del_node,
+                self.flush_notifications.as_ref(),
+                move |n| {
+                    for _ in 0..n {
+                        shared.increment_num_docs();
+                    }
+                },
             );
             if guard.is_aborted() {
                 self.flush_control.do_on_abort(&guard);

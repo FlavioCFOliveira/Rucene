@@ -671,6 +671,47 @@ impl IndexWriter {
         self.documents_writer.update_documents(docs, None)
     }
 
+    /// Adds a batch of documents presented column by column.
+    ///
+    /// Equivalent to `IndexWriter.addBatch(ColumnBatch)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates indexing, delete-queue and flush errors.
+    pub fn add_batch(
+        &self,
+        column_batch: &dyn crate::document::column::ColumnBatch,
+    ) -> Result<i64> {
+        self.update_batch(None, column_batch)
+    }
+
+    /// Atomically deletes the documents matching `term` and adds a batch of
+    /// documents presented column by column.
+    ///
+    /// Equivalent to `IndexWriter.updateDocuments(Term, ColumnBatch)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates indexing, delete-queue and flush errors.
+    pub fn update_documents_batch(
+        &self,
+        term: Option<Term>,
+        column_batch: &dyn crate::document::column::ColumnBatch,
+    ) -> Result<i64> {
+        self.update_batch(term.map(DeleteNode::new_term), column_batch)
+    }
+
+    /// Equivalent to the private `IndexWriter.updateBatch(
+    /// DocumentsWriterDeleteQueue.Node, ColumnBatch)`.
+    fn update_batch(
+        &self,
+        del_node: Option<Arc<DeleteNode>>,
+        column_batch: &dyn crate::document::column::ColumnBatch,
+    ) -> Result<i64> {
+        self.ensure_open()?;
+        self.documents_writer.update_batch(column_batch, del_node)
+    }
+
     /// Replaces every document matching `term` with `doc`.
     ///
     /// Equivalent to `IndexWriter.updateDocument(Term, Iterable)`.
