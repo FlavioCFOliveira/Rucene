@@ -260,6 +260,98 @@ impl ByteBlockPool {
         Ok(text_start)
     }
 
+    /// Appends `bytes` at the current position.
+    ///
+    /// Equivalent to `ByteBlockPool.append(byte[], int, int)`, which fills the
+    /// head block, moves to the next one, and repeats until nothing is left.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`next_buffer`](Self::next_buffer) raises.
+    pub fn append(&mut self, bytes: &[u8]) -> Result<()> {
+        let mut bytes_left = bytes.len();
+        let mut offset = 0usize;
+        while bytes_left > 0 {
+            let buffer_left = BYTE_BLOCK_SIZE - self.byte_upto;
+            if bytes_left < buffer_left {
+                // Fits within the current buffer.
+                let buffer = &mut self.buffers[self.buffer_upto as usize];
+                buffer[self.byte_upto..self.byte_upto + bytes_left]
+                    .copy_from_slice(&bytes[offset..offset + bytes_left]);
+                self.byte_upto += bytes_left;
+                break;
+            }
+            // Fill up this buffer and move to the next one.
+            if buffer_left > 0 {
+                let buffer = &mut self.buffers[self.buffer_upto as usize];
+                buffer[self.byte_upto..self.byte_upto + buffer_left]
+                    .copy_from_slice(&bytes[offset..offset + buffer_left]);
+                bytes_left -= buffer_left;
+                offset += buffer_left;
+            }
+            self.next_buffer()?;
+        }
+        Ok(())
+    }
+
+    /// Appends `length` bytes taken from `src_pool` at `src_offset`.
+    ///
+    /// Equivalent to `ByteBlockPool.append(ByteBlockPool, long, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`next_buffer`](Self::next_buffer) raises.
+    pub fn append_pool(
+        &mut self,
+        src_pool: &ByteBlockPool,
+        mut src_offset: i64,
+        length: usize,
+    ) -> Result<()> {
+        let mut bytes_left = length;
+        while bytes_left > 0 {
+            let buffer_left = BYTE_BLOCK_SIZE - self.byte_upto;
+            if bytes_left < buffer_left {
+                // Fits within the current buffer.
+                self.append_bytes_single_buffer(src_pool, src_offset, bytes_left);
+                break;
+            }
+            // Fill up this buffer and move to the next one.
+            if buffer_left > 0 {
+                self.append_bytes_single_buffer(src_pool, src_offset, buffer_left);
+                bytes_left -= buffer_left;
+                src_offset += buffer_left as i64;
+            }
+            self.next_buffer()?;
+        }
+        Ok(())
+    }
+
+    /// Copies `length` bytes from `src_pool` into the head block.
+    ///
+    /// Equivalent to the private
+    /// `ByteBlockPool.appendBytesSingleBuffer(ByteBlockPool, long, int)`. The
+    /// bytes copied must fit in what is left of the head block, but they may
+    /// span several blocks of the source, which is why this loops.
+    fn append_bytes_single_buffer(
+        &mut self,
+        src_pool: &ByteBlockPool,
+        mut src_offset: i64,
+        mut length: usize,
+    ) {
+        debug_assert!(length <= BYTE_BLOCK_SIZE - self.byte_upto);
+        while length > 0 {
+            let src_block = (src_offset >> BYTE_BLOCK_SHIFT) as usize;
+            let src_pos = (src_offset as usize) & BYTE_BLOCK_MASK;
+            let bytes_to_copy = length.min(BYTE_BLOCK_SIZE - src_pos);
+            let buffer = &mut self.buffers[self.buffer_upto as usize];
+            buffer[self.byte_upto..self.byte_upto + bytes_to_copy]
+                .copy_from_slice(&src_pool.buffers[src_block][src_pos..src_pos + bytes_to_copy]);
+            length -= bytes_to_copy;
+            src_offset += bytes_to_copy as i64;
+            self.byte_upto += bytes_to_copy;
+        }
+    }
+
     /// Returns the bytes previously stored at `start` by [`Self::add_bytes_ref`].
     ///
     /// Equivalent to `BytesRefBlockPool.fillBytesRef(BytesRef, int)`.

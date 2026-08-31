@@ -63,6 +63,31 @@ impl<O1: Outputs, O2: Outputs> PairOutputs<O1, O2> {
     }
 
     /// Returns the outputs of the first half of every pair.
+    /// Returns whether `pair` is a well-formed output of this pair.
+    ///
+    /// Equivalent to the private `PairOutputs.valid(Pair)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Two of Java's three checks compare
+    /// object identity — that a half equal to its no-output value *is* that
+    /// singleton, and that a pair of two no-outputs *is* `NO_OUTPUT`. Rust has
+    /// no such interning: a value equal to the no-output value is the no-output
+    /// value as far as anything can observe, so those checks are vacuously
+    /// satisfied and only the structural invariant remains.
+    pub fn valid(&self, pair: &Pair<O1::Output, O2::Output>) -> bool {
+        let no_output1 = self
+            .outputs1
+            .equals(&pair.output1, &self.outputs1.no_output());
+        let no_output2 = self
+            .outputs2
+            .equals(&pair.output2, &self.outputs2.no_output());
+        if no_output1 && no_output2 {
+            let no_output = self.no_output();
+            return self.outputs1.equals(&pair.output1, &no_output.output1)
+                && self.outputs2.equals(&pair.output2, &no_output.output2);
+        }
+        true
+    }
+
     pub fn outputs1(&self) -> &O1 {
         &self.outputs1
     }
@@ -83,6 +108,8 @@ impl<O1: Outputs, O2: Outputs> Outputs for PairOutputs<O1, O2> {
     type Output = Pair<O1::Output, O2::Output>;
 
     fn common(&self, pair1: &Self::Output, pair2: &Self::Output) -> Self::Output {
+        debug_assert!(self.valid(pair1));
+        debug_assert!(self.valid(pair2));
         self.new_pair(
             self.outputs1.common(&pair1.output1, &pair2.output1),
             self.outputs2.common(&pair1.output2, &pair2.output2),
@@ -90,6 +117,8 @@ impl<O1: Outputs, O2: Outputs> Outputs for PairOutputs<O1, O2> {
     }
 
     fn subtract(&self, output: &Self::Output, inc: &Self::Output) -> Self::Output {
+        debug_assert!(self.valid(output));
+        debug_assert!(self.valid(inc));
         self.new_pair(
             self.outputs1.subtract(&output.output1, &inc.output1),
             self.outputs2.subtract(&output.output2, &inc.output2),
@@ -97,6 +126,8 @@ impl<O1: Outputs, O2: Outputs> Outputs for PairOutputs<O1, O2> {
     }
 
     fn add(&self, prefix: &Self::Output, output: &Self::Output) -> Self::Output {
+        debug_assert!(self.valid(prefix));
+        debug_assert!(self.valid(output));
         self.new_pair(
             self.outputs1.add(&prefix.output1, &output.output1),
             self.outputs2.add(&prefix.output2, &output.output2),
@@ -104,6 +135,7 @@ impl<O1: Outputs, O2: Outputs> Outputs for PairOutputs<O1, O2> {
     }
 
     fn write(&self, output: &Self::Output, writer: &mut dyn DataOutput) -> Result<()> {
+        debug_assert!(self.valid(output));
         self.outputs1.write(&output.output1, writer)?;
         self.outputs2.write(&output.output2, writer)
     }

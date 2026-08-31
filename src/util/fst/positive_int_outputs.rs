@@ -39,6 +39,8 @@ impl Outputs for PositiveIntOutputs {
     type Output = i64;
 
     fn common(&self, output1: &i64, output2: &i64) -> i64 {
+        debug_assert!(valid(output1));
+        debug_assert!(valid(output2));
         if *output1 == NO_OUTPUT || *output2 == NO_OUTPUT {
             NO_OUTPUT
         } else {
@@ -48,6 +50,8 @@ impl Outputs for PositiveIntOutputs {
     }
 
     fn subtract(&self, output: &i64, inc: &i64) -> i64 {
+        debug_assert!(valid(output));
+        debug_assert!(valid(inc));
         debug_assert!(*output >= *inc);
         if *inc == NO_OUTPUT {
             *output
@@ -61,6 +65,8 @@ impl Outputs for PositiveIntOutputs {
     }
 
     fn add(&self, prefix: &i64, output: &i64) -> i64 {
+        debug_assert!(valid(prefix));
+        debug_assert!(valid(output));
         if *prefix == NO_OUTPUT {
             *output
         } else if *output == NO_OUTPUT {
@@ -72,6 +78,7 @@ impl Outputs for PositiveIntOutputs {
     }
 
     fn write(&self, output: &i64, out: &mut dyn DataOutput) -> Result<()> {
+        debug_assert!(valid(output));
         out.write_v_long(*output)
     }
 
@@ -101,4 +108,14 @@ impl Outputs for PositiveIntOutputs {
         // Mirrors `Long.hashCode()`.
         i64::from((*output ^ ((*output as u64) >> 32) as i64) as i32)
     }
+}
+
+/// Returns whether `o` is a valid output: either the no-output sentinel or a
+/// positive value.
+///
+/// Equivalent to the private `PositiveIntOutputs.valid(Long)`, which Java only
+/// evaluates inside an `assert` at the head of each operation.
+fn valid(o: &i64) -> bool {
+    debug_assert!(*o == NO_OUTPUT || *o > 0, "o={o}");
+    true
 }

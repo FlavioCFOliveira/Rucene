@@ -1012,11 +1012,21 @@ impl DirectMonotonicMeta {
         let mut offsets = Vec::new();
         let mut bpvs = Vec::new();
 
+        let mut all_values_zero = true;
         for _ in 0..num_blocks {
-            mins.push(input.read_long()?);
-            avgs.push(f32::from_bits(input.read_int()? as u32));
+            let min = input.read_long()?;
+            mins.push(min);
+            let avg_int = input.read_int()?;
+            avgs.push(f32::from_bits(avg_int as u32));
             offsets.push(input.read_long()?);
-            bpvs.push(input.read_byte()? as i8);
+            let bpv = input.read_byte()? as i8;
+            bpvs.push(bpv);
+            all_values_zero = all_values_zero && min == 0 && avg_int == 0 && bpv == 0;
+        }
+
+        // Save heap in case all values are zero.
+        if all_values_zero {
+            return Ok(Self::single_zero_block());
         }
 
         Ok(Self {
@@ -1027,6 +1037,23 @@ impl DirectMonotonicMeta {
             offsets,
             bpvs,
         })
+    }
+
+    /// The metadata of a field whose every value is zero.
+    ///
+    /// Equivalent to the private `DirectMonotonicReader.Meta.SINGLE_ZERO_BLOCK`,
+    /// which uses a shift of 63 so that there is one block whatever the number
+    /// of values, and which `loadMeta` returns in place of a metadata block per
+    /// value's worth of zeroes.
+    pub fn single_zero_block() -> Self {
+        Self {
+            block_shift: 63,
+            num_blocks: 1,
+            mins: vec![0],
+            avgs: vec![0.0],
+            offsets: vec![0],
+            bpvs: vec![0],
+        }
     }
 }
 
