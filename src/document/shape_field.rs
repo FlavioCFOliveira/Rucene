@@ -5,8 +5,14 @@
 //! point whose first four dimensions are its bounding box — which is what lets
 //! a BKD tree prune whole subtrees of a polygon.
 
-use crate::document::{FieldData, FieldType};
+use std::io::Read;
+
+use crate::analysis::{Analyzer, TokenStream};
+use crate::document::{
+    binary_doc_values_field_type, FieldData, FieldType, InvertableType, NumericValue, StoredValue,
+};
 use crate::error::{LuceneError, Result};
+use crate::index::{IndexableField, IndexableFieldType};
 use crate::util::{BytesRef, NumericUtils};
 
 /// How many bytes one encoded coordinate occupies.
@@ -550,6 +556,52 @@ impl Triangle {
     }
 }
 
+impl IndexableField for Triangle {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        let value = self
+            .packed_value()
+            .map(|bytes| BytesRef::new(bytes.to_vec()))
+            .unwrap_or_else(|| BytesRef::new(Vec::new()));
+        Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        Triangle::binary_value(self).cloned()
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
+    }
+}
+
 /// A multi-vector value, stored as binary doc values.
 ///
 /// Equivalent to `org.apache.lucene.document.LateInteractionField`, which holds
@@ -666,5 +718,47 @@ impl LateInteractionField {
             value.push(vector);
         }
         Ok(value)
+    }
+}
+
+impl IndexableField for LateInteractionField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        binary_doc_values_field_type()
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        Box::new(crate::analysis::BinaryTokenStream::new(self.value.clone()).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        Some(self.value.clone())
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
     }
 }

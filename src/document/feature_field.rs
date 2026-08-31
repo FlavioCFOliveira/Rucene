@@ -4,9 +4,16 @@
 //! boost, a popularity score — inside the term frequency, so a query can
 //! combine it into the score without a doc-values lookup.
 
-use crate::document::{FieldType, StoredValue};
+use std::io::Read;
+
+use crate::analysis::tokenattributes::{
+    CharTermAttribute, CharTermAttributeImpl, TermFrequencyAttribute, TermFrequencyAttributeImpl,
+};
+use crate::analysis::{Analyzer, TokenStream};
+use crate::document::{FieldType, InvertableType, NumericValue, StoredValue};
 use crate::error::{LuceneError, Result};
-use crate::index::IndexOptions;
+use crate::index::{IndexOptions, IndexableField, IndexableFieldType};
+use crate::util::AttributeSource;
 
 /// Largest frequency the encoding can carry.
 ///
@@ -206,6 +213,120 @@ impl FeatureField {
     /// Returns the stored form of the feature name.
     pub fn stored_value(&self) -> StoredValue {
         StoredValue::String(self.feature_name.clone())
+    }
+}
+
+impl IndexableField for FeatureField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        Box::new(FeatureTokenStream::new(
+            self.feature_name.clone(),
+            encode_feature_value(self.feature_value),
+        ))
+    }
+
+    fn binary_value(&self) -> Option<crate::util::BytesRef> {
+        None
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::TOKEN_STREAM)
+    }
+}
+
+/// The single-token stream `FeatureField` indexes: its term is the feature
+/// name, and its frequency carries the encoded feature value.
+///
+/// Equivalent to the private `FeatureField.FeatureTokenStream`.
+#[derive(Debug)]
+struct FeatureTokenStream {
+    source: AttributeSource,
+    feature_name: String,
+    freq: i32,
+    used: bool,
+}
+
+impl FeatureTokenStream {
+    fn new(feature_name: String, freq: i32) -> Self {
+        let mut source = AttributeSource::default();
+        source
+            .add_attribute::<CharTermAttributeImpl>()
+            .expect("CharTermAttributeImpl always registers");
+        source
+            .add_attribute::<TermFrequencyAttributeImpl>()
+            .expect("TermFrequencyAttributeImpl always registers");
+        Self {
+            source,
+            feature_name,
+            freq,
+            used: true,
+        }
+    }
+}
+
+impl TokenStream for FeatureTokenStream {
+    fn increment_token(&mut self) -> Result<bool> {
+        if self.used {
+            return Ok(false);
+        }
+        self.source.clear_attributes();
+        let feature_name = self.feature_name.clone();
+        let freq = self.freq;
+        self.source
+            .get_attribute_mut::<CharTermAttributeImpl>()
+            .expect("registered in new")
+            .append_string(&feature_name);
+        self.source
+            .get_attribute_mut::<TermFrequencyAttributeImpl>()
+            .expect("registered in new")
+            .set_term_frequency(freq);
+        self.used = true;
+        Ok(true)
+    }
+
+    fn reset(&mut self) -> Result<()> {
+        self.used = false;
+        Ok(())
+    }
+
+    fn end(&mut self) -> Result<()> {
+        self.source.end_attributes();
+        Ok(())
+    }
+
+    fn attribute_source(&self) -> &AttributeSource {
+        &self.source
+    }
+
+    fn attribute_source_mut(&mut self) -> &mut AttributeSource {
+        &mut self.source
     }
 }
 

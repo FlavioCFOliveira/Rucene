@@ -3,12 +3,23 @@
 //! The fields that index a location, in both the geographic and the cartesian
 //! coordinate systems, as points for a BKD lookup or as doc values for a scan.
 
-use crate::document::{FieldData, FieldType};
+use std::io::Read;
+
+use crate::analysis::{Analyzer, TokenStream};
+use crate::document::{FieldData, FieldType, InvertableType, NumericValue, StoredValue};
 use crate::error::{LuceneError, Result};
 use crate::geo::encoding::{GeoEncodingUtils, XYEncodingUtils};
 use crate::geo::geometry::{Rectangle, XYRectangle};
-use crate::index::DocValuesType;
+use crate::index::{DocValuesType, IndexableField, IndexableFieldType};
 use crate::util::{BytesRef, NumericUtils};
+
+/// Body shared by every packed-point field's `IndexableField::token_stream`.
+fn point_token_stream(packed_value: Option<&[u8]>) -> Box<dyn TokenStream> {
+    let value = packed_value
+        .map(|bytes| BytesRef::new(bytes.to_vec()))
+        .unwrap_or_else(|| BytesRef::new(Vec::new()));
+    Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+}
 
 /// How many bytes one encoded coordinate occupies.
 pub const COORDINATE_BYTES: usize = 4;
@@ -139,6 +150,51 @@ impl LatLonPoint {
     }
 }
 
+impl IndexableField for LatLonPoint {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        point_token_stream(self.packed_value())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        match &self.fields_data {
+            FieldData::Bytes(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
+    }
+}
+
 /// A latitude/longitude pair stored as doc values.
 ///
 /// Equivalent to `org.apache.lucene.document.LatLonDocValuesField`.
@@ -211,6 +267,48 @@ impl LatLonDocValuesField {
     /// Returns the longitude a packed value encodes.
     pub fn decode_longitude(value: i64) -> f64 {
         GeoEncodingUtils::decode_longitude((value & 0xFFFF_FFFF) as i32)
+    }
+}
+
+impl IndexableField for LatLonDocValuesField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        Box::new(crate::analysis::BinaryTokenStream::new(BytesRef::new(Vec::new())).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        None
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        Some(NumericValue::Long(self.value))
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
     }
 }
 
@@ -312,6 +410,51 @@ impl XYPointField {
     }
 }
 
+impl IndexableField for XYPointField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        point_token_stream(self.packed_value())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        match &self.fields_data {
+            FieldData::Bytes(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
+    }
+}
+
 /// An x/y pair stored as doc values.
 ///
 /// Equivalent to `org.apache.lucene.document.XYDocValuesField`.
@@ -379,6 +522,48 @@ impl XYDocValuesField {
     /// Returns the y coordinate a packed value encodes.
     pub fn decode_y(value: i64) -> f32 {
         XYEncodingUtils::decode((value & 0xFFFF_FFFF) as i32)
+    }
+}
+
+impl IndexableField for XYDocValuesField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        Box::new(crate::analysis::BinaryTokenStream::new(BytesRef::new(Vec::new())).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        None
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        Some(NumericValue::Long(self.value))
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
     }
 }
 
@@ -489,6 +674,51 @@ impl InetAddressPoint {
     }
 }
 
+impl IndexableField for InetAddressPoint {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        point_token_stream(self.packed_value())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        match &self.fields_data {
+            FieldData::Bytes(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
+    }
+}
+
 /// A range of IP addresses indexed as a two-dimensional range.
 ///
 /// Equivalent to `org.apache.lucene.document.InetAddressRange`.
@@ -551,6 +781,51 @@ impl InetAddressRange {
             FieldData::Bytes(bytes) => Some(bytes.slice()),
             _ => None,
         }
+    }
+}
+
+impl IndexableField for InetAddressRange {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        point_token_stream(self.packed_value())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        match &self.fields_data {
+            FieldData::Bytes(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
     }
 }
 

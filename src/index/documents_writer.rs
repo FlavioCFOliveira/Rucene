@@ -4837,7 +4837,7 @@ mod tests {
         queue.add_delete_terms(vec![term("id", "b")]).unwrap();
         // The slice has not been advanced yet, so it still sees nothing.
         let mut updates = BufferedUpdates::new("_0");
-        slice.apply(&mut updates, 7);
+        slice.apply(&mut updates, 7).unwrap();
         assert_eq!(updates.terms_size(), 0);
 
         let seq_no = queue.update_slice(&mut slice).unwrap();
@@ -4845,7 +4845,7 @@ mod tests {
             seq_no < 0,
             "a moved slice is reported with a negative seqNo"
         );
-        slice.apply(&mut updates, 7);
+        slice.apply(&mut updates, 7).unwrap();
         assert_eq!(updates.terms_size(), 2);
         assert_eq!(updates.delete_term_doc_id_upto(&term("id", "a")), Some(7));
         assert!(slice.is_empty(), "apply resets the slice");
@@ -4863,7 +4863,7 @@ mod tests {
         assert!(slice.is_tail(&node));
 
         let mut updates = BufferedUpdates::new("_0");
-        slice.apply(&mut updates, 3);
+        slice.apply(&mut updates, 3).unwrap();
         assert_eq!(updates.delete_term_doc_id_upto(&term("id", "a")), Some(3));
     }
 

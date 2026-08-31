@@ -4,9 +4,14 @@
 //! document can answer "does my interval intersect, contain, or fall within
 //! yours" — which a point field cannot express.
 
-use crate::document::{FieldData, FieldType};
+use std::io::Read;
+
+use crate::analysis::{Analyzer, TokenStream};
+use crate::document::{
+    binary_doc_values_field_type, FieldData, FieldType, InvertableType, NumericValue, StoredValue,
+};
 use crate::error::{LuceneError, Result};
-use crate::index::IndexableFieldType;
+use crate::index::{IndexableField, IndexableFieldType};
 use crate::util::{BytesRef, NumericUtils};
 
 /// Largest number of dimensions a range field may have.
@@ -237,6 +242,54 @@ macro_rules! range_field {
                 }
             }
         }
+
+        impl IndexableField for $name {
+            fn name(&self) -> &str {
+                &self.name
+            }
+
+            fn field_type(&self) -> &dyn IndexableFieldType {
+                &self.field_type
+            }
+
+            fn token_stream(
+                &self,
+                _analyzer: &dyn Analyzer,
+                _reuse: Option<&mut dyn TokenStream>,
+            ) -> Box<dyn TokenStream> {
+                let value = self
+                    .binary_value()
+                    .unwrap_or_else(|| BytesRef::new(Vec::new()));
+                Box::new(crate::analysis::BinaryTokenStream::new(value).unwrap())
+            }
+
+            fn binary_value(&self) -> Option<BytesRef> {
+                match &self.fields_data {
+                    FieldData::Bytes(v) => Some(v.clone()),
+                    _ => None,
+                }
+            }
+
+            fn string_value(&self) -> Option<String> {
+                None
+            }
+
+            fn reader_value(&mut self) -> Option<&mut dyn Read> {
+                None
+            }
+
+            fn numeric_value(&self) -> Option<NumericValue> {
+                None
+            }
+
+            fn stored_value(&self) -> Result<Option<StoredValue>> {
+                Ok(None)
+            }
+
+            fn invertable_type(&self) -> Option<InvertableType> {
+                Some(InvertableType::BINARY)
+            }
+        }
     };
 }
 
@@ -368,6 +421,48 @@ impl BinaryRangeDocValuesField {
     /// Returns this field as a `BytesRef` doc value.
     pub fn binary_value(&self) -> BytesRef {
         BytesRef::new(self.packed_value.clone())
+    }
+}
+
+impl IndexableField for BinaryRangeDocValuesField {
+    fn name(&self) -> &str {
+        &self.field
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        binary_doc_values_field_type()
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        Box::new(crate::analysis::BinaryTokenStream::new(self.binary_value()).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        Some(BinaryRangeDocValuesField::binary_value(self))
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
     }
 }
 
