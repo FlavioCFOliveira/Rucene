@@ -341,7 +341,10 @@ impl Lucene99HnswVectorsWriter {
         result
     }
 
-    fn write_field(
+    /// Writes one field's metadata entry.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsWriter.writeMeta(FieldInfo, long, long, int, HnswGraph, int[][])`.
+    fn write_meta(
         &mut self,
         field_info: &FieldInfo,
         vector_index_offset: i64,
@@ -350,37 +353,84 @@ impl Lucene99HnswVectorsWriter {
         graph: Option<&OnHeapHnswGraph>,
         graph_level_node_offsets: &[Vec<i32>],
     ) -> Result<()> {
+        // The metadata only needs the nodes of each level, which is all Java's
+        // "mock graph" answers with; collecting them here lets the sorted path
+        // reuse the same writer with the levels it rebuilt.
+        let levels = match graph {
+            None => Vec::new(),
+            Some(graph) => {
+                let mut levels = Vec::with_capacity(graph.num_levels()? as usize);
+                for level in 0..graph.num_levels()? {
+                    let mut nodes_on_level = graph.get_nodes_on_level(level)?;
+                    let mut nodes = Vec::with_capacity(nodes_on_level.size() as usize);
+                    while nodes_on_level.has_next() {
+                        nodes.push(nodes_on_level.next_int());
+                    }
+                    levels.push(nodes);
+                }
+                levels
+            }
+        };
+        self.write_meta_from_levels(
+            field_info,
+            vector_index_offset,
+            vector_index_length,
+            count,
+            &levels,
+            graph_level_node_offsets,
+        )
+    }
+
+    /// Writes one field's metadata entry from the nodes of each level.
+    ///
+    /// This is the body of `Lucene99HnswVectorsWriter.writeMeta`, taking the
+    /// level membership directly rather than through the graph, so that the
+    /// sorted path — which has rebuilt the levels under the new numbering — can
+    /// write the same metadata.
+    fn write_meta_from_levels(
+        &mut self,
+        field_info: &FieldInfo,
+        vector_index_offset: i64,
+        vector_index_length: i64,
+        count: i32,
+        levels: &[Vec<i32>],
+        graph_level_node_offsets: &[Vec<i32>],
+    ) -> Result<()> {
         let meta = self.meta.as_mut().ok_or_else(|| {
             LuceneError::IllegalState("Lucene99HnswVectorsWriter is already closed".to_string())
         })?;
         meta.write_int(field_info.number)?;
         meta.write_int(vector_encoding_ordinal(field_info.vector_encoding))?;
-        meta.write_int(vector_similarity_ordinal(
-            field_info.vector_similarity_function,
-        ))?;
+        meta.write_int(dist_func_to_ord(field_info.vector_similarity_function))?;
         meta.write_v_long(vector_index_offset)?;
         meta.write_v_long(vector_index_length)?;
         meta.write_v_int(field_info.vector_dimension)?;
         meta.write_int(count)?;
         meta.write_v_int(self.m)?;
-        if let Some(graph) = graph {
-            meta.write_v_int(graph.num_levels()?)?;
+        if !levels.is_empty() {
+            meta.write_v_int(levels.len() as i32)?;
             let mut value_count = 0i64;
-            for level in 0..graph.num_levels()? {
-                let mut nodes_on_level = graph.get_nodes_on_level(level)?;
-                value_count += nodes_on_level.size() as i64;
+            for (level, nodes) in levels.iter().enumerate() {
+                value_count += nodes.len() as i64;
                 if level > 0 {
-                    let mut nol = vec![0i32; nodes_on_level.size() as usize];
-                    let consumed = nodes_on_level.consume(&mut nol);
-                    debug_assert_eq!(consumed, nol.len());
+                    let mut nol = nodes.clone();
                     nol.sort_unstable();
                     meta.write_v_int(nol.len() as i32)?;
+                    // Delta-encode, from the top down so each entry still sees
+                    // its undeltaed predecessor.
                     for i in (1..nol.len()).rev() {
                         nol[i] -= nol[i - 1];
                     }
                     for n in nol {
+                        debug_assert!(n >= 0, "nodes must be sorted before delta encoding");
                         meta.write_v_int(n)?;
                     }
+                } else {
+                    debug_assert_eq!(
+                        nodes.len() as i32,
+                        count,
+                        "level 0 expects to have all nodes"
+                    );
                 }
             }
 
@@ -409,6 +459,167 @@ impl Lucene99HnswVectorsWriter {
             meta.write_v_int(0)?;
         }
         Ok(())
+    }
+
+    /// Writes a field of a sorted segment: the graph is rebuilt under the new
+    /// ordinal numbering before it is written.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsWriter.writeSortingField(FieldWriter, Sorter.DocMap)`.
+    /// Vector ordinals follow document order, so a sort renumbers them; the
+    /// graph's edges have to be renumbered with them or every neighbour list
+    /// would point at the wrong vector.
+    fn write_sorting_field(
+        &mut self,
+        field_info: &FieldInfo,
+        ord_to_doc: &[i32],
+        graph: Option<&OnHeapHnswGraph>,
+        sort_map: &crate::index::index_sorter::SorterDocMap,
+    ) -> Result<()> {
+        let (old_to_new_map, new_to_old_map) =
+            crate::codecs::knn_vectors::map_old_ord_to_new_ord(ord_to_doc, sort_map)?;
+
+        let vector_index_offset = {
+            let vector_index = self.vector_index.as_ref().ok_or_else(|| {
+                LuceneError::IllegalState("Lucene99HnswVectorsWriter is already closed".to_string())
+            })?;
+            vector_index.file_pointer()
+        };
+        let (levels, graph_level_node_offsets) =
+            self.reconstruct_and_write_graph(graph, &new_to_old_map, &old_to_new_map)?;
+        let vector_index_length = {
+            let vector_index = self.vector_index.as_ref().ok_or_else(|| {
+                LuceneError::IllegalState("Lucene99HnswVectorsWriter is already closed".to_string())
+            })?;
+            vector_index.file_pointer() - vector_index_offset
+        };
+
+        self.write_meta_from_levels(
+            field_info,
+            vector_index_offset,
+            vector_index_length,
+            ord_to_doc.len() as i32,
+            &levels,
+            &graph_level_node_offsets,
+        )
+    }
+
+    /// Writes every node's neighbours under the new ordinal numbering, and
+    /// returns the nodes of each level together with the byte length of each
+    /// node's entry.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsWriter.reconstructAndWriteGraph(OnHeapHnswGraph, int[], int[], int[][])`.
+    /// Java returns a "mock graph" that answers only what `writeMeta` asks of
+    /// it — the size, the level count, the max connections, and the nodes of
+    /// each level; this port returns those directly, because a graph that
+    /// raises from every other method is a shape Rust need not construct.
+    fn reconstruct_and_write_graph(
+        &mut self,
+        graph: Option<&OnHeapHnswGraph>,
+        new_to_old_map: &[i32],
+        old_to_new_map: &[i32],
+    ) -> Result<(Vec<Vec<i32>>, Vec<Vec<i32>>)> {
+        let Some(graph) = graph else {
+            return Ok((Vec::new(), Vec::new()));
+        };
+        let max_ord = graph.size();
+        let scratch_capacity = (graph.max_conn() * 2).max(4) as usize;
+        let num_levels = graph.num_levels()?;
+        let mut levels: Vec<Vec<i32>> = Vec::with_capacity(num_levels as usize);
+        let mut level_node_offsets: Vec<Vec<i32>> = Vec::with_capacity(num_levels as usize);
+
+        // Level 0 holds every node, already numbered 0..size in the new space.
+        let mut nodes_on_level0 = graph.get_nodes_on_level(0)?;
+        let mut level0_nodes = Vec::with_capacity(nodes_on_level0.size() as usize);
+        let mut level0_offsets = vec![0i32; nodes_on_level0.size() as usize];
+        while nodes_on_level0.has_next() {
+            let node = nodes_on_level0.next_int();
+            level0_nodes.push(node);
+            let neighbors = graph.get_neighbors(0, new_to_old_map[node as usize])?;
+            let written = self.reconstruct_and_write_neighbours(
+                neighbors,
+                old_to_new_map,
+                scratch_capacity,
+                max_ord,
+            )?;
+            level0_offsets[node as usize] = written;
+        }
+        levels.push(level0_nodes);
+        level_node_offsets.push(level0_offsets);
+
+        for level in 1..num_levels {
+            let mut nodes_on_level = graph.get_nodes_on_level(level)?;
+            let mut new_nodes = Vec::with_capacity(nodes_on_level.size() as usize);
+            while nodes_on_level.has_next() {
+                new_nodes.push(old_to_new_map[nodes_on_level.next_int() as usize]);
+            }
+            new_nodes.sort_unstable();
+            let mut offsets = Vec::with_capacity(new_nodes.len());
+            for &node in &new_nodes {
+                let neighbors = graph.get_neighbors(level, new_to_old_map[node as usize])?;
+                offsets.push(self.reconstruct_and_write_neighbours(
+                    neighbors,
+                    old_to_new_map,
+                    scratch_capacity,
+                    max_ord,
+                )?);
+            }
+            levels.push(new_nodes);
+            level_node_offsets.push(offsets);
+        }
+        Ok((levels, level_node_offsets))
+    }
+
+    /// Writes one node's neighbours under the new ordinal numbering, and
+    /// returns how many bytes that took.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsWriter.reconstructAndWriteNeighbours(NeighborArray, int[], int[], int)`:
+    /// the neighbours are remapped, sorted, de-duplicated and delta-encoded, in
+    /// that order, because the delta encoding is what keeps the entry small and
+    /// only a sorted list deltas usefully.
+    fn reconstruct_and_write_neighbours(
+        &mut self,
+        neighbors: &NeighborArray,
+        old_to_new_map: &[i32],
+        scratch_capacity: usize,
+        max_ord: i32,
+    ) -> Result<i32> {
+        let size = neighbors.size() as usize;
+        let mut nnodes: Vec<i32> = neighbors.nodes()[..size]
+            .iter()
+            .map(|&node| old_to_new_map[node as usize])
+            .collect();
+        nnodes.sort_unstable();
+
+        let mut scratch: Vec<i32> = Vec::with_capacity(scratch_capacity.max(size));
+        if size > 0 {
+            scratch.push(nnodes[0]);
+        }
+        for i in 1..size {
+            debug_assert!(
+                nnodes[i] < max_ord,
+                "node too large: {}>={max_ord}",
+                nnodes[i]
+            );
+            if nnodes[i - 1] == nnodes[i] {
+                continue;
+            }
+            scratch.push(nnodes[i] - nnodes[i - 1]);
+        }
+
+        let version = self.version;
+        let vector_index = self.vector_index.as_mut().ok_or_else(|| {
+            LuceneError::IllegalState("Lucene99HnswVectorsWriter is already closed".to_string())
+        })?;
+        let start = vector_index.file_pointer();
+        vector_index.write_v_int(scratch.len() as i32)?;
+        if version >= VERSION_GROUPVARINT {
+            write_group_v_ints(vector_index.as_mut(), &scratch)?;
+        } else {
+            for value in &scratch {
+                vector_index.write_v_int(*value)?;
+            }
+        }
+        Ok((vector_index.file_pointer() - start) as i32)
     }
 
     fn write_graph(&mut self, graph: &OnHeapHnswGraph) -> Result<Vec<Vec<i32>>> {
@@ -502,21 +713,34 @@ impl KnnVectorsWriter for Lucene99HnswVectorsWriter {
                             )
                         })?
                         .file_pointer();
-                    let graph_level_offsets = if let Some(ref g) = graph {
-                        self.write_graph(g)?
+                    if let Some(sort_map) = sort_map {
+                        // A sorted segment renumbers the vector ordinals, so
+                        // the graph is rebuilt under the new numbering.
+                        let _ = vector_index_offset;
+                        self.write_sorting_field(
+                            &info,
+                            values.ord_to_doc(),
+                            graph.as_ref(),
+                            sort_map,
+                        )?;
                     } else {
-                        Vec::new()
-                    };
-                    let vector_index_length =
-                        self.vector_index.as_ref().unwrap().file_pointer() - vector_index_offset;
-                    self.write_field(
-                        &info,
-                        vector_index_offset,
-                        vector_index_length,
-                        count,
-                        graph.as_ref(),
-                        &graph_level_offsets,
-                    )?;
+                        let graph_level_offsets = if let Some(ref g) = graph {
+                            self.write_graph(g)?
+                        } else {
+                            Vec::new()
+                        };
+                        let vector_index_length =
+                            self.vector_index.as_ref().unwrap().file_pointer()
+                                - vector_index_offset;
+                        self.write_meta(
+                            &info,
+                            vector_index_offset,
+                            vector_index_length,
+                            count,
+                            graph.as_ref(),
+                            &graph_level_offsets,
+                        )?;
+                    }
                 }
                 FieldWriterEntry::Byte(writer, info) => {
                     let values =
@@ -540,21 +764,34 @@ impl KnnVectorsWriter for Lucene99HnswVectorsWriter {
                             )
                         })?
                         .file_pointer();
-                    let graph_level_offsets = if let Some(ref g) = graph {
-                        self.write_graph(g)?
+                    if let Some(sort_map) = sort_map {
+                        // A sorted segment renumbers the vector ordinals, so
+                        // the graph is rebuilt under the new numbering.
+                        let _ = vector_index_offset;
+                        self.write_sorting_field(
+                            &info,
+                            values.ord_to_doc(),
+                            graph.as_ref(),
+                            sort_map,
+                        )?;
                     } else {
-                        Vec::new()
-                    };
-                    let vector_index_length =
-                        self.vector_index.as_ref().unwrap().file_pointer() - vector_index_offset;
-                    self.write_field(
-                        &info,
-                        vector_index_offset,
-                        vector_index_length,
-                        count,
-                        graph.as_ref(),
-                        &graph_level_offsets,
-                    )?;
+                        let graph_level_offsets = if let Some(ref g) = graph {
+                            self.write_graph(g)?
+                        } else {
+                            Vec::new()
+                        };
+                        let vector_index_length =
+                            self.vector_index.as_ref().unwrap().file_pointer()
+                                - vector_index_offset;
+                        self.write_meta(
+                            &info,
+                            vector_index_offset,
+                            vector_index_length,
+                            count,
+                            graph.as_ref(),
+                            &graph_level_offsets,
+                        )?;
+                    }
                 }
             }
         }
@@ -779,7 +1016,12 @@ fn vector_encoding_ordinal(encoding: VectorEncoding) -> i32 {
     }
 }
 
-fn vector_similarity_ordinal(similarity: VectorSimilarityFunction) -> i32 {
+/// Returns the ordinal a similarity function is written as.
+///
+/// Equivalent to `Lucene99HnswVectorsWriter.distFuncToOrd(VectorSimilarityFunction)`.
+/// The ordinals are part of the file format, so they are written out here
+/// rather than derived from the enum's declaration order.
+fn dist_func_to_ord(similarity: VectorSimilarityFunction) -> i32 {
     match similarity {
         VectorSimilarityFunction::EUCLIDEAN => 0,
         VectorSimilarityFunction::DOT_PRODUCT => 1,
@@ -822,6 +1064,11 @@ struct BufferedFloatVectorValues {
 }
 
 impl BufferedFloatVectorValues {
+    /// Returns the document each ordinal belongs to.
+    fn ord_to_doc(&self) -> &[i32] {
+        &self.ord_to_doc
+    }
+
     fn new(
         dimension: i32,
         writer: Arc<Mutex<DefaultFlatFieldVectorsWriter<Vec<f32>>>>,
@@ -886,6 +1133,11 @@ struct BufferedByteVectorValues {
 }
 
 impl BufferedByteVectorValues {
+    /// Returns the document each ordinal belongs to.
+    fn ord_to_doc(&self) -> &[i32] {
+        &self.ord_to_doc
+    }
+
     fn new(
         dimension: i32,
         writer: Arc<Mutex<DefaultFlatFieldVectorsWriter<Vec<u8>>>>,
@@ -1709,7 +1961,7 @@ mod tests {
             VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
         ] {
             let ordinal = similarity as i32;
-            assert_eq!(super::vector_similarity_ordinal(similarity), ordinal);
+            assert_eq!(super::dist_func_to_ord(similarity), ordinal);
             assert_eq!(super::read_vector_similarity(ordinal).unwrap(), similarity);
         }
     }

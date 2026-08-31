@@ -91,6 +91,47 @@ impl FieldVectorWriter {
 /// Writes vectors to an index.
 ///
 /// Equivalent to `org.apache.lucene.codecs.KnnVectorsWriter`.
+/// Builds the two ordinal maps a sorted segment needs, from the documents a
+/// field carries and the sort's document map.
+///
+/// Equivalent to `KnnVectorsWriter.mapOldOrdToNewOrd(DocsWithFieldSet, Sorter.DocMap, int[], int[], DocsWithFieldSet)`.
+/// Vector ordinals follow document order, so re-ordering the documents
+/// re-orders the ordinals: `old_to_new[o]` is where the vector at old ordinal
+/// `o` ends up, and `new_to_old` is its inverse.
+///
+/// # Errors
+///
+/// Propagates whatever iterating the document set raises.
+pub fn map_old_ord_to_new_ord(
+    old_doc_ids: &[i32],
+    sort_map: &crate::index::index_sorter::SorterDocMap,
+) -> Result<(Vec<i32>, Vec<i32>)> {
+    let cardinality = old_doc_ids.len();
+    let mut new_id_to_old_ord: std::collections::HashMap<i32, i32> =
+        std::collections::HashMap::with_capacity(cardinality);
+    let mut new_doc_ids = Vec::with_capacity(cardinality);
+
+    // **Divergence from Lucene 10.5.0.** Java takes the `DocsWithFieldSet` and
+    // iterates it here. Iterating it produces exactly this list — the documents
+    // that carry the field, in ordinal order — and every caller in this port
+    // already holds that list, so it is taken directly rather than rebuilt.
+    for (old_ord, &old_doc_id) in old_doc_ids.iter().enumerate() {
+        let new_id = sort_map.old_to_new(old_doc_id);
+        new_id_to_old_ord.insert(new_id, old_ord as i32);
+        new_doc_ids.push(new_id);
+    }
+
+    new_doc_ids.sort_unstable();
+    let mut old_to_new = vec![0i32; cardinality];
+    let mut new_to_old = vec![0i32; cardinality];
+    for (new_ord, new_doc_id) in new_doc_ids.into_iter().enumerate() {
+        let curr_old_ord = new_id_to_old_ord[&new_doc_id];
+        old_to_new[curr_old_ord as usize] = new_ord as i32;
+        new_to_old[new_ord] = curr_old_ord;
+    }
+    Ok((old_to_new, new_to_old))
+}
+
 pub trait KnnVectorsWriter: Send + Sync + fmt::Debug {
     /// Adds a new vector field for indexing.
     ///
@@ -135,9 +176,11 @@ pub trait KnnVectorsWriter: Send + Sync + fmt::Debug {
 
 /// Document-id mapping produced by index sorting.
 ///
-/// Equivalent to `org.apache.lucene.index.Sorter.DocMap`.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SorterDocMap;
+/// Equivalent to `org.apache.lucene.index.Sorter.DocMap`. This is the real
+/// mapping the index sorter produces; it used to be a placeholder struct with
+/// no fields, which meant no sort map could ever reach a vectors writer and the
+/// sorted write path could not be exercised at all.
+pub use crate::index::index_sorter::SorterDocMap;
 
 /// Runnable I/O operation returned by deferred merge steps.
 ///
