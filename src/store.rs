@@ -2680,6 +2680,88 @@ impl IOContext for DefaultIOContext {
     }
 }
 
+/// [`IOContext`] describing a flush.
+///
+/// Equivalent to `org.apache.lucene.store.FlushIOContext`, which
+/// `IOContext.flush(FlushInfo)` returns.
+#[derive(Clone, Debug)]
+pub struct FlushIOContext {
+    flush_info: FlushInfo,
+}
+
+impl FlushIOContext {
+    /// Creates a flush context describing `flush_info`.
+    ///
+    /// Equivalent to `IOContext.flush(FlushInfo)`.
+    pub fn new(flush_info: FlushInfo) -> Self {
+        Self { flush_info }
+    }
+}
+
+impl IOContext for FlushIOContext {
+    fn context(&self) -> Context {
+        Context::Flush
+    }
+
+    fn merge_info(&self) -> Option<MergeInfo> {
+        None
+    }
+
+    fn flush_info(&self) -> Option<FlushInfo> {
+        Some(self.flush_info)
+    }
+
+    fn hints(&self) -> &[Arc<dyn FileOpenHint>] {
+        // A flush context carries no hints, as Lucene's record does.
+        &[]
+    }
+
+    fn with_hints(&self, _hints: &[Arc<dyn FileOpenHint>]) -> Box<dyn IOContext> {
+        // Merge and flush contexts ignore hints and return themselves.
+        Box::new(self.clone())
+    }
+}
+
+/// [`IOContext`] describing a merge.
+///
+/// Equivalent to `org.apache.lucene.store.MergeIOContext`, which
+/// `IOContext.merge(MergeInfo)` returns.
+#[derive(Clone, Debug)]
+pub struct MergeIOContext {
+    merge_info: MergeInfo,
+}
+
+impl MergeIOContext {
+    /// Creates a merge context describing `merge_info`.
+    ///
+    /// Equivalent to `IOContext.merge(MergeInfo)`.
+    pub fn new(merge_info: MergeInfo) -> Self {
+        Self { merge_info }
+    }
+}
+
+impl IOContext for MergeIOContext {
+    fn context(&self) -> Context {
+        Context::Merge
+    }
+
+    fn merge_info(&self) -> Option<MergeInfo> {
+        Some(self.merge_info)
+    }
+
+    fn flush_info(&self) -> Option<FlushInfo> {
+        None
+    }
+
+    fn hints(&self) -> &[Arc<dyn FileOpenHint>] {
+        &[]
+    }
+
+    fn with_hints(&self, _hints: &[Arc<dyn FileOpenHint>]) -> Box<dyn IOContext> {
+        Box::new(self.clone())
+    }
+}
+
 /// Default context for ordinary reads and writes.
 ///
 /// Equivalent to `IOContext.DEFAULT` in Lucene 10.5.0.

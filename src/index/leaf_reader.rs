@@ -152,6 +152,20 @@ pub trait LeafReader: Send + Sync + Debug + 'static {
     /// Returns the shared core state for this reader.
     fn core(&self) -> &IndexReaderCore;
 
+    /// Returns this reader as a [`SegmentReader`](crate::index::segment_reader::SegmentReader),
+    /// when it is one.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java writes
+    /// `reader instanceof SegmentReader` wherever it needs this — in
+    /// `IndexWriter.tryModifyDocument`, `SegmentMerger` and `CheckIndex`. Rust
+    /// has no `instanceof` over a trait object, so the check is a method the
+    /// one implementation that *is* a segment reader overrides. The default
+    /// answers `None`, which is what `instanceof` answers for every other
+    /// reader.
+    fn as_segment_reader(&self) -> Option<&crate::index::segment_reader::SegmentReader> {
+        None
+    }
+
     /// Returns a [`TermVectors`] reader for this leaf.
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>>;
 

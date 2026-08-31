@@ -1437,6 +1437,10 @@ impl SegmentReader {
 }
 
 impl LeafReader for SegmentReader {
+    fn as_segment_reader(&self) -> Option<&SegmentReader> {
+        Some(self)
+    }
+
     fn core(&self) -> &IndexReaderCore {
         &self.core
     }

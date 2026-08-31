@@ -6,7 +6,8 @@
 //! `LogByteSizeMergePolicy` and `LogDocMergePolicy`.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::error::Result;
 use crate::index::segment_info::SegmentCommitInfo;
@@ -92,6 +93,32 @@ pub struct OneMerge {
     pub merge_gen: i64,
     /// Whether the merge came from another index, through `addIndexes`.
     pub is_external: bool,
+    /// Set when the writer aborts this merge.
+    ///
+    /// Equivalent to `OneMerge.isAborted`. Java declares it `volatile` and
+    /// shares the one `OneMerge` object between the writer and the merge
+    /// thread; `OneMerge` is `Clone` here, so the flag is shared through an
+    /// `Arc` and a clone still observes the abort.
+    aborted: Arc<AtomicBool>,
+    /// Set once the merge has run to completion, successfully or not.
+    ///
+    /// Equivalent to the `mergeCompleted` future's completion in Java.
+    merged: Arc<AtomicBool>,
+    /// The error that stopped this merge, rendered.
+    ///
+    /// Equivalent to `OneMerge.error`. Java keeps the `Throwable`; a
+    /// [`LuceneError`](crate::error::LuceneError) is not clonable and the merge
+    /// must be shared, so the port keeps the rendered message, which answers
+    /// the same question.
+    error: Arc<Mutex<Option<String>>>,
+    /// The merged segment, once the writer has built it.
+    ///
+    /// Equivalent to `OneMerge.info`.
+    pub info: Option<SegmentCommitInfo>,
+    /// When the merge started, in nanoseconds.
+    ///
+    /// Equivalent to `OneMerge.mergeStartNS`.
+    pub merge_start_ns: i64,
 }
 
 impl OneMerge {
@@ -119,7 +146,104 @@ impl OneMerge {
             register_done: false,
             merge_gen: 0,
             is_external: false,
+            aborted: Arc::new(AtomicBool::new(false)),
+            merged: Arc::new(AtomicBool::new(false)),
+            error: Arc::new(Mutex::new(None)),
+            info: None,
+            merge_start_ns: -1,
         })
+    }
+
+    /// Marks this merge aborted, so the running merge stops at its next check.
+    ///
+    /// Equivalent to `OneMerge.setAborted()`.
+    pub fn set_aborted(&self) {
+        self.aborted.store(true, Ordering::Release);
+    }
+
+    /// Returns whether this merge was aborted.
+    ///
+    /// Equivalent to `OneMerge.isAborted()`.
+    pub fn is_aborted(&self) -> bool {
+        self.aborted.load(Ordering::Acquire)
+    }
+
+    /// Fails with `MergeAborted` once this merge has been aborted.
+    ///
+    /// Equivalent to `OneMerge.checkAborted()`, which throws
+    /// `MergePolicy.MergeAbortedException`. Merge loops call it periodically so
+    /// that `IndexWriter.rollback` and `deleteAll` do not have to wait for a
+    /// long merge to finish.
+    pub fn check_aborted(&self) -> Result<()> {
+        if self.is_aborted() {
+            return Err(crate::error::LuceneError::MergeAborted(
+                "merge is aborted".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Records the error that stopped this merge.
+    ///
+    /// Equivalent to `OneMerge.setException(Throwable)`.
+    pub fn set_error(&self, error: &str) {
+        if let Ok(mut guard) = self.error.lock() {
+            *guard = Some(error.to_string());
+        }
+    }
+
+    /// Returns the error that stopped this merge, if any.
+    ///
+    /// Equivalent to `OneMerge.getException()`.
+    pub fn get_error(&self) -> Option<String> {
+        self.error.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Marks the merge finished, whatever its outcome.
+    ///
+    /// Equivalent to completing `OneMerge.mergeCompleted`.
+    pub fn set_finished(&self) {
+        self.merged.store(true, Ordering::Release);
+    }
+
+    /// Returns whether the merge has run to completion.
+    ///
+    /// Equivalent to `OneMerge.hasFinished()`.
+    pub fn has_finished(&self) -> bool {
+        self.merged.load(Ordering::Acquire)
+    }
+
+    /// Returns the total number of documents the merge inputs hold, deletions
+    /// excluded.
+    ///
+    /// Equivalent to `OneMerge.totalNumDocs()`.
+    pub fn total_num_docs(&self) -> Result<i32> {
+        let mut total = 0i32;
+        for info in &self.segments {
+            total += info.info.max_doc()? - info.get_del_count();
+        }
+        Ok(total)
+    }
+
+    /// Returns the summed byte size of the merge inputs.
+    ///
+    /// Equivalent to `OneMerge.totalBytesSize()`.
+    pub fn total_bytes_size(&self) -> i64 {
+        self.total_merge_bytes
+    }
+
+    /// Records the merged segment this merge produced.
+    ///
+    /// Equivalent to `OneMerge.setMergeInfo(SegmentCommitInfo)`.
+    pub fn set_merge_info(&mut self, info: SegmentCommitInfo) {
+        self.info = Some(info);
+    }
+
+    /// Returns the merged segment, once the writer has built it.
+    ///
+    /// Equivalent to `OneMerge.getMergeInfo()`.
+    pub fn get_merge_info(&self) -> Option<&SegmentCommitInfo> {
+        self.info.as_ref()
     }
 
     /// Returns how many documents the merged segment will hold, before deletes

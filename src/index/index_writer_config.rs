@@ -1040,7 +1040,7 @@ impl Default for IndexWriterConfig {
 // Helpers for producing Java-like class names in `toString` output.
 // -----------------------------------------------------------------------------
 
-fn type_name_of_trait_object<T: ?Sized + 'static>(_obj: &T) -> String {
+pub(crate) fn type_name_of_trait_object<T: ?Sized + 'static>(_obj: &T) -> String {
     type_name::<T>().to_string()
 }
 

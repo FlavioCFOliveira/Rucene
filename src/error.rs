@@ -113,6 +113,22 @@ pub enum LuceneError {
     #[error("unsupported operation: {0}")]
     UnsupportedOperation(String),
 
+    /// A merge was aborted before it completed.
+    ///
+    /// Equivalent to `org.apache.lucene.index.MergePolicy.MergeAbortedException`,
+    /// which extends `IOException` and is thrown by `OneMerge.checkAborted()`
+    /// once `IndexWriter.rollback` or `deleteAll` has stopped the merges.
+    #[error("merge aborted: {0}")]
+    MergeAborted(String),
+
+    /// A merge failed.
+    ///
+    /// Equivalent to `org.apache.lucene.index.MergePolicy.MergeException`,
+    /// which Lucene throws when a merge policy selects a segment the writer
+    /// does not hold, or when a background merge fails.
+    #[error("merge failed: {0}")]
+    Merge(String),
+
     /// A generic wrapper for errors that do not yet have a dedicated variant.
     #[error("{0}")]
     Other(String),
