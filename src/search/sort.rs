@@ -429,6 +429,68 @@ impl SortField {
         Ok(sort_field)
     }
 
+    /// The name this sort field's `SortFieldProvider` is registered under.
+    ///
+    /// Equivalent to `SortField.Provider.NAME`.
+    pub const NAME: &'static str = "SortField";
+
+    /// Returns the [`IndexSorter`] that sorts a segment by this field, or
+    /// `None` when the field cannot sort an index.
+    ///
+    /// Equivalent to `SortField.getIndexSorter()`. `SCORE`, `DOC`, `CUSTOM`,
+    /// `STRING_VAL` and `REWRITEABLE` all answer `None`: none of them reads a
+    /// doc-values field, and index sorting has nothing else to read at flush
+    /// time.
+    pub fn get_index_sorter(&self) -> Option<Arc<dyn crate::index::index_sorter::IndexSorter>> {
+        use crate::index::index_sorter::{NumericSortKind, NumericSorter, StringSorter};
+        let field = self.field.clone()?;
+        match self.field_type {
+            SortFieldType::String => {
+                let name = field.clone();
+                Some(Arc::new(StringSorter::new(
+                    Self::NAME,
+                    matches!(self.missing_value, Some(MissingValue::StringLast)),
+                    self.reverse,
+                    Arc::new(move |reader: &dyn crate::index::LeafReader| {
+                        reader.get_sorted_doc_values(&name)
+                    }),
+                )))
+            }
+            SortFieldType::Int
+            | SortFieldType::Long
+            | SortFieldType::Float
+            | SortFieldType::Double => {
+                let kind = match self.field_type {
+                    SortFieldType::Int => NumericSortKind::Int,
+                    SortFieldType::Long => NumericSortKind::Long,
+                    SortFieldType::Float => NumericSortKind::Float,
+                    _ => NumericSortKind::Double,
+                };
+                // The doc values hold the raw sortable encoding, which is what
+                // the sorter compares; the missing value is converted into the
+                // same encoding here.
+                let missing = match self.missing_value {
+                    Some(MissingValue::Int(v)) => Some(i64::from(v)),
+                    Some(MissingValue::Long(v)) => Some(v),
+                    Some(MissingValue::Float(v)) => Some(i64::from(v.to_bits() as i32)),
+                    Some(MissingValue::Double(v)) => Some(v.to_bits() as i64),
+                    _ => None,
+                };
+                let name = field.clone();
+                Some(Arc::new(NumericSorter::new(
+                    Self::NAME,
+                    kind,
+                    missing,
+                    self.reverse,
+                    Arc::new(move |reader: &dyn crate::index::LeafReader| {
+                        reader.get_numeric_doc_values(&name)
+                    }),
+                )))
+            }
+            _ => None,
+        }
+    }
+
     /// Returns the field name, if any.
     pub fn field(&self) -> Option<&str> {
         self.field.as_deref()

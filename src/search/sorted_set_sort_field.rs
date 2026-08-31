@@ -87,6 +87,45 @@ impl SortedSetSortField {
     }
 
     /// Returns this sort field as a [`SortField`].
+    /// Returns the [`IndexSorter`](crate::index::index_sorter::IndexSorter)
+    /// that sorts a segment by this field.
+    ///
+    /// Equivalent to `SortedSetSortField.getIndexSorter()`. The sorter reads
+    /// the sorted-set doc values and reduces each document to the one term the
+    /// selector picks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field is unnamed.
+    pub fn get_index_sorter(
+        &self,
+    ) -> Result<std::sync::Arc<dyn crate::index::index_sorter::IndexSorter>> {
+        use crate::index::index_sorter::StringSorter;
+        let field = self
+            .get_field()
+            .ok_or_else(|| {
+                LuceneError::IllegalArgument("a sort field must name a field".to_string())
+            })?
+            .to_string();
+        let selector = self.get_selector();
+        Ok(std::sync::Arc::new(StringSorter::new(
+            Self::NAME,
+            matches!(
+                self.sort_field.missing_value(),
+                Some(crate::search::MissingValue::StringLast)
+            ),
+            self.sort_field.reverse(),
+            std::sync::Arc::new(move |reader: &dyn crate::index::LeafReader| {
+                let Some(values) = reader.get_sorted_set_doc_values(&field)? else {
+                    return Ok(None);
+                };
+                Ok(Some(
+                    crate::search::sorted_set_selector::SortedSetSelector::wrap(values, selector)?,
+                ))
+            }),
+        )))
+    }
+
     pub fn sort_field(&self) -> &SortField {
         &self.sort_field
     }

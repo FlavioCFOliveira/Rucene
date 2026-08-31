@@ -109,6 +109,69 @@ impl SortedNumericSortField {
     }
 
     /// Returns this sort field as a [`SortField`].
+    /// Returns the [`IndexSorter`](crate::index::index_sorter::IndexSorter)
+    /// that sorts a segment by this field.
+    ///
+    /// Equivalent to `SortedNumericSortField.getIndexSorter()`. The sorter
+    /// reads the sorted-numeric doc values and reduces each document to the one
+    /// value the selector picks, which is what makes a multi-valued field
+    /// sortable at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field's numeric type
+    /// is not one Lucene can sort an index by — the same cases its `switch`
+    /// falls through on.
+    pub fn get_index_sorter(
+        &self,
+    ) -> Result<std::sync::Arc<dyn crate::index::index_sorter::IndexSorter>> {
+        use crate::index::index_sorter::{NumericSortKind, NumericSorter};
+        let kind = match self.get_numeric_type() {
+            SortFieldType::Int => NumericSortKind::Int,
+            SortFieldType::Long => NumericSortKind::Long,
+            SortFieldType::Float => NumericSortKind::Float,
+            SortFieldType::Double => NumericSortKind::Double,
+            other => {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "cannot sort an index by a SortedNumericSortField of type {other:?}"
+                )))
+            }
+        };
+        let missing = match self.sort_field.missing_value() {
+            Some(crate::search::MissingValue::Int(v)) => Some(i64::from(v)),
+            Some(crate::search::MissingValue::Long(v)) => Some(v),
+            Some(crate::search::MissingValue::Float(v)) => Some(i64::from(v.to_bits() as i32)),
+            Some(crate::search::MissingValue::Double(v)) => Some(v.to_bits() as i64),
+            _ => None,
+        };
+        let field = self
+            .get_field()
+            .ok_or_else(|| {
+                LuceneError::IllegalArgument("a sort field must name a field".to_string())
+            })?
+            .to_string();
+        let selector = self.get_selector();
+        let numeric_type = self.get_numeric_type();
+        Ok(std::sync::Arc::new(NumericSorter::new(
+            Self::NAME,
+            kind,
+            missing,
+            self.sort_field.reverse(),
+            std::sync::Arc::new(move |reader: &dyn crate::index::LeafReader| {
+                let Some(values) = reader.get_sorted_numeric_doc_values(&field)? else {
+                    return Ok(None);
+                };
+                Ok(Some(
+                    crate::search::sorted_numeric_selector::SortedNumericSelector::wrap(
+                        values,
+                        selector,
+                        numeric_type,
+                    )?,
+                ))
+            }),
+        )))
+    }
+
     pub fn sort_field(&self) -> &SortField {
         &self.sort_field
     }
