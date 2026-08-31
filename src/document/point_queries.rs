@@ -172,6 +172,20 @@ pub struct LatLonPointQuery {
 }
 
 impl LatLonPointQuery {
+    /// Builds the [`Component2D`] this query relates its candidates against.
+    ///
+    /// Equivalent to `LatLonPointQuery.createComponent2D(LatLonGeometry[])`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the geometry list is
+    /// empty.
+    pub fn create_component_2d(
+        geometries: &[LatLonGeometryValue],
+    ) -> Result<std::sync::Arc<dyn Component2D>> {
+        SpatialQuery::create_component_2d(geometries)
+    }
+
     /// Creates the query.
     ///
     /// Equivalent to

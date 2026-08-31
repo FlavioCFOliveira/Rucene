@@ -829,6 +829,35 @@ impl SpatialQuery {
         values.estimate_doc_count(&mut estimate)
     }
 
+    /// Builds the [`Component2D`] a query relates its candidates against.
+    ///
+    /// Equivalent to `SpatialQuery.createComponent2D(Geometry[])`, which each
+    /// subclass overrides with the geometry family it accepts. Rust names the
+    /// two families as enums instead, so the base method is the geographic one
+    /// and [`create_component_2d_xy`](Self::create_component_2d_xy) is the
+    /// Cartesian one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the geometry list is
+    /// empty.
+    pub fn create_component_2d(geometries: &[LatLonGeometryValue]) -> Result<Arc<dyn Component2D>> {
+        LatLonGeometryValue::create(geometries)
+    }
+
+    /// Builds the [`Component2D`] a Cartesian query relates its candidates
+    /// against.
+    ///
+    /// Equivalent to `XYShapeQuery.createComponent2D(XYGeometry[])`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the geometry list is
+    /// empty.
+    pub fn create_component_2d_xy(geometries: &[XYGeometryValue]) -> Result<Arc<dyn Component2D>> {
+        XYGeometryValue::create(geometries)
+    }
+
     /// Returns the visitor that estimates how many documents match.
     ///
     /// Equivalent to `SpatialQuery.getEstimateVisitor()`.
@@ -1782,6 +1811,20 @@ pub struct LatLonShapeQuery {
 }
 
 impl LatLonShapeQuery {
+    /// Builds the [`Component2D`] this query relates its candidates against.
+    ///
+    /// Equivalent to `LatLonShapeQuery.createComponent2D(...)`, the override Java declares
+    /// on this query; it delegates to
+    /// [`SpatialQuery::create_component_2d`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the geometry list is
+    /// empty.
+    pub fn create_component_2d(geometries: &[LatLonGeometryValue]) -> Result<Arc<dyn Component2D>> {
+        SpatialQuery::create_component_2d(geometries)
+    }
+
     /// Creates the query.
     ///
     /// Equivalent to
@@ -1989,6 +2032,20 @@ pub struct XYShapeQuery {
 }
 
 impl XYShapeQuery {
+    /// Builds the [`Component2D`] this query relates its candidates against.
+    ///
+    /// Equivalent to `XYShapeQuery.createComponent2D(...)`, the override Java declares
+    /// on this query; it delegates to
+    /// [`SpatialQuery::create_component_2d_xy`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the geometry list is
+    /// empty.
+    pub fn create_component_2d(geometries: &[XYGeometryValue]) -> Result<Arc<dyn Component2D>> {
+        SpatialQuery::create_component_2d_xy(geometries)
+    }
+
     /// Creates the query.
     ///
     /// Equivalent to `XYShapeQuery(String, QueryRelation, XYGeometry...)`.
@@ -2444,6 +2501,20 @@ pub struct LatLonShapeBoundingBoxQuery {
 }
 
 impl LatLonShapeBoundingBoxQuery {
+    /// Builds the [`Component2D`] this query relates its candidates against.
+    ///
+    /// Equivalent to `LatLonShapeBoundingBoxQuery.createComponent2D(...)`, the override Java declares
+    /// on this query; it delegates to
+    /// [`SpatialQuery::create_component_2d`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the geometry list is
+    /// empty.
+    pub fn create_component_2d(geometries: &[LatLonGeometryValue]) -> Result<Arc<dyn Component2D>> {
+        SpatialQuery::create_component_2d(geometries)
+    }
+
     /// Creates the query.
     ///
     /// Equivalent to
@@ -2756,6 +2827,20 @@ pub struct LatLonShapeDocValuesQuery {
 }
 
 impl LatLonShapeDocValuesQuery {
+    /// Builds the [`Component2D`] this query relates its candidates against.
+    ///
+    /// Equivalent to `LatLonShapeDocValuesQuery.createComponent2D(...)`, the override Java declares
+    /// on this query; it delegates to
+    /// [`SpatialQuery::create_component_2d`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the geometry list is
+    /// empty.
+    pub fn create_component_2d(geometries: &[LatLonGeometryValue]) -> Result<Arc<dyn Component2D>> {
+        SpatialQuery::create_component_2d(geometries)
+    }
+
     /// Creates the query.
     ///
     /// Equivalent to
@@ -2863,6 +2948,20 @@ pub struct XYShapeDocValuesQuery {
 }
 
 impl XYShapeDocValuesQuery {
+    /// Builds the [`Component2D`] this query relates its candidates against.
+    ///
+    /// Equivalent to `XYShapeDocValuesQuery.createComponent2D(...)`, the override Java declares
+    /// on this query; it delegates to
+    /// [`SpatialQuery::create_component_2d_xy`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the geometry list is
+    /// empty.
+    pub fn create_component_2d(geometries: &[XYGeometryValue]) -> Result<Arc<dyn Component2D>> {
+        SpatialQuery::create_component_2d_xy(geometries)
+    }
+
     /// Creates the query.
     ///
     /// Equivalent to
