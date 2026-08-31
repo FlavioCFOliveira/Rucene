@@ -438,14 +438,10 @@ impl<S: DocIdSetIteratorSupplier> IteratorAcceptDocs<S> {
 
     fn filtered_iterator(&mut self) -> Result<Box<dyn DocIdSetIterator>> {
         let base = self.supplier.get()?;
-        match self.live_docs.as_ref() {
-            None => Ok(base),
-            Some(bits) => {
-                let bits = Arc::clone(bits);
-                let predicate = Box::new(move |doc: i32| bits.get(doc as usize));
-                Ok(Box::new(FilteredDocIdSetIterator::new(base, predicate)))
-            }
-        }
+        Ok(get_filtered_doc_id_set_iterator(
+            base,
+            self.live_docs.as_ref().map(Arc::clone),
+        ))
     }
 
     fn ensure_cached_bits(&mut self) -> Result<()> {
@@ -877,5 +873,23 @@ mod tests {
         };
         let live: Box<dyn Bits> = Box::new(EvenBits { max_doc: 5 });
         assert!(from_iterator_supplier(supplier, Some(live), 8).is_err());
+    }
+}
+
+/// Wraps `iterator` so that it only produces documents `live_docs` accepts, or
+/// returns it unchanged when there are none.
+///
+/// Equivalent to the private static
+/// `AcceptDocs.getFilteredDocIdSetIterator(DocIdSetIterator, Bits)`.
+pub fn get_filtered_doc_id_set_iterator(
+    iterator: Box<dyn DocIdSetIterator>,
+    live_docs: Option<Arc<dyn Bits>>,
+) -> Box<dyn DocIdSetIterator> {
+    match live_docs {
+        None => iterator,
+        Some(bits) => {
+            let predicate = Box::new(move |doc: i32| bits.get(doc as usize));
+            Box::new(FilteredDocIdSetIterator::new(iterator, predicate))
+        }
     }
 }

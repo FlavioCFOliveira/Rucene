@@ -382,9 +382,43 @@ impl PhraseQuery {
     ///
     /// As [`new`](Self::new).
     pub fn with_slop(slop: i32, field: &str, terms: &[&str]) -> Result<Self> {
-        let terms: Vec<Term> = terms.iter().map(|t| Term::from_text(field, t)).collect();
+        let terms = Self::to_terms(field, terms);
         let positions = incremental_positions(terms.len());
         Self::new(slop, terms, positions)
+    }
+
+    /// Builds the terms of `field` from their text.
+    ///
+    /// Equivalent to the private `PhraseQuery.toTerms(String, String...)`.
+    /// Java's null check on each string has no counterpart: a `&str` cannot be
+    /// null.
+    pub fn to_terms(field: &str, term_strings: &[&str]) -> Vec<Term> {
+        term_strings
+            .iter()
+            .map(|t| Term::from_text(field, t))
+            .collect()
+    }
+
+    /// Builds the terms of `field` from their bytes.
+    ///
+    /// Equivalent to the private `PhraseQuery.toTerms(String, BytesRef...)`.
+    pub fn to_terms_from_bytes(field: &str, term_bytes: &[BytesRef]) -> Vec<Term> {
+        term_bytes
+            .iter()
+            .map(|b| Term::new(field, b.clone()))
+            .collect()
+    }
+
+    /// Returns whether `term` is absent from `reader`.
+    ///
+    /// Equivalent to the private static `PhraseQuery.termNotInReader(LeafReader,
+    /// Term)`, which Java only evaluates inside an `assert`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the document frequency raises.
+    pub fn term_not_in_reader(reader: &dyn crate::index::IndexReader, term: &Term) -> Result<bool> {
+        Ok(reader.doc_freq(term)? == 0)
     }
 
     /// Creates a phrase query matching documents that contain the given terms
