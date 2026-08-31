@@ -219,6 +219,407 @@ impl SparseFixedBitSet {
 
     /// Returns an iterator over the set bits as a [`DocIdSetIterator`].
     ///
+    /// Returns the mask of the bits in `[from, to]`, both inclusive, within a
+    /// 64-bit word.
+    ///
+    /// Equivalent to `SparseFixedBitSet.mask(int, int)`. The double shift is
+    /// deliberate: `1 << 64` is undefined, so the mask for a full word is built
+    /// as two shifts of 63 and 1.
+    fn mask(from: usize, to: usize) -> u64 {
+        ((1u64 << (to - from) << 1).wrapping_sub(1)) << (from & 0x3f)
+    }
+
+    /// Clears the bits in `[from, to]` of block `i4096`, both offsets relative
+    /// to the block.
+    ///
+    /// Equivalent to `SparseFixedBitSet.clearWithinBlock(int, int, int)`.
+    fn clear_within_block(&mut self, i4096: usize, from: usize, to: usize) {
+        let first_long = from >> 6;
+        let last_long = to >> 6;
+        if first_long == last_long {
+            self.and(i4096, first_long, !Self::mask(from, to));
+        } else {
+            debug_assert!(first_long < last_long);
+            self.and(i4096, last_long, !Self::mask(0, to));
+            for i in (first_long + 1..last_long).rev() {
+                self.and(i4096, i, 0);
+            }
+            self.and(i4096, first_long, !Self::mask(from, 63));
+        }
+    }
+
+    /// Sets the bits in `[from, to]` of block `i4096`, both offsets relative to
+    /// the block.
+    ///
+    /// Equivalent to `SparseFixedBitSet.setWithinBlock(int, int, int)`.
+    fn set_within_block(&mut self, i4096: usize, from: usize, to: usize) {
+        let first_long = from >> 6;
+        let last_long = to >> 6;
+        if first_long == last_long {
+            self.or_long(i4096, first_long, Self::mask(from, to));
+        } else {
+            debug_assert!(first_long < last_long);
+            self.or_long(i4096, last_long, Self::mask(0, to));
+            for i in first_long + 1..last_long {
+                self.or_long(i4096, i, u64::MAX);
+            }
+            self.or_long(i4096, first_long, Self::mask(from, 63));
+        }
+    }
+
+    /// Sets every bit in `[start_index, end_index)`.
+    ///
+    /// Equivalent to `SparseFixedBitSet.set(int, int)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the range falls outside the set.
+    pub fn set_range(&mut self, start_index: usize, end_index: usize) {
+        assert!(
+            start_index < self.length,
+            "startIndex={start_index} out of bounds"
+        );
+        assert!(
+            end_index <= self.length,
+            "endIndex={end_index} out of bounds"
+        );
+        if end_index <= start_index {
+            return;
+        }
+        let first_block = start_index >> 12;
+        let last_block = (end_index - 1) >> 12;
+        const MASK_4096: usize = SPARSE_BLOCK_BITS - 1;
+        if first_block == last_block {
+            self.set_within_block(
+                first_block,
+                start_index & MASK_4096,
+                (end_index - 1) & MASK_4096,
+            );
+        } else {
+            self.set_within_block(first_block, start_index & MASK_4096, MASK_4096);
+            for i in first_block + 1..last_block {
+                self.set_within_block(i, 0, MASK_4096);
+            }
+            self.set_within_block(last_block, 0, (end_index - 1) & MASK_4096);
+        }
+    }
+
+    /// Clears every bit in `[from, to)`.
+    ///
+    /// Equivalent to `SparseFixedBitSet.clear(int, int)`. A block that falls
+    /// wholly inside the range is dropped rather than cleared word by word.
+    pub fn clear_range(&mut self, from: usize, to: usize) {
+        assert!(to <= self.length, "to={to} out of bounds");
+        if from >= to {
+            return;
+        }
+        let first_block = from >> 12;
+        let last_block = (to - 1) >> 12;
+        const MASK_4096: usize = SPARSE_BLOCK_BITS - 1;
+        if first_block == last_block {
+            self.clear_within_block(first_block, from & MASK_4096, (to - 1) & MASK_4096);
+        } else {
+            self.clear_within_block(first_block, from & MASK_4096, MASK_4096);
+            for i in first_block + 1..last_block {
+                self.non_zero_long_count -= self.indices[i].count_ones() as usize;
+                self.indices[i] = 0;
+                self.bits[i] = None;
+            }
+            self.clear_within_block(last_block, 0, (to - 1) & MASK_4096);
+        }
+    }
+
+    /// Returns the bits stored at word `i64` of a block, or zero when that word
+    /// is absent.
+    ///
+    /// Equivalent to `SparseFixedBitSet.longBits(long, long[], int)`.
+    fn long_bits(index_word: u64, bits: &[u64], i64: usize) -> u64 {
+        let i64bit = 1u64 << (i64 & 0x3f);
+        if (index_word & i64bit) == 0 {
+            0
+        } else {
+            bits[(index_word & (i64bit - 1)).count_ones() as usize]
+        }
+    }
+
+    /// Ors `new_bits` into word `i64` of block `i4096`.
+    ///
+    /// Equivalent to `SparseFixedBitSet.orLong(int, int, long)`.
+    fn or_long(&mut self, i4096: usize, i64: usize, new_bits: u64) {
+        if new_bits == 0 {
+            return;
+        }
+        let index_word = self.indices[i4096];
+        let i64bit = 1u64 << (i64 & 0x3f);
+        if (index_word & i64bit) != 0 {
+            let o = (index_word & (i64bit - 1)).count_ones() as usize;
+            self.bits[i4096]
+                .as_mut()
+                .expect("INVARIANT: index bit implies block")[o] |= new_bits;
+        } else if index_word == 0 {
+            self.indices[i4096] = i64bit;
+            debug_assert!(self.bits[i4096].is_none());
+            self.bits[i4096] = Some(vec![new_bits]);
+            self.non_zero_long_count += 1;
+        } else {
+            self.insert_long_value(i4096, i64bit, new_bits, index_word);
+        }
+    }
+
+    /// Returns the last set bit at or below `i`, or `-1` when there is none.
+    ///
+    /// Equivalent to `SparseFixedBitSet.prevSetBit(int)`.
+    pub fn prev_set_bit(&self, i: usize) -> i32 {
+        let i4096 = i >> 12;
+        let index_word = self.indices[i4096];
+        let mut i64 = i >> 6;
+        let index_bits = index_word & ((1u64 << (i64 & 0x3f)) - 1);
+        let o = index_bits.count_ones() as usize;
+        if (index_word & (1u64 << (i64 & 0x3f))) != 0 {
+            // At least one bit is set in the same word: look for one below `i`.
+            let bit_array = self.bits[i4096]
+                .as_ref()
+                .expect("INVARIANT: index bit implies block");
+            let bits = bit_array[o] & ((1u64 << (i & 0x3f) << 1).wrapping_sub(1));
+            if bits != 0 {
+                return (((i64 << 6) | (63 - bits.leading_zeros() as usize)) & i32::MAX as usize)
+                    as i32;
+            }
+        }
+        if index_bits == 0 {
+            // Nothing else is set in this block: find the last bit of the
+            // previous one.
+            return if i4096 == 0 {
+                -1
+            } else {
+                self.last_doc(i4096 - 1)
+            };
+        }
+        // Go to the previous word.
+        i64 = 63 - index_bits.leading_zeros() as usize;
+        let bit_array = self.bits[i4096]
+            .as_ref()
+            .expect("INVARIANT: index_bits non-zero implies block");
+        let bits = bit_array[o - 1];
+        ((i4096 << 12) | (i64 << 6) | (63 - bits.leading_zeros() as usize)) as i32
+    }
+
+    /// Returns the last set bit in block `i4096` or any block below it, or `-1`.
+    ///
+    /// Equivalent to `SparseFixedBitSet.lastDoc(int)`.
+    fn last_doc(&self, i4096: usize) -> i32 {
+        let mut block = i4096 as i64;
+        while block >= 0 {
+            let index_word = self.indices[block as usize];
+            if index_word != 0 {
+                let i64 = 63 - index_word.leading_zeros() as usize;
+                let bit_array = self.bits[block as usize]
+                    .as_ref()
+                    .expect("INVARIANT: index word non-zero implies block");
+                let bits = bit_array[index_word.count_ones() as usize - 1];
+                return (((block as usize) << 12)
+                    | (i64 << 6)
+                    | (63 - bits.leading_zeros() as usize)) as i32;
+            }
+            block -= 1;
+        }
+        -1
+    }
+
+    /// Returns the first unset bit in `[from_global, upper_bound)` within block
+    /// `i4096`, or `None`.
+    ///
+    /// Equivalent to `SparseFixedBitSet.firstClearInBlock(int, int, int)`.
+    fn first_clear_in_block(
+        &self,
+        i4096: usize,
+        from_global: usize,
+        upper_bound: usize,
+    ) -> Option<usize> {
+        let block_base = i4096 << 12;
+        let block_end = (block_base + SPARSE_BLOCK_BITS).min(self.length);
+        let from = from_global.max(block_base);
+        let block_cap = upper_bound.min(block_end);
+        if from >= block_cap {
+            return None;
+        }
+        let index_word = self.indices[i4096];
+        if index_word == 0 {
+            return Some(from);
+        }
+        let bit_array = self.bits[i4096]
+            .as_ref()
+            .expect("INVARIANT: index word non-zero implies block");
+        let mut pos = from;
+        while pos < block_cap {
+            let i64 = pos >> 6;
+            let i64bit = 1u64 << (i64 & 0x3f);
+            let w_start = i64 << 6;
+            if w_start >= block_end {
+                break;
+            }
+            if (index_word & i64bit) == 0 {
+                if pos < block_cap {
+                    return Some(pos);
+                }
+                pos = w_start + 64;
+                continue;
+            }
+            let o = (index_word & (i64bit - 1)).count_ones() as usize;
+            let word_bits = bit_array[o];
+            let sub = pos - w_start;
+            let tail = word_bits >> sub;
+            let span = 64 - sub;
+            let span_mask = if sub == 0 {
+                u64::MAX
+            } else {
+                (1u64 << span) - 1
+            };
+            let inv = (!tail) & span_mask;
+            if inv != 0 {
+                let cand = pos + inv.trailing_zeros() as usize;
+                if cand < block_cap {
+                    return Some(cand);
+                }
+            }
+            pos = w_start + 64;
+        }
+        None
+    }
+
+    /// Returns the first unset bit in `[start, upper_bound)`, or `None`.
+    ///
+    /// Equivalent to `SparseFixedBitSet.nextClearBitInRange(int, int)`.
+    fn next_clear_bit_in_range(&self, start: usize, upper_bound: usize) -> Option<usize> {
+        debug_assert!(start < self.length);
+        debug_assert!(upper_bound > start && upper_bound <= self.length);
+        let mut i4096 = start >> 12;
+        let i4096_upper = if upper_bound == self.length {
+            self.indices.len()
+        } else {
+            sparse_block_count(upper_bound)
+        };
+        let mut from = start;
+        while i4096 < i4096_upper {
+            if let Some(res) = self.first_clear_in_block(i4096, from, upper_bound) {
+                return Some(res);
+            }
+            i4096 += 1;
+            from = i4096 << 12;
+        }
+        None
+    }
+
+    /// Returns the first unset bit at or after `index`, or `None`.
+    ///
+    /// Equivalent to `SparseFixedBitSet.nextClearBit(int)`.
+    pub fn next_clear_bit(&self, index: usize) -> Option<usize> {
+        self.next_clear_bit_in_range(index, self.length)
+            .filter(|&res| res < self.length)
+    }
+
+    /// Returns the first unset bit in `[start, upper_bound)`, or `None`.
+    ///
+    /// Equivalent to `SparseFixedBitSet.nextClearBit(int, int)`.
+    pub fn next_clear_bit_up_to(&self, start: usize, upper_bound: usize) -> Option<usize> {
+        self.next_clear_bit_in_range(start, upper_bound)
+            .filter(|&res| res < upper_bound)
+    }
+
+    /// Ors the whole block `i4096` with `bits`, whose set words are described by
+    /// `index_word`.
+    ///
+    /// Equivalent to `SparseFixedBitSet.or(int, long, long[], int)`, the bulk
+    /// path `or_dense` flushes each block through.
+    fn or_block(
+        &mut self,
+        i4096: usize,
+        index_word: u64,
+        words: &[u64],
+        non_zero_long_count: usize,
+    ) {
+        debug_assert_eq!(index_word.count_ones() as usize, non_zero_long_count);
+        let current_index = self.indices[i4096];
+        if current_index == 0 {
+            // Fast path: nothing in the block yet, so just copy the data in.
+            self.indices[i4096] = index_word;
+            self.bits[i4096] = Some(words[..non_zero_long_count].to_vec());
+            self.non_zero_long_count += non_zero_long_count;
+            return;
+        }
+        let new_index = current_index | index_word;
+        let new_count = new_index.count_ones() as usize;
+        let mut new_bits = vec![0u64; new_count];
+        let current_bits = self.bits[i4096]
+            .as_ref()
+            .expect("INVARIANT: index word non-zero implies block");
+        let mut remaining = new_index;
+        let mut new_o = 0usize;
+        while remaining != 0 {
+            let bit_index = remaining.trailing_zeros() as usize;
+            new_bits[new_o] = Self::long_bits(current_index, current_bits, bit_index)
+                | Self::long_bits(index_word, words, bit_index);
+            new_o += 1;
+            remaining &= remaining - 1;
+        }
+        self.indices[i4096] = new_index;
+        self.bits[i4096] = Some(new_bits);
+        self.non_zero_long_count +=
+            non_zero_long_count - (current_index & index_word).count_ones() as usize;
+    }
+
+    /// Ors every document of `it` into this set, taking advantage of the fact
+    /// that they arrive in order.
+    ///
+    /// Equivalent to `SparseFixedBitSet.orDense(DocIdSetIterator)`. Words are
+    /// buffered per block and flushed once, which is what makes it worth using
+    /// over the one-bit-at-a-time path for a dense iterator.
+    pub fn or_dense(&mut self, it: &mut dyn DocIdSetIterator) -> crate::error::Result<()> {
+        // NOTE: this relies on shifts being taken modulo 64.
+        let first_doc = it.next_doc()?;
+        if first_doc == NO_MORE_DOCS {
+            return Ok(());
+        }
+        let mut i4096 = (first_doc >> 12) as usize;
+        let mut i64 = (first_doc >> 6) as usize;
+        let mut index_word = 1u64 << (i64 & 0x3f);
+        let mut current_long = 1u64 << (first_doc & 0x3f);
+        // At most 64 words per block, so this never needs to grow.
+        let mut words = [0u64; SPARSE_LONGS_PER_BLOCK];
+        let mut num_longs = 0usize;
+
+        let mut doc = it.next_doc()?;
+        while doc != NO_MORE_DOCS {
+            let doc64 = (doc >> 6) as usize;
+            if doc64 == i64 {
+                // Still in the same word: just set the bit.
+                current_long |= 1u64 << (doc & 0x3f);
+            } else {
+                words[num_longs] = current_long;
+                num_longs += 1;
+
+                let doc4096 = (doc >> 12) as usize;
+                if doc4096 == i4096 {
+                    index_word |= 1u64 << (doc64 & 0x3f);
+                } else {
+                    // A new block: flush what was buffered.
+                    self.or_block(i4096, index_word, &words, num_longs);
+                    i4096 = doc4096;
+                    index_word = 1u64 << (doc64 & 0x3f);
+                    num_longs = 0;
+                }
+                i64 = doc64;
+                current_long = 1u64 << (doc & 0x3f);
+            }
+            doc = it.next_doc()?;
+        }
+
+        words[num_longs] = current_long;
+        num_longs += 1;
+        self.or_block(i4096, index_word, &words, num_longs);
+        Ok(())
+    }
+
     /// The iterator owns a clone of the bit set; mutating the original set after
     /// creating an iterator does not affect the iterator.
     pub fn iter(&self) -> SparseFixedBitSetIterator {
