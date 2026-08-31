@@ -7,7 +7,7 @@
 use crate::analysis::{SharedTokenStream, TokenStream};
 use crate::document::{StoredValue, StoredValueType};
 use crate::error::{LuceneError, Result};
-use crate::index::{IndexOptions, IndexableField, IndexableFieldType};
+use crate::index::{DocValuesType, IndexOptions, IndexableField, IndexableFieldType};
 use crate::util::byte_block_pool::BYTE_BLOCK_SIZE;
 use crate::util::{BytesRef, NumericUtils};
 use std::cell::RefCell;
@@ -430,7 +430,336 @@ impl ColumnValidation {
         }
         Ok(())
     }
+
+    /// Returns the bitmask of the indexing features `field_type` declares.
+    ///
+    /// Equivalent to `ColumnValidation.featureMask(IndexableFieldType)`. The
+    /// column-batch path uses it to enforce that, where several columns share a
+    /// field name, each feature is carried by at most one of them.
+    pub fn feature_mask(field_type: &dyn IndexableFieldType) -> i32 {
+        let mut mask = 0;
+        if field_type.index_options() != IndexOptions::NONE {
+            mask |= FEATURE_INVERSION;
+        }
+        if field_type.stored() {
+            mask |= FEATURE_STORED;
+        }
+        if field_type.doc_values_type() != DocValuesType::NONE {
+            mask |= FEATURE_DOCVALUES;
+        }
+        if field_type.point_dimension_count() != 0 {
+            mask |= FEATURE_POINTS;
+        }
+        if field_type.vector_dimension() != 0 {
+            mask |= FEATURE_VECTOR;
+        }
+        mask
+    }
+
+    /// Renders the features set in `mask` as a comma-separated list.
+    ///
+    /// Equivalent to `ColumnValidation.featureNames(int)`.
+    pub fn feature_names(mask: i32) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        if mask & FEATURE_INVERSION != 0 {
+            parts.push("inversion");
+        }
+        if mask & FEATURE_STORED != 0 {
+            parts.push("stored");
+        }
+        if mask & FEATURE_DOCVALUES != 0 {
+            parts.push("doc values");
+        }
+        if mask & FEATURE_POINTS != 0 {
+            parts.push("points");
+        }
+        if mask & FEATURE_VECTOR != 0 {
+            parts.push("vectors");
+        }
+        format!("[{}]", parts.join(", "))
+    }
+
+    /// Fails when `field_type` declares no indexing feature at all.
+    ///
+    /// Equivalent to `ColumnValidation.validateColumnHasIndexingFeature(String, IndexableFieldType)`.
+    pub fn validate_column_has_indexing_feature(
+        field_name: &str,
+        field_type: &dyn IndexableFieldType,
+    ) -> Result<()> {
+        if field_type.doc_values_type() == DocValuesType::NONE
+            && field_type.point_dimension_count() == 0
+            && !field_type.stored()
+            && field_type.index_options() == IndexOptions::NONE
+            && field_type.vector_dimension() == 0
+        {
+            return Err(LuceneError::IllegalArgument(format!(
+                "Column \"{field_name}\" must have a non-NONE docValuesType, point dimensions, \
+                 be stored, have index options, or have vector dimensions"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Checks a long column against the field type it will feed.
+    ///
+    /// Equivalent to `ColumnValidation.validateLongColumn(LongColumn, IndexableFieldType)`.
+    pub fn validate_long_column(
+        name: &str,
+        numeric_kind: NumericKind,
+        stored_type: StoredValueType,
+        field_type: &dyn IndexableFieldType,
+    ) -> Result<()> {
+        let point_dims = field_type.point_dimension_count();
+        if point_dims != 0 {
+            if point_dims != 1 {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "LongColumn \"{name}\" only supports 1-dimensional point fields, got \
+                     pointDimensionCount={point_dims}"
+                )));
+            }
+            let expected_point_bytes =
+                if matches!(numeric_kind, NumericKind::Int | NumericKind::Float) {
+                    std::mem::size_of::<i32>() as i32
+                } else {
+                    std::mem::size_of::<i64>() as i32
+                };
+            if field_type.point_num_bytes() != expected_point_bytes {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "LongColumn \"{name}\" numericKind={numeric_kind:?} requires \
+                     pointNumBytes={expected_point_bytes}, got {}",
+                    field_type.point_num_bytes()
+                )));
+            }
+        }
+        if field_type.stored() {
+            match stored_type {
+                StoredValueType::INTEGER
+                | StoredValueType::LONG
+                | StoredValueType::FLOAT
+                | StoredValueType::DOUBLE => {}
+                StoredValueType::STRING | StoredValueType::BINARY => {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "LongColumn \"{name}\" storedType={stored_type:?} is not supported; use a \
+                         BinaryColumn for non-numeric stored data"
+                    )));
+                }
+                StoredValueType::DATA_INPUT => {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "LongColumn \"{name}\" storedType DATA_INPUT is not supported for columns"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks a binary column against the field type it will feed.
+    ///
+    /// Equivalent to `ColumnValidation.validateBinaryColumn(BinaryColumn, IndexableFieldType)`.
+    pub fn validate_binary_column(
+        name: &str,
+        stored_type: StoredValueType,
+        field_type: &dyn IndexableFieldType,
+    ) -> Result<()> {
+        let dv_type = field_type.doc_values_type();
+        if dv_type == DocValuesType::NUMERIC || dv_type == DocValuesType::SORTED_NUMERIC {
+            return Err(LuceneError::IllegalArgument(format!(
+                "BinaryColumn \"{name}\" cannot feed docValuesType={dv_type:?}; use a LongColumn"
+            )));
+        }
+        if field_type.stored() {
+            match stored_type {
+                StoredValueType::BINARY | StoredValueType::STRING => {}
+                StoredValueType::INTEGER
+                | StoredValueType::LONG
+                | StoredValueType::FLOAT
+                | StoredValueType::DOUBLE => {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "BinaryColumn \"{name}\" storedType={stored_type:?} is not supported; use \
+                         a LongColumn for numeric stored data"
+                    )));
+                }
+                StoredValueType::DATA_INPUT => {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "BinaryColumn \"{name}\" storedType DATA_INPUT is not supported for columns"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks a dictionary column against the field type it will feed.
+    ///
+    /// Equivalent to `ColumnValidation.validateDictionaryColumn(DictionaryColumn, IndexableFieldType)`.
+    pub fn validate_dictionary_column(
+        name: &str,
+        stored_type: StoredValueType,
+        field_type: &dyn IndexableFieldType,
+    ) -> Result<()> {
+        let dv = field_type.doc_values_type();
+        if dv == DocValuesType::NUMERIC || dv == DocValuesType::SORTED_NUMERIC {
+            return Err(LuceneError::IllegalArgument(format!(
+                "DictionaryColumn \"{name}\" cannot feed docValuesType={dv:?}; use a LongColumn"
+            )));
+        }
+        if dv == DocValuesType::BINARY {
+            return Err(LuceneError::IllegalArgument(format!(
+                "DictionaryColumn \"{name}\" cannot feed docValuesType=BINARY (the writer does not \
+                 dedup terms, so the dictionary provides no benefit); use a BinaryColumn"
+            )));
+        }
+        if field_type.point_dimension_count() != 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "DictionaryColumn \"{name}\" does not support points (pointDimensionCount must be 0)"
+            )));
+        }
+        if field_type.stored() {
+            match stored_type {
+                StoredValueType::BINARY | StoredValueType::STRING => {}
+                StoredValueType::INTEGER
+                | StoredValueType::LONG
+                | StoredValueType::FLOAT
+                | StoredValueType::DOUBLE => {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "DictionaryColumn \"{name}\" storedType={stored_type:?} is not supported; \
+                         use a LongColumn for numeric stored data"
+                    )));
+                }
+                StoredValueType::DATA_INPUT => {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "DictionaryColumn \"{name}\" storedType DATA_INPUT is not supported for \
+                         columns"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks a token-stream column against the field type it will feed.
+    ///
+    /// Equivalent to `ColumnValidation.validateTokenStreamColumn(TokenStreamColumn, IndexableFieldType)`,
+    /// which additionally requires the field to be inverted-only.
+    pub fn validate_token_stream_column(
+        name: &str,
+        field_type: &dyn IndexableFieldType,
+    ) -> Result<()> {
+        Self::validate_token_stream(name, field_type)?;
+        if field_type.stored()
+            || field_type.doc_values_type() != DocValuesType::NONE
+            || field_type.point_dimension_count() != 0
+            || field_type.vector_dimension() != 0
+        {
+            return Err(LuceneError::IllegalArgument(format!(
+                "TokenStreamColumn \"{name}\" must be inverted-only: stored=false, \
+                 docValuesType=NONE, pointDimensionCount=0, vectorDimension=0"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Checks a vector column against the field type it will feed.
+    ///
+    /// Equivalent to `ColumnValidation.validateVectorColumn(VectorColumn, IndexableFieldType)`,
+    /// which additionally requires the field to be vector-only.
+    pub fn validate_vector_column(name: &str, field_type: &dyn IndexableFieldType) -> Result<()> {
+        Self::validate_vector(name, field_type)?;
+        if field_type.doc_values_type() != DocValuesType::NONE
+            || field_type.point_dimension_count() != 0
+            || field_type.stored()
+            || field_type.index_options() != IndexOptions::NONE
+        {
+            return Err(LuceneError::IllegalArgument(format!(
+                "VectorColumn \"{name}\" must be vector-only: docValuesType=NONE, \
+                 pointDimensionCount=0, stored=false, indexOptions=NONE"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Fails when `batch_doc_id` falls outside `[0, num_docs)`.
+    ///
+    /// Equivalent to `ColumnValidation.checkDocID(Column, int, int)`.
+    pub fn check_doc_id(name: &str, batch_doc_id: i32, num_docs: i32) -> Result<()> {
+        if batch_doc_id < 0 || batch_doc_id >= num_docs {
+            return Err(LuceneError::IllegalArgument(format!(
+                "Column \"{name}\" returned batch doc-id {batch_doc_id} which is out of range \
+                 [0, {num_docs})"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Fails when a dense column produced other than `num_docs` values.
+    ///
+    /// Equivalent to `ColumnValidation.checkDenseCount(Column, int, int)`.
+    pub fn check_dense_count(name: &str, consumed: i32, num_docs: i32) -> Result<()> {
+        if consumed != num_docs {
+            return Err(LuceneError::IllegalArgument(format!(
+                "Dense column \"{name}\" provided {consumed} values but batch has {num_docs} \
+                 documents"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Fails when a vector cursor's doc ID does not strictly increase.
+    ///
+    /// Equivalent to `ColumnValidation.checkVectorDocIDStrictlyIncreasing(VectorColumn, int, int)`.
+    pub fn check_vector_doc_id_strictly_increasing(
+        name: &str,
+        batch_doc_id: i32,
+        prev_batch_doc_id: i32,
+    ) -> Result<()> {
+        if batch_doc_id <= prev_batch_doc_id {
+            return Err(LuceneError::IllegalArgument(format!(
+                "VectorColumn \"{name}\" must yield strictly increasing batch doc-ids; got \
+                 {batch_doc_id} after {prev_batch_doc_id}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Fails when a vector's length does not match the field's dimension.
+    ///
+    /// Equivalent to `ColumnValidation.checkVectorDimension(VectorColumn, int, int, int)`.
+    pub fn check_vector_dimension(
+        name: &str,
+        actual: i32,
+        expected: i32,
+        batch_doc_id: i32,
+    ) -> Result<()> {
+        if actual != expected {
+            return Err(LuceneError::IllegalArgument(format!(
+                "VectorColumn \"{name}\" expected dimension {expected} but got vector of length \
+                 {actual} at batch doc {batch_doc_id}"
+            )));
+        }
+        Ok(())
+    }
 }
+
+/// Inverted-index feature (`index_options() != NONE`).
+///
+/// Equivalent to `ColumnValidation.FEATURE_INVERSION`.
+pub const FEATURE_INVERSION: i32 = 1 << 0;
+/// Stored-fields feature (`stored()`).
+///
+/// Equivalent to `ColumnValidation.FEATURE_STORED`.
+pub const FEATURE_STORED: i32 = 1 << 1;
+/// Doc-values feature (`doc_values_type() != NONE`).
+///
+/// Equivalent to `ColumnValidation.FEATURE_DOCVALUES`.
+pub const FEATURE_DOCVALUES: i32 = 1 << 2;
+/// Points feature (`point_dimension_count() != 0`).
+///
+/// Equivalent to `ColumnValidation.FEATURE_POINTS`.
+pub const FEATURE_POINTS: i32 = 1 << 3;
+/// KNN-vector feature (`vector_dimension() != 0`).
+///
+/// Equivalent to `ColumnValidation.FEATURE_VECTOR`.
+pub const FEATURE_VECTOR: i32 = 1 << 4;
 
 // -----------------------------------------------------------------------------
 // Field adapters

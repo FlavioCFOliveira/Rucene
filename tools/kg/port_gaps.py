@@ -116,6 +116,16 @@ for qn, jmethods in java.items():
                 cands.add(snake[len(pre):])
         if snake == "to_string":
             cands |= {"fmt", "to_config_string"}
+        # Java's Object contract maps onto Rust's derive-able traits, whose
+        # methods carry different names: equals/equalsTo -> PartialEq::eq,
+        # hashCode -> Hash::hash. Counting them as missing would report a
+        # #[derive(PartialEq, Eq, Hash)] as three absent methods.
+        if snake in ("equals", "equals_to"):
+            cands |= {"eq", "ne"}
+        if snake == "hash_code":
+            cands |= {"hash"}
+        if snake == "compare_to":
+            cands |= {"cmp", "partial_cmp"}
         if any(c in have for c in cands):
             continue
         if any(h.startswith(c + "_") or h.endswith("_" + c)
