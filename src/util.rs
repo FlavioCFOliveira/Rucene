@@ -116,6 +116,7 @@ pub use resource_loader::{
     ResourceLoader, ResourceLoaderAware,
 };
 pub use ring_buffer::{FrequencyTrackingRingBuffer, Resettable, RollingBuffer};
+pub use selector::intro_select;
 pub use sloppy_math::SloppyMath;
 pub use sorter::{
     ArrayInPlaceMergeSorter, ArrayIntroSorter, ArrayTimSorter, BytesRefComparator,
@@ -171,7 +172,7 @@ use std::{
     fs::{self, File, OpenOptions},
     hash::{Hash, Hasher},
     io,
-    path::Path,
+    path::{Path, PathBuf},
     sync::LazyLock,
 };
 
@@ -530,6 +531,141 @@ impl NumericUtils {
         let v = u64::from_be_bytes(bytes);
         (v ^ 0x8000_0000_0000_0000) as i64
     }
+
+    /// Writes `result = a - b` for the `dim`-th dimension, where `a >= b`.
+    ///
+    /// Equivalent to `NumericUtils.subtract(int, int, byte[], byte[], byte[])`:
+    /// the tail that is not a multiple of four is borrowed byte by byte, then
+    /// the aligned head four bytes at a time.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `a < b`, standing in for Java's `IllegalArgumentException`.
+    pub fn subtract(bytes_per_dim: usize, dim: usize, a: &[u8], b: &[u8], result: &mut [u8]) {
+        let start = dim * bytes_per_dim;
+        let end = start + bytes_per_dim;
+
+        let mut borrow: i64 = 0;
+        let limit = start + (bytes_per_dim & !3);
+
+        let mut i = end;
+        while i > limit {
+            i -= 1;
+            let diff = i32::from(a[i]) - i32::from(b[i]) - borrow as i32;
+            borrow = i64::from(diff < 0);
+            result[i - start] = diff as u8;
+        }
+
+        // Java steps `i -= 3` from the byte-wise loop's exit value, which is one
+        // before `limit`, so the first aligned word starts at `limit - 4`.
+        let mut j = i;
+        while j >= start + 4 {
+            j -= 4;
+            let a_int = u32::from_be_bytes(a[j..j + 4].try_into().unwrap());
+            let b_int = u32::from_be_bytes(b[j..j + 4].try_into().unwrap());
+            let diff = i64::from(a_int) - i64::from(b_int) - borrow;
+            borrow = i64::from(diff < 0);
+            result[j - start..j - start + 4].copy_from_slice(&(diff as u32).to_be_bytes());
+        }
+
+        assert!(borrow == 0, "a < b");
+    }
+
+    /// Writes `result = a + b` for the `dim`-th dimension, treating both as
+    /// unsigned.
+    ///
+    /// Equivalent to `NumericUtils.add(int, int, byte[], byte[], byte[])`.
+    ///
+    /// # Panics
+    ///
+    /// Panics on overflow, standing in for Java's `IllegalArgumentException`.
+    pub fn add(bytes_per_dim: usize, dim: usize, a: &[u8], b: &[u8], result: &mut [u8]) {
+        let start = dim * bytes_per_dim;
+        let end = start + bytes_per_dim;
+
+        let mut carry: i64 = 0;
+        let limit = start + (bytes_per_dim & !3);
+
+        let mut i = end;
+        while i > limit {
+            i -= 1;
+            let digit_sum = i32::from(a[i]) + i32::from(b[i]) + carry as i32;
+            carry = i64::from(digit_sum >= 256);
+            result[i - start] = digit_sum as u8;
+        }
+
+        let mut j = i;
+        while j >= start + 4 {
+            j -= 4;
+            let a_int = u32::from_be_bytes(a[j..j + 4].try_into().unwrap());
+            let b_int = u32::from_be_bytes(b[j..j + 4].try_into().unwrap());
+            let digit_sum = i64::from(a_int) + i64::from(b_int) + carry;
+            carry = i64::from(digit_sum >= 0x1_0000_0000);
+            result[j - start..j - start + 4].copy_from_slice(&(digit_sum as u32).to_be_bytes());
+        }
+
+        assert!(carry == 0, "a + b overflows bytesPerDim={bytes_per_dim}");
+    }
+
+    /// Encodes an arbitrary-precision integer so that unsigned byte order
+    /// matches its numeric order, sign-extending it to `big_int_size` bytes.
+    ///
+    /// Equivalent to `NumericUtils.bigIntToSortableBytes(BigInteger, int,
+    /// byte[], int)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java takes a `java.math.BigInteger`.
+    /// The crate has no arbitrary-precision integer type and adopting one is a
+    /// dependency decision reserved to the user (`CLAUDE.md` §13.3), so the
+    /// value is passed in the form `BigInteger.toByteArray()` returns and
+    /// `new BigInteger(byte[])` consumes: its minimal two's-complement
+    /// big-endian representation, most significant byte first, never empty.
+    /// Every caller of the Java method already obtains those bytes on the way
+    /// in or out, so the encoding this produces is unchanged.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the value needs more than `big_int_size` bytes, standing in
+    /// for Java's `IllegalArgumentException`.
+    pub fn big_int_to_sortable_bytes(
+        big_int: &[u8],
+        big_int_size: usize,
+        result: &mut [u8],
+        offset: usize,
+    ) {
+        assert!(!big_int.is_empty(), "big_int must not be empty");
+        let mut full_big_int_bytes = vec![0u8; big_int_size];
+        match big_int.len().cmp(&big_int_size) {
+            Ordering::Less => {
+                let pad = big_int_size - big_int.len();
+                full_big_int_bytes[pad..].copy_from_slice(big_int);
+                if (big_int[0] & 0x80) != 0 {
+                    // sign extend
+                    full_big_int_bytes[..pad].fill(0xff);
+                }
+            }
+            Ordering::Equal => full_big_int_bytes.copy_from_slice(big_int),
+            Ordering::Greater => {
+                panic!("BigInteger requires more than {big_int_size} bytes storage")
+            }
+        }
+        // Flip the sign bit so negative bigints sort before positive bigints:
+        full_big_int_bytes[0] ^= 0x80;
+
+        result[offset..offset + big_int_size].copy_from_slice(&full_big_int_bytes);
+    }
+
+    /// Decodes a value previously written with
+    /// [`big_int_to_sortable_bytes`](Self::big_int_to_sortable_bytes).
+    ///
+    /// Equivalent to `NumericUtils.sortableBytesToBigInt(byte[], int, int)`. It
+    /// returns the two's-complement big-endian bytes `new BigInteger(byte[])`
+    /// would be built from — see the note on the encoder.
+    pub fn sortable_bytes_to_big_int(encoded: &[u8], offset: usize, length: usize) -> Vec<u8> {
+        let mut big_int_bytes = ArrayUtil::copy_of_sub_array(encoded, offset, offset + length);
+        // Flip the sign bit back to the original
+        big_int_bytes[0] ^= 0x80;
+        big_int_bytes
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -650,7 +786,113 @@ impl BitUtil {
     pub fn write_be_long(dst: &mut [u8], offset: usize, value: i64) {
         dst[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
     }
+
+    /// The byte order the crate reads and writes native-order values in.
+    ///
+    /// Equivalent to `BitUtil.NATIVE_BYTE_ORDER`: the platform's own order,
+    /// except that a test run with a seed picks an order from the seed instead,
+    /// so that a randomised run exercises both. Native-order values never reach
+    /// the index files, so flipping this cannot change what is written.
+    pub fn native_byte_order() -> ByteOrder {
+        Self::get_native_byte_order()
+    }
+
+    /// Equivalent to the private `BitUtil.getNativeByteOrder()`.
+    fn get_native_byte_order() -> ByteOrder {
+        if let Ok(prop) = env::var("tests.seed") {
+            return if Self::java_string_hash_code(&prop) % 2 == 0 {
+                ByteOrder::LittleEndian
+            } else {
+                ByteOrder::BigEndian
+            };
+        }
+        if cfg!(target_endian = "little") {
+            ByteOrder::LittleEndian
+        } else {
+            ByteOrder::BigEndian
+        }
+    }
+
+    /// `java.lang.String.hashCode()`, which the seed-derived order depends on.
+    fn java_string_hash_code(s: &str) -> i32 {
+        let mut h: i32 = 0;
+        for c in s.encode_utf16() {
+            h = h.wrapping_mul(31).wrapping_add(i32::from(c));
+        }
+        h
+    }
+
+    /// Interleaves the low 32 bits of each value, the even bits taken from
+    /// `even` and the odd bits from `odd`.
+    ///
+    /// Equivalent to `BitUtil.interleave(int, int)`. Adapted from
+    /// <http://graphics.stanford.edu/~seander/bithacks.html#InterleaveBMN>.
+    pub fn interleave(even: i32, odd: i32) -> i64 {
+        let mut v1 = 0x0000_0000_FFFF_FFFFu64 & (even as u32 as u64);
+        let mut v2 = 0x0000_0000_FFFF_FFFFu64 & (odd as u32 as u64);
+        v1 = (v1 | (v1 << SHIFT4)) & MAGIC4;
+        v1 = (v1 | (v1 << SHIFT3)) & MAGIC3;
+        v1 = (v1 | (v1 << SHIFT2)) & MAGIC2;
+        v1 = (v1 | (v1 << SHIFT1)) & MAGIC1;
+        v1 = (v1 | (v1 << SHIFT0)) & MAGIC0;
+        v2 = (v2 | (v2 << SHIFT4)) & MAGIC4;
+        v2 = (v2 | (v2 << SHIFT3)) & MAGIC3;
+        v2 = (v2 | (v2 << SHIFT2)) & MAGIC2;
+        v2 = (v2 | (v2 << SHIFT1)) & MAGIC1;
+        v2 = (v2 | (v2 << SHIFT0)) & MAGIC0;
+        ((v2 << 1) | v1) as i64
+    }
+
+    /// Extracts the even-bit half of an interleaved value.
+    ///
+    /// Equivalent to `BitUtil.deinterleave(long)`.
+    pub fn deinterleave(b: i64) -> i64 {
+        let mut b = b as u64;
+        b &= MAGIC0;
+        b = (b ^ (b >> SHIFT0)) & MAGIC1;
+        b = (b ^ (b >> SHIFT1)) & MAGIC2;
+        b = (b ^ (b >> SHIFT2)) & MAGIC3;
+        b = (b ^ (b >> SHIFT3)) & MAGIC4;
+        b = (b ^ (b >> SHIFT4)) & MAGIC5;
+        b as i64
+    }
+
+    /// Flips odd bits with even bits.
+    ///
+    /// Equivalent to `BitUtil.flipFlop(long)`.
+    pub fn flip_flop(b: i64) -> i64 {
+        let b = b as u64;
+        (((b & MAGIC6) >> 1) | ((b & MAGIC0) << 1)) as i64
+    }
 }
+
+/// The byte order of a multi-byte value.
+///
+/// Equivalent to `java.nio.ByteOrder`, which Lucene's `BitUtil` returns from
+/// `NATIVE_BYTE_ORDER`. Only the two orders Java defines exist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ByteOrder {
+    /// Least significant byte first.
+    LittleEndian,
+    /// Most significant byte first.
+    BigEndian,
+}
+
+// magic numbers for bit interleaving
+const MAGIC0: u64 = 0x5555_5555_5555_5555;
+const MAGIC1: u64 = 0x3333_3333_3333_3333;
+const MAGIC2: u64 = 0x0F0F_0F0F_0F0F_0F0F;
+const MAGIC3: u64 = 0x00FF_00FF_00FF_00FF;
+const MAGIC4: u64 = 0x0000_FFFF_0000_FFFF;
+const MAGIC5: u64 = 0x0000_0000_FFFF_FFFF;
+const MAGIC6: u64 = 0xAAAA_AAAA_AAAA_AAAA;
+
+// shift values for bit interleaving
+const SHIFT0: u32 = 1;
+const SHIFT1: u32 = 2;
+const SHIFT2: u32 = 4;
+const SHIFT3: u32 = 8;
+const SHIFT4: u32 = 16;
 
 // ---------------------------------------------------------------------------
 // GroupVIntUtil
@@ -685,6 +927,48 @@ impl GroupVIntUtil {
             i += 1;
         }
         Ok(())
+    }
+
+    /// Reads group varints from `src` into `dst[0..limit]` through the scalar
+    /// path, bypassing any specialised decoder.
+    ///
+    /// Equivalent to `GroupVIntUtil.readGroupVInts$Baseline(DataInput, int[],
+    /// int)`, which exists so a benchmark can measure the generic decoder
+    /// against a specialised one. This port has only the generic decoder, so
+    /// the baseline is the same code, kept under Lucene's name so the
+    /// comparison it exists for stays expressible.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LuceneError::Io` if the input is truncated or otherwise invalid.
+    pub fn read_group_vints_baseline(
+        src: &[u8],
+        pos: &mut usize,
+        dst: &mut [i32],
+        limit: usize,
+    ) -> Result<(), LuceneError> {
+        let limit = limit.min(dst.len());
+        let mut i = 0;
+        while i + 4 <= limit {
+            Self::read_group_vint_baseline(src, pos, dst, i)?;
+            i += 4;
+        }
+        while i < limit {
+            dst[i] = Self::read_vint(src, pos)?;
+            i += 1;
+        }
+        Ok(())
+    }
+
+    /// Equivalent to the private `GroupVIntUtil.readGroupVInt$Baseline(DataInput,
+    /// int[], int)`.
+    fn read_group_vint_baseline(
+        src: &[u8],
+        pos: &mut usize,
+        dst: &mut [i32],
+        offset: usize,
+    ) -> Result<(), LuceneError> {
+        Self::read_group_vint(src, pos, dst, offset)
     }
 
     /// Reads a single group of four varints.
@@ -1238,6 +1522,110 @@ impl ArrayUtil {
             Ordering::Greater => 1,
         }
     }
+
+    /// Sorts `a[from_index..to_index]` with the intro-sort algorithm, falling
+    /// back to insertion sort for small slices.
+    ///
+    /// Equivalent to `ArrayUtil.introSort(T[], int, int, Comparator)`.
+    pub fn intro_sort<T, C>(a: &mut [T], from_index: usize, to_index: usize, comp: C)
+    where
+        T: Clone,
+        C: FnMut(&T, &T) -> Ordering,
+    {
+        if to_index - from_index <= 1 {
+            return;
+        }
+        ArrayIntroSorter::new(a, comp).sort(from_index, to_index);
+    }
+
+    /// Sorts the whole slice with the intro-sort algorithm.
+    ///
+    /// Equivalent to `ArrayUtil.introSort(T[], Comparator)`.
+    pub fn intro_sort_all<T, C>(a: &mut [T], comp: C)
+    where
+        T: Clone,
+        C: FnMut(&T, &T) -> Ordering,
+    {
+        let len = a.len();
+        Self::intro_sort(a, 0, len, comp);
+    }
+
+    /// Sorts `a[from_index..to_index]` in natural order with the intro-sort
+    /// algorithm.
+    ///
+    /// Equivalent to `ArrayUtil.introSort(T[], int, int)`.
+    pub fn intro_sort_natural<T: Ord + Clone>(a: &mut [T], from_index: usize, to_index: usize) {
+        if to_index - from_index <= 1 {
+            return;
+        }
+        Self::intro_sort(a, from_index, to_index, |x: &T, y: &T| x.cmp(y));
+    }
+
+    /// Sorts `a[from_index..to_index]` with TimSort, falling back to binary
+    /// sort for small slices.
+    ///
+    /// Equivalent to `ArrayUtil.timSort(T[], int, int, Comparator)`, which sizes
+    /// the temporary storage at an eighth of the slice.
+    pub fn tim_sort<T, C>(a: &mut [T], from_index: usize, to_index: usize, comp: C)
+    where
+        T: Clone,
+        C: FnMut(&T, &T) -> Ordering,
+    {
+        if to_index - from_index <= 1 {
+            return;
+        }
+        let max_temp_slots = a.len() / 64;
+        ArrayTimSorter::new(a, comp, max_temp_slots).sort(from_index, to_index);
+    }
+
+    /// Sorts the whole slice with TimSort.
+    ///
+    /// Equivalent to `ArrayUtil.timSort(T[], Comparator)`.
+    pub fn tim_sort_all<T, C>(a: &mut [T], comp: C)
+    where
+        T: Clone,
+        C: FnMut(&T, &T) -> Ordering,
+    {
+        let len = a.len();
+        Self::tim_sort(a, 0, len, comp);
+    }
+
+    /// Sorts `a[from_index..to_index]` in natural order with TimSort.
+    ///
+    /// Equivalent to `ArrayUtil.timSort(T[], int, int)`.
+    pub fn tim_sort_natural<T: Ord + Clone>(a: &mut [T], from_index: usize, to_index: usize) {
+        if to_index - from_index <= 1 {
+            return;
+        }
+        Self::tim_sort(a, from_index, to_index, |x: &T, y: &T| x.cmp(y));
+    }
+
+    /// Reorganises `arr[from..to]` so that the element at offset `k` sits where
+    /// it would sit if the range were sorted, with every element to its left no
+    /// greater and every element to its right no smaller.
+    ///
+    /// Equivalent to `ArrayUtil.select(T[], int, int, int, Comparator)`. Runs in
+    /// linear time on average and `n log n` in the worst case.
+    pub fn select<T, C>(arr: &mut [T], from: usize, to: usize, k: usize, comparator: C)
+    where
+        T: Clone,
+        C: FnMut(&T, &T) -> Ordering,
+    {
+        // Java builds an anonymous IntroSelector whose swap/setPivot/comparePivot
+        // read the array; ArrayIntroSorter offers exactly those three operations
+        // over the same array, so the selector runs on it unchanged.
+        let mut ops = ArrayIntroSorter::new(arr, comparator);
+        intro_select(&mut ops, from, to, k);
+    }
+
+    /// Copies a slice into a new vector.
+    ///
+    /// Equivalent to the `ArrayUtil.copyArray` overloads. Java declares one per
+    /// primitive plus a generic form; a single generic function serves them all
+    /// here.
+    pub fn copy_array<T: Clone>(array: &[T]) -> Vec<T> {
+        array.to_vec()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1248,6 +1636,11 @@ impl ArrayUtil {
 pub struct IOUtils;
 
 impl IOUtils {
+    /// The canonical name of the UTF-8 charset.
+    ///
+    /// Equivalent to `IOUtils.UTF_8`.
+    pub const UTF_8: &'static str = "UTF-8";
+
     /// Closes all given closeables, collecting the first exception and
     /// suppressing subsequent ones into it.
     pub fn close<I, F>(objects: I) -> Result<(), LuceneError>
@@ -1338,6 +1731,198 @@ impl IOUtils {
                 // io::Error doesn't support add_suppressed; chain via source.
                 io::Error::new(second.kind(), second.to_string())
             }
+        }
+    }
+
+    /// Closes all given closeables, folding every failure into `ex`.
+    ///
+    /// Equivalent to `IOUtils.closeWhileSuppressingExceptions(Throwable,
+    /// Iterable)`. Java suppresses each new throwable into the one already in
+    /// flight and rethrows any `Error` in preference to it; Rust has neither
+    /// suppressed-exception lists nor a separate `Error` hierarchy, so the
+    /// failures are appended to the message of `ex`, which is the same
+    /// information in the one place the language offers for it.
+    pub fn close_while_suppressing_exceptions<I, F>(ex: LuceneError, objects: I) -> LuceneError
+    where
+        I: IntoIterator<Item = Option<F>>,
+        F: FnOnce() -> io::Result<()>,
+    {
+        let mut suppressed: Vec<String> = Vec::new();
+        for object in objects.into_iter().flatten() {
+            if let Err(e) = object() {
+                suppressed.push(e.to_string());
+            }
+        }
+        if suppressed.is_empty() {
+            return ex;
+        }
+        LuceneError::Other(format!("{ex} (suppressed: {})", suppressed.join("; ")))
+    }
+
+    /// Wraps `stream` in a reader that reports, rather than replaces, malformed
+    /// input and unmappable characters.
+    ///
+    /// Equivalent to `IOUtils.getDecodingReader(InputStream, Charset)`. Java
+    /// builds a `CharsetDecoder` set to `CodingErrorAction.REPORT`; this reads
+    /// the whole stream and decodes it strictly, so an ill-formed sequence is an
+    /// error instead of a replacement character. Only UTF-8 is supported, which
+    /// is the only charset Lucene passes here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stream cannot be read, or when its bytes are
+    /// not valid UTF-8.
+    pub fn get_decoding_reader<R: io::Read>(
+        mut stream: R,
+        char_set: &str,
+    ) -> Result<io::Cursor<String>, LuceneError> {
+        if !char_set.eq_ignore_ascii_case(Self::UTF_8) {
+            return Err(LuceneError::UnsupportedOperation(format!(
+                "unsupported charset: {char_set}"
+            )));
+        }
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes)?;
+        let text = String::from_utf8(bytes)
+            .map_err(|e| LuceneError::Other(format!("MalformedInputException: {e}")))?;
+        Ok(io::Cursor::new(text))
+    }
+
+    /// Enforces the existence of a resource that a lookup reports as absent by
+    /// returning nothing.
+    ///
+    /// Equivalent to `IOUtils.requireResourceNonNull(T, String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::NotFound`] when `resource` is `None`, standing in
+    /// for Java's `FileNotFoundException`.
+    pub fn require_resource_non_null<T>(resource: Option<T>, name: &str) -> Result<T, LuceneError> {
+        match resource {
+            Some(resource) => Ok(resource),
+            None => Err(LuceneError::NotFound(format!(
+                "The resource '{name}' was not found."
+            ))),
+        }
+    }
+
+    /// Deletes one or more files or directories, and everything underneath
+    /// them.
+    ///
+    /// Equivalent to `IOUtils.rm(Path...)`: every location is attempted, the
+    /// ones that could not be removed are collected in the order they were
+    /// attempted, and a single error naming all of them is raised at the end.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error listing every path that could not be removed.
+    pub fn rm<I, P>(locations: I) -> Result<(), LuceneError>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let mut unremoved: Vec<(PathBuf, io::Error)> = Vec::new();
+        Self::rm_into(&mut unremoved, locations);
+        if unremoved.is_empty() {
+            return Ok(());
+        }
+        let mut b =
+            String::from("Could not remove the following files (in the order of attempts):\n");
+        for (path, cause) in &unremoved {
+            let absolute = path.canonicalize().unwrap_or_else(|_| path.clone());
+            b.push_str(&format!("   {}: {cause}\n", absolute.display()));
+        }
+        Err(LuceneError::Io(io::Error::other(b)))
+    }
+
+    /// Equivalent to the private `IOUtils.rm(LinkedHashMap, Path...)`: walks
+    /// each location depth-first, deleting files before the directory that
+    /// holds them, and records — rather than propagates — every failure.
+    fn rm_into<I, P>(unremoved: &mut Vec<(PathBuf, io::Error)>, locations: I)
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        for location in locations {
+            let location = location.as_ref();
+            // TODO: remove this leniency!
+            if !location.exists() {
+                continue;
+            }
+            Self::rm_walk(unremoved, location);
+        }
+    }
+
+    /// The file-tree visitor Java hands to `Files.walkFileTree`: post-order, so
+    /// a directory is removed only once its entries have been.
+    fn rm_walk(unremoved: &mut Vec<(PathBuf, io::Error)>, path: &Path) {
+        let is_dir = path.symlink_metadata().map(|m| m.is_dir()).unwrap_or(false);
+        if is_dir {
+            match fs::read_dir(path) {
+                Ok(entries) => {
+                    for entry in entries {
+                        match entry {
+                            Ok(entry) => Self::rm_walk(unremoved, &entry.path()),
+                            Err(e) => unremoved.push((path.to_path_buf(), e)),
+                        }
+                    }
+                }
+                Err(e) => {
+                    // visitFileFailed: the directory could not be opened.
+                    unremoved.push((path.to_path_buf(), e));
+                    return;
+                }
+            }
+            if let Err(e) = fs::remove_dir(path) {
+                unremoved.push((path.to_path_buf(), e));
+            }
+        } else if let Err(e) = fs::remove_file(path) {
+            unremoved.push((path.to_path_buf(), e));
+        }
+    }
+
+    /// Rethrows a previously caught error, and never returns.
+    ///
+    /// Equivalent to `IOUtils.rethrowAlways(Throwable)`. Java declares a return
+    /// type of `Error` purely so the compiler can see that the call site is
+    /// unreachable afterwards; Rust says the same thing with the never type,
+    /// so the signature carries the guarantee instead of documenting it.
+    ///
+    /// # Panics
+    ///
+    /// Always panics, with the message of `th`.
+    pub fn rethrow_always(th: LuceneError) -> ! {
+        panic!("{th}");
+    }
+
+    /// Applies `consumer` to every element of `collection`, even after one of
+    /// them fails.
+    ///
+    /// Equivalent to `IOUtils.applyToAll(Collection, IOConsumer)`: the first
+    /// error is returned and the later ones are suppressed into it, exactly as
+    /// [`close`](Self::close) does for the closeables it is built on.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error the consumer raised.
+    pub fn apply_to_all<T, C>(
+        collection: Vec<Option<T>>,
+        mut consumer: C,
+    ) -> Result<(), LuceneError>
+    where
+        C: FnMut(T) -> Result<(), LuceneError>,
+    {
+        let mut err: Option<LuceneError> = None;
+        for t in collection.into_iter().flatten() {
+            if let Err(e) = consumer(t) {
+                if err.is_none() {
+                    err = Some(e);
+                }
+            }
+        }
+        match err {
+            Some(e) => Err(e),
+            None => Ok(()),
         }
     }
 }
@@ -1573,6 +2158,76 @@ impl RamUsageEstimator {
         Self::align_object_size(Self::NUM_BYTES_OBJECT_HEADER + size_of::<T>() as i64)
     }
 
+    /// Returns the shallow size of an array of `len` elements of type `T`.
+    ///
+    /// Equivalent to the private `RamUsageEstimator.shallowSizeOfArray(Object)`:
+    /// the array header plus the element width times the length, aligned. Java
+    /// reads the length and the component type by reflection; here both are
+    /// known statically, and a reference element is charged
+    /// [`NUM_BYTES_OBJECT_REF`](Self::NUM_BYTES_OBJECT_REF) through
+    /// [`shallow_size_of`](Self::shallow_size_of) instead.
+    pub fn shallow_size_of_array<T>(len: usize) -> i64 {
+        let mut size = Self::NUM_BYTES_ARRAY_HEADER;
+        if len > 0 {
+            size += len as i64 * size_of::<T>() as i64;
+        }
+        Self::align_object_size(size)
+    }
+
+    /// Adds the representation size of one field to the size measured so far.
+    ///
+    /// Equivalent to `RamUsageEstimator.adjustForField(long, Field)`. Java reads
+    /// the field's type by reflection to decide between a primitive width and
+    /// [`NUM_BYTES_OBJECT_REF`](Self::NUM_BYTES_OBJECT_REF); Rust knows the width
+    /// at the call site, so it is passed in. The arithmetic — Java's TODO about
+    /// the absence of per-field alignment included — is unchanged.
+    pub fn adjust_for_field(size_so_far: i64, field_size: i64) -> i64 {
+        size_so_far + field_size
+    }
+
+    /// Runs `action` with the privileges Lucene's `RamUsageEstimator` asks for.
+    ///
+    /// Equivalent to the private `RamUsageEstimator.doPrivileged(PrivilegedAction)`,
+    /// which wraps the reflective field lookup so the JVM's `SecurityManager`
+    /// grants it. Rust has neither, so the privileged block is the action; see
+    /// [`Constants::do_privileged`](Constants) for the same reasoning.
+    fn do_privileged<T>(action: impl FnOnce() -> T) -> T {
+        action()
+    }
+
+    /// Best-effort estimate of the memory an object of undetermined type costs.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOfObject(Object, long)`: an
+    /// [`Accountable`] reports its own size, and anything else falls back to
+    /// `def_size` when that is positive, or to
+    /// [`UNKNOWN_DEFAULT_RAM_BYTES_USED`](Self::UNKNOWN_DEFAULT_RAM_BYTES_USED).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java dispatches on the runtime class
+    /// through a chain of `instanceof` tests covering `String`, the boxed
+    /// primitives and every primitive array, and recurses into maps, collections
+    /// and object arrays up to [`MAX_DEPTH`](Self::MAX_DEPTH). Rust has no
+    /// runtime type information to dispatch on, so the one case the crate can
+    /// recognise — an `Accountable` — is recognised, and every other type is
+    /// charged the default, exactly as Java charges it for a class it does not
+    /// know. The typed cases are reachable directly through
+    /// [`size_of_string`](Self::size_of_string) and the `size_of_*` family,
+    /// which is how the crate's callers, which know their types, reach them.
+    pub fn size_of_object(o: Option<&dyn Accountable>, def_size: i64) -> i64 {
+        Self::do_privileged(|| match o {
+            None => 0,
+            Some(accountable) => {
+                let size = accountable.ram_bytes_used();
+                if size > 0 {
+                    size
+                } else if def_size > 0 {
+                    def_size
+                } else {
+                    Self::UNKNOWN_DEFAULT_RAM_BYTES_USED
+                }
+            }
+        })
+    }
+
     /// Renders `bytes` in human-readable units — GB, MB, KB, or bytes.
     ///
     /// Equivalent to `RamUsageEstimator.humanReadableUnits(long)`, which formats
@@ -1607,6 +2262,17 @@ impl RamUsageEstimator {
 // ---------------------------------------------------------------------------
 
 /// JVM-like and OS constants, matching Lucene's `Constants`.
+///
+/// Equivalent to `org.apache.lucene.util.Constants`.
+///
+/// Lucene reads every value through `System.getProperty`. Rust's equivalent of
+/// the JVM system-property table is the process environment, so [`get_sys_prop`]
+/// consults it first and falls back to what the Rust runtime itself knows
+/// (`std::env::consts`) for the handful of properties the JVM answers from the
+/// platform rather than from the command line. Every derived constant is then
+/// computed exactly as Lucene computes it.
+///
+/// [`get_sys_prop`]: Constants::get_sys_prop
 #[derive(Debug, Copy, Clone)]
 pub struct Constants;
 
@@ -1614,44 +2280,328 @@ impl Constants {
     /// Sentinel used when a system property cannot be read.
     pub const UNKNOWN: &'static str = "Unknown";
 
-    /// Operating-system name.
-    pub fn os_name() -> &'static str {
-        env::consts::OS
+    /// Runs `action` with the privileges Lucene's `Constants.doPrivileged` asks
+    /// for.
+    ///
+    /// Equivalent to `Constants.doPrivileged(PrivilegedAction)`, which exists
+    /// only to wrap a property read in `AccessController.doPrivileged` so the
+    /// JVM's `SecurityManager` grants it. Rust has neither an access controller
+    /// nor a security manager: the caller's own privileges are the process's
+    /// privileges, so the privileged block *is* the action. The wrapper is kept
+    /// because Lucene routes both property readers through it, and keeping the
+    /// seam means the two readers stay identical to Lucene's.
+    fn do_privileged<T>(action: impl FnOnce() -> T) -> T {
+        action()
     }
 
-    /// True if running on Linux.
-    pub fn linux() -> bool {
-        env::consts::OS == "linux"
+    /// Logs the warning Lucene logs when a property cannot be read.
+    ///
+    /// Equivalent to `Constants.logSecurityWarning(String)`. Java reaches here
+    /// when the `SecurityManager` denies the read; this port reaches here when
+    /// the environment holds a value that is not valid Unicode, the only way a
+    /// lookup can fail other than being absent.
+    fn log_security_warning(property: &str) {
+        log::warn!("SecurityManager prevented access to system property: {property}");
     }
 
-    /// True if running on Windows.
-    pub fn windows() -> bool {
-        env::consts::OS == "windows"
+    /// Returns the value of a system property, or `None` when it is not set.
+    ///
+    /// Equivalent to `Constants.getSysProp(String)`.
+    fn get_sys_prop(property: &str) -> Option<String> {
+        match Self::do_privileged(|| env::var(property)) {
+            Ok(value) => Some(value),
+            Err(env::VarError::NotPresent) => Self::platform_prop(property),
+            Err(env::VarError::NotUnicode(_)) => {
+                Self::log_security_warning(property);
+                None
+            }
+        }
     }
 
-    /// True if running on macOS.
-    pub fn mac_os_x() -> bool {
-        env::consts::OS == "macos"
+    /// Returns the value of a system property, or `def` when it is not set.
+    ///
+    /// Equivalent to `Constants.getSysProp(String, String)`.
+    fn get_sys_prop_or(property: &str, def: &str) -> String {
+        Self::get_sys_prop(property).unwrap_or_else(|| def.to_string())
     }
 
-    /// Operating-system architecture.
-    pub fn os_arch() -> &'static str {
-        env::consts::ARCH
+    /// The values the Rust runtime answers for the JVM properties that describe
+    /// the platform rather than the invocation. The JVM fills these in the same
+    /// way — from the platform, before any command line is consulted — so
+    /// answering them here keeps `get_sys_prop` the single source every constant
+    /// below reads from, exactly as in Lucene.
+    fn platform_prop(property: &str) -> Option<String> {
+        match property {
+            "os.name" => Some(env::consts::OS.to_string()),
+            "os.arch" => Some(env::consts::ARCH.to_string()),
+            "sun.arch.data.model" => Some(if cfg!(target_pointer_width = "64") {
+                "64".to_string()
+            } else {
+                usize::BITS.to_string()
+            }),
+            _ => None,
+        }
     }
 
-    /// True if the target pointer width is 64 bits.
-    pub fn jre_is_64bit() -> bool {
-        env::consts::ARCH.contains("64")
+    /// JVM vendor info.
+    ///
+    /// Equivalent to `Constants.JVM_VENDOR`.
+    pub fn jvm_vendor() -> String {
+        Self::get_sys_prop_or("java.vm.vendor", Self::UNKNOWN)
     }
 
-    /// Rust target family, approximating a JVM vendor name.
-    pub fn jvm_vendor() -> &'static str {
-        "Rust"
+    /// JVM vendor name.
+    ///
+    /// Equivalent to `Constants.JVM_NAME`.
+    pub fn jvm_name() -> String {
+        Self::get_sys_prop_or("java.vm.name", Self::UNKNOWN)
     }
 
     /// Rust compiler version string.
     pub fn jvm_version() -> String {
         env!("CARGO_PKG_RUST_VERSION").to_string()
+    }
+
+    /// Operating-system name.
+    ///
+    /// Equivalent to `Constants.OS_NAME`.
+    pub fn os_name() -> &'static str {
+        env::consts::OS
+    }
+
+    /// True if running on Linux.
+    ///
+    /// Equivalent to `Constants.LINUX`.
+    pub fn linux() -> bool {
+        env::consts::OS == "linux"
+    }
+
+    /// True if running on Windows.
+    ///
+    /// Equivalent to `Constants.WINDOWS`.
+    pub fn windows() -> bool {
+        env::consts::OS == "windows"
+    }
+
+    /// True if running on SunOS.
+    ///
+    /// Equivalent to `Constants.SUN_OS`.
+    pub fn sun_os() -> bool {
+        env::consts::OS == "solaris"
+    }
+
+    /// True if running on macOS.
+    ///
+    /// Equivalent to `Constants.MAC_OS_X`.
+    pub fn mac_os_x() -> bool {
+        env::consts::OS == "macos"
+    }
+
+    /// True if running on FreeBSD.
+    ///
+    /// Equivalent to `Constants.FREE_BSD`.
+    pub fn free_bsd() -> bool {
+        env::consts::OS == "freebsd"
+    }
+
+    /// Operating-system architecture.
+    ///
+    /// Equivalent to `Constants.OS_ARCH`. Java spells x86-64 `amd64`; the Rust
+    /// runtime spells the same architecture `x86_64`, and the crate compares
+    /// against the Rust spelling throughout.
+    pub fn os_arch() -> &'static str {
+        env::consts::ARCH
+    }
+
+    /// Operating-system version.
+    ///
+    /// Equivalent to `Constants.OS_VERSION`.
+    pub fn os_version() -> String {
+        Self::get_sys_prop_or("os.version", Self::UNKNOWN)
+    }
+
+    /// Runtime vendor.
+    ///
+    /// Equivalent to `Constants.JAVA_VENDOR`.
+    pub fn java_vendor() -> String {
+        Self::get_sys_prop_or("java.vendor", Self::UNKNOWN)
+    }
+
+    /// True if the runtime is a client runtime with the optimising compiler
+    /// disabled.
+    ///
+    /// Equivalent to `Constants.IS_CLIENT_VM`.
+    pub fn is_client_vm() -> bool {
+        Self::get_sys_prop_or("java.vm.info", "").contains("emulated-client")
+    }
+
+    /// True if the runtime is HotSpot-based and exposes its options.
+    ///
+    /// Equivalent to `Constants.IS_HOTSPOT_VM`.
+    pub fn is_hotspot_vm() -> bool {
+        HotspotVMOptions::is_hotspot_vm()
+    }
+
+    /// True if JVMCI is enabled (for example on GraalVM).
+    ///
+    /// Equivalent to `Constants.IS_JVMCI_VM`.
+    pub fn is_jvmci_vm() -> bool {
+        HotspotVMOptions::get("UseJVMCICompiler")
+            .and_then(|v| v.parse::<bool>().ok())
+            .unwrap_or(false)
+    }
+
+    /// True if the target pointer width is 64 bits.
+    ///
+    /// Equivalent to `Constants.JRE_IS_64BIT`.
+    pub fn jre_is_64bit() -> bool {
+        Self::is_64bit()
+    }
+
+    /// Equivalent to `Constants.is64Bit()`.
+    fn is_64bit() -> bool {
+        match Self::get_sys_prop("sun.arch.data.model") {
+            Some(datamodel) => datamodel.contains("64"),
+            None => Self::os_arch().contains("64"),
+        }
+    }
+
+    /// True when FMA likely means a CPU instruction rather than software
+    /// arithmetic.
+    ///
+    /// Equivalent to the private `Constants.HAS_FMA`.
+    fn has_fma() -> bool {
+        !Self::is_client_vm()
+            && HotspotVMOptions::get("UseFMA")
+                .and_then(|v| v.parse::<bool>().ok())
+                .unwrap_or(false)
+    }
+
+    /// Equivalent to the private `Constants.MAX_VECTOR_SIZE`.
+    fn max_vector_size() -> i32 {
+        HotspotVMOptions::get("MaxVectorSize")
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(0)
+    }
+
+    /// Equivalent to the private `Constants.HAS_SSE4A`: an AMD CPU with SSE4a.
+    fn has_sse4a() -> bool {
+        HotspotVMOptions::get("UseXmmI2F")
+            .and_then(|v| v.parse::<bool>().ok())
+            .unwrap_or(false)
+    }
+
+    /// Equivalent to the private `Constants.HAS_AVX2`: AVX support of at least
+    /// AVX2.
+    fn has_avx2() -> bool {
+        HotspotVMOptions::get("UseAVX")
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(0)
+            >= 2
+    }
+
+    /// Equivalent to the private `Constants.HAS_SVE`: an Arm CPU with SVE.
+    fn has_sve() -> bool {
+        HotspotVMOptions::get("UseSVE")
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(0)
+            >= 1
+    }
+
+    /// True when vector FMA is known to have faster throughput than a separate
+    /// multiply and add.
+    ///
+    /// Equivalent to `Constants.HAS_FAST_VECTOR_FMA`.
+    pub fn has_fast_vector_fma() -> bool {
+        if Self::has_fma() {
+            let value = Self::get_sys_prop_or("lucene.useVectorFMA", "auto");
+            if value == "auto" {
+                // newer Neoverse cores have their act together
+                // the problem is just apple silicon (this is a practical heuristic)
+                if Self::os_arch() == "aarch64" && !Self::mac_os_x() {
+                    return true;
+                }
+                // zen cores or newer, its a wash, turn it on as it doesn't hurt
+                // starts to yield gains for vectors only at zen4+
+                if Self::has_sse4a() && Self::max_vector_size() >= 32 {
+                    return true;
+                }
+                // intel has their act together
+                if Self::os_arch() == "x86_64" && !Self::has_sse4a() {
+                    return true;
+                }
+            } else {
+                return value.eq_ignore_ascii_case("true");
+            }
+        }
+        // everyone else is slow, until proven otherwise by benchmarks
+        false
+    }
+
+    /// True when scalar FMA is known to have faster throughput than a separate
+    /// multiply and add.
+    ///
+    /// Equivalent to `Constants.HAS_FAST_SCALAR_FMA`.
+    pub fn has_fast_scalar_fma() -> bool {
+        if Self::has_fma() {
+            let value = Self::get_sys_prop_or("lucene.useScalarFMA", "auto");
+            if value == "auto" {
+                // newer Neoverse cores have their act together
+                // the problem is just apple silicon (this is a practical heuristic)
+                if Self::os_arch() == "aarch64" && !Self::mac_os_x() {
+                    return true;
+                }
+                // latency becomes 4 for the Zen3 (0x19h), but still a wash
+                // until the Zen4 anyway, and big drop on previous zens:
+                if Self::has_sse4a() && Self::max_vector_size() >= 64 {
+                    return true;
+                }
+                // intel has their act together
+                if Self::os_arch() == "x86_64" && !Self::has_sse4a() {
+                    return true;
+                }
+            } else {
+                return value.eq_ignore_ascii_case("true");
+            }
+        }
+        // everyone else is slow, until proven otherwise by benchmarks
+        false
+    }
+
+    /// True when compress-and-cast is known to have fast throughput.
+    ///
+    /// Equivalent to `Constants.HAS_FAST_COMPRESS_MASK_CAST`.
+    pub fn has_fast_compress_mask_cast() -> bool {
+        if Self::os_arch() == "aarch64" && Self::has_sve() {
+            return true;
+        }
+        if Self::os_arch() == "x86_64" && Self::has_avx2() {
+            return true;
+        }
+        false
+    }
+
+    /// The default read advice used when opening index files.
+    ///
+    /// Equivalent to `Constants.DEFAULT_READADVICE`: `ReadAdvice::Normal`
+    /// unless the `org.apache.lucene.store.defaultReadAdvice` property names
+    /// another value.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the property names no known advice, standing in for Java's
+    /// `IllegalArgumentException` from `ReadAdvice.valueOf`.
+    pub fn default_read_advice() -> crate::store::ReadAdvice {
+        use crate::store::ReadAdvice;
+        match Self::get_sys_prop("org.apache.lucene.store.defaultReadAdvice") {
+            None => ReadAdvice::Normal,
+            Some(a) => match a.to_uppercase().as_str() {
+                "NORMAL" => ReadAdvice::Normal,
+                "RANDOM" => ReadAdvice::Random,
+                "SEQUENTIAL" => ReadAdvice::Sequential,
+                other => panic!("No enum constant ReadAdvice.{other}"),
+            },
+        }
     }
 }
 
