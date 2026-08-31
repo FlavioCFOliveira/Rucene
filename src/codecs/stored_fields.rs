@@ -9,8 +9,14 @@ use crate::error::Result;
 use crate::store::{Directory, IOContext};
 use crate::util::Accountable;
 
+use std::sync::Arc;
+
+use super::postings::MergeState;
 use super::stub::{FieldInfo, FieldInfos, SegmentInfo, StoredFieldVisitor};
+use crate::index::merge::{DocIDMerger, DocIDMergerSub, DocMap};
+use crate::index::stored_field_visitor::StoredFieldVisitorStatus;
 use crate::index::StoredFieldDataInput;
+use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 
 /// Controls the format of stored fields.
 ///
@@ -141,6 +147,54 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
 
     /// Called before close, passing the number of documents written.
     fn finish(&mut self, num_docs: i32) -> Result<()>;
+
+    /// Copies every document's stored fields from the segments being merged.
+    ///
+    /// Equivalent to `StoredFieldsWriter.merge(MergeState)`. The documents come
+    /// out in merged order through a [`DocIDMerger`], each one read back through
+    /// its own reader and written straight out again; the return value is the
+    /// number of documents written, which the caller checks against the merged
+    /// segment's `max_doc`.
+    fn merge(&mut self, merge_state: &MergeState) -> Result<i32> {
+        // The readers stay outside the merger: the sub carries only the index
+        // of the one it walks, so the reader can be used while the merger is
+        // borrowed, and no reader is cloned per document.
+        let mut readers: Vec<Box<dyn StoredFieldsReader>> = Vec::new();
+        let mut remappers: Vec<Option<FieldInfos>> = Vec::new();
+        let mut subs: Vec<StoredFieldsMergeSub> = Vec::new();
+        for (i, reader) in merge_state.stored_fields_readers.iter().enumerate() {
+            let Some(reader) = reader.as_ref() else {
+                continue;
+            };
+            reader.check_integrity()?;
+            subs.push(StoredFieldsMergeSub {
+                doc_map: Arc::clone(&merge_state.doc_maps[i]),
+                reader_index: readers.len(),
+                max_doc: merge_state.max_docs[i],
+                doc_id: -1,
+                mapped_doc_id: -1,
+            });
+            readers.push(reader.clone_reader());
+            remappers.push(merge_visitor_remapper(merge_state, i));
+        }
+
+        let mut merger = DocIDMerger::new(subs, merge_state.needs_index_sort)?;
+        let mut doc_count = 0i32;
+        while let Some((reader_index, doc_id)) =
+            merger.next_sub()?.map(|sub| (sub.reader_index, sub.doc_id))
+        {
+            self.start_document()?;
+            let mut visitor = MergeVisitor {
+                writer: self,
+                remapper: remappers[reader_index].as_ref(),
+            };
+            readers[reader_index].document(doc_id, &mut visitor)?;
+            self.finish_document()?;
+            doc_count += 1;
+        }
+        self.finish(doc_count)?;
+        Ok(doc_count)
+    }
 
     /// Closes the writer and releases any resources.
     fn close(&mut self) -> Result<()>;
@@ -290,5 +344,132 @@ mod tests {
         ) -> Result<super::super::stub::StoredFieldVisitorStatus> {
             Ok(super::super::stub::StoredFieldVisitorStatus::Yes)
         }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Merging
+// -----------------------------------------------------------------------------
+
+/// Decides whether a sub-reader's field numbers need remapping.
+///
+/// Equivalent to the loop in `StoredFieldsWriter.MergeVisitor`'s constructor:
+/// when every field of the sub-reader keeps its number and name in the merged
+/// `FieldInfos`, the numbers are aligned and each field access can skip the
+/// lookup; one mismatch and every field must be looked up by name instead.
+fn merge_visitor_remapper(merge_state: &MergeState, reader_index: usize) -> Option<FieldInfos> {
+    let Some(reader_field_infos) = merge_state.field_infos.get(reader_index) else {
+        return None;
+    };
+    for fi in reader_field_infos.iter() {
+        match merge_state
+            .merge_field_infos
+            .field_info_by_number(fi.number)
+        {
+            Some(other) if other.name == fi.name => {}
+            _ => return Some(merge_state.merge_field_infos.clone()),
+        }
+    }
+    None
+}
+
+/// One sub-reader's stored fields, as the merger walks them.
+///
+/// Equivalent to `StoredFieldsWriter.StoredFieldsMergeSub`.
+struct StoredFieldsMergeSub {
+    doc_map: DocMap,
+    /// Index into the merge's reader list, so the reader itself stays outside
+    /// the merger and need not be cloned per document.
+    reader_index: usize,
+    max_doc: i32,
+    doc_id: i32,
+    mapped_doc_id: i32,
+}
+
+impl DocIDMergerSub for StoredFieldsMergeSub {
+    fn next_doc(&mut self) -> Result<i32> {
+        self.doc_id += 1;
+        if self.doc_id == self.max_doc {
+            Ok(NO_MORE_DOCS)
+        } else {
+            Ok(self.doc_id)
+        }
+    }
+
+    fn doc_map(&self) -> &DocMap {
+        &self.doc_map
+    }
+
+    fn mapped_doc_id(&self) -> i32 {
+        self.mapped_doc_id
+    }
+
+    fn set_mapped_doc_id(&mut self, doc_id: i32) {
+        self.mapped_doc_id = doc_id;
+    }
+}
+
+/// Forwards every stored field read from a sub-reader straight to the writer.
+///
+/// Equivalent to `StoredFieldsWriter.MergeVisitor`, which Java also makes an
+/// `IndexableField` so it can hand itself to `writeField`. This port's writer
+/// takes the value directly, one method per type, so the visitor forwards the
+/// callback instead of impersonating a field.
+struct MergeVisitor<'a, W: StoredFieldsWriter + ?Sized> {
+    writer: &'a mut W,
+    remapper: Option<&'a FieldInfos>,
+}
+
+impl<W: StoredFieldsWriter + ?Sized> MergeVisitor<'_, W> {
+    /// Returns the field info to write under, remapping by name when the
+    /// numbers are not aligned.
+    ///
+    /// Equivalent to `MergeVisitor.remap(FieldInfo)`.
+    fn remap<'f>(&'f self, field: &'f FieldInfo) -> Result<&'f FieldInfo> {
+        match self.remapper {
+            None => Ok(field),
+            Some(remapper) => remapper.field_info(&field.name).ok_or_else(|| {
+                crate::error::LuceneError::IllegalState(format!(
+                    "field \"{}\" is absent from the merged field infos",
+                    field.name
+                ))
+            }),
+        }
+    }
+}
+
+impl<W: StoredFieldsWriter + ?Sized> StoredFieldVisitor for MergeVisitor<'_, W> {
+    fn binary_field(&mut self, field_info: &FieldInfo, value: &[u8]) -> Result<()> {
+        let remapped = self.remap(field_info)?.clone();
+        self.writer.write_field_bytes(&remapped, value)
+    }
+
+    fn string_field(&mut self, field_info: &FieldInfo, value: &str) -> Result<()> {
+        let remapped = self.remap(field_info)?.clone();
+        self.writer.write_field_string(&remapped, value)
+    }
+
+    fn int_field(&mut self, field_info: &FieldInfo, value: i32) -> Result<()> {
+        let remapped = self.remap(field_info)?.clone();
+        self.writer.write_field_i32(&remapped, value)
+    }
+
+    fn long_field(&mut self, field_info: &FieldInfo, value: i64) -> Result<()> {
+        let remapped = self.remap(field_info)?.clone();
+        self.writer.write_field_i64(&remapped, value)
+    }
+
+    fn float_field(&mut self, field_info: &FieldInfo, value: f32) -> Result<()> {
+        let remapped = self.remap(field_info)?.clone();
+        self.writer.write_field_f32(&remapped, value)
+    }
+
+    fn double_field(&mut self, field_info: &FieldInfo, value: f64) -> Result<()> {
+        let remapped = self.remap(field_info)?.clone();
+        self.writer.write_field_f64(&remapped, value)
+    }
+
+    fn needs_field(&mut self, _field_info: &FieldInfo) -> Result<StoredFieldVisitorStatus> {
+        Ok(StoredFieldVisitorStatus::Yes)
     }
 }

@@ -19,6 +19,9 @@ use crate::index::FieldInfos;
 use crate::store::{Directory, IOContext};
 use crate::util::InfoStream;
 
+/// Component name used in this merger's info-stream messages, as Java does.
+const SM: &str = "SM";
+
 /// Adapts a [`crate::codecs::norms::NormsProducer`] to the postings module's own
 /// `NormsProducer` trait.
 ///
@@ -168,48 +171,170 @@ impl SegmentMerger {
             ));
         }
 
+        let num_merged = self.merge_with_logging_count(Self::merge_fields, "stored fields")?;
+        debug_assert_eq!(
+            num_merged,
+            self.write_state.segment_info.max_doc()?,
+            "numMerged does not match the merged segment's maxDoc"
+        );
+
         let field_infos = &self.write_state.field_infos;
         let has_norms = field_infos.has_norms();
         let has_doc_values = field_infos.has_doc_values();
         let has_points = field_infos.has_point_values();
         let has_vectors = field_infos.has_vector_values();
-        let has_postings = field_infos.has_postings();
+        let has_term_vectors = field_infos.has_term_vectors();
 
         if has_norms {
-            let state = self.write_state.borrow();
-            let mut consumer = self.codec.norms_format().norms_consumer(&state)?;
-            consumer.merge(&self.merge_state)?;
-            consumer.close()?;
+            self.merge_with_logging(Self::merge_norms, "norms", num_merged)?;
         }
 
-        if has_postings {
-            self.merge_terms(has_norms)?;
-        }
+        // Lucene merges the postings unconditionally: the terms writer must run
+        // even for a segment with no indexed field, so that the empty terms
+        // files exist and the reader finds them.
+        let has_norms_for_terms = has_norms;
+        self.merge_with_logging(
+            move |merger| merger.merge_terms(has_norms_for_terms),
+            "postings",
+            num_merged,
+        )?;
 
         if has_doc_values {
-            let state = self.write_state.borrow();
-            let mut consumer = self.codec.doc_values_format().fields_consumer(&state)?;
-            consumer.merge(&self.merge_state)?;
-            consumer.close()?;
+            self.merge_with_logging(Self::merge_doc_values, "doc values", num_merged)?;
         }
 
         if has_points {
-            let state = self.write_state.borrow();
-            let mut writer = self.codec.points_format().fields_writer(&state)?;
-            writer.merge(&self.merge_state)?;
-            writer.close()?;
+            self.merge_with_logging(Self::merge_points, "points", num_merged)?;
         }
 
         if has_vectors {
-            let mut writer = self
-                .codec
-                .knn_vectors_format()
-                .fields_writer(&self.write_state)?;
-            writer.merge(&self.merge_state)?;
-            writer.close()?;
+            self.merge_with_logging(Self::merge_vector_values, "numeric vectors", num_merged)?;
         }
 
-        self.merge_field_infos()
+        if has_term_vectors {
+            self.merge_with_logging_count(Self::merge_term_vectors, "term vectors")?;
+        }
+
+        // Write the merged infos.
+        self.merge_with_logging(
+            |merger| merger.merge_field_infos(),
+            "field infos",
+            num_merged,
+        )
+    }
+
+    /// Copies the stored fields of every document into the merged segment.
+    ///
+    /// Equivalent to `SegmentMerger.mergeFields()`. Returns how many documents
+    /// were written.
+    fn merge_fields(&mut self) -> Result<i32> {
+        let mut writer = self.codec.stored_fields_format().fields_writer(
+            &*self.write_state.directory,
+            &self.write_state.segment_info,
+            &*self.write_state.context,
+        )?;
+        let merged = writer.merge(&self.merge_state)?;
+        writer.close()?;
+        Ok(merged)
+    }
+
+    /// Copies the term vectors of every document into the merged segment.
+    ///
+    /// Equivalent to `SegmentMerger.mergeTermVectors()`.
+    fn merge_term_vectors(&mut self) -> Result<i32> {
+        let mut writer = self.codec.term_vectors_format().vectors_writer(
+            &*self.write_state.directory,
+            &self.write_state.segment_info,
+            &*self.write_state.context,
+        )?;
+        let merged = writer.merge(&self.merge_state)?;
+        debug_assert_eq!(merged, self.write_state.segment_info.max_doc()?);
+        writer.close()?;
+        Ok(merged)
+    }
+
+    /// Merges the norms.
+    ///
+    /// Equivalent to `SegmentMerger.mergeNorms(SegmentWriteState, SegmentReadState)`.
+    fn merge_norms(&mut self) -> Result<()> {
+        let state = self.write_state.borrow();
+        let mut consumer = self.codec.norms_format().norms_consumer(&state)?;
+        consumer.merge(&self.merge_state)?;
+        consumer.close()
+    }
+
+    /// Merges the doc values.
+    ///
+    /// Equivalent to `SegmentMerger.mergeDocValues(SegmentWriteState, SegmentReadState)`.
+    fn merge_doc_values(&mut self) -> Result<()> {
+        let state = self.write_state.borrow();
+        let mut consumer = self.codec.doc_values_format().fields_consumer(&state)?;
+        consumer.merge(&self.merge_state)?;
+        consumer.close()
+    }
+
+    /// Merges the points.
+    ///
+    /// Equivalent to `SegmentMerger.mergePoints(SegmentWriteState, SegmentReadState)`.
+    fn merge_points(&mut self) -> Result<()> {
+        let state = self.write_state.borrow();
+        let mut writer = self.codec.points_format().fields_writer(&state)?;
+        writer.merge(&self.merge_state)?;
+        writer.close()
+    }
+
+    /// Merges the KNN vectors.
+    ///
+    /// Equivalent to `SegmentMerger.mergeVectorValues(SegmentWriteState, SegmentReadState)`.
+    fn merge_vector_values(&mut self) -> Result<()> {
+        let mut writer = self
+            .codec
+            .knn_vectors_format()
+            .fields_writer(&self.write_state)?;
+        writer.merge(&self.merge_state)?;
+        writer.close()
+    }
+
+    /// Runs one merge phase and reports how long it took.
+    ///
+    /// Equivalent to `SegmentMerger.mergeWithLogging(VoidMerger, SegmentWriteState, SegmentReadState, String, int)`.
+    fn merge_with_logging<F>(&mut self, merger: F, format_name: &str, num_merged: i32) -> Result<()>
+    where
+        F: FnOnce(&mut Self) -> Result<()>,
+    {
+        let start = std::time::Instant::now();
+        merger(self)?;
+        if self.write_state.info_stream.is_enabled(SM) {
+            self.write_state.info_stream.message(
+                SM,
+                &format!(
+                    "{} ms to merge {format_name} [{num_merged} docs]",
+                    start.elapsed().as_millis()
+                ),
+            );
+        }
+        Ok(())
+    }
+
+    /// Runs one merge phase that reports a document count, and logs it.
+    ///
+    /// Equivalent to `SegmentMerger.mergeWithLogging(Merger, String)`.
+    fn merge_with_logging_count<F>(&mut self, merger: F, format_name: &str) -> Result<i32>
+    where
+        F: FnOnce(&mut Self) -> Result<i32>,
+    {
+        let start = std::time::Instant::now();
+        let num_merged = merger(self)?;
+        if self.write_state.info_stream.is_enabled(SM) {
+            self.write_state.info_stream.message(
+                SM,
+                &format!(
+                    "{} ms to merge {format_name} [{num_merged} docs]",
+                    start.elapsed().as_millis()
+                ),
+            );
+        }
+        Ok(num_merged)
     }
 
     /// Merges the postings, supplying the norms the terms writer needs.
@@ -247,7 +372,7 @@ impl SegmentMerger {
     /// Writes the merged field infos.
     ///
     /// Equivalent to `SegmentMerger.mergeFieldInfos`.
-    fn merge_field_infos(&self) -> Result<()> {
+    fn merge_field_infos(&mut self) -> Result<()> {
         self.codec.field_infos_format().write(
             &*self.write_state.directory,
             &self.write_state.segment_info,

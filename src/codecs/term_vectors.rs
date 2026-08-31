@@ -9,7 +9,13 @@ use crate::error::{LuceneError, Result};
 use crate::store::{DataInput, Directory, IOContext};
 use crate::util::BytesRef;
 
+use std::sync::Arc;
+
+use super::postings::MergeState;
 use super::stub::{FieldInfo, FieldInfos, Fields, SegmentInfo};
+use crate::index::merge::{DocIDMerger, DocIDMergerSub, DocMap};
+use crate::index::postings_enum::{POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS};
+use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 
 /// Controls the format of term vectors.
 ///
@@ -193,6 +199,130 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug {
 
     /// Called before close, passing the number of documents written.
     fn finish(&mut self, num_docs: i32) -> Result<()>;
+
+    /// Writes one document's term vectors, field by field and term by term.
+    ///
+    /// Equivalent to `TermVectorsWriter.addAllDocVectors(Fields, MergeState)`.
+    /// A document with no vectors is written as an empty one, so that document
+    /// numbers stay aligned with the merged segment.
+    fn add_all_doc_vectors(
+        &mut self,
+        vectors: Option<&dyn Fields>,
+        merge_field_infos: &FieldInfos,
+    ) -> Result<()> {
+        let Some(vectors) = vectors else {
+            self.start_document(0)?;
+            self.finish_document()?;
+            return Ok(());
+        };
+
+        let field_names: Vec<String> = vectors.iterator().collect();
+        let mut num_fields = vectors.size();
+        if num_fields == -1 {
+            // Count them: `Fields.size()` is not a mandatory statistic.
+            num_fields = field_names.len() as i32;
+        }
+        self.start_document(num_fields)?;
+
+        for field_name in &field_names {
+            let field_info = merge_field_infos.field_info(field_name).ok_or_else(|| {
+                crate::error::LuceneError::IllegalState(format!(
+                    "field \"{field_name}\" carries term vectors but is absent from the merged \
+                     field infos"
+                ))
+            })?;
+            let Some(terms) = vectors.terms(field_name)? else {
+                // The field enumeration should not lie, but Lucene tolerates it.
+                continue;
+            };
+
+            let has_positions = terms.has_positions();
+            let has_offsets = terms.has_offsets();
+            let has_payloads = terms.has_payloads();
+            debug_assert!(!has_payloads || has_positions);
+
+            let mut num_terms = terms.size() as i32;
+            if num_terms == -1 {
+                // Count them: `Terms.size()` is not a mandatory statistic.
+                num_terms = 0;
+                let mut counting = terms.iterator()?;
+                while counting.next()?.is_some() {
+                    num_terms += 1;
+                }
+            }
+
+            self.start_field(
+                field_info,
+                num_terms,
+                has_positions,
+                has_offsets,
+                has_payloads,
+            )?;
+            let mut terms_enum = terms.iterator()?;
+            while let Some(term) = terms_enum.next()? {
+                let freq = terms_enum.total_term_freq()? as i32;
+                self.start_term(&term, freq)?;
+
+                if has_positions || has_offsets {
+                    let mut postings = terms_enum
+                        .postings(None, POSTINGS_ENUM_OFFSETS | POSTINGS_ENUM_PAYLOADS)?;
+                    let doc_id = postings.next_doc()?;
+                    debug_assert_ne!(doc_id, NO_MORE_DOCS);
+                    for _ in 0..freq {
+                        let pos = postings.next_position()?;
+                        let start_offset = postings.start_offset();
+                        let end_offset = postings.end_offset();
+                        let payload = postings
+                            .get_payload()?
+                            .map(|bytes| BytesRef::new(bytes.to_vec()));
+                        debug_assert!(!has_positions || pos >= 0);
+                        self.add_position(pos, start_offset, end_offset, payload.as_ref())?;
+                    }
+                }
+                self.finish_term()?;
+            }
+            self.finish_field()?;
+        }
+        self.finish_document()
+    }
+
+    /// Copies every document's term vectors from the segments being merged.
+    ///
+    /// Equivalent to `TermVectorsWriter.merge(MergeState)`.
+    fn merge(&mut self, merge_state: &MergeState) -> Result<i32> {
+        let mut readers: Vec<Option<Box<dyn TermVectorsReader>>> = Vec::new();
+        let mut subs: Vec<TermVectorsMergeSub> = Vec::new();
+        for (i, reader) in merge_state.term_vectors_readers.iter().enumerate() {
+            if let Some(reader) = reader.as_ref() {
+                reader.check_integrity()?;
+                readers.push(Some(reader.clone_reader()));
+            } else {
+                readers.push(None);
+            }
+            subs.push(TermVectorsMergeSub {
+                doc_map: Arc::clone(&merge_state.doc_maps[i]),
+                reader_index: i,
+                max_doc: merge_state.max_docs[i],
+                doc_id: -1,
+                mapped_doc_id: -1,
+            });
+        }
+
+        let mut merger = DocIDMerger::new(subs, merge_state.needs_index_sort)?;
+        let mut doc_count = 0i32;
+        while let Some((reader_index, doc_id)) =
+            merger.next_sub()?.map(|sub| (sub.reader_index, sub.doc_id))
+        {
+            let vectors = match readers[reader_index].as_ref() {
+                None => None,
+                Some(reader) => reader.get(doc_id)?,
+            };
+            self.add_all_doc_vectors(vectors.as_deref(), &merge_state.merge_field_infos)?;
+            doc_count += 1;
+        }
+        self.finish(doc_count)?;
+        Ok(doc_count)
+    }
 
     /// Closes the writer and releases any resources.
     fn close(&mut self) -> Result<()>;
@@ -497,5 +627,41 @@ mod tests {
         writer.finish_document().unwrap();
         writer.finish(1).unwrap();
         writer.close().unwrap();
+    }
+}
+
+/// One sub-reader's term vectors, as the merger walks them.
+///
+/// Equivalent to `TermVectorsWriter.TermVectorsMergeSub`. The reader lives in
+/// the merge's own list rather than in the sub, so it need not be cloned per
+/// document.
+struct TermVectorsMergeSub {
+    doc_map: DocMap,
+    reader_index: usize,
+    max_doc: i32,
+    doc_id: i32,
+    mapped_doc_id: i32,
+}
+
+impl DocIDMergerSub for TermVectorsMergeSub {
+    fn next_doc(&mut self) -> Result<i32> {
+        self.doc_id += 1;
+        if self.doc_id == self.max_doc {
+            Ok(NO_MORE_DOCS)
+        } else {
+            Ok(self.doc_id)
+        }
+    }
+
+    fn doc_map(&self) -> &DocMap {
+        &self.doc_map
+    }
+
+    fn mapped_doc_id(&self) -> i32 {
+        self.mapped_doc_id
+    }
+
+    fn set_mapped_doc_id(&mut self, doc_id: i32) {
+        self.mapped_doc_id = doc_id;
     }
 }
