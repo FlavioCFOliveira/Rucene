@@ -20,9 +20,12 @@ use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, Result};
 use std::fmt::Debug;
 
+use crate::index::leaf_reader::LeafReader;
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
+use crate::index::reader_context::LeafReaderContext;
 use crate::index::terms::{OrdTermState, SeekStatus, TermState, TermsEnum};
 use crate::index::terms_enum_index::{TermsEnumIndex, TermsEnumIndexState};
+use crate::index::DocValuesType;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::util::attribute::AttributeSource;
 use crate::util::extra::{
@@ -491,6 +494,169 @@ impl DocValues {
         dv: Box<dyn SortedSetDocValues + 'a>,
     ) -> Option<Box<dyn SortedDocValues + 'a>> {
         dv.into_singleton()
+    }
+
+    /// Refuses a field that exists but does not carry doc values of one of the
+    /// `expected` types.
+    ///
+    /// Equivalent to the private `DocValues.checkField(LeafReader, String,
+    /// DocValuesType...)`. A field the reader does not know about is not an
+    /// error: the caller returns an empty instance for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] naming the actual and the expected
+    /// types, as Java's `IllegalStateException` does.
+    pub fn check_field(
+        reader: &dyn LeafReader,
+        field: &str,
+        expected: &[DocValuesType],
+    ) -> Result<()> {
+        let field_infos = reader.get_field_infos();
+        let Some(fi) = field_infos.field_info(field) else {
+            return Ok(());
+        };
+        let actual = fi.get_doc_values_type();
+        let expectation = if expected.len() == 1 {
+            format!("(expected={:?}", expected[0])
+        } else {
+            format!("(expected one of {expected:?}")
+        };
+        Err(LuceneError::IllegalState(format!(
+            "unexpected docvalues type {actual:?} for field '{field}' {expectation}).              Re-index with correct docvalues type."
+        )))
+    }
+
+    /// Returns the numeric doc values of `field`, or an empty instance when the
+    /// reader has none.
+    ///
+    /// Equivalent to `DocValues.getNumeric(LeafReader, String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// doc-values type, and propagates any I/O error.
+    pub fn get_numeric(reader: &dyn LeafReader, field: &str) -> Result<Box<dyn NumericDocValues>> {
+        match reader.get_numeric_doc_values(field)? {
+            Some(dv) => Ok(dv),
+            None => {
+                Self::check_field(reader, field, &[DocValuesType::NUMERIC])?;
+                Ok(Box::new(Self::empty_numeric()))
+            }
+        }
+    }
+
+    /// Returns the binary doc values of `field`, or an empty instance when the
+    /// reader has none.
+    ///
+    /// Equivalent to `DocValues.getBinary(LeafReader, String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// doc-values type, and propagates any I/O error.
+    pub fn get_binary(reader: &dyn LeafReader, field: &str) -> Result<Box<dyn BinaryDocValues>> {
+        match reader.get_binary_doc_values(field)? {
+            Some(dv) => Ok(dv),
+            None => {
+                Self::check_field(reader, field, &[DocValuesType::BINARY])?;
+                Ok(Box::new(Self::empty_binary()))
+            }
+        }
+    }
+
+    /// Returns the sorted doc values of `field`, or an empty instance when the
+    /// reader has none.
+    ///
+    /// Equivalent to `DocValues.getSorted(LeafReader, String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// doc-values type, and propagates any I/O error.
+    pub fn get_sorted(reader: &dyn LeafReader, field: &str) -> Result<Box<dyn SortedDocValues>> {
+        match reader.get_sorted_doc_values(field)? {
+            Some(dv) => Ok(dv),
+            None => {
+                Self::check_field(reader, field, &[DocValuesType::SORTED])?;
+                Ok(Box::new(Self::empty_sorted()))
+            }
+        }
+    }
+
+    /// Returns the sorted-numeric doc values of `field`, promoting a
+    /// single-valued numeric field, or an empty instance when the reader has
+    /// none.
+    ///
+    /// Equivalent to `DocValues.getSortedNumeric(LeafReader, String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// doc-values type, and propagates any I/O error.
+    pub fn get_sorted_numeric(
+        reader: &dyn LeafReader,
+        field: &str,
+    ) -> Result<Box<dyn SortedNumericDocValues>> {
+        if let Some(dv) = reader.get_sorted_numeric_doc_values(field)? {
+            return Ok(dv);
+        }
+        match reader.get_numeric_doc_values(field)? {
+            Some(single) => Ok(Box::new(Self::singleton_numeric(single))),
+            None => {
+                Self::check_field(
+                    reader,
+                    field,
+                    &[DocValuesType::SORTED_NUMERIC, DocValuesType::NUMERIC],
+                )?;
+                Ok(Box::new(Self::empty_sorted_numeric()))
+            }
+        }
+    }
+
+    /// Returns the sorted-set doc values of `field`, promoting a single-valued
+    /// sorted field, or an empty instance when the reader has none.
+    ///
+    /// Equivalent to `DocValues.getSortedSet(LeafReader, String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// doc-values type, and propagates any I/O error.
+    pub fn get_sorted_set(
+        reader: &dyn LeafReader,
+        field: &str,
+    ) -> Result<Box<dyn SortedSetDocValues>> {
+        if let Some(dv) = reader.get_sorted_set_doc_values(field)? {
+            return Ok(dv);
+        }
+        match reader.get_sorted_doc_values(field)? {
+            Some(sorted) => Ok(Box::new(Self::singleton_sorted(sorted))),
+            None => {
+                Self::check_field(
+                    reader,
+                    field,
+                    &[DocValuesType::SORTED, DocValuesType::SORTED_SET],
+                )?;
+                Ok(Box::new(Self::empty_sorted_set()))
+            }
+        }
+    }
+
+    /// Returns whether the given doc-values fields have not been updated, and
+    /// so may be cached against.
+    ///
+    /// Equivalent to `DocValues.isCacheable(LeafReaderContext, String...)`.
+    pub fn is_cacheable(ctx: &LeafReaderContext, fields: &[&str]) -> bool {
+        let field_infos = ctx.leaf_reader().get_field_infos();
+        for field in fields {
+            if let Some(fi) = field_infos.field_info(field) {
+                if fi.get_doc_values_gen() > -1 {
+                    return false;
+                }
+            }
+        }
+        true
     }
 }
 

@@ -27,13 +27,23 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::io::Read;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::analysis::{Analyzer, TokenStream};
+use crate::document::doc_values_queries::{
+    SortedNumericDocValuesRangeQuery, SortedNumericDocValuesSetQuery, SortedSetDocValuesRangeQuery,
+};
 use crate::error::{LuceneError, Result};
+use crate::index::Term;
 use crate::index::{
     DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, IndexableField,
     IndexableFieldType, StoredFieldVisitor, StoredFieldVisitorStatus, VectorEncoding,
     VectorSimilarityFunction, MAX_DIMENSIONS, MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
+};
+use crate::search::{
+    ConstantScoreQuery, IndexOrDocValuesQuery, IndexSortSortedNumericDocValuesRangeQuery,
+    PointInSetQuery, PointRangeQuery, Query, SortedSetSelectorType, SortedSetSortField,
+    TermInSetQuery, TermQuery,
 };
 use crate::store::DataInput;
 use crate::util::BytesRef;
@@ -332,6 +342,32 @@ impl StoredValue {
             Self::String(value) => Ok(value),
             other => other.mismatch("a string value"),
         }
+    }
+
+    /// Sets the byte value.
+    ///
+    /// Equivalent to `Field.setByteValue(byte)`, which refuses a field whose
+    /// current value is of another type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// [`Self::Integer`] value.
+    pub fn set_byte_value(&mut self, value: i8) -> Result<()> {
+        self.set_int_value(i32::from(value))
+    }
+
+    /// Sets the short value.
+    ///
+    /// Equivalent to `Field.setShortValue(short)`, which refuses a field whose
+    /// current value is of another type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// [`Self::Integer`] value.
+    pub fn set_short_value(&mut self, value: i16) -> Result<()> {
+        self.set_int_value(i32::from(value))
     }
 
     /// Sets the integer value.
@@ -2001,23 +2037,54 @@ impl KeywordField {
     }
 
     /// Query stub: exact match on a binary value.
-    pub fn new_exact_query(_field: &str, _value: &BytesRef) -> ! {
-        todo!("KeywordField::new_exact_query requires the search module")
+    pub fn new_exact_query(field: &str, value: &BytesRef) -> Arc<dyn Query> {
+        Arc::new(ConstantScoreQuery::new(Arc::new(TermQuery::new(
+            Term::new(field, value.clone()),
+        ))))
     }
 
-    /// Query stub: exact match on a string value.
-    pub fn new_exact_query_string(_field: &str, _value: &str) -> ! {
-        todo!("KeywordField::new_exact_query_string requires the search module")
+    /// Creates a query matching the exact string value.
+    ///
+    /// Equivalent to `KeywordField.newExactQuery(String, String)`.
+    pub fn new_exact_query_string(field: &str, value: &str) -> Arc<dyn Query> {
+        Self::new_exact_query(field, &BytesRef::new(value.as_bytes().to_vec()))
     }
 
-    /// Query stub: set match.
-    pub fn new_set_query(_field: &str, _values: &[BytesRef]) -> ! {
-        todo!("KeywordField::new_set_query requires the search module")
+    /// Creates a query matching any of `values`.
+    ///
+    /// Equivalent to `KeywordField.newSetQuery(String, Collection<BytesRef>)`,
+    /// which pairs a terms-index set query with a doc-values one so the
+    /// searcher picks whichever is cheaper.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`TermInSetQuery::new_index_or_doc_values_query`](crate::search::TermInSetQuery)
+    /// raises for the given terms.
+    pub fn new_set_query(field: &str, values: Vec<BytesRef>) -> Result<Arc<dyn Query>> {
+        Ok(Arc::new(TermInSetQuery::new_index_or_doc_values_query(
+            crate::search::constant_score_blended_rewrite(),
+            field,
+            values,
+        )?))
     }
 
-    /// Sort stub.
-    pub fn new_sort_field(_field: &str, _reverse: bool) -> ! {
-        todo!("KeywordField::new_sort_field requires the search module")
+    /// Creates a sort over this field, reading the doc values.
+    ///
+    /// Equivalent to `KeywordField.newSortField(String, boolean,
+    /// SortedSetSelector.Type)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`SortedSetSortField::with_selector`](crate::search::SortedSetSortField)
+    /// raises.
+    pub fn new_sort_field(
+        field: &str,
+        reverse: bool,
+        selector: SortedSetSelectorType,
+    ) -> Result<SortedSetSortField> {
+        SortedSetSortField::with_selector(field, reverse, selector)
     }
 }
 
@@ -2258,14 +2325,92 @@ impl IntPoint {
         crate::util::NumericUtils::sortable_bytes_to_int(value, offset)
     }
 
-    /// Query stub: exact match.
-    pub fn new_exact_query(_field: &str, _value: i32) -> ! {
-        todo!("IntPoint::new_exact_query requires the search module")
+    /// Changes the values of this field, keeping the same dimension count.
+    ///
+    /// Equivalent to `IntPoint.setIntValues(int...)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `point` has a different
+    /// number of dimensions than the field was created with.
+    pub fn set_int_values(&mut self, point: &[i32]) -> Result<()> {
+        self.set_values(point)
     }
 
-    /// Query stub: range match.
-    pub fn new_range_query(_field: &str, _lower: &[i32], _upper: &[i32]) -> ! {
-        todo!("IntPoint::new_range_query requires the search module")
+    /// Creates a query matching an exact value.
+    ///
+    /// Equivalent to `IntPoint.newExactQuery(String, int)`. This is for
+    /// one-dimensional points; for several dimensions use
+    /// [`new_range_query`](Self::new_range_query).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`new_range_query`](Self::new_range_query) raises.
+    pub fn new_exact_query(field: &str, value: i32) -> Result<Arc<dyn Query>> {
+        Self::new_range_query(field, &[value], &[value])
+    }
+
+    /// Creates a range query, both bounds inclusive.
+    ///
+    /// Equivalent to `IntPoint.newRangeQuery(String, int[], int[])`. A
+    /// half-open range is expressed with the extreme value on the open side;
+    /// an exclusive bound by stepping the value by one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the two points have
+    /// different dimension counts, or when packing a point fails.
+    pub fn new_range_query(
+        field: &str,
+        lower_value: &[i32],
+        upper_value: &[i32],
+    ) -> Result<Arc<dyn Query>> {
+        if lower_value.len() != upper_value.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "lowerValue has length={} but upperValue has different length={}",
+                lower_value.len(),
+                upper_value.len()
+            )));
+        }
+        Ok(Arc::new(PointRangeQuery::new(
+            field,
+            pack_int_point(lower_value)?.slice().to_vec(),
+            pack_int_point(upper_value)?.slice().to_vec(),
+            lower_value.len() as i32,
+            Arc::new(IntPointFormatter),
+        )?))
+    }
+
+    /// Creates a query matching any of the one-dimensional `values`.
+    ///
+    /// Equivalent to `IntPoint.newSetQuery(String, int...)`, the points
+    /// equivalent of a terms query.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`PointInSetQuery::new`](crate::search::PointInSetQuery) raises.
+    pub fn new_set_query(field: &str, values: &[i32]) -> Result<Arc<dyn Query>> {
+        // Do not unexpectedly change the caller's array.
+        let mut sorted_values = values.to_vec();
+        sorted_values.sort_by(|a, b| a.partial_cmp(b).expect("INVARIANT: points are never NaN"));
+        let mut stream = PointValueStream::new(
+            sorted_values
+                .iter()
+                .map(|v| {
+                    let mut encoded = vec![0u8; 4];
+                    Self::encode_dimension(*v, &mut encoded, 0);
+                    encoded
+                })
+                .collect(),
+        );
+        Ok(Arc::new(PointInSetQuery::new(
+            field,
+            1,
+            4,
+            &mut stream,
+            Arc::new(IntPointFormatter),
+        )?))
     }
 }
 
@@ -2366,14 +2511,92 @@ impl LongPoint {
         crate::util::NumericUtils::sortable_bytes_to_long(value, offset)
     }
 
-    /// Query stub: exact match.
-    pub fn new_exact_query(_field: &str, _value: i64) -> ! {
-        todo!("LongPoint::new_exact_query requires the search module")
+    /// Changes the values of this field, keeping the same dimension count.
+    ///
+    /// Equivalent to `LongPoint.setLongValues(long...)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `point` has a different
+    /// number of dimensions than the field was created with.
+    pub fn set_long_values(&mut self, point: &[i64]) -> Result<()> {
+        self.set_values(point)
     }
 
-    /// Query stub: range match.
-    pub fn new_range_query(_field: &str, _lower: &[i64], _upper: &[i64]) -> ! {
-        todo!("LongPoint::new_range_query requires the search module")
+    /// Creates a query matching an exact value.
+    ///
+    /// Equivalent to `LongPoint.newExactQuery(String, long)`. This is for
+    /// one-dimensional points; for several dimensions use
+    /// [`new_range_query`](Self::new_range_query).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`new_range_query`](Self::new_range_query) raises.
+    pub fn new_exact_query(field: &str, value: i64) -> Result<Arc<dyn Query>> {
+        Self::new_range_query(field, &[value], &[value])
+    }
+
+    /// Creates a range query, both bounds inclusive.
+    ///
+    /// Equivalent to `LongPoint.newRangeQuery(String, long[], long[])`. A
+    /// half-open range is expressed with the extreme value on the open side;
+    /// an exclusive bound by stepping the value by one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the two points have
+    /// different dimension counts, or when packing a point fails.
+    pub fn new_range_query(
+        field: &str,
+        lower_value: &[i64],
+        upper_value: &[i64],
+    ) -> Result<Arc<dyn Query>> {
+        if lower_value.len() != upper_value.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "lowerValue has length={} but upperValue has different length={}",
+                lower_value.len(),
+                upper_value.len()
+            )));
+        }
+        Ok(Arc::new(PointRangeQuery::new(
+            field,
+            pack_long_point(lower_value)?.slice().to_vec(),
+            pack_long_point(upper_value)?.slice().to_vec(),
+            lower_value.len() as i32,
+            Arc::new(LongPointFormatter),
+        )?))
+    }
+
+    /// Creates a query matching any of the one-dimensional `values`.
+    ///
+    /// Equivalent to `LongPoint.newSetQuery(String, long...)`, the points
+    /// equivalent of a terms query.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`PointInSetQuery::new`](crate::search::PointInSetQuery) raises.
+    pub fn new_set_query(field: &str, values: &[i64]) -> Result<Arc<dyn Query>> {
+        // Do not unexpectedly change the caller's array.
+        let mut sorted_values = values.to_vec();
+        sorted_values.sort_by(|a, b| a.partial_cmp(b).expect("INVARIANT: points are never NaN"));
+        let mut stream = PointValueStream::new(
+            sorted_values
+                .iter()
+                .map(|v| {
+                    let mut encoded = vec![0u8; 8];
+                    Self::encode_dimension(*v, &mut encoded, 0);
+                    encoded
+                })
+                .collect(),
+        );
+        Ok(Arc::new(PointInSetQuery::new(
+            field,
+            1,
+            8,
+            &mut stream,
+            Arc::new(LongPointFormatter),
+        )?))
     }
 }
 
@@ -2474,14 +2697,92 @@ impl FloatPoint {
         sortable_bytes_to_float(value, offset)
     }
 
-    /// Query stub: exact match.
-    pub fn new_exact_query(_field: &str, _value: f32) -> ! {
-        todo!("FloatPoint::new_exact_query requires the search module")
+    /// Changes the values of this field, keeping the same dimension count.
+    ///
+    /// Equivalent to `FloatPoint.setFloatValues(float...)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `point` has a different
+    /// number of dimensions than the field was created with.
+    pub fn set_float_values(&mut self, point: &[f32]) -> Result<()> {
+        self.set_values(point)
     }
 
-    /// Query stub: range match.
-    pub fn new_range_query(_field: &str, _lower: &[f32], _upper: &[f32]) -> ! {
-        todo!("FloatPoint::new_range_query requires the search module")
+    /// Creates a query matching an exact value.
+    ///
+    /// Equivalent to `FloatPoint.newExactQuery(String, float)`. This is for
+    /// one-dimensional points; for several dimensions use
+    /// [`new_range_query`](Self::new_range_query).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`new_range_query`](Self::new_range_query) raises.
+    pub fn new_exact_query(field: &str, value: f32) -> Result<Arc<dyn Query>> {
+        Self::new_range_query(field, &[value], &[value])
+    }
+
+    /// Creates a range query, both bounds inclusive.
+    ///
+    /// Equivalent to `FloatPoint.newRangeQuery(String, float[], float[])`. A
+    /// half-open range is expressed with the extreme value on the open side;
+    /// an exclusive bound by stepping the value by one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the two points have
+    /// different dimension counts, or when packing a point fails.
+    pub fn new_range_query(
+        field: &str,
+        lower_value: &[f32],
+        upper_value: &[f32],
+    ) -> Result<Arc<dyn Query>> {
+        if lower_value.len() != upper_value.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "lowerValue has length={} but upperValue has different length={}",
+                lower_value.len(),
+                upper_value.len()
+            )));
+        }
+        Ok(Arc::new(PointRangeQuery::new(
+            field,
+            pack_float_point(lower_value)?.slice().to_vec(),
+            pack_float_point(upper_value)?.slice().to_vec(),
+            lower_value.len() as i32,
+            Arc::new(FloatPointFormatter),
+        )?))
+    }
+
+    /// Creates a query matching any of the one-dimensional `values`.
+    ///
+    /// Equivalent to `FloatPoint.newSetQuery(String, float...)`, the points
+    /// equivalent of a terms query.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`PointInSetQuery::new`](crate::search::PointInSetQuery) raises.
+    pub fn new_set_query(field: &str, values: &[f32]) -> Result<Arc<dyn Query>> {
+        // Do not unexpectedly change the caller's array.
+        let mut sorted_values = values.to_vec();
+        sorted_values.sort_by(|a, b| a.partial_cmp(b).expect("INVARIANT: points are never NaN"));
+        let mut stream = PointValueStream::new(
+            sorted_values
+                .iter()
+                .map(|v| {
+                    let mut encoded = vec![0u8; 4];
+                    Self::encode_dimension(*v, &mut encoded, 0);
+                    encoded
+                })
+                .collect(),
+        );
+        Ok(Arc::new(PointInSetQuery::new(
+            field,
+            1,
+            4,
+            &mut stream,
+            Arc::new(FloatPointFormatter),
+        )?))
     }
 }
 
@@ -2582,14 +2883,92 @@ impl DoublePoint {
         sortable_bytes_to_double(value, offset)
     }
 
-    /// Query stub: exact match.
-    pub fn new_exact_query(_field: &str, _value: f64) -> ! {
-        todo!("DoublePoint::new_exact_query requires the search module")
+    /// Changes the values of this field, keeping the same dimension count.
+    ///
+    /// Equivalent to `DoublePoint.setDoubleValues(double...)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `point` has a different
+    /// number of dimensions than the field was created with.
+    pub fn set_double_values(&mut self, point: &[f64]) -> Result<()> {
+        self.set_values(point)
     }
 
-    /// Query stub: range match.
-    pub fn new_range_query(_field: &str, _lower: &[f64], _upper: &[f64]) -> ! {
-        todo!("DoublePoint::new_range_query requires the search module")
+    /// Creates a query matching an exact value.
+    ///
+    /// Equivalent to `DoublePoint.newExactQuery(String, double)`. This is for
+    /// one-dimensional points; for several dimensions use
+    /// [`new_range_query`](Self::new_range_query).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`new_range_query`](Self::new_range_query) raises.
+    pub fn new_exact_query(field: &str, value: f64) -> Result<Arc<dyn Query>> {
+        Self::new_range_query(field, &[value], &[value])
+    }
+
+    /// Creates a range query, both bounds inclusive.
+    ///
+    /// Equivalent to `DoublePoint.newRangeQuery(String, double[], double[])`. A
+    /// half-open range is expressed with the extreme value on the open side;
+    /// an exclusive bound by stepping the value by one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the two points have
+    /// different dimension counts, or when packing a point fails.
+    pub fn new_range_query(
+        field: &str,
+        lower_value: &[f64],
+        upper_value: &[f64],
+    ) -> Result<Arc<dyn Query>> {
+        if lower_value.len() != upper_value.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "lowerValue has length={} but upperValue has different length={}",
+                lower_value.len(),
+                upper_value.len()
+            )));
+        }
+        Ok(Arc::new(PointRangeQuery::new(
+            field,
+            pack_double_point(lower_value)?.slice().to_vec(),
+            pack_double_point(upper_value)?.slice().to_vec(),
+            lower_value.len() as i32,
+            Arc::new(DoublePointFormatter),
+        )?))
+    }
+
+    /// Creates a query matching any of the one-dimensional `values`.
+    ///
+    /// Equivalent to `DoublePoint.newSetQuery(String, double...)`, the points
+    /// equivalent of a terms query.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`PointInSetQuery::new`](crate::search::PointInSetQuery) raises.
+    pub fn new_set_query(field: &str, values: &[f64]) -> Result<Arc<dyn Query>> {
+        // Do not unexpectedly change the caller's array.
+        let mut sorted_values = values.to_vec();
+        sorted_values.sort_by(|a, b| a.partial_cmp(b).expect("INVARIANT: points are never NaN"));
+        let mut stream = PointValueStream::new(
+            sorted_values
+                .iter()
+                .map(|v| {
+                    let mut encoded = vec![0u8; 8];
+                    Self::encode_dimension(*v, &mut encoded, 0);
+                    encoded
+                })
+                .collect(),
+        );
+        Ok(Arc::new(PointInSetQuery::new(
+            field,
+            1,
+            8,
+            &mut stream,
+            Arc::new(DoublePointFormatter),
+        )?))
     }
 }
 
@@ -2710,14 +3089,45 @@ impl BinaryPoint {
         })
     }
 
-    /// Query stub: exact match.
-    pub fn new_exact_query(_field: &str, _value: &[u8]) -> ! {
-        todo!("BinaryPoint::new_exact_query requires the search module")
+    /// Creates a query matching an exact one-dimensional value.
+    ///
+    /// Equivalent to `BinaryPoint.newExactQuery(String, byte[])`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`new_range_query`](Self::new_range_query) raises.
+    pub fn new_exact_query(field: &str, value: &[u8]) -> Result<Arc<dyn Query>> {
+        let value = BytesRef::new(value.to_vec());
+        Self::new_range_query(field, &[value.clone()], &[value])
     }
 
-    /// Query stub: range match.
-    pub fn new_range_query(_field: &str, _lower: &[BytesRef], _upper: &[BytesRef]) -> ! {
-        todo!("BinaryPoint::new_range_query requires the search module")
+    /// Creates a range query over binary points, both bounds inclusive.
+    ///
+    /// Equivalent to `BinaryPoint.newRangeQuery(String, byte[][], byte[][])`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the two points have
+    /// different dimension counts, or when packing a point fails.
+    pub fn new_range_query(
+        field: &str,
+        lower_value: &[BytesRef],
+        upper_value: &[BytesRef],
+    ) -> Result<Arc<dyn Query>> {
+        if lower_value.len() != upper_value.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "lowerValue has length={} but upperValue has different length={}",
+                lower_value.len(),
+                upper_value.len()
+            )));
+        }
+        Ok(Arc::new(PointRangeQuery::new(
+            field,
+            pack_binary_point(lower_value)?.slice().to_vec(),
+            pack_binary_point(upper_value)?.slice().to_vec(),
+            lower_value.len() as i32,
+            Arc::new(BinaryPointFormatter),
+        )?))
     }
 }
 
@@ -2902,14 +3312,33 @@ impl NumericDocValuesField {
         self.value = value;
     }
 
-    /// Query stub: slow exact query.
-    pub fn new_slow_exact_query(_field: &str, _value: i64) -> ! {
-        todo!("NumericDocValuesField::new_slow_exact_query requires the search module")
+    /// Creates a query matching values in `[lower_value, upper_value]`.
+    ///
+    /// Equivalent to `NumericDocValuesField.newSlowRangeQuery(String, long,
+    /// long)`. Such a query cannot advance efficiently to the next match, so it
+    /// is best used inside an
+    /// [`IndexOrDocValuesQuery`](crate::search::IndexOrDocValuesQuery)
+    /// alongside a range query that runs on points.
+    pub fn new_slow_range_query(field: &str, lower_value: i64, upper_value: i64) -> Arc<dyn Query> {
+        Arc::new(SortedNumericDocValuesRangeQuery::new(
+            field,
+            lower_value,
+            upper_value,
+        ))
     }
 
-    /// Query stub: slow range query.
-    pub fn new_slow_range_query(_field: &str, _lower: i64, _upper: i64) -> ! {
-        todo!("NumericDocValuesField::new_slow_range_query requires the search module")
+    /// Creates a query matching an exact value.
+    ///
+    /// Equivalent to `NumericDocValuesField.newSlowExactQuery(String, long)`.
+    pub fn new_slow_exact_query(field: &str, value: i64) -> Arc<dyn Query> {
+        Self::new_slow_range_query(field, value, value)
+    }
+
+    /// Creates a query matching any of `values`.
+    ///
+    /// Equivalent to `NumericDocValuesField.newSlowSetQuery(String, long...)`.
+    pub fn new_slow_set_query(field: &str, values: &[i64]) -> Arc<dyn Query> {
+        Arc::new(SortedNumericDocValuesSetQuery::new(field, values))
     }
 }
 
@@ -3114,9 +3543,50 @@ impl SortedDocValuesField {
         }
     }
 
-    /// Query stub: slow exact query.
-    pub fn new_slow_exact_query(_field: &str, _value: &BytesRef) -> ! {
-        todo!("SortedDocValuesField::new_slow_exact_query requires the search module")
+    /// Creates a query matching documents whose term falls in the range.
+    ///
+    /// Equivalent to `SortedDocValuesField.newSlowRangeQuery(String, BytesRef,
+    /// BytesRef, boolean, boolean)`. A `None` bound is open on that side.
+    pub fn new_slow_range_query(
+        field: &str,
+        lower_value: Option<BytesRef>,
+        upper_value: Option<BytesRef>,
+        lower_inclusive: bool,
+        upper_inclusive: bool,
+    ) -> Arc<dyn Query> {
+        Arc::new(SortedSetDocValuesRangeQuery::new(
+            field,
+            lower_value,
+            upper_value,
+            lower_inclusive,
+            upper_inclusive,
+        ))
+    }
+
+    /// Creates a query matching documents with the exact term.
+    ///
+    /// Equivalent to `SortedDocValuesField.newSlowExactQuery(String, BytesRef)`.
+    pub fn new_slow_exact_query(field: &str, value: &BytesRef) -> Arc<dyn Query> {
+        Self::new_slow_range_query(field, Some(value.clone()), Some(value.clone()), true, true)
+    }
+
+    /// Creates a query matching documents with any of `values`.
+    ///
+    /// Equivalent to `SortedDocValuesField.newSlowSetQuery(String,
+    /// Collection<BytesRef>)`, which rewrites over doc values rather than over
+    /// the terms index.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`TermInSetQuery::with_rewrite_method`](crate::search::TermInSetQuery)
+    /// raises for the given terms.
+    pub fn new_slow_set_query(field: &str, values: Vec<BytesRef>) -> Result<Arc<dyn Query>> {
+        Ok(Arc::new(TermInSetQuery::with_rewrite_method(
+            crate::search::doc_values_rewrite(),
+            field,
+            values,
+        )?))
     }
 }
 
@@ -3191,9 +3661,51 @@ impl SortedSetDocValuesField {
         }
     }
 
-    /// Query stub: slow exact query.
-    pub fn new_slow_exact_query(_field: &str, _value: &BytesRef) -> ! {
-        todo!("SortedSetDocValuesField::new_slow_exact_query requires the search module")
+    /// Creates a query matching documents with a term in the range.
+    ///
+    /// Equivalent to `SortedSetDocValuesField.newSlowRangeQuery(String,
+    /// BytesRef, BytesRef, boolean, boolean)`. A `None` bound is open on that
+    /// side.
+    pub fn new_slow_range_query(
+        field: &str,
+        lower_value: Option<BytesRef>,
+        upper_value: Option<BytesRef>,
+        lower_inclusive: bool,
+        upper_inclusive: bool,
+    ) -> Arc<dyn Query> {
+        Arc::new(SortedSetDocValuesRangeQuery::new(
+            field,
+            lower_value,
+            upper_value,
+            lower_inclusive,
+            upper_inclusive,
+        ))
+    }
+
+    /// Creates a query matching documents with the exact term.
+    ///
+    /// Equivalent to `SortedSetDocValuesField.newSlowExactQuery(String,
+    /// BytesRef)`.
+    pub fn new_slow_exact_query(field: &str, value: &BytesRef) -> Arc<dyn Query> {
+        Self::new_slow_range_query(field, Some(value.clone()), Some(value.clone()), true, true)
+    }
+
+    /// Creates a query matching documents with any of `values`.
+    ///
+    /// Equivalent to `SortedSetDocValuesField.newSlowSetQuery(String,
+    /// Collection<BytesRef>)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`TermInSetQuery::with_rewrite_method`](crate::search::TermInSetQuery)
+    /// raises for the given terms.
+    pub fn new_slow_set_query(field: &str, values: Vec<BytesRef>) -> Result<Arc<dyn Query>> {
+        Ok(Arc::new(TermInSetQuery::with_rewrite_method(
+            crate::search::doc_values_rewrite(),
+            field,
+            values,
+        )?))
     }
 }
 
@@ -3268,9 +3780,33 @@ impl SortedNumericDocValuesField {
         }
     }
 
-    /// Query stub: slow exact query.
-    pub fn new_slow_exact_query(_field: &str, _value: i64) -> ! {
-        todo!("SortedNumericDocValuesField::new_slow_exact_query requires the search module")
+    /// Creates a query matching documents with a value in
+    /// `[lower_value, upper_value]`.
+    ///
+    /// Equivalent to `SortedNumericDocValuesField.newSlowRangeQuery(String,
+    /// long, long)`.
+    pub fn new_slow_range_query(field: &str, lower_value: i64, upper_value: i64) -> Arc<dyn Query> {
+        Arc::new(SortedNumericDocValuesRangeQuery::new(
+            field,
+            lower_value,
+            upper_value,
+        ))
+    }
+
+    /// Creates a query matching documents with the exact value.
+    ///
+    /// Equivalent to `SortedNumericDocValuesField.newSlowExactQuery(String,
+    /// long)`.
+    pub fn new_slow_exact_query(field: &str, value: i64) -> Arc<dyn Query> {
+        Self::new_slow_range_query(field, value, value)
+    }
+
+    /// Creates a query matching documents with any of `values`.
+    ///
+    /// Equivalent to `SortedNumericDocValuesField.newSlowSetQuery(String,
+    /// long...)`.
+    pub fn new_slow_set_query(field: &str, values: &[i64]) -> Arc<dyn Query> {
+        Arc::new(SortedNumericDocValuesSetQuery::new(field, values))
     }
 }
 
@@ -3528,19 +4064,63 @@ impl IntField {
         }
     }
 
-    /// Query stub: exact match.
-    pub fn new_exact_query(_field: &str, _value: i32) -> ! {
-        todo!("IntField::new_exact_query requires the search module")
+    /// Creates a query matching an exact value.
+    ///
+    /// Equivalent to `IntField.newExactQuery(String, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`new_range_query`](Self::new_range_query) raises.
+    pub fn new_exact_query(field: &str, value: i32) -> Result<Arc<dyn Query>> {
+        Self::new_range_query(field, value, value)
     }
 
-    /// Query stub: range match.
-    pub fn new_range_query(_field: &str, _lower: i32, _upper: i32) -> ! {
-        todo!("IntField::new_range_query requires the search module")
+    /// Creates a range query, both bounds inclusive.
+    ///
+    /// Equivalent to `IntField.newRangeQuery(String, int, int)`, which
+    /// wraps an `IndexOrDocValuesQuery` over points and doc values in an
+    /// `IndexSortSortedNumericDocValuesRangeQuery` so that an index sorted on
+    /// the field can answer the range by a bounded scan.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the underlying point query raises.
+    pub fn new_range_query(
+        field: &str,
+        lower_value: i32,
+        upper_value: i32,
+    ) -> Result<Arc<dyn Query>> {
+        let sortable = |v: i32| -> i64 { i64::from(v) };
+        let fallback_query: Arc<dyn Query> = Arc::new(IndexOrDocValuesQuery::new(
+            IntPoint::new_range_query(field, &[lower_value], &[upper_value])?,
+            SortedNumericDocValuesField::new_slow_range_query(
+                field,
+                sortable(lower_value),
+                sortable(upper_value),
+            ),
+        ));
+        Ok(Arc::new(IndexSortSortedNumericDocValuesRangeQuery::new(
+            field,
+            sortable(lower_value),
+            sortable(upper_value),
+            fallback_query,
+        )))
     }
 
-    /// Query stub: set match.
-    pub fn new_set_query(_field: &str, _values: &[i32]) -> ! {
-        todo!("IntField::new_set_query requires the search module")
+    /// Creates a query matching any of `values`.
+    ///
+    /// Equivalent to `IntField.newSetQuery(String, int...)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the underlying point query raises.
+    pub fn new_set_query(field: &str, values: &[i32]) -> Result<Arc<dyn Query>> {
+        let sortable = |v: i32| -> i64 { i64::from(v) };
+        let points: Vec<i64> = values.iter().copied().map(sortable).collect();
+        Ok(Arc::new(IndexOrDocValuesQuery::new(
+            IntPoint::new_set_query(field, values)?,
+            SortedNumericDocValuesField::new_slow_set_query(field, &points),
+        )))
     }
 }
 
@@ -3632,19 +4212,63 @@ impl LongField {
         }
     }
 
-    /// Query stub: exact match.
-    pub fn new_exact_query(_field: &str, _value: i64) -> ! {
-        todo!("LongField::new_exact_query requires the search module")
+    /// Creates a query matching an exact value.
+    ///
+    /// Equivalent to `LongField.newExactQuery(String, long)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`new_range_query`](Self::new_range_query) raises.
+    pub fn new_exact_query(field: &str, value: i64) -> Result<Arc<dyn Query>> {
+        Self::new_range_query(field, value, value)
     }
 
-    /// Query stub: range match.
-    pub fn new_range_query(_field: &str, _lower: i64, _upper: i64) -> ! {
-        todo!("LongField::new_range_query requires the search module")
+    /// Creates a range query, both bounds inclusive.
+    ///
+    /// Equivalent to `LongField.newRangeQuery(String, long, long)`, which
+    /// wraps an `IndexOrDocValuesQuery` over points and doc values in an
+    /// `IndexSortSortedNumericDocValuesRangeQuery` so that an index sorted on
+    /// the field can answer the range by a bounded scan.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the underlying point query raises.
+    pub fn new_range_query(
+        field: &str,
+        lower_value: i64,
+        upper_value: i64,
+    ) -> Result<Arc<dyn Query>> {
+        let sortable = |v: i64| -> i64 { v };
+        let fallback_query: Arc<dyn Query> = Arc::new(IndexOrDocValuesQuery::new(
+            LongPoint::new_range_query(field, &[lower_value], &[upper_value])?,
+            SortedNumericDocValuesField::new_slow_range_query(
+                field,
+                sortable(lower_value),
+                sortable(upper_value),
+            ),
+        ));
+        Ok(Arc::new(IndexSortSortedNumericDocValuesRangeQuery::new(
+            field,
+            sortable(lower_value),
+            sortable(upper_value),
+            fallback_query,
+        )))
     }
 
-    /// Query stub: set match.
-    pub fn new_set_query(_field: &str, _values: &[i64]) -> ! {
-        todo!("LongField::new_set_query requires the search module")
+    /// Creates a query matching any of `values`.
+    ///
+    /// Equivalent to `LongField.newSetQuery(String, long...)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the underlying point query raises.
+    pub fn new_set_query(field: &str, values: &[i64]) -> Result<Arc<dyn Query>> {
+        let sortable = |v: i64| -> i64 { v };
+        let points: Vec<i64> = values.iter().copied().map(sortable).collect();
+        Ok(Arc::new(IndexOrDocValuesQuery::new(
+            LongPoint::new_set_query(field, values)?,
+            SortedNumericDocValuesField::new_slow_set_query(field, &points),
+        )))
     }
 }
 
@@ -3740,19 +4364,67 @@ impl FloatField {
         crate::util::NumericUtils::float_to_sortable_int(self.value)
     }
 
-    /// Query stub: exact match.
-    pub fn new_exact_query(_field: &str, _value: f32) -> ! {
-        todo!("FloatField::new_exact_query requires the search module")
+    /// Returns the field's value.
+    ///
+    /// Equivalent to the private `FloatField.getValueAsFloat()`, which decodes
+    /// the sortable int the field stores; this port keeps the value itself, so
+    /// the decode is unnecessary.
+    fn get_value_as_float(&self) -> f32 {
+        self.value
     }
 
-    /// Query stub: range match.
-    pub fn new_range_query(_field: &str, _lower: f32, _upper: f32) -> ! {
-        todo!("FloatField::new_range_query requires the search module")
+    /// Creates a query matching an exact value.
+    ///
+    /// Equivalent to `FloatField.newExactQuery(String, float)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`new_range_query`](Self::new_range_query) raises.
+    pub fn new_exact_query(field: &str, value: f32) -> Result<Arc<dyn Query>> {
+        Self::new_range_query(field, value, value)
     }
 
-    /// Query stub: set match.
-    pub fn new_set_query(_field: &str, _values: &[f32]) -> ! {
-        todo!("FloatField::new_set_query requires the search module")
+    /// Creates a range query, both bounds inclusive.
+    ///
+    /// Equivalent to `FloatField.newRangeQuery(String, float, float)`, which
+    /// pairs the points range with the doc-values range over the sortable bits,
+    /// so the searcher picks whichever is cheaper.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the underlying point query raises.
+    pub fn new_range_query(
+        field: &str,
+        lower_value: f32,
+        upper_value: f32,
+    ) -> Result<Arc<dyn Query>> {
+        let sortable =
+            |v: f32| -> i64 { i64::from(crate::util::NumericUtils::float_to_sortable_int(v)) };
+        Ok(Arc::new(IndexOrDocValuesQuery::new(
+            FloatPoint::new_range_query(field, &[lower_value], &[upper_value])?,
+            SortedNumericDocValuesField::new_slow_range_query(
+                field,
+                sortable(lower_value),
+                sortable(upper_value),
+            ),
+        )))
+    }
+
+    /// Creates a query matching any of `values`.
+    ///
+    /// Equivalent to `FloatField.newSetQuery(String, float...)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the underlying point query raises.
+    pub fn new_set_query(field: &str, values: &[f32]) -> Result<Arc<dyn Query>> {
+        let sortable =
+            |v: f32| -> i64 { i64::from(crate::util::NumericUtils::float_to_sortable_int(v)) };
+        let points: Vec<i64> = values.iter().copied().map(sortable).collect();
+        Ok(Arc::new(IndexOrDocValuesQuery::new(
+            FloatPoint::new_set_query(field, values)?,
+            SortedNumericDocValuesField::new_slow_set_query(field, &points),
+        )))
     }
 }
 
@@ -3848,19 +4520,65 @@ impl DoubleField {
         crate::util::NumericUtils::double_to_sortable_long(self.value)
     }
 
-    /// Query stub: exact match.
-    pub fn new_exact_query(_field: &str, _value: f64) -> ! {
-        todo!("DoubleField::new_exact_query requires the search module")
+    /// Returns the field's value.
+    ///
+    /// Equivalent to the private `DoubleField.getValueAsDouble()`, which
+    /// decodes the sortable long the field stores; this port keeps the value
+    /// itself, so the decode is unnecessary.
+    fn get_value_as_double(&self) -> f64 {
+        self.value
     }
 
-    /// Query stub: range match.
-    pub fn new_range_query(_field: &str, _lower: f64, _upper: f64) -> ! {
-        todo!("DoubleField::new_range_query requires the search module")
+    /// Creates a query matching an exact value.
+    ///
+    /// Equivalent to `DoubleField.newExactQuery(String, double)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`new_range_query`](Self::new_range_query) raises.
+    pub fn new_exact_query(field: &str, value: f64) -> Result<Arc<dyn Query>> {
+        Self::new_range_query(field, value, value)
     }
 
-    /// Query stub: set match.
-    pub fn new_set_query(_field: &str, _values: &[f64]) -> ! {
-        todo!("DoubleField::new_set_query requires the search module")
+    /// Creates a range query, both bounds inclusive.
+    ///
+    /// Equivalent to `DoubleField.newRangeQuery(String, double, double)`, which
+    /// pairs the points range with the doc-values range over the sortable bits,
+    /// so the searcher picks whichever is cheaper.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the underlying point query raises.
+    pub fn new_range_query(
+        field: &str,
+        lower_value: f64,
+        upper_value: f64,
+    ) -> Result<Arc<dyn Query>> {
+        let sortable = |v: f64| -> i64 { crate::util::NumericUtils::double_to_sortable_long(v) };
+        Ok(Arc::new(IndexOrDocValuesQuery::new(
+            DoublePoint::new_range_query(field, &[lower_value], &[upper_value])?,
+            SortedNumericDocValuesField::new_slow_range_query(
+                field,
+                sortable(lower_value),
+                sortable(upper_value),
+            ),
+        )))
+    }
+
+    /// Creates a query matching any of `values`.
+    ///
+    /// Equivalent to `DoubleField.newSetQuery(String, double...)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the underlying point query raises.
+    pub fn new_set_query(field: &str, values: &[f64]) -> Result<Arc<dyn Query>> {
+        let sortable = |v: f64| -> i64 { crate::util::NumericUtils::double_to_sortable_long(v) };
+        let points: Vec<i64> = values.iter().copied().map(sortable).collect();
+        Ok(Arc::new(IndexOrDocValuesQuery::new(
+            DoublePoint::new_set_query(field, values)?,
+            SortedNumericDocValuesField::new_slow_set_query(field, &points),
+        )))
     }
 }
 
@@ -4001,6 +4719,36 @@ impl DateTools {
             Resolution::MILLISECOND => dt,
         };
         rounded.timestamp_millis()
+    }
+
+    /// Converts a date to a string suitable for indexing.
+    ///
+    /// Equivalent to `DateTools.dateToString(Date, Resolution)`. Java's `Date`
+    /// is a millisecond instant, which is exactly what
+    /// [`time_to_string`](Self::time_to_string) takes, so this is the same
+    /// conversion under the name callers holding a date use.
+    pub fn date_to_string(date: chrono::DateTime<chrono::Utc>, resolution: Resolution) -> String {
+        Self::time_to_string(date.timestamp_millis(), resolution)
+    }
+
+    /// Converts a GMT date string back to a date.
+    ///
+    /// Equivalent to `DateTools.stringToDate(String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the string is not a valid
+    /// date string, standing in for Java's `ParseException`.
+    pub fn string_to_date(date_string: &str) -> Result<chrono::DateTime<chrono::Utc>> {
+        let millis = Self::string_to_time(date_string)?;
+        chrono::Utc
+            .timestamp_millis_opt(millis)
+            .single()
+            .ok_or_else(|| {
+                LuceneError::IllegalArgument(format!(
+                    "Input is not a valid date string: {date_string}"
+                ))
+            })
     }
 
     /// Converts a timestamp to a GMT string with the given resolution.
@@ -4158,6 +4906,22 @@ impl KnnFloatVectorField {
     /// As [`KnnFloatVectorField::new`].
     pub fn with_euclidean(name: &str, vector: &[f32]) -> Result<Self> {
         Self::new(name, vector, VectorSimilarityFunction::EUCLIDEAN)
+    }
+
+    /// Creates a query that finds the `k` nearest documents to `query_vector`.
+    ///
+    /// Equivalent to `KnnFloatVectorField.newVectorQuery(String, float[], int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`KnnFloatVectorQuery::new`](crate::search::KnnFloatVectorQuery) raises.
+    pub fn new_vector_query(field: &str, query_vector: &[f32], k: i32) -> Result<Arc<dyn Query>> {
+        Ok(Arc::new(crate::search::KnnFloatVectorQuery::new(
+            field,
+            query_vector.to_vec(),
+            k,
+        )?))
     }
 
     /// Builds the field type a float-vector field of `dimension` dimensions
@@ -4336,6 +5100,22 @@ impl KnnByteVectorField {
     /// As [`KnnByteVectorField::new`].
     pub fn with_euclidean(name: &str, vector: &[u8]) -> Result<Self> {
         Self::new(name, vector, VectorSimilarityFunction::EUCLIDEAN)
+    }
+
+    /// Creates a query that finds the `k` nearest documents to `query_vector`.
+    ///
+    /// Equivalent to `KnnByteVectorField.newVectorQuery(String, byte[], int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`KnnByteVectorQuery::new`](crate::search::KnnByteVectorQuery) raises.
+    pub fn new_vector_query(field: &str, query_vector: &[u8], k: i32) -> Result<Arc<dyn Query>> {
+        Ok(Arc::new(crate::search::KnnByteVectorQuery::new(
+            field,
+            query_vector.to_vec(),
+            k,
+        )?))
     }
 
     /// Builds the field type a byte-vector field of `dimension` dimensions
@@ -5195,5 +5975,171 @@ mod tests {
         assert!(field_type.store_term_vectors());
         assert!(field_type.omit_norms());
         assert_eq!(field_type.index_options(), IndexOptions::DOCS_AND_FREQS);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Point query formatters
+// ---------------------------------------------------------------------------
+
+/// Feeds already-encoded points to
+/// [`PointInSetQuery`](crate::search::PointInSetQuery).
+///
+/// Equivalent to `PointInSetQuery.Stream`, the abstract iterator Java's
+/// `newSetQuery` implements with an anonymous class that encodes one value per
+/// call into a reused `BytesRef`.
+struct PointValueStream {
+    values: Vec<Vec<u8>>,
+    upto: usize,
+}
+
+impl PointValueStream {
+    /// Creates the stream over the already-encoded points, in order.
+    fn new(values: Vec<Vec<u8>>) -> Self {
+        Self { values, upto: 0 }
+    }
+}
+
+impl crate::util::BytesRefIterator for PointValueStream {
+    fn next(&mut self) -> Result<Option<BytesRef>> {
+        if self.upto == self.values.len() {
+            return Ok(None);
+        }
+        let value = BytesRef::new(self.values[self.upto].clone());
+        self.upto += 1;
+        Ok(Some(value))
+    }
+}
+
+/// Renders one dimension of an `IntPoint` query.
+///
+/// Equivalent to the `toString(int, byte[])` of the anonymous `PointRangeQuery`
+/// that `IntPoint.newRangeQuery` returns, and to the `toString(byte[])` of the
+/// anonymous `PointInSetQuery` that `IntPoint.newSetQuery` returns.
+#[derive(Debug)]
+struct IntPointFormatter;
+
+impl crate::search::DimensionFormatter for IntPointFormatter {
+    fn format(&self, _dimension: i32, value: &[u8]) -> String {
+        IntPoint::decode_dimension(value, 0).to_string()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl crate::search::PointFormatter for IntPointFormatter {
+    fn format(&self, value: &[u8]) -> String {
+        IntPoint::decode_dimension(value, 0).to_string()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Renders one dimension of a `LongPoint` query.
+#[derive(Debug)]
+struct LongPointFormatter;
+
+impl crate::search::DimensionFormatter for LongPointFormatter {
+    fn format(&self, _dimension: i32, value: &[u8]) -> String {
+        LongPoint::decode_dimension(value, 0).to_string()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl crate::search::PointFormatter for LongPointFormatter {
+    fn format(&self, value: &[u8]) -> String {
+        LongPoint::decode_dimension(value, 0).to_string()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Renders one dimension of a `FloatPoint` query.
+#[derive(Debug)]
+struct FloatPointFormatter;
+
+impl crate::search::DimensionFormatter for FloatPointFormatter {
+    fn format(&self, _dimension: i32, value: &[u8]) -> String {
+        FloatPoint::decode_dimension(value, 0).to_string()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl crate::search::PointFormatter for FloatPointFormatter {
+    fn format(&self, value: &[u8]) -> String {
+        FloatPoint::decode_dimension(value, 0).to_string()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Renders one dimension of a `DoublePoint` query.
+#[derive(Debug)]
+struct DoublePointFormatter;
+
+impl crate::search::DimensionFormatter for DoublePointFormatter {
+    fn format(&self, _dimension: i32, value: &[u8]) -> String {
+        DoublePoint::decode_dimension(value, 0).to_string()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl crate::search::PointFormatter for DoublePointFormatter {
+    fn format(&self, value: &[u8]) -> String {
+        DoublePoint::decode_dimension(value, 0).to_string()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Renders one dimension of a `BinaryPoint` query, as space-separated
+/// hexadecimal bytes.
+///
+/// Equivalent to the `toString(int, byte[])` of the anonymous
+/// `PointRangeQuery` that `BinaryPoint.newRangeQuery` returns.
+#[derive(Debug)]
+struct BinaryPointFormatter;
+
+impl BinaryPointFormatter {
+    fn render(value: &[u8]) -> String {
+        let mut sb = String::from("binary(");
+        for (i, byte) in value.iter().enumerate() {
+            if i > 0 {
+                sb.push(' ');
+            }
+            // Java's Integer.toHexString has no leading zero for a short byte.
+            sb.push_str(&format!("{byte:x}"));
+        }
+        sb.push(')');
+        sb
+    }
+}
+
+impl crate::search::DimensionFormatter for BinaryPointFormatter {
+    fn format(&self, _dimension: i32, value: &[u8]) -> String {
+        Self::render(value)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

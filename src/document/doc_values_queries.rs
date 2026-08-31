@@ -4,6 +4,30 @@
 //! a points lookup when the field is already being read for another reason, or
 //! when no points index exists.
 
+use std::any::Any;
+use std::fmt::Debug;
+use std::sync::Arc;
+
+use crate::error::Result;
+use crate::index::doc_values::DocValues;
+use crate::index::doc_values::{SortedNumericDocValues, SortedSetDocValues};
+use crate::index::leaf_reader::LeafReader;
+use crate::index::reader_context::LeafReaderContext;
+use crate::search::constant_score_scorer_supplier::ConstantScoreScorerSupplier;
+use crate::search::constant_score_weight::{ConstantScoreWeight, ConstantScoreWeightImpl};
+use crate::search::doc_id_set_iterator::DocIdSetIterator;
+use crate::search::doc_values_range_iterator::DocValuesRangeIterator;
+use crate::search::field_exists_query::FieldExistsQuery;
+use crate::search::index_searcher::IndexSearcher;
+use crate::search::match_all_docs_query::MatchAllDocsQuery;
+use crate::search::match_no_docs_query::MatchNoDocsQuery;
+use crate::search::numeric_field_stats::NumericFieldStats;
+use crate::search::query::Query;
+use crate::search::query_visitor::QueryVisitor;
+use crate::search::score_mode::ScoreMode;
+use crate::search::scorer_supplier::ScorerSupplier;
+use crate::search::two_phase_iterator::{ScorerIterator, TwoPhaseIterator};
+use crate::search::weight::Weight;
 use crate::util::BytesRef;
 
 /// Sentinel standing for a value the table cannot hold, which is also the
@@ -14,7 +38,7 @@ const MISSING: i64 = i64::MIN;
 ///
 /// Equivalent to `org.apache.lucene.document.DocValuesLongHashSet`, which a set
 /// query uses to test membership without a per-document allocation.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DocValuesLongHashSet {
     table: Vec<i64>,
     mask: usize,
@@ -313,5 +337,636 @@ pub fn ordinal_range(min_ord: i64, max_ord: i64) -> Option<(i64, i64)> {
         None
     } else {
         Some((min_ord, max_ord))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The queries themselves
+// ---------------------------------------------------------------------------
+
+/// The weight of a doc-values query, built over the query's own scorer
+/// supplier.
+///
+/// Equivalent to the anonymous `ConstantScoreWeight` each of the three queries
+/// below creates in `createWeight`. Rust has no anonymous classes, so the three
+/// share one weight body parameterised by a [`DocValuesScorerSource`].
+#[derive(Debug)]
+struct DocValuesWeightImpl<S: DocValuesScorerSource> {
+    source: S,
+    score: f32,
+    score_mode: ScoreMode,
+}
+
+/// What a doc-values query contributes to its weight: the field it reads and
+/// the iterator it wants over a leaf.
+trait DocValuesScorerSource: Debug + Send + Sync + 'static {
+    /// The field the query reads, which decides cacheability.
+    fn field(&self) -> &str;
+
+    /// Returns the iterator over the leaf's matching documents, or `None` when
+    /// nothing in the leaf can match.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while opening the doc values.
+    fn iterator(&self, reader: &dyn LeafReader) -> Result<Option<ScorerIterator>>;
+
+    /// Counts the matching documents without iterating, or returns `-1`.
+    ///
+    /// Equivalent to the `count(LeafReaderContext)` override, which only
+    /// `SortedNumericDocValuesRangeQuery` has.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while reading the skipper.
+    fn count(&self, _reader: &dyn LeafReader) -> Result<i32> {
+        Ok(-1)
+    }
+}
+
+impl<S: DocValuesScorerSource> ConstantScoreWeightImpl for DocValuesWeightImpl<S> {
+    fn scorer_supplier(
+        &self,
+        context: &LeafReaderContext,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
+        let reader = context.leaf_reader();
+        if reader
+            .get_field_infos()
+            .field_info(self.source.field())
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let max_doc = reader.max_doc();
+        let Some(iterator) = self.source.iterator(reader.as_ref())? else {
+            return Ok(None);
+        };
+        Ok(Some(Box::new(ConstantScoreScorerSupplier::from_iterator(
+            iterator,
+            self.score,
+            self.score_mode,
+            max_doc,
+        ))))
+    }
+
+    fn is_cacheable(&self, ctx: &LeafReaderContext) -> bool {
+        DocValues::is_cacheable(ctx, &[self.source.field()])
+    }
+
+    fn count(&self, context: &LeafReaderContext) -> Result<i32> {
+        let reader = context.leaf_reader();
+        let max_doc = reader.max_doc();
+        let cnt = self.source.count(reader.as_ref())?;
+        if cnt == max_doc {
+            // Return the reader's numDocs, which accounts for deleted documents
+            // as well.
+            return Ok(reader.num_docs());
+        }
+        Ok(cnt)
+    }
+}
+
+/// Counts the documents of a leaf whose values all fall inside `[lower, upper]`,
+/// ignoring deletes, or returns `-1` when the count cannot be had cheaply.
+///
+/// Equivalent to the private
+/// `SortedNumericDocValuesRangeQuery…docCountIgnoringDeletes(LeafReaderContext)`.
+fn doc_count_ignoring_deletes(
+    reader: &dyn LeafReader,
+    field: &str,
+    lower_value: i64,
+    upper_value: i64,
+) -> Result<i32> {
+    if let Some(skipper) = reader.get_doc_values_skipper(field)? {
+        if skipper.global_min_value() > upper_value || skipper.global_max_value() < lower_value {
+            return Ok(0);
+        }
+        if skipper.global_doc_count() == reader.max_doc()
+            && skipper.global_min_value() >= lower_value
+            && skipper.global_max_value() <= upper_value
+        {
+            return Ok(reader.max_doc());
+        }
+    }
+    Ok(-1)
+}
+
+/// The scorer source of [`SortedNumericDocValuesRangeQuery`].
+#[derive(Clone, Debug)]
+struct SortedNumericRangeSource {
+    field: String,
+    lower_value: i64,
+    upper_value: i64,
+}
+
+impl DocValuesScorerSource for SortedNumericRangeSource {
+    fn field(&self) -> &str {
+        &self.field
+    }
+
+    fn iterator(&self, reader: &dyn LeafReader) -> Result<Option<ScorerIterator>> {
+        let max_doc = reader.max_doc();
+        let count =
+            doc_count_ignoring_deletes(reader, &self.field, self.lower_value, self.upper_value)?;
+        if count == 0 {
+            return Ok(None);
+        }
+        if count == max_doc {
+            return Ok(Some(ScorerIterator::Simple(Box::new(
+                crate::search::doc_id_set_iterator::all(max_doc)?,
+            ))));
+        }
+
+        let values = DocValues::get_sorted_numeric(reader, &self.field)?;
+        let skipper = reader.get_doc_values_skipper(&self.field)?;
+        // A single two-phase iterator covers every density: its approximation
+        // rides the skipper, so it never over-scans.
+        match DocValues::unwrap_singleton_numeric(values) {
+            Some(singleton) => Ok(Some(ScorerIterator::TwoPhase(Box::new(
+                DocValuesRangeIterator::for_range(
+                    singleton,
+                    skipper,
+                    self.lower_value,
+                    self.upper_value,
+                ),
+            )))),
+            None => {
+                // `unwrap_singleton_numeric` consumed the values, so they are
+                // reopened for the multi-valued path; Java can simply keep the
+                // reference it tested.
+                let values = DocValues::get_sorted_numeric(reader, &self.field)?;
+                Ok(Some(ScorerIterator::TwoPhase(Box::new(
+                    DocValuesRangeIterator::for_sorted_numeric_range(
+                        values,
+                        skipper,
+                        self.lower_value,
+                        self.upper_value,
+                    ),
+                ))))
+            }
+        }
+    }
+
+    fn count(&self, reader: &dyn LeafReader) -> Result<i32> {
+        doc_count_ignoring_deletes(reader, &self.field, self.lower_value, self.upper_value)
+    }
+}
+
+impl SortedNumericDocValuesRangeQuery {
+    /// The scorer source this query hands to its weight.
+    fn source(&self) -> SortedNumericRangeSource {
+        SortedNumericRangeSource {
+            field: self.field.clone(),
+            lower_value: self.lower_value,
+            upper_value: self.upper_value,
+        }
+    }
+}
+
+impl Query for SortedNumericDocValuesRangeQuery {
+    fn to_query_string(&self, field: &str) -> String {
+        let mut b = String::new();
+        if self.field != field {
+            b.push_str(&self.field);
+            b.push(':');
+        }
+        b.push('[');
+        b.push_str(&self.lower_value.to_string());
+        b.push_str(" TO ");
+        b.push_str(&self.upper_value.to_string());
+        b.push(']');
+        b
+    }
+
+    fn visit(&self, visitor: &mut dyn QueryVisitor) {
+        if visitor.accept_field(&self.field) {
+            visitor.visit_leaf(self);
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn rewrite(&self, searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
+        if self.lower_value == i64::MIN && self.upper_value == i64::MAX {
+            return Ok(Some(Arc::new(FieldExistsQuery::new(&self.field))));
+        }
+        if self.lower_value > self.upper_value {
+            return Ok(Some(Arc::new(MatchNoDocsQuery::new(""))));
+        }
+        let reader = Arc::clone(searcher.get_index_reader());
+        if let Some(stats) = NumericFieldStats::get_stats(Arc::clone(&reader), &self.field)? {
+            if self.lower_value > stats.max || self.upper_value < stats.min {
+                return Ok(Some(Arc::new(MatchNoDocsQuery::new(""))));
+            }
+            if self.lower_value <= stats.min
+                && self.upper_value >= stats.max
+                && stats.doc_count == reader.max_doc()
+            {
+                return Ok(Some(Arc::new(MatchAllDocsQuery)));
+            }
+        }
+        Ok(None)
+    }
+
+    fn query_eq(&self, other: &dyn Query) -> bool {
+        match other.as_any().downcast_ref::<Self>() {
+            Some(other) => {
+                self.field == other.field
+                    && self.lower_value == other.lower_value
+                    && self.upper_value == other.upper_value
+            }
+            None => false,
+        }
+    }
+
+    fn query_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.class_hash().hash(&mut hasher);
+        self.field.hash(&mut hasher);
+        self.lower_value.hash(&mut hasher);
+        self.upper_value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        Ok(Arc::new(ConstantScoreWeight::new(
+            Arc::new(self.clone()),
+            boost,
+            DocValuesWeightImpl {
+                source: self.source(),
+                score: boost,
+                score_mode,
+            },
+        )))
+    }
+}
+
+/// The scorer source of [`SortedNumericDocValuesSetQuery`].
+#[derive(Clone, Debug)]
+struct SortedNumericSetSource {
+    field: String,
+    numbers: DocValuesLongHashSet,
+}
+
+/// Confirms that one of a document's numeric values is in the set.
+///
+/// Equivalent to the anonymous `TwoPhaseIterator` of
+/// `SortedNumericDocValuesSetQuery.createWeight`.
+struct SortedNumericSetIterator {
+    values: Box<dyn SortedNumericDocValues>,
+    numbers: DocValuesLongHashSet,
+    /// Whether the values are single-valued, in which case one comparison
+    /// suffices.
+    singleton: bool,
+}
+
+impl Debug for SortedNumericSetIterator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SortedNumericSetIterator")
+            .field("numbers", &self.numbers)
+            .field("singleton", &self.singleton)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TwoPhaseIterator for SortedNumericSetIterator {
+    fn approximation(&mut self) -> &mut dyn DocIdSetIterator {
+        self.values.as_mut()
+    }
+
+    fn approximation_ref(&self) -> &dyn DocIdSetIterator {
+        self.values.as_ref()
+    }
+
+    fn matches(&mut self) -> Result<bool> {
+        let count = self.values.doc_value_count()?;
+        for _ in 0..count {
+            let value = self.values.next_value()?;
+            if value < self.numbers.min_value() {
+                continue;
+            } else if value > self.numbers.max_value() {
+                // Values are sorted, so nothing later can match.
+                return Ok(false);
+            } else if self.numbers.contains(value) {
+                return Ok(true);
+            }
+            if self.singleton {
+                break;
+            }
+        }
+        Ok(false)
+    }
+
+    fn match_cost(&self) -> f32 {
+        // 2 comparisons, plus a possible lookup in the set.
+        5.0
+    }
+}
+
+impl DocValuesScorerSource for SortedNumericSetSource {
+    fn field(&self) -> &str {
+        &self.field
+    }
+
+    fn iterator(&self, reader: &dyn LeafReader) -> Result<Option<ScorerIterator>> {
+        let values = DocValues::get_sorted_numeric(reader, &self.field)?;
+        // Java tests for a singleton so it can spend one comparison instead of
+        // walking the value list; the walk over a single value is the same work,
+        // so the flag records which case this is rather than splitting the
+        // iterator in two.
+        let singleton = values.into_singleton().is_some();
+        let values = DocValues::get_sorted_numeric(reader, &self.field)?;
+        Ok(Some(ScorerIterator::TwoPhase(Box::new(
+            SortedNumericSetIterator {
+                values,
+                numbers: self.numbers.clone(),
+                singleton,
+            },
+        ))))
+    }
+}
+
+impl Query for SortedNumericDocValuesSetQuery {
+    fn to_query_string(&self, _default_field: &str) -> String {
+        format!("{}: {:?}", self.field, self.values)
+    }
+
+    fn visit(&self, visitor: &mut dyn QueryVisitor) {
+        if visitor.accept_field(&self.field) {
+            visitor.visit_leaf(self);
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn rewrite(&self, _searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
+        if self.values.size() == 0 {
+            return Ok(Some(Arc::new(MatchNoDocsQuery::new(""))));
+        }
+        Ok(None)
+    }
+
+    fn query_eq(&self, other: &dyn Query) -> bool {
+        match other.as_any().downcast_ref::<Self>() {
+            Some(other) => self.field == other.field && self.values == other.values,
+            None => false,
+        }
+    }
+
+    fn query_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.class_hash().hash(&mut hasher);
+        self.field.hash(&mut hasher);
+        self.values.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        Ok(Arc::new(ConstantScoreWeight::new(
+            Arc::new(self.clone()),
+            boost,
+            DocValuesWeightImpl {
+                source: SortedNumericSetSource {
+                    field: self.field.clone(),
+                    numbers: self.values.clone(),
+                },
+                score: boost,
+                score_mode,
+            },
+        )))
+    }
+}
+
+/// The scorer source of [`SortedSetDocValuesRangeQuery`].
+#[derive(Clone, Debug)]
+struct SortedSetRangeSource {
+    field: String,
+    lower_value: Option<BytesRef>,
+    upper_value: Option<BytesRef>,
+    lower_inclusive: bool,
+    upper_inclusive: bool,
+}
+
+impl SortedSetRangeSource {
+    /// The lowest ordinal the range covers.
+    ///
+    /// Equivalent to the private
+    /// `SortedSetDocValuesRangeQuery.minOrd(SortedSetDocValues)`.
+    fn min_ord(&self, values: &dyn SortedSetDocValues) -> Result<i64> {
+        let Some(lower) = self.lower_value.as_ref() else {
+            return Ok(0);
+        };
+        let ord = values.lookup_term(lower)?;
+        Ok(if ord < 0 {
+            -1 - ord
+        } else if self.lower_inclusive {
+            ord
+        } else {
+            ord + 1
+        })
+    }
+
+    /// The highest ordinal the range covers.
+    ///
+    /// Equivalent to the private
+    /// `SortedSetDocValuesRangeQuery.maxOrd(SortedSetDocValues)`.
+    fn max_ord(&self, values: &dyn SortedSetDocValues) -> Result<i64> {
+        let Some(upper) = self.upper_value.as_ref() else {
+            return Ok(values.get_value_count()? - 1);
+        };
+        let ord = values.lookup_term(upper)?;
+        Ok(if ord < 0 {
+            -2 - ord
+        } else if self.upper_inclusive {
+            ord
+        } else {
+            ord - 1
+        })
+    }
+}
+
+impl DocValuesScorerSource for SortedSetRangeSource {
+    fn field(&self) -> &str {
+        &self.field
+    }
+
+    fn iterator(&self, reader: &dyn LeafReader) -> Result<Option<ScorerIterator>> {
+        let skipper = reader.get_doc_values_skipper(&self.field)?;
+        let values = DocValues::get_sorted_set(reader, &self.field)?;
+        let min_ord = self.min_ord(values.as_ref())?;
+        let max_ord = self.max_ord(values.as_ref())?;
+
+        // No term matched in this segment.
+        if min_ord > max_ord {
+            return Ok(None);
+        }
+        if let Some(skipper) = skipper.as_ref() {
+            if min_ord > skipper.global_max_value() || max_ord < skipper.global_min_value() {
+                return Ok(None);
+            }
+            // Every term matched in this segment.
+            if skipper.global_doc_count() == reader.max_doc()
+                && skipper.global_min_value() >= min_ord
+                && skipper.global_max_value() <= max_ord
+            {
+                return Ok(Some(ScorerIterator::Simple(Box::new(
+                    crate::search::doc_id_set_iterator::all(skipper.global_doc_count())?,
+                ))));
+            }
+        }
+
+        // A single two-phase iterator covers every density: its approximation
+        // rides the skipper, so it never over-scans.
+        match DocValues::unwrap_singleton_sorted(values) {
+            Some(singleton) => Ok(Some(ScorerIterator::TwoPhase(Box::new(
+                DocValuesRangeIterator::for_ordinal_range(singleton, skipper, min_ord, max_ord),
+            )))),
+            None => {
+                // The singleton test consumed the values, so they are reopened
+                // for the multi-valued path; Java keeps the reference it tested.
+                let values = DocValues::get_sorted_set(reader, &self.field)?;
+                Ok(Some(ScorerIterator::TwoPhase(Box::new(
+                    DocValuesRangeIterator::for_sorted_set_ordinal_range(
+                        values, skipper, min_ord, max_ord,
+                    ),
+                ))))
+            }
+        }
+    }
+
+    fn count(&self, reader: &dyn LeafReader) -> Result<i32> {
+        if reader.get_field_infos().field_info(&self.field).is_none() {
+            return Ok(0);
+        }
+        let values = DocValues::get_sorted_set(reader, &self.field)?;
+        let min_ord = self.min_ord(values.as_ref())?;
+        let max_ord = self.max_ord(values.as_ref())?;
+        if min_ord > max_ord {
+            return Ok(0);
+        }
+        if let Some(skipper) = reader.get_doc_values_skipper(&self.field)? {
+            if min_ord > skipper.global_max_value() || max_ord < skipper.global_min_value() {
+                return Ok(0);
+            }
+            if skipper.global_doc_count() == reader.max_doc()
+                && skipper.global_min_value() >= min_ord
+                && skipper.global_max_value() <= max_ord
+            {
+                return Ok(reader.max_doc());
+            }
+        }
+        Ok(-1)
+    }
+}
+
+impl Query for SortedSetDocValuesRangeQuery {
+    fn to_query_string(&self, field: &str) -> String {
+        let mut b = String::new();
+        if self.field != field {
+            b.push_str(&self.field);
+            b.push(':');
+        }
+        b.push(if self.lower_inclusive { '[' } else { '{' });
+        match self.lower_value.as_ref() {
+            None => b.push('*'),
+            Some(v) => b.push_str(&v.to_string()),
+        }
+        b.push_str(" TO ");
+        match self.upper_value.as_ref() {
+            None => b.push('*'),
+            Some(v) => b.push_str(&v.to_string()),
+        }
+        b.push(if self.upper_inclusive { ']' } else { '}' });
+        b
+    }
+
+    fn visit(&self, visitor: &mut dyn QueryVisitor) {
+        if visitor.accept_field(&self.field) {
+            visitor.visit_leaf(self);
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn query_eq(&self, other: &dyn Query) -> bool {
+        match other.as_any().downcast_ref::<Self>() {
+            Some(other) => {
+                self.field == other.field
+                    && self.lower_value == other.lower_value
+                    && self.upper_value == other.upper_value
+                    && self.lower_inclusive == other.lower_inclusive
+                    && self.upper_inclusive == other.upper_inclusive
+            }
+            None => false,
+        }
+    }
+
+    fn query_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.class_hash().hash(&mut hasher);
+        self.field.hash(&mut hasher);
+        self.lower_value
+            .as_ref()
+            .map(|v| v.slice().to_vec())
+            .hash(&mut hasher);
+        self.upper_value
+            .as_ref()
+            .map(|v| v.slice().to_vec())
+            .hash(&mut hasher);
+        self.lower_inclusive.hash(&mut hasher);
+        self.upper_inclusive.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn rewrite(&self, _searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
+        if self.lower_value.is_none() && self.upper_value.is_none() {
+            return Ok(Some(Arc::new(FieldExistsQuery::new(&self.field))));
+        }
+        Ok(None)
+    }
+
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        Ok(Arc::new(ConstantScoreWeight::new(
+            Arc::new(self.clone()),
+            boost,
+            DocValuesWeightImpl {
+                source: SortedSetRangeSource {
+                    field: self.field.clone(),
+                    lower_value: self.lower_value.clone(),
+                    upper_value: self.upper_value.clone(),
+                    lower_inclusive: self.lower_inclusive,
+                    upper_inclusive: self.upper_inclusive,
+                },
+                score: boost,
+                score_mode,
+            },
+        )))
     }
 }
