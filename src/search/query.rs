@@ -92,6 +92,20 @@ pub trait Query: Debug + Send + Sync + 'static {
         Ok(None)
     }
 
+    /// Whether this query is a
+    /// [`MultiTermQuery`](crate::search::MultiTermQuery).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java writes
+    /// `query instanceof MultiTermQuery` in
+    /// [`UsageTrackingQueryCachingPolicy`](crate::search::UsageTrackingQueryCachingPolicy),
+    /// which decides how often a query must be seen before it is cached. Rust
+    /// cannot test a `dyn Query` for a trait, so the test is declared as a
+    /// method whose default answers `false` — Java's `false` branch — and every
+    /// implementation of `MultiTermQuery` overrides it.
+    fn is_multi_term_query(&self) -> bool {
+        false
+    }
+
     /// Query instance equivalence.
     ///
     /// Equivalent to `Query.equals(Object)`, which Java leaves abstract. It is

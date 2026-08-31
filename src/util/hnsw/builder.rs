@@ -613,8 +613,13 @@ impl KnnCollector for GraphBuilderKnnCollector {
         }
     }
 
-    fn top_docs(&self) -> crate::search::knn::TopDocs {
-        crate::search::knn::TopDocs
+    /// # Panics
+    ///
+    /// Always. Equivalent to `HnswGraphBuilder.GraphBuilderKnnCollector.topDocs()`,
+    /// which throws `IllegalArgumentException`: this collector feeds graph
+    /// construction and never produces search results.
+    fn top_docs(&mut self) -> crate::search::knn::TopDocs {
+        panic!("GraphBuilderKnnCollector does not produce TopDocs")
     }
 
     fn get_search_strategy(&self) -> Option<&crate::search::knn::KnnSearchStrategy> {

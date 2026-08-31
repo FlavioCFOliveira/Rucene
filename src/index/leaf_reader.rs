@@ -16,6 +16,7 @@ use crate::index::{
     NumericDocValues, PointValues, PostingsEnum, SortedDocValues, SortedNumericDocValues,
     SortedSetDocValues, Term, Terms,
 };
+use crate::search::empty_top_docs;
 use crate::search::knn::{KnnCollector, TopDocs, TopKnnCollector};
 use crate::search::AcceptDocs;
 use crate::search::Sort;
@@ -274,16 +275,16 @@ pub trait LeafReader: Send + Sync + Debug + 'static {
         let infos = self.get_field_infos();
         let field_info = infos.field_info(field);
         if field_info.is_none() || field_info.unwrap().vector_dimension == 0 {
-            return Ok(TopDocs);
+            return Ok(empty_top_docs());
         }
         let values = self.get_float_vector_values(field)?;
         if values.is_none() {
-            return Ok(TopDocs);
+            return Ok(empty_top_docs());
         }
         let values = values.unwrap();
         let k = k.min(values.size());
         if k == 0 {
-            return Ok(TopDocs);
+            return Ok(empty_top_docs());
         }
         let mut collector = TopKnnCollector::new(k, visited_limit as i64);
         self.search_nearest_vectors(field, target, &mut collector, accept_docs)?;
@@ -302,16 +303,16 @@ pub trait LeafReader: Send + Sync + Debug + 'static {
         let infos = self.get_field_infos();
         let field_info = infos.field_info(field);
         if field_info.is_none() || field_info.unwrap().vector_dimension == 0 {
-            return Ok(TopDocs);
+            return Ok(empty_top_docs());
         }
         let values = self.get_byte_vector_values(field)?;
         if values.is_none() {
-            return Ok(TopDocs);
+            return Ok(empty_top_docs());
         }
         let values = values.unwrap();
         let k = k.min(values.size());
         if k == 0 {
-            return Ok(TopDocs);
+            return Ok(empty_top_docs());
         }
         let mut collector = TopKnnCollector::new(k, visited_limit as i64);
         self.search_nearest_vectors_byte(field, target, &mut collector, accept_docs)?;

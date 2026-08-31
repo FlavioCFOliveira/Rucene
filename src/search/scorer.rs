@@ -16,6 +16,21 @@ use crate::util::Bits;
 /// extends `Scorable`. A scorer exposes an [`iterator`](Self::iterator) over
 /// the documents matching a query in increasing order of doc ID.
 pub trait Scorer: Scorable {
+    /// Returns this scorer viewed as an [`IndriScorer`], or `None` when it is
+    /// not one.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java writes
+    /// `scorer instanceof IndriScorer indriScorer` in
+    /// `IndriAndScorer.scoreDoc`, which is how an Indri disjunction decides
+    /// which of its sub-scorers carry a boost and a smoothing score. Rust
+    /// cannot downcast a `dyn Scorer`, so the test is declared as a method
+    /// whose default answers `None` — Java's `false` branch — and
+    /// [`IndriDisjunctionScorer`](crate::search::IndriDisjunctionScorer)
+    /// overrides it.
+    fn as_indri_scorer(&mut self) -> Option<&mut dyn crate::search::indri_scorer::IndriScorer> {
+        None
+    }
+
     /// Returns this scorer viewed as a [`Scorable`].
     ///
     /// **Divergence from Lucene 10.5.0.** Java gets this for free, because

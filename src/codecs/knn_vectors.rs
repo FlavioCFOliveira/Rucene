@@ -403,8 +403,8 @@ impl KnnCollector for EmptyKnnCollector {
         f32::NEG_INFINITY
     }
 
-    fn top_docs(&self) -> TopDocs {
-        TopDocs
+    fn top_docs(&mut self) -> TopDocs {
+        crate::search::empty_top_docs()
     }
 
     fn get_search_strategy(&self) -> Option<&KnnSearchStrategy> {

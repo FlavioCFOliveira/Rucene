@@ -56,6 +56,18 @@ pub trait Weight: SegmentCacheable + Send + Sync + Debug {
     /// Propagates any I/O error raised while explaining.
     fn explain(&self, context: &LeafReaderContext, doc: i32) -> Result<Explanation>;
 
+    /// Returns the weight this one caches, when it is the wrapper
+    /// [`LRUQueryCache`](crate::search::LRUQueryCache) puts around a weight.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `LRUQueryCache.doCache` writes
+    /// `while (weight instanceof CachingWrapperWeight) weight = ((CachingWrapperWeight) weight).in;`
+    /// so that a weight is never wrapped twice. Rust cannot downcast a
+    /// `dyn Weight`, so the test is declared as a method whose default answers
+    /// `None` — Java's `false` branch — and the caching wrapper overrides it.
+    fn unwrap_cached(&self) -> Option<Arc<dyn Weight>> {
+        None
+    }
+
     /// Returns a [`ScorerSupplier`], which allows knowing the cost of the
     /// [`Scorer`] before building it, or `None` if no documents will be scored
     /// by this query.

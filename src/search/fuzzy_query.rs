@@ -304,6 +304,10 @@ impl FuzzyQuery {
 }
 
 impl Query for FuzzyQuery {
+    fn is_multi_term_query(&self) -> bool {
+        true
+    }
+
     fn to_query_string(&self, field: &str) -> String {
         let mut buffer = String::new();
         if self.term.field() != field {

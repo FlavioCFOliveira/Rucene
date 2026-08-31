@@ -7,9 +7,14 @@
 #![deny(unsafe_code)]
 
 pub mod abstract_doc_id_set_iterator;
+pub mod abstract_knn_collector;
+pub mod abstract_knn_vector_query;
 pub mod abstract_multi_term_query_constant_score_wrapper;
+pub mod abstract_vector_similarity_query;
 pub mod automaton_query;
 pub mod batch_score_bulk_scorer;
+pub mod bayesian_score_estimator;
+pub mod bayesian_score_query;
 pub mod binary_sort_field;
 pub mod bit_set_doc_id_stream;
 pub mod bit_set_util;
@@ -24,6 +29,8 @@ pub mod boolean_weight;
 pub mod boost_attribute;
 pub mod boost_query;
 pub mod bulk_scorer;
+pub mod byte_vector_similarity_query;
+pub mod byte_vector_similarity_values_source;
 pub mod caching_collector;
 pub mod collection_terminated_exception;
 pub mod collector;
@@ -38,6 +45,7 @@ pub mod constant_score_query;
 pub mod constant_score_scorer;
 pub mod constant_score_scorer_supplier;
 pub mod constant_score_weight;
+pub mod controlled_real_time_reopen_thread;
 pub mod dense_conjunction_bulk_scorer;
 pub mod disi_priority_queue;
 pub mod disi_wrapper;
@@ -49,6 +57,7 @@ pub mod disjunction_max_scorer;
 pub mod disjunction_score_block_boundary_propagator;
 pub mod disjunction_scorer;
 pub mod disjunction_sum_scorer;
+pub mod doc_and_score_query;
 pub mod doc_id_set;
 pub mod doc_id_set_bulk_iterator;
 pub mod doc_id_set_iterator;
@@ -59,6 +68,7 @@ pub mod doc_values_range_iterator;
 pub mod doc_values_rewrite_method;
 pub mod double_values;
 pub mod double_values_source;
+pub mod double_values_source_rescorer;
 pub mod exact_phrase_matcher;
 pub mod field_comparator;
 pub mod field_comparator_source;
@@ -66,19 +76,37 @@ pub mod field_doc;
 pub mod field_exists_query;
 pub mod field_value_hit_queue;
 pub mod filter_matches_iterator;
+pub mod float_vector_similarity_query;
+pub mod float_vector_similarity_values_source;
+pub mod full_precision_float_vector_similarity_values_source;
 pub mod fuzzy_automaton_builder;
 pub mod fuzzy_query;
 pub mod fuzzy_terms_enum;
 pub mod hit_queue;
+pub mod hnsw_queue_saturation_collector;
 pub mod impacts_disi;
 pub mod index_or_doc_values_query;
 pub mod index_priority_queue;
 pub mod index_searcher;
 pub mod index_sort_sorted_numeric_doc_values_range_query;
+pub mod indri_and_query;
+pub mod indri_and_scorer;
+pub mod indri_and_weight;
+pub mod indri_disjunction_scorer;
+pub mod indri_query;
+pub mod indri_scorer;
 pub mod knn;
+pub mod knn_byte_vector_query;
+pub mod knn_float_vector_query;
+pub mod late_interaction_float_values_source;
+pub mod late_interaction_rescorer;
 pub mod leaf_field_comparator;
+pub mod live_field_values;
+pub mod log_odds_fusion_query;
+pub mod log_odds_fusion_scorer;
 pub mod long_values;
 pub mod long_values_source;
+pub mod lru_query_cache;
 pub mod match_all_docs_query;
 pub mod match_no_docs_query;
 pub mod matches;
@@ -94,11 +122,13 @@ pub mod multi_phrase_query;
 pub mod multi_term_query;
 pub mod multi_term_query_constant_score_blended_wrapper;
 pub mod multi_term_query_constant_score_wrapper;
+pub mod multi_vector_similarity;
 pub mod multiset;
 pub mod named_matches;
 pub mod ngram_phrase_query;
 pub mod numeric_doc_values_range_query;
 pub mod numeric_field_stats;
+pub mod patience_knn_vector_query;
 pub mod phrase_matcher;
 pub mod phrase_positions;
 pub mod phrase_query;
@@ -112,12 +142,16 @@ pub mod prefix_query;
 pub mod pruning;
 pub mod query;
 pub mod query_cache;
+pub mod query_rescorer;
 pub mod query_visitor;
 pub mod reference_manager;
+pub mod refresh_commit_supplier;
 pub mod regexp_query;
 pub mod req_excl_bulk_scorer;
 pub mod req_excl_scorer;
 pub mod req_opt_sum_scorer;
+pub mod rescore_top_n_query;
+pub mod rescorer;
 pub mod scorable;
 pub mod score_caching_wrapping_scorer;
 pub mod score_doc;
@@ -126,6 +160,10 @@ pub mod scorer;
 pub mod scorer_supplier;
 pub mod scorer_util;
 pub mod scoring_rewrite;
+pub mod searcher_factory;
+pub mod searcher_lifetime_manager;
+pub mod searcher_manager;
+pub mod seeded_knn_vector_query;
 pub mod segment_cacheable;
 pub mod sim_scorer_source;
 pub mod similarities;
@@ -133,6 +171,7 @@ pub mod simple_field_comparator;
 pub mod skip_block_range_iterator;
 pub mod sloppy_phrase_matcher;
 pub mod sort;
+pub mod sort_rescorer;
 pub mod sorted_numeric_selector;
 pub mod sorted_numeric_sort_field;
 pub mod sorted_set_selector;
@@ -146,6 +185,7 @@ pub mod term_query;
 pub mod term_range_query;
 pub mod term_scorer;
 pub mod time_limiting_bulk_scorer;
+pub mod time_limiting_knn_collector_manager;
 pub mod top_docs;
 pub mod top_docs_collector;
 pub mod top_field_collector;
@@ -157,6 +197,10 @@ pub mod top_terms_rewrite;
 pub mod total_hit_count_collector;
 pub mod total_hits;
 pub mod two_phase_iterator;
+pub mod usage_tracking_query_caching_policy;
+pub mod vector_scorer;
+pub mod vector_similarity_collector;
+pub mod vector_similarity_values_source;
 pub mod wand_scorer;
 pub mod weight;
 pub mod wildcard_query;
@@ -191,23 +235,38 @@ pub use sloppy_phrase_matcher::SloppyPhraseMatcher;
 pub use sort::{
     read_sort, write_sort, MissingValue, Sort, SortField, SortFieldKind, SortFieldType,
 };
+pub use sort_rescorer::SortRescorer;
 pub use sorted_numeric_selector::{SortedNumericSelector, SortedNumericSelectorType};
 pub use sorted_numeric_sort_field::SortedNumericSortField;
 pub use sorted_set_selector::{SortedSetSelector, SortedSetSelectorType};
 pub use sorted_set_sort_field::SortedSetSortField;
 
 pub use abstract_doc_id_set_iterator::{AbstractDocIdSetIterator, FilterDocIdSetIterator};
+pub use abstract_knn_collector::{AbstractKnnCollector, AbstractKnnCollectorState};
+pub use abstract_knn_vector_query::{
+    default_exact_search, knn_vector_query_rewrite, knn_vector_query_visit, search_leaf,
+    AbstractKnnVectorQuery, AbstractKnnVectorQueryImpl, OptimisticKnnCollectorManager,
+};
 pub use abstract_multi_term_query_constant_score_wrapper::{
     collect_terms as collect_rewrite_terms, estimate_cost, rewrite_as_boolean_query,
     rewriting_matches, rewriting_scorer_supplier, AbstractMultiTermQueryConstantScoreWrapper,
     RewriteInner, RewritingScorerSupplier, RewritingState, RewritingWeight, TermAndState,
     WeightOrDocIdSetIterator, BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD,
 };
+pub use abstract_vector_similarity_query::{
+    default_similarity_strategy, vector_similarity_create_weight, vector_similarity_query_visit,
+    AbstractVectorSimilarityQuery, AbstractVectorSimilarityQueryImpl, DECAY_MAX_APPROXIMATION,
+    DECAY_MAX_QUALITY, DEFAULT_DECAY,
+};
 pub use automaton_query::{
     automaton_query_eq, automaton_query_hash, automaton_query_visit, compiled_automaton_hash,
     term_hash, AutomatonQuery,
 };
 pub use batch_score_bulk_scorer::BatchScoreBulkScorer;
+pub use bayesian_score_estimator::{
+    sample_vocabulary_terms, BayesianScoreEstimator, JavaRandom, Parameters,
+};
+pub use bayesian_score_query::BayesianScoreQuery;
 pub use binary_sort_field::BinarySortField;
 pub use bit_set_doc_id_stream::BitSetDocIdStream;
 pub use blended_term_query::{
@@ -224,6 +283,8 @@ pub use boolean_weight::{BooleanWeight, WeightedBooleanClause};
 pub use boost_attribute::{BoostAttribute, BoostAttributeImpl, DEFAULT_BOOST};
 pub use boost_query::BoostQuery;
 pub use bulk_scorer::{BulkScorer, DefaultBulkScorer};
+pub use byte_vector_similarity_query::ByteVectorSimilarityQuery;
+pub use byte_vector_similarity_values_source::ByteVectorSimilarityValuesSource;
 pub use caching_collector::{CachingCollector, NoOpCollector};
 pub use collection_terminated_exception::{
     CollectionError, CollectionResult, CollectionTerminatedException, TimeExceededException,
@@ -247,6 +308,9 @@ pub use constant_score_scorer_supplier::{
     ConstantScoreIteratorSupplier, ConstantScoreScorerSupplier, SingleIteratorSupplier,
 };
 pub use constant_score_weight::{ConstantScoreWeight, ConstantScoreWeightImpl};
+pub use controlled_real_time_reopen_thread::{
+    ControlledRealTimeReopenThread, MaxCompletedSequenceNumberSource,
+};
 pub use dense_conjunction_bulk_scorer::{
     DenseConjunctionBulkScorer, DENSITY_THRESHOLD_INVERSE, WINDOW_SIZE,
 };
@@ -265,6 +329,7 @@ pub use disjunction_score_block_boundary_propagator::{
 };
 pub use disjunction_scorer::{ByMatchCost, DisjunctionScorer};
 pub use disjunction_sum_scorer::DisjunctionSumScorer;
+pub use doc_and_score_query::{find_segment_starts, DocAndScoreQuery};
 pub use doc_id_set_bulk_iterator::DocIdSetBulkIterator;
 pub use doc_id_stream::{CheckedIntConsumer, DocIdStream, RangeDocIdStream};
 pub use doc_values_range_iterator::DocValuesRangeIterator;
@@ -275,6 +340,9 @@ pub use double_values::{
 pub use double_values_source::{
     DoubleValueDecoder, DoubleValuesComparatorSource, DoubleValuesSource,
 };
+pub use double_values_source_rescorer::{
+    DoubleValuesSourceRescorer, DoubleValuesSourceRescorerImpl,
+};
 pub use exact_phrase_matcher::{merge_impacts, ExactPhraseMatcher, MergedImpactsSource};
 pub use field_comparator::{FieldComparator, RelevanceComparator, SortValue, TermValComparator};
 pub use field_comparator_source::FieldComparatorSource;
@@ -282,6 +350,9 @@ pub use field_doc::FieldDoc;
 pub use field_exists_query::FieldExistsQuery;
 pub use field_value_hit_queue::{Entry as FieldValueHitQueueEntry, FieldValueHitQueue};
 pub use filter_matches_iterator::FilterMatchesIterator;
+pub use float_vector_similarity_query::FloatVectorSimilarityQuery;
+pub use float_vector_similarity_values_source::FloatVectorSimilarityValuesSource;
+pub use full_precision_float_vector_similarity_values_source::FullPrecisionFloatVectorSimilarityValuesSource;
 pub use fuzzy_automaton_builder::FuzzyAutomatonBuilder;
 pub use fuzzy_query::{
     default_rewrite_method, FuzzyQuery, DEFAULT_MAX_EDITS, DEFAULT_MAX_EXPANSIONS,
@@ -291,6 +362,7 @@ pub use fuzzy_terms_enum::{
     shared_automata, AutomatonAttribute, AutomatonAttributeImpl, AutomatonSet, FuzzyTermsEnum,
 };
 pub use hit_queue::{HitQueue, HitQueueComparator};
+pub use hnsw_queue_saturation_collector::{HnswQueueSaturationCollector, HnswQueueSaturationState};
 pub use impacts_disi::ImpactsDISI;
 pub use index_or_doc_values_query::IndexOrDocValuesQuery;
 pub use index_priority_queue::{IndexOrder, IndexPriorityQueue};
@@ -298,10 +370,32 @@ pub use index_searcher::{
     IndexSearcher, LeafReaderContextPartition, LeafSlice, TooManyClauses, TooManyNestedClauses,
 };
 pub use index_sort_sorted_numeric_doc_values_range_query::IndexSortSortedNumericDocValuesRangeQuery;
+pub use indri_and_query::IndriAndQuery;
+pub use indri_and_scorer::{new_indri_and_scorer, IndriAndScorer, IndriAndScoring};
+pub use indri_and_weight::IndriAndWeight;
+pub use indri_disjunction_scorer::{IndriDisjunctionScorer, IndriDisjunctionScoring};
+pub use indri_query::IndriQuery;
+pub use indri_scorer::IndriScorer;
+pub use knn::{KnnCollector, KnnSearchStrategy, TopKnnCollector};
+pub use knn_byte_vector_query::KnnByteVectorQuery;
+pub use knn_float_vector_query::KnnFloatVectorQuery;
+pub use late_interaction_float_values_source::{
+    LateInteractionFloatValuesSource, LateInteractionScoreFunction,
+};
+pub use late_interaction_rescorer::{LateInteractionFallback, LateInteractionRescorer};
 pub use leaf_field_comparator::LeafFieldComparator;
+pub use live_field_values::{LiveFieldValues, LiveFieldValuesLookup};
+pub use log_odds_fusion_query::LogOddsFusionQuery;
+pub use log_odds_fusion_scorer::{
+    clamp_probability, logit, sigmoid, softplus, LogOddsFusionScorer,
+};
 pub use long_values::LongValues;
 pub use long_values_source::{
     ConstantLongValuesSource, LongValuesComparatorSource, LongValuesSource,
+};
+pub use lru_query_cache::{
+    min_segment_size_predicate, CacheAndCount, LRUQueryCache, LeavesToCache,
+    HASHTABLE_RAM_BYTES_PER_ENTRY, LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY,
 };
 pub use match_all_docs_query::MatchAllDocsQuery;
 pub use match_no_docs_query::MatchNoDocsQuery;
@@ -333,11 +427,13 @@ pub use multi_term_query::{
 };
 pub use multi_term_query_constant_score_blended_wrapper::MultiTermQueryConstantScoreBlendedWrapper;
 pub use multi_term_query_constant_score_wrapper::MultiTermQueryConstantScoreWrapper;
+pub use multi_vector_similarity::MultiVectorSimilarity;
 pub use multiset::Multiset;
 pub use named_matches::{wrap_query, NamedMatches, NamedQuery};
 pub use ngram_phrase_query::NGramPhraseQuery;
 pub use numeric_doc_values_range_query::NumericDocValuesRangeQuery;
 pub use numeric_field_stats::{NumericFieldStats, Stats as NumericFieldStatsValues};
+pub use patience_knn_vector_query::PatienceKnnVectorQuery;
 pub use phrase_matcher::{
     DummyImpactsSource, IteratorWithImpacts, PhraseImpactsDISI, PhraseMatcher, SharedPostings,
 };
@@ -355,11 +451,17 @@ pub use prefix_query::PrefixQuery;
 pub use pruning::Pruning;
 pub use query::{query_to_string, Query, QueryKey};
 pub use query_cache::{QueryCache, QueryCachingPolicy};
+pub use query_rescorer::{
+    rescore as query_rescore, LinearCombination, QueryRescorer, QueryRescorerImpl,
+};
 pub use query_visitor::{EmptyQueryVisitor, QueryVisitor, TermCollectorVisitor};
+pub use refresh_commit_supplier::{LatestCommitSupplier, RefreshCommitSupplier};
 pub use regexp_query::{DefaultProvider, RegexpQuery};
 pub use req_excl_bulk_scorer::ReqExclBulkScorer;
 pub use req_excl_scorer::ReqExclScorer;
 pub use req_opt_sum_scorer::ReqOptSumScorer;
+pub use rescore_top_n_query::RescoreTopNQuery;
+pub use rescorer::Rescorer;
 pub use scorable::{ChildScorable, FilterScorable, Scorable, SimpleScorable};
 pub use score_caching_wrapping_scorer::{
     ScoreCachingWrappingLeafCollector, ScoreCachingWrappingScorer,
@@ -374,6 +476,12 @@ pub use scorer_util::{DocAndScoreAccBuffer, ScorerUtil};
 pub use scoring_rewrite::{
     scoring_rewrite, ConstantScoreBooleanRewrite, ScoringBooleanQueryBuilder,
     ScoringBooleanRewrite, ScoringRewrite,
+};
+pub use searcher_factory::{DefaultSearcherFactory, SearcherFactory};
+pub use searcher_lifetime_manager::{PruneByAge, Pruner, SearcherLifetimeManager, NANOS_PER_SEC};
+pub use searcher_manager::{get_searcher, ManagedSearcher, SearcherManager};
+pub use seeded_knn_vector_query::{
+    mapped_seed_ordinals, MappedDISI, SeededKnnVectorQuery, TopDocsDISI,
 };
 pub use segment_cacheable::SegmentCacheable;
 pub use simple_field_comparator::{SimpleFieldComparator, SimpleFieldComparatorImpl};
@@ -393,6 +501,9 @@ pub use term_query::{empty_term_scorer, TermQuery, TermScorerSupplier, TermWeigh
 pub use term_range_query::{term_bytes_to_string, TermRangeQuery};
 pub use term_scorer::{BoxedImpactsEnum, TermScorer};
 pub use time_limiting_bulk_scorer::TimeLimitingBulkScorer;
+pub use time_limiting_knn_collector_manager::{
+    TimeLimitingKnnCollector, TimeLimitingKnnCollectorManager,
+};
 pub use top_docs::{default_tie_breaker, TieBreaker, TopDocs};
 pub use top_docs_collector::{empty_top_docs, TopDocsCollector};
 pub use top_field_collector::{can_early_terminate, TopFieldCollector};
@@ -410,6 +521,14 @@ pub use total_hits::{TotalHits, TotalHitsRelation};
 pub use two_phase_iterator::{
     ScorerIterator, TwoPhaseIterator, TwoPhaseIteratorAsDocIdSetIterator,
 };
+pub use usage_tracking_query_caching_policy::{is_costly, UsageTrackingQueryCachingPolicy};
+pub use vector_scorer::{
+    bulk_from_random_scorer_dense, bulk_from_random_scorer_sparse, default_bulk,
+    SharedVectorScorer, SharedVectorScorerIterator, VectorScorer, VectorScorerBulk,
+    DEFAULT_BULK_BATCH_SIZE,
+};
+pub use vector_similarity_collector::VectorSimilarityCollector;
+pub use vector_similarity_values_source::{vector_similarity_values, VectorSimilarityValuesSource};
 pub use wand_scorer::{scale_max_score, scaling_factor, WANDScorer, FLOAT_MANTISSA_BITS};
 pub use weight::{DefaultScorerSupplier, FilterWeight, Weight};
 pub use wildcard_query::{WildcardQuery, WILDCARD_CHAR, WILDCARD_ESCAPE, WILDCARD_STRING};

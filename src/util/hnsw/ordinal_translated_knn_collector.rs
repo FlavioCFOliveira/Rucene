@@ -1,6 +1,7 @@
 //! Port of `org.apache.lucene.util.hnsw.OrdinalTranslatedKnnCollector`.
 
 use crate::search::knn::{KnnCollector, KnnSearchStrategy, TopDocs};
+use crate::search::{TotalHits, TotalHitsRelation};
 
 use super::int_to_int_function::IntToIntFunction;
 
@@ -10,14 +11,6 @@ use super::int_to_int_function::IntToIntFunction;
 /// Equivalent to `org.apache.lucene.util.hnsw.OrdinalTranslatedKnnCollector`, which
 /// extends `KnnCollector.Decorator`; Rust has no implementation inheritance, so the
 /// decorator's delegation is written out.
-///
-/// # Divergence from Lucene 10.5.0
-///
-/// Java's `topDocs()` rebuilds the `TopDocs` with a `TotalHits` carrying
-/// `visitedCount()` and a relation of `GREATER_THAN_OR_EQUAL_TO` when the search
-/// terminated early. The crate's [`TopDocs`] is still a placeholder that carries no
-/// hit count, so the override has nothing to rewrite and delegates; it must be
-/// revisited when `TopDocs` grows its fields.
 pub struct OrdinalTranslatedKnnCollector {
     collector: Box<dyn KnnCollector>,
     vector_ordinal_to_doc_id: Box<dyn IntToIntFunction + Send>,
@@ -72,8 +65,18 @@ impl KnnCollector for OrdinalTranslatedKnnCollector {
         self.collector.min_competitive_similarity()
     }
 
-    fn top_docs(&self) -> TopDocs {
-        self.collector.top_docs()
+    fn top_docs(&mut self) -> TopDocs {
+        let td = self.collector.top_docs();
+        let relation = if self.early_terminated() {
+            TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO
+        } else {
+            TotalHitsRelation::EQUAL_TO
+        };
+        TopDocs {
+            total_hits: TotalHits::new(self.visited_count(), relation)
+                .expect("INVARIANT: a visited count is never negative"),
+            score_docs: td.score_docs,
+        }
     }
 
     fn get_search_strategy(&self) -> Option<&KnnSearchStrategy> {

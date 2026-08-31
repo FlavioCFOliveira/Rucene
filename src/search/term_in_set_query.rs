@@ -276,6 +276,10 @@ impl Accountable for TermInSetQuery {
 }
 
 impl Query for TermInSetQuery {
+    fn is_multi_term_query(&self) -> bool {
+        true
+    }
+
     fn to_query_string(&self, _default_field: &str) -> String {
         let mut builder = String::new();
         builder.push_str(&self.field);

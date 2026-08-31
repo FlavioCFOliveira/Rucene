@@ -31,7 +31,7 @@ use std::sync::Arc;
 use crate::error::{LuceneError, Result};
 use crate::index::leaf_reader::LeafReader;
 use crate::index::VectorEncoding;
-use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
+use crate::search::{DocIdSetIterator, VectorScorer, NO_MORE_DOCS};
 use crate::util::Bits;
 
 // -----------------------------------------------------------------------------
@@ -431,6 +431,40 @@ pub trait FloatVectorValues: KnnVectorValues {
     ///
     /// Returns an error when the underlying input cannot be cloned.
     fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>>;
+
+    /// Returns a [`VectorScorer`] for `target` and these values, or `None` when
+    /// this field cannot be scored.
+    ///
+    /// Equivalent to `FloatVectorValues.scorer(float[])`, which throws
+    /// `UnsupportedOperationException` unless a format overrides it. When the
+    /// underlying format quantizes the vectors, the returned scorer scores
+    /// against the quantized vectors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::UnsupportedOperation`] unless the implementation
+    /// overrides this method, or an I/O error raised while opening the scorer.
+    fn scorer(&self, _target: &[f32]) -> Result<Option<Box<dyn VectorScorer>>> {
+        Err(LuceneError::UnsupportedOperation(
+            "FloatVectorValues::scorer".to_string(),
+        ))
+    }
+
+    /// Returns a [`VectorScorer`] for `target` intended for rescoring an
+    /// existing set of hits.
+    ///
+    /// Equivalent to `FloatVectorValues.rescorer(float[])`, whose default is
+    /// [`scorer`](Self::scorer): it assumes that the scorer is already the
+    /// highest-fidelity implementation available. It is useful when the initial
+    /// search used a quantized index or an approximate algorithm and the hits
+    /// are now rescored with the full-fidelity vectors.
+    ///
+    /// # Errors
+    ///
+    /// As [`scorer`](Self::scorer).
+    fn rescorer(&self, target: &[f32]) -> Result<Option<Box<dyn VectorScorer>>> {
+        self.scorer(target)
+    }
 }
 
 /// Checks that `field`, if it has vectors, is encoded as
@@ -588,6 +622,35 @@ pub trait ByteVectorValues: KnnVectorValues {
     ///
     /// Returns an error when the underlying input cannot be cloned.
     fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>>;
+
+    /// Returns a [`VectorScorer`] for `target` and these values, or `None` when
+    /// this field cannot be scored.
+    ///
+    /// Equivalent to `ByteVectorValues.scorer(byte[])`, which throws
+    /// `UnsupportedOperationException` unless a format overrides it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::UnsupportedOperation`] unless the implementation
+    /// overrides this method, or an I/O error raised while opening the scorer.
+    fn scorer(&self, _target: &[u8]) -> Result<Option<Box<dyn VectorScorer>>> {
+        Err(LuceneError::UnsupportedOperation(
+            "ByteVectorValues::scorer".to_string(),
+        ))
+    }
+
+    /// Returns a [`VectorScorer`] for `target` intended for rescoring an
+    /// existing set of hits.
+    ///
+    /// Equivalent to `ByteVectorValues.rescorer(byte[])`, whose default is
+    /// [`scorer`](Self::scorer).
+    ///
+    /// # Errors
+    ///
+    /// As [`scorer`](Self::scorer).
+    fn rescorer(&self, target: &[u8]) -> Result<Option<Box<dyn VectorScorer>>> {
+        self.scorer(target)
+    }
 }
 
 /// Byte vector values backed by an in-memory list.
