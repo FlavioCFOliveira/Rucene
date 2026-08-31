@@ -5,6 +5,7 @@
 //! combine it into the score without a doc-values lookup.
 
 use std::io::Read;
+use std::sync::Arc;
 
 use crate::analysis::tokenattributes::{
     CharTermAttribute, CharTermAttributeImpl, TermFrequencyAttribute, TermFrequencyAttributeImpl,
@@ -12,8 +13,25 @@ use crate::analysis::tokenattributes::{
 use crate::analysis::{Analyzer, TokenStream};
 use crate::document::{FieldType, InvertableType, NumericValue, StoredValue};
 use crate::error::{LuceneError, Result};
+use crate::index::postings_enum::POSTINGS_ENUM_FREQS;
+use crate::index::reader_context::LeafReaderContext;
+use crate::index::terms::TermsEnum;
+use crate::index::Term;
 use crate::index::{IndexOptions, IndexableField, IndexableFieldType};
-use crate::util::AttributeSource;
+use crate::search::index_searcher::IndexSearcher;
+use crate::search::query::Query;
+use crate::search::query_visitor::QueryVisitor;
+use crate::search::score_mode::ScoreMode;
+use crate::search::scorer::Scorer;
+use crate::search::scorer_supplier::ScorerSupplier;
+use crate::search::segment_cacheable::SegmentCacheable;
+use crate::search::sim_scorer_source::SharedSimScorer;
+use crate::search::similarities::{Explanation, SimScorer};
+use crate::search::term_query::TermQuery;
+use crate::search::term_scorer::TermScorer;
+use crate::search::weight::Weight;
+use crate::search::DocIdSetIterator;
+use crate::util::{AttributeSource, BytesRef};
 
 /// Largest frequency the encoding can carry.
 ///
@@ -106,6 +124,218 @@ impl FeatureFunction {
                 weight * v / (v + p)
             }
         }
+    }
+}
+
+/// The largest weight a feature query accepts.
+///
+/// Equivalent to `FeatureField.MAX_WEIGHT`, which is `Long.SIZE`.
+pub const MAX_WEIGHT: f32 = 64.0;
+
+/// Refuses a weight outside `(0, MAX_WEIGHT]`.
+///
+/// The check every `FeatureField.new*Query` factory runs first.
+fn check_weight(weight: f32) -> Result<()> {
+    if weight <= 0.0 || weight > MAX_WEIGHT {
+        return Err(LuceneError::IllegalArgument(format!(
+            "weight must be in (0, {MAX_WEIGHT}], got: {weight}"
+        )));
+    }
+    Ok(())
+}
+
+/// Wraps `query` in a boost when `weight` is not `1.0`.
+///
+/// The tail every `FeatureField.new*Query` factory shares.
+fn boosted(query: FeatureQuery, weight: f32) -> Result<Arc<dyn Query>> {
+    let query: Arc<dyn Query> = Arc::new(query);
+    if weight != 1.0 {
+        return Ok(Arc::new(crate::search::BoostQuery::new(query, weight)?));
+    }
+    Ok(query)
+}
+
+impl FeatureField {
+    /// Returns a query scoring documents as `weight * S`, where `S` is the
+    /// feature's value.
+    ///
+    /// Equivalent to `FeatureField.newLinearQuery(String, String, float)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `weight` is outside
+    /// `(0, 64]`.
+    pub fn new_linear_query(
+        field_name: &str,
+        feature_name: &str,
+        weight: f32,
+    ) -> Result<Arc<dyn Query>> {
+        check_weight(weight)?;
+        boosted(
+            FeatureQuery::new(
+                field_name,
+                feature_name,
+                FeatureFunction::Linear { weight: 1.0 },
+            ),
+            weight,
+        )
+    }
+
+    /// Returns a query scoring documents as
+    /// `weight * ln(scaling_factor + S)`.
+    ///
+    /// Equivalent to `FeatureField.newLogQuery(String, String, float, float)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `weight` is outside
+    /// `(0, 64]` or `scaling_factor` is below one or not finite.
+    pub fn new_log_query(
+        field_name: &str,
+        feature_name: &str,
+        weight: f32,
+        scaling_factor: f32,
+    ) -> Result<Arc<dyn Query>> {
+        check_weight(weight)?;
+        if scaling_factor < 1.0 || !scaling_factor.is_finite() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "scalingFactor must be >= 1, got: {scaling_factor}"
+            )));
+        }
+        boosted(
+            FeatureQuery::new(
+                field_name,
+                feature_name,
+                FeatureFunction::Logarithm {
+                    weight: 1.0,
+                    scaling_factor,
+                },
+            ),
+            weight,
+        )
+    }
+
+    /// Returns a query scoring documents as `weight * S / (S + pivot)`.
+    ///
+    /// Equivalent to `FeatureField.newSaturationQuery(String, String, float,
+    /// float)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `weight` is outside
+    /// `(0, 64]` or `pivot` is not positive and finite.
+    pub fn new_saturation_query(
+        field_name: &str,
+        feature_name: &str,
+        weight: f32,
+        pivot: f32,
+    ) -> Result<Arc<dyn Query>> {
+        check_weight(weight)?;
+        if pivot <= 0.0 || !pivot.is_finite() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "pivot must be > 0, got: {pivot}"
+            )));
+        }
+        boosted(
+            FeatureQuery::new(
+                field_name,
+                feature_name,
+                FeatureFunction::Saturation { weight: 1.0, pivot },
+            ),
+            weight,
+        )
+    }
+
+    /// Returns a query scoring documents as
+    /// `weight * S^exp / (S^exp + pivot^exp)`.
+    ///
+    /// Equivalent to `FeatureField.newSigmoidQuery(String, String, float,
+    /// float, float)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `weight` is outside
+    /// `(0, 64]`, or `pivot` or `exp` is not positive and finite.
+    pub fn new_sigmoid_query(
+        field_name: &str,
+        feature_name: &str,
+        weight: f32,
+        pivot: f32,
+        exp: f32,
+    ) -> Result<Arc<dyn Query>> {
+        check_weight(weight)?;
+        if pivot <= 0.0 || !pivot.is_finite() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "pivot must be > 0, got: {pivot}"
+            )));
+        }
+        if exp <= 0.0 || !exp.is_finite() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "exp must be > 0, got: {exp}"
+            )));
+        }
+        boosted(
+            FeatureQuery::new(
+                field_name,
+                feature_name,
+                FeatureFunction::SigmoidFunction {
+                    weight: 1.0,
+                    pivot,
+                    exp,
+                },
+            ),
+            weight,
+        )
+    }
+
+    /// Returns a pivot value for
+    /// [`new_saturation_query`](Self::new_saturation_query) and
+    /// [`new_sigmoid_query`](Self::new_sigmoid_query), approximating the
+    /// geometric mean of the feature's values in the index.
+    ///
+    /// Equivalent to the package-private
+    /// `FeatureField.computePivotFeatureValue(IndexSearcher, String, String)`,
+    /// which averages the integer bits of the float representation: floats keep
+    /// the exponent in the high bits, so the average of the bits approximates
+    /// the geometric mean of the values.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever gathering the term statistics raises.
+    pub fn compute_pivot_feature_value(
+        searcher: &crate::search::IndexSearcher,
+        feature_field: &str,
+        feature_name: &str,
+    ) -> Result<f32> {
+        let term = Term::new(
+            feature_field,
+            BytesRef::new(feature_name.as_bytes().to_vec()),
+        );
+        let states = crate::index::terms::TermStates::build(searcher, &term, true)?;
+        let doc_freq = states.doc_freq()?;
+        if doc_freq == 0 {
+            // Avoid a division by zero. The value hardly matters: the term does
+            // not exist, so it is never used for scoring — it only has to be
+            // legal.
+            return Ok(1.0);
+        }
+        let avg_freq = (states.total_term_freq()? as f64 / f64::from(doc_freq)) as f32;
+        Ok(decode_feature_value(avg_freq))
+    }
+
+    /// Returns a sort field ordering documents by descending feature value.
+    ///
+    /// Equivalent to `FeatureField.newFeatureSort(String, String)`. A document
+    /// without the field sorts as if its value were `0.0`.
+    pub fn new_feature_sort(field: &str, feature_name: &str) -> FeatureSortField {
+        FeatureSortField::new(field, feature_name)
+    }
+
+    /// Returns a source that reads a feature's value as a double.
+    ///
+    /// Equivalent to `FeatureField.newDoubleValues(String, String)`.
+    pub fn new_double_values(field: &str, feature_name: &str) -> FeatureDoubleValuesSource {
+        FeatureDoubleValuesSource::new(field, feature_name)
     }
 }
 
@@ -436,5 +666,226 @@ impl FeatureDoubleValuesSource {
     /// Returns the value a stored frequency decodes to.
     pub fn double_value(&self, freq: f32) -> f64 {
         f64::from(decode_feature_value(freq))
+    }
+}
+
+/// The [`SimScorer`] a [`FeatureFunction`] supplies.
+///
+/// Equivalent to the `SimScorer` each `FeatureFunction` subclass returns from
+/// `scorer(float)`: the score depends only on the term frequency, which is the
+/// encoded feature value, and never on the norm.
+#[derive(Clone, Copy, Debug)]
+struct FeatureSimScorer {
+    function: FeatureFunction,
+    boost: f32,
+}
+
+impl SimScorer for FeatureSimScorer {
+    fn score(&self, freq: f32, _norm: i64) -> f32 {
+        self.boost * self.function.score(freq)
+    }
+}
+
+/// The weight [`FeatureQuery`] builds when scores are needed.
+///
+/// Equivalent to the anonymous `Weight` of `FeatureQuery.createWeight`.
+#[derive(Debug)]
+struct FeatureWeight {
+    query: Arc<FeatureQuery>,
+    boost: f32,
+    top_level_scoring_clause: bool,
+}
+
+impl SegmentCacheable for FeatureWeight {
+    fn is_cacheable(&self, _ctx: &LeafReaderContext) -> bool {
+        false
+    }
+}
+
+impl FeatureWeight {
+    /// Positions a terms enum on the feature term of `context`, or returns
+    /// `None` when the field or the feature is absent.
+    fn seek(&self, context: &LeafReaderContext) -> Result<Option<Box<dyn TermsEnum>>> {
+        let reader = context.leaf_reader();
+        let Some(terms) = reader.terms(&self.query.field)? else {
+            return Ok(None);
+        };
+        let mut terms_enum = terms.iterator()?;
+        let feature = BytesRef::new(self.query.feature.as_bytes().to_vec());
+        if !terms_enum.seek_exact(&feature)? {
+            return Ok(None);
+        }
+        Ok(Some(terms_enum))
+    }
+}
+
+impl Weight for FeatureWeight {
+    fn get_query(&self) -> Arc<dyn Query> {
+        Arc::clone(&self.query) as Arc<dyn Query>
+    }
+
+    fn explain(&self, context: &LeafReaderContext, doc: i32) -> Result<Explanation> {
+        let desc = format!(
+            "weight({} in {doc}) [{:?}]",
+            self.query.to_query_string(""),
+            self.query.function
+        );
+        let reader = context.leaf_reader();
+        let Some(terms) = reader.terms(&self.query.field)? else {
+            return Ok(Explanation::no_match(
+                format!("{desc}. Field {} doesn't exist.", self.query.field),
+                Vec::new(),
+            ));
+        };
+        let mut terms_enum = terms.iterator()?;
+        let feature = BytesRef::new(self.query.feature.as_bytes().to_vec());
+        if !terms_enum.seek_exact(&feature)? {
+            return Ok(Explanation::no_match(
+                format!("{desc}. Feature {} doesn't exist.", self.query.feature),
+                Vec::new(),
+            ));
+        }
+        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS)?;
+        if postings.advance(doc)? != doc {
+            return Ok(Explanation::no_match(
+                format!("{desc}. Feature {} isn't set.", self.query.feature),
+                Vec::new(),
+            ));
+        }
+        let freq = postings.freq()? as f32;
+        Ok(Explanation::matched(
+            self.query.function.score(freq) * self.boost,
+            desc,
+            Vec::new(),
+        ))
+    }
+
+    fn scorer_supplier(
+        &self,
+        context: &LeafReaderContext,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
+        let Some(mut terms_enum) = self.seek(context)? else {
+            return Ok(None);
+        };
+        let doc_freq = terms_enum.doc_freq()?;
+        Ok(Some(Box::new(FeatureScorerSupplier {
+            terms_enum,
+            function: self.query.function,
+            boost: self.boost,
+            doc_freq,
+            top_level_scoring_clause: self.top_level_scoring_clause,
+        })))
+    }
+}
+
+/// The supplier the feature weight hands out.
+///
+/// Equivalent to the anonymous `ScorerSupplier` of
+/// `FeatureQuery.createWeight`, which keeps the positioned terms enum so the
+/// scorer can ask it for impacts.
+struct FeatureScorerSupplier {
+    terms_enum: Box<dyn TermsEnum>,
+    function: FeatureFunction,
+    boost: f32,
+    doc_freq: i32,
+    top_level_scoring_clause: bool,
+}
+
+impl std::fmt::Debug for FeatureScorerSupplier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FeatureScorerSupplier")
+            .field("doc_freq", &self.doc_freq)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ScorerSupplier for FeatureScorerSupplier {
+    fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
+        let scorer: SharedSimScorer = Arc::new(FeatureSimScorer {
+            function: self.function,
+            boost: self.boost,
+        });
+        let impacts = self.terms_enum.impacts(POSTINGS_ENUM_FREQS)?;
+        Ok(Box::new(TermScorer::with_impacts(
+            impacts,
+            scorer,
+            None,
+            self.top_level_scoring_clause,
+        )))
+    }
+
+    fn cost(&self) -> i64 {
+        i64::from(self.doc_freq)
+    }
+
+    fn set_top_level_scoring_clause(&mut self) -> Result<()> {
+        self.top_level_scoring_clause = true;
+        Ok(())
+    }
+}
+
+impl Query for FeatureQuery {
+    fn to_query_string(&self, _field: &str) -> String {
+        format!(
+            "FeatureQuery(field={}, feature={}, function={:?})",
+            self.field, self.feature, self.function
+        )
+    }
+
+    fn visit(&self, visitor: &mut dyn QueryVisitor) {
+        if visitor.accept_field(&self.field) {
+            visitor.visit_leaf(self);
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn query_eq(&self, other: &dyn Query) -> bool {
+        match other.as_any().downcast_ref::<Self>() {
+            Some(other) => {
+                self.field == other.field
+                    && self.feature == other.feature
+                    && self.function == other.function
+            }
+            None => false,
+        }
+    }
+
+    fn query_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.class_hash().hash(&mut hasher);
+        self.field.hash(&mut hasher);
+        self.feature.hash(&mut hasher);
+        // `FeatureFunction` holds floats, which have no `Hash`; their bits do,
+        // and two functions that are equal have equal bits.
+        format!("{:?}", self.function).hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn create_weight(
+        &self,
+        searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        if !score_mode.needs_scores() {
+            // Scores are not needed — for faceting, say — and features are
+            // stored as terms, so let TermQuery optimise this case.
+            let tq = TermQuery::new(Term::new(
+                &self.field,
+                BytesRef::new(self.feature.as_bytes().to_vec()),
+            ));
+            let rewritten = searcher.rewrite(Arc::new(tq))?;
+            return rewritten.create_weight(searcher, score_mode, boost);
+        }
+        Ok(Arc::new(FeatureWeight {
+            query: Arc::new(self.clone()),
+            boost,
+            top_level_scoring_clause: false,
+        }))
     }
 }
