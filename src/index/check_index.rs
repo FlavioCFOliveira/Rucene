@@ -3844,3 +3844,280 @@ pub fn check_soft_deletes(
     }
     Ok(status)
 }
+
+/// Checks every document's term vectors, and — at the slow level — that they
+/// agree with the inverted index.
+///
+/// Equivalent to `CheckIndex.testTermVectors(CodecReader, PrintStream, boolean, int, boolean)`.
+/// Deleted documents are read too, so a corrupt one is still reported, but they
+/// are not counted in the statistics.
+pub fn test_term_vectors(
+    reader: &dyn CodecReader,
+    info_stream: Option<&dyn InfoStream>,
+    verbose: bool,
+    level: i32,
+    fail_fast: bool,
+) -> Result<TermVectorStatus> {
+    let start = Instant::now();
+    let mut status = TermVectorStatus::default();
+    let field_infos = reader.get_field_infos();
+    let field_infos = &field_infos;
+
+    let outcome = (|| -> Result<()> {
+        let live_docs = reader.get_live_docs();
+
+        // The postings are only opened at the level that includes the slow
+        // cross-check against the inverted index.
+        let postings_fields = if level >= Level::MIN_LEVEL_FOR_SLOW_CHECKS {
+            reader.get_postings_reader()?
+        } else {
+            None
+        };
+
+        let Some(vectors_reader) = reader.get_term_vectors_reader()? else {
+            msg(
+                info_stream,
+                &format!(
+                    "OK [{} total term vector count; avg 0.0 term/freq vector fields per doc] \
+                     [took {}]",
+                    status.tot_vectors,
+                    took(start)
+                ),
+            );
+            return Ok(());
+        };
+        let vectors_reader = vectors_reader.get_merge_instance();
+
+        for j in 0..reader.max_doc() {
+            if (j & 0x03) == 0 {
+                vectors_reader.prefetch(j)?;
+            }
+            // Deleted documents are pulled and visited deliberately — but not
+            // counted — so a corrupt one is still reported.
+            let Some(tfv) = vectors_reader.get(j)? else {
+                continue;
+            };
+
+            // First run with no deletions.
+            check_fields(
+                tfv.as_ref(),
+                None,
+                1,
+                field_infos,
+                None,
+                false,
+                true,
+                info_stream,
+                verbose,
+                level,
+            )?;
+
+            let do_stats = live_docs.as_ref().is_none_or(|bits| bits.get(j as usize));
+            if do_stats {
+                status.doc_count += 1;
+            }
+
+            for field in tfv.iterator() {
+                if do_stats {
+                    status.tot_vectors += 1;
+                }
+                let Some(field_info) = field_infos.field_info(&field) else {
+                    return Err(check_index_error(format!(
+                        "docID={j} has term vectors for field={field} which the field infos do \
+                         not declare"
+                    )));
+                };
+                if !field_info.has_term_vectors() {
+                    return Err(check_index_error(format!(
+                        "docID={j} has term vectors for field={field} but FieldInfo has \
+                         storeTermVector=false"
+                    )));
+                }
+                if level < Level::MIN_LEVEL_FOR_SLOW_CHECKS {
+                    continue;
+                }
+                let Some(postings_fields) = postings_fields.as_ref() else {
+                    return Err(check_index_error(format!(
+                        "vector field={field} does not exist in postings; doc={j}"
+                    )));
+                };
+                cross_check_vector_field_against_postings(
+                    tfv.as_ref(),
+                    postings_fields.as_ref(),
+                    field_info,
+                    &field,
+                    j,
+                )?;
+            }
+        }
+
+        let avg = if status.doc_count == 0 {
+            0.0
+        } else {
+            status.tot_vectors as f64 / f64::from(status.doc_count)
+        };
+        msg(
+            info_stream,
+            &format!(
+                "OK [{} total term vector count; avg {:.1} term/freq vector fields per doc] \
+                 [took {}]",
+                status.tot_vectors,
+                avg,
+                took(start)
+            ),
+        );
+        Ok(())
+    })();
+
+    if let Err(error) = outcome {
+        if fail_fast {
+            return Err(error);
+        }
+        msg(info_stream, &format!("ERROR: {error}"));
+        status.error = Some(error);
+    }
+    Ok(status)
+}
+
+/// Checks that one document's term vectors for one field agree with the
+/// inverted index.
+///
+/// This is the body of the `level >= MIN_LEVEL_FOR_SLOW_CHECKS` branch of
+/// `CheckIndex.testTermVectors`: every term of the vector must exist in the
+/// postings, at this document, with the same frequency, positions, offsets and
+/// payloads.
+fn cross_check_vector_field_against_postings(
+    tfv: &dyn Fields,
+    postings_fields: &dyn Fields,
+    field_info: &FieldInfo,
+    field: &str,
+    doc: i32,
+) -> Result<()> {
+    let Some(terms) = tfv.terms(field)? else {
+        return Ok(());
+    };
+    let Some(postings_terms) = postings_fields.terms(field)? else {
+        return Err(check_index_error(format!(
+            "vector field={field} does not exist in postings; doc={doc}"
+        )));
+    };
+    let mut terms_enum = terms.iterator()?;
+    let mut postings_terms_enum = postings_terms.iterator()?;
+
+    let postings_has_freq = field_info
+        .get_index_options()
+        .subsumes(IndexOptions::DOCS_AND_FREQS);
+    let postings_has_payload = field_info.has_payloads();
+    let vectors_has_payload = terms.has_payloads();
+    let has_prox = terms.has_offsets() || terms.has_positions();
+
+    while let Some(term) = terms_enum.next()? {
+        // This is the term vector's own postings.
+        let mut postings = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+
+        // **Divergence from Lucene 10.5.0.** Java alternates every other term
+        // between `seekExact(BytesRef)` and `prepareSeekExact(BytesRef)`, so
+        // that a codec's deferred-seek path is exercised as well as its direct
+        // one. `TermsEnum.prepareSeekExact` is not ported yet, so only the
+        // direct seek runs here; the check itself — that the term exists in the
+        // postings — is the same either way.
+        let term_exists = postings_terms_enum.seek_exact(&term)?;
+        if !term_exists {
+            return Err(check_index_error(format!(
+                "vector term={term:?} field={field} does not exist in postings; doc={doc}"
+            )));
+        }
+
+        // This is the inverted index — the "real" postings.
+        let mut postings_docs = postings_terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+        let advance_doc = postings_docs.advance(doc)?;
+        if advance_doc != doc {
+            return Err(check_index_error(format!(
+                "vector term={term:?} field={field}: doc={doc} was not found in postings (got: \
+                 {advance_doc})"
+            )));
+        }
+
+        let vector_doc = postings.next_doc()?;
+        if vector_doc != 0 {
+            return Err(check_index_error(format!(
+                "vector for doc {doc} didn't return docID=0: got docID={vector_doc}"
+            )));
+        }
+
+        if !postings_has_freq {
+            continue;
+        }
+        let tf = postings.freq()?;
+        if postings_docs.freq()? != tf {
+            return Err(check_index_error(format!(
+                "vector term={term:?} field={field} doc={doc}: freq={tf} differs from postings \
+                 freq={}",
+                postings_docs.freq()?
+            )));
+        }
+        if !has_prox {
+            continue;
+        }
+        for _ in 0..tf {
+            let pos = postings.next_position()?;
+            if postings_terms.has_positions() {
+                let postings_pos = postings_docs.next_position()?;
+                if terms.has_positions() && pos != postings_pos {
+                    return Err(check_index_error(format!(
+                        "vector term={term:?} field={field} doc={doc}: pos={pos} differs from \
+                         postings pos={postings_pos}"
+                    )));
+                }
+            }
+
+            // The offsets are read whether or not they are compared, so that a
+            // codec that would raise on them is still exercised.
+            let start_offset = postings.start_offset();
+            let end_offset = postings.end_offset();
+            if start_offset != -1 && end_offset != -1 && postings_terms.has_offsets() {
+                let postings_start_offset = postings_docs.start_offset();
+                let postings_end_offset = postings_docs.end_offset();
+                if start_offset != postings_start_offset {
+                    return Err(check_index_error(format!(
+                        "vector term={term:?} field={field} doc={doc}: startOffset={start_offset} \
+                         differs from postings startOffset={postings_start_offset}"
+                    )));
+                }
+                if end_offset != postings_end_offset {
+                    return Err(check_index_error(format!(
+                        "vector term={term:?} field={field} doc={doc}: endOffset={end_offset} \
+                         differs from postings endOffset={postings_end_offset}"
+                    )));
+                }
+            }
+
+            let payload = postings.get_payload()?.map(<[u8]>::to_vec);
+            if postings_has_payload && vectors_has_payload {
+                let postings_payload = postings_docs.get_payload()?.map(<[u8]>::to_vec);
+                match (&payload, &postings_payload) {
+                    (None, Some(other)) => {
+                        return Err(check_index_error(format!(
+                            "vector term={term:?} field={field} doc={doc} has no payload but \
+                             postings does: {other:?}"
+                        )));
+                    }
+                    (Some(payload), None) => {
+                        return Err(check_index_error(format!(
+                            "vector term={term:?} field={field} doc={doc} has payload={payload:?} \
+                             but postings does not."
+                        )));
+                    }
+                    (Some(payload), Some(other)) if payload != other => {
+                        return Err(check_index_error(format!(
+                            "vector term={term:?} field={field} doc={doc} has payload={payload:?} \
+                             but differs from postings payload={other:?}"
+                        )));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
