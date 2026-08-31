@@ -11,8 +11,10 @@
 //! file format.
 
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Instant;
+use std::path::Path;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::thread::{Scope, ScopedJoinHandle};
+use std::time::{Duration, Instant};
 
 use crate::codecs::doc_values::DocValuesProducer;
 use crate::codecs::norms::NormsProducer;
@@ -37,15 +39,18 @@ use crate::index::postings_enum::{
 };
 use crate::index::segment_infos::SegmentInfos;
 use crate::index::terms::{Fields, SeekStatus, Terms};
-use crate::index::{DocValuesSkipIndexType, DocValuesType, IndexOptions};
+use crate::index::{
+    DocValuesSkipIndexType, DocValuesType, IndexOptions, SegmentCommitInfo, SegmentReader,
+};
 use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::search::Sort;
-use crate::store::{Directory, Lock};
+use crate::store::{Directory, FSDirectory, Lock, DEFAULT_IO_CONTEXT};
 use crate::util::automaton::ByteRunnable;
 use crate::util::bit_set::BitSet;
 use crate::util::{
-    Automata, Automaton, Bits, ByteRunAutomaton, BytesRef, CompiledAutomaton, FixedBitSet,
-    InfoStream, LongBitSet, Operations, DEFAULT_DETERMINIZE_WORK_LIMIT,
+    Automata, Automaton, Bits, ByteRunAutomaton, BytesRef, CommandLineUtil, CompiledAutomaton,
+    FixedBitSet, InfoStream, LongBitSet, Operations, PrintStreamInfoStream, StringHelper, Version,
+    DEFAULT_DETERMINIZE_WORK_LIMIT,
 };
 
 // ---------------------------------------------------------------------------
@@ -572,6 +577,1075 @@ impl Drop for CheckIndex {
         // `close()`, which is idempotent because `close()` takes the lock out.
         let _ = self.close();
     }
+}
+
+// ---------------------------------------------------------------------------
+// checkIndex / testSegment / exorciseIndex
+// ---------------------------------------------------------------------------
+
+/// Collects the messages of one segment's check so that they can be replayed to
+/// the real info stream once every earlier segment has been reported.
+///
+/// Equivalent to the per-segment `ByteArrayOutputStream` and its `PrintStream`
+/// that `CheckIndex.checkIndex(List, ExecutorService)` builds, which is what
+/// keeps the reports of concurrently checked segments from interleaving.
+struct BufferingInfoStream {
+    messages: Mutex<Vec<String>>,
+}
+
+impl BufferingInfoStream {
+    /// Creates an empty buffer.
+    fn new() -> Self {
+        Self {
+            messages: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Replays everything buffered so far to `info_stream`, in order, and
+    /// empties the buffer.
+    ///
+    /// Equivalent to Java's `msg(infoStream, output)`, which prints the whole
+    /// byte buffer of one segment in one go.
+    fn drain_to(&self, info_stream: Option<&dyn InfoStream>) {
+        let buffered =
+            std::mem::take(&mut *self.messages.lock().unwrap_or_else(PoisonError::into_inner));
+        for line in buffered {
+            msg(info_stream, &line);
+        }
+    }
+}
+
+impl InfoStream for BufferingInfoStream {
+    fn message(&self, _component: &str, message: &str) {
+        self.messages
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(message.to_string());
+    }
+
+    fn is_enabled(&self, _component: &str) -> bool {
+        true
+    }
+
+    fn close(&self) {
+        // Java's buffer is a `ByteArrayOutputStream`, whose `close()` is a no-op
+        // as well.
+    }
+}
+
+/// Caps how many segment checks may run at the same time.
+///
+/// Equivalent to the bound that the fixed-size `ExecutorService` created by
+/// `CheckIndex.checkIndex(List)` puts on concurrency.
+struct SegmentCheckPermits {
+    available: Mutex<usize>,
+    released: Condvar,
+}
+
+impl SegmentCheckPermits {
+    /// Creates a set of `permits` permits.
+    fn new(permits: usize) -> Self {
+        Self {
+            available: Mutex::new(permits.max(1)),
+            released: Condvar::new(),
+        }
+    }
+
+    /// Takes one permit, blocking until one is free.
+    fn acquire(&self) -> SegmentCheckPermit<'_> {
+        let mut available = self
+            .available
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        while *available == 0 {
+            available = self
+                .released
+                .wait(available)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *available -= 1;
+        SegmentCheckPermit { permits: self }
+    }
+}
+
+/// One permit held by a running segment check, returned when it is dropped.
+struct SegmentCheckPermit<'a> {
+    permits: &'a SegmentCheckPermits,
+}
+
+impl Drop for SegmentCheckPermit<'_> {
+    fn drop(&mut self) {
+        *self
+            .permits
+            .available
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) += 1;
+        self.permits.released.notify_one();
+    }
+}
+
+/// Starts one segment check on another thread and hands back the handle that
+/// yields its result.
+///
+/// Equivalent to `CheckIndex.runAsyncSegmentCheck(Callable, ExecutorService)`,
+/// which submits the callable to the executor as a `CompletableFuture`.
+///
+/// **Divergence from Lucene 10.5.0.** Java submits to a fixed-size
+/// `ExecutorService`, whose pool size bounds both the number of threads and the
+/// number of checks running at once. The Rust standard library ships no thread
+/// pool, and the crate's [`Executor`](crate::search::Executor) seam only accepts
+/// `'static` tasks, which a check borrowing this `CheckIndex` and the commit's
+/// `SegmentInfos` cannot be. This port therefore spawns one scoped thread per
+/// segment and gates the check itself on `permits`, so that `thread_count` still
+/// caps how many segments are checked concurrently, exactly as the pool size
+/// does in Java.
+fn run_async_segment_check<'scope, 'env, F>(
+    async_callable: F,
+    permits: &'env SegmentCheckPermits,
+    scope: &'scope Scope<'scope, 'env>,
+) -> ScopedJoinHandle<'scope, Result<SegmentInfoStatus>>
+where
+    F: FnOnce() -> Result<SegmentInfoStatus> + Send + 'scope,
+{
+    scope.spawn(move || {
+        let _permit = permits.acquire();
+        async_callable()
+    })
+}
+
+impl CheckIndex {
+    /// Returns a [`Status`] describing the state of the whole index.
+    ///
+    /// Equivalent to `CheckIndex.checkIndex()`.
+    ///
+    /// As this method checks every byte in the index, on a large index it can
+    /// take a long time to run.
+    ///
+    /// **Warning:** only call this when the index is not opened by any writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IndexNotFound`] when the directory holds no
+    /// commit, and propagates the first corruption found when
+    /// [`set_fail_fast`](CheckIndex::set_fail_fast) is set; otherwise a
+    /// corruption is recorded in the returned status.
+    pub fn check_index(&self) -> Result<Status> {
+        self.check_index_segments(None)
+    }
+
+    /// Returns a [`Status`] describing the state of the named segments, or of
+    /// every segment when `only_segments` is `None`.
+    ///
+    /// Equivalent to `CheckIndex.checkIndex(List)`, which creates the executor
+    /// that checks the segments concurrently when the thread count is greater
+    /// than one, and shuts it down afterwards. In this port the threads live in
+    /// a `std::thread::scope` inside the check, so there is nothing to shut
+    /// down; the divergence is recorded on the private
+    /// `run_async_segment_check`, which spawns them.
+    ///
+    /// # Errors
+    ///
+    /// As [`CheckIndex::check_index`].
+    pub fn check_index_segments(&self, only_segments: Option<&[String]>) -> Result<Status> {
+        msg(
+            self.info(),
+            &format!("Checking index with threadCount: {}", self.thread_count),
+        );
+        self.check_index_impl(only_segments)
+    }
+
+    /// Walks the commit points and checks the segments of the last one.
+    ///
+    /// Equivalent to `CheckIndex.checkIndex(List, ExecutorService)`.
+    fn check_index_impl(&self, only_segments: Option<&[String]>) -> Result<Status> {
+        self.ensure_open()?;
+        let start = Instant::now();
+
+        let mut result = Status::default();
+        let files = self.dir.list_all()?;
+        let Some(last_segments_file) = SegmentInfos::get_last_commit_segments_file_name(&files)
+        else {
+            // Java names the directory in the message; `dyn Directory` has no
+            // `Display` in this crate, so only the file listing is reported.
+            return Err(LuceneError::IndexNotFound(format!(
+                "no segments* file found in the directory: files: {files:?}"
+            )));
+        };
+
+        // https://github.com/apache/lucene/issues/7820: also attempt to open any
+        // older commit points (segments_N), which will catch certain corruption
+        // like missing _N.si files for segments not also referenced by the newest
+        // commit point (which was already loaded, successfully, above). Note that
+        // we do not do a deeper check of segments referenced ONLY by these older
+        // commit points, because such corruption would not prevent a new
+        // IndexWriter from opening on the newest commit point. But it is still
+        // corruption, e.g. a reader opened on those old commit points can hit
+        // corruption exceptions which we (still) will not detect here. Progress
+        // not perfection!
+        let mut all_segments_files: Vec<(i64, &String)> = Vec::new();
+        for file_name in &files {
+            if file_name.starts_with(crate::index::index_file_names::SEGMENTS)
+                && file_name != crate::index::segment_infos::OLD_SEGMENTS_GEN
+            {
+                let generation = SegmentInfos::generation_from_segments_file_name(file_name)?;
+                all_segments_files.push((generation, file_name));
+            }
+        }
+
+        // Sort descending by generation so that we always attempt to read the
+        // last commit first. This way if an index has a broken last commit AND a
+        // broken old commit, we report the last commit error first.
+        all_segments_files.sort_by_key(|(generation, _)| std::cmp::Reverse(*generation));
+
+        let mut last_commit: Option<SegmentInfos> = None;
+        for (_, file_name) in &all_segments_files {
+            let is_last_commit = **file_name == last_segments_file;
+
+            // Do not use `SegmentInfos::read_latest_commit`, since the spooky
+            // retrying it does is not necessary here (we hold the write lock);
+            // always open old indices if codecs are around.
+            let infos =
+                match SegmentInfos::read_commit_with_min_version(self.dir.as_ref(), file_name, 0) {
+                    Ok(infos) => infos,
+                    Err(error) => {
+                        if self.fail_fast {
+                            return Err(error);
+                        }
+                        let message = if is_last_commit {
+                            format!(
+                                "ERROR: could not read latest commit point from segments file \
+                                 \"{file_name}\" in directory"
+                            )
+                        } else {
+                            format!(
+                                "ERROR: could not read old (not latest) commit point segments \
+                                 file \"{file_name}\" in directory"
+                            )
+                        };
+                        msg(self.info(), &message);
+                        msg(self.info(), &format!("{error}"));
+                        result.missing_segments = true;
+                        return Ok(result);
+                    }
+                };
+
+            if is_last_commit {
+                // Record the latest commit point: we will deeply check all
+                // segments referenced by it.
+                last_commit = Some(infos);
+            }
+        }
+
+        // We know there is a `last_segments_file`, so we must have attempted to
+        // load it in the loop above; if it failed to load we either returned the
+        // failure or recorded it. So we should always have a valid last commit.
+        let Some(last_commit) = last_commit else {
+            msg(
+                self.info(),
+                "ERROR: could not read any segments file in directory",
+            );
+            result.missing_segments = true;
+            return Ok(result);
+        };
+
+        if self.info().is_some() {
+            let mut max_doc = 0i64;
+            let mut del_count = 0i64;
+            for info in last_commit.iter() {
+                max_doc += i64::from(info.info.max_doc()?);
+                del_count += i64::from(info.get_del_count());
+            }
+            msg(
+                self.info(),
+                &format!(
+                    "{:.2}% total deletions; {max_doc} documents; {del_count} deletions",
+                    100.0 * del_count as f64 / max_doc as f64
+                ),
+            );
+        }
+
+        // Find the oldest and newest segment versions. Java also tracks an
+        // `oldSegs` marker for pre-3.1 segments, whose `SegmentInfo.getVersion()`
+        // is null; this port's `SegmentInfo::version` is not optional, because
+        // the codecs it can read all record a version, so that marker has no
+        // counterpart here.
+        let mut oldest: Option<Version> = None;
+        let mut newest: Option<Version> = None;
+        for si in last_commit.iter() {
+            let version = si.info.version();
+            if oldest.map_or(true, |oldest| !version.on_or_after(&oldest)) {
+                oldest = Some(version);
+            }
+            if newest.map_or(true, |newest| version.on_or_after(&newest)) {
+                newest = Some(version);
+            }
+        }
+
+        let num_segments = last_commit.size();
+        let segments_file_name = last_commit.segments_file_name();
+        result.segments_file_name = segments_file_name.clone();
+        result.num_segments = num_segments;
+        result.user_data = last_commit.user_data().clone();
+        let user_data_string = if result.user_data.is_empty() {
+            String::new()
+        } else {
+            format!(" userData={:?}", result.user_data)
+        };
+
+        let version_string = match (oldest, newest) {
+            (Some(oldest), Some(newest)) if oldest == newest => format!("version={oldest}"),
+            (Some(oldest), Some(newest)) => format!("versions=[{oldest} .. {newest}]"),
+            _ => String::new(),
+        };
+
+        let commit_id = last_commit.id();
+        msg(
+            self.info(),
+            &format!(
+                "Segments file={} numSegments={num_segments} {version_string} id={}{user_data_string}",
+                segments_file_name.as_deref().unwrap_or_default(),
+                StringHelper::id_to_string(Some(&commit_id))
+            ),
+        );
+
+        if let Some(only_segments) = only_segments {
+            result.partial = true;
+            let mut line = String::from("Checking only these segments:");
+            for segment in only_segments {
+                line.push(' ');
+                line.push_str(segment);
+            }
+            line.push(':');
+            msg(self.info(), &line);
+            result
+                .segments_checked
+                .extend(only_segments.iter().cloned());
+        }
+
+        let mut new_segments = last_commit.clone();
+        new_segments.clear();
+        result.new_segments = Some(new_segments);
+        result.max_segment_name = -1;
+
+        if self.thread_count <= 1 {
+            // Checks segments sequentially.
+            for i in 0..num_segments {
+                let info = last_commit.info(i);
+                self.update_max_segment_name(&mut result, info)?;
+                if is_skipped_segment(only_segments, &info.info.name) {
+                    continue;
+                }
+
+                msg(
+                    self.info(),
+                    &format!(
+                        "{} of {num_segments}: name={} maxDoc={}",
+                        1 + i,
+                        info.info.name,
+                        info.info.max_doc()?
+                    ),
+                );
+                let segment_info_status = self.test_segment(&last_commit, info, self.info())?;
+
+                self.process_segment_info_status_result(&mut result, info, segment_info_status)?;
+            }
+        } else {
+            // Sort the segments by size, as a smaller segment tends to finish
+            // faster and hence its output can be printed out faster.
+            let mut sized: Vec<(i64, &SegmentCommitInfo)> = Vec::with_capacity(num_segments);
+            for info in last_commit.iter() {
+                let size = match info.size_in_bytes_uncached() {
+                    Ok(size) => size,
+                    Err(error) => {
+                        msg(
+                            self.info(),
+                            "ERROR: IOException occurred when comparing SegmentCommitInfo file \
+                             sizes",
+                        );
+                        msg(self.info(), &format!("{error}"));
+                        0
+                    }
+                };
+                sized.push((size, info));
+            }
+            sized.sort_by_key(|(size, _)| *size);
+            let segment_commit_infos: Vec<&SegmentCommitInfo> =
+                sized.into_iter().map(|(_, info)| info).collect();
+
+            let permits = SegmentCheckPermits::new(self.thread_count);
+            let last_commit_ref = &last_commit;
+            let result_ref = &mut result;
+
+            // Checks segments concurrently.
+            std::thread::scope(|scope| -> Result<()> {
+                let mut buffers: Vec<Option<Arc<BufferingInfoStream>>> =
+                    (0..num_segments).map(|_| None).collect();
+                let mut handles: Vec<Option<ScopedJoinHandle<'_, Result<SegmentInfoStatus>>>> =
+                    (0..num_segments).map(|_| None).collect();
+
+                // Start larger segments earlier.
+                for i in (0..num_segments).rev() {
+                    let info = segment_commit_infos[i];
+                    self.update_max_segment_name(result_ref, info)?;
+                    if is_skipped_segment(only_segments, &info.info.name) {
+                        continue;
+                    }
+
+                    let buffer = Arc::new(BufferingInfoStream::new());
+                    msg(
+                        Some(buffer.as_ref() as &dyn InfoStream),
+                        &format!(
+                            "{} of {num_segments}: name={} maxDoc={}",
+                            1 + i,
+                            info.info.name,
+                            info.info.max_doc()?
+                        ),
+                    );
+
+                    let task_buffer = Arc::clone(&buffer);
+                    buffers[i] = Some(buffer);
+                    handles[i] = Some(run_async_segment_check(
+                        move || {
+                            self.test_segment(
+                                last_commit_ref,
+                                info,
+                                Some(task_buffer.as_ref() as &dyn InfoStream),
+                            )
+                        },
+                        &permits,
+                        scope,
+                    ));
+                }
+
+                for i in 0..num_segments {
+                    let info = segment_commit_infos[i];
+                    // A segment left out of the check has neither a buffer nor a
+                    // handle, which is what makes this the same skip as above.
+                    let (Some(buffer), Some(handle)) = (buffers[i].take(), handles[i].take())
+                    else {
+                        continue;
+                    };
+
+                    match handle.join() {
+                        Ok(Ok(segment_info_status)) => {
+                            // Print the segment results in order.
+                            buffer.drain_to(self.info());
+                            self.process_segment_info_status_result(
+                                result_ref,
+                                info,
+                                segment_info_status,
+                            )?;
+                        }
+                        Ok(Err(error)) => {
+                            // The check only fails instead of recording the
+                            // failure when `fail_fast` is set, which is Java's
+                            // `assert failFast` on this path.
+                            buffer.drain_to(self.info());
+                            return Err(check_index_error_with_cause(
+                                &format!("Segment {} check failed.", info.info.name),
+                                &error,
+                            ));
+                        }
+                        Err(_) => {
+                            // Java has no counterpart: a `CompletableFuture`
+                            // reports a `RuntimeException` as an
+                            // `ExecutionException` like any other failure, while
+                            // a Rust panic unwinds into the join handle instead.
+                            buffer.drain_to(self.info());
+                            return Err(check_index_error(format!(
+                                "Segment {} check panicked.",
+                                info.info.name
+                            )));
+                        }
+                    }
+                }
+
+                Ok(())
+            })?;
+        }
+
+        if result.num_bad_segments == 0 {
+            result.clean = true;
+        } else {
+            msg(
+                self.info(),
+                &format!(
+                    "WARNING: {} broken segments (containing {} documents) detected",
+                    result.num_bad_segments, result.tot_lose_doc_count
+                ),
+            );
+        }
+
+        result.valid_counter = result.max_segment_name < last_commit.counter;
+        if !result.valid_counter {
+            result.clean = false;
+            if let Some(new_segments) = result.new_segments.as_mut() {
+                new_segments.counter = result.max_segment_name + 1;
+            }
+            msg(
+                self.info(),
+                &format!(
+                    "ERROR: Next segment name counter {} is not greater than max segment name {}",
+                    last_commit.counter, result.max_segment_name
+                ),
+            );
+        }
+
+        if result.clean {
+            msg(self.info(), "No problems were detected with this index.\n");
+        }
+
+        msg(self.info(), &format!("Took {} total.", took(start)));
+
+        Ok(result)
+    }
+
+    /// Raises `result.max_segment_name` to `info`'s segment name when that name
+    /// is the greater of the two.
+    ///
+    /// Equivalent to `CheckIndex.updateMaxSegmentName`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the segment name is not a
+    /// leading `_` followed by a base-36 number, which is Java's
+    /// `NumberFormatException`.
+    fn update_max_segment_name(&self, result: &mut Status, info: &SegmentCommitInfo) -> Result<()> {
+        let digits = info.info.name.get(1..).ok_or_else(|| {
+            LuceneError::IllegalArgument(format!("invalid segment name: {}", info.info.name))
+        })?;
+        let segment_name = i64::from_str_radix(digits, 36).map_err(|error| {
+            LuceneError::IllegalArgument(format!(
+                "invalid segment name \"{}\": {error}",
+                info.info.name
+            ))
+        })?;
+        if segment_name > result.max_segment_name {
+            result.max_segment_name = segment_name;
+        }
+        Ok(())
+    }
+
+    /// Files one segment's result into `result`, keeping the segment only when
+    /// it passed.
+    ///
+    /// Equivalent to `CheckIndex.processSegmentInfoStatusResult`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the failure of adding the kept segment to the repaired
+    /// `SegmentInfos`.
+    fn process_segment_info_status_result(
+        &self,
+        result: &mut Status,
+        info: &SegmentCommitInfo,
+        segment_info_status: SegmentInfoStatus,
+    ) -> Result<()> {
+        let failed = segment_info_status.error.is_some();
+        let to_lose_doc_count = segment_info_status.to_lose_doc_count;
+        result.segment_infos.push(segment_info_status);
+        if failed {
+            result.tot_lose_doc_count += to_lose_doc_count;
+            result.num_bad_segments += 1;
+        } else if let Some(new_segments) = result.new_segments.as_mut() {
+            // Keeper.
+            new_segments.add(info.clone())?;
+        }
+        Ok(())
+    }
+
+    /// Checks one segment of `sis` from end to end.
+    ///
+    /// Equivalent to `CheckIndex.testSegment(SegmentInfos, SegmentCommitInfo, PrintStream)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::CorruptIndex`] when the segment claims a
+    /// non-positive document count, and propagates the first corruption found
+    /// when [`set_fail_fast`](CheckIndex::set_fail_fast) is set; otherwise the
+    /// corruption is recorded in the returned status.
+    fn test_segment(
+        &self,
+        sis: &SegmentInfos,
+        info: &SegmentCommitInfo,
+        info_stream: Option<&dyn InfoStream>,
+    ) -> Result<SegmentInfoStatus> {
+        let max_doc = info.info.max_doc()?;
+        let mut seg_info_stat = SegmentInfoStatus {
+            name: info.info.name.clone(),
+            max_doc,
+            ..SegmentInfoStatus::default()
+        };
+
+        let version = info.info.version();
+        if max_doc <= 0 {
+            return Err(check_index_error(format!(
+                " illegal number of documents: maxDoc={max_doc}"
+            )));
+        }
+
+        let mut to_lose_doc_count = max_doc;
+
+        // Java closes the `SegmentReader` in a `finally` block; here the reader
+        // is dropped when this closure returns, on both the success and the
+        // failure path.
+        let outcome = (|| -> Result<()> {
+            msg(info_stream, &format!("    version={version}"));
+            let id = info.info.id();
+            msg(
+                info_stream,
+                &format!("    id={}", StringHelper::id_to_string(Some(&id))),
+            );
+            let codec = info.info.codec();
+            msg(
+                info_stream,
+                &format!(
+                    "    codec={}",
+                    codec.as_ref().map_or("null", |codec| codec.name())
+                ),
+            );
+            seg_info_stat.codec = codec;
+            msg(
+                info_stream,
+                &format!("    compound={}", info.info.get_use_compound_file()),
+            );
+            seg_info_stat.compound = info.info.get_use_compound_file();
+            let num_files = info.files()?.len();
+            msg(info_stream, &format!("    numFiles={num_files}"));
+            // An empty `Sort` is how this crate spells Java's null index sort.
+            let index_sort = info.info.index_sort();
+            let index_sort = if index_sort.fields().is_empty() {
+                None
+            } else {
+                Some(index_sort)
+            };
+            if let Some(index_sort) = index_sort {
+                msg(info_stream, &format!("    sort={index_sort}"));
+            }
+            seg_info_stat.num_files = num_files;
+            seg_info_stat.size_mb = info.size_in_bytes_uncached()? as f64 / (1024.0 * 1024.0);
+            // Java renders the size through a `NumberFormat`, which groups the
+            // integer part and keeps up to three fraction digits; this port has
+            // no locale-aware formatter, so it keeps the three fraction digits
+            // without the grouping separators.
+            msg(
+                info_stream,
+                &format!("    size (MB)={:.3}", seg_info_stat.size_mb),
+            );
+            let diagnostics = info.info.get_diagnostics().clone();
+            if !diagnostics.is_empty() {
+                msg(info_stream, &format!("    diagnostics = {diagnostics:?}"));
+            }
+            seg_info_stat.diagnostics = diagnostics;
+
+            if !info.has_deletions() {
+                msg(info_stream, "    no deletions");
+                seg_info_stat.has_deletions = false;
+            } else {
+                msg(
+                    info_stream,
+                    &format!("    has deletions [delGen={}]", info.get_del_gen()),
+                );
+                seg_info_stat.has_deletions = true;
+                seg_info_stat.deletions_gen = info.get_del_gen();
+            }
+
+            let start_open_reader = Instant::now();
+            let reader = SegmentReader::new(
+                info.clone(),
+                sis.index_created_version_major(),
+                &*DEFAULT_IO_CONTEXT,
+            )?;
+            msg(
+                info_stream,
+                &format!(
+                    "    test: open reader.........OK [took {}]",
+                    took(start_open_reader)
+                ),
+            );
+
+            seg_info_stat.open_reader_passed = true;
+
+            let start_integrity = Instant::now();
+            reader.check_integrity()?;
+            msg(
+                info_stream,
+                &format!(
+                    "    test: check integrity.....OK [took {}]",
+                    took(start_integrity)
+                ),
+            );
+
+            if reader.max_doc() != max_doc {
+                return Err(check_index_error(format!(
+                    "SegmentReader.maxDoc() {} != SegmentInfo.maxDoc {max_doc}",
+                    reader.max_doc()
+                )));
+            }
+
+            let num_docs = reader.num_docs();
+            to_lose_doc_count = num_docs;
+
+            // `has_deletions` lives on `IndexReader`, whose `max_doc` and
+            // `num_docs` would shadow `LeafReader`'s if the trait were imported.
+            if crate::index::index_reader::IndexReader::has_deletions(&reader) {
+                if num_docs != max_doc - info.get_del_count() {
+                    return Err(check_index_error(format!(
+                        "delete count mismatch: info={} vs reader={num_docs}",
+                        max_doc - info.get_del_count()
+                    )));
+                }
+                if (max_doc - num_docs) > reader.max_doc() {
+                    return Err(check_index_error(format!(
+                        "too many deleted docs: maxDoc()={} vs del count={}",
+                        reader.max_doc(),
+                        max_doc - num_docs
+                    )));
+                }
+                if max_doc - num_docs != info.get_del_count() {
+                    return Err(check_index_error(format!(
+                        "delete count mismatch: info={} vs reader={}",
+                        info.get_del_count(),
+                        max_doc - num_docs
+                    )));
+                }
+            } else if info.get_del_count() != 0 {
+                return Err(check_index_error(format!(
+                    "delete count mismatch: info={} vs reader={}",
+                    info.get_del_count(),
+                    max_doc - num_docs
+                )));
+            }
+
+            if self.level >= Level::MIN_LEVEL_FOR_INTEGRITY_CHECKS {
+                let codec_reader: &dyn CodecReader = &reader;
+
+                // Test live docs.
+                seg_info_stat.live_doc_status =
+                    Some(test_live_docs(codec_reader, info_stream, self.fail_fast)?);
+
+                // Test field infos.
+                seg_info_stat.field_info_status =
+                    Some(test_field_infos(codec_reader, info_stream, self.fail_fast)?);
+
+                // Test field norms.
+                seg_info_stat.field_norm_status =
+                    Some(test_field_norms(codec_reader, info_stream, self.fail_fast)?);
+
+                // Test the term index.
+                seg_info_stat.term_index_status = Some(test_postings(
+                    codec_reader,
+                    info_stream,
+                    self.verbose,
+                    self.level,
+                    self.fail_fast,
+                )?);
+
+                // Test stored fields.
+                seg_info_stat.stored_field_status = Some(test_stored_fields(
+                    codec_reader,
+                    info_stream,
+                    self.fail_fast,
+                )?);
+
+                // Test term vectors.
+                seg_info_stat.term_vector_status = Some(test_term_vectors(
+                    codec_reader,
+                    info_stream,
+                    self.verbose,
+                    self.level,
+                    self.fail_fast,
+                )?);
+
+                // Test doc values.
+                seg_info_stat.doc_values_status =
+                    Some(test_doc_values(codec_reader, info_stream, self.fail_fast)?);
+
+                // Test point values.
+                seg_info_stat.points_status =
+                    Some(test_points(codec_reader, info_stream, self.fail_fast)?);
+
+                // Test float vector values and byte vector values.
+                seg_info_stat.vector_values_status =
+                    Some(test_vectors(codec_reader, info_stream, self.fail_fast)?);
+
+                // Test the index sort.
+                if index_sort.is_some() {
+                    seg_info_stat.index_sort_status = Some(test_sort(
+                        codec_reader,
+                        index_sort,
+                        info_stream,
+                        self.fail_fast,
+                    )?);
+                }
+
+                // Test soft deletes.
+                let field_infos = reader.get_field_infos();
+                if let Some(soft_deletes_field) = field_infos.get_soft_deletes_field() {
+                    seg_info_stat.soft_deletes_status = Some(check_soft_deletes(
+                        soft_deletes_field,
+                        info.get_soft_del_count(),
+                        &reader as &dyn LeafReader,
+                        info_stream,
+                        self.fail_fast,
+                    )?);
+                }
+
+                // Rethrow the first failure encountered. This causes the stats
+                // for failed segments to be incremented properly. A check
+                // running on another thread cannot (easily) be stopped, so every
+                // check is run to completion first, rather than failing here
+                // while another one may still be reporting.
+                if let Some(error) = seg_info_stat
+                    .live_doc_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause("Live docs test failed", error));
+                } else if let Some(error) = seg_info_stat
+                    .field_info_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause(
+                        "Field Info test failed",
+                        error,
+                    ));
+                } else if let Some(error) = seg_info_stat
+                    .field_norm_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause(
+                        "Field Norm test failed",
+                        error,
+                    ));
+                } else if let Some(error) = seg_info_stat
+                    .term_index_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause(
+                        "Term Index test failed",
+                        error,
+                    ));
+                } else if let Some(error) = seg_info_stat
+                    .stored_field_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause(
+                        "Stored Field test failed",
+                        error,
+                    ));
+                } else if let Some(error) = seg_info_stat
+                    .term_vector_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause(
+                        "Term Vector test failed",
+                        error,
+                    ));
+                } else if let Some(error) = seg_info_stat
+                    .doc_values_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause("DocValues test failed", error));
+                } else if let Some(error) = seg_info_stat
+                    .points_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause("Points test failed", error));
+                } else if let Some(error) = seg_info_stat
+                    .vector_values_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause("Vectors test failed", error));
+                } else if let Some(error) = seg_info_stat
+                    .index_sort_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause(
+                        "Index Sort test failed",
+                        error,
+                    ));
+                } else if let Some(error) = seg_info_stat
+                    .soft_deletes_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause(
+                        "Soft Deletes test failed",
+                        error,
+                    ));
+                }
+            }
+
+            msg(info_stream, "");
+            Ok(())
+        })();
+
+        if let Err(error) = outcome {
+            if self.fail_fast {
+                return Err(error);
+            }
+            seg_info_stat.to_lose_doc_count = to_lose_doc_count;
+            msg(info_stream, "FAILED");
+            msg(
+                info_stream,
+                "    WARNING: exorcise_index() would remove reference to this segment; full \
+                 exception:",
+            );
+            msg(info_stream, &format!("{error}"));
+            seg_info_stat.error = Some(error);
+            msg(info_stream, "");
+        }
+
+        Ok(seg_info_stat)
+    }
+
+    /// Repairs the index from a [`Status`] previously returned by
+    /// [`CheckIndex::check_index`].
+    ///
+    /// Equivalent to `CheckIndex.exorciseIndex(Status)`. Note that this does not
+    /// remove any of the unreferenced files afterwards; you must separately open
+    /// an [`IndexWriter`], which deletes unreferenced files when it is created.
+    ///
+    /// **Warning:** this writes a new segments file into the index, effectively
+    /// removing every document of the broken segments from the index. Be
+    /// careful.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `result` covers only a
+    /// subset of the segments, or when it carries no repaired `SegmentInfos`
+    /// because the check never got as far as reading the commit. Propagates the
+    /// failure of writing the new segments file.
+    pub fn exorcise_index(&self, result: &mut Status) -> Result<()> {
+        self.ensure_open()?;
+        if result.partial {
+            return Err(LuceneError::IllegalArgument(
+                "can only exorcise an index that was fully checked (this status checked a subset \
+                 of segments)"
+                    .to_string(),
+            ));
+        }
+        // Java dereferences `result.newSegments` unconditionally and would throw
+        // a `NullPointerException` for a status whose check returned before the
+        // commit was read; this port reports that as an illegal argument.
+        let Some(new_segments) = result.new_segments.as_mut() else {
+            return Err(LuceneError::IllegalArgument(
+                "this status carries no segments to write; the index was never fully checked"
+                    .to_string(),
+            ));
+        };
+        new_segments.changed();
+        new_segments.commit(self.dir.as_ref())?;
+        Ok(())
+    }
+
+    /// Actually performs the index check, and returns `0` when the index is
+    /// clean and `1` otherwise.
+    ///
+    /// Equivalent to `CheckIndex.doCheck(Options)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java carries the `PrintStream` to
+    /// report on in `Options.out`, which `doMain` sets to `System.out`. This
+    /// port's [`Options`] is a plain `Debug + Clone` value and cannot hold an
+    /// [`InfoStream`], so the sink is passed here instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `opts` holds an out of
+    /// range level or thread count, and propagates whatever
+    /// [`CheckIndex::check_index_segments`] and [`CheckIndex::exorcise_index`]
+    /// raise.
+    pub fn do_check(&mut self, opts: &Options, out: Arc<dyn InfoStream>) -> Result<i32> {
+        self.set_level(opts.level)?;
+        self.set_info_stream_verbose(Some(Arc::clone(&out)), opts.verbose);
+        // A thread count given on the command line overrides the default.
+        if opts.thread_count > 0 {
+            self.set_thread_count(opts.thread_count)?;
+        }
+
+        // Java's `parseOptions` nulls out an empty segment list, so that an
+        // empty one never means "check nothing".
+        let only_segments = if opts.only_segments.is_empty() {
+            None
+        } else {
+            Some(opts.only_segments.as_slice())
+        };
+        let mut result = self.check_index_segments(only_segments)?;
+        let out = Some(out.as_ref() as &dyn InfoStream);
+
+        if result.missing_segments {
+            return Ok(1);
+        }
+
+        if !result.clean {
+            if !opts.do_exorcise {
+                msg(
+                    out,
+                    &format!(
+                        "WARNING: would write new segments file, and {} documents would be lost, \
+                         if -exorcise were specified\n",
+                        result.tot_lose_doc_count
+                    ),
+                );
+            } else {
+                msg(
+                    out,
+                    &format!(
+                        "WARNING: {} documents will be lost\n",
+                        result.tot_lose_doc_count
+                    ),
+                );
+                msg(
+                    out,
+                    &format!(
+                        "NOTE: will write new segments file in 5 seconds; this will remove {} \
+                         docs from the index. YOU WILL LOSE DATA. THIS IS YOUR LAST CHANCE TO \
+                         CTRL+C!",
+                        result.tot_lose_doc_count
+                    ),
+                );
+                for s in 0..5 {
+                    std::thread::sleep(Duration::from_secs(1));
+                    msg(out, &format!("  {}...", 5 - s));
+                }
+                msg(out, "Writing...");
+                self.exorcise_index(&mut result)?;
+                msg(out, "OK");
+                msg(
+                    out,
+                    &format!(
+                        "Wrote new segments file \"{}\"",
+                        result
+                            .new_segments
+                            .as_ref()
+                            .and_then(SegmentInfos::segments_file_name)
+                            .unwrap_or_default()
+                    ),
+                );
+            }
+        }
+        msg(out, "");
+
+        Ok(if result.clean { 0 } else { 1 })
+    }
+}
+
+/// Returns whether a segment named `name` is left out of a check restricted to
+/// `only_segments`.
+///
+/// Equivalent to Java's `onlySegments != null && !onlySegments.contains(info.info.name)`.
+fn is_skipped_segment(only_segments: Option<&[String]>, name: &str) -> bool {
+    only_segments.is_some_and(|only| !only.iter().any(|segment| segment == name))
 }
 
 // ---------------------------------------------------------------------------
@@ -2967,6 +4041,90 @@ pub fn parse_options<S: AsRef<str>>(args: &[S]) -> Result<Options> {
     Ok(opts)
 }
 
+/// Command-line entry point: checks an index and, with `-exorcise`, removes its
+/// corrupt segments.
+///
+/// Equivalent to `CheckIndex.doMain(String[])`, the "actual main" that Java's
+/// `main` wraps, which returns the exit code instead of terminating the process
+/// so that it can be tested. `0` means the index is clean, `1` that it could not
+/// be opened or that it is corrupt.
+///
+/// **Divergences from Lucene 10.5.0.**
+///
+/// * Java's `doMain` is package-private and reached only through `main`; this
+///   crate is a library and has no `main`, so this is the entry point a binary
+///   wraps, and it is public.
+/// * Java reports on `System.out` through a `PrintStream`; this port reports
+///   through a [`PrintStreamInfoStream`] over standard output, which is the
+///   crate's [`InfoStream`] seam over the same sink.
+///
+/// # Errors
+///
+/// Propagates the failure of taking the index write lock and whatever
+/// [`CheckIndex::do_check`] raises. An invalid command line, an index path that
+/// cannot be opened, and a corrupt index are all reported as exit code `1`
+/// rather than as an error, exactly as in Java.
+pub fn do_main<S: AsRef<str>>(args: &[S]) -> Result<i32> {
+    let out: Arc<dyn InfoStream> =
+        Arc::new(PrintStreamInfoStream::system(Box::new(std::io::stdout())));
+    let stream = Some(out.as_ref() as &dyn InfoStream);
+
+    let opts = match parse_options(args) {
+        Ok(opts) => opts,
+        Err(error) => {
+            msg(stream, &format!("{error}"));
+            return Ok(1);
+        }
+    };
+
+    if !asserts_on() {
+        msg(
+            stream,
+            "\nNOTE: testing will be more thorough in a debug build, where debug assertions are \
+             enabled",
+        );
+    }
+
+    // `parse_options` refuses to return options without an index path, so this
+    // is the path the user gave.
+    let index_path = opts.index_path().unwrap_or_default();
+    msg(stream, &format!("\nOpening index @ {index_path}\n"));
+
+    let path = Path::new(index_path);
+    let directory: Arc<dyn Directory> = match opts.dir_impl() {
+        None => match FSDirectory::open(path) {
+            Ok(directory) => Arc::new(directory),
+            Err(error) => {
+                msg(
+                    stream,
+                    &format!("ERROR: could not open directory \"{index_path}\"; exiting"),
+                );
+                msg(stream, &format!("{error}"));
+                return Ok(1);
+            }
+        },
+        Some(dir_impl) => match CommandLineUtil::new_fs_directory(dir_impl, path) {
+            Ok(directory) => Arc::from(directory),
+            Err(error) => {
+                msg(
+                    stream,
+                    &format!("ERROR: could not open directory \"{index_path}\"; exiting"),
+                );
+                msg(stream, &format!("{error}"));
+                return Ok(1);
+            }
+        },
+    };
+
+    // Java closes the directory and the checker with try-with-resources; the
+    // checker releases the write lock when it is dropped, and the directory when
+    // its last handle goes.
+    let mut checker = CheckIndex::new(directory)?;
+    let exit_code = checker.do_check(&opts, Arc::clone(&out))?;
+    checker.close()?;
+    Ok(exit_code)
+}
+
 // ---------------------------------------------------------------------------
 // IndexUpgrader
 // ---------------------------------------------------------------------------
@@ -2994,6 +4152,105 @@ pub struct IndexUpgrader {
 }
 
 impl IndexUpgrader {
+    /// Writes to standard error how the tool is invoked.
+    ///
+    /// Equivalent to `IndexUpgrader.printUsage()`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `printUsage` ends with
+    /// `System.exit(1)`, so it never returns. A library must not terminate its
+    /// host process, so this port only writes the text; its sole caller,
+    /// [`IndexUpgrader::parse_args`], then returns the failure that Java's exit
+    /// code stands for.
+    fn print_usage() {
+        eprintln!(
+            "Upgrades an index so all segments created with a previous Lucene version are \
+             rewritten."
+        );
+        eprintln!("Usage:");
+        eprintln!(
+            "  rucene index-upgrader [-delete-prior-commits] [-verbose] [-dir-impl X] indexDir"
+        );
+        eprintln!("This tool keeps only the last commit in an index; for this");
+        eprintln!("reason, if the incoming index has more than one commit, the tool");
+        eprintln!("refuses to run by default. Specify -delete-prior-commits to override");
+        eprintln!("this, allowing the tool to delete all but the last commit.");
+        eprintln!(
+            "Specify a FSDirectory implementation through the -dir-impl option to force its use. \
+             If no package is specified the org.apache.lucene.store package will be used."
+        );
+        eprintln!("WARNING: This tool may reorder document IDs!");
+    }
+
+    /// Parses command line arguments into a ready-to-run upgrader.
+    ///
+    /// Equivalent to `IndexUpgrader.parseArgs(String[])`.
+    ///
+    /// **Divergences from Lucene 10.5.0.**
+    ///
+    /// * Java's `parseArgs` is package-private and reached only through `main`;
+    ///   this crate is a library and has no `main`, so this is the entry point a
+    ///   binary wraps, and it is public.
+    /// * Java prints the usage text and calls `System.exit(1)` on a bad command
+    ///   line. This port prints the same text and returns
+    ///   [`LuceneError::IllegalArgument`], because a library must not terminate
+    ///   its host process.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when an option is missing its
+    /// value, when an extra argument follows the index directory, or when no
+    /// index directory is given. Propagates the failure of opening the
+    /// directory.
+    pub fn parse_args<S: AsRef<str>>(args: &[S]) -> Result<Self> {
+        let mut path: Option<&str> = None;
+        let mut delete_prior_commits = false;
+        let mut out: Option<Arc<dyn InfoStream>> = None;
+        let mut dir_impl: Option<&str> = None;
+
+        let mut i = 0usize;
+        while i < args.len() {
+            let arg = args[i].as_ref();
+            if arg == "-delete-prior-commits" {
+                delete_prior_commits = true;
+            } else if arg == "-verbose" {
+                out = Some(Arc::new(PrintStreamInfoStream::system(Box::new(
+                    std::io::stdout(),
+                ))));
+            } else if arg == "-dir-impl" {
+                if i == args.len() - 1 {
+                    println!("ERROR: missing value for -dir-impl option");
+                    return Err(LuceneError::IllegalArgument(
+                        "ERROR: missing value for -dir-impl option".to_string(),
+                    ));
+                }
+                i += 1;
+                dir_impl = Some(args[i].as_ref());
+            } else if path.is_none() {
+                path = Some(arg);
+            } else {
+                Self::print_usage();
+                return Err(LuceneError::IllegalArgument(format!(
+                    "ERROR: unexpected extra argument '{arg}'"
+                )));
+            }
+            i += 1;
+        }
+
+        let Some(path) = path else {
+            Self::print_usage();
+            return Err(LuceneError::IllegalArgument(
+                "ERROR: index directory not specified".to_string(),
+            ));
+        };
+
+        let path = Path::new(path);
+        let dir: Arc<dyn Directory> = match dir_impl {
+            None => Arc::new(FSDirectory::open(path)?),
+            Some(dir_impl) => Arc::from(CommandLineUtil::new_fs_directory(dir_impl, path)?),
+        };
+        Self::with_info_stream(dir, out, delete_prior_commits)
+    }
+
     /// Creates an upgrader on `dir` that refuses indexes with multiple commit
     /// points.
     ///
