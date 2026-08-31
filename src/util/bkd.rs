@@ -3278,6 +3278,143 @@ impl BKDWriter {
     /// Current format version used by this implementation.
     pub const VERSION_CURRENT: i32 = self::VERSION_CURRENT;
 
+    /// Checks the two constructor parameters Lucene validates before anything
+    /// else.
+    ///
+    /// Equivalent to `BKDWriter.verifyParams(double, long)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the heap budget is
+    /// negative or the point count is.
+    fn verify_params(max_mb_sort_in_heap: f64, total_point_count: i64) -> Result<()> {
+        if max_mb_sort_in_heap < 0.0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "maxMBSortInHeap must be >= 0.0 (got: {max_mb_sort_in_heap})"
+            )));
+        }
+        if total_point_count < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "totalPointCount must be >= 0 (got: {total_point_count})"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Checks that a packed value falls inside a leaf cell's bounds.
+    ///
+    /// Equivalent to `BKDWriter.valueInBounds(BKDConfig, BytesRef, byte[], byte[])`,
+    /// which Lucene calls only from an assertion: a value outside the cell that
+    /// claims to hold it is a writer bug, and it would make the tree unsearchable.
+    fn value_in_bounds(
+        config: &BKDConfig,
+        packed_value: &[u8],
+        min_packed_value: &[u8],
+        max_packed_value: &[u8],
+    ) -> bool {
+        let bytes_per_dim = config.bytes_per_dim as usize;
+        for dim in 0..config.num_index_dims as usize {
+            let offset = bytes_per_dim * dim;
+            let value = &packed_value[offset..offset + bytes_per_dim];
+            if value < &min_packed_value[offset..offset + bytes_per_dim]
+                || value > &max_packed_value[offset..offset + bytes_per_dim]
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Checks that a value follows its predecessor in the sorted dimension,
+    /// then in the data dimensions, then by document id.
+    ///
+    /// Equivalent to `BKDWriter.valueInOrder(BKDConfig, long, int, byte[], byte[], int, int, int)`.
+    /// The three comparisons are the tie-break chain the leaf encoding assumes;
+    /// breaking it silently produces a leaf a reader will decode wrongly.
+    #[allow(clippy::too_many_arguments)]
+    fn value_in_order(
+        config: &BKDConfig,
+        ord: i64,
+        sorted_dim: usize,
+        last_packed_value: &[u8],
+        packed_value: &[u8],
+        packed_value_offset: usize,
+        doc: i32,
+        last_doc: i32,
+    ) -> bool {
+        if ord == 0 {
+            return true;
+        }
+        let bytes_per_dim = config.bytes_per_dim as usize;
+        let dim_offset = sorted_dim * bytes_per_dim;
+        let last = &last_packed_value[dim_offset..dim_offset + bytes_per_dim];
+        let current = &packed_value
+            [packed_value_offset + dim_offset..packed_value_offset + dim_offset + bytes_per_dim];
+        let mut cmp = last.cmp(current);
+        if cmp == std::cmp::Ordering::Greater {
+            return false;
+        }
+        if cmp == std::cmp::Ordering::Equal && config.num_dims > config.num_index_dims {
+            let index_len = config.packed_index_bytes_length() as usize;
+            let packed_len = config.packed_bytes_length() as usize;
+            cmp = last_packed_value[index_len..packed_len].cmp(
+                &packed_value[packed_value_offset + index_len..packed_value_offset + packed_len],
+            );
+            if cmp == std::cmp::Ordering::Greater {
+                return false;
+            }
+        }
+        if cmp == std::cmp::Ordering::Equal && doc < last_doc {
+            return false;
+        }
+        true
+    }
+
+    /// Checks a whole leaf block: every value in order, and every value inside
+    /// the cell.
+    ///
+    /// Equivalent to `BKDWriter.valuesInOrderAndBounds(BKDConfig, int, int, byte[], byte[], IntFunction, int[], int)`.
+    #[allow(clippy::too_many_arguments)]
+    fn values_in_order_and_bounds(
+        config: &BKDConfig,
+        count: usize,
+        sorted_dim: usize,
+        min_packed_value: &[u8],
+        max_packed_value: &[u8],
+        values: impl Fn(usize) -> Vec<u8>,
+        docs: &[i32],
+        docs_offset: usize,
+    ) -> bool {
+        let packed_len = config.packed_bytes_length() as usize;
+        let mut last_packed_value = vec![0u8; packed_len];
+        let mut last_doc = -1i32;
+        for i in 0..count {
+            let packed_value = values(i);
+            if packed_value.len() != packed_len {
+                return false;
+            }
+            if !Self::value_in_order(
+                config,
+                i as i64,
+                sorted_dim,
+                &last_packed_value,
+                &packed_value,
+                0,
+                docs[docs_offset + i],
+                last_doc,
+            ) {
+                return false;
+            }
+            last_doc = docs[docs_offset + i];
+            // The value must in fact fall inside this leaf cell.
+            if !Self::value_in_bounds(config, &packed_value, min_packed_value, max_packed_value) {
+                return false;
+            }
+            last_packed_value.copy_from_slice(&packed_value);
+        }
+        true
+    }
+
     /// Creates a writer using [`Self::VERSION_CURRENT`].
     pub fn new_default(
         max_doc: i32,
@@ -3314,18 +3451,7 @@ impl BKDWriter {
                 version
             )));
         }
-        if max_mb_sort_in_heap < 0.0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "maxMBSortInHeap must be >= 0.0 (got: {})",
-                max_mb_sort_in_heap
-            )));
-        }
-        if total_point_count < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "totalPointCount must be >= 0 (got: {})",
-                total_point_count
-            )));
-        }
+        Self::verify_params(max_mb_sort_in_heap, total_point_count)?;
         let bytes_per_doc = config.bytes_per_doc() as f64;
         let max_points_sort_in_heap =
             ((max_mb_sort_in_heap * 1024.0 * 1024.0) / bytes_per_doc) as usize;
@@ -4658,6 +4784,20 @@ impl OneDimensionBKDWriter {
             last,
             self.config.bytes_per_dim as usize,
         );
+
+        // Every value must be in the sorted dimension's order and inside the
+        // cell, or the leaf encoding — which assumes both — writes a block no
+        // reader can decode. Java checks this from an assertion here too.
+        debug_assert!(BKDWriter::values_in_order_and_bounds(
+            &self.config,
+            self.leaf_count,
+            0,
+            &self.min_packed_value,
+            &self.max_packed_value,
+            |i| self.leaf_values[i * packed_len..(i + 1) * packed_len].to_vec(),
+            &self.leaf_docs,
+            0,
+        ));
 
         write_leaf_block_docs(
             data_out,
