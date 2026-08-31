@@ -825,11 +825,128 @@ impl SpatialQuery {
     ///
     /// Propagates whatever the point tree raises.
     pub fn cost(&self, values: &dyn PointValues, visitor: &dyn SpatialVisitor) -> Result<i64> {
-        let mut estimate = EstimateVisitor {
+        let mut estimate = self.get_estimate_visitor(visitor);
+        values.estimate_doc_count(&mut estimate)
+    }
+
+    /// Returns the visitor that estimates how many documents match.
+    ///
+    /// Equivalent to `SpatialQuery.getEstimateVisitor()`.
+    fn get_estimate_visitor<'a>(&self, visitor: &'a dyn SpatialVisitor) -> EstimateVisitor<'a> {
+        EstimateVisitor {
             visitor,
             query_relation: self.query_relation,
-        };
-        values.estimate_doc_count(&mut estimate)
+        }
+    }
+
+    /// Returns the visitor that collects matches into a doc-id set builder.
+    ///
+    /// Equivalent to `SpatialQuery.getSparseVisitor(SpatialVisitor, QueryRelation, DocIdSetBuilder)`,
+    /// the strategy used when the matches are expected to be few.
+    fn get_sparse_visitor<'a>(
+        &self,
+        visitor: &'a dyn SpatialVisitor,
+        result: &'a mut DocIdSetBuilder,
+    ) -> SparseVisitor<'a> {
+        SparseVisitor {
+            visitor,
+            query_relation: self.query_relation,
+            result,
+        }
+    }
+
+    /// Returns the visitor that collects `Intersects` matches into a bit set.
+    ///
+    /// Equivalent to `SpatialQuery.getIntersectsDenseVisitor(SpatialVisitor, QueryRelation, FixedBitSet, long[])`.
+    fn get_intersects_dense_visitor<'a>(
+        &self,
+        visitor: &'a dyn SpatialVisitor,
+        result: &'a mut FixedBitSet,
+        cost: &'a mut i64,
+    ) -> IntersectsDenseVisitor<'a> {
+        IntersectsDenseVisitor {
+            visitor,
+            query_relation: self.query_relation,
+            result,
+            cost,
+        }
+    }
+
+    /// Returns the visitor that collects matches and exclusions into two bit
+    /// sets.
+    ///
+    /// Equivalent to `SpatialQuery.getDenseVisitor(SpatialVisitor, QueryRelation, FixedBitSet, FixedBitSet, long[])`,
+    /// the strategy used when the matches are expected to be many.
+    fn get_dense_visitor<'a>(
+        &self,
+        visitor: &'a dyn SpatialVisitor,
+        result: &'a mut FixedBitSet,
+        excluded: &'a mut FixedBitSet,
+        cost: &'a mut i64,
+    ) -> DenseVisitor<'a> {
+        DenseVisitor {
+            visitor,
+            query_relation: self.query_relation,
+            result,
+            excluded,
+            cost,
+        }
+    }
+
+    /// Returns the visitor a `Contains` query collects with.
+    ///
+    /// Equivalent to `SpatialQuery.getContainsDenseVisitor(SpatialVisitor, QueryRelation, FixedBitSet, FixedBitSet, long[])`.
+    /// A `Contains` query is the one relation where a matching triangle
+    /// *excludes* its document, so the two bit sets are filled the other way
+    /// round.
+    fn get_contains_dense_visitor<'a>(
+        &self,
+        visitor: &'a dyn SpatialVisitor,
+        result: &'a mut FixedBitSet,
+        excluded: &'a mut FixedBitSet,
+        cost: &'a mut i64,
+    ) -> ContainsDenseVisitor<'a> {
+        ContainsDenseVisitor {
+            visitor,
+            query_relation: self.query_relation,
+            result,
+            excluded,
+            cost,
+        }
+    }
+
+    /// Returns the visitor that clears the documents *not* matching.
+    ///
+    /// Equivalent to `SpatialQuery.getInverseDenseVisitor(SpatialVisitor, QueryRelation, FixedBitSet, long[])`,
+    /// used when computing the complement is cheaper than computing the match.
+    fn get_inverse_dense_visitor<'a>(
+        &self,
+        visitor: &'a dyn SpatialVisitor,
+        result: &'a mut FixedBitSet,
+        cost: &'a mut i64,
+    ) -> InverseDenseVisitor<'a> {
+        InverseDenseVisitor {
+            visitor,
+            query_relation: self.query_relation,
+            result,
+            cost,
+        }
+    }
+
+    /// Returns the inverse visitor that does not track the cost.
+    ///
+    /// Equivalent to `SpatialQuery.getShallowInverseDenseVisitor(SpatialVisitor, QueryRelation, FixedBitSet)`,
+    /// used where the caller already knows the cost.
+    fn get_shallow_inverse_dense_visitor<'a>(
+        &self,
+        visitor: &'a dyn SpatialVisitor,
+        result: &'a mut FixedBitSet,
+    ) -> ShallowInverseDenseVisitor<'a> {
+        ShallowInverseDenseVisitor {
+            visitor,
+            query_relation: self.query_relation,
+            result,
+        }
     }
 
     /// Equivalent to `RelationScorerSupplier.getScorer(LeafReader, float, ScoreMode)`.
@@ -871,12 +988,7 @@ impl SpatialQuery {
             let mut result = FixedBitSet::new(max_doc as usize);
             result.set_range(0, max_doc as usize);
             let mut cost = i64::from(max_doc);
-            let mut inverse = InverseDenseVisitor {
-                visitor,
-                query_relation: self.query_relation,
-                result: &mut result,
-                cost: &mut cost,
-            };
+            let mut inverse = self.get_inverse_dense_visitor(visitor, &mut result, &mut cost);
             values.intersect(&mut inverse)?;
             return Ok(Some(bit_set_iterator(result, cost)?));
         }
@@ -884,12 +996,7 @@ impl SpatialQuery {
             // Use a dense structure, so an already visited document is skipped.
             let mut result = FixedBitSet::new(max_doc as usize);
             let mut cost = 0i64;
-            let mut dense = IntersectsDenseVisitor {
-                visitor,
-                query_relation: self.query_relation,
-                result: &mut result,
-                cost: &mut cost,
-            };
+            let mut dense = self.get_intersects_dense_visitor(visitor, &mut result, &mut cost);
             values.intersect(&mut dense)?;
             debug_assert!(cost > 0 || result.cardinality() == 0);
             if cost == 0 {
@@ -899,11 +1006,7 @@ impl SpatialQuery {
         }
         let mut builder = DocIdSetBuilder::from_point_values(max_doc, values);
         {
-            let mut sparse = SparseVisitor {
-                visitor,
-                query_relation: self.query_relation,
-                result: &mut builder,
-            };
+            let mut sparse = self.get_sparse_visitor(visitor, &mut builder);
             values.intersect(&mut sparse)?;
         }
         Ok(Some(builder.build()?.iterator()?))
@@ -926,36 +1029,22 @@ impl SpatialQuery {
             // potential match.
             result.set_range(0, max_doc as usize);
             // Remove the false positives.
-            let mut inverse = InverseDenseVisitor {
-                visitor,
-                query_relation: self.query_relation,
-                result: &mut result,
-                cost: &mut cost,
-            };
+            let mut inverse = self.get_inverse_dense_visitor(visitor, &mut result, &mut cost);
             values.intersect(&mut inverse)?;
         } else {
             cost = 0;
             // Collect the potential documents.
             let mut excluded = FixedBitSet::new(max_doc as usize);
             {
-                let mut dense = DenseVisitor {
-                    visitor,
-                    query_relation: self.query_relation,
-                    result: &mut result,
-                    excluded: &mut excluded,
-                    cost: &mut cost,
-                };
+                let mut dense =
+                    self.get_dense_visitor(visitor, &mut result, &mut excluded, &mut cost);
                 values.intersect(&mut dense)?;
             }
             and_not(&mut result, &excluded);
             // Remove the false positives. Only the inner nodes matter, because
             // the intersecting leaf nodes have already been taken into account;
             // this still reads the leaf nodes, unfortunately.
-            let mut shallow = ShallowInverseDenseVisitor {
-                visitor,
-                query_relation: self.query_relation,
-                result: &mut result,
-            };
+            let mut shallow = self.get_shallow_inverse_dense_visitor(visitor, &mut result);
             values.intersect(&mut shallow)?;
         }
         debug_assert!(cost > 0 || result.cardinality() == 0);
@@ -977,13 +1066,8 @@ impl SpatialQuery {
         let mut cost = 0i64;
         let mut excluded = FixedBitSet::new(max_doc as usize);
         {
-            let mut contains = ContainsDenseVisitor {
-                visitor,
-                query_relation: self.query_relation,
-                result: &mut result,
-                excluded: &mut excluded,
-                cost: &mut cost,
-            };
+            let mut contains =
+                self.get_contains_dense_visitor(visitor, &mut result, &mut excluded, &mut cost);
             values.intersect(&mut contains)?;
         }
         and_not(&mut result, &excluded);
