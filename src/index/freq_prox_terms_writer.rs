@@ -574,6 +574,13 @@ pub struct TermsHashPerField {
     /// Highest document id passed to [`Self::intern`], checked in debug builds
     /// the way Lucene's `assertDocId` does.
     last_doc_id: i32,
+    /// The term ids in sorted order, once [`Self::sort_terms`] has produced
+    /// them.
+    ///
+    /// Equivalent to `TermsHashPerField.sortedTermIDs`, which Lucene fills once
+    /// and reads back; recomputing the sort on every read would sort the whole
+    /// table again per field per flush.
+    sorted_term_ids: Option<Vec<i32>>,
 }
 
 impl TermsHashPerField {
@@ -602,6 +609,7 @@ impl TermsHashPerField {
             postings: Vec::new(),
             bytes_used,
             last_doc_id: 0,
+            sorted_term_ids: None,
         }
     }
 
@@ -633,6 +641,53 @@ impl TermsHashPerField {
         field.bytes_hash.release_accounting();
         field.bytes_hash = BytesRefHash::new_by_pool_offset(bytes_used);
         field
+    }
+
+    /// Checks that document ids arrive in order, and records the latest.
+    ///
+    /// Equivalent to `TermsHashPerField.assertDocId(int)`, which Java calls
+    /// only from an assertion — the recording is a side effect of the check,
+    /// so it happens only where the check does.
+    fn assert_doc_id(&mut self, doc_id: i32) -> bool {
+        debug_assert!(
+            doc_id >= self.last_doc_id,
+            "docID must be >= {} but was {doc_id}",
+            self.last_doc_id
+        );
+        self.last_doc_id = doc_id;
+        true
+    }
+
+    /// Collapses the hash table and sorts it in place, recording the result.
+    ///
+    /// Equivalent to `TermsHashPerField.sortTerms()`. It must not be called
+    /// twice without a [`reset`](Self::reset) or
+    /// [`reinit_hash`](Self::reinit_hash) in between.
+    pub fn sort_terms(&mut self, term_pool: &ByteBlockPool) {
+        debug_assert!(self.sorted_term_ids.is_none());
+        self.sorted_term_ids = Some(self.bytes_hash.sort(term_pool));
+    }
+
+    /// Returns the sorted term ids.
+    ///
+    /// Equivalent to `TermsHashPerField.getSortedTermIDs()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when [`sort_terms`](Self::sort_terms) has not run, as Java's
+    /// assertion does.
+    pub fn get_sorted_term_ids(&self) -> &[i32] {
+        self.sorted_term_ids
+            .as_deref()
+            .expect("sort_terms must be called before get_sorted_term_ids")
+    }
+
+    /// Drops the sort and reinitialises the hash table.
+    ///
+    /// Equivalent to `TermsHashPerField.reinitHash()`.
+    pub fn reinit_hash(&mut self) {
+        self.sorted_term_ids = None;
+        self.bytes_hash.reinit();
     }
 
     /// Returns the field this table belongs to.
@@ -756,12 +811,7 @@ impl TermsHashPerField {
         term_bytes: &[u8],
         doc_id: i32,
     ) -> Result<TermSlot> {
-        debug_assert!(
-            doc_id >= self.last_doc_id,
-            "docID must be >= {} but was {doc_id}",
-            self.last_doc_id
-        );
-        self.last_doc_id = doc_id;
+        debug_assert!(self.assert_doc_id(doc_id));
 
         let raw = self.bytes_hash.add(pool, term_bytes)?;
         if raw >= 0 {
@@ -3237,5 +3287,29 @@ mod tests {
         let fields = writer.freeze();
         let frozen: Vec<String> = fields.iterator().collect();
         assert_eq!(frozen, vec!["a", "\u{10000}", "\u{FFFF}"]);
+    }
+}
+
+impl PartialEq for TermsHashPerField {
+    fn eq(&self, other: &Self) -> bool {
+        self.field_name == other.field_name
+    }
+}
+
+impl Eq for TermsHashPerField {}
+
+impl PartialOrd for TermsHashPerField {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TermsHashPerField {
+    /// Orders the tables by field name.
+    ///
+    /// Equivalent to `TermsHashPerField.compareTo(TermsHashPerField)`, which is
+    /// what puts the fields of a segment in name order at flush.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::util::compare_utf16(&self.field_name, &other.field_name)
     }
 }

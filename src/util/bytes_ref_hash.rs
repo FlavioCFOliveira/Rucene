@@ -273,6 +273,22 @@ impl BytesRefHash {
     /// Removes every term, keeping the table allocated for reuse.
     ///
     /// Equivalent to `BytesRefHash.clear(false)`.
+    /// Restores the table's buffers after a [`close`](Self::clear) that
+    /// released them.
+    ///
+    /// Equivalent to `BytesRefHash.reinit()`, which reallocates the id and
+    /// byte-start arrays when a previous `close()` dropped them, and does
+    /// nothing when they are still there.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java can drop both arrays to null and
+    /// rebuild them here. This port keeps them allocated — a `Vec` that has
+    /// been cleared holds no elements — so `reinit` only has to clear the
+    /// table, which is what leaves it in the state Java's `reinit` leaves it
+    /// in: empty, sized, and ready to intern again.
+    pub fn reinit(&mut self) {
+        self.clear();
+    }
+
     pub fn clear(&mut self) {
         self.bytes_used.fetch_sub(
             (self.bytes_start.len() * std::mem::size_of::<i32>()) as i64,
