@@ -14,6 +14,7 @@ import json, os, re, subprocess, sys
 from collections import defaultdict
 
 ROOT = "/data/dev/github.com/FlavioCFOliveira/Rucene"
+EXCLUSIONS = os.path.join(ROOT, "tools/kg/port_gaps_exclusions.json")
 
 def q(cypher):
     out = subprocess.run(["rmp", "graph", "query", "-r", "rucene", "-q", cypher],
@@ -79,8 +80,17 @@ for dirpath, _dirs, filenames in os.walk(os.path.join(ROOT, "src")):
             rel = os.path.relpath(os.path.join(dirpath, fn), ROOT)
             by_basename[fn[:-3]].add(rel)
 
+# Methods that are deliberately not ported, each with the reason. A gap the
+# port has decided not to close is not the same as one still open, and counting
+# them together makes the figure say less than it appears to.
+try:
+    excluded = json.load(open(EXCLUSIONS))
+except OSError:
+    excluded = {}
+
 rows = []
 for qn, jmethods in java.items():
+    jmethods = jmethods - set(excluded.get(qn, {}).get("methods", ()))
     paths = files.get(qn) or set()
     if not paths:
         paths = set(by_basename.get(camel_to_snake(names[qn][0]), ()))

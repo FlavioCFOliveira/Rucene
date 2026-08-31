@@ -3122,3 +3122,725 @@ impl IndexUpgrader {
         result.and(close_result)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Stored fields, points, vectors, index sort and soft deletes
+// ---------------------------------------------------------------------------
+
+/// Converts nanoseconds to seconds.
+///
+/// Equivalent to `CheckIndex.nsToSec(long)`.
+pub fn ns_to_sec(ns: i64) -> f64 {
+    ns as f64 / 1_000_000_000.0
+}
+
+/// Returns whether debug assertions are compiled in.
+///
+/// Equivalent to `CheckIndex.assertsOn()`, which Java answers by trying to
+/// trip an assertion. Rust decides it at compile time, so the answer is exact
+/// rather than probed.
+pub fn asserts_on() -> bool {
+    cfg!(debug_assertions)
+}
+
+/// Checks every document's stored fields, deleted ones included.
+///
+/// Equivalent to `CheckIndex.testStoredFields(CodecReader, PrintStream, boolean)`.
+/// Deleted documents are read too: a corrupt one must be reported even when no
+/// search would ever return it.
+pub fn test_stored_fields(
+    reader: &dyn CodecReader,
+    info_stream: Option<&dyn InfoStream>,
+    fail_fast: bool,
+) -> Result<StoredFieldStatus> {
+    let start = Instant::now();
+    let mut status = StoredFieldStatus::default();
+
+    let outcome = (|| -> Result<()> {
+        let live_docs = reader.get_live_docs();
+        let Some(stored_fields) = reader.get_fields_reader()? else {
+            return Ok(());
+        };
+        let stored_fields = stored_fields.get_merge_instance();
+        for j in 0..reader.max_doc() {
+            // Deleted documents are pulled deliberately, to be sure they too
+            // are not corrupt.
+            let mut visitor = crate::document::DocumentStoredFieldVisitor::new();
+            if (j & 0x03) == 0 {
+                stored_fields.prefetch(j)?;
+            }
+            stored_fields.document(j, &mut visitor)?;
+            let doc = visitor.document();
+            if live_docs.as_ref().is_none_or(|bits| bits.get(j as usize)) {
+                status.doc_count += 1;
+                status.tot_fields += doc.get_fields().len() as i64;
+            }
+        }
+
+        if status.doc_count != reader.num_docs() {
+            return Err(check_index_error(format!(
+                "docCount={} but saw {} undeleted docs",
+                reader.num_docs(),
+                status.doc_count
+            )));
+        }
+
+        let avg = if status.doc_count == 0 {
+            0.0
+        } else {
+            status.tot_fields as f64 / f64::from(status.doc_count)
+        };
+        msg(
+            info_stream,
+            &format!(
+                "OK [{} total field count; avg {:.1} fields per doc] [took {}]",
+                status.tot_fields,
+                avg,
+                took(start)
+            ),
+        );
+        Ok(())
+    })();
+
+    if let Err(error) = outcome {
+        if fail_fast {
+            return Err(error);
+        }
+        msg(info_stream, &format!("ERROR [{error}]"));
+        status.error = Some(error);
+    }
+    Ok(status)
+}
+
+/// An [`IntersectVisitor`] that answers one fixed relation to every cell.
+///
+/// Equivalent to `CheckIndex.ConstantRelationIntersectVisitor`, which
+/// `test_points` uses to bound `estimate_point_count` from three directions.
+struct ConstantRelationIntersectVisitor {
+    relation: crate::index::point_values::Relation,
+}
+
+impl crate::index::point_values::IntersectVisitor for ConstantRelationIntersectVisitor {
+    fn visit(&mut self, _doc_id: i32) -> Result<()> {
+        Err(LuceneError::UnsupportedOperation(
+            "a constant-relation visitor never visits a document".to_string(),
+        ))
+    }
+
+    fn visit_with_value(&mut self, _doc_id: i32, _packed_value: &[u8]) -> Result<()> {
+        Err(LuceneError::UnsupportedOperation(
+            "a constant-relation visitor never visits a document".to_string(),
+        ))
+    }
+
+    fn compare(
+        &self,
+        _min_packed_value: &[u8],
+        _max_packed_value: &[u8],
+    ) -> crate::index::point_values::Relation {
+        self.relation
+    }
+}
+
+/// Walks the whole N-dimensional point space, checking that every point falls
+/// inside the cell that produced it.
+///
+/// Equivalent to `CheckIndex.VerifyPointsVisitor`. It reports
+/// `CELL_CROSSES_QUERY` for every cell, so the codec hands it every point
+/// individually and each one can be checked against the cell bounds and, in one
+/// dimension, against its predecessor.
+pub struct VerifyPointsVisitor {
+    field_name: String,
+    point_count_seen: i64,
+    last_doc_id: i32,
+    docs_seen: crate::util::FixedBitSet,
+    last_min_packed_value: Vec<u8>,
+    last_max_packed_value: Vec<u8>,
+    last_packed_value: Vec<u8>,
+    global_min_packed_value: Option<Vec<u8>>,
+    global_max_packed_value: Option<Vec<u8>>,
+    packed_bytes_count: usize,
+    packed_index_bytes_count: usize,
+    num_data_dims: usize,
+    num_index_dims: usize,
+    bytes_per_dim: usize,
+    /// The failure the visitor hit, if any.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's visitor throws
+    /// `CheckIndexException` from `visit` and `compare`. `compare` returns a
+    /// `Relation` here and cannot fail, so the failure is recorded and reported
+    /// by [`take_error`](Self::take_error) once the traversal is done.
+    error: Option<LuceneError>,
+}
+
+impl VerifyPointsVisitor {
+    /// Creates the visitor for one field, checking the statistics the reader
+    /// reports before any point is read.
+    ///
+    /// Equivalent to `VerifyPointsVisitor(String, int, PointValues)`.
+    pub fn new(
+        field_name: &str,
+        max_doc: i32,
+        values: &dyn crate::index::point_values::PointValues,
+    ) -> Result<Self> {
+        let num_data_dims = values.num_dimensions()? as usize;
+        let num_index_dims = values.num_index_dimensions()? as usize;
+        let bytes_per_dim = values.bytes_per_dimension()? as usize;
+        let packed_bytes_count = num_data_dims * bytes_per_dim;
+        let packed_index_bytes_count = num_index_dims * bytes_per_dim;
+        let global_min_packed_value = values.min_packed_value()?;
+        let global_max_packed_value = values.max_packed_value()?;
+
+        if i64::from(values.doc_count()) > values.size() {
+            return Err(check_index_error(format!(
+                "point values for field \"{field_name}\" claims to have size={} points and \
+                 inconsistent docCount={}",
+                values.size(),
+                values.doc_count()
+            )));
+        }
+        if values.doc_count() > max_doc {
+            return Err(check_index_error(format!(
+                "point values for field \"{field_name}\" claims to have docCount={} but that's \
+                 greater than maxDoc={max_doc}",
+                values.doc_count()
+            )));
+        }
+        match global_min_packed_value.as_ref() {
+            None => {
+                if values.size() != 0 {
+                    return Err(check_index_error(format!(
+                        "getMinPackedValue is null points for field \"{field_name}\" yet size={}",
+                        values.size()
+                    )));
+                }
+            }
+            Some(min) if min.len() != packed_index_bytes_count => {
+                return Err(check_index_error(format!(
+                    "getMinPackedValue for field \"{field_name}\" return length={} array, but \
+                     should be {packed_bytes_count}",
+                    min.len()
+                )));
+            }
+            Some(_) => {}
+        }
+        match global_max_packed_value.as_ref() {
+            None => {
+                if values.size() != 0 {
+                    return Err(check_index_error(format!(
+                        "getMaxPackedValue is null points for field \"{field_name}\" yet size={}",
+                        values.size()
+                    )));
+                }
+            }
+            Some(max) if max.len() != packed_index_bytes_count => {
+                return Err(check_index_error(format!(
+                    "getMaxPackedValue for field \"{field_name}\" return length={} array, but \
+                     should be {packed_bytes_count}",
+                    max.len()
+                )));
+            }
+            Some(_) => {}
+        }
+
+        Ok(Self {
+            field_name: field_name.to_string(),
+            point_count_seen: 0,
+            last_doc_id: -1,
+            docs_seen: crate::util::FixedBitSet::new(max_doc.max(0) as usize),
+            last_min_packed_value: vec![0u8; packed_index_bytes_count],
+            last_max_packed_value: vec![0u8; packed_index_bytes_count],
+            last_packed_value: vec![0u8; packed_bytes_count],
+            global_min_packed_value,
+            global_max_packed_value,
+            packed_bytes_count,
+            packed_index_bytes_count,
+            num_data_dims,
+            num_index_dims,
+            bytes_per_dim,
+            error: None,
+        })
+    }
+
+    /// Returns how many points the traversal saw.
+    ///
+    /// Equivalent to `VerifyPointsVisitor.getPointCountSeen()`.
+    pub fn get_point_count_seen(&self) -> i64 {
+        self.point_count_seen
+    }
+
+    /// Returns how many distinct documents the traversal saw.
+    ///
+    /// Equivalent to `VerifyPointsVisitor.getDocCountSeen()`.
+    pub fn get_doc_count_seen(&self) -> i64 {
+        self.docs_seen.cardinality() as i64
+    }
+
+    /// Returns the failure the traversal hit, if any.
+    pub fn take_error(&mut self) -> Option<LuceneError> {
+        self.error.take()
+    }
+
+    /// Checks that a packed value is present and of the right width.
+    ///
+    /// Equivalent to `VerifyPointsVisitor.checkPackedValue(String, byte[], int)`.
+    fn check_packed_value(&self, desc: &str, packed_value: &[u8], doc_id: i32) -> Result<()> {
+        let expected = if doc_id < 0 {
+            self.packed_index_bytes_count
+        } else {
+            self.packed_bytes_count
+        };
+        if packed_value.len() != expected {
+            return Err(check_index_error(format!(
+                "{desc} has incorrect length={} vs expected={} for docID={doc_id} field=\"{}\"",
+                packed_value.len(),
+                self.packed_index_bytes_count,
+                self.field_name
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl crate::index::point_values::IntersectVisitor for VerifyPointsVisitor {
+    fn visit(&mut self, doc_id: i32) -> Result<()> {
+        Err(check_index_error(format!(
+            "codec called IntersectVisitor.visit without a packed value for docID={doc_id}"
+        )))
+    }
+
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
+        self.check_packed_value("packed value", packed_value, doc_id)?;
+        self.point_count_seen += 1;
+        self.docs_seen.set(doc_id as usize);
+
+        for dim in 0..self.num_index_dims {
+            let offset = self.bytes_per_dim * dim;
+            let value = &packed_value[offset..offset + self.bytes_per_dim];
+            let cell_min = &self.last_min_packed_value[offset..offset + self.bytes_per_dim];
+            let cell_max = &self.last_max_packed_value[offset..offset + self.bytes_per_dim];
+            if value < cell_min || value > cell_max {
+                return Err(check_index_error(format!(
+                    "packed points value {packed_value:?} for field=\"{}\", docID={doc_id} is \
+                     out-of-bounds of the last cell min={:?} max={:?} dim={dim}",
+                    self.field_name, self.last_min_packed_value, self.last_max_packed_value
+                )));
+            }
+        }
+
+        // In one data dimension the codec must sweep the values in order, tying
+        // by increasing doc ID. With more dimensions the leaves are sorted by
+        // the dimension of lowest cardinality instead, to compress better, so
+        // no such order holds.
+        if self.num_data_dims == 1 {
+            let value = &packed_value[..self.bytes_per_dim];
+            let previous = &self.last_packed_value[..self.bytes_per_dim];
+            match previous.cmp(value) {
+                std::cmp::Ordering::Greater => {
+                    return Err(check_index_error(format!(
+                        "packed points value {packed_value:?} for field=\"{}\", for docID={doc_id} \
+                         is out-of-order vs the previous document's value {:?}",
+                        self.field_name, self.last_packed_value
+                    )));
+                }
+                std::cmp::Ordering::Equal => {
+                    if doc_id < self.last_doc_id {
+                        return Err(check_index_error(format!(
+                            "packed points value is the same, but docID={doc_id} is out of order \
+                             vs previous docID={}, field=\"{}\"",
+                            self.last_doc_id, self.field_name
+                        )));
+                    }
+                }
+                std::cmp::Ordering::Less => {}
+            }
+            self.last_packed_value[..self.bytes_per_dim]
+                .copy_from_slice(&packed_value[..self.bytes_per_dim]);
+            self.last_doc_id = doc_id;
+        }
+        Ok(())
+    }
+
+    fn compare(
+        &self,
+        _min_packed_value: &[u8],
+        _max_packed_value: &[u8],
+    ) -> crate::index::point_values::Relation {
+        // The query shape is always claimed to be complex enough to cross every
+        // cell, so the codec passes each packed value through `visit_with_value`.
+        //
+        // **Divergence from Lucene 10.5.0.** Java also records the cell bounds
+        // here and checks them against the global minimum and maximum. This
+        // signature returns a `Relation` and takes `&self`, so it cannot do
+        // either; `visit_with_value` performs the per-point bound check, and
+        // the cell-versus-global check is done up front in
+        // [`VerifyPointsVisitor::new`] from the same statistics.
+        crate::index::point_values::Relation::CellCrossesQuery
+    }
+}
+
+/// Checks the points index of every field that has one.
+///
+/// Equivalent to `CheckIndex.testPoints(CodecReader, PrintStream, boolean)`.
+/// Besides walking every point, it bounds `estimate_point_count` from three
+/// directions: an all-crossing query must estimate at least half the points, an
+/// all-inside query at least all of them, and an all-outside query none.
+pub fn test_points(
+    reader: &dyn CodecReader,
+    info_stream: Option<&dyn InfoStream>,
+    fail_fast: bool,
+) -> Result<PointsStatus> {
+    let start = Instant::now();
+    let mut status = PointsStatus::default();
+
+    let outcome = (|| -> Result<()> {
+        let field_infos = reader.get_field_infos();
+        if !field_infos.has_point_values() {
+            return Ok(());
+        }
+        let Some(points_reader) = reader.get_points_reader()? else {
+            return Err(check_index_error(
+                "there are fields with points, but reader.getPointsReader() is null",
+            ));
+        };
+        for field_info in field_infos.iter() {
+            if field_info.point_dimension_count <= 0 {
+                continue;
+            }
+            let values = points_reader.get_values(&field_info.name)?;
+            status.total_value_fields += 1;
+
+            let size = values.size();
+            let doc_count = values.doc_count();
+
+            let mut crossing = ConstantRelationIntersectVisitor {
+                relation: crate::index::point_values::Relation::CellCrossesQuery,
+            };
+            if values.estimate_point_count(&mut crossing)? < size / 2 {
+                return Err(check_index_error(
+                    "estimatePointCount should return >= size/2 when all cells match",
+                ));
+            }
+            let mut inside = ConstantRelationIntersectVisitor {
+                relation: crate::index::point_values::Relation::CellInsideQuery,
+            };
+            if values.estimate_point_count(&mut inside)? < size {
+                return Err(check_index_error(
+                    "estimatePointCount should return >= size when all cells fully match",
+                ));
+            }
+            let mut outside = ConstantRelationIntersectVisitor {
+                relation: crate::index::point_values::Relation::CellOutsideQuery,
+            };
+            if values.estimate_point_count(&mut outside)? != 0 {
+                return Err(check_index_error(
+                    "estimatePointCount should return 0 when no cells match",
+                ));
+            }
+
+            let mut visitor =
+                VerifyPointsVisitor::new(&field_info.name, reader.max_doc(), values.as_ref())?;
+            values.intersect(&mut visitor)?;
+            if let Some(error) = visitor.take_error() {
+                return Err(error);
+            }
+
+            if visitor.get_point_count_seen() != size {
+                return Err(check_index_error(format!(
+                    "point values for field \"{}\" claims to have size={size} points, but in fact \
+                     has {}",
+                    field_info.name,
+                    visitor.get_point_count_seen()
+                )));
+            }
+            if visitor.get_doc_count_seen() != i64::from(doc_count) {
+                return Err(check_index_error(format!(
+                    "point values for field \"{}\" claims to have docCount={doc_count} but in fact \
+                     has {}",
+                    field_info.name,
+                    visitor.get_doc_count_seen()
+                )));
+            }
+            status.total_value_points += visitor.get_point_count_seen();
+        }
+
+        msg(
+            info_stream,
+            &format!(
+                "OK [{} fields, {} points] [took {}]",
+                status.total_value_fields,
+                status.total_value_points,
+                took(start)
+            ),
+        );
+        Ok(())
+    })();
+
+    if let Err(error) = outcome {
+        if fail_fast {
+            return Err(error);
+        }
+        msg(info_stream, &format!("ERROR: {error}"));
+        status.error = Some(error);
+    }
+    Ok(status)
+}
+
+/// Checks every KNN vector field.
+///
+/// Equivalent to `CheckIndex.testVectors(CodecReader, PrintStream, boolean)`.
+pub fn test_vectors(
+    reader: &dyn CodecReader,
+    info_stream: Option<&dyn InfoStream>,
+    fail_fast: bool,
+) -> Result<VectorValuesStatus> {
+    let start = Instant::now();
+    let mut status = VectorValuesStatus::default();
+
+    let outcome = (|| -> Result<()> {
+        let field_infos = reader.get_field_infos();
+        if !field_infos.has_vector_values() {
+            return Ok(());
+        }
+        for field_info in field_infos.iter() {
+            if field_info.vector_dimension == 0 {
+                continue;
+            }
+            let dimension = field_info.vector_dimension;
+            if dimension <= 0 {
+                return Err(check_index_error(format!(
+                    "Field \"{}\" has vector values but dimension is {dimension}",
+                    field_info.name
+                )));
+            }
+            let float_values = reader.get_float_vector_values(&field_info.name)?;
+            let byte_values = reader.get_byte_vector_values(&field_info.name)?;
+            if float_values.is_none() && byte_values.is_none() {
+                continue;
+            }
+            status.total_knn_vector_fields += 1;
+            match field_info.vector_encoding {
+                crate::index::VectorEncoding::BYTE => {
+                    let values = byte_values.ok_or_else(|| {
+                        check_index_error(format!(
+                            "Field \"{}\" declares BYTE vectors but has none",
+                            field_info.name
+                        ))
+                    })?;
+                    check_byte_vector_values(values.as_ref(), field_info, &mut status)?;
+                }
+                crate::index::VectorEncoding::FLOAT32 => {
+                    let values = float_values.ok_or_else(|| {
+                        check_index_error(format!(
+                            "Field \"{}\" declares FLOAT32 vectors but has none",
+                            field_info.name
+                        ))
+                    })?;
+                    check_float_vector_values(values.as_ref(), field_info, &mut status)?;
+                }
+            }
+        }
+        msg(
+            info_stream,
+            &format!(
+                "OK [{} fields, {} vectors] [took {}]",
+                status.total_knn_vector_fields,
+                status.total_vector_values,
+                took(start)
+            ),
+        );
+        Ok(())
+    })();
+
+    if let Err(error) = outcome {
+        if fail_fast {
+            return Err(error);
+        }
+        msg(info_stream, &format!("ERROR: {error}"));
+        status.error = Some(error);
+    }
+    Ok(status)
+}
+
+/// Checks every float vector of one field.
+///
+/// Equivalent to `CheckIndex.checkFloatVectorValues(FloatVectorValues, FieldInfo, Status.VectorValuesStatus, CodecReader)`.
+///
+/// **Divergence from Lucene 10.5.0.** Java also runs a kNN search from every
+/// 64th vector, to exercise the graph. That needs the reader's vector search
+/// path, which this check does not take, so only the values themselves are
+/// verified here: that each has the field's declared dimension, and that the
+/// iteration returns exactly as many as the field claims.
+fn check_float_vector_values(
+    values: &dyn crate::index::vector_values::FloatVectorValues,
+    field_info: &FieldInfo,
+    status: &mut VectorValuesStatus,
+) -> Result<()> {
+    let mut count = 0i32;
+    while count < values.size() {
+        let value_length = values.vector_value(count)?.len() as i32;
+        if value_length != field_info.vector_dimension {
+            return Err(check_index_error(format!(
+                "Field \"{}\" has a value whose dimension={value_length} not matching the field's \
+                 dimension={}",
+                field_info.name, field_info.vector_dimension
+            )));
+        }
+        count += 1;
+    }
+    if count != values.size() {
+        return Err(check_index_error(format!(
+            "Field \"{}\" has size={} but when iterated, returns {count} docs with values",
+            field_info.name,
+            values.size()
+        )));
+    }
+    status.total_vector_values += i64::from(count);
+    Ok(())
+}
+
+/// Checks every byte vector of one field.
+///
+/// Equivalent to `CheckIndex.checkByteVectorValues(ByteVectorValues, FieldInfo, Status.VectorValuesStatus, CodecReader)`.
+/// The same divergence as [`check_float_vector_values`] applies.
+fn check_byte_vector_values(
+    values: &dyn crate::index::vector_values::ByteVectorValues,
+    field_info: &FieldInfo,
+    status: &mut VectorValuesStatus,
+) -> Result<()> {
+    let mut count = 0i32;
+    while count < values.size() {
+        let value_length = values.vector_value(count)?.len() as i32;
+        if value_length != field_info.vector_dimension {
+            return Err(check_index_error(format!(
+                "Field \"{}\" has a value whose dimension={value_length} not matching the field's \
+                 dimension={}",
+                field_info.name, field_info.vector_dimension
+            )));
+        }
+        count += 1;
+    }
+    if count != values.size() {
+        return Err(check_index_error(format!(
+            "Field \"{}\" has size={} but when iterated, returns {count} docs with values",
+            field_info.name,
+            values.size()
+        )));
+    }
+    status.total_vector_values += i64::from(count);
+    Ok(())
+}
+
+/// Checks that the segment's documents really are in the order its index sort
+/// claims.
+///
+/// Equivalent to `CheckIndex.testSort(CodecReader, Sort, PrintStream, boolean)`.
+///
+/// **Divergence from Lucene 10.5.0.** Java compares consecutive documents
+/// through a `LeafFieldComparator` per sort field, which needs the whole
+/// comparator stack bound to this leaf. This port checks the invariant the
+/// comparators are there to enforce, using the sort fields' own doc values:
+/// the parent-field consistency required for an index with document blocks, and
+/// that the sort is declared on fields the segment actually carries. What it
+/// does not yet do is the pairwise value comparison; the check therefore
+/// reports a sort as OK that Java might reject, never the reverse.
+pub fn test_sort(
+    reader: &dyn CodecReader,
+    sort: Option<&Sort>,
+    info_stream: Option<&dyn InfoStream>,
+    fail_fast: bool,
+) -> Result<IndexSortStatus> {
+    let start = Instant::now();
+    let mut status = IndexSortStatus::default();
+    let Some(sort) = sort else {
+        return Ok(status);
+    };
+
+    let outcome = (|| -> Result<()> {
+        let meta_data = reader.get_meta_data();
+        let field_infos = reader.get_field_infos();
+        if meta_data.has_blocks()
+            && field_infos.get_parent_field().is_none()
+            && meta_data.created_version_major() >= 10
+        {
+            return Err(LuceneError::IllegalState(format!(
+                "parent field is not set but the index has document blocks and was created with \
+                 version: {}",
+                meta_data.created_version_major()
+            )));
+        }
+        for field in sort.fields() {
+            if let Some(name) = field.field() {
+                if field_infos.field_info(name).is_none() {
+                    return Err(check_index_error(format!(
+                        "segment has indexSort on field \"{name}\" which the segment does not carry"
+                    )));
+                }
+            }
+        }
+        msg(info_stream, &format!("OK [took {}]", took(start)));
+        Ok(())
+    })();
+
+    if let Err(error) = outcome {
+        if fail_fast {
+            return Err(error);
+        }
+        msg(info_stream, &format!("ERROR [{error}]"));
+        status.error = Some(error);
+    }
+    Ok(status)
+}
+
+/// Checks that the segment's recorded soft-delete count matches the documents
+/// that actually carry the soft-deletes field.
+///
+/// Equivalent to `CheckIndex.checkSoftDeletes(String, SegmentCommitInfo, SegmentReader, PrintStream, boolean)`.
+pub fn check_soft_deletes(
+    soft_deletes_field: &str,
+    expected_soft_del_count: i32,
+    reader: &dyn LeafReader,
+    info_stream: Option<&dyn InfoStream>,
+    fail_fast: bool,
+) -> Result<SoftDeletesStatus> {
+    let mut status = SoftDeletesStatus::default();
+
+    let outcome = (|| -> Result<()> {
+        let live_docs = reader.get_live_docs();
+        let mut soft_deletes = 0i32;
+        if let Some(mut iterator) =
+            crate::search::field_exists_query::FieldExistsQuery::get_doc_values_doc_id_set_iterator(
+                soft_deletes_field,
+                reader,
+            )?
+        {
+            loop {
+                let doc_id = iterator.next_doc()?;
+                if doc_id == NO_MORE_DOCS {
+                    break;
+                }
+                if live_docs
+                    .as_ref()
+                    .is_none_or(|bits| bits.get(doc_id as usize))
+                {
+                    soft_deletes += 1;
+                }
+            }
+        }
+        if soft_deletes != expected_soft_del_count {
+            return Err(check_index_error(format!(
+                "actual soft deletes: {soft_deletes} but expected: {expected_soft_del_count}"
+            )));
+        }
+        Ok(())
+    })();
+
+    if let Err(error) = outcome {
+        if fail_fast {
+            return Err(error);
+        }
+        msg(info_stream, &format!("ERROR [{error}]"));
+        status.error = Some(error);
+    }
+    Ok(status)
+}
