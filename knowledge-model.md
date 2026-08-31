@@ -178,7 +178,7 @@ node; that label is gone, and `File` is the only file label.)
 |----------|---------|
 | `path` | Path relative to the repository root (identity). |
 | `name` | File name. |
-| `kind` | `"source"`, `"test"`, `"build"`, `"doc"`, `"config"`, `"module-descriptor"`. |
+| `kind` | `"source"`, `"test"`, `"test-fixture"`, `"build"`, `"doc"`, `"config"`, `"module-descriptor"`. `"test-fixture"` is a Java program under `tests/fixtures/` that drives real Lucene 10.5.0 to emit reference data; those 24 files carry `language: "Java"` and `crate: "java-codec-harness"`. |
 | `language` | `"Rust"` for the crate's `.rs` files; absent for Lucene and non-code files. |
 | `modulePath` | For a crate file, its Rust module path (`rucene::index::terms`) or, for an integration test, its test-crate name. |
 | `crate` | `"rucene"`, or the `[[test]]` crate name for a test file. |
@@ -356,22 +356,104 @@ implement, and to model the JPMS `module-info` descriptors.
 
 ---
 
+### `TestClass`
+
+A top-level type declared by a file of the Apache Lucene Core 10.5.0 **test**
+trees — `lucene/test-framework/src/java` (the machinery every Lucene test uses)
+or `lucene/core/src/test` (the test corpus itself). Identity is `qualifiedName`.
+
+Modelling the test side is what makes "which tests are still missing" a query
+rather than an impression, exactly as `portScope` did for the code side. The two
+trees are kept apart by `module` because they are different obligations: the
+framework is infrastructure, the corpus is coverage.
+
+| Property | Purpose |
+|----------|---------|
+| `qualifiedName` | Fully qualified Java name (identity). |
+| `name` | Simple type name. |
+| `kind` | `"class"`, `"interface"`, `"enum"`, `"record"`, `"annotation"`. |
+| `package` | Enclosing Java package. |
+| `file` | Source file path, relative to the Lucene repository root. |
+| `module` | `"lucene/test-framework"` or `"lucene/core"`. |
+| `testKind` | `"framework"` or `"unit-test"`, following `module`. |
+| `role` | What the type is, derived mechanically from its name and path — see below. |
+| `isAbstract` | Whether the declaration carries `abstract`. |
+| `testMethodCount` | Number of test methods the file declares. |
+| `ruceneCoverage` | `"covered"`, `"uncovered"`, `"subject-unported"`, `"no-subject-resolved"` — see below. |
+| `gitCommit` / `gitDate` | Provenance stamp. |
+
+#### `role` — what the type is
+
+Assigned by name and path only, never by reading the body, so that a wrong role
+is visible and correctable rather than an unauditable guess.
+
+| Value | Count | Meaning |
+|---|---|---|
+| `unit-test` | 740 | `TestX`, `XTest`, `XTests` — an actual test class. |
+| `framework-util` | 64 | Test-framework machinery with no more specific role. |
+| `base-test-case` | 41 | `BaseXTestCase` — a reusable conformance suite that a codec or directory implementation extends to inherit hundreds of tests. |
+| `mock` | 28 | Carries `Mock` in the name (`MockDirectoryWrapper`, `MockAnalyzer`). |
+| `asserting` | 23 | The assertion wrappers that check codec contracts on every call. |
+| `mock-filesystem` | 20 | `org.apache.lucene.tests.mockfile`. |
+| `test-codec` | 17 | A codec that exists only for testing. |
+| `test-case-base` | 13 | Another `…TestCase` / `…TestBase`, including `LuceneTestCase` itself. |
+| `test-helper` | 13 | A helper declared inside the core test tree. |
+| `fault-injection` | 12 | The `cranky` codecs, which fail on purpose. |
+| `annotation` | — | A JUnit or randomizedtesting annotation. |
+
+#### `ruceneCoverage` — the correspondence with Rucene
+
+| Value | Count | Meaning |
+|---|---|---|
+| `covered` | 164 | The Lucene type this test exercises is ported, and the Rust file declaring the port also declares at least one `#[test]`. A `COVERED_BY` edge names that file. |
+| `uncovered` | 259 | The type is ported but its Rust file declares no test. |
+| `subject-unported` | 21 | The type this test exercises is not ported. |
+| `no-subject-resolved` | 527 | The class name follows none of Lucene's test-naming conventions, so no subject could be derived. The framework types are nearly all here. |
+
+This is a *file-level* correspondence, and it is the strongest one available: a
+Rust test does not name the Lucene type it covers, but it lives in the file that
+declares the port of that type. `covered` therefore means "there is Rust test
+code where this Lucene test's subject lives" — **not** that the Lucene test's
+cases were ported. Nothing in the graph claims the latter, and no query should
+be read as if it did.
+
+### `TestMethod`
+
+One test method of a `TestClass` — `public void testXxx()`, or any `void` method
+carrying `@Test`. Identity is `qualifiedName` (`<class>#<method>`). 5,746 nodes.
+
+| Property | Purpose |
+|----------|---------|
+| `qualifiedName` | `<TestClass qualifiedName>#<method name>` (identity). |
+| `name` | Method name. |
+| `parentQualifiedName` | The declaring `TestClass`. |
+| `file` | Source file path. |
+| `module` | `"lucene/test-framework"` or `"lucene/core"`. |
+| `gitCommit` / `gitDate` | Provenance stamp. |
+
+Methods are attributed to the **first top-level type** of their file, which is
+the public one. That is exact for the overwhelming majority of Lucene test files
+and conservative for the rest.
+
+---
+
 ## Edge types
 
 | Edge | Meaning |
 |------|---------|
 | `CONTAINS` | `Project` → `Module`, `Module` → `Package`, `Module` → `File` (the crate's `.rs` files), `Package` → `Package`, `Package` → `Class`/`File`. |
-| `DECLARES` | `File` → `Class` (Java top-level type), `Class` → `Method`, and, for the crate, `File` → `RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn` and `RustStruct`/`RustTrait`/`RustEnum`/`RustAlias` → `RustFn` (the type declares that method). |
+| `DECLARES` | `File` → `Class` (Java top-level type), `Class` → `Method`, and, for the crate, `File` → `RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn` and `RustStruct`/`RustTrait`/`RustEnum`/`RustAlias` → `RustFn` (the type declares that method). Also `TestClass` → `TestMethod`. |
 | `NESTED_IN` | `Class` (inner type) → `Class` (enclosing top-level type). |
 | `DEPENDS_ON` | `Package` → `Package` and `Class` → `Class` on the Lucene side, both derived from `import` declarations plus same-package references; `File` → `File` on the Rucene side, derived from `use` declarations; Rucene type → Rucene type for curated dependencies, optionally carrying a `note`. Also `Task` → `Task`, mirroring the dependency `rmp` records, and `Decision` → `Task`, which a `kind: "gap"` decision uses to name the task that will close it. |
-| `EXTENDS` | `Class` → `Class` / `Class` → `Interface`. |
+| `EXTENDS` | `Class` → `Class` / `Class` → `Interface`; also `TestClass` → `TestClass`, which is how the 564 core tests reach `LuceneTestCase` and how a codec test reaches the `Base…TestCase` suite whose cases it inherits. 799 edges. |
 | `IMPLEMENTS` | `Class` → `Interface` on the Lucene side; Rucene type → `RustTrait` (an `impl Trait for Type` block, restricted to traits the crate itself declares). Also used as `Feature` → `File`/`Class`: the file or type that realises the feature — a few early syncs (including `b0e1a75`) wrote that one the other way round, as `File` → `Feature`, and those edges are still present. |
 | `PORTS` | Rucene node (`RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn`/`Component`) → Lucene `Class`. The Rust item is the port of that Lucene type. Optional `note` records that the port is partial, a placeholder, or a deliberate adaptation. Always points at the **type**, never at the Java file. |
 | `PORTS_CANDIDATE` | Rucene type → Lucene `Class`. There is exactly one Rucene type with the same simple name, so this is very probably a port that the graph has not confirmed. `evidence` says how it was derived (`"exact-name-match"`). Promote to `PORTS` once verified. |
 | `REQUIRES_PORT` | `Task` → `Class`. The task's statement names that Lucene type, so an unported type on the other end blocks the task. Derived mechanically from the task's title and its functional/technical/acceptance text, restricted to unambiguous simple names of at least four characters. |
 | `EXPORTS` / `OPENS` / `REQUIRES` / `USES` / `PROVIDES` | `Feature` (`module-info`) → `Package` / `Feature` / `Class` (JPMS and SPI declarations). |
 | `PROVIDED_BY` | `Class` (SPI interface) → `Class` (implementation). |
-| `TESTS` | `File` / `Class` → `Feature` / `Class` / Rucene type / `Component` / `Defect`. A portability test file points at the harness `Feature` it belongs to and at the Rucene types whose behaviour it pins down; where it is also the regression test for a fixed bug, it points at the `Defect` too. The origin is normally a file under `tests/`; a `src/` file is the origin when the regression test is a `#[cfg(test)]` unit test in the module itself. |
+| `TESTS` | `File` / `Class` → `Feature` / `Class` / Rucene type / `Component` / `Defect`. A portability test file points at the harness `Feature` it belongs to and at the Rucene types whose behaviour it pins down; where it is also the regression test for a fixed bug, it points at the `Defect` too. The origin is normally a file under `tests/`; a `src/` file is the origin when the regression test is a `#[cfg(test)]` unit test in the module itself. Also `TestClass` → `Class`: the `lucene/core` type a Lucene test exercises, derived from Lucene's naming convention (`TestFoo` → `Foo`, `FooTest` → `Foo`, `BaseFooTestCase` → `Foo`) and carrying `evidence: name-convention`. It is a deduction, not a fact, and the edge says so; a name matching no convention gets no edge rather than a guessed one. 444 edges. |
+| `COVERED_BY` | `TestClass` → `File`. The Rust file that declares the port of the type this Lucene test exercises, and that declares at least one `#[test]`. `evidence` is `ported-type-file-has-tests`, which is exactly what it proves — see `ruceneCoverage` above. |
 | `SPECIFIED_IN` | `Feature` → `File` (specification document). |
 | `REFERENCES` | `Project` → `Project` (Rucene references Apache Lucene Core 10.5.0), `Project` → `Feature` (the project specification), and `Feature` → `Package` (the Lucene packages a Rucene capability covers). It is **not** a port relation: two `RustEnum` → `Class` edges written this way by an early sync were converted to `PORTS` at `2855d29`, their claim verified against the `Equivalent to …` doc comments in `src/index/mod.rs`. |
 | `IMPLEMENTED_IN` | `Component`/`Task`/`Decision`/`Defect` → `File`/`Commit` (where the thing lives, landed, or was fixed). |
@@ -534,7 +616,9 @@ The loaders under `tools/kg/` rebuild the whole graph from a clean store; see
 
 ## Materialization status
 
-Counts are those measured at commit `2855d29` (2026-08-30).
+Counts are those measured at commit `2855d29` (2026-08-30), except the test-side
+labels, which were measured when the Lucene test surface was first loaded at
+`d20da7b` (2026-08-31).
 
 | Label / Edge | Status |
 |--------------|--------|
@@ -561,6 +645,10 @@ Counts are those measured at commit `2855d29` (2026-08-30).
 | `PORTS_CANDIDATE` | populated (300 name-match candidates awaiting confirmation) |
 | `REQUIRES_PORT` | populated (141 edges from 32 open tasks) |
 | `TESTS` / `SPECIFIED_IN` | populated for the portability harness and the components it validates; extended per synced commit |
+| `TestClass` | populated (971: 759 from `lucene/core/src/test`, 212 from `lucene/test-framework/src/java`), every one carrying a `role` and a `ruceneCoverage` |
+| `TestMethod` | populated (5,746: 5,188 from the core test corpus, 558 from the framework) |
+| `COVERED_BY` | populated (165 edges from a `TestClass` to the Rust file that tests its subject) |
+
 | `REFERENCES` | populated (13: `Project` → `Project`/`Feature`, and 11 `Feature` → `Package`) |
 | `IMPLEMENTED_IN` / `COMMITTED_IN` / `CLOSES_TASK` / `DELIVERS` | populated per synced commit |
 
