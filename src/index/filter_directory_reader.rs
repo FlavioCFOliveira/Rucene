@@ -6,18 +6,38 @@
 
 use std::sync::Arc;
 
+use crate::codecs::doc_values::DocValuesProducer;
+use crate::codecs::knn_vectors::KnnVectorsReader;
+use crate::codecs::norms::NormsProducer;
+use crate::codecs::points::PointsReader;
+use crate::codecs::postings::FieldsProducer;
+use crate::codecs::stored_fields::StoredFieldsReader;
+use crate::codecs::term_vectors::TermVectorsReader;
 use crate::error::{LuceneError, Result};
 use crate::index::codec_reader::CodecReader;
 use crate::index::directory_reader::DirectoryReader;
+use crate::index::doc_values::{
+    BinaryDocValues, DocValues, DocValuesSkipper, NumericDocValues, SortedDocValues,
+    SortedNumericDocValues, SortedSetDocValues,
+};
+use crate::index::field_infos::{FieldInfo, FieldInfos};
 use crate::index::filter_reader::FilterLeafReader;
 use crate::index::index_reader::{
     CacheHelper, CompositeReader, IndexReader, IndexReaderCore, StoredFields,
 };
 use crate::index::index_utilities::QueryTimeout;
 use crate::index::leaf_reader::{LeafReader, TermVectors};
+use crate::index::point_values::PointValues;
+use crate::index::stored_field_visitor::StoredFieldVisitor;
+use crate::index::terms::{Fields, Terms};
+use crate::index::vector_values::{ByteVectorValues, FloatVectorValues};
 use crate::index::{IndexCommit, Term};
+use crate::index::{IndexOptions, LeafMetaData};
+use crate::search::knn::KnnCollector;
+use crate::search::AcceptDocs;
 use crate::store::Directory;
 use crate::util::Bits;
+use std::collections::HashMap;
 
 /// Wraps each leaf of a [`DirectoryReader`] as it is opened.
 ///
@@ -433,25 +453,606 @@ impl LeafReader for ExitableFilterLeafReader {
 
 /// Turns any [`LeafReader`] into a [`CodecReader`].
 ///
-/// Equivalent to `org.apache.lucene.index.SlowCodecReaderWrapper`.
-///
-/// **Divergence from Lucene 10.5.0.** Java's wrapper synthesises a
-/// `StoredFieldsReader`, `TermVectorsReader`, `NormsProducer`,
-/// `DocValuesProducer`, `FieldsProducer`, `PointsReader` and `KnnVectorsReader`
-/// that each re-serve the leaf reader's own API, so a non-codec reader can be
-/// merged. Those seven adapters need the producer traits to be implementable
-/// outside their codec modules, which this port does not yet allow, so the
-/// wrapper only passes through a reader that already is a `CodecReader` and
-/// refuses one that is not, rather than pretending to wrap it.
+/// Equivalent to `org.apache.lucene.index.SlowCodecReaderWrapper`. Note that
+/// this can make merges slow and memory-intensive; prefer
+/// [`FilterCodecReader`](crate::index::filter_reader::FilterCodecReader) where
+/// one will do.
 pub struct SlowCodecReaderWrapper;
 
 impl SlowCodecReaderWrapper {
-    /// Returns `reader` as a codec reader.
+    /// Returns a codec-reader view of `reader`.
     ///
-    /// Equivalent to `SlowCodecReaderWrapper.wrap(LeafReader)`.
-    pub fn wrap(reader: Arc<dyn CodecReader>) -> Result<Arc<dyn CodecReader>> {
+    /// Equivalent to `SlowCodecReaderWrapper.wrap(LeafReader)`: a reader that
+    /// is already a codec reader is returned directly, and any other is checked
+    /// for integrity once and then served slowly over its own leaf-reader API.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the integrity check raises.
+    pub fn wrap(reader: Arc<dyn LeafReader>) -> Result<Arc<dyn CodecReader>> {
+        // Simulate it slowly, over the leaf-reader API.
+        reader.check_integrity()?;
+        Ok(Arc::new(SlowCodecReader::new(reader)))
+    }
+
+    /// Returns a codec-reader view of a reader that already is one.
+    ///
+    /// This is the branch Java takes with `reader instanceof CodecReader`; Rust
+    /// cannot downcast a `dyn LeafReader` to a `dyn CodecReader`, so the caller
+    /// that holds the codec reader calls this instead of
+    /// [`wrap`](Self::wrap).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the integrity check raises.
+    pub fn wrap_codec_reader(reader: Arc<dyn CodecReader>) -> Result<Arc<dyn CodecReader>> {
         reader.check_integrity()?;
         Ok(reader)
+    }
+
+    /// Equivalent to the private
+    /// `SlowCodecReaderWrapper.pointValuesToReader(LeafReader)`.
+    fn point_values_to_reader(reader: Arc<dyn LeafReader>) -> SlowPointsReader {
+        SlowPointsReader { reader }
+    }
+
+    /// Equivalent to the private
+    /// `SlowCodecReaderWrapper.readerToVectorReader(LeafReader)`.
+    fn reader_to_vector_reader(reader: Arc<dyn LeafReader>) -> SlowKnnVectorsReader {
+        SlowKnnVectorsReader { reader }
+    }
+
+    /// Equivalent to the private
+    /// `SlowCodecReaderWrapper.readerToNormsProducer(LeafReader)`.
+    fn reader_to_norms_producer(reader: Arc<dyn LeafReader>) -> SlowNormsProducer {
+        SlowNormsProducer { reader }
+    }
+
+    /// Equivalent to the private
+    /// `SlowCodecReaderWrapper.readerToDocValuesProducer(LeafReader)`.
+    fn reader_to_doc_values_producer(reader: Arc<dyn LeafReader>) -> SlowDocValuesProducer {
+        SlowDocValuesProducer { reader }
+    }
+
+    /// Equivalent to the private
+    /// `SlowCodecReaderWrapper.readerToStoredFieldsReader(LeafReader)`.
+    fn reader_to_stored_fields_reader(reader: Arc<dyn LeafReader>) -> SlowStoredFieldsReader {
+        SlowStoredFieldsReader { reader }
+    }
+
+    /// Equivalent to the private
+    /// `SlowCodecReaderWrapper.readerToTermVectorsReader(LeafReader)`.
+    fn reader_to_term_vectors_reader(reader: Arc<dyn LeafReader>) -> SlowTermVectorsReader {
+        SlowTermVectorsReader { reader }
+    }
+
+    /// Equivalent to the private
+    /// `SlowCodecReaderWrapper.readerToFieldsProducer(LeafReader)`.
+    fn reader_to_fields_producer(reader: Arc<dyn LeafReader>) -> Result<SlowFieldsProducer> {
+        let mut indexed_fields: Vec<String> = reader
+            .get_field_infos()
+            .iter()
+            .filter(|fi| fi.get_index_options() != IndexOptions::NONE)
+            .map(|fi| fi.name.clone())
+            .collect();
+        indexed_fields.sort();
+        Ok(SlowFieldsProducer {
+            reader,
+            indexed_fields,
+        })
+    }
+}
+/// A [`CodecReader`] view over an arbitrary [`LeafReader`].
+///
+/// Equivalent to the anonymous `CodecReader` `SlowCodecReaderWrapper.wrap`
+/// returns: every accessor re-serves the wrapped reader's own API, so a reader
+/// that is not a codec reader can still be merged. The integrity of the whole
+/// reader is checked once, up front, which is why each synthesised producer's
+/// `checkIntegrity` does nothing.
+#[derive(Debug)]
+pub struct SlowCodecReader {
+    reader: Arc<dyn LeafReader>,
+}
+
+impl SlowCodecReader {
+    /// Wraps `reader`, which the caller has already integrity-checked.
+    fn new(reader: Arc<dyn LeafReader>) -> Self {
+        Self { reader }
+    }
+}
+
+impl std::fmt::Display for SlowCodecReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SlowCodecReaderWrapper({:?})", self.reader)
+    }
+}
+
+impl LeafReader for SlowCodecReader {
+    fn core(&self) -> &IndexReaderCore {
+        self.reader.core()
+    }
+
+    fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+        self.reader.term_vectors()
+    }
+
+    fn num_docs(&self) -> i32 {
+        self.reader.num_docs()
+    }
+
+    fn max_doc(&self) -> i32 {
+        self.reader.max_doc()
+    }
+
+    fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+        self.reader.stored_fields()
+    }
+
+    fn do_close(&self) -> Result<()> {
+        self.reader.do_close()
+    }
+
+    fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+        self.reader.get_reader_cache_helper()
+    }
+
+    fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+        self.reader.get_core_cache_helper()
+    }
+
+    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        self.reader.terms(field)
+    }
+
+    fn get_numeric_doc_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+        self.reader.get_numeric_doc_values(field)
+    }
+
+    fn get_binary_doc_values(&self, field: &str) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        self.reader.get_binary_doc_values(field)
+    }
+
+    fn get_sorted_doc_values(&self, field: &str) -> Result<Option<Box<dyn SortedDocValues>>> {
+        self.reader.get_sorted_doc_values(field)
+    }
+
+    fn get_sorted_numeric_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        self.reader.get_sorted_numeric_doc_values(field)
+    }
+
+    fn get_sorted_set_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        self.reader.get_sorted_set_doc_values(field)
+    }
+
+    fn get_norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+        self.reader.get_norm_values(field)
+    }
+
+    fn get_doc_values_skipper(&self, field: &str) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        self.reader.get_doc_values_skipper(field)
+    }
+
+    fn get_float_vector_values(&self, field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
+        self.reader.get_float_vector_values(field)
+    }
+
+    fn get_byte_vector_values(&self, field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
+        self.reader.get_byte_vector_values(field)
+    }
+
+    fn search_nearest_vectors(
+        &self,
+        field: &str,
+        target: &[f32],
+        collector: &mut dyn KnnCollector,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<()> {
+        self.reader
+            .search_nearest_vectors(field, target, collector, accept_docs)
+    }
+
+    fn search_nearest_vectors_byte(
+        &self,
+        field: &str,
+        target: &[u8],
+        collector: &mut dyn KnnCollector,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<()> {
+        self.reader
+            .search_nearest_vectors_byte(field, target, collector, accept_docs)
+    }
+
+    fn get_field_infos(&self) -> FieldInfos {
+        self.reader.get_field_infos()
+    }
+
+    fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
+        self.reader.get_live_docs()
+    }
+
+    fn get_point_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
+        self.reader.get_point_values(field)
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        self.reader.check_integrity()
+    }
+
+    fn get_meta_data(&self) -> LeafMetaData {
+        self.reader.get_meta_data()
+    }
+}
+
+impl CodecReader for SlowCodecReader {
+    fn get_fields_reader(&self) -> Result<Option<Box<dyn StoredFieldsReader>>> {
+        Ok(Some(Box::new(
+            SlowCodecReaderWrapper::reader_to_stored_fields_reader(Arc::clone(&self.reader)),
+        )))
+    }
+
+    fn get_term_vectors_reader(&self) -> Result<Option<Box<dyn TermVectorsReader>>> {
+        Ok(Some(Box::new(
+            SlowCodecReaderWrapper::reader_to_term_vectors_reader(Arc::clone(&self.reader)),
+        )))
+    }
+
+    fn get_norms_reader(&self) -> Result<Option<Arc<dyn NormsProducer>>> {
+        Ok(Some(Arc::new(
+            SlowCodecReaderWrapper::reader_to_norms_producer(Arc::clone(&self.reader)),
+        )))
+    }
+
+    fn get_doc_values_reader(&self) -> Result<Option<Arc<dyn DocValuesProducer>>> {
+        Ok(Some(Arc::new(
+            SlowCodecReaderWrapper::reader_to_doc_values_producer(Arc::clone(&self.reader)),
+        )))
+    }
+
+    fn get_postings_reader(&self) -> Result<Option<Arc<dyn FieldsProducer>>> {
+        Ok(Some(Arc::new(
+            SlowCodecReaderWrapper::reader_to_fields_producer(Arc::clone(&self.reader))?,
+        )))
+    }
+
+    fn get_points_reader(&self) -> Result<Option<Arc<dyn PointsReader>>> {
+        Ok(Some(Arc::new(
+            SlowCodecReaderWrapper::point_values_to_reader(Arc::clone(&self.reader)),
+        )))
+    }
+
+    fn get_vector_reader(&self) -> Result<Option<Arc<dyn KnnVectorsReader>>> {
+        Ok(Some(Arc::new(
+            SlowCodecReaderWrapper::reader_to_vector_reader(Arc::clone(&self.reader)),
+        )))
+    }
+}
+
+/// The [`PointsReader`] a slow codec reader synthesises.
+///
+/// Equivalent to the anonymous reader of the private
+/// `SlowCodecReaderWrapper.pointValuesToReader(LeafReader)`.
+#[derive(Debug)]
+struct SlowPointsReader {
+    reader: Arc<dyn LeafReader>,
+}
+
+impl PointsReader for SlowPointsReader {
+    fn check_integrity(&self) -> Result<()> {
+        // The whole reader was already integrity-checked, up front.
+        Ok(())
+    }
+
+    fn get_values(&self, field: &str) -> Result<Box<dyn PointValues>> {
+        self.reader.get_point_values(field)?.ok_or_else(|| {
+            LuceneError::IllegalArgument(format!("field \"{field}\" has no point values"))
+        })
+    }
+
+    fn get_merge_instance(&self) -> Result<Box<dyn PointsReader>> {
+        Ok(Box::new(Self {
+            reader: Arc::clone(&self.reader),
+        }))
+    }
+
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// The [`KnnVectorsReader`] a slow codec reader synthesises.
+///
+/// Equivalent to the anonymous reader of the private
+/// `SlowCodecReaderWrapper.readerToVectorReader(LeafReader)`.
+#[derive(Debug)]
+struct SlowKnnVectorsReader {
+    reader: Arc<dyn LeafReader>,
+}
+
+impl KnnVectorsReader for SlowKnnVectorsReader {
+    fn check_integrity(&self) -> Result<()> {
+        // The whole reader was already integrity-checked, up front.
+        Ok(())
+    }
+
+    fn get_float_vector_values(&self, field: &str) -> Result<Box<dyn FloatVectorValues>> {
+        self.reader.get_float_vector_values(field)?.ok_or_else(|| {
+            LuceneError::IllegalArgument(format!("field \"{field}\" has no float vectors"))
+        })
+    }
+
+    fn get_byte_vector_values(&self, field: &str) -> Result<Box<dyn ByteVectorValues>> {
+        self.reader.get_byte_vector_values(field)?.ok_or_else(|| {
+            LuceneError::IllegalArgument(format!("field \"{field}\" has no byte vectors"))
+        })
+    }
+
+    fn search(
+        &self,
+        field: &str,
+        target: &[f32],
+        knn_collector: &mut dyn KnnCollector,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<()> {
+        self.reader
+            .search_nearest_vectors(field, target, knn_collector, accept_docs)
+    }
+
+    fn search_byte(
+        &self,
+        field: &str,
+        target: &[u8],
+        knn_collector: &mut dyn KnnCollector,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<()> {
+        self.reader
+            .search_nearest_vectors_byte(field, target, knn_collector, accept_docs)
+    }
+
+    fn get_merge_instance(&self) -> Result<Box<dyn KnnVectorsReader>> {
+        Ok(Box::new(Self {
+            reader: Arc::clone(&self.reader),
+        }))
+    }
+
+    fn get_off_heap_byte_size(&self, field_info: &FieldInfo) -> HashMap<String, i64> {
+        // Java unwraps the reader down to its SegmentReader and asks its own
+        // vectors reader, going through PerFieldKnnVectorsFormat when one is in
+        // the way. `as_segment_reader` is this port's unwrap, and it answers
+        // for the same reader Java reaches.
+        match self.reader.as_segment_reader() {
+            Some(segment_reader) => match segment_reader.get_vector_reader() {
+                Ok(Some(vectors_reader)) => vectors_reader.get_off_heap_byte_size(field_info),
+                _ => HashMap::new(),
+            },
+            None => HashMap::new(),
+        }
+    }
+
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// The [`NormsProducer`] a slow codec reader synthesises.
+///
+/// Equivalent to the anonymous producer of the private
+/// `SlowCodecReaderWrapper.readerToNormsProducer(LeafReader)`.
+#[derive(Debug)]
+struct SlowNormsProducer {
+    reader: Arc<dyn LeafReader>,
+}
+
+impl NormsProducer for SlowNormsProducer {
+    fn get_norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+        self.reader.get_norm_values(&field.name)?.ok_or_else(|| {
+            LuceneError::IllegalArgument(format!("field \"{}\" has no norms", field.name))
+        })
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        // The whole reader was already integrity-checked, up front.
+        Ok(())
+    }
+
+    fn get_merge_instance(&self) -> Result<Box<dyn NormsProducer>> {
+        Ok(Box::new(Self {
+            reader: Arc::clone(&self.reader),
+        }))
+    }
+
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// The [`DocValuesProducer`] a slow codec reader synthesises.
+///
+/// Equivalent to the anonymous producer of the private
+/// `SlowCodecReaderWrapper.readerToDocValuesProducer(LeafReader)`.
+#[derive(Debug)]
+struct SlowDocValuesProducer {
+    reader: Arc<dyn LeafReader>,
+}
+
+impl DocValuesProducer for SlowDocValuesProducer {
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+        Ok(self
+            .reader
+            .get_numeric_doc_values(&field.name)?
+            .unwrap_or_else(|| Box::new(DocValues::empty_numeric())))
+    }
+
+    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
+        Ok(self
+            .reader
+            .get_binary_doc_values(&field.name)?
+            .unwrap_or_else(|| Box::new(DocValues::empty_binary())))
+    }
+
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
+        Ok(self
+            .reader
+            .get_sorted_doc_values(&field.name)?
+            .unwrap_or_else(|| Box::new(DocValues::empty_sorted())))
+    }
+
+    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
+        Ok(self
+            .reader
+            .get_sorted_numeric_doc_values(&field.name)?
+            .unwrap_or_else(|| Box::new(DocValues::empty_sorted_numeric())))
+    }
+
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
+        Ok(self
+            .reader
+            .get_sorted_set_doc_values(&field.name)?
+            .unwrap_or_else(|| Box::new(DocValues::empty_sorted_set())))
+    }
+
+    fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
+        self.reader
+            .get_doc_values_skipper(&field.name)?
+            .ok_or_else(|| {
+                LuceneError::IllegalArgument(format!(
+                    "field \"{}\" has no doc-values skip index",
+                    field.name
+                ))
+            })
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        // The whole reader was already integrity-checked, up front.
+        Ok(())
+    }
+
+    fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
+        Ok(Box::new(Self {
+            reader: Arc::clone(&self.reader),
+        }))
+    }
+
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// The [`StoredFieldsReader`] a slow codec reader synthesises.
+///
+/// Equivalent to the anonymous reader of the private
+/// `SlowCodecReaderWrapper.readerToStoredFieldsReader(LeafReader)`.
+#[derive(Debug)]
+struct SlowStoredFieldsReader {
+    reader: Arc<dyn LeafReader>,
+}
+
+impl StoredFieldsReader for SlowStoredFieldsReader {
+    fn document(&self, doc_id: i32, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
+        self.reader
+            .stored_fields()?
+            .document_with_visitor(doc_id, visitor)
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        // The whole reader was already integrity-checked, up front.
+        Ok(())
+    }
+
+    fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
+        Box::new(Self {
+            reader: Arc::clone(&self.reader),
+        })
+    }
+
+    fn prefetch(&self, doc_id: i32) -> Result<()> {
+        self.reader.stored_fields()?.prefetch(doc_id)
+    }
+
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// The [`TermVectorsReader`] a slow codec reader synthesises.
+///
+/// Equivalent to the anonymous reader of the private
+/// `SlowCodecReaderWrapper.readerToTermVectorsReader(LeafReader)`.
+#[derive(Debug)]
+struct SlowTermVectorsReader {
+    reader: Arc<dyn LeafReader>,
+}
+
+impl TermVectorsReader for SlowTermVectorsReader {
+    fn check_integrity(&self) -> Result<()> {
+        // The whole reader was already integrity-checked, up front.
+        Ok(())
+    }
+
+    fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
+        Box::new(Self {
+            reader: Arc::clone(&self.reader),
+        })
+    }
+
+    fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
+        self.reader.term_vectors()?.get(doc)
+    }
+
+    fn prefetch(&self, doc_id: i32) -> Result<()> {
+        self.reader.term_vectors()?.prefetch(doc_id)
+    }
+
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// The [`FieldsProducer`] a slow codec reader synthesises.
+///
+/// Equivalent to the anonymous producer of the private
+/// `SlowCodecReaderWrapper.readerToFieldsProducer(LeafReader)`, which lists the
+/// indexed fields once, sorted, and serves `terms` straight from the reader.
+#[derive(Debug)]
+struct SlowFieldsProducer {
+    reader: Arc<dyn LeafReader>,
+    indexed_fields: Vec<String>,
+}
+
+impl Fields for SlowFieldsProducer {
+    fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        Box::new(self.indexed_fields.iter().cloned())
+    }
+
+    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        self.reader.terms(field)
+    }
+
+    fn size(&self) -> i32 {
+        self.indexed_fields.len() as i32
+    }
+}
+
+impl FieldsProducer for SlowFieldsProducer {
+    fn check_integrity(&self) -> Result<()> {
+        // The whole reader was already integrity-checked, up front.
+        Ok(())
+    }
+
+    fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
+        Ok(Box::new(Self {
+            reader: Arc::clone(&self.reader),
+            indexed_fields: self.indexed_fields.clone(),
+        }))
+    }
+
+    fn close(&mut self) -> Result<()> {
+        Ok(())
     }
 }
 
