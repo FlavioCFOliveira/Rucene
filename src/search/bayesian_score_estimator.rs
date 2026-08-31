@@ -370,4 +370,30 @@ impl JavaRandom {
     pub fn next_long(&mut self) -> i64 {
         ((self.next(32) as i64) << 32).wrapping_add(self.next(32) as i64)
     }
+
+    /// Returns the next pseudorandom `int` in `[0, bound)`.
+    ///
+    /// Equivalent to `java.util.Random.nextInt(int)`, whose rejection loop
+    /// keeps the distribution uniform for a bound that is not a power of two.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `bound` is not positive, standing in for Java's
+    /// `IllegalArgumentException`.
+    pub fn next_int(&mut self, bound: i32) -> i32 {
+        assert!(bound > 0, "bound must be positive");
+
+        // A power of two takes the high bits directly.
+        if (bound & -bound) == bound {
+            return (((bound as i64).wrapping_mul(i64::from(self.next(31)))) >> 31) as i32;
+        }
+
+        loop {
+            let bits = self.next(31);
+            let val = bits % bound;
+            if bits.wrapping_sub(val).wrapping_add(bound - 1) >= 0 {
+                return val;
+            }
+        }
+    }
 }
