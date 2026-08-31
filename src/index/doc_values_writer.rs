@@ -239,6 +239,24 @@ impl DocValuesWriter {
         }
     }
 
+    /// Returns a read-only view over the values buffered so far, for the
+    /// index sorter to compare.
+    ///
+    /// Equivalent to `DocValuesWriter.getDocValues()`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the concrete writer raises.
+    pub fn get_doc_values(&self) -> Result<Arc<dyn DocValuesProducer>> {
+        match self {
+            Self::Numeric(writer) => writer.get_doc_values(),
+            Self::Binary(writer) => writer.get_doc_values(),
+            Self::Sorted(writer) => writer.get_doc_values(),
+            Self::SortedNumeric(writer) => writer.get_doc_values(),
+            Self::SortedSet(writer) => writer.get_doc_values(),
+        }
+    }
+
     /// Hands the buffered values to `consumer`.
     ///
     /// Equivalent to `DocValuesWriter.flush(SegmentWriteState,
@@ -1091,6 +1109,31 @@ impl NumericDocValuesWriter {
     }
 }
 
+impl NumericDocValuesWriter {
+    /// Returns a read-only view over the values buffered so far.
+    ///
+    /// Equivalent to `NumericDocValuesWriter.getDocValues()`, which
+    /// `IndexingChain.maybeSortSegment` reads to order the segment before
+    /// anything is written.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's view reads the writer's live
+    /// buffers. Rust's borrow rules make a shared read-only view over buffers
+    /// the writer still owns awkward to express, so the view is taken over a
+    /// copy. The values are identical; the cost is one copy per sorted field,
+    /// paid only when the segment is index-sorted.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever materialising the document set raises.
+    pub fn get_doc_values(&self) -> Result<Arc<dyn DocValuesProducer>> {
+        Ok(Arc::new(BufferedNumericProducer::new(
+            &self.field_info,
+            &self.docs_with_field,
+            self.pending.clone(),
+        )?))
+    }
+}
+
 impl Drop for NumericDocValuesWriter {
     /// Gives back the bytes this writer charged to the shared counter.
     ///
@@ -1307,6 +1350,25 @@ impl BinaryDocValuesWriter {
         drop((docs_with_field, lengths, data));
         self.update_bytes_used();
         consumer.add_binary_field(&self.field_info, &producer)
+    }
+}
+
+impl BinaryDocValuesWriter {
+    /// Returns a read-only view over the values buffered so far.
+    ///
+    /// Equivalent to `BinaryDocValuesWriter.getDocValues()`; the same
+    /// divergence as [`NumericDocValuesWriter::get_doc_values`] applies.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever materialising the document set raises.
+    pub fn get_doc_values(&self) -> Result<Arc<dyn DocValuesProducer>> {
+        Ok(Arc::new(BufferedBinaryProducer::new(
+            &self.field_info,
+            &self.docs_with_field,
+            &self.lengths,
+            &self.data,
+        )?))
     }
 }
 
@@ -1871,7 +1933,7 @@ impl SortedDocValuesWriter {
     ///
     /// Equivalent to `SortedDocValuesWriter.finish`: `hash.sort()` yields the
     /// term ids in dictionary order, and `ordMap[termID] = ord` inverts it.
-    fn materialize_dictionary(&mut self) -> Result<Dictionary> {
+    fn materialize_dictionary(&self) -> Result<Dictionary> {
         let sorted = self.hash.sort(&self.pool);
         let mut dictionary = Vec::with_capacity(sorted.len());
         let mut ord_map = vec![0i32; sorted.len()];
@@ -1884,6 +1946,33 @@ impl SortedDocValuesWriter {
             values: dictionary,
             ord_map,
         })
+    }
+}
+
+impl SortedDocValuesWriter {
+    /// Returns a read-only view over the values buffered so far.
+    ///
+    /// Equivalent to `SortedDocValuesWriter.getDocValues()`; the same
+    /// divergence as [`NumericDocValuesWriter::get_doc_values`] applies. The
+    /// dictionary is built here as it is at flush, because the ordinals a
+    /// sorter compares are dictionary ordinals.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the dictionary raises.
+    pub fn get_doc_values(&self) -> Result<Arc<dyn DocValuesProducer>> {
+        let dictionary = self.materialize_dictionary()?;
+        let ords: Vec<i32> = self
+            .pending
+            .iter()
+            .map(|&term_id| dictionary.ord_map[term_id as usize])
+            .collect();
+        Ok(Arc::new(BufferedSortedProducer::new(
+            &self.field_info,
+            &self.docs_with_field,
+            ords,
+            dictionary.values,
+        )?))
     }
 }
 
@@ -2069,6 +2158,25 @@ impl SortedNumericDocValuesWriter {
         drop(docs_with_field);
         self.update_bytes_used();
         consumer.add_sorted_numeric_field(&self.field_info, &producer)
+    }
+}
+
+impl SortedNumericDocValuesWriter {
+    /// Returns a read-only view over the values buffered so far.
+    ///
+    /// Equivalent to `SortedNumericDocValuesWriter.getDocValues()`; the same
+    /// divergence as [`NumericDocValuesWriter::get_doc_values`] applies.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever materialising the document set raises.
+    pub fn get_doc_values(&self) -> Result<Arc<dyn DocValuesProducer>> {
+        Ok(Arc::new(BufferedSortedNumericProducer::new(
+            &self.field_info,
+            &self.docs_with_field,
+            self.pending.clone(),
+            self.pending_counts.clone(),
+        )?))
     }
 }
 
@@ -2307,7 +2415,7 @@ impl SortedSetDocValuesWriter {
 
     /// Sorts the distinct values by unsigned byte order and builds the
     /// term-id → ordinal map. Equivalent to `SortedSetDocValuesWriter.finish`.
-    fn materialize_dictionary(&mut self) -> Result<Dictionary> {
+    fn materialize_dictionary(&self) -> Result<Dictionary> {
         let sorted = self.hash.sort(&self.pool);
         let mut values = Vec::with_capacity(sorted.len());
         let mut ord_map = vec![0i32; sorted.len()];
@@ -2317,6 +2425,44 @@ impl SortedSetDocValuesWriter {
             values.push(self.pool.term_bytes(start).to_vec());
         }
         Ok(Dictionary { values, ord_map })
+    }
+}
+
+impl SortedSetDocValuesWriter {
+    /// Returns a read-only view over the values buffered so far.
+    ///
+    /// Equivalent to `SortedSetDocValuesWriter.getDocValues()`; the same
+    /// divergence as [`NumericDocValuesWriter::get_doc_values`] applies. The
+    /// document under construction is not included: Java calls `finishCurrentDoc`
+    /// before reading, and this view is taken between documents, where there is
+    /// none in flight.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the dictionary raises.
+    pub fn get_doc_values(&self) -> Result<Arc<dyn DocValuesProducer>> {
+        let dictionary = self.materialize_dictionary()?;
+        let mut ord_counts = self.pending_counts.clone().unwrap_or_default();
+        if ord_counts.is_empty() {
+            ord_counts = vec![1; self.pending.len()];
+        }
+        let mut ords: Vec<i64> = Vec::with_capacity(self.pending.len());
+        let mut cursor = 0usize;
+        for &count in &ord_counts {
+            let end = cursor + count as usize;
+            for &term_id in &self.pending[cursor..end] {
+                ords.push(i64::from(dictionary.ord_map[term_id as usize]));
+            }
+            ords[cursor..end].sort_unstable();
+            cursor = end;
+        }
+        Ok(Arc::new(BufferedSortedSetProducer::new(
+            &self.field_info,
+            &self.docs_with_field,
+            ords,
+            self.pending_counts.clone(),
+            dictionary.values,
+        )?))
     }
 }
 

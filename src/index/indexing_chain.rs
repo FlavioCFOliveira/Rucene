@@ -64,9 +64,10 @@
 
 #![deny(unsafe_code)]
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::analysis::tokenattributes::{
     BytesTermAttributeImpl, CharTermAttributeImpl, OffsetAttribute, OffsetAttributeImpl,
@@ -89,6 +90,7 @@ use crate::index::documents_writer::{
 };
 use crate::index::field_infos::FieldInfosBuilder;
 use crate::index::freq_prox_terms_writer::{FreqProxTermsWriter, InvertedToken};
+use crate::index::index_sorter::{Sorter, SorterDocMap};
 use crate::index::index_writer_config::LiveIndexWriterConfig;
 use crate::index::norms_writer::NormValuesWriter;
 use crate::index::point_values_writer::PointValuesWriter;
@@ -801,6 +803,87 @@ impl DefaultIndexingChain {
     /// (`IndexingChain.java:1375-1381`): it is the only part of
     /// `initializeFieldInfo` that can leave a half-written file behind, because
     /// it is the only part that opens one.
+    /// Returns a leaf reader over the doc values buffered so far, which is all
+    /// the index sorter has to compare at flush time.
+    ///
+    /// Equivalent to `IndexingChain.getDocValuesLeafReader()`, whose anonymous
+    /// `DocValuesLeafReader` answers each of the five doc-values kinds from the
+    /// per-field writer, and `null` for a field that either does not exist or
+    /// carries a different kind.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading a writer's buffers raises.
+    fn get_doc_values_leaf_reader(&self, max_doc: i32) -> Result<BufferedDocValuesReader> {
+        let mut producers = HashMap::new();
+        for per_field in &self.per_fields {
+            let Some(writer) = per_field.doc_values.as_ref() else {
+                continue;
+            };
+            producers.insert(
+                per_field.field_info.name.clone(),
+                (per_field.field_info.clone(), writer.get_doc_values()?),
+            );
+        }
+        Ok(BufferedDocValuesReader { max_doc, producers })
+    }
+
+    /// Returns the document map that puts this segment in the configured index
+    /// sort, or `None` when there is no sort or the documents already satisfy
+    /// it.
+    ///
+    /// Equivalent to `IndexingChain.maybeSortSegment(SegmentWriteState)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java also wraps every comparator so
+    /// that a segment holding document blocks compares each block by its parent
+    /// document, and refuses a blocked segment that names no parent field. This
+    /// port compares documents directly; the blocked case is refused outright
+    /// rather than sorted wrongly, which is the safe half of Lucene's
+    /// behaviour and never produces a differently ordered segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::UnsupportedOperation`] when the sort names a
+    /// field no [`IndexSorter`](crate::index::index_sorter::IndexSorter) can
+    /// read, and [`LuceneError::CorruptIndex`] for a blocked segment.
+    fn maybe_sort_segment(
+        &self,
+        segment_info: &SegmentInfo,
+        field_infos: &crate::index::FieldInfos,
+    ) -> Result<Option<SorterDocMap>> {
+        let index_sort = segment_info.index_sort();
+        // **Divergence from Lucene 10.5.0.** `SegmentInfo.getIndexSort()`
+        // returns `null` for an unsorted segment; this port carries a `Sort`
+        // there and encodes "unsorted" as the relevance sort, which is what
+        // `Sort::default()` builds. An empty sort means the same thing.
+        if index_sort.fields().is_empty() || *index_sort == crate::search::Sort::default() {
+            return Ok(None);
+        }
+        if segment_info.get_has_blocks() {
+            return Err(LuceneError::CorruptIndex(format!(
+                "segment {} has document blocks and uses index sorting, which this port cannot \
+                 order: the parent field is {}",
+                segment_info.name,
+                field_infos.get_parent_field().unwrap_or("not set")
+            )));
+        }
+
+        let max_doc = segment_info.max_doc()?;
+        let doc_values_reader = self.get_doc_values_leaf_reader(max_doc)?;
+        let mut comparators = Vec::with_capacity(index_sort.fields().len());
+        for sort_field in index_sort.fields() {
+            let sorter = sort_field.get_index_sorter().ok_or_else(|| {
+                LuceneError::UnsupportedOperation(format!(
+                    "Cannot sort index using sort field {sort_field:?}"
+                ))
+            })?;
+            comparators.push(sorter.get_doc_comparator(&doc_values_reader, max_doc)?);
+        }
+        // `Sorter.sort` answers `None` when the documents are already in order,
+        // which is what spares an unsorted rewrite of a segment that needs none.
+        Ok(Sorter::sort_multi(max_doc, comparators))
+    }
+
     fn get_or_add_per_field(&mut self, field_info: &FieldInfo) -> Result<usize> {
         if let Some(index) = self.per_field_index.get(&field_info.name) {
             return Ok(*index);
@@ -2088,15 +2171,18 @@ impl IndexingChain for DefaultIndexingChain {
         // `FreqProxTermsWriter.java:118`). They write different files, so only
         // the order of the calls is reproduced here.
         let max_doc = state.segment_info.max_doc()?;
+        // `maybeSortSegment` runs first, before a single file is written: every
+        // consumer below needs the map to write its column in the sorted order
+        // (`IndexingChain.java:302`).
+        let sort_map = self.maybe_sort_segment(state.segment_info, state.field_infos)?;
         self.write_norms(&write_state, max_doc)?;
         self.write_doc_values(&write_state)?;
         self.write_points(&write_state)?;
 
         // `vectorValuesConsumer.flush(state, sortMap)` runs between the points
-        // and the stored fields (`IndexingChain.java:333`). Index sorting is a
-        // separate port, so the doc map is always absent.
+        // and the stored fields (`IndexingChain.java:333`).
         if let Some(consumer) = self.vector_values_consumer.as_mut() {
-            consumer.flush(max_doc, None)?;
+            consumer.flush(max_doc, sort_map.as_ref())?;
         }
 
         if let Some(consumer) = self.stored_fields_consumer.as_mut() {
@@ -2148,7 +2234,6 @@ impl IndexingChain for DefaultIndexingChain {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
     use std::rc::Rc;
 
     use super::*;
@@ -4571,5 +4656,226 @@ mod tests {
             vec![3, 0, 1, 2, 4],
             "the stale-mask bug produced [3, 4, 0, 1, 2] here"
         );
+    }
+}
+
+/// A [`LeafReader`] over the doc values a chain has buffered but not yet
+/// written.
+///
+/// Equivalent to the anonymous `DocValuesLeafReader` that
+/// `IndexingChain.getDocValuesLeafReader()` returns. It exists so the index
+/// sorter can compare documents at flush time, before any file is written;
+/// everything that is not a doc-values column is unsupported, exactly as in
+/// Java.
+///
+/// **Divergence from Lucene 10.5.0.** Java's reader asks the per-field writer
+/// for a fresh iterator on every call. A `Box<dyn …>` cannot be handed out
+/// twice, so the views are built once and taken out on the first call for each
+/// field; the sorter reads each field once, which is what Lucene's own
+/// comparators do.
+struct BufferedDocValuesReader {
+    max_doc: i32,
+    /// The buffered producer of each field, with the field info it answers for.
+    producers: HashMap<
+        String,
+        (
+            FieldInfo,
+            Arc<dyn crate::codecs::doc_values::DocValuesProducer>,
+        ),
+    >,
+}
+
+impl std::fmt::Debug for BufferedDocValuesReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BufferedDocValuesReader")
+            .field("max_doc", &self.max_doc)
+            .finish_non_exhaustive()
+    }
+}
+
+impl crate::index::LeafReader for BufferedDocValuesReader {
+    fn core(&self) -> &crate::index::index_reader::IndexReaderCore {
+        // A buffered reader is never registered anywhere, so it needs no core
+        // state; the one held here is created once and shared.
+        static CORE: std::sync::LazyLock<crate::index::index_reader::IndexReaderCore> =
+            std::sync::LazyLock::new(crate::index::index_reader::IndexReaderCore::new);
+        &CORE
+    }
+
+    fn term_vectors(&self) -> Result<Box<dyn crate::index::TermVectors>> {
+        Err(LuceneError::UnsupportedOperation(
+            "the buffered doc-values reader has no term vectors".to_string(),
+        ))
+    }
+
+    fn num_docs(&self) -> i32 {
+        self.max_doc
+    }
+
+    fn max_doc(&self) -> i32 {
+        self.max_doc
+    }
+
+    fn stored_fields(&self) -> Result<Box<dyn crate::index::StoredFields>> {
+        Err(LuceneError::UnsupportedOperation(
+            "the buffered doc-values reader has no stored fields".to_string(),
+        ))
+    }
+
+    fn terms(&self, _field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
+        Err(LuceneError::UnsupportedOperation(
+            "the buffered doc-values reader has no terms".to_string(),
+        ))
+    }
+
+    fn get_numeric_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn crate::index::doc_values::NumericDocValues>>> {
+        let Some((info, producer)) = self.producers.get(field) else {
+            return Ok(None);
+        };
+        if info.doc_values_type != DocValuesType::NUMERIC {
+            return Ok(None);
+        }
+        Ok(Some(producer.get_numeric(info)?))
+    }
+
+    fn get_binary_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn crate::index::doc_values::BinaryDocValues>>> {
+        let Some((info, producer)) = self.producers.get(field) else {
+            return Ok(None);
+        };
+        if info.doc_values_type != DocValuesType::BINARY {
+            return Ok(None);
+        }
+        Ok(Some(producer.get_binary(info)?))
+    }
+
+    fn get_sorted_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn crate::index::doc_values::SortedDocValues>>> {
+        let Some((info, producer)) = self.producers.get(field) else {
+            return Ok(None);
+        };
+        if info.doc_values_type != DocValuesType::SORTED {
+            return Ok(None);
+        }
+        Ok(Some(producer.get_sorted(info)?))
+    }
+
+    fn get_sorted_numeric_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn crate::index::doc_values::SortedNumericDocValues>>> {
+        let Some((info, producer)) = self.producers.get(field) else {
+            return Ok(None);
+        };
+        if info.doc_values_type != DocValuesType::SORTED_NUMERIC {
+            return Ok(None);
+        }
+        Ok(Some(producer.get_sorted_numeric(info)?))
+    }
+
+    fn get_sorted_set_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn crate::index::doc_values::SortedSetDocValues>>> {
+        let Some((info, producer)) = self.producers.get(field) else {
+            return Ok(None);
+        };
+        if info.doc_values_type != DocValuesType::SORTED_SET {
+            return Ok(None);
+        }
+        Ok(Some(producer.get_sorted_set(info)?))
+    }
+
+    fn get_norm_values(
+        &self,
+        _field: &str,
+    ) -> Result<Option<Box<dyn crate::index::doc_values::NumericDocValues>>> {
+        Ok(None)
+    }
+
+    fn get_doc_values_skipper(
+        &self,
+        _field: &str,
+    ) -> Result<Option<Box<dyn crate::index::doc_values::DocValuesSkipper>>> {
+        Ok(None)
+    }
+
+    fn get_float_vector_values(
+        &self,
+        _field: &str,
+    ) -> Result<Option<Box<dyn crate::index::vector_values::FloatVectorValues>>> {
+        Ok(None)
+    }
+
+    fn get_byte_vector_values(
+        &self,
+        _field: &str,
+    ) -> Result<Option<Box<dyn crate::index::vector_values::ByteVectorValues>>> {
+        Ok(None)
+    }
+
+    fn get_field_infos(&self) -> crate::index::FieldInfos {
+        crate::index::FieldInfos::default()
+    }
+
+    fn get_live_docs(&self) -> Option<Box<dyn crate::util::Bits>> {
+        None
+    }
+
+    fn get_point_values(&self, _field: &str) -> Result<Option<Box<dyn crate::index::PointValues>>> {
+        Ok(None)
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_meta_data(&self) -> crate::index::leaf_reader::LeafMetaData {
+        crate::index::leaf_reader::LeafMetaData::new(
+            crate::util::extra::Version::LATEST.major as i32,
+            Some(crate::util::extra::Version::LATEST),
+            None,
+            false,
+        )
+        .expect("the latest version is always a valid leaf metadata version")
+    }
+
+    fn do_close(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_reader_cache_helper(&self) -> Option<Box<dyn crate::index::index_reader::CacheHelper>> {
+        None
+    }
+
+    fn get_core_cache_helper(&self) -> Option<Box<dyn crate::index::index_reader::CacheHelper>> {
+        None
+    }
+
+    fn search_nearest_vectors(
+        &self,
+        _field: &str,
+        _target: &[f32],
+        _knn_collector: &mut dyn crate::search::KnnCollector,
+        _accept_docs: &mut dyn crate::search::AcceptDocs,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn search_nearest_vectors_byte(
+        &self,
+        _field: &str,
+        _target: &[u8],
+        _knn_collector: &mut dyn crate::search::KnnCollector,
+        _accept_docs: &mut dyn crate::search::AcceptDocs,
+    ) -> Result<()> {
+        Ok(())
     }
 }
