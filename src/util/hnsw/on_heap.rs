@@ -127,6 +127,41 @@ impl OnHeapHnswGraph {
         })
     }
 
+    /// Returns the `NeighborArray` for `node` at `level`, for modification.
+    ///
+    /// Java hands out the array itself from `getNeighbors`, so a caller can
+    /// mutate it in place; Rust needs the borrow to be declared mutable, hence
+    /// the second accessor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the node or the level is
+    /// out of range, or when the node has no array at that level.
+    pub fn get_neighbors_mut(&mut self, level: i32, node: i32) -> Result<&mut NeighborArray> {
+        let node_usize = node as usize;
+        let graph_len = self.graph.len();
+        if node_usize >= graph_len {
+            return Err(LuceneError::IllegalArgument(format!(
+                "node {node} out of bounds (graph length {graph_len})"
+            )));
+        }
+        let levels = self.graph[node_usize]
+            .as_mut()
+            .ok_or_else(|| LuceneError::IllegalArgument(format!("node {node} has no levels")))?;
+        let level_usize = level as usize;
+        let num_levels = levels.len();
+        if level_usize >= num_levels {
+            return Err(LuceneError::IllegalArgument(format!(
+                "level {level} out of bounds for node {node} (has {num_levels} levels)"
+            )));
+        }
+        levels[level_usize].as_mut().ok_or_else(|| {
+            LuceneError::IllegalArgument(format!(
+                "node {node} has no neighbor array at level {level}"
+            ))
+        })
+    }
+
     /// Replaces the neighbor array for `node` at `level`.
     pub fn set_neighbors(&mut self, level: i32, node: i32, neighbors: NeighborArray) -> Result<()> {
         let node_usize = node as usize;

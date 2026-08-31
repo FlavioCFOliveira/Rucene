@@ -8,15 +8,20 @@
 use std::f32;
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::error::{LuceneError, Result};
 use crate::internal::hppc::IntHashSet;
 use crate::search::knn::KnnCollector;
+use crate::search::NO_MORE_DOCS;
+use crate::util::bit_set::FixedBits;
 use crate::util::hnsw::hnsw_lock::HnswLock;
 use crate::util::hnsw::on_heap::OnHeapHnswGraph;
 use crate::util::hnsw::scorer::{RandomVectorScorerSupplier, UpdateableRandomVectorScorer};
 use crate::util::hnsw::searcher::HnswGraphSearcher;
+use crate::util::hnsw::util::HnswUtil;
 use crate::util::hnsw::{HnswGraph, NeighborArray, NeighborQueue};
+use crate::util::{FixedBitSet, InfoStream};
 
 /// Default number of maximum connections per node on upper levels.
 pub const DEFAULT_MAX_CONN: i32 = 16;
@@ -88,7 +93,17 @@ pub struct HnswGraphBuilder {
     ///
     /// Equivalent to `HnswGraphBuilder.hnswLock`.
     pub(crate) hnsw_lock: Option<Arc<HnswLock>>,
+    /// Where the builder reports its progress.
+    ///
+    /// Equivalent to `HnswGraphBuilder.infoStream`, which defaults to
+    /// `InfoStream.getDefault()`.
+    info_stream: Arc<dyn InfoStream>,
 }
+
+/// The component name the builder logs under.
+///
+/// Equivalent to `HnswGraphBuilder.HNSW_COMPONENT`.
+pub const HNSW_COMPONENT: &str = "HNSW";
 
 impl HnswGraphBuilder {
     /// Creates a builder with a known graph size (-1 means unbounded).
@@ -143,6 +158,7 @@ impl HnswGraphBuilder {
             hnsw,
             frozen: false,
             hnsw_lock: None,
+            info_stream: Arc::new(crate::util::NoOutputInfoStream),
         })
     }
 
@@ -156,6 +172,208 @@ impl HnswGraphBuilder {
 
     pub(crate) fn finish(&mut self) {
         self.frozen = true;
+    }
+
+    /// Sets where the builder reports its progress.
+    ///
+    /// Equivalent to `HnswGraphBuilder.setInfoStream(InfoStream)`.
+    pub fn set_info_stream(&mut self, info_stream: Arc<dyn InfoStream>) {
+        self.info_stream = info_stream;
+    }
+
+    /// Logs how long the build has taken to reach `node`.
+    ///
+    /// Equivalent to the private
+    /// `HnswGraphBuilder.printGraphBuildStatus(int, long)`.
+    fn print_graph_build_status(&self, node: i32, start: Instant) {
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        self.info_stream.message(
+            HNSW_COMPONENT,
+            &format!("built {node} in {elapsed_ms:.2} ms"),
+        );
+    }
+
+    /// Repairs the graph's connectivity, level by level.
+    ///
+    /// Equivalent to the private `HnswGraphBuilder.connectComponents()`.
+    ///
+    /// Lucene 10.5.0 has the call to it commented out of `finish()`, because
+    /// connecting components can be exceptionally expensive
+    /// (<https://github.com/apache/lucene/issues/14214>); the method is kept
+    /// here for the same reason it is kept there — so that the repair can be
+    /// re-enabled without rewriting it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the graph or scoring raises.
+    pub fn connect_components(&mut self) -> Result<()> {
+        let start = Instant::now();
+        for level in 0..self.hnsw.num_levels()? {
+            if !self.connect_components_on_level(level)?
+                && self.info_stream.is_enabled(HNSW_COMPONENT)
+            {
+                self.info_stream.message(
+                    HNSW_COMPONENT,
+                    &format!("connectComponents failed on level {level}"),
+                );
+            }
+        }
+        if self.info_stream.is_enabled(HNSW_COMPONENT) {
+            self.info_stream.message(
+                HNSW_COMPONENT,
+                &format!("connectComponents {} ms", start.elapsed().as_millis()),
+            );
+        }
+        Ok(())
+    }
+
+    /// Connects every component of one level to the largest one.
+    ///
+    /// Equivalent to the private `HnswGraphBuilder.connectComponents(int)`,
+    /// which returns whether every component could be attached.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the graph or scoring raises.
+    fn connect_components_on_level(&mut self, level: i32) -> Result<bool> {
+        let mut not_fully_connected = FixedBitSet::new(self.hnsw.size().max(0) as usize);
+        let mut max_conn = self.m;
+        if level == 0 {
+            max_conn *= 2;
+        }
+        let components = HnswUtil::components(
+            &mut self.hnsw,
+            level,
+            Some(&mut not_fully_connected),
+            max_conn,
+        )?;
+        if self.info_stream.is_enabled(HNSW_COMPONENT) {
+            self.info_stream.message(
+                HNSW_COMPONENT,
+                &format!("connect {} components on level={level}", components.len()),
+            );
+        }
+        let mut result = true;
+        if components.len() > 1 {
+            // Connect the other components to the largest one.
+            let c0 = components
+                .iter()
+                .max_by_key(|c| c.size())
+                .copied()
+                .expect("INVARIANT: components is not empty");
+            if c0.start() == NO_MORE_DOCS {
+                // The component is already fully connected: no room for new
+                // connections.
+                return Ok(false);
+            }
+            // Only one extra connection is attempted per component; more and
+            // they may fill up while linking.
+            let mut beam = GraphBuilderKnnCollector::new(2);
+            for c in &components {
+                if c.start() == c0.start() && c.size() == c0.size() {
+                    continue;
+                }
+                if c.start() == NO_MORE_DOCS {
+                    continue;
+                }
+                if self.info_stream.is_enabled(HNSW_COMPONENT) {
+                    self.info_stream.message(
+                        HNSW_COMPONENT,
+                        &format!("connect component {c:?} to {c0:?}"),
+                    );
+                }
+
+                beam.clear();
+                let eps = [c0.start()];
+                self.scorer.set_scoring_ordinal(c.start())?;
+                // Find the node of the largest component closest to the
+                // lowest-numbered node of this one that still has room for a
+                // connection.
+                self.graph_searcher.search_level(
+                    &mut beam,
+                    self.scorer.as_mut(),
+                    level,
+                    &eps,
+                    &mut self.hnsw,
+                    Some(&FixedBits::new(
+                        not_fully_connected.get_bits().to_vec(),
+                        not_fully_connected.length(),
+                    )),
+                )?;
+                let mut linked = false;
+                while beam.size() > 0 {
+                    let c0node = beam.pop_node();
+                    if c0node == c.start() || !not_fully_connected.get(c0node as usize) {
+                        continue;
+                    }
+                    let score = beam.minimum_score();
+                    Self::link(
+                        &mut self.hnsw,
+                        level,
+                        c0node,
+                        c.start(),
+                        score,
+                        &mut not_fully_connected,
+                    )?;
+                    linked = true;
+                    if self.info_stream.is_enabled(HNSW_COMPONENT) {
+                        self.info_stream.message(
+                            HNSW_COMPONENT,
+                            &format!("connected ok {c0node} -> {}", c.start()),
+                        );
+                    }
+                }
+                if !linked {
+                    if self.info_stream.is_enabled(HNSW_COMPONENT) {
+                        self.info_stream
+                            .message(HNSW_COMPONENT, "not connected; no free nodes found");
+                    }
+                    result = false;
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Links two nodes, always making the forward connection, and updates
+    /// `not_fully_connected`.
+    ///
+    /// Equivalent to the private `HnswGraphBuilder.link(int, int, int, float,
+    /// FixedBitSet)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever adding a neighbour raises.
+    fn link(
+        hnsw: &mut OnHeapHnswGraph,
+        level: i32,
+        n0: i32,
+        n1: i32,
+        score: f32,
+        not_fully_connected: &mut FixedBitSet,
+    ) -> Result<()> {
+        // One must be subtracted here because the nodes array is one larger
+        // than the configured maximum number of neighbours (M or 2M). The
+        // fullness check itself was done by searching for not-full nodes.
+        let max_conn = hnsw.get_neighbors(level, n0)?.max_size() - 1;
+        debug_assert!(not_fully_connected.get(n0 as usize));
+        debug_assert!(
+            hnsw.get_neighbors(level, n0)?.size() < max_conn,
+            "node {n0} is full"
+        );
+        hnsw.get_neighbors_mut(level, n0)?
+            .add_out_of_order(n1, score)?;
+        if hnsw.get_neighbors(level, n0)?.size() == max_conn {
+            not_fully_connected.clear(n0 as usize);
+        }
+        if hnsw.get_neighbors(level, n1)?.size() < max_conn {
+            hnsw.get_neighbors_mut(level, n1)?
+                .add_out_of_order(n0, score)?;
+            if hnsw.get_neighbors(level, n1)?.size() == max_conn {
+                not_fully_connected.clear(n1 as usize);
+            }
+        }
+        Ok(())
     }
 
     /// Installs the striped locks used while several workers share this graph.
@@ -214,8 +432,22 @@ impl HnswGraphBuilder {
                 "This HnswGraphBuilder is frozen and cannot be updated".to_string(),
             ));
         }
+        let start = Instant::now();
         for node in min_ord..max_ord {
             self.add_graph_node(node)?;
+            if node % 10000 == 0 && self.info_stream.is_enabled(HNSW_COMPONENT) {
+                self.print_graph_build_status(node, start);
+            }
+        }
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        if self.info_stream.is_enabled(HNSW_COMPONENT) {
+            self.info_stream.message(
+                HNSW_COMPONENT,
+                &format!(
+                    "addVectors [{min_ord} {max_ord}): {} vectors in {elapsed_ms:.2} ms",
+                    max_ord - min_ord
+                ),
+            );
         }
         Ok(())
     }

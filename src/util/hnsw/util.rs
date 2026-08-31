@@ -47,7 +47,7 @@ impl HnswUtil {
     /// point.
     pub fn is_rooted(graph: &mut dyn HnswGraph) -> Result<bool> {
         for level in 0..graph.num_levels()? {
-            if Self::components(graph, level)?.len() > 1 {
+            if Self::components(graph, level, None, 0)?.len() > 1 {
                 return Ok(false);
             }
         }
@@ -56,14 +56,19 @@ impl HnswUtil {
 
     /// Returns the sizes of the distinct graph components on the given level.
     pub fn component_sizes(graph: &mut dyn HnswGraph, level: i32) -> Result<Vec<i32>> {
-        Ok(Self::components(graph, level)?
+        Ok(Self::components(graph, level, None, 0)?
             .into_iter()
             .map(|c| c.size())
             .collect())
     }
 
     /// Finds the connected components on a graph level.
-    pub fn components(graph: &mut dyn HnswGraph, level: i32) -> Result<Vec<Component>> {
+    pub fn components(
+        graph: &mut dyn HnswGraph,
+        level: i32,
+        mut not_fully_connected: Option<&mut FixedBitSet>,
+        max_conn: i32,
+    ) -> Result<Vec<Component>> {
         let num_levels = graph.num_levels()?;
         if level < 0 || level >= num_levels {
             return Err(crate::error::LuceneError::IllegalArgument(format!(
@@ -80,33 +85,53 @@ impl HnswUtil {
         // on the next higher level.
         if level == num_levels - 1 {
             let entry = graph.entry_node()?;
-            let component = Self::mark_rooted(graph, level, &mut connected_nodes, entry)?;
+            let component = Self::mark_rooted(
+                graph,
+                level,
+                &mut connected_nodes,
+                not_fully_connected.as_deref_mut(),
+                max_conn,
+                entry,
+            )?;
             total += component.size();
         } else {
             let mut iter = graph.get_nodes_on_level(level + 1)?;
             while iter.has_next() {
                 let entry = iter.next_int();
-                let component = Self::mark_rooted(graph, level, &mut connected_nodes, entry)?;
+                let component = Self::mark_rooted(
+                    graph,
+                    level,
+                    &mut connected_nodes,
+                    not_fully_connected.as_deref_mut(),
+                    max_conn,
+                    entry,
+                )?;
                 total += component.size();
             }
         }
 
+        // Java takes the component's representative from `notFullyConnected`
+        // when the caller supplied one — that is the node `connectComponents`
+        // can still attach a link to — and from `connectedNodes` otherwise.
+        let entry_point = match not_fully_connected.as_deref() {
+            Some(bits) => crate::util::bit_set::BitSet::next_set_bit(bits, 0),
+            None => crate::util::bit_set::BitSet::next_set_bit(&connected_nodes, 0),
+        };
         if total > 0 {
-            components.push(Component::new(
-                if level == num_levels - 1 {
-                    graph.entry_node()?
-                } else {
-                    Self::next_unvisited(graph, level, &connected_nodes)?
-                },
-                total,
-            ));
+            components.push(Component::new(entry_point, total));
         }
 
         if level == 0 {
             let mut next_clear = connected_nodes.next_clear_bit(0);
             while next_clear != NO_MORE_DOCS as usize {
-                let component =
-                    Self::mark_rooted(graph, level, &mut connected_nodes, next_clear as i32)?;
+                let component = Self::mark_rooted(
+                    graph,
+                    level,
+                    &mut connected_nodes,
+                    not_fully_connected.as_deref_mut(),
+                    max_conn,
+                    next_clear as i32,
+                )?;
                 components.push(component);
                 total += component.size();
                 next_clear = connected_nodes.next_clear_bit(component.start() as usize);
@@ -118,7 +143,14 @@ impl HnswUtil {
                 if connected_nodes.get(node as usize) {
                     continue;
                 }
-                let component = Self::mark_rooted(graph, level, &mut connected_nodes, node)?;
+                let component = Self::mark_rooted(
+                    graph,
+                    level,
+                    &mut connected_nodes,
+                    not_fully_connected.as_deref_mut(),
+                    max_conn,
+                    node,
+                )?;
                 components.push(component);
                 total += component.size();
             }
@@ -136,6 +168,8 @@ impl HnswUtil {
         graph: &mut dyn HnswGraph,
         level: i32,
         connected_nodes: &mut FixedBitSet,
+        mut not_fully_connected: Option<&mut FixedBitSet>,
+        max_conn: i32,
         entry_point: i32,
     ) -> Result<Component> {
         if connected_nodes.get(entry_point as usize) {
@@ -152,14 +186,21 @@ impl HnswUtil {
             count += 1;
             connected_nodes.set(node as usize);
             graph.seek(level, node)?;
+            let mut friend_count = 0i32;
             loop {
                 let friend = graph.next_neighbor()?;
                 if friend == NO_MORE_DOCS {
                     break;
                 }
+                friend_count += 1;
                 if !connected_nodes.get(friend as usize) && !nodes_in_stack.get(friend as usize) {
                     stack.push_back(friend);
                     nodes_in_stack.set(friend as usize);
+                }
+            }
+            if friend_count < max_conn {
+                if let Some(bits) = not_fully_connected.as_deref_mut() {
+                    bits.set(node as usize);
                 }
             }
         }
