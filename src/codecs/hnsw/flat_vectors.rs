@@ -256,37 +256,99 @@ pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
 
 /// Default on-heap buffer for a single vector field.
 ///
-/// Equivalent to the concrete field writer used by
-/// `Lucene99FlatVectorsWriter`. It buffers every added vector together with the
-/// set of documents that have a value.
+/// Equivalent to `Lucene99FlatVectorsWriter.FieldWriter`, the one concrete
+/// `FlatFieldVectorsWriter` Lucene 10.5.0 ships
+/// (`Lucene99FlatVectorsWriter.java:370-434`). It buffers every added vector
+/// together with the set of documents that have a value, and — like Java's —
+/// it carries the field's [`FieldInfo`], which it needs for the duplicate-value
+/// message and for its RAM footprint.
 #[derive(Debug, Clone)]
 pub struct DefaultFlatFieldVectorsWriter<T> {
+    field_info: FieldInfo,
     vectors: Vec<T>,
     docs_with_field_set: DocsWithFieldSet,
+    /// The last doc id added, `-1` before the first. Java keeps the same field
+    /// and compares against it to reject a second value in one document.
+    last_doc_id: i32,
     finished: bool,
 }
 
 impl<T> DefaultFlatFieldVectorsWriter<T> {
-    /// Creates a new empty field writer.
-    pub fn new() -> Self {
+    /// Creates a new empty field writer for `field_info`.
+    pub fn new(field_info: FieldInfo) -> Self {
         Self {
+            field_info,
             vectors: Vec::new(),
             docs_with_field_set: DocsWithFieldSet::new(),
+            last_doc_id: -1,
             finished: false,
         }
+    }
+
+    /// Returns the field this writer buffers.
+    pub fn field_info(&self) -> &FieldInfo {
+        &self.field_info
+    }
+
+    /// Returns the RAM this writer currently holds.
+    ///
+    /// Equivalent to `Lucene99FlatVectorsWriter.FieldWriter.ramBytesUsed()`
+    /// (`Lucene99FlatVectorsWriter.java:419-430`): a shallow size, plus the
+    /// document set, plus one array header and reference per buffered vector,
+    /// plus the vector payload itself. The shallow size is an approximation —
+    /// Java measures a JVM object layout that has no Rust counterpart — but the
+    /// terms that scale with the data are computed exactly as Java computes
+    /// them, and those are the ones that decide when a segment flushes.
+    pub fn ram_bytes_used(&self) -> i64 {
+        let shallow = RamUsageEstimator::align_object_size(
+            RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+                + 5 * RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+        );
+        if self.vectors.is_empty() {
+            return shallow;
+        }
+        let count = self.vectors.len() as i64;
+        shallow
+            + self.docs_with_field_set.ram_bytes_used()
+            + count
+                * (RamUsageEstimator::NUM_BYTES_OBJECT_REF
+                    + RamUsageEstimator::NUM_BYTES_ARRAY_HEADER)
+            + count
+                * i64::from(self.field_info.vector_dimension)
+                * i64::from(self.field_info.vector_encoding.byte_size())
     }
 }
 
 impl<T: Clone> DefaultFlatFieldVectorsWriter<T> {
     /// Adds a document with its vector value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] once [`FlatFieldVectorsWriter::finish`]
+    /// has run, and [`LuceneError::IllegalArgument`] when the same document
+    /// offers a second value for this field, or when doc ids do not increase.
     pub fn add_value(&mut self, doc_id: i32, vector_value: T) -> Result<()> {
         if self.finished {
             return Err(LuceneError::IllegalState(
-                "FlatFieldVectorsWriter is already finished".to_string(),
+                "already finished, cannot add more values".to_string(),
             ));
         }
+        // Java's guard, verbatim (`Lucene99FlatVectorsWriter.java:406-412`): a
+        // vector field is single-valued, and a document that offers two is a
+        // caller error rather than a corrupt index. `DocsWithFieldSet::add`
+        // would also reject the repeat, but with the generic out-of-order
+        // message that says nothing about which field the caller duplicated.
+        if doc_id == self.last_doc_id {
+            return Err(LuceneError::IllegalArgument(format!(
+                "VectorValuesField \"{}\" appears more than once in this document (only one value is allowed per field)",
+                self.field_info.name
+            )));
+        }
+        // Java asserts `docID > lastDocID` here, which is disabled in
+        // production; `DocsWithFieldSet::add` enforces it unconditionally.
         self.docs_with_field_set.add(doc_id)?;
         self.vectors.push(vector_value);
+        self.last_doc_id = doc_id;
         Ok(())
     }
 
@@ -294,10 +356,14 @@ impl<T: Clone> DefaultFlatFieldVectorsWriter<T> {
     pub fn add_docs_with_no_vector(&mut self, from: i32, to_exclusive: i32) -> Result<()> {
         if self.finished {
             return Err(LuceneError::IllegalState(
-                "FlatFieldVectorsWriter is already finished".to_string(),
+                "already finished, cannot add more values".to_string(),
             ));
         }
-        self.docs_with_field_set.add_range(from, to_exclusive)
+        self.docs_with_field_set.add_range(from, to_exclusive)?;
+        if to_exclusive > from {
+            self.last_doc_id = to_exclusive - 1;
+        }
+        Ok(())
     }
 }
 
@@ -310,6 +376,10 @@ impl<T: Clone + Send + Sync + 'static> KnnFieldVectorsWriter<T>
 
     fn copy_value(&self, vector_value: T) -> T {
         vector_value
+    }
+
+    fn ram_bytes_used(&self) -> i64 {
+        DefaultFlatFieldVectorsWriter::ram_bytes_used(self)
     }
 }
 
@@ -331,12 +401,6 @@ impl<T: Clone + Send + Sync + 'static> FlatFieldVectorsWriter<T>
 
     fn is_finished(&self) -> bool {
         self.finished
-    }
-}
-
-impl<T> Default for DefaultFlatFieldVectorsWriter<T> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -485,7 +549,7 @@ impl FloatVectorScorer {
 impl RandomVectorScorer for FloatVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
         let v = self.values.vector_value(node)?;
-        Ok(self.similarity_function.compare_f32(&self.query, &v))
+        self.similarity_function.compare_f32(&self.query, &v)
     }
 
     fn max_ord(&self) -> i32 {
@@ -520,7 +584,7 @@ impl ByteVectorScorer {
 impl RandomVectorScorer for ByteVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
         let v = self.values.vector_value(node)?;
-        Ok(self.similarity_function.compare_u8(&self.query, &v))
+        self.similarity_function.compare_bytes(&self.query, &v)
     }
 
     fn max_ord(&self) -> i32 {
@@ -582,7 +646,7 @@ struct UpdateableFloatVectorScorer {
 impl RandomVectorScorer for UpdateableFloatVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
         let v = self.target_vectors.vector_value(node)?;
-        Ok(self.similarity_function.compare_f32(&self.query, &v))
+        self.similarity_function.compare_f32(&self.query, &v)
     }
 
     fn max_ord(&self) -> i32 {
@@ -652,7 +716,7 @@ struct UpdateableByteVectorScorer {
 impl RandomVectorScorer for UpdateableByteVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
         let v = self.target_vectors.vector_value(node)?;
-        Ok(self.similarity_function.compare_u8(&self.query, &v))
+        self.similarity_function.compare_bytes(&self.query, &v)
     }
 
     fn max_ord(&self) -> i32 {
@@ -767,58 +831,8 @@ impl FlatVectorScorerUtil {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::Result;
-    use crate::index::vector_values::{DenseDocIndexIterator, KnnVectorValues};
+    use crate::index::vector_values::from_floats;
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
-
-    /// Simple float vector values for testing.
-    struct VecFloatVectorValues {
-        vectors: Vec<Vec<f32>>,
-        dimension: i32,
-    }
-
-    impl VecFloatVectorValues {
-        fn new(vectors: Vec<Vec<f32>>, dimension: i32) -> Self {
-            Self { vectors, dimension }
-        }
-    }
-
-    impl KnnVectorValues for VecFloatVectorValues {
-        fn dimension(&self) -> i32 {
-            self.dimension
-        }
-
-        fn size(&self) -> i32 {
-            self.vectors.len() as i32
-        }
-
-        fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-            Ok(Box::new(Self {
-                vectors: self.vectors.clone(),
-                dimension: self.dimension,
-            }))
-        }
-
-        fn encoding(&self) -> crate::index::VectorEncoding {
-            crate::index::VectorEncoding::FLOAT32
-        }
-
-        fn iterator(&self) -> Result<Box<dyn crate::index::vector_values::DocIndexIterator>> {
-            Ok(Box::new(DenseDocIndexIterator::new(self.size())))
-        }
-    }
-
-    impl FloatVectorValues for VecFloatVectorValues {
-        fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
-            if ord < 0 || ord as usize >= self.vectors.len() {
-                return Err(crate::error::LuceneError::IllegalArgument(format!(
-                    "ordinal {ord} out of range [0, {})",
-                    self.vectors.len()
-                )));
-            }
-            Ok(self.vectors[ord as usize].clone())
-        }
-    }
 
     #[test]
     fn docs_with_field_set_dense() {
@@ -870,10 +884,36 @@ mod tests {
         assert!(set.add(3).is_err());
     }
 
+    /// A minimal float-vector `FieldInfo`, which the default field writer now
+    /// needs for its duplicate-value message and its RAM footprint.
+    fn test_float_field_info(name: &str, dim: i32) -> FieldInfo {
+        FieldInfo::new_full(
+            name,
+            0,
+            false,
+            false,
+            false,
+            crate::index::IndexOptions::NONE,
+            crate::index::DocValuesType::NONE,
+            crate::index::DocValuesSkipIndexType::NONE,
+            -1,
+            std::collections::HashMap::new(),
+            0,
+            0,
+            0,
+            dim,
+            crate::index::VectorEncoding::FLOAT32,
+            VectorSimilarityFunction::EUCLIDEAN,
+            false,
+            false,
+        )
+        .expect("field info")
+    }
+
     #[test]
     fn default_flat_field_writer_buffers_vectors() {
         let mut writer: DefaultFlatFieldVectorsWriter<Vec<f32>> =
-            DefaultFlatFieldVectorsWriter::new();
+            DefaultFlatFieldVectorsWriter::new(test_float_field_info("v", 2));
         writer.add_value(0, vec![1.0, 2.0]).unwrap();
         writer.add_value(2, vec![3.0, 4.0]).unwrap();
         assert_eq!(writer.vectors().len(), 2);
@@ -890,7 +930,7 @@ mod tests {
 
     #[test]
     fn default_flat_vector_scorer_scores_float_vectors() {
-        let vectors = VecFloatVectorValues::new(
+        let vectors = from_floats(
             vec![
                 vec![1.0, 0.0, 0.0],
                 vec![0.0, 1.0, 0.0],
@@ -912,7 +952,7 @@ mod tests {
 
     #[test]
     fn default_flat_vector_scorer_supplier_updates_query() {
-        let vectors = VecFloatVectorValues::new(
+        let vectors = from_floats(
             vec![
                 vec![1.0, 0.0, 0.0],
                 vec![0.0, 1.0, 0.0],

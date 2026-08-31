@@ -11,14 +11,26 @@ use std::sync::{Arc, RwLock};
 
 use crate::codecs::Codec;
 use crate::error::{LuceneError, Result};
+use crate::index::IndexReader;
 use crate::search::Sort;
 use crate::store::Directory;
 use crate::util::string_helper::{StringHelper, ID_LENGTH};
 use crate::util::Version;
 
+pub use crate::codecs::state::{SegmentReadState, SegmentWriteState};
+
 // -----------------------------------------------------------------------------
 // SegmentInfo
 // -----------------------------------------------------------------------------
+
+/// Sentinel stored in [`SegmentInfo::max_doc`] while the document count is not
+/// known yet.
+///
+/// Lucene's `SegmentInfo` constructor accepts `-1` and only
+/// `SegmentInfo.maxDoc()` refuses to return it, because
+/// `DocumentsWriterPerThread` builds its `SegmentInfo` before it knows how many
+/// documents the segment will hold and calls `setMaxDoc` at flush time.
+pub const UNSET_MAX_DOC: i32 = -1;
 
 /// Metadata identifying a single segment.
 ///
@@ -91,9 +103,9 @@ impl SegmentInfo {
         attributes: HashMap<String, String>,
         index_sort: Sort,
     ) -> Result<Self> {
-        if max_doc < 0 {
+        if max_doc < UNSET_MAX_DOC {
             return Err(LuceneError::IllegalArgument(format!(
-                "maxDoc must be non-negative: {max_doc}"
+                "maxDoc must be non-negative or {UNSET_MAX_DOC} (not set yet): {max_doc}"
             )));
         }
         Ok(Self {
@@ -136,9 +148,9 @@ impl SegmentInfo {
         attributes: HashMap<String, String>,
         index_sort: Sort,
     ) -> Result<Self> {
-        if max_doc < 0 {
+        if max_doc < UNSET_MAX_DOC {
             return Err(LuceneError::IllegalArgument(format!(
-                "maxDoc must be non-negative: {max_doc}"
+                "maxDoc must be non-negative or {UNSET_MAX_DOC} (not set yet): {max_doc}"
             )));
         }
         Ok(Self {
@@ -596,6 +608,13 @@ impl SegmentCommitInfo {
         self.next_write_del_gen += 1;
     }
 
+    /// Sets the next available live docs file generation.
+    ///
+    /// Equivalent to `SegmentCommitInfo.setNextWriteDelGen`.
+    pub fn set_next_write_del_gen(&mut self, v: i64) {
+        self.next_write_del_gen = v;
+    }
+
     /// Returns the field infos update file generation.
     pub fn get_field_infos_gen(&self) -> i64 {
         self.field_infos_gen
@@ -618,6 +637,13 @@ impl SegmentCommitInfo {
         self.next_write_field_infos_gen += 1;
     }
 
+    /// Sets the next available field infos update generation.
+    ///
+    /// Equivalent to `SegmentCommitInfo.setNextWriteFieldInfosGen`.
+    pub fn set_next_write_field_infos_gen(&mut self, v: i64) {
+        self.next_write_field_infos_gen = v;
+    }
+
     /// Returns the doc values update file generation.
     pub fn get_doc_values_gen(&self) -> i64 {
         self.doc_values_gen
@@ -638,6 +664,13 @@ impl SegmentCommitInfo {
     /// Advances the next-write doc values generation after a failed write.
     pub fn advance_next_write_doc_values_gen(&mut self) {
         self.next_write_doc_values_gen += 1;
+    }
+
+    /// Sets the next available doc values update generation.
+    ///
+    /// Equivalent to `SegmentCommitInfo.setNextWriteDocValuesGen`.
+    pub fn set_next_write_doc_values_gen(&mut self, v: i64) {
+        self.next_write_doc_values_gen = v;
     }
 
     /// Returns the per-field doc values update files.
@@ -701,6 +734,66 @@ impl SegmentCommitInfo {
         self.size_in_bytes = -1;
         self.id = StringHelper::random_id();
     }
+
+    /// Returns all files in use by this segment commit.
+    ///
+    /// Equivalent to `SegmentCommitInfo.files()`.
+    pub fn files(&self) -> Result<HashSet<String>> {
+        let mut files = self.info.files()?;
+
+        if self.has_deletions() {
+            if let Some(codec) = self.info.codec() {
+                let mut live_docs_files = Vec::new();
+                codec.live_docs_format().files(self, &mut live_docs_files)?;
+                for file in live_docs_files {
+                    files.insert(file);
+                }
+            }
+        }
+
+        for set in self.dv_updates_files.values() {
+            for file in set {
+                files.insert(file.clone());
+            }
+        }
+
+        for file in &self.field_infos_files {
+            files.insert(file.clone());
+        }
+
+        Ok(files)
+    }
+
+    /// Returns the total size in bytes of all files for this segment without
+    /// caching the result.
+    ///
+    /// Java's `sizeInBytes()` memoises into a mutable field, which needs
+    /// `&mut self` here. A merge policy inspects segments through a shared
+    /// reference, so it uses this form instead; the value returned is identical.
+    pub fn size_in_bytes_uncached(&self) -> Result<i64> {
+        if self.size_in_bytes != -1 {
+            return Ok(self.size_in_bytes);
+        }
+        let mut sum = 0i64;
+        for file in self.files()? {
+            sum += self.info.directory.file_length(&file)?;
+        }
+        Ok(sum)
+    }
+
+    /// Returns the total size in bytes of all files for this segment.
+    ///
+    /// Equivalent to `SegmentCommitInfo.sizeInBytes()`.
+    pub fn size_in_bytes(&mut self) -> Result<i64> {
+        if self.size_in_bytes == -1 {
+            let mut sum = 0i64;
+            for file in self.files()? {
+                sum += self.info.directory.file_length(&file)?;
+            }
+            self.size_in_bytes = sum;
+        }
+        Ok(self.size_in_bytes)
+    }
 }
 
 impl Debug for SegmentCommitInfo {
@@ -718,7 +811,7 @@ impl Debug for SegmentCommitInfo {
 
 impl Clone for SegmentCommitInfo {
     fn clone(&self) -> Self {
-        let mut other = Self {
+        let other = Self {
             info: self.info.clone(),
             id: self.id,
             del_count: self.del_count,
@@ -734,8 +827,72 @@ impl Clone for SegmentCommitInfo {
             size_in_bytes: self.size_in_bytes,
             buffered_deletes_gen: self.buffered_deletes_gen,
         };
-        other.id = StringHelper::random_id();
+        // Preserve the id from the source, matching Java's
+        // SegmentCommitInfo.clone() which passes getId() to the constructor.
+        // A new id is only generated when a generation advances (see
+        // generation_advanced), not on clone.
         other
+    }
+}
+
+impl PartialEq for SegmentCommitInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.info == other.info
+            && self.del_count == other.del_count
+            && self.soft_del_count == other.soft_del_count
+            && self.del_gen == other.del_gen
+            && self.field_infos_gen == other.field_infos_gen
+            && self.doc_values_gen == other.doc_values_gen
+    }
+}
+
+impl Eq for SegmentCommitInfo {}
+
+// -----------------------------------------------------------------------------
+// SegmentOrder
+// -----------------------------------------------------------------------------
+
+/// Utility class to re-order segments within an `IndexReader` to assist in early
+/// termination.
+///
+/// Equivalent to `org.apache.lucene.index.SegmentOrder`.
+///
+/// The full numeric sorter implementation depends on `LeafReader` point and
+/// doc-values skipper APIs that are still being ported. This struct provides
+/// the public API surface and an identity fallback.
+#[derive(Debug)]
+pub struct SegmentOrder {
+    inner: Box<dyn SegmentOrderImpl>,
+}
+
+impl SegmentOrder {
+    /// Builds a sorter from the primary numeric field of `sort`.
+    ///
+    /// If the primary sort field is not numeric, this currently returns an
+    /// identity orderer (no reordering), matching the Java no-op behaviour for
+    /// non-numeric sorts.
+    pub fn from_sort(_sort: &Sort) -> Self {
+        Self {
+            inner: Box::new(IdentitySegmentOrder),
+        }
+    }
+
+    /// Produces a new view over `reader` by re-ordering the reader's segments.
+    pub fn reorder(&self, reader: Arc<dyn IndexReader>) -> Result<Arc<dyn IndexReader>> {
+        self.inner.reorder(reader)
+    }
+}
+
+trait SegmentOrderImpl: Send + Sync + Debug {
+    fn reorder(&self, reader: Arc<dyn IndexReader>) -> Result<Arc<dyn IndexReader>>;
+}
+
+#[derive(Debug)]
+struct IdentitySegmentOrder;
+
+impl SegmentOrderImpl for IdentitySegmentOrder {
+    fn reorder(&self, reader: Arc<dyn IndexReader>) -> Result<Arc<dyn IndexReader>> {
+        Ok(reader)
     }
 }
 
@@ -780,6 +937,40 @@ mod tests {
         .unwrap()
     }
 
+    /// Regression test: `DocumentsWriterPerThread` builds its `SegmentInfo`
+    /// before the document count is known and passes `UNSET_MAX_DOC`, exactly
+    /// as `DocumentsWriterPerThread`'s Java constructor passes `-1`. Rejecting
+    /// that value made the whole indexing pipeline impossible to construct.
+    #[test]
+    fn segment_info_accepts_an_unset_max_doc_and_rejects_smaller_values() {
+        let mut info = test_segment_info("_0", UNSET_MAX_DOC);
+        assert!(
+            info.max_doc().is_err(),
+            "maxDoc must stay unreadable until it is set"
+        );
+        info.set_max_doc(7).unwrap();
+        assert_eq!(info.max_doc().unwrap(), 7);
+        assert!(info.set_max_doc(8).is_err(), "maxDoc may only be set once");
+
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let error = SegmentInfo::new(
+            dir,
+            Version::LUCENE_10_5_0,
+            Some(Version::LUCENE_10_5_0),
+            "_1".to_string(),
+            -2,
+            false,
+            false,
+            test_codec(),
+            HashMap::new(),
+            StringHelper::random_id(),
+            HashMap::new(),
+            Sort::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, LuceneError::IllegalArgument(_)));
+    }
+
     #[test]
     fn segment_info_basic() {
         let info = test_segment_info("_0", 42);
@@ -817,13 +1008,18 @@ mod tests {
 
     #[test]
     fn segment_info_max_doc_validation() {
+        // `-1` is Lucene's "not set yet" sentinel and must be accepted; only
+        // values below it are illegal.
+        let info = test_segment_info("_0", UNSET_MAX_DOC);
+        assert!(info.max_doc().is_err());
+
         let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let result = SegmentInfo::new(
             dir,
             Version::LUCENE_10_5_0,
             Some(Version::LUCENE_10_5_0),
             "_0".to_string(),
-            -1,
+            -3,
             false,
             false,
             test_codec(),
@@ -853,13 +1049,14 @@ mod tests {
     }
 
     #[test]
-    fn segment_commit_info_clone_changes_id() {
+    fn segment_commit_info_clone_preserves_id() {
         let info = test_segment_info("_0", 10);
         let sci =
             SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, StringHelper::random_id()).unwrap();
         let cloned = sci.clone();
         assert_eq!(sci.get_del_count(), cloned.get_del_count());
-        assert_ne!(sci.id(), cloned.id());
+        // Java's SegmentCommitInfo.clone() preserves the id.
+        assert_eq!(sci.id(), cloned.id());
     }
 
     #[test]

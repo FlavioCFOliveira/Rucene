@@ -18,10 +18,10 @@
 
 #![deny(unsafe_code)]
 
-use std::cmp::{max, Ordering};
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use crate::codecs::codec_util::{
     check_footer, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
@@ -41,7 +41,7 @@ use crate::store::{
     IndexInput, IndexOutput,
 };
 use crate::util::attribute::AttributeSource;
-use crate::util::extra::LongValues;
+use crate::util::byte_block_pool::MAX_TERM_LENGTH;
 use crate::util::packed::{
     read_packed_ints_no_header, write_packed_ints_no_header, BlockPackedReaderIterator,
     BlockPackedWriter, DirectReader, DirectWriter, PackedInts,
@@ -220,9 +220,8 @@ impl TermVectorsFormat for Lucene90CompressingTermVectorsFormat {
         field_infos: &FieldInfos,
         context: &dyn IOContext,
     ) -> Result<Box<dyn TermVectorsReader>> {
-        let _ = directory;
         Ok(Box::new(Lucene90CompressingTermVectorsReader::new(
-            Arc::clone(&segment_info.directory),
+            directory,
             segment_info,
             &self.segment_suffix,
             field_infos,
@@ -240,9 +239,8 @@ impl TermVectorsFormat for Lucene90CompressingTermVectorsFormat {
         segment_info: &SegmentInfo,
         context: &dyn IOContext,
     ) -> Result<Box<dyn TermVectorsWriter>> {
-        let _ = directory;
         Ok(Box::new(Lucene90CompressingTermVectorsWriter::new(
-            Arc::clone(&segment_info.directory),
+            directory,
             segment_info,
             &self.segment_suffix,
             context,
@@ -424,7 +422,7 @@ pub struct Lucene90CompressingTermVectorsWriter {
 impl Lucene90CompressingTermVectorsWriter {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        directory: Arc<dyn Directory>,
+        directory: &dyn Directory,
         segment_info: &SegmentInfo,
         segment_suffix: &str,
         context: &dyn IOContext,
@@ -458,7 +456,7 @@ impl Lucene90CompressingTermVectorsWriter {
         )?;
 
         let index_writer = FieldsIndexWriter::new(
-            directory.as_ref(),
+            directory,
             &segment,
             segment_suffix,
             INDEX_EXTENSION,
@@ -616,10 +614,13 @@ impl Lucene90CompressingTermVectorsWriter {
 
         let num_distinct_fields = field_nums.len();
         debug_assert!(num_distinct_fields > 0);
-        let bits_required = max(
-            1,
-            DirectWriter::bits_required(field_nums[num_distinct_fields - 1] as i64),
-        );
+        // `PackedInts.bitsRequired`, not `DirectWriter.bitsRequired`
+        // (`Lucene90CompressingTermVectorsWriter.java:467`): the field numbers
+        // are written with `PackedInts.Format.PACKED`, which accepts any width,
+        // so Lucene stores the exact number of bits. `DirectWriter` rounds up
+        // to its own supported set — 3 becomes 4 — which still round-trips but
+        // writes different bytes and a longer file than Lucene's.
+        let bits_required = PackedInts::bits_required(field_nums[num_distinct_fields - 1] as i64)?;
         let token = (((num_distinct_fields - 1).min(0x07) as i32) << 5) | bits_required;
         self.vectors_stream.write_byte(token as u8)?;
         if num_distinct_fields > 0x07 {
@@ -1098,6 +1099,80 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
     }
 }
 
+/// Upper bound on how many packed values one byte of a term-vector chunk can
+/// possibly encode.
+///
+/// `BlockPackedWriter` spends at least one header byte per block of
+/// [`PACKED_BLOCK_SIZE`] values, and `DirectWriter`/`PackedInts` spend at least
+/// one bit per value, so no encoding this format uses can pack more than 64
+/// values into a byte. A count read off disk that exceeds the remaining bytes
+/// times this factor cannot be honest, and honouring it would mean allocating
+/// gigabytes for a file that holds none.
+const MAX_VALUES_PER_BYTE: i64 = PACKED_BLOCK_SIZE as i64;
+
+/// Returns how many bytes of `input` are still unread.
+fn remaining(input: &dyn IndexInput) -> i64 {
+    (input.length() - input.file_pointer()).max(0)
+}
+
+/// Validates a length that came off disk before it is used to allocate.
+///
+/// Java would answer a negative length with a `NegativeArraySizeException` and
+/// an absurd one with an `OutOfMemoryError`, both of which a caller can catch.
+/// Rust cannot catch an allocation failure, so a length no honest file could
+/// carry is rejected up front.
+fn checked_block_len(what: &str, length: i64, input: &dyn IndexInput) -> Result<usize> {
+    let available = remaining(input);
+    if length < 0 || length > available {
+        return Err(LuceneError::CorruptIndex(format!(
+            "{what} claims {length} bytes, but only {available} remain in the term-vectors stream"
+        )));
+    }
+    Ok(length as usize)
+}
+
+/// Validates a value count that came off disk before it is used to allocate.
+///
+/// `available` is how many bytes of the stream are still unread; it is taken
+/// before the caller borrows the stream to decode, because the reader that
+/// produces `count` holds that borrow.
+fn checked_count(what: &str, count: i64, available: i64) -> Result<usize> {
+    // Every count in this format is a Java `int`, so it is also capped there.
+    let ceiling = available
+        .saturating_mul(MAX_VALUES_PER_BYTE)
+        .min(i64::from(i32::MAX));
+    if count < 0 || count > ceiling {
+        return Err(LuceneError::CorruptIndex(format!(
+            "{what} claims {count} values, which the {available} remaining bytes of the \
+             term-vectors stream cannot encode"
+        )));
+    }
+    Ok(count as usize)
+}
+
+/// Reads `length` bytes into a fresh buffer, refusing a length the stream
+/// cannot satisfy.
+fn read_block(what: &str, input: &mut dyn IndexInput, length: i64) -> Result<Vec<u8>> {
+    let length = checked_block_len(what, length, input)?;
+    let mut bytes = vec![0u8; length];
+    input.read_bytes(&mut bytes, 0, length)?;
+    Ok(bytes)
+}
+
+/// Returns `values[index]`, reporting an index the file invented rather than
+/// panicking.
+fn at(what: &str, values: &[i32], index: i32) -> Result<i32> {
+    usize::try_from(index)
+        .ok()
+        .and_then(|index| values.get(index).copied())
+        .ok_or_else(|| {
+            LuceneError::CorruptIndex(format!(
+                "{what} index {index} is outside the {} values the chunk holds",
+                values.len()
+            ))
+        })
+}
+
 // -----------------------------------------------------------------------------
 // Reader
 // -----------------------------------------------------------------------------
@@ -1119,15 +1194,17 @@ pub struct Lucene90CompressingTermVectorsReader {
     num_dirty_chunks: i64,
     num_dirty_docs: i64,
     max_pointer: i64,
-    directory: Arc<dyn Directory>,
-    vectors_file: String,
-    io_context: Box<dyn IOContext>,
+    /// The `.tvd` file, kept open exactly as Lucene keeps `vectorsStream`.
+    /// Every read clones it, so the reader works on whatever directory it was
+    /// opened from — including a compound-file directory, whose files no
+    /// `SegmentInfo` can point at.
+    vectors_stream: Box<dyn IndexInput>,
 }
 
 impl Lucene90CompressingTermVectorsReader {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        directory: Arc<dyn Directory>,
+        directory: &dyn Directory,
         segment_info: &SegmentInfo,
         segment_suffix: &str,
         field_infos: &FieldInfos,
@@ -1167,14 +1244,14 @@ impl Lucene90CompressingTermVectorsReader {
         let chunk_size = meta_in.read_v_int()?;
 
         let index_reader = FieldsIndexReader::new(
-            Arc::clone(&directory),
+            directory,
             &segment,
             segment_suffix,
             INDEX_EXTENSION,
             INDEX_CODEC_NAME,
             id,
             meta_in.as_mut(),
-            dyn_io_context_clone(context),
+            context,
         )?;
         let max_pointer = index_reader.max_pointer();
 
@@ -1214,9 +1291,7 @@ impl Lucene90CompressingTermVectorsReader {
             num_dirty_chunks,
             num_dirty_docs,
             max_pointer,
-            directory,
-            vectors_file,
-            io_context: dyn_io_context_clone(context),
+            vectors_stream,
         })
     }
 }
@@ -1250,9 +1325,10 @@ impl Clone for Lucene90CompressingTermVectorsReader {
             num_dirty_chunks: self.num_dirty_chunks,
             num_dirty_docs: self.num_dirty_docs,
             max_pointer: self.max_pointer,
-            directory: Arc::clone(&self.directory),
-            vectors_file: self.vectors_file.clone(),
-            io_context: dyn_io_context_clone(self.io_context.as_ref()),
+            vectors_stream: self
+                .vectors_stream
+                .clone_input()
+                .expect("INVARIANT: cloning an open IndexInput never fails"),
         }
     }
 }
@@ -1261,19 +1337,29 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
     #[allow(clippy::needless_range_loop)]
     fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
         let start_pointer = self.index_reader.get_start_pointer(doc)?;
-        let mut input = self
-            .directory
-            .open_input(&self.vectors_file, self.io_context.as_ref())?;
+        let mut input = self.vectors_stream.clone_input()?;
         input.seek(start_pointer)?;
 
         let doc_base = input.read_v_int()?;
-        let chunk_docs = input.read_v_int()? >> 1;
-        if doc < doc_base || doc >= doc_base + chunk_docs || doc_base + chunk_docs > self.num_docs {
+        // Every one of these comes off disk, so the bounds check itself must
+        // not overflow: Java's `int` arithmetic wraps here and simply fails the
+        // comparison, while Rust would abort a debug build before it got that
+        // far.
+        let chunk_docs = i64::from(input.read_v_int()?) >> 1;
+        let chunk_end = i64::from(doc_base) + chunk_docs;
+        if i64::from(doc) < i64::from(doc_base)
+            || i64::from(doc) >= chunk_end
+            || chunk_end > i64::from(self.num_docs)
+        {
             return Err(LuceneError::CorruptIndex(format!(
                 "docBase={doc_base}, chunkDocs={chunk_docs}, doc={doc}, numDocs={}",
                 self.num_docs
             )));
         }
+        let chunk_docs = chunk_docs as i32;
+        // Taken before the block-packed reader borrows the stream, because
+        // every count it decodes is bounded by what is still left to read.
+        let available = remaining(input.as_ref());
         let skip;
         let num_fields;
         let total_fields;
@@ -1288,74 +1374,115 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
                 PACKED_BLOCK_SIZE,
                 chunk_docs as i64,
             )?;
-            let mut sum = 0i32;
+            // The per-document field counts are summed in 64 bits and validated
+            // once, rather than accumulated in a wrapping `int` as Java does.
+            // A corrupt block can decode to any `i64` at all, so the running
+            // sum saturates rather than overflowing; `checked_count` then
+            // rejects it.
+            let mut sum = 0i64;
             for _ in doc_base..doc {
-                sum += reader.next()? as i32;
+                sum = sum.saturating_add(reader.next()?);
             }
-            skip = sum;
-            num_fields = reader.next()? as i32;
-            sum += num_fields;
+            skip = checked_count("the fields skipped in the chunk", sum, available)? as i32;
+            let fields_here = reader.next()?;
+            num_fields =
+                checked_count("the fields of the document", fields_here, available)? as i32;
+            sum = sum.saturating_add(fields_here);
             for _ in doc + 1..doc_base + chunk_docs {
-                sum += reader.next()? as i32;
+                sum = sum.saturating_add(reader.next()?);
             }
-            total_fields = sum;
+            total_fields = checked_count("the fields of the chunk", sum, available)? as i32;
         }
 
         if num_fields == 0 {
             return Ok(None);
         }
+        if num_fields < 0 || skip < 0 || total_fields < skip + num_fields {
+            return Err(LuceneError::CorruptIndex(format!(
+                "the chunk claims {total_fields} fields but the document at {doc} needs \
+                 {skip} + {num_fields}"
+            )));
+        }
 
         // Read field numbers.
         let token = input.read_byte()? as i32;
         let bits_per_field_num = token & 0x1F;
-        let mut total_distinct_fields = token >> 5;
+        let mut total_distinct_fields = i64::from(token >> 5);
         if total_distinct_fields == 0x07 {
-            total_distinct_fields += input.read_v_int()?;
+            total_distinct_fields += i64::from(input.read_v_int()?);
         }
         total_distinct_fields += 1;
+        let total_distinct_fields = checked_count(
+            "the distinct fields of the chunk",
+            total_distinct_fields,
+            remaining(input.as_ref()),
+        )?;
         let field_nums = read_packed_ints_no_header(
             input.as_mut(),
             total_distinct_fields as i64,
             bits_per_field_num,
         )?;
         let field_nums: Vec<i32> = field_nums.into_iter().map(|v| v as i32).collect();
+        if field_nums.is_empty() {
+            return Err(LuceneError::CorruptIndex(
+                "a term-vector chunk with fields must name at least one of them".to_string(),
+            ));
+        }
 
         // Read field num offsets and flags.
-        let field_num_offs_len = input.read_v_long()? as usize;
-        let mut field_num_offs_bytes = vec![0u8; field_num_offs_len];
-        input.read_bytes(&mut field_num_offs_bytes, 0, field_num_offs_len)?;
+        let field_num_offs_len = input.read_v_long()?;
+        let field_num_offs_bytes = read_block(
+            "the field-number offsets",
+            input.as_mut(),
+            field_num_offs_len,
+        )?;
         let bits_per_off = DirectWriter::bits_required((field_nums.len() - 1) as i64);
-        let all_field_num_offs = DirectReader::new(field_num_offs_bytes, bits_per_off)?;
-        let all_field_num_offs_vec: Vec<i32> = (0..total_fields as usize)
-            .map(|i| all_field_num_offs.get(i as i64) as i32)
-            .collect();
+        let all_field_num_offs_reader = DirectReader::new(field_num_offs_bytes, bits_per_off)?;
+        let mut all_field_num_offs_vec = Vec::with_capacity(total_fields as usize);
+        for i in 0..total_fields as i64 {
+            let off = all_field_num_offs_reader.get_checked(i)?;
+            // Validated once, here, so that every later use — the flags, the
+            // per-field `charsPerTerm` — is provably in range.
+            if off < 0 || off >= field_nums.len() as i64 {
+                return Err(LuceneError::CorruptIndex(format!(
+                    "field {i} of the chunk points at field-number slot {off} of {}",
+                    field_nums.len()
+                )));
+            }
+            all_field_num_offs_vec.push(off as i32);
+        }
 
-        let field_num_offs: Vec<i32> = (0..num_fields as usize)
-            .map(|i| all_field_num_offs_vec[(skip + i as i32) as usize])
-            .collect();
+        let mut field_num_offs = Vec::with_capacity(num_fields as usize);
+        for i in 0..num_fields {
+            field_num_offs.push(at(
+                "the field-number offset",
+                &all_field_num_offs_vec,
+                skip + i,
+            )?);
+        }
 
         let flags_mode = input.read_v_int()?;
         let mut field_flags_values = vec![0i32; total_fields as usize];
         match flags_mode {
             0 => {
-                let flags_len = input.read_v_int()? as usize;
-                let mut flags_bytes = vec![0u8; flags_len];
-                input.read_bytes(&mut flags_bytes, 0, flags_len)?;
+                let flags_len = i64::from(input.read_v_int()?);
+                let flags_bytes = read_block("the per-field flags", input.as_mut(), flags_len)?;
                 let field_flags_reader = DirectReader::new(flags_bytes, FLAGS_BITS)?;
-                let distinct_flags: Vec<i32> = (0..field_nums.len() as i64)
-                    .map(|idx| field_flags_reader.get(idx) as i32)
-                    .collect();
+                let mut distinct_flags = Vec::with_capacity(field_nums.len());
+                for idx in 0..field_nums.len() as i64 {
+                    distinct_flags.push(field_flags_reader.get_checked(idx)? as i32);
+                }
                 for i in 0..total_fields as usize {
-                    field_flags_values[i] = distinct_flags[all_field_num_offs_vec[i] as usize];
+                    field_flags_values[i] =
+                        at("the flags", &distinct_flags, all_field_num_offs_vec[i])?;
                 }
             }
             1 => {
-                let flags_len = input.read_v_int()? as usize;
-                let mut flags_bytes = vec![0u8; flags_len];
-                input.read_bytes(&mut flags_bytes, 0, flags_len)?;
+                let flags_len = i64::from(input.read_v_int()?);
+                let flags_bytes = read_block("the per-instance flags", input.as_mut(), flags_len)?;
                 let all_flags = DirectReader::new(flags_bytes, FLAGS_BITS)?;
                 for i in 0..total_fields as usize {
-                    field_flags_values[i] = all_flags.get(i as i64) as i32;
+                    field_flags_values[i] = all_flags.get_checked(i as i64)? as i32;
                 }
             }
             _ => {
@@ -1364,18 +1491,35 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
                 )))
             }
         };
-        let flags = |idx: i32| field_flags_values[idx as usize];
+        let flags = |idx: i32| -> i32 {
+            // Every index handed to this closure is below `total_fields`, which
+            // is exactly the length of the vector.
+            field_flags_values[idx as usize]
+        };
 
         // Number of terms per field.
         let num_terms_bits = input.read_v_int()?;
-        let num_terms_len = input.read_v_int()? as usize;
-        let mut num_terms_bytes = vec![0u8; num_terms_len];
-        input.read_bytes(&mut num_terms_bytes, 0, num_terms_len)?;
+        let num_terms_len = i64::from(input.read_v_int()?);
+        let num_terms_bytes = read_block("the term counts", input.as_mut(), num_terms_len)?;
         let num_terms_reader = DirectReader::new(num_terms_bytes, num_terms_bits)?;
-        let mut total_terms = 0i32;
-        for i in 0..total_fields as usize {
-            total_terms += num_terms_reader.get(i as i64) as i32;
+        let mut num_terms_per_field = Vec::with_capacity(total_fields as usize);
+        let mut total_terms = 0i64;
+        for i in 0..total_fields as i64 {
+            let count = num_terms_reader.get_checked(i)?;
+            if count < 0 || count > i64::from(i32::MAX) {
+                return Err(LuceneError::CorruptIndex(format!(
+                    "field {i} of the chunk claims {count} terms"
+                )));
+            }
+            num_terms_per_field.push(count as i32);
+            total_terms = total_terms.saturating_add(count);
         }
+        let total_terms = checked_count(
+            "the terms of the chunk",
+            total_terms,
+            remaining(input.as_ref()),
+        )? as i32;
+        let num_terms_at = |index: i64| -> i64 { i64::from(num_terms_per_field[index as usize]) };
 
         // Term lengths.
         let mut all_prefix_lengths = vec![0i32; total_terms as usize];
@@ -1405,7 +1549,7 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
 
         let mut skip_terms = 0i32;
         for i in 0..skip as usize {
-            skip_terms += num_terms_reader.get(i as i64) as i32;
+            skip_terms = skip_terms.wrapping_add(num_terms_at(i as i64) as i32);
         }
         let mut prefix_lengths = vec![Vec::new(); num_fields as usize];
         let mut suffix_lengths = vec![Vec::new(); num_fields as usize];
@@ -1413,20 +1557,24 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         let mut doc_off = 0i32;
         let mut doc_len = 0i32;
         for i in 0..skip_terms as usize {
-            doc_off += all_suffix_lengths[i];
+            doc_off = doc_off.wrapping_add(all_suffix_lengths[i]);
         }
         let mut off = skip_terms;
         for i in 0..num_fields as usize {
-            let term_count = num_terms_reader.get((skip + i as i32) as i64) as usize;
+            let term_count = num_terms_at((skip + i as i32) as i64) as usize;
             prefix_lengths[i] =
                 all_prefix_lengths[off as usize..off as usize + term_count].to_vec();
             suffix_lengths[i] =
                 all_suffix_lengths[off as usize..off as usize + term_count].to_vec();
-            field_lengths[i] = suffix_lengths[i].iter().sum();
-            doc_len += field_lengths[i];
-            off += term_count as i32;
+            field_lengths[i] = suffix_lengths[i]
+                .iter()
+                .fold(0i32, |sum, value| sum.wrapping_add(*value));
+            doc_len = doc_len.wrapping_add(field_lengths[i]);
+            off = off.wrapping_add(term_count as i32);
         }
-        let chunk_total_len: i32 = all_suffix_lengths.iter().sum();
+        let chunk_total_len: i32 = all_suffix_lengths
+            .iter()
+            .fold(0i32, |sum, value| sum.wrapping_add(*value));
 
         // Term freqs.
         let mut term_freqs = vec![0i32; total_terms as usize];
@@ -1437,9 +1585,23 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
                 PACKED_BLOCK_SIZE,
                 total_terms as i64,
             )?;
+            // Java stores `1 + next()` and lets a corrupt block produce a
+            // frequency of zero or less, which then walks off the end of the
+            // position arrays. A frequency below one cannot describe a term
+            // that is in the vector at all, so it is rejected here; the total
+            // is capped for the same reason every other count is.
+            let mut total_freqs = 0i64;
             for i in 0..total_terms as usize {
-                term_freqs[i] = 1 + reader.next()? as i32;
+                let freq = reader.next()?.saturating_add(1);
+                if freq < 1 {
+                    return Err(LuceneError::CorruptIndex(format!(
+                        "term {i} of the chunk claims a frequency of {freq}"
+                    )));
+                }
+                total_freqs = total_freqs.saturating_add(freq);
+                term_freqs[i] = checked_count("a term frequency", freq, available)? as i32;
             }
+            checked_count("the term occurrences of the chunk", total_freqs, available)?;
         }
 
         // Compute total positions/offsets/payloads and positionIndex.
@@ -1450,34 +1612,34 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         let mut term_index = 0i32;
         for i in 0..total_fields as usize {
             let f = flags(i as i32);
-            let term_count = num_terms_reader.get(i as i64) as i32;
+            let term_count = num_terms_at(i as i64) as i32;
             for j in 0..term_count as usize {
                 let freq = term_freqs[(term_index + j as i32) as usize];
                 if (f & POSITIONS) != 0 {
-                    total_positions += freq;
+                    total_positions = total_positions.wrapping_add(freq);
                 }
                 if (f & OFFSETS) != 0 {
-                    total_offsets += freq;
+                    total_offsets = total_offsets.wrapping_add(freq);
                 }
                 if (f & PAYLOADS) != 0 {
-                    total_payloads += freq;
+                    total_payloads = total_payloads.wrapping_add(freq);
                 }
             }
-            term_index += term_count;
+            term_index = term_index.wrapping_add(term_count);
         }
 
         term_index = 0;
         for i in 0..skip as usize {
-            term_index += num_terms_reader.get(i as i64) as i32;
+            term_index = term_index.wrapping_add(num_terms_at(i as i64) as i32);
         }
         for i in 0..num_fields as usize {
-            let term_count = num_terms_reader.get((skip + i as i32) as i64) as usize;
+            let term_count = num_terms_at((skip + i as i32) as i64) as usize;
             position_index[i] = vec![0; term_count + 1];
             for j in 0..term_count {
                 let freq = term_freqs[(term_index + j as i32) as usize];
                 position_index[i][j + 1] = position_index[i][j] + freq;
             }
-            term_index += term_count as i32;
+            term_index = term_index.wrapping_add(term_count as i32);
         }
 
         let mut positions = vec![None; num_fields as usize];
@@ -1490,24 +1652,22 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
                 self.packed_ints_version,
                 skip,
                 num_fields,
-                &num_terms_reader,
+                &num_terms_at,
                 &term_freqs,
                 &flags,
                 POSITIONS,
                 total_positions,
                 &position_index,
             )?;
-            for i in 0..num_fields as usize {
-                if let Some(mut field_positions) = raw[i].clone() {
-                    let term_count = num_terms_reader.get((skip + i as i32) as i64) as usize;
-                    for j in 0..term_count {
-                        for k in position_index[i][j] + 1..position_index[i][j + 1] {
-                            field_positions[k as usize] += field_positions[(k - 1) as usize];
-                        }
-                    }
-                    positions[i] = Some(field_positions);
-                }
-            }
+            // The positions stay *delta-encoded* here, on purpose: the offsets
+            // block below patches every start offset with
+            // `charsPerTerm * positionDelta`, which is exactly what the writer
+            // subtracted (`Lucene90CompressingTermVectorsWriter.flushOffsets`
+            // uses `position - previousPos`). Java therefore delta-decodes the
+            // positions only after the offsets are done
+            // (`Lucene90CompressingTermVectorsReader.java:585-645`), and so
+            // does this port.
+            positions[..num_fields as usize].clone_from_slice(&raw[..num_fields as usize]);
         }
 
         if total_offsets > 0 {
@@ -1520,7 +1680,7 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
                 self.packed_ints_version,
                 skip,
                 num_fields,
-                &num_terms_reader,
+                &num_terms_at,
                 &term_freqs,
                 &flags,
                 OFFSETS,
@@ -1532,7 +1692,7 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
                 self.packed_ints_version,
                 skip,
                 num_fields,
-                &num_terms_reader,
+                &num_terms_at,
                 &term_freqs,
                 &flags,
                 OFFSETS,
@@ -1543,13 +1703,14 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
             for i in 0..num_fields as usize {
                 let f = flags(skip + i as i32);
                 if (f & OFFSETS) != 0 {
-                    let term_count = num_terms_reader.get((skip + i as i32) as i64) as usize;
+                    let term_count = num_terms_at((skip + i as i32) as i64) as usize;
                     let mut f_start_offsets = raw_start[i].clone().unwrap();
                     let f_positions = positions[i].as_ref();
                     let cpt = chars_per_term[field_num_offs[i] as usize];
                     if let Some(fp) = f_positions {
                         for j in 0..f_start_offsets.len() {
-                            f_start_offsets[j] += (cpt * fp[j] as f32) as i32;
+                            f_start_offsets[j] =
+                                f_start_offsets[j].wrapping_add((cpt * fp[j] as f32) as i32);
                         }
                     }
                     let mut f_lengths = raw_lengths[i].clone().unwrap();
@@ -1557,14 +1718,33 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
                     let f_suffix = &suffix_lengths[i];
                     for j in 0..term_count {
                         let term_length = f_prefix[j] + f_suffix[j];
-                        f_lengths[position_index[i][j] as usize] += term_length;
+                        let slot = position_index[i][j] as usize;
+                        f_lengths[slot] = f_lengths[slot].wrapping_add(term_length);
                         for k in position_index[i][j] + 1..position_index[i][j + 1] {
-                            f_start_offsets[k as usize] += f_start_offsets[(k - 1) as usize];
-                            f_lengths[k as usize] += term_length;
+                            f_start_offsets[k as usize] = f_start_offsets[k as usize]
+                                .wrapping_add(f_start_offsets[(k - 1) as usize]);
+                            f_lengths[k as usize] = f_lengths[k as usize].wrapping_add(term_length);
                         }
                     }
                     start_offsets[i] = Some(f_start_offsets);
                     lengths[i] = Some(f_lengths);
+                }
+            }
+        }
+
+        // Only now are the positions themselves delta-decoded, mirroring the
+        // `if (totalPositions > 0)` block Java runs after the offsets.
+        if total_positions > 0 {
+            for i in 0..num_fields as usize {
+                let Some(field_positions) = positions[i].as_mut() else {
+                    continue;
+                };
+                let term_count = num_terms_at((skip + i as i32) as i64) as usize;
+                for j in 0..term_count {
+                    for k in position_index[i][j] + 1..position_index[i][j + 1] {
+                        field_positions[k as usize] = field_positions[k as usize]
+                            .wrapping_add(field_positions[(k - 1) as usize]);
+                    }
                 }
             }
         }
@@ -1592,44 +1772,102 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
             let mut term_idx = 0i32;
             for i in 0..skip as usize {
                 let f = flags(i as i32);
-                let term_count = num_terms_reader.get(i as i64) as i32;
+                let term_count = num_terms_at(i as i64) as i32;
                 if (f & PAYLOADS) != 0 {
                     for j in 0..term_count as usize {
                         let freq = term_freqs[(term_idx + j as i32) as usize];
                         for _ in 0..freq {
-                            payload_off += all_payload_lengths[offset];
+                            payload_off = payload_off.wrapping_add(all_payload_lengths[offset]);
                             offset += 1;
                         }
                     }
                 }
-                term_idx += term_count;
+                term_idx = term_idx.wrapping_add(term_count);
             }
             for i in 0..num_fields as usize {
                 let f = flags(skip + i as i32);
-                let term_count = num_terms_reader.get((skip + i as i32) as i64) as i32;
+                let term_count = num_terms_at((skip + i as i32) as i64) as i32;
                 if (f & PAYLOADS) != 0 {
                     let total_freq = position_index[i][term_count as usize];
                     let mut idx = vec![0; total_freq as usize + 1];
+                    // The index is an offset into the *document's* payload
+                    // buffer, which every payload-bearing field of the document
+                    // shares, so it starts where the previous field ended —
+                    // `payloadIndex[i][0] = payloadLen` in
+                    // `Lucene90CompressingTermVectorsReader.java:675`. Starting
+                    // at zero makes the first payload of the second and every
+                    // later field of a document begin at the buffer's start and
+                    // run far too long.
+                    idx[0] = payload_len;
                     for pos_idx in 0..total_freq as usize {
                         let pl = all_payload_lengths[offset + pos_idx];
-                        payload_len += pl;
+                        payload_len = payload_len.wrapping_add(pl);
                         idx[pos_idx + 1] = payload_len;
                     }
                     offset += total_freq as usize;
                     payload_index[i] = Some(idx);
                 }
             }
-            chunk_total_payload_length = payload_off + payload_len;
+            // Java also sums the payloads of the fields that follow this
+            // document inside the same chunk
+            // (`Lucene90CompressingTermVectorsReader.java:688-700`); the total
+            // is the decompressor's `originalLength`, which bounds the buffer
+            // and is checked against what the stream actually holds. Every
+            // remaining entry belongs to a payload-bearing field of a later
+            // document, so summing the tail of the array is that third term.
+            chunk_total_payload_length = all_payload_lengths[offset..]
+                .iter()
+                .fold(payload_off.wrapping_add(payload_len), |sum, value| {
+                    sum.wrapping_add(*value)
+                });
         }
 
-        // Decompress term and payload bytes.
+        // Decompress term and payload bytes. Java asserts
+        // `offset + length <= originalLength` inside the decompressor
+        // (`CompressionMode.java`), which a production JVM skips; here the three
+        // figures are all sums of values that came off disk, so they are checked
+        // rather than trusted — a negative one would become an enormous `usize`
+        // and ask the allocator for it.
+        let original_length = i64::from(chunk_total_len) + i64::from(chunk_total_payload_length);
+        let block_offset = i64::from(doc_off) + i64::from(payload_off);
+        let block_length = i64::from(doc_len) + i64::from(payload_len);
+        // Each of the four has to be checked on its own, not only in the two
+        // sums: `doc_len` and `payload_len` slice the decompressed block apart
+        // below, so a negative one that a positive partner hides in the sum
+        // would still become an enormous `usize` there. `doc_len` is a wrapping
+        // sum of suffix lengths and `payload_len` of payload lengths, both
+        // decoded from the chunk, so both can be negative.
+        if chunk_total_len < 0
+            || chunk_total_payload_length < 0
+            || doc_off < 0
+            || doc_len < 0
+            || payload_off < 0
+            || payload_len < 0
+            || block_offset + block_length > original_length
+        {
+            return Err(LuceneError::CorruptIndex(format!(
+                "the chunk claims {doc_len} term bytes at {doc_off} and {payload_len} payload \
+                 bytes at {payload_off} of a {original_length}-byte block"
+            )));
+        }
+        // `doc_len` is a wrapping sum of `field_lengths`, so checking it alone
+        // is not enough: a negative entry hidden by a positive sibling keeps the
+        // total non-negative and reaches `TVFields::terms`, which walks the
+        // per-field prefix sum to place each field's window inside the
+        // decompressed block. The same masking pattern, one level down.
+        if let Some(bad) = field_lengths.iter().position(|length| *length < 0) {
+            return Err(LuceneError::CorruptIndex(format!(
+                "field {bad} of the document claims {} term bytes",
+                field_lengths[bad]
+            )));
+        }
         let mut suffix_bytes = BytesRef::default();
         let mut decompressor = self.decompressor.lock().unwrap();
         decompressor.decompress(
             input.as_mut(),
-            (chunk_total_len + chunk_total_payload_length) as usize,
-            (doc_off + payload_off) as usize,
-            (doc_len + payload_len) as usize,
+            original_length as usize,
+            block_offset as usize,
+            block_length as usize,
             &mut suffix_bytes,
         )?;
         let payload_len_usize = payload_len as usize;
@@ -1646,17 +1884,17 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         let mut field_term_freqs: Vec<Vec<i32>> = vec![Vec::new(); num_fields as usize];
         term_index = 0;
         for i in 0..skip as usize {
-            term_index += num_terms_reader.get(i as i64) as i32;
+            term_index = term_index.wrapping_add(num_terms_at(i as i64) as i32);
         }
         for i in 0..num_fields as usize {
             field_flags[i] = flags(skip + i as i32);
-            let term_count = num_terms_reader.get((skip + i as i32) as i64) as i32;
+            let term_count = num_terms_at((skip + i as i32) as i64) as i32;
             field_num_terms[i] = term_count;
             field_term_freqs[i] = vec![0; term_count as usize];
             for j in 0..term_count as usize {
                 field_term_freqs[i][j] = term_freqs[(term_index + j as i32) as usize];
             }
-            term_index += term_count;
+            term_index = term_index.wrapping_add(term_count);
         }
 
         Ok(Some(Box::new(TVFields {
@@ -1681,9 +1919,7 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
 
     fn check_integrity(&self) -> Result<()> {
         self.index_reader.check_integrity()?;
-        let mut input = self
-            .directory
-            .open_input(&self.vectors_file, self.io_context.as_ref())?;
+        let mut input = self.vectors_stream.clone_input()?;
         input.seek(0)?;
         checksum_entire_file(input.as_mut())?;
         Ok(())
@@ -1706,7 +1942,7 @@ impl Lucene90CompressingTermVectorsReader {
         packed_ints_version: i32,
         skip: i32,
         num_fields: i32,
-        num_terms_reader: &DirectReader,
+        num_terms_at: &dyn Fn(i64) -> i64,
         term_freqs: &[i32],
         flags: &dyn Fn(i32) -> i32,
         flag: i32,
@@ -1728,7 +1964,7 @@ impl Lucene90CompressingTermVectorsReader {
         let mut term_index = 0i32;
         for i in 0..skip as usize {
             let f = flags(i as i32);
-            let term_count = num_terms_reader.get(i as i64) as i32;
+            let term_count = num_terms_at(i as i64) as i32;
             if (f & flag) != 0 {
                 for j in 0..term_count as usize {
                     let freq = term_freqs[(term_index + j as i32) as usize];
@@ -1741,7 +1977,7 @@ impl Lucene90CompressingTermVectorsReader {
         let mut result = vec![None; num_fields as usize];
         for i in 0..num_fields as usize {
             let f = flags(skip + i as i32);
-            let term_count = num_terms_reader.get((skip + i as i32) as i64) as i32;
+            let term_count = num_terms_at((skip + i as i32) as i64) as i32;
             if (f & flag) != 0 {
                 let total_freq = position_index[i][term_count as usize];
                 result[i] = Some(all_values[offset..offset + total_freq as usize].to_vec());
@@ -1750,10 +1986,6 @@ impl Lucene90CompressingTermVectorsReader {
         }
         Ok(result)
     }
-}
-
-fn dyn_io_context_clone(ctx: &dyn IOContext) -> Box<dyn IOContext> {
-    ctx.with_hints(ctx.hints())
 }
 
 // -----------------------------------------------------------------------------
@@ -1804,11 +2036,25 @@ impl Fields for TVFields {
             return Ok(None);
         }
         let idx = idx.unwrap();
-        let mut field_off = 0i32;
+        // Every length here was decoded from the chunk. `Lucene90CompressingTermVectorsReader`
+        // bounds the field's window with
+        // `new ByteArrayDataInput(termBytes.bytes, termBytes.offset, termBytes.length)`
+        // (`:1013`) and answers a window outside the block with a catchable
+        // `ArrayIndexOutOfBoundsException`; unchecked arithmetic here would
+        // overflow instead, and a `usize` cast would then place the window
+        // anywhere at all.
+        let mut field_off = 0i64;
         for i in 0..idx {
-            field_off += self.field_lengths[i];
+            field_off += i64::from(self.field_lengths[i]);
         }
-        let field_len = self.field_lengths[idx];
+        let field_len = i64::from(self.field_lengths[idx]);
+        let block_len = self.suffix_bytes.length as i64;
+        if field_off < 0 || field_len < 0 || field_off + field_len > block_len {
+            return Err(LuceneError::CorruptIndex(format!(
+                "field {field} claims {field_len} term bytes at {field_off} of a \
+                 {block_len}-byte block"
+            )));
+        }
         Ok(Some(Box::new(TVTerms {
             num_terms: self.field_num_terms[idx],
             flags: self.field_flags[idx],
@@ -1864,7 +2110,7 @@ impl Terms for TVTerms {
             self.payload_index.clone(),
             self.payload_bytes.clone(),
             self.term_bytes.clone(),
-        )))
+        )?))
     }
 
     fn size(&self) -> i64 {
@@ -1912,7 +2158,6 @@ struct TVTermsEnum {
     payload_index: Option<Vec<i32>>,
     payload_bytes: BytesRef,
     input: ByteArrayDataInput,
-    start_pos: usize,
     term: BytesRef,
     ord: i32,
     atts: AttributeSource,
@@ -1933,11 +2178,32 @@ impl TVTermsEnum {
         payload_index: Option<Vec<i32>>,
         payload_bytes: BytesRef,
         term_bytes: BytesRef,
-    ) -> Self {
-        let start_pos = term_bytes.offset;
-        let mut input = ByteArrayDataInput::new(term_bytes.bytes);
-        input.seek(start_pos).unwrap();
-        Self {
+    ) -> Result<Self> {
+        // Java constructs the input over the field's own window —
+        // `new ByteArrayDataInput(termBytes.bytes, termBytes.offset, termBytes.length)`
+        // (`Lucene90CompressingTermVectorsReader.java:1013`). That window is not
+        // an enforced limit: `ByteArrayDataInput.readBytes` is a bare
+        // `System.arraycopy` (`ByteArrayDataInput.java:141-144`) and `limit` is
+        // consulted only by `eof()`, so a field that over-reads silently takes
+        // the next field's bytes and throws only at the backing array's end.
+        // Slicing here is therefore stricter than Java: an over-read is an
+        // `Err` rather than a neighbouring field's contents. Handing the whole
+        // decompressed block over and merely seeking into it would be looser
+        // than both, and the seek itself can fail on a window the chunk invented.
+        let end = term_bytes
+            .offset
+            .checked_add(term_bytes.length)
+            .filter(|end| *end <= term_bytes.bytes.len())
+            .ok_or_else(|| {
+                LuceneError::CorruptIndex(format!(
+                    "a field window of {} bytes at {} is outside the {}-byte decompressed block",
+                    term_bytes.length,
+                    term_bytes.offset,
+                    term_bytes.bytes.len()
+                ))
+            })?;
+        let input = ByteArrayDataInput::from_slice(&term_bytes.bytes[term_bytes.offset..end]);
+        Ok(Self {
             num_terms,
             prefix_lengths,
             suffix_lengths,
@@ -1949,16 +2215,19 @@ impl TVTermsEnum {
             payload_index,
             payload_bytes,
             input,
-            start_pos,
             term: BytesRef::with_capacity(16),
             ord: -1,
             atts: AttributeSource::new(),
-        }
+        })
     }
 
     fn reset(&mut self) {
         self.term.length = 0;
-        self.input.seek(self.start_pos).unwrap();
+        // The input now spans exactly the field's window, so rewinding it is
+        // seeking to zero, which cannot fail.
+        self.input
+            .seek(0)
+            .expect("INVARIANT: position zero is inside every window");
         self.ord = -1;
     }
 }
@@ -2073,9 +2342,39 @@ impl TermsEnum for TVTermsEnum {
             return Ok(None);
         }
         self.ord += 1;
-        let prefix = self.prefix_lengths[self.ord as usize] as usize;
-        let suffix = self.suffix_lengths[self.ord as usize] as usize;
+        // Both lengths were decoded from the chunk, so both are untrusted. Java
+        // reaches `ArrayUtil.grow(term.bytes, prefix + suffix)`, which answers a
+        // negative sum with an `IllegalArgumentException` and an absurd one with
+        // an `OutOfMemoryError` — catchable either way. In Rust a negative
+        // `i32` cast to `usize` becomes about 1.8e19 and the `resize` aborts
+        // the process, so the two lengths are validated instead.
+        let prefix = self.prefix_lengths[self.ord as usize];
+        let suffix = self.suffix_lengths[self.ord as usize];
+        if prefix < 0 || suffix < 0 {
+            return Err(LuceneError::CorruptIndex(format!(
+                "term {} of the field has a prefix of {prefix} and a suffix of {suffix}",
+                self.ord
+            )));
+        }
+        let prefix = prefix as usize;
+        let suffix = suffix as usize;
         let new_len = prefix + suffix;
+        // The term bytes are a window into the decompressed suffix block, so no
+        // term can be longer than what is left of it.
+        let available = self.input.length().saturating_sub(self.input.position());
+        if suffix > available {
+            return Err(LuceneError::CorruptIndex(format!(
+                "term {} of the field claims a {suffix}-byte suffix, but only {available} bytes \
+                 of the decompressed block remain",
+                self.ord
+            )));
+        }
+        if new_len > MAX_TERM_LENGTH {
+            return Err(LuceneError::CorruptIndex(format!(
+                "term {} of the field is {new_len} bytes, above the {MAX_TERM_LENGTH}-byte maximum",
+                self.ord
+            )));
+        }
         if self.term.bytes.len() < new_len {
             self.term.bytes.resize(new_len, 0);
         }
@@ -2188,11 +2487,33 @@ impl PostingsEnum for TVPostingsEnum {
         }
         self.i += 1;
         if let Some(ref idx) = self.payload_index {
+            // Java assigns `payload.offset`/`payload.length` straight from the
+            // index and hands back a nonsense `BytesRef`; the caller then trips
+            // an `ArrayIndexOutOfBoundsException` when it reads. Rust would
+            // instead panic inside `BytesRef::slice`, so the window is
+            // validated against the buffer here, where the error can still be
+            // reported.
+            let slot = (self.position_index + self.i) as usize;
+            let (Some(&from), Some(&to)) = (idx.get(slot), idx.get(slot + 1)) else {
+                return Err(LuceneError::CorruptIndex(format!(
+                    "payload {slot} is outside the {} entries of the payload index",
+                    idx.len()
+                )));
+            };
             let base = self.payload_bytes.offset;
-            self.payload.offset = base + idx[(self.position_index + self.i) as usize] as usize;
-            self.payload.length = (idx[(self.position_index + self.i + 1) as usize]
-                - idx[(self.position_index + self.i) as usize])
-                as usize;
+            let end = self.payload_bytes.offset + self.payload_bytes.length;
+            if from < 0
+                || to < from
+                || base + to as usize > end
+                || end > self.payload_bytes.bytes.len()
+            {
+                return Err(LuceneError::CorruptIndex(format!(
+                    "payload {slot} spans [{from}, {to}) of a {}-byte payload buffer",
+                    self.payload_bytes.length
+                )));
+            }
+            self.payload.offset = base + from as usize;
+            self.payload.length = (to - from) as usize;
         }
         match &self.positions {
             Some(positions) => Ok(positions[(self.position_index + self.i) as usize]),
@@ -2216,8 +2537,10 @@ impl PostingsEnum for TVPostingsEnum {
         }
         match (&self.start_offsets, &self.lengths) {
             (Some(offsets), Some(lengths)) => {
+                // `startOffsets[i] + lengths[i]` in Java, on `int`s decoded
+                // from the chunk: it wraps there and must wrap here.
                 offsets[(self.position_index + self.i) as usize]
-                    + lengths[(self.position_index + self.i) as usize]
+                    .wrapping_add(lengths[(self.position_index + self.i) as usize])
             }
             _ => -1,
         }
@@ -2328,7 +2651,8 @@ impl Impacts for SingleImpact {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::postings_enum::POSTINGS_ENUM_POSITIONS;
+    use crate::codecs::compound::CompoundFormat;
+    use crate::index::postings_enum::{POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS};
     use crate::index::{FieldInfo as RealFieldInfo, IndexOptions};
     use crate::search::Sort;
     use crate::store::RamDirectory;
@@ -2602,5 +2926,457 @@ mod tests {
     fn term_vectors_format_name() {
         let format = Lucene90TermVectorsFormat::new();
         assert_eq!(format.name(), "Lucene90");
+    }
+
+    // -- Regressions -------------------------------------------------------
+
+    /// One occurrence of a term: its position, its two offsets and its payload.
+    type Occurrence<'a> = (i32, i32, i32, Option<&'a [u8]>);
+
+    /// One term of a scripted field: its text and its occurrences.
+    type ScriptedTerm<'a> = (&'a str, Vec<Occurrence<'a>>);
+
+    /// One scripted field: its name, whether it stores positions, offsets and
+    /// payloads, and its terms.
+    type ScriptedField<'a> = (&'a str, bool, bool, bool, Vec<ScriptedTerm<'a>>);
+
+    /// Writes one document made of `fields`, exactly as a
+    /// `TermVectorsConsumer` would.
+    fn write_document(
+        directory: &dyn Directory,
+        segment_info: &SegmentInfo,
+        field_infos: &FieldInfos,
+        fields: &[ScriptedField<'_>],
+    ) {
+        let format = Lucene90TermVectorsFormat::new();
+        let mut writer = format
+            .vectors_writer(directory, segment_info, &*DEFAULT_IO_CONTEXT)
+            .expect("writer");
+        writer
+            .start_document(fields.len() as i32)
+            .expect("start document");
+        for (name, positions, offsets, payloads, terms) in fields {
+            writer
+                .start_field(
+                    field_infos.field_info(name).expect("field info"),
+                    terms.len() as i32,
+                    *positions,
+                    *offsets,
+                    *payloads,
+                )
+                .expect("start field");
+            for (text, occurrences) in terms {
+                writer
+                    .start_term(
+                        &BytesRef::new(text.as_bytes().to_vec()),
+                        occurrences.len() as i32,
+                    )
+                    .expect("start term");
+                for (position, start, end, payload) in occurrences {
+                    let payload = payload.map(|bytes| BytesRef::new(bytes.to_vec()));
+                    writer
+                        .add_position(*position, *start, *end, payload.as_ref())
+                        .expect("add position");
+                }
+                writer.finish_term().expect("finish term");
+            }
+            writer.finish_field().expect("finish field");
+        }
+        writer.finish_document().expect("finish document");
+        writer.finish(1).expect("finish");
+        writer.close().expect("close");
+    }
+
+    #[test]
+    fn offsets_survive_a_term_that_occurs_more_than_twice() {
+        // The writer encodes a start offset as
+        // `startOffset - previousStart - (int) (charsPerTerm * (position - previousPosition))`,
+        // so the reader has to add back `charsPerTerm * positionDelta` — the
+        // *delta*, not the decoded position. Java therefore delta-decodes the
+        // positions only after the offsets are reconstructed. Doing it earlier
+        // leaves every occurrence but the first two shifted by one
+        // `charsPerTerm`.
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let field_infos = make_field_infos();
+        let segment_info = test_segment_info(Arc::clone(&dir), "_0", 1);
+        let occurrences: Vec<(i32, i32, i32, Option<&[u8]>)> = vec![
+            (0, 0, 4, None),
+            (1, 5, 9, None),
+            (2, 10, 14, None),
+            (3, 15, 19, None),
+        ];
+        write_document(
+            dir.as_ref(),
+            &segment_info,
+            &field_infos,
+            &[("body", true, true, false, vec![("zeta", occurrences)])],
+        );
+
+        let reader = Lucene90TermVectorsFormat::new()
+            .vectors_reader(
+                dir.as_ref(),
+                &segment_info,
+                &field_infos,
+                &*DEFAULT_IO_CONTEXT,
+            )
+            .expect("reader");
+        let fields = reader.get(0).expect("get").expect("doc 0 has vectors");
+        let terms = fields.terms("body").expect("terms").expect("body terms");
+        let mut iterator = terms.iterator().expect("terms enum");
+        iterator.next().expect("next").expect("zeta");
+        let mut postings = iterator
+            .postings(None, POSTINGS_ENUM_POSITIONS)
+            .expect("postings");
+        postings.next_doc().expect("next doc");
+        let mut decoded = Vec::new();
+        for _ in 0..4 {
+            let position = postings.next_position().expect("next position");
+            decoded.push((position, postings.start_offset(), postings.end_offset()));
+        }
+        assert_eq!(
+            decoded,
+            vec![(0, 0, 4), (1, 5, 9), (2, 10, 14), (3, 15, 19)]
+        );
+    }
+
+    #[test]
+    fn the_second_payload_bearing_field_of_a_document_keeps_its_own_slice() {
+        // Every payload-bearing field of a document shares one payload buffer,
+        // so a field's payload index starts where the previous field's ended.
+        // Starting it at zero hands the second field the first field's bytes.
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let mut first = RealFieldInfo::new("aaa", 0);
+        first.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
+        let mut second = RealFieldInfo::new("bbb", 1);
+        second.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
+        let field_infos = FieldInfos::new(vec![first, second]).unwrap();
+        let segment_info = test_segment_info(Arc::clone(&dir), "_0", 1);
+
+        write_document(
+            dir.as_ref(),
+            &segment_info,
+            &field_infos,
+            &[
+                (
+                    "aaa",
+                    true,
+                    false,
+                    true,
+                    vec![("alpha", vec![(0, 0, 0, Some(&[1, 2, 3, 4]))])],
+                ),
+                (
+                    "bbb",
+                    true,
+                    false,
+                    true,
+                    vec![("alpha", vec![(0, 0, 0, Some(&[9]))])],
+                ),
+            ],
+        );
+
+        let reader = Lucene90TermVectorsFormat::new()
+            .vectors_reader(
+                dir.as_ref(),
+                &segment_info,
+                &field_infos,
+                &*DEFAULT_IO_CONTEXT,
+            )
+            .expect("reader");
+        let fields = reader.get(0).expect("get").expect("doc 0 has vectors");
+        for (name, expected) in [("aaa", &[1u8, 2, 3, 4][..]), ("bbb", &[9u8][..])] {
+            let terms = fields.terms(name).expect("terms").expect("terms");
+            let mut iterator = terms.iterator().expect("terms enum");
+            iterator.next().expect("next").expect("alpha");
+            let mut postings = iterator
+                .postings(None, POSTINGS_ENUM_PAYLOADS)
+                .expect("postings");
+            postings.next_doc().expect("next doc");
+            postings.next_position().expect("next position");
+            assert_eq!(
+                postings.get_payload().expect("payload"),
+                Some(expected),
+                "field {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_field_numbers_are_packed_with_the_exact_bit_width_lucene_uses() {
+        // `flushFieldNums` writes the field numbers with
+        // `PackedInts.Format.PACKED`, whose width is unconstrained, so Lucene
+        // stores `PackedInts.bitsRequired(maxFieldNum)`. Rounding that up to a
+        // width `DirectWriter` supports — 3 becomes 4 — still round-trips but
+        // writes bytes Lucene never would.
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let infos: Vec<RealFieldInfo> = (0..6)
+            .map(|number| {
+                let mut info = RealFieldInfo::new(format!("f{number}"), number);
+                info.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
+                info
+            })
+            .collect();
+        let field_infos = FieldInfos::new(infos).unwrap();
+        let segment_info = test_segment_info(Arc::clone(&dir), "_0", 1);
+
+        let fields: Vec<ScriptedField<'_>> = vec![
+            (
+                "f0",
+                false,
+                false,
+                false,
+                vec![("t", vec![(0, 0, 0, None)])],
+            ),
+            (
+                "f1",
+                false,
+                false,
+                false,
+                vec![("t", vec![(0, 0, 0, None)])],
+            ),
+            (
+                "f2",
+                false,
+                false,
+                false,
+                vec![("t", vec![(0, 0, 0, None)])],
+            ),
+            (
+                "f3",
+                false,
+                false,
+                false,
+                vec![("t", vec![(0, 0, 0, None)])],
+            ),
+            (
+                "f4",
+                false,
+                false,
+                false,
+                vec![("t", vec![(0, 0, 0, None)])],
+            ),
+            (
+                "f5",
+                false,
+                false,
+                false,
+                vec![("t", vec![(0, 0, 0, None)])],
+            ),
+        ];
+        write_document(dir.as_ref(), &segment_info, &field_infos, &fields);
+
+        let mut input = dir
+            .open_input("_0.tvd", &*DEFAULT_IO_CONTEXT)
+            .expect("open .tvd");
+        let mut header = vec![0u8; 53];
+        input.read_bytes(&mut header, 0, 53).expect("read header");
+        // The index header is 4 magic bytes, the codec name as a
+        // length-prefixed string, a four-byte version, the sixteen-byte segment
+        // id and an empty suffix: 4 + 1 + 23 + 4 + 16 + 1 = 49 bytes. The chunk
+        // then opens with `docBase`, `(chunkDocs << 1) | dirty` and, for a
+        // single-document chunk, the field count — one byte each.
+        let token = header[49 + 3];
+        assert_eq!(
+            token, 0xA3,
+            "the token packs (numDistinctFields - 1) in its top three bits and \\
+             PackedInts.bitsRequired(5) = 3 in its low five, so it must be 0xA3"
+        );
+    }
+
+    #[test]
+    fn a_document_reads_its_payloads_when_a_later_document_of_the_chunk_has_some() {
+        // The decompressor is told the *chunk's* total length, which includes
+        // the payload bytes of every document of the chunk — including the ones
+        // after the requested document
+        // (`Lucene90CompressingTermVectorsReader.java:688-700`). Leaving that
+        // third term out understates the buffer the codec is allowed to
+        // produce.
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let mut body = RealFieldInfo::new("body", 0);
+        body.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
+        let field_infos = FieldInfos::new(vec![body]).unwrap();
+        let segment_info = test_segment_info(Arc::clone(&dir), "_0", 2);
+
+        for mode in [CompressionMode::FAST, CompressionMode::HIGH_COMPRESSION] {
+            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let format = Lucene90CompressingTermVectorsFormat::new(
+                VECTORS_CODEC_NAME,
+                "",
+                mode,
+                1 << 12,
+                128,
+                10,
+            )
+            .unwrap();
+            {
+                let mut writer = format
+                    .vectors_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                    .unwrap();
+                for doc in 0..2u8 {
+                    writer.start_document(1).unwrap();
+                    writer
+                        .start_field(
+                            field_infos.field_info("body").unwrap(),
+                            1,
+                            true,
+                            false,
+                            true,
+                        )
+                        .unwrap();
+                    writer
+                        .start_term(&BytesRef::new(b"alpha".to_vec()), 1)
+                        .unwrap();
+                    let payload = BytesRef::new(vec![doc; 32]);
+                    writer.add_position(0, 0, 0, Some(&payload)).unwrap();
+                    writer.finish_term().unwrap();
+                    writer.finish_field().unwrap();
+                    writer.finish_document().unwrap();
+                }
+                writer.finish(2).unwrap();
+                writer.close().unwrap();
+            }
+
+            let reader = format
+                .vectors_reader(
+                    dir.as_ref(),
+                    &segment_info,
+                    &field_infos,
+                    &*DEFAULT_IO_CONTEXT,
+                )
+                .unwrap();
+            for doc in 0..2u8 {
+                let fields = reader
+                    .get(doc as i32)
+                    .unwrap_or_else(|error| panic!("{mode} doc {doc}: {error}"))
+                    .expect("vectors");
+                let terms = fields.terms("body").unwrap().expect("body terms");
+                let mut iterator = terms.iterator().unwrap();
+                iterator.next().unwrap().expect("alpha");
+                let mut postings = iterator.postings(None, POSTINGS_ENUM_PAYLOADS).unwrap();
+                postings.next_doc().unwrap();
+                postings.next_position().unwrap();
+                assert_eq!(
+                    postings.get_payload().unwrap(),
+                    Some(&vec![doc; 32][..]),
+                    "{mode} doc {doc}"
+                );
+            }
+        }
+    }
+
+    // -- The directory the reader is handed ---------------------------------
+
+    /// Writes one document's term vector into `directory` and returns the field
+    /// infos the reader needs.
+    fn write_one_document(directory: &dyn Directory, segment_info: &SegmentInfo) -> FieldInfos {
+        let field_infos = make_field_infos();
+        let format = Lucene90TermVectorsFormat::new();
+        let mut writer = format
+            .vectors_writer(directory, segment_info, &*DEFAULT_IO_CONTEXT)
+            .expect("writer");
+        writer.start_document(1).expect("start document");
+        writer
+            .start_field(
+                field_infos.field_info("body").unwrap(),
+                1,
+                true,
+                true,
+                false,
+            )
+            .expect("start field");
+        writer
+            .start_term(&BytesRef::new(b"hello".to_vec()), 1)
+            .expect("start term");
+        writer.add_position(0, 0, 5, None).expect("add position");
+        writer.finish_term().expect("finish term");
+        writer.finish_field().expect("finish field");
+        writer.finish_document().expect("finish document");
+        writer.finish(1).expect("finish");
+        writer.close().expect("close");
+        field_infos
+    }
+
+    fn assert_reads_hello(reader: &dyn TermVectorsReader) {
+        reader.check_integrity().expect("integrity");
+        let fields = reader.get(0).expect("get").expect("doc 0 has vectors");
+        let terms = fields.terms("body").expect("terms").expect("body terms");
+        let mut iterator = terms.iterator().expect("terms enum");
+        let term = iterator.next().expect("next").expect("first term");
+        assert_eq!(term.slice(), b"hello");
+        let mut postings = iterator
+            .postings(None, POSTINGS_ENUM_POSITIONS)
+            .expect("postings");
+        assert_eq!(postings.next_doc().expect("next doc"), 0);
+        assert_eq!(postings.freq().expect("freq"), 1);
+        assert_eq!(postings.next_position().expect("next position"), 0);
+        assert_eq!(postings.start_offset(), 0);
+        assert_eq!(postings.end_offset(), 5);
+    }
+
+    #[test]
+    fn the_reader_and_writer_use_the_directory_they_are_handed() {
+        // `SegmentInfo.directory` is not usable as a fallback: the Lucene 9.9
+        // segment-info format attaches an empty placeholder directory when it
+        // parses a `.si`, and a compound segment's files exist only inside the
+        // `.cfs`. Both halves of the format must therefore go through their
+        // `directory` argument.
+        let files: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let placeholder: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let segment_info = test_segment_info(Arc::clone(&placeholder), "_0", 1);
+
+        let field_infos = write_one_document(files.as_ref(), &segment_info);
+        assert!(
+            placeholder.list_all().expect("list").is_empty(),
+            "the writer must not create files in SegmentInfo.directory"
+        );
+        assert!(files.file_length("_0.tvd").expect("length") > 0);
+
+        let reader = Lucene90TermVectorsFormat::new()
+            .vectors_reader(
+                files.as_ref(),
+                &segment_info,
+                &field_infos,
+                &*DEFAULT_IO_CONTEXT,
+            )
+            .expect("the reader must open the files from the directory it was given");
+        assert_reads_hello(reader.as_ref());
+    }
+
+    #[test]
+    fn term_vectors_are_readable_from_a_compound_file_segment() {
+        let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let segment_info = test_segment_info(Arc::clone(&directory), "_0", 1);
+        let field_infos = write_one_document(directory.as_ref(), &segment_info);
+
+        let loose: Vec<String> = ["_0.tvd", "_0.tvx", "_0.tvm"]
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+        segment_info.set_files(loose.iter().cloned().collect());
+        let compound_format = crate::codecs::lucene90::compound::Lucene90CompoundFormat;
+        compound_format
+            .write(directory.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+            .expect("compound write");
+        // A compound segment keeps no loose copy; the reader has nowhere else
+        // to look.
+        for name in &loose {
+            directory.delete_file(name).expect("delete loose file");
+        }
+
+        let compound = compound_format
+            .get_compound_reader(directory.as_ref(), &segment_info)
+            .expect("compound reader");
+        let reader = Lucene90TermVectorsFormat::new()
+            .vectors_reader(
+                compound.as_ref(),
+                &segment_info,
+                &field_infos,
+                &*DEFAULT_IO_CONTEXT,
+            )
+            .expect("the reader must open the files from the compound directory");
+        assert_reads_hello(reader.as_ref());
+
+        // A clone must keep reading from the same compound stream.
+        assert_reads_hello(reader.clone_reader().as_ref());
+        assert_reads_hello(reader.get_merge_instance().as_ref());
     }
 }

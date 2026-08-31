@@ -19,6 +19,7 @@ pub mod lucene90;
 
 /// Bundled Lucene 9.4 sub-formats reused by the default `Lucene104` codec.
 pub mod lucene94;
+pub mod lucene95;
 
 /// Bundled Lucene 9.9 sub-formats reused by the default `Lucene104` codec.
 pub mod lucene99;
@@ -55,10 +56,10 @@ pub use compound::{
     EmptyCompoundDirectory, EmptyCompoundFormat,
 };
 pub use doc_values::{
-    available_doc_values_formats, doc_values_for_name, BinaryDocValues, DocValuesConsumer,
-    DocValuesFormat, DocValuesFormatRegistry, DocValuesProducer, DocValuesSkipper,
-    EmptyBinaryDocValues, EmptyDocValuesConsumer, EmptyDocValuesFormat, EmptyDocValuesProducer,
-    EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
+    available_doc_values_formats, doc_values_for_name, register_doc_values_format, BinaryDocValues,
+    DocValuesConsumer, DocValuesFormat, DocValuesFormatRegistry, DocValuesProducer,
+    DocValuesSkipper, EmptyBinaryDocValues, EmptyDocValuesConsumer, EmptyDocValuesFormat,
+    EmptyDocValuesProducer, EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
     EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues, SortedDocValues,
     SortedNumericDocValues, SortedSetDocValues,
 };
@@ -318,6 +319,19 @@ pub fn available_codecs() -> Vec<String> {
 /// registry, if any.
 pub fn default_codec() -> Option<Arc<dyn Codec>> {
     GLOBAL_REGISTRY.default_codec()
+}
+
+/// Registers a codec in the global registry.
+///
+/// This mirrors the static `Codec.register` path used by `SegmentInfos` when
+/// resolving codec names read from `segments_N` files.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] if the name is invalid, or
+/// [`LuceneError::IllegalState`] if the name is already registered.
+pub fn register_codec(name: impl Into<String>, codec: impl Codec + 'static) -> Result<()> {
+    GLOBAL_REGISTRY.register(name, codec)
 }
 
 // ---------------------------------------------------------------------------
@@ -583,6 +597,12 @@ pub(crate) mod tests {
     #[derive(Debug)]
     pub(crate) struct DummyFormat(&'static str);
 
+    impl DummyFormat {
+        pub(crate) fn new(name: &'static str) -> Self {
+            Self(name)
+        }
+    }
+
     impl PostingsFormat for DummyFormat {
         fn name(&self) -> &str {
             self.0
@@ -591,14 +611,14 @@ pub(crate) mod tests {
         fn fields_consumer<'a>(
             &self,
             _state: &SegmentWriteState<'a>,
-        ) -> Result<Box<dyn FieldsConsumer + 'a>> {
+        ) -> Result<Box<dyn FieldsConsumer>> {
             Ok(Box::new(DummyFieldsConsumer))
         }
 
         fn fields_producer<'a>(
             &self,
             _state: &SegmentReadState<'a>,
-        ) -> Result<Box<dyn FieldsProducer + 'a>> {
+        ) -> Result<Box<dyn FieldsProducer>> {
             Ok(Box::new(DummyFieldsProducer))
         }
     }
@@ -611,14 +631,14 @@ pub(crate) mod tests {
         fn fields_consumer<'a>(
             &self,
             _state: &SegmentWriteState<'a>,
-        ) -> crate::error::Result<Box<dyn DocValuesConsumer + 'a>> {
+        ) -> crate::error::Result<Box<dyn DocValuesConsumer>> {
             Ok(Box::new(EmptyDocValuesConsumer))
         }
 
         fn fields_producer<'a>(
             &self,
             _state: &SegmentReadState<'a>,
-        ) -> crate::error::Result<Box<dyn DocValuesProducer + 'a>> {
+        ) -> crate::error::Result<Box<dyn DocValuesProducer>> {
             Ok(Box::new(EmptyDocValuesProducer))
         }
     }
@@ -845,17 +865,17 @@ pub(crate) mod tests {
             self.0
         }
 
-        fn fields_writer<'a>(
+        fn fields_writer(
             &self,
-            _state: &SegmentWriteState<'a>,
-        ) -> crate::error::Result<Box<dyn KnnVectorsWriter + 'a>> {
+            _state: &crate::codecs::state::OwnedSegmentWriteState,
+        ) -> crate::error::Result<Box<dyn KnnVectorsWriter>> {
             Ok(Box::new(EmptyKnnVectorsWriter))
         }
 
         fn fields_reader<'a>(
             &self,
             _state: &SegmentReadState<'a>,
-        ) -> crate::error::Result<Box<dyn KnnVectorsReader + 'a>> {
+        ) -> crate::error::Result<Box<dyn KnnVectorsReader>> {
             Ok(Box::new(EmptyKnnVectorsReader))
         }
 

@@ -25,7 +25,7 @@ use crate::index::doc_values::{DocValues, EmptyNumericDocValues, NumericDocValue
 /// Reads normalization values from a segment.
 ///
 /// Equivalent to `org.apache.lucene.codecs.NormsProducer`.
-pub trait NormsProducer: fmt::Debug {
+pub trait NormsProducer: Send + Sync + fmt::Debug {
     /// Returns the numeric norm values for the given field.
     fn get_norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>>;
 

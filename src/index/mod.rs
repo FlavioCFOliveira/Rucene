@@ -2,28 +2,90 @@
 //!
 //! This module exposes the core value-accessor abstractions used by codec
 //! producers and index consumers: field metadata, segment information,
-//! doc-values, vector values, and point values.
+//! doc-values, vector values, point values, and the reader hierarchy
+//! (`IndexReader`, `LeafReader`, and their contexts).
+//!
+//! It also holds the write path: [`documents_writer`] buffers documents and
+//! orchestrates flushes, [`indexing_chain`] inverts each document,
+//! [`freq_prox_terms_writer`] buffers the resulting postings in RAM and streams
+//! them through the codec's postings format at flush time, and
+//! [`stored_fields_consumer`] streams the stored field values of every document
+//! through the codec's stored-fields format.
 
 #![deny(unsafe_code)]
 
+pub mod automaton_terms_enum;
+pub mod base_composite_reader;
+pub mod buffered_updates_stream;
+pub mod check_index;
+pub mod codec_reader;
+pub mod directory_reader;
 pub mod doc_values;
+pub mod doc_values_field_updates;
+pub mod doc_values_update;
+pub mod doc_values_writer;
+pub mod documents_writer;
 pub mod field_infos;
+pub mod field_updates_buffer;
+pub mod filter_directory_reader;
+pub mod filter_reader;
+pub mod freq_prox_terms_writer;
+pub mod index_commit;
+pub mod index_deletion_policy;
+pub mod index_file_deleter;
 pub mod index_file_names;
+pub mod index_reader;
+pub mod index_sorter;
+pub mod index_utilities;
+pub mod index_writer;
+pub mod index_writer_config;
+pub mod indexing_chain;
+pub mod leaf_reader;
+pub mod mapped_multi_fields;
+pub mod mapping_multi_postings_enum;
 pub mod merge;
+pub mod merge_policy;
+pub mod merge_scheduler;
+pub mod multi_bits;
+pub mod multi_doc_values;
+pub mod multi_fields;
+pub mod multi_leaf_reader;
+pub mod multi_reader;
+pub mod norms_writer;
+pub mod parallel_reader;
 pub mod point_values;
+pub mod point_values_writer;
 pub mod postings_enum;
+pub mod reader_context;
+pub mod reader_manager;
+pub mod readers_and_updates;
 pub mod segment_info;
+pub mod segment_infos;
+pub mod segment_merger;
+pub mod segment_reader;
+pub mod sorting_codec_reader;
+pub mod sorting_consumers;
+pub mod stored_field_visitor;
+pub mod stored_fields_consumer;
+pub mod term_vectors_consumer;
 pub mod terms;
+pub mod terms_enum_index;
+pub mod two_phase_commit;
 pub mod vector_values;
+pub mod vector_values_consumer;
 
+pub use automaton_terms_enum::AutomatonTermsEnum;
+pub use codec_reader::CodecReader;
 pub use doc_values::{
     BinaryDocValues, DocValues, DocValuesIterator, DocValuesSkipper, EmptyBinaryDocValues,
-    EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
-    EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues,
-    SingletonSortedNumericDocValues, SingletonSortedSetDocValues, SortedDocValues,
-    SortedNumericDocValues, SortedSetDocValues,
+    EmptyDocValuesProducer, EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
+    EmptySortedNumericDocValues, EmptySortedSetDocValues, FilterBinaryDocValues,
+    FilterNumericDocValues, FilterSortedDocValues, FilterSortedNumericDocValues,
+    FilterSortedSetDocValues, NumericDocValues, OrdinalMap, SingletonSortedNumericDocValues,
+    SingletonSortedSetDocValues, SortedDocValues, SortedDocValuesTermsEnum, SortedNumericDocValues,
+    SortedSetDocValues, SortedSetDocValuesTermsEnum,
 };
-pub use field_infos::{FieldInfo, FieldInfos};
+pub use field_infos::{FieldInfo, FieldInfos, FieldInfosBuilder, FieldNumbers};
 pub use index_file_names::{
     file_name_from_generation, get_extension, is_codec_file, matches_extension, parse_generation,
     parse_segment_name, segment_file_name, standard_extensions, strip_extension,
@@ -38,35 +100,133 @@ pub use index_file_names::{
     TERMS_POSTINGS_EXTENSION, VECTORS_FIELDS_EXTENSION, VECTORS_INDEX_EXTENSION,
     VECTORS_META_EXTENSION,
 };
+pub use index_reader::{
+    CacheHelper, CacheKey, ClosedListener, CompositeReader, IndexReader, IndexReaderCore,
+    StoredFields,
+};
+pub use index_utilities::{
+    ApproximatePriorityQueue, ConcurrentApproximatePriorityQueue,
+    LockableConcurrentApproximatePriorityQueue, QueryTimeout, QueryTimeoutImpl,
+    TrackingTmpOutputDirectoryWrapper, TryLockable,
+};
+pub use leaf_reader::{EmptyTermVectors, LeafMetaData, LeafReader, TermVectors};
 pub use merge::{
     deletion_doc_map, identity_doc_map, DocIDMerger, DocIDMergerSub, DocMap, MergeState,
 };
+pub use term_vectors_consumer::{TermVectorsConsumer, TermVectorsConsumerPerField};
+// The per-reader aggregation helpers (`size`, `doc_count`, `min_packed_value`,
+// `max_packed_value`) and the traversal free functions (`intersect`,
+// `estimate_point_count`, ...) are deliberately not re-exported here: their
+// names are far too generic at the `index` root. They are reached through
+// `crate::index::point_values::`, which is the exact analogue of Java's
+// `PointValues.size(reader, field)` static call.
 pub use point_values::{
-    EmptyPointValues, IntersectVisitor, PointValues, Relation, MAX_DIMENSIONS,
-    MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
+    EmptyPointValues, InMemoryPointTree, InMemoryPointValues, IntersectVisitor, MutablePointTree,
+    PointTree, PointValues, Relation, MAX_DIMENSIONS, MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
 };
 pub use postings_enum::{
     feature_requested, DocAndFloatFeatureBuffer, EmptyPostingsEnum, FreqAndNormBuffer, Impacts,
     ImpactsEnum, ImpactsSource, PostingsEnum, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS,
     POSTINGS_ENUM_NONE, POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
 };
-pub use segment_info::{SegmentCommitInfo, SegmentInfo};
+pub use reader_context::{CompositeReaderContext, IndexReaderContext, LeafReaderContext};
+pub use segment_info::{
+    SegmentCommitInfo, SegmentInfo, SegmentOrder, SegmentReadState, SegmentWriteState,
+    UNSET_MAX_DOC,
+};
+pub use segment_infos::SegmentInfos;
+
+pub use freq_prox_terms_writer::{
+    ByteSlicePool, ByteSliceReader, FreqProxFields, FreqProxPosting, FreqProxTermsWriter,
+    FreqProxTermsWriterPerField, InvertedToken, TermSlot, TermsHash, TermsHashPerField,
+    FIRST_LEVEL_SIZE, LEVEL_SIZE_ARRAY, NEXT_LEVEL_ARRAY,
+};
+pub use indexing_chain::{
+    DefaultIndexingChain, EmptyNormsProducer, FieldInvertState, MAX_POSITION,
+};
+
+pub use index_writer_config::{
+    BM25Similarity, ConcurrentMergeScheduler, IndexWriterConfig, IndexWriterEventListener,
+    LeafComparator, LiveIndexWriterConfig, MergePolicy, MergeScheduler, MergeSpecification,
+    MergedSegmentWarmer, NoOpIndexWriterEventListener, OpenMode, Similarity, TieredMergePolicy,
+};
+
+// Commit points, two-phase commit and deletion policies.
+pub use index_commit::{
+    execute as execute_two_phase_commit, IndexCommit, TwoPhaseCommit, TwoPhaseCommitError,
+};
+pub use index_deletion_policy::{
+    IndexDeletionPolicy, KeepLastNCommitsDeletionPolicy, KeepOnlyLastCommitDeletionPolicy,
+    NoDeletionPolicy, PersistentSnapshotDeletionPolicy, SnapshotDeletionPolicy, SNAPSHOTS_PREFIX,
+};
+pub use index_file_deleter::{inflate_gens, CommitPoint, IndexFileDeleter, WRITE_LOCK_NAME};
+
+// In-memory indexing pipeline exports.
+pub use documents_writer::{
+    BufferedUpdates, DeleteNode, DeleteSlice, DocumentsWriter, DocumentsWriterDeleteQueue,
+    DocumentsWriterFlushControl, DocumentsWriterFlushQueue, DocumentsWriterPerThread,
+    DocumentsWriterPerThreadPool, DocumentsWriterShared, DocumentsWriterStallControl, DwptGuard,
+    FlushByRamOrCountsPolicy, FlushControlHandle, FlushNotifications, FlushPolicy, FlushTicket,
+    FlushedSegment, FrozenBufferedUpdates, IndexingChain, IndexingChainFactory,
+    IndexingChainFlushState, LockAllGuard, NoOpFlushNotifications, Query, SegmentNameSupplier,
+    SharedIndexingScratch, TermDelete, BYTES_PER_DEL_QUERY, BYTES_SCRATCH_SIZE, INTS_SCRATCH_SIZE,
+    MAX_DOCS, SOURCE_FLUSH,
+};
+
+// Directory/segment reader exports.
+pub use directory_reader::{
+    index_exists, list_commits, open as open_directory_reader, open_if_changed,
+    open_if_changed_with_commit, open_if_changed_with_writer, open_with_commit, DirectoryReader,
+    IndexWriter as DirectoryReaderIndexWriter, StandardDirectoryReader,
+};
+pub use doc_values_writer::{
+    BinaryDocValuesWriter, DocValuesWriter, NumericDocValuesWriter, SortedDocValuesWriter,
+    SortedNumericDocValuesWriter, SortedSetDocValuesWriter,
+};
+pub use mapped_multi_fields::MappedMultiFields;
+pub use mapping_multi_postings_enum::MappingMultiPostingsEnum;
+pub use multi_bits::{BitsSlice, MultiBits};
+pub use multi_doc_values::{MultiDocValues, MultiSortedDocValues, MultiSortedSetDocValues};
+pub use multi_fields::{
+    EnumWithSlice, MultiFields, MultiPostingsEnum, MultiTerms, MultiTermsEnum, SlowImpactsEnum,
+};
+pub use multi_reader::{
+    get_top_level_context, index_of, sub_index, sub_index_from_leaves, MultiReader, ReaderSlice,
+};
+pub use norms_writer::NormValuesWriter;
+pub use parallel_reader::{ParallelCompositeReader, ParallelLeafReader};
+pub use reader_manager::ReaderManager;
+pub use segment_reader::SegmentReader;
+pub use stored_field_visitor::{StoredFieldVisitor, StoredFieldVisitorStatus};
+pub use stored_fields_consumer::StoredFieldsConsumer;
+
 pub use terms::{
-    EmptyFields, EmptyTerms, EmptyTermsEnum, Fields, SeekStatus, TermState, Terms, TermsEnum,
+    AcceptStatus, EmptyFields, EmptyTerms, EmptyTermsEnum, Fields, FilteredTermsEnum,
+    FilteredTermsEnumFilter, OrdTermState, PrefixCodedTerms, PrefixCodedTermsBuilder,
+    PrefixCodedTermsIterator, SeekStatus, SingleTermsEnum, Term, TermState, TermStates, Terms,
+    TermsEnum,
+};
+pub use terms_enum_index::{
+    prefix8_to_comparable_unsigned_long, TermsEnumIndex, TermsEnumIndexState,
 };
 pub use vector_values::{
+    accept_ords, check_byte_field, check_float_field, from_bytes, from_floats, AcceptOrds,
     ByteVectorValues, DenseDocIndexIterator, DocIndexIterator, EmptyByteVectorValues,
     EmptyFloatVectorValues, EmptyKnnVectorValues, FloatVectorValues, FromDisiDocIndexIterator,
-    KnnVectorValues,
+    KnnVectorValues, ListByteVectorValues, ListFloatVectorValues, SparseDocIndexIterator,
 };
+
+pub use doc_values_field_updates::DocValuesFieldUpdates;
+pub use readers_and_updates::{PendingDeletes, PendingSoftDeletes, ReaderPool, ReadersAndUpdates};
 
 use std::collections::HashMap;
 
 use crate::{
     analysis::{Analyzer, TokenStream},
     document::{InvertableType, NumericValue, StoredValue},
+    error::Result,
     store::{ByteArrayDataInput, DataInput},
-    util::BytesRef,
+    util::{vector_util, BytesRef},
 };
 
 /// Controls how much information is stored in the postings lists.
@@ -93,10 +253,18 @@ pub enum IndexOptions {
 impl IndexOptions {
     /// Returns `true` if this option records at least as much information as
     /// `other`.
+    ///
+    /// Equivalent to `org.apache.lucene.index.IndexOptions.subsumes(IndexOptions)`.
+    /// `DOCS_AND_CUSTOM_FREQS` is encoded with the same bits as
+    /// `DOCS_AND_FREQS`, so for ordering purposes it is treated as the latter.
     pub fn subsumes(&self, other: IndexOptions) -> bool {
-        let ord = *self as i32;
-        let other_ord = other as i32;
-        ord >= other_ord
+        if *self == IndexOptions::DOCS_AND_CUSTOM_FREQS {
+            return IndexOptions::DOCS_AND_FREQS.subsumes(other);
+        }
+        if other == IndexOptions::DOCS_AND_CUSTOM_FREQS {
+            return self.subsumes(IndexOptions::DOCS_AND_FREQS);
+        }
+        (*self as i32) >= (other as i32)
     }
 }
 
@@ -192,123 +360,65 @@ pub enum VectorSimilarityFunction {
 impl VectorSimilarityFunction {
     /// Returns the similarity score between two float vectors.
     ///
-    /// Higher scores correspond to closer vectors. Equivalent to the Java
-    /// `VectorSimilarityFunction.compare(float[], float[])`.
-    pub fn compare_f32(&self, a: &[f32], b: &[f32]) -> f32 {
-        debug_assert_eq!(a.len(), b.len());
+    /// Higher scores correspond to closer vectors. Equivalent to
+    /// `VectorSimilarityFunction.compare(float[], float[])`, which delegates
+    /// every arithmetic step to `VectorUtil`; this port does the same through
+    /// [`crate::util::vector_util`], so the scores are bit-identical to
+    /// Lucene's scalar, non-FMA path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::LuceneError::IllegalArgument`] when the two
+    /// vectors have different dimensions, matching the
+    /// `IllegalArgumentException` that `VectorUtil` throws.
+    pub fn compare_f32(&self, a: &[f32], b: &[f32]) -> Result<f32> {
         match self {
-            Self::EUCLIDEAN => {
-                let dist = square_distance_f32(a, b);
-                1.0 / (1.0 + dist)
-            }
-            Self::DOT_PRODUCT => {
-                let dot = dot_product_f32(a, b);
-                ((1.0 + dot) / 2.0).max(0.0)
-            }
-            Self::COSINE => {
-                let score = cosine_f32(a, b);
-                ((1.0 + score) / 2.0).max(0.0)
-            }
-            Self::MAXIMUM_INNER_PRODUCT => {
-                let dot = dot_product_f32(a, b);
-                if dot < 0.0 {
-                    1.0 / (1.0 - dot)
-                } else {
-                    dot + 1.0
-                }
-            }
+            Self::EUCLIDEAN => Ok(vector_util::normalize_distance_to_unit_interval(
+                vector_util::square_distance_f32(a, b)?,
+            )),
+            Self::DOT_PRODUCT => Ok(vector_util::normalize_to_unit_interval(
+                vector_util::dot_product_f32(a, b)?,
+            )),
+            Self::COSINE => Ok(vector_util::normalize_to_unit_interval(
+                vector_util::cosine_f32(a, b)?,
+            )),
+            Self::MAXIMUM_INNER_PRODUCT => Ok(vector_util::scale_max_inner_product_score(
+                vector_util::dot_product_f32(a, b)?,
+            )),
         }
     }
 
     /// Returns the similarity score between two byte vectors.
     ///
-    /// Higher scores correspond to closer vectors. Equivalent to the Java
+    /// The bytes are interpreted as **signed** values in `[-128, 127]`, as
+    /// Lucene does. Equivalent to
     /// `VectorSimilarityFunction.compare(byte[], byte[])`.
-    pub fn compare_u8(&self, a: &[u8], b: &[u8]) -> f32 {
-        debug_assert_eq!(a.len(), b.len());
+    ///
+    /// Note the deliberate asymmetry with [`compare_f32`](Self::compare_f32):
+    /// the float `DOT_PRODUCT` and `COSINE` paths clamp negative scores to
+    /// zero, the byte paths do not. That is Lucene's behaviour, not an
+    /// oversight.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::LuceneError::IllegalArgument`] when the two
+    /// vectors have different dimensions.
+    pub fn compare_bytes(&self, a: &[u8], b: &[u8]) -> Result<f32> {
         match self {
             Self::EUCLIDEAN => {
-                let dist = square_distance_u8(a, b);
-                1.0 / (1.0 + dist)
+                let dist = vector_util::square_distance_bytes(a, b)?;
+                Ok(1.0 / (1.0 + dist as f32))
             }
-            Self::DOT_PRODUCT => {
-                let dot = dot_product_u8(a, b);
-                // divide by 2 * 2^14 (maximum absolute value of product of 2 signed bytes) * len
-                let denom = (a.len() * (1 << 15)) as f32;
-                0.5 + dot / denom
-            }
+            Self::DOT_PRODUCT => vector_util::dot_product_score(a, b),
             Self::COSINE => {
-                let score = cosine_u8(a, b);
-                (1.0 + score) / 2.0
+                let score = vector_util::cosine_bytes(a, b)?;
+                Ok((1.0 + score) / 2.0)
             }
-            Self::MAXIMUM_INNER_PRODUCT => {
-                let dot = dot_product_u8_signed(a, b);
-                if dot < 0.0 {
-                    1.0 / (1.0 - dot)
-                } else {
-                    dot + 1.0
-                }
-            }
+            Self::MAXIMUM_INNER_PRODUCT => Ok(vector_util::scale_max_inner_product_score(
+                vector_util::dot_product_bytes(a, b)? as f32,
+            )),
         }
     }
-}
-
-fn dot_product_f32(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum()
-}
-
-fn square_distance_f32(a: &[f32], b: &[f32]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| {
-            let d = x - y;
-            d * d
-        })
-        .sum()
-}
-
-fn cosine_f32(a: &[f32], b: &[f32]) -> f32 {
-    let dot = dot_product_f32(a, b);
-    let norm_a = dot_product_f32(a, a).sqrt();
-    let norm_b = dot_product_f32(b, b).sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-    dot / (norm_a * norm_b)
-}
-
-fn dot_product_u8(a: &[u8], b: &[u8]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| (x as i32 * y as i32) as f32)
-        .sum()
-}
-
-fn dot_product_u8_signed(a: &[u8], b: &[u8]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| (x as i8 as i32 * y as i8 as i32) as f32)
-        .sum()
-}
-
-fn square_distance_u8(a: &[u8], b: &[u8]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| {
-            let d = x as i32 - y as i32;
-            (d * d) as f32
-        })
-        .sum()
-}
-
-fn cosine_u8(a: &[u8], b: &[u8]) -> f32 {
-    let dot = dot_product_u8_signed(a, b);
-    let norm_a = dot_product_u8_signed(a, a).sqrt();
-    let norm_b = dot_product_u8_signed(b, b).sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-    dot / (norm_a * norm_b)
 }
 
 /// Describes the properties of a field.
@@ -401,8 +511,44 @@ pub trait IndexableField {
     /// Non-null if this field has a numeric value.
     fn numeric_value(&self) -> Option<NumericValue>;
 
-    /// Stored value.
-    fn stored_value(&self) -> Option<StoredValue>;
+    /// The float vector this field carries, or `None` when it carries none.
+    ///
+    /// Java has no such method on `IndexableField`:
+    /// `IndexingChain.indexVectorValue` downcasts the field to
+    /// `KnnFloatVectorField` and calls `vectorValue()`
+    /// (`IndexingChain.java:1695-1707`). Rust has no downcast, so the two
+    /// accessors Java reaches by casting are sibling methods here, defaulting
+    /// to `None` for every field that carries no vector — which is exactly the
+    /// set of fields Java never casts, because it only casts when
+    /// `fieldType.vectorDimension() != 0`.
+    fn float_vector_value(&self) -> Option<&[f32]> {
+        None
+    }
+
+    /// The byte vector this field carries, or `None` when it carries none.
+    ///
+    /// The `VectorEncoding::BYTE` sibling of [`Self::float_vector_value`];
+    /// Java's `KnnByteVectorField.vectorValue()`.
+    ///
+    /// Note that Java's `Field.binaryValue()` answers `null` for a
+    /// `KnnByteVectorField` (`Field.java:428-434`): its `fieldsData` is a bare
+    /// `byte[]`, not a `BytesRef`. A byte vector is therefore reachable only
+    /// through this accessor, in both implementations.
+    fn byte_vector_value(&self) -> Option<&[u8]> {
+        None
+    }
+
+    /// The value this field contributes to the stored-fields stream, or `None`
+    /// when the field is not stored.
+    ///
+    /// Equivalent to `IndexableField.storedValue()`, which declares
+    /// `IOException` because a field whose value is a
+    /// [`StoredFieldDataInput`] has to be read to produce it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while materialising the value.
+    fn stored_value(&self) -> Result<Option<StoredValue>>;
 
     /// Describes how this field should be inverted.
     fn invertable_type(&self) -> Option<InvertableType>;
@@ -460,6 +606,19 @@ mod tests {
     }
 
     #[test]
+    fn index_options_subsumes_matches_java() {
+        // DOCS_AND_CUSTOM_FREQS is encoded like DOCS_AND_FREQS, so it is treated
+        // as that option for subsumes comparisons.
+        assert!(!IndexOptions::DOCS_AND_FREQS.subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS));
+        assert!(!IndexOptions::DOCS_AND_CUSTOM_FREQS
+            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS));
+        assert!(IndexOptions::DOCS_AND_CUSTOM_FREQS.subsumes(IndexOptions::DOCS));
+        assert!(IndexOptions::DOCS_AND_CUSTOM_FREQS.subsumes(IndexOptions::DOCS_AND_FREQS));
+        assert!(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS
+            .subsumes(IndexOptions::DOCS_AND_CUSTOM_FREQS));
+    }
+
+    #[test]
     fn doc_values_type_ordinals_match_java() {
         assert_eq!(DocValuesType::NONE as usize, 0);
         assert_eq!(DocValuesType::NUMERIC as usize, 1);
@@ -482,11 +641,52 @@ mod tests {
     }
 
     #[test]
+    fn vector_encoding_ordinals_match_java() {
+        assert_eq!(VectorEncoding::BYTE as usize, 0);
+        assert_eq!(VectorEncoding::FLOAT32 as usize, 1);
+    }
+
+    #[test]
     fn vector_similarity_function_ordinals_match_java() {
         assert_eq!(VectorSimilarityFunction::EUCLIDEAN as usize, 0);
         assert_eq!(VectorSimilarityFunction::DOT_PRODUCT as usize, 1);
         assert_eq!(VectorSimilarityFunction::COSINE as usize, 2);
         assert_eq!(VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT as usize, 3);
+    }
+
+    #[test]
+    fn vector_similarity_byte_comparisons_use_signed_arithmetic() {
+        // Java VectorUtil treats byte vectors as signed for every similarity function.
+        let a = [0xFFu8, 0x00]; // -1, 0 as signed bytes
+        let b = [0x01u8, 0x00]; //  1, 0 as signed bytes
+
+        // Dot product of [-1, 0] and [1, 0] is -1, scaled by 2^15 * 2.
+        let dot = VectorSimilarityFunction::DOT_PRODUCT
+            .compare_bytes(&a, &b)
+            .unwrap();
+        let expected_dot = 0.5f32 - 1.0 / ((a.len() * (1 << 15)) as f32);
+        assert!(
+            (dot - expected_dot).abs() < 1e-6,
+            "dot product score should be ~{expected_dot}"
+        );
+
+        // Maximum inner product of [-1, 0] and [1, 0] is -1 -> scaled to 1/2.
+        let mip = VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT
+            .compare_bytes(&a, &b)
+            .unwrap();
+        assert!(
+            (mip - 0.5f32).abs() < f32::EPSILON,
+            "MIP score should be 0.5"
+        );
+
+        // Euclidean distance squared of [-1, 0] and [1, 0] is 4.
+        let euclid = VectorSimilarityFunction::EUCLIDEAN
+            .compare_bytes(&a, &b)
+            .unwrap();
+        assert!(
+            (euclid - 1.0 / 5.0).abs() < 1e-6,
+            "euclidean score should be 1/5"
+        );
     }
 
     #[test]

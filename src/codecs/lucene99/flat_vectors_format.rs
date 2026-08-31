@@ -28,9 +28,10 @@ use crate::codecs::knn_vectors::{
     BufferingKnnVectorsWriter, FieldVectorWriter, KnnFieldVectorsWriter, KnnVectorsFormat,
     KnnVectorsReader, KnnVectorsWriter, SorterDocMap,
 };
-use crate::codecs::lucene90::indexed_disi::{write_bit_set, IndexedDISI, DEFAULT_DENSE_RANK_POWER};
+use crate::codecs::lucene90::indexed_disi::IndexedDISI;
+use crate::codecs::lucene95::OrdToDocDISIReaderConfiguration;
 use crate::codecs::postings::MergeState;
-use crate::codecs::state::{SegmentReadState, SegmentWriteState};
+use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, Result};
 use crate::index::vector_values::{
@@ -42,7 +43,7 @@ use crate::search::{AcceptDocs, DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{DataInput, IndexInput, IndexOutput};
 use crate::util::extra::LongValues;
 use crate::util::hnsw::RandomVectorScorer;
-use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter};
+use crate::util::packed::DirectMonotonicReader;
 
 // -----------------------------------------------------------------------------
 // Format constants
@@ -109,17 +110,11 @@ impl KnnVectorsFormat for Lucene99FlatVectorsFormat {
         NAME
     }
 
-    fn fields_writer<'a>(
-        &self,
-        state: &SegmentWriteState<'a>,
-    ) -> Result<Box<dyn KnnVectorsWriter + 'a>> {
-        Ok(Box::new(self.create_writer(state)?))
+    fn fields_writer(&self, state: &OwnedSegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>> {
+        Ok(Box::new(self.create_writer(&state.borrow())?))
     }
 
-    fn fields_reader<'a>(
-        &self,
-        state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn KnnVectorsReader + 'a>> {
+    fn fields_reader<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn KnnVectorsReader>> {
         Ok(Box::new(self.create_reader(state)?))
     }
 
@@ -156,7 +151,23 @@ pub struct Lucene99FlatVectorsWriter {
     vector_data: Option<Box<dyn IndexOutput>>,
     vector_scorer: DefaultFlatVectorScorer,
     fields: Vec<FieldWriterEntry>,
-    segment_max_doc: i32,
+    /// `maxDoc` of the segment being written, or `None` when it was not set
+    /// yet at the moment this writer was created.
+    ///
+    /// Java holds the whole `SegmentWriteState` and reads
+    /// `segmentWriteState.segmentInfo.maxDoc()` lazily, at the one place that
+    /// needs it — `mergeOneField` (`Lucene99FlatVectorsWriter.java:288`).
+    /// Reading it eagerly in the constructor, as this port used to, made the
+    /// writer unconstructible on the flush path: `VectorValuesConsumer` builds
+    /// it while the first document is being indexed
+    /// (`VectorValuesConsumer.java:52-71`) and `DocumentsWriterPerThread` only
+    /// calls `segmentInfo.setMaxDoc` at flush
+    /// (`DocumentsWriterPerThread.java:446`), so `maxDoc()` raises
+    /// `IllegalStateException("maxDoc isn't set yet")` at that point. The
+    /// merge path always creates the writer after `maxDoc` is set, so it still
+    /// sees the same value Java sees; the flush path never reads this field,
+    /// because `flush(maxDoc, ..)` is given `maxDoc` by its caller.
+    segment_max_doc: Option<i32>,
     finished: bool,
 }
 
@@ -204,6 +215,13 @@ impl<T: Clone + Send + Sync + 'static> KnnFieldVectorsWriter<T> for SharedFieldW
 
     fn copy_value(&self, vector_value: T) -> T {
         vector_value
+    }
+
+    fn ram_bytes_used(&self) -> i64 {
+        // The shared handle owns nothing: the buffer it locks is accounted by
+        // the writer that also holds it, and counting it here would count it
+        // twice in `KnnVectorsWriter::ram_bytes_used`.
+        0
     }
 }
 
@@ -261,7 +279,7 @@ impl Lucene99FlatVectorsWriter {
                 vector_data: vector_data_opt.take(),
                 vector_scorer: vectors_scorer,
                 fields: Vec::new(),
-                segment_max_doc: state.segment_info.max_doc()?,
+                segment_max_doc: state.segment_info.max_doc().ok(),
                 finished: false,
             })
         })();
@@ -342,7 +360,9 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
         }
         match field_info.vector_encoding {
             VectorEncoding::FLOAT32 => {
-                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<f32>>::new()));
+                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<f32>>::new(
+                    field_info.clone(),
+                )));
                 self.fields.push(FieldWriterEntry::Float(
                     Arc::clone(&writer),
                     field_info.clone(),
@@ -352,7 +372,9 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
                 })))
             }
             VectorEncoding::BYTE => {
-                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<u8>>::new()));
+                let writer = Arc::new(Mutex::new(DefaultFlatFieldVectorsWriter::<Vec<u8>>::new(
+                    field_info.clone(),
+                )));
                 self.fields.push(FieldWriterEntry::Byte(
                     Arc::clone(&writer),
                     field_info.clone(),
@@ -420,6 +442,29 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
     fn close(&mut self) -> Result<()> {
         close_outputs(&mut self.meta, &mut self.vector_data)
     }
+
+    /// Equivalent to `Lucene99FlatVectorsWriter.ramBytesUsed()`
+    /// (`Lucene99FlatVectorsWriter.java:174-181`): a shallow size plus the
+    /// footprint of every field writer it holds.
+    fn ram_bytes_used(&self) -> i64 {
+        let mut total = crate::util::RamUsageEstimator::align_object_size(
+            crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+                + 6 * crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+        );
+        for entry in &self.fields {
+            total += match entry {
+                FieldWriterEntry::Float(writer, _) => writer
+                    .lock()
+                    .map(|guard| guard.ram_bytes_used())
+                    .unwrap_or(0),
+                FieldWriterEntry::Byte(writer, _) => writer
+                    .lock()
+                    .map(|guard| guard.ram_bytes_used())
+                    .unwrap_or(0),
+            };
+        }
+        total
+    }
 }
 
 impl BufferingKnnVectorsWriter for Lucene99FlatVectorsWriter {
@@ -429,7 +474,7 @@ impl BufferingKnnVectorsWriter for Lucene99FlatVectorsWriter {
         values: &dyn FloatVectorValues,
         max_doc: i32,
     ) -> Result<()> {
-        let mut writer = DefaultFlatFieldVectorsWriter::<Vec<f32>>::new();
+        let mut writer = DefaultFlatFieldVectorsWriter::<Vec<f32>>::new(field_info.clone());
         let mut iter = values.iterator()?;
         while iter.next_doc()? != NO_MORE_DOCS {
             let ord = iter.index();
@@ -447,7 +492,7 @@ impl BufferingKnnVectorsWriter for Lucene99FlatVectorsWriter {
         values: &dyn ByteVectorValues,
         max_doc: i32,
     ) -> Result<()> {
-        let mut writer = DefaultFlatFieldVectorsWriter::<Vec<u8>>::new();
+        let mut writer = DefaultFlatFieldVectorsWriter::<Vec<u8>>::new(field_info.clone());
         let mut iter = values.iterator()?;
         while iter.next_doc()? != NO_MORE_DOCS {
             let ord = iter.index();
@@ -514,11 +559,17 @@ impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
         let meta = self.meta.as_mut().ok_or_else(|| {
             LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
         })?;
+        // Java reads `segmentWriteState.segmentInfo.maxDoc()` here, which
+        // raises `IllegalStateException("maxDoc isn't set yet")` when it was
+        // never set; this reproduces that error at the same place.
+        let segment_max_doc = self
+            .segment_max_doc
+            .ok_or_else(|| LuceneError::IllegalState("maxDoc isn't set yet".to_string()))?;
         write_meta(
             meta.as_mut(),
             vector_data.as_mut(),
             field_info,
-            self.segment_max_doc,
+            segment_max_doc,
             vector_data_offset,
             vector_data_length,
             &docs_with_field,
@@ -573,7 +624,13 @@ fn write_meta(
 
     let count = docs_with_field.cardinality();
     meta.write_int(count)?;
-    OrdToDocConfig::write_stored_meta(meta, vector_data, count, max_doc, docs_with_field)
+    OrdToDocDISIReaderConfiguration::write_stored_meta(
+        meta,
+        vector_data,
+        count,
+        max_doc,
+        docs_with_field,
+    )
 }
 
 fn vector_encoding_ordinal(encoding: VectorEncoding) -> i32 {
@@ -615,136 +672,6 @@ fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
 }
 
 // -----------------------------------------------------------------------------
-// OrdToDoc configuration
-// -----------------------------------------------------------------------------
-
-struct OrdToDocConfig {
-    size: i32,
-    jump_table_entry_count: i16,
-    addresses_offset: i64,
-    addresses_length: i64,
-    docs_with_field_offset: i64,
-    docs_with_field_length: i64,
-    dense_rank_power: i8,
-    meta: DirectMonotonicMeta,
-}
-
-impl Clone for OrdToDocConfig {
-    fn clone(&self) -> Self {
-        Self {
-            size: self.size,
-            jump_table_entry_count: self.jump_table_entry_count,
-            addresses_offset: self.addresses_offset,
-            addresses_length: self.addresses_length,
-            docs_with_field_offset: self.docs_with_field_offset,
-            docs_with_field_length: self.docs_with_field_length,
-            dense_rank_power: self.dense_rank_power,
-            meta: DirectMonotonicMeta {
-                block_shift: self.meta.block_shift,
-                num_blocks: self.meta.num_blocks,
-                mins: self.meta.mins.clone(),
-                avgs: self.meta.avgs.clone(),
-                offsets: self.meta.offsets.clone(),
-                bpvs: self.meta.bpvs.clone(),
-            },
-        }
-    }
-}
-
-impl OrdToDocConfig {
-    fn is_empty(&self) -> bool {
-        self.docs_with_field_offset == -2
-    }
-
-    fn is_dense(&self) -> bool {
-        self.docs_with_field_offset == -1
-    }
-
-    fn write_stored_meta(
-        meta_out: &mut dyn IndexOutput,
-        vector_data: &mut dyn IndexOutput,
-        count: i32,
-        max_doc: i32,
-        docs_with_field: &DocsWithFieldSet,
-    ) -> Result<()> {
-        if count == 0 {
-            meta_out.write_long(-2)?;
-            meta_out.write_long(0)?;
-            meta_out.write_short(-1)?;
-            meta_out.write_byte((-1i8) as u8)?;
-        } else if count == max_doc {
-            meta_out.write_long(-1)?;
-            meta_out.write_long(0)?;
-            meta_out.write_short(-1)?;
-            meta_out.write_byte((-1i8) as u8)?;
-        } else {
-            let offset = vector_data.file_pointer();
-            meta_out.write_long(offset)?;
-            let jump_table_entry_count = {
-                let mut iter = docs_with_field.iterator()?;
-                write_bit_set(iter.as_mut(), vector_data, DEFAULT_DENSE_RANK_POWER)?
-            };
-            meta_out.write_long(vector_data.file_pointer() - offset)?;
-            meta_out.write_short(jump_table_entry_count)?;
-            meta_out.write_byte(DEFAULT_DENSE_RANK_POWER as u8)?;
-
-            let start = vector_data.file_pointer();
-            meta_out.write_long(start)?;
-            meta_out.write_v_int(DIRECT_MONOTONIC_BLOCK_SHIFT)?;
-            let mut writer = DirectMonotonicWriter::new(
-                meta_out,
-                vector_data,
-                count as i64,
-                DIRECT_MONOTONIC_BLOCK_SHIFT,
-            )?;
-            let mut iter = docs_with_field.iterator()?;
-            while iter.next_doc()? != NO_MORE_DOCS {
-                writer.add(iter.doc_id() as i64)?;
-            }
-            writer.finish()?;
-            meta_out.write_long(vector_data.file_pointer() - start)?;
-        }
-        Ok(())
-    }
-
-    fn read_stored_meta(input: &mut dyn DataInput, size: i32) -> Result<Self> {
-        let docs_with_field_offset = input.read_long()?;
-        let docs_with_field_length = input.read_long()?;
-        let jump_table_entry_count = input.read_short()?;
-        let dense_rank_power = input.read_byte()? as i8;
-
-        let mut addresses_offset = 0i64;
-        let mut addresses_length = 0i64;
-        let mut meta = DirectMonotonicMeta {
-            block_shift: 0,
-            num_blocks: 0,
-            mins: Vec::new(),
-            avgs: Vec::new(),
-            offsets: Vec::new(),
-            bpvs: Vec::new(),
-        };
-
-        if docs_with_field_offset > -1 {
-            addresses_offset = input.read_long()?;
-            let block_shift = input.read_v_int()?;
-            meta = DirectMonotonicMeta::load(input, size as i64, block_shift)?;
-            addresses_length = input.read_long()?;
-        }
-
-        Ok(Self {
-            size,
-            jump_table_entry_count,
-            addresses_offset,
-            addresses_length,
-            docs_with_field_offset,
-            docs_with_field_length,
-            dense_rank_power,
-            meta,
-        })
-    }
-}
-
-// -----------------------------------------------------------------------------
 // Lucene99FlatVectorsReader
 // -----------------------------------------------------------------------------
 
@@ -777,7 +704,7 @@ struct FieldEntry {
     vector_data_length: i64,
     dimension: i32,
     size: i32,
-    ord_to_doc: OrdToDocConfig,
+    ord_to_doc: OrdToDocDISIReaderConfiguration,
 }
 
 impl Lucene99FlatVectorsReader {
@@ -901,7 +828,7 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
     }
 
     fn search(
-        &mut self,
+        &self,
         _field: &str,
         _target: &[f32],
         _knn_collector: &mut dyn crate::codecs::knn_vectors::KnnCollector,
@@ -911,7 +838,7 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
     }
 
     fn search_byte(
-        &mut self,
+        &self,
         _field: &str,
         _target: &[u8],
         _knn_collector: &mut dyn crate::codecs::knn_vectors::KnnCollector,
@@ -1008,7 +935,7 @@ impl FieldEntry {
         let vector_data_length = input.read_v_long()?;
         let dimension = input.read_v_int()?;
         let size = input.read_int()?;
-        let ord_to_doc = OrdToDocConfig::read_stored_meta(input, size)?;
+        let ord_to_doc = OrdToDocDISIReaderConfiguration::read_stored_meta(input, size)?;
 
         if similarity_function != field_info.vector_similarity_function {
             return Err(LuceneError::CorruptIndex(format!(
@@ -1062,14 +989,14 @@ struct OffHeapFloatVectorValues {
     size: i32,
     byte_size: i32,
     slice: Mutex<Box<dyn IndexInput>>,
-    config: Option<OrdToDocConfig>,
+    config: Option<OrdToDocDISIReaderConfiguration>,
     data_input: Option<Box<dyn IndexInput>>,
     ord_to_doc_data: Vec<u8>,
 }
 
 impl OffHeapFloatVectorValues {
     fn load(
-        config: &OrdToDocConfig,
+        config: &OrdToDocDISIReaderConfiguration,
         dimension: i32,
         vector_data_offset: i64,
         vector_data_length: i64,
@@ -1106,6 +1033,45 @@ impl OffHeapFloatVectorValues {
     }
 }
 
+impl OffHeapFloatVectorValues {
+    /// Clones the instance together with a fresh view over the vector data.
+    ///
+    /// Shared by `copy` and `copy_float`, which differ only in the trait object
+    /// they hand back; Rust cannot express Java's covariant return.
+    fn clone_values(&self) -> Result<Self> {
+        let slice = Mutex::new(
+            self.slice
+                .lock()
+                .map_err(|_| {
+                    LuceneError::IllegalState(
+                        "off-heap vector slice mutex was poisoned".to_string(),
+                    )
+                })?
+                .clone_input()?,
+        );
+        match (&self.config, &self.data_input) {
+            (Some(config), Some(data_input)) => Ok(Self {
+                dimension: self.dimension,
+                size: self.size,
+                byte_size: self.byte_size,
+                slice,
+                config: Some(config.clone()),
+                data_input: Some(data_input.clone_input()?),
+                ord_to_doc_data: self.ord_to_doc_data.clone(),
+            }),
+            _ => Ok(Self {
+                dimension: self.dimension,
+                size: self.size,
+                byte_size: self.byte_size,
+                slice,
+                config: None,
+                data_input: None,
+                ord_to_doc_data: Vec::new(),
+            }),
+        }
+    }
+}
+
 impl KnnVectorValues for OffHeapFloatVectorValues {
     fn dimension(&self) -> i32 {
         self.dimension
@@ -1128,39 +1094,7 @@ impl KnnVectorValues for OffHeapFloatVectorValues {
     }
 
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        let new_slice = Mutex::new(
-            self.slice
-                .lock()
-                .map_err(|_| {
-                    LuceneError::IllegalState(
-                        "off-heap vector slice mutex was poisoned".to_string(),
-                    )
-                })?
-                .clone_input()?,
-        );
-        match (&self.config, &self.data_input) {
-            (Some(config), Some(data_input)) => {
-                let new_data_input = data_input.clone_input()?;
-                Ok(Box::new(Self {
-                    dimension: self.dimension,
-                    size: self.size,
-                    byte_size: self.byte_size,
-                    slice: new_slice,
-                    config: Some(config.clone()),
-                    data_input: Some(new_data_input),
-                    ord_to_doc_data: self.ord_to_doc_data.clone(),
-                }))
-            }
-            _ => Ok(Box::new(Self {
-                dimension: self.dimension,
-                size: self.size,
-                byte_size: self.byte_size,
-                slice: new_slice,
-                config: None,
-                data_input: None,
-                ord_to_doc_data: Vec::new(),
-            })),
-        }
+        Ok(Box::new(self.clone_values()?))
     }
 
     fn encoding(&self) -> VectorEncoding {
@@ -1190,6 +1124,10 @@ impl KnnVectorValues for OffHeapFloatVectorValues {
 }
 
 impl FloatVectorValues for OffHeapFloatVectorValues {
+    fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
+        Ok(Box::new(self.clone_values()?))
+    }
+
     fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
         let mut value = vec![0.0f32; self.dimension as usize];
         let mut slice = self.slice.lock().map_err(|_| {
@@ -1206,14 +1144,14 @@ struct OffHeapByteVectorValues {
     size: i32,
     byte_size: i32,
     slice: Mutex<Box<dyn IndexInput>>,
-    config: Option<OrdToDocConfig>,
+    config: Option<OrdToDocDISIReaderConfiguration>,
     data_input: Option<Box<dyn IndexInput>>,
     ord_to_doc_data: Vec<u8>,
 }
 
 impl OffHeapByteVectorValues {
     fn load(
-        config: &OrdToDocConfig,
+        config: &OrdToDocDISIReaderConfiguration,
         dimension: i32,
         vector_data_offset: i64,
         vector_data_length: i64,
@@ -1250,6 +1188,45 @@ impl OffHeapByteVectorValues {
     }
 }
 
+impl OffHeapByteVectorValues {
+    /// Clones the instance together with a fresh view over the vector data.
+    ///
+    /// Shared by `copy` and `copy_byte`, which differ only in the trait object
+    /// they hand back; Rust cannot express Java's covariant return.
+    fn clone_values(&self) -> Result<Self> {
+        let slice = Mutex::new(
+            self.slice
+                .lock()
+                .map_err(|_| {
+                    LuceneError::IllegalState(
+                        "off-heap vector slice mutex was poisoned".to_string(),
+                    )
+                })?
+                .clone_input()?,
+        );
+        match (&self.config, &self.data_input) {
+            (Some(config), Some(data_input)) => Ok(Self {
+                dimension: self.dimension,
+                size: self.size,
+                byte_size: self.byte_size,
+                slice,
+                config: Some(config.clone()),
+                data_input: Some(data_input.clone_input()?),
+                ord_to_doc_data: self.ord_to_doc_data.clone(),
+            }),
+            _ => Ok(Self {
+                dimension: self.dimension,
+                size: self.size,
+                byte_size: self.byte_size,
+                slice,
+                config: None,
+                data_input: None,
+                ord_to_doc_data: Vec::new(),
+            }),
+        }
+    }
+}
+
 impl KnnVectorValues for OffHeapByteVectorValues {
     fn dimension(&self) -> i32 {
         self.dimension
@@ -1272,39 +1249,7 @@ impl KnnVectorValues for OffHeapByteVectorValues {
     }
 
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        let new_slice = Mutex::new(
-            self.slice
-                .lock()
-                .map_err(|_| {
-                    LuceneError::IllegalState(
-                        "off-heap vector slice mutex was poisoned".to_string(),
-                    )
-                })?
-                .clone_input()?,
-        );
-        match (&self.config, &self.data_input) {
-            (Some(config), Some(data_input)) => {
-                let new_data_input = data_input.clone_input()?;
-                Ok(Box::new(Self {
-                    dimension: self.dimension,
-                    size: self.size,
-                    byte_size: self.byte_size,
-                    slice: new_slice,
-                    config: Some(config.clone()),
-                    data_input: Some(new_data_input),
-                    ord_to_doc_data: self.ord_to_doc_data.clone(),
-                }))
-            }
-            _ => Ok(Box::new(Self {
-                dimension: self.dimension,
-                size: self.size,
-                byte_size: self.byte_size,
-                slice: new_slice,
-                config: None,
-                data_input: None,
-                ord_to_doc_data: Vec::new(),
-            })),
-        }
+        Ok(Box::new(self.clone_values()?))
     }
 
     fn encoding(&self) -> VectorEncoding {
@@ -1334,6 +1279,10 @@ impl KnnVectorValues for OffHeapByteVectorValues {
 }
 
 impl ByteVectorValues for OffHeapByteVectorValues {
+    fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
+        Ok(Box::new(self.clone_values()?))
+    }
+
     fn vector_value(&self, ord: i32) -> Result<Vec<u8>> {
         let mut value = vec![0u8; self.dimension as usize];
         let mut slice = self.slice.lock().map_err(|_| {
@@ -1345,7 +1294,10 @@ impl ByteVectorValues for OffHeapByteVectorValues {
     }
 }
 
-fn read_ord_to_doc_data(vector_data: &dyn IndexInput, config: &OrdToDocConfig) -> Result<Vec<u8>> {
+fn read_ord_to_doc_data(
+    vector_data: &dyn IndexInput,
+    config: &OrdToDocDISIReaderConfiguration,
+) -> Result<Vec<u8>> {
     if config.addresses_length <= 0 {
         return Ok(Vec::new());
     }
@@ -1363,6 +1315,33 @@ fn read_ord_to_doc_data(vector_data: &dyn IndexInput, config: &OrdToDocConfig) -
 
 #[cfg(test)]
 mod tests {
+    /// The four serialization sites for `VectorEncoding` and
+    /// `VectorSimilarityFunction` each carry their own ordinal table. Java has
+    /// one, `Enum.ordinal()`, so the tables must agree with the declaration
+    /// order of the Rust enums and therefore with each other; a divergence here
+    /// silently writes an unreadable index.
+    #[test]
+    fn vector_ordinals_match_the_enum_declaration_order() {
+        use crate::index::{VectorEncoding, VectorSimilarityFunction};
+
+        for encoding in [VectorEncoding::BYTE, VectorEncoding::FLOAT32] {
+            let ordinal = encoding as i32;
+            assert_eq!(super::vector_encoding_ordinal(encoding), ordinal);
+            assert_eq!(super::read_vector_encoding(ordinal).unwrap(), encoding);
+        }
+
+        for similarity in [
+            VectorSimilarityFunction::EUCLIDEAN,
+            VectorSimilarityFunction::DOT_PRODUCT,
+            VectorSimilarityFunction::COSINE,
+            VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
+        ] {
+            let ordinal = similarity as i32;
+            assert_eq!(super::vector_similarity_ordinal(similarity), ordinal);
+            assert_eq!(super::read_vector_similarity(ordinal).unwrap(), similarity);
+        }
+    }
+
     use super::*;
     use crate::codecs::stub::{BufferedUpdates, FieldInfos};
     use crate::codecs::{FlatVectorsFormat, KnnVectorsFormat};

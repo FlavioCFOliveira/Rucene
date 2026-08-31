@@ -687,6 +687,7 @@ mod tests {
     }
 
     /// Bits implementation accepting only even doc IDs.
+    #[derive(Debug)]
     struct EvenBits {
         max_doc: i32,
     }

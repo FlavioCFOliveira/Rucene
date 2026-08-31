@@ -12,94 +12,18 @@ use std::fmt;
 
 use crate::error::Result;
 
-pub use crate::util::bkd::{IntersectVisitor, Relation};
+// The codec layer speaks the same visitor language as the index layer; Java's
+// `PointsReader.getValues` likewise returns an `org.apache.lucene.index.PointValues`
+// whose `intersect` takes `PointValues.IntersectVisitor`. The codec re-exports the
+// single canonical `PointValues`/`IntersectVisitor`/`Relation`/`DocValuesVisitor`
+// definitions from the index layer.
+pub use crate::index::point_values::{
+    DocValuesVisitor, IntersectVisitor, MutablePointTree, PointTree, PointValues, Relation,
+};
 
 use super::postings::MergeState;
 use super::state::{SegmentReadState, SegmentWriteState};
 use super::stub::FieldInfo;
-
-// -----------------------------------------------------------------------------
-// Doc-values visitor
-// -----------------------------------------------------------------------------
-
-/// Visitor that receives every indexed point together with its document id.
-///
-/// This is the codec-level counterpart to Java's
-/// `PointValues.IntersectVisitor` used while writing a field: the writer
-/// needs to consume all `(doc_id, packed_value)` pairs, not only the ones
-/// matching a query.
-pub trait DocValuesVisitor {
-    /// Called once for every indexed point value.
-    fn visit(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()>;
-}
-
-impl<F> DocValuesVisitor for F
-where
-    F: FnMut(i32, &[u8]) -> Result<()> + Send + Sync,
-{
-    fn visit(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
-        (self)(doc_id, packed_value)
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Point values
-// -----------------------------------------------------------------------------
-
-/// Access to indexed point values for a single field.
-///
-/// Equivalent to `org.apache.lucene.index.PointValues`.
-pub trait PointValues: Send + Sync {
-    /// Returns the number of bytes in each dimension's values.
-    fn bytes_per_dimension(&self) -> i32;
-
-    /// Returns the number of dimensions.
-    fn num_dimensions(&self) -> i32;
-
-    /// Returns the number of dimensions used for the index key.
-    fn num_index_dimensions(&self) -> i32;
-
-    /// Returns the total number of indexed points.
-    fn size(&self) -> i64;
-
-    /// Returns the number of documents that have at least one point.
-    fn doc_count(&self) -> i32;
-
-    /// Returns the minimum packed value.
-    fn min_packed_value(&self) -> Result<Vec<u8>>;
-
-    /// Returns the maximum packed value.
-    fn max_packed_value(&self) -> Result<Vec<u8>>;
-
-    /// Iterates every indexed point value for this field.
-    ///
-    /// The default implementation is a no-op so that existing implementors keep
-    /// compiling. Concrete sources that can enumerate their values (for
-    /// example a BKD-backed reader) must override this method.
-    fn visit_doc_values(&self, _visitor: &mut dyn DocValuesVisitor) -> Result<()> {
-        Ok(())
-    }
-
-    /// Finds all matching points for the provided intersection visitor.
-    ///
-    /// The default implementation enumerates every stored point and invokes the
-    /// visitor directly. BKD-backed implementations override this to use the
-    /// tree index for efficient range/intersection queries.
-    fn intersect(&self, visitor: &mut dyn IntersectVisitor) -> Result<()> {
-        struct IntersectDocValuesVisitor<'a> {
-            visitor: &'a mut dyn IntersectVisitor,
-        }
-
-        impl<'a> DocValuesVisitor for IntersectDocValuesVisitor<'a> {
-            fn visit(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
-                self.visitor.visit_point(doc_id, packed_value);
-                Ok(())
-            }
-        }
-
-        self.visit_doc_values(&mut IntersectDocValuesVisitor { visitor })
-    }
-}
 
 // -----------------------------------------------------------------------------
 // Reader
@@ -183,38 +107,10 @@ pub trait PointsFormat: Send + Sync + fmt::Debug {
 // -----------------------------------------------------------------------------
 
 /// A no-op point-values instance that reports zero dimensions and no values.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyPointValues;
-
-impl PointValues for EmptyPointValues {
-    fn bytes_per_dimension(&self) -> i32 {
-        0
-    }
-
-    fn num_dimensions(&self) -> i32 {
-        0
-    }
-
-    fn num_index_dimensions(&self) -> i32 {
-        0
-    }
-
-    fn size(&self) -> i64 {
-        0
-    }
-
-    fn doc_count(&self) -> i32 {
-        0
-    }
-
-    fn min_packed_value(&self) -> Result<Vec<u8>> {
-        Ok(Vec::new())
-    }
-
-    fn max_packed_value(&self) -> Result<Vec<u8>> {
-        Ok(Vec::new())
-    }
-}
+///
+/// Re-exported from the index layer so the codec and index layers share a
+/// single definition.
+pub use crate::index::point_values::EmptyPointValues;
 
 /// A no-op points reader.
 #[derive(Debug, Default, Clone)]
@@ -296,13 +192,13 @@ mod tests {
     #[test]
     fn empty_point_values_reports_zero() {
         let values = EmptyPointValues;
-        assert_eq!(values.bytes_per_dimension(), 0);
-        assert_eq!(values.num_dimensions(), 0);
-        assert_eq!(values.num_index_dimensions(), 0);
+        assert_eq!(values.bytes_per_dimension().unwrap(), 0);
+        assert_eq!(values.num_dimensions().unwrap(), 0);
+        assert_eq!(values.num_index_dimensions().unwrap(), 0);
         assert_eq!(values.size(), 0);
         assert_eq!(values.doc_count(), 0);
-        assert!(values.min_packed_value().unwrap().is_empty());
-        assert!(values.max_packed_value().unwrap().is_empty());
+        assert!(values.min_packed_value().unwrap().is_none());
+        assert!(values.max_packed_value().unwrap().is_none());
     }
 
     #[test]

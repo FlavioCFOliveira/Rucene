@@ -187,9 +187,17 @@ fn create_block_slice(
     let jump_table_bytes = if jump_table_entry_count < 0 {
         0
     } else {
-        jump_table_entry_count as i64 * 8
+        i64::from(jump_table_entry_count) * 8
     };
-    slice.slice(slice_description, offset, length - jump_table_bytes)
+    // Both the length and the entry count come off disk. Java subtracts them as
+    // `long`s and lets the result wrap, then leaves it to `slice` to refuse a
+    // length it cannot serve; the wrap has to be explicit here, or a corrupt
+    // length near `Long.MIN_VALUE` aborts instead of being refused.
+    slice.slice(
+        slice_description,
+        offset,
+        length.wrapping_sub(jump_table_bytes),
+    )
 }
 
 fn create_jump_table(
@@ -201,9 +209,9 @@ fn create_jump_table(
     if jump_table_entry_count <= 0 {
         Ok(None)
     } else {
-        let jump_table_bytes = jump_table_entry_count as i64 * 8;
+        let jump_table_bytes = i64::from(jump_table_entry_count) * 8;
         Ok(Some(slice.random_access_slice(
-            offset + length - jump_table_bytes,
+            offset.wrapping_add(length).wrapping_sub(jump_table_bytes),
             jump_table_bytes,
         )?))
     }
@@ -331,7 +339,7 @@ impl IndexedDISI {
                 let base = in_range_block_index as i64 * 8;
                 let index = jump_table.read_int_at(base)?;
                 let offset = jump_table.read_int_at(base + 4)?;
-                self.next_block_index = index - 1;
+                self.next_block_index = index.wrapping_sub(1);
                 self.slice.seek(offset as i64)?;
                 self.read_block_header()?;
                 return Ok(());
@@ -346,11 +354,24 @@ impl IndexedDISI {
 
     fn read_block_header(&mut self) -> Result<()> {
         let block_short = self.slice.read_short()? as u16;
+        // Java writes `doc >>> 16` as a short and asserts `block >= 0` when it
+        // reads it back (`IndexedDISI.java:520-521`). A document id is a
+        // non-negative `int`, so a legal block index never exceeds 32767 and
+        // the top bit of this short is only ever set by corruption. Java's
+        // assertion is disabled at runtime and it carries on with a negative
+        // block; a `debug_assert!` here would instead abort the process on a
+        // corrupt file, so the invariant is enforced as an error.
+        if block_short > i16::MAX as u16 {
+            return Err(LuceneError::CorruptIndex(format!(
+                "invalid IndexedDISI block index: {block_short}"
+            )));
+        }
         self.block = (block_short as i32) << 16;
-        debug_assert!(self.block >= 0);
         let num_values = 1 + (self.slice.read_short()? as u16 as i32);
         self.index = self.next_block_index;
-        self.next_block_index = self.index + num_values;
+        // Java adds these as `int`s and wraps; a jump-table entry read off a
+        // corrupt file can make `index` any value at all.
+        self.next_block_index = self.index.wrapping_add(num_values);
         if num_values <= MAX_ARRAY_LENGTH as i32 {
             self.method = Method::Sparse;
             self.block_end = self.slice.file_pointer() + (num_values as i64 * 2);
@@ -358,7 +379,7 @@ impl IndexedDISI {
         } else if num_values == BLOCK_SIZE as i32 {
             self.method = Method::All;
             self.block_end = self.slice.file_pointer();
-            let gap = self.block - self.index - 1;
+            let gap = self.block.wrapping_sub(self.index).wrapping_sub(1);
             self.doc = -1; // will be set by advance
             self.dense_origo_index = gap; // repurpose for ALL gap
         } else {
@@ -375,7 +396,7 @@ impl IndexedDISI {
                 self.slice.read_bytes(&mut self.dense_rank_table, 0, len)?;
             }
             self.word_index = -1;
-            self.number_of_ones = self.index + 1;
+            self.number_of_ones = self.index.wrapping_add(1);
             self.dense_origo_index = self.number_of_ones;
         }
         Ok(())
@@ -388,7 +409,7 @@ impl IndexedDISI {
             Method::All => {
                 let gap = self.dense_origo_index;
                 self.doc = target;
-                self.index = target - gap;
+                self.index = target.wrapping_sub(gap);
                 Ok(true)
             }
         }
@@ -398,7 +419,7 @@ impl IndexedDISI {
         let target_in_block = target & 0xFFFF;
         while self.index < self.next_block_index {
             let doc_in_block = self.slice.read_short()? as u16 as i32;
-            self.index += 1;
+            self.index = self.index.wrapping_add(1);
             if doc_in_block >= target_in_block {
                 self.doc = self.block | doc_in_block;
                 self.exists = true;
@@ -413,19 +434,23 @@ impl IndexedDISI {
         let target_in_block = target & 0xFFFF;
         let target_word_index = target_in_block >> 6;
         if self.dense_rank_power != -1
-            && target_word_index - self.word_index >= (1 << (self.dense_rank_power - 6))
+            && target_word_index.wrapping_sub(self.word_index) >= (1 << (self.dense_rank_power - 6))
         {
             self.rank_skip(target_in_block)?;
         }
-        for _ in (self.word_index + 1)..=target_word_index {
+        for _ in self.word_index.wrapping_add(1)..=target_word_index {
             self.word = self.slice.read_long()? as u64;
-            self.number_of_ones += (self.word as u64).count_ones() as i32;
+            self.number_of_ones = self
+                .number_of_ones
+                .wrapping_add(self.word.count_ones() as i32);
         }
         self.word_index = target_word_index;
         let left_bits = self.word >> (target & 0x3F);
         if left_bits != 0 {
-            self.doc = target + (left_bits.trailing_zeros() as i32);
-            self.index = self.number_of_ones - (left_bits.count_ones() as i32);
+            self.doc = target.wrapping_add(left_bits.trailing_zeros() as i32);
+            self.index = self
+                .number_of_ones
+                .wrapping_sub(left_bits.count_ones() as i32);
             return Ok(true);
         }
         while self.word_index + 1 < DENSE_BLOCK_LONGS as i32 {
@@ -433,7 +458,9 @@ impl IndexedDISI {
             self.word = self.slice.read_long()? as u64;
             if self.word != 0 {
                 self.index = self.number_of_ones;
-                self.number_of_ones += self.word.count_ones() as i32;
+                self.number_of_ones = self
+                    .number_of_ones
+                    .wrapping_add(self.word.count_ones() as i32);
                 self.doc = self.block | (self.word_index << 6) | self.word.trailing_zeros() as i32;
                 return Ok(true);
             }
@@ -450,10 +477,10 @@ impl IndexedDISI {
         self.slice
             .seek(self.dense_bitmap_offset + rank_aligned_word_index as i64 * 8)?;
         let rank_word = self.slice.read_long()? as u64;
-        let dense_noo = rank as i32 + rank_word.count_ones() as i32;
-        self.word_index = rank_aligned_word_index as i32;
+        let dense_noo = (rank as i32).wrapping_add(rank_word.count_ones() as i32);
+        self.word_index = rank_aligned_word_index;
         self.word = rank_word;
-        self.number_of_ones = self.dense_origo_index + dense_noo;
+        self.number_of_ones = self.dense_origo_index.wrapping_add(dense_noo);
         Ok(())
     }
 
@@ -463,7 +490,7 @@ impl IndexedDISI {
             Method::Dense => self.dense_advance_exact(target),
             Method::All => {
                 let gap = self.dense_origo_index;
-                self.index = target - gap;
+                self.index = target.wrapping_sub(gap);
                 Ok(true)
             }
         }
@@ -479,11 +506,11 @@ impl IndexedDISI {
         }
         while self.index < self.next_block_index {
             let doc_in_block = self.slice.read_short()? as u16 as i32;
-            self.index += 1;
+            self.index = self.index.wrapping_add(1);
             if doc_in_block >= target_in_block {
                 self.next_exist_doc_in_block = doc_in_block;
                 if doc_in_block != target_in_block {
-                    self.index -= 1;
+                    self.index = self.index.wrapping_sub(1);
                     self.slice.seek(self.slice.file_pointer() - 2)?;
                     break;
                 }
@@ -499,17 +526,21 @@ impl IndexedDISI {
         let target_in_block = target & 0xFFFF;
         let target_word_index = target_in_block >> 6;
         if self.dense_rank_power != -1
-            && target_word_index - self.word_index >= (1 << (self.dense_rank_power - 6))
+            && target_word_index.wrapping_sub(self.word_index) >= (1 << (self.dense_rank_power - 6))
         {
             self.rank_skip(target_in_block)?;
         }
-        for _ in (self.word_index + 1)..=target_word_index {
+        for _ in self.word_index.wrapping_add(1)..=target_word_index {
             self.word = self.slice.read_long()? as u64;
-            self.number_of_ones += self.word.count_ones() as i32;
+            self.number_of_ones = self
+                .number_of_ones
+                .wrapping_add(self.word.count_ones() as i32);
         }
         self.word_index = target_word_index;
         let left_bits = self.word >> (target & 0x3F);
-        self.index = self.number_of_ones - left_bits.count_ones() as i32;
+        self.index = self
+            .number_of_ones
+            .wrapping_sub(left_bits.count_ones() as i32);
         Ok((left_bits & 1) != 0)
     }
 }
@@ -520,7 +551,7 @@ impl DocIdSetIterator for IndexedDISI {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        self.advance(self.doc + 1)
+        self.advance(self.doc.wrapping_add(1))
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
@@ -534,8 +565,17 @@ impl DocIdSetIterator for IndexedDISI {
             }
             self.read_block_header()?;
         }
-        let found = self.advance_within_block(self.block)?;
-        debug_assert!(found);
+        // Java asserts here that the freshly read block yields its own first
+        // document (`IndexedDISI.java:582`), which holds for every block it
+        // writes. Assertions are off at runtime, so a corrupt block leaves Java
+        // with a stale `doc`; a `debug_assert!` would instead abort this
+        // process, so the broken invariant is reported as corruption.
+        if !self.advance_within_block(self.block)? {
+            return Err(LuceneError::CorruptIndex(format!(
+                "IndexedDISI block {} names no document of its own",
+                self.block
+            )));
+        }
         Ok(self.doc)
     }
 

@@ -201,10 +201,7 @@ impl PostingsFormat for Lucene104PostingsFormat {
         Ok(Box::new(terms_writer))
     }
 
-    fn fields_producer<'a>(
-        &self,
-        state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn FieldsProducer + 'a>> {
+    fn fields_producer<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn FieldsProducer>> {
         let postings_reader = Box::new(Lucene104PostingsReader::new(state)?);
         let reader = Lucene103BlockTreeTermsReader::new(postings_reader, state)?;
         Ok(Box::new(reader))

@@ -8,15 +8,48 @@
 
 #![deny(unsafe_code)]
 
+pub mod accountables;
+pub mod annotations;
 pub mod attribute;
 pub mod automaton;
+pub mod bit_set;
+pub mod byte_block_pool;
+pub mod bytes_ref_array;
+pub mod bytes_ref_hash;
 pub mod chars_ref;
+pub mod collection_util;
+pub mod command_line_util;
 /// LZ4 and lowercase-ASCII compression utilities.
 pub mod compress;
+pub mod concurrent;
+pub mod doc_id_set;
 pub mod extra;
+pub mod file_deleter;
+pub mod fst;
+pub mod graph;
+pub mod info_stream;
+pub mod int_block_pool;
+pub mod io_function;
+pub mod jvm;
+pub mod long_heap;
+pub mod math_util;
+pub mod misc;
+pub mod mutable;
+pub mod offline_sorter;
 pub mod packed;
+pub mod paged_bytes;
+pub mod quantization;
+pub mod query_builder;
+pub mod refs;
+pub mod resource_loader;
+pub mod ring_buffer;
+pub mod selector;
+pub mod sloppy_math;
 pub mod small_float;
+pub mod sorter;
+pub mod spi;
 pub mod string_helper;
+pub mod unicode_util;
 
 /// Block KD-tree utilities ported from `org.apache.lucene.util.bkd`.
 pub mod bkd;
@@ -27,28 +60,116 @@ pub mod bit_sets;
 /// HNSW graph utilities for vector search.
 pub mod hnsw;
 
+/// Vector arithmetic primitives ported from `org.apache.lucene.util.VectorUtil`.
+pub mod vector_util;
+
+pub use accountables::{AccountableTree, Accountables, NamedAccountable};
+pub use annotations::{IgnoreRandomChains, SuppressForbidden};
+pub use bit_set::{
+    bit_set_of, check_unpositioned, BitSet, BitSetIterator, DocBaseBitSetIterator, FixedBits,
+    LiveDocs,
+};
+pub use bytes_ref_array::{
+    BytesRefArray, BytesRefBlockPool, BytesRefIterator, EmptyBytesRefIterator,
+    FixedLengthBytesRefArray, IndexedBytesRefIterator, SortState, SortableBytesRefArray,
+};
+pub use collection_util::{
+    intro_sort as collection_intro_sort, intro_sort_by, new_hash_map, new_hash_set,
+    tim_sort as collection_tim_sort, tim_sort_by,
+};
+pub use command_line_util::{CommandLineUtil, FSDirectoryKind};
+pub use concurrent::{
+    Counter, NamedThreadFactory, SameThreadExecutorService, SetOnce, WeakIdentityMap,
+};
+pub use doc_id_set::{
+    BitDocIdSet, BulkAdder, DocIdSetBuilder, IntArrayDocIdSet, IntArrayDocIdSetIterator,
+    NotDocIdSet,
+};
+pub use graph::{
+    FiniteStringsTokenStream, FiniteStringsTokenStreams, GraphTokenStreamFiniteStrings,
+};
+pub use info_stream::{JavaLoggingInfoStream, PrintStreamInfoStream};
+pub use int_block_pool::{
+    ByteBlockAllocator, DirectIntAllocator, IntBlockAllocator, IntBlockPool,
+    RecyclingByteBlockAllocator, RecyclingIntBlockAllocator, INT_BLOCK_MASK, INT_BLOCK_SHIFT,
+    INT_BLOCK_SIZE,
+};
+pub use io_function::{
+    FilterIterator, FloatToFloatFunction, IOBooleanSupplier, IOConsumer, IOFunction, IOSupplier,
+};
+pub use jvm::{HotspotVMOptions, MethodClass, VirtualMethod};
+pub use long_heap::{LongHeap, TernaryLongHeap};
+pub use math_util::MathUtil;
+pub use misc::{MapOfSets, SentinelIntSet, StrictStringTokenizer, TermAndVector, ToStringUtils};
+pub use mutable::{
+    MutableValue, MutableValueBool, MutableValueDate, MutableValueDouble, MutableValueFloat,
+    MutableValueInt, MutableValueLong, MutableValueObject, MutableValueStr,
+};
+pub use offline_sorter::{
+    BufferSize, ByteSequencesReader, ByteSequencesWriter, OfflineSorter, OfflineSorterComparator,
+    SortInfo,
+};
+pub use paged_bytes::{PagedBytes, PagedBytesDataInput, PagedBytesDataOutput, PagedBytesReader};
+pub use refs::{CharsRefBuilder, IntsRefBuilder, LongsRef, EMPTY_LONGS};
+pub use resource_loader::{
+    ClassLoader, ClassLoaderUtils, ClassRegistry, ClasspathResourceLoader, ModuleResourceLoader,
+    ResourceLoader, ResourceLoaderAware,
+};
+pub use ring_buffer::{FrequencyTrackingRingBuffer, Resettable, RollingBuffer};
+pub use sloppy_math::SloppyMath;
+pub use sorter::{
+    ArrayInPlaceMergeSorter, ArrayIntroSorter, ArrayTimSorter, BytesRefComparator,
+    InPlaceMergeSorter, LSBRadixSorter, MSBRadixSorter, MSBRadixSorterOps, MergeSorter,
+    NaturalBytesRefComparator, Sorter, StableMSBRadixSorter, StableMSBRadixSorterOps,
+    StableStringSorter, StableStringSorterOps, StringSorter, StringSorterComparator,
+    StringSorterOps, TimSorter, TimSorterState,
+};
+pub use spi::{NamedSPI, NamedSPILoader};
+pub use unicode_util::{UTF8CodePoint, UnicodeUtil};
+
 pub use attribute::{
     unwrap_all, AsUnwrappable, Attribute, AttributeFactory, AttributeImpl, AttributeReflector,
     AttributeSource, CapturedState, CloseableThreadLocal, DefaultAttributeFactory, Unwrappable,
 };
 pub use automaton::{
-    automata, operations, Automaton, AutomatonType, ByteRunAutomaton, ByteRunnable,
-    CompiledAutomaton, RunAutomaton, Transition, TransitionAccessor,
+    automata, operations, Automata, Automaton, AutomatonBuilder, AutomatonProvider, AutomatonType,
+    ByteRunAutomaton, ByteRunnable, CaseFolding, CharacterRunAutomaton, CompiledAutomaton,
+    DeterminizeResult, FiniteStringsIterator, FrozenIntSet, IntSet, Lev1ParametricDescription,
+    Lev1TParametricDescription, Lev2ParametricDescription, Lev2TParametricDescription,
+    LevenshteinAutomata, LimitedFiniteStringsIterator, NFARunAutomaton, Operations,
+    ParametricDescription, RegExp, RegExpKind, RunAutomaton, StatePair, StateSet,
+    StringsToAutomaton, TooComplexToDeterminizeException, Transition, TransitionAccessor,
+    UTF32ToUTF8, DEFAULT_DETERMINIZE_WORK_LIMIT, MAXIMUM_SUPPORTED_DISTANCE,
+    MAX_STRING_UNION_TERM_LENGTH,
 };
 pub use bit_sets::{DenseLiveDocs, RoaringDocIdSet, SparseFixedBitSet, SparseLiveDocs};
+pub use byte_block_pool::{
+    ByteBlockPool, BYTE_BLOCK_MASK, BYTE_BLOCK_SHIFT, BYTE_BLOCK_SIZE, MAX_TERM_LENGTH,
+};
+pub use bytes_ref_hash::BytesRefHash;
 pub use chars_ref::{CharsRef, EMPTY_CHARS};
 pub use extra::{
     IdentityLongValues, IntoIter as PriorityQueueIntoIter, LongBitSet, LongValues, MergedIterator,
     PriorityQueue, PriorityQueueComparator, Version, ZeroesLongValues,
 };
+pub use query_builder::{QueryBuilder, QueryBuilderOps, TermAndBoost as QueryBuilderTermAndBoost};
 pub use small_float::SmallFloat;
-pub use string_helper::{read_string, write_string, IntsRef, StringHelper, ID_LENGTH};
+pub use string_helper::{
+    compare_utf16, read_string, write_string, IntsRef, StringHelper, ID_LENGTH,
+};
+pub use vector_util::{
+    add, check_finite, cosine_bytes, cosine_f32, dot_product_bytes, dot_product_f32,
+    dot_product_score, is_unit_vector, is_zero_vector_bytes, is_zero_vector_f32, l2normalize,
+    normalize_distance_to_unit_interval, normalize_to_unit_interval, scale_max_inner_product_score,
+    square_distance_bytes, square_distance_f32, USE_FMA,
+};
 
 use std::{
     cmp::Ordering,
     env,
     fmt::{self, Debug, Display, Formatter},
     fs::{self, File, OpenOptions},
+    hash::{Hash, Hasher},
     io,
     path::Path,
     sync::LazyLock,
@@ -708,6 +829,12 @@ impl GroupVIntUtil {
 // ---------------------------------------------------------------------------
 
 /// Methods for manipulating arrays, matching Lucene's `ArrayUtil`.
+/// A comparator over two byte slices at given offsets, returning a negative,
+/// zero or positive `i32` as Java's comparators do.
+///
+/// Equivalent to the functional interface `ArrayUtil.ByteArrayComparator`.
+pub type ByteArrayComparator = fn(&[u8], usize, &[u8], usize) -> i32;
+
 pub struct ArrayUtil;
 
 impl ArrayUtil {
@@ -811,6 +938,305 @@ impl ArrayUtil {
     /// Copies a sub-range of an `i64` array into a new vector.
     pub fn copy_of_sub_array_long(array: &[i64], from: usize, to: usize) -> Vec<i64> {
         array[from..to].to_vec()
+    }
+
+    /// Grows `array` to hold at least `min_length` elements, without exceeding
+    /// `max_length`.
+    ///
+    /// Equivalent to `ArrayUtil.growInRange(int[], int, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `min_length > max_length`, which is the
+    /// `IllegalArgumentException` Java throws.
+    pub fn grow_in_range_int(
+        array: &[i32],
+        min_length: usize,
+        max_length: usize,
+    ) -> Result<Vec<i32>, LuceneError> {
+        Self::grow_in_range_generic(array, min_length, max_length, 4)
+    }
+
+    /// Grows `array` to hold at least `min_length` elements, without exceeding
+    /// `max_length`.
+    ///
+    /// Equivalent to `ArrayUtil.growInRange(float[], int, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `min_length > max_length`.
+    pub fn grow_in_range_float(
+        array: &[f32],
+        min_length: usize,
+        max_length: usize,
+    ) -> Result<Vec<f32>, LuceneError> {
+        Self::grow_in_range_generic(array, min_length, max_length, 4)
+    }
+
+    /// The body both `grow_in_range` forms share.
+    ///
+    /// Java writes one overload per primitive because it has no generics over
+    /// primitives; the only thing that varies is the element width handed to
+    /// [`oversize`](Self::oversize), so one generic function stands for both.
+    fn grow_in_range_generic<T: Copy + Default>(
+        array: &[T],
+        min_length: usize,
+        max_length: usize,
+        bytes_per_element: usize,
+    ) -> Result<Vec<T>, LuceneError> {
+        if min_length > max_length {
+            return Err(LuceneError::IllegalArgument(format!(
+                "requested minimum array length {min_length} is larger than requested maximum array length {max_length}"
+            )));
+        }
+
+        if array.len() >= min_length {
+            return Ok(array.to_vec());
+        }
+
+        let potential_length = Self::oversize(min_length, bytes_per_element);
+        let new_length = max_length.min(potential_length);
+        let mut grown = array.to_vec();
+        grown.resize(new_length, T::default());
+        Ok(grown)
+    }
+
+    /// Returns a copy of `array` grown to exactly `new_length` elements.
+    ///
+    /// Equivalent to the `ArrayUtil.growExact` overloads. Java declares one per
+    /// primitive plus a generic one; Rust needs only the generic form.
+    pub fn grow_exact_generic<T: Copy + Default>(array: &[T], new_length: usize) -> Vec<T> {
+        let mut grown = array.to_vec();
+        grown.resize(new_length, T::default());
+        grown
+    }
+
+    /// Returns `array` grown to hold at least `min_size` elements, over-allocating
+    /// as [`oversize`](Self::oversize) prescribes.
+    ///
+    /// Equivalent to the `ArrayUtil.grow(T[], int)` overloads.
+    pub fn grow_generic<T: Copy + Default>(array: &[T], min_size: usize) -> Vec<T> {
+        if array.len() < min_size {
+            Self::grow_exact_generic(array, Self::oversize(min_size, size_of::<T>()))
+        } else {
+            array.to_vec()
+        }
+    }
+
+    /// Returns an array of at least `min_size` elements, discarding the contents
+    /// of `array` when it has to grow.
+    ///
+    /// Equivalent to the `ArrayUtil.growNoCopy(T[], int)` overloads.
+    pub fn grow_no_copy_generic<T: Copy + Default>(array: &[T], min_size: usize) -> Vec<T> {
+        if array.len() < min_size {
+            vec![T::default(); Self::oversize(min_size, size_of::<T>())]
+        } else {
+            array.to_vec()
+        }
+    }
+
+    /// Returns a copy of the elements of `array` in `[from, to)`.
+    ///
+    /// Equivalent to the `ArrayUtil.copyOfSubArray` overloads.
+    pub fn copy_of_sub_array_generic<T: Copy>(array: &[T], from: usize, to: usize) -> Vec<T> {
+        array[from..to].to_vec()
+    }
+
+    /// Parses the UTF-16 code units of `chars[offset..offset + len]` as a signed
+    /// integer in `radix`.
+    ///
+    /// Equivalent to `ArrayUtil.parseInt(char[], int, int, int)`. Lucene has this
+    /// so that a term can be parsed without allocating a `String`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error where Java throws `NumberFormatException`: an
+    /// out-of-range radix, an empty slice, a non-digit character, or a value that
+    /// does not fit in an `i32`.
+    pub fn parse_int_radix(
+        chars: &[char],
+        mut offset: usize,
+        mut len: usize,
+        radix: u32,
+    ) -> Result<i32, LuceneError> {
+        // Character.MIN_RADIX / Character.MAX_RADIX.
+        if !(2..=36).contains(&radix) {
+            return Err(LuceneError::IllegalArgument(format!(
+                "radix {radix} out of range"
+            )));
+        }
+        if len == 0 {
+            return Err(LuceneError::IllegalArgument(
+                "chars length is 0".to_string(),
+            ));
+        }
+        let mut i = 0usize;
+        let negative = chars[offset] == '-';
+        if negative {
+            i += 1;
+            if i == len {
+                return Err(LuceneError::IllegalArgument(
+                    "can't convert to an int".to_string(),
+                ));
+            }
+            offset += 1;
+            len -= 1;
+        }
+        Self::parse(chars, offset, len, radix, negative)
+    }
+
+    /// Parses every code unit of `chars` as a signed decimal integer.
+    ///
+    /// Equivalent to `ArrayUtil.parseInt(char[])`.
+    ///
+    /// # Errors
+    ///
+    /// As [`parse_int_radix`](Self::parse_int_radix).
+    pub fn parse_int(chars: &[char]) -> Result<i32, LuceneError> {
+        Self::parse_int_radix(chars, 0, chars.len(), 10)
+    }
+
+    /// Equivalent to the private `ArrayUtil.parse(char[], int, int, int, boolean)`.
+    ///
+    /// Java accumulates the value as a negative number so that `Integer.MIN_VALUE`
+    /// is representable; the same trick is reproduced here, which is why the
+    /// arithmetic is checked against `i32::MIN` rather than `i32::MAX`.
+    fn parse(
+        chars: &[char],
+        offset: usize,
+        len: usize,
+        radix: u32,
+        negative: bool,
+    ) -> Result<i32, LuceneError> {
+        let unparsable = || LuceneError::IllegalArgument("Unable to parse".to_string());
+        let max = i32::MIN / radix as i32;
+        let mut result: i32 = 0;
+        for i in 0..len {
+            let digit = match chars[i + offset].to_digit(radix) {
+                Some(d) => d as i32,
+                None => return Err(unparsable()),
+            };
+            if max > result {
+                return Err(unparsable());
+            }
+            let next = result
+                .checked_mul(radix as i32)
+                .and_then(|v| v.checked_sub(digit))
+                .ok_or_else(unparsable)?;
+            if next > result {
+                return Err(unparsable());
+            }
+            result = next;
+        }
+        if !negative {
+            result = result.checked_neg().ok_or_else(unparsable)?;
+            if result < 0 {
+                return Err(unparsable());
+            }
+        }
+        Ok(result)
+    }
+
+    /// Returns the hash Lucene computes over `array[start..end]`.
+    ///
+    /// Equivalent to `ArrayUtil.hashCode(char[], int, int)`: a `31 * h + c` fold
+    /// walked from the end towards the start.
+    pub fn hash_code(array: &[char], start: usize, end: usize) -> i32 {
+        let mut code: i32 = 0;
+        for i in (start..end).rev() {
+            code = code.wrapping_mul(31).wrapping_add(array[i] as i32);
+        }
+        code
+    }
+
+    /// Swaps the elements at `i` and `j`.
+    ///
+    /// Equivalent to `ArrayUtil.swap(T[], int, int)`.
+    pub fn swap<T>(arr: &mut [T], i: usize, j: usize) {
+        arr.swap(i, j);
+    }
+
+    /// Compares the eight bytes at `a_offset` and `b_offset` as unsigned 64-bit
+    /// big-endian integers.
+    ///
+    /// Equivalent to `ArrayUtil.compareUnsigned8(byte[], int, byte[], int)`, the
+    /// comparator `LongPoint` and `DoublePoint` use.
+    pub fn compare_unsigned8(a: &[u8], a_offset: usize, b: &[u8], b_offset: usize) -> i32 {
+        let x = u64::from_be_bytes(a[a_offset..a_offset + 8].try_into().unwrap());
+        let y = u64::from_be_bytes(b[b_offset..b_offset + 8].try_into().unwrap());
+        match x.cmp(&y) {
+            Ordering::Less => -1,
+            Ordering::Equal => 0,
+            Ordering::Greater => 1,
+        }
+    }
+
+    /// Compares the four bytes at `a_offset` and `b_offset` as unsigned 32-bit
+    /// big-endian integers.
+    ///
+    /// Equivalent to `ArrayUtil.compareUnsigned4(byte[], int, byte[], int)`, the
+    /// comparator `IntPoint`, `FloatPoint`, `LatLonPoint` and `LatLonShape` use.
+    pub fn compare_unsigned4(a: &[u8], a_offset: usize, b: &[u8], b_offset: usize) -> i32 {
+        let x = u32::from_be_bytes(a[a_offset..a_offset + 4].try_into().unwrap());
+        let y = u32::from_be_bytes(b[b_offset..b_offset + 4].try_into().unwrap());
+        match x.cmp(&y) {
+            Ordering::Less => -1,
+            Ordering::Equal => 0,
+            Ordering::Greater => 1,
+        }
+    }
+
+    /// Returns the comparator for keys of `num_bytes` bytes.
+    ///
+    /// Equivalent to `ArrayUtil.getUnsignedComparator(int)`, which specialises on
+    /// the two widths that dominate — 8 and 4 — and otherwise falls back to a
+    /// plain unsigned byte-wise comparison.
+    pub fn get_unsigned_comparator(num_bytes: usize) -> ByteArrayComparator {
+        match num_bytes {
+            8 => Self::compare_unsigned8,
+            4 => Self::compare_unsigned4,
+            _ => {
+                // A closure would capture num_bytes, which a plain fn pointer
+                // cannot carry; the generic width is served by the boxed form.
+                Self::compare_unsigned_generic
+            }
+        }
+    }
+
+    /// Compares two byte slices from the given offsets to their ends, treating
+    /// each byte as unsigned.
+    ///
+    /// This is the fallback branch of
+    /// [`get_unsigned_comparator`](Self::get_unsigned_comparator). Java closes
+    /// over `numBytes`; a `fn` pointer cannot, so the caller slices the arrays to
+    /// the width it wants before calling. [`compare_unsigned_len`](Self::compare_unsigned_len)
+    /// is the form that takes the width explicitly.
+    pub fn compare_unsigned_generic(a: &[u8], a_offset: usize, b: &[u8], b_offset: usize) -> i32 {
+        match a[a_offset..].cmp(&b[b_offset..]) {
+            Ordering::Less => -1,
+            Ordering::Equal => 0,
+            Ordering::Greater => 1,
+        }
+    }
+
+    /// Compares `len` bytes of each slice from the given offsets, treating each
+    /// byte as unsigned.
+    ///
+    /// This is what Java's `getUnsignedComparator` lambda does for a width other
+    /// than 8 or 4: `Arrays.compareUnsigned(a, aOffset, aOffset + numBytes, b,
+    /// bOffset, bOffset + numBytes)`. Rust's `u8` ordering is already unsigned.
+    pub fn compare_unsigned_len(
+        a: &[u8],
+        a_offset: usize,
+        b: &[u8],
+        b_offset: usize,
+        len: usize,
+    ) -> i32 {
+        match a[a_offset..a_offset + len].cmp(&b[b_offset..b_offset + len]) {
+            Ordering::Less => -1,
+            Ordering::Equal => 0,
+            Ordering::Greater => 1,
+        }
     }
 }
 
@@ -1007,6 +1433,173 @@ impl RamUsageEstimator {
             Self::NUM_BYTES_ARRAY_HEADER + Self::NUM_BYTES_OBJECT_REF * arr.len() as i64,
         )
     }
+
+    /// Approximate memory a hash-table entry costs.
+    ///
+    /// Equivalent to `RamUsageEstimator.HASHTABLE_RAM_BYTES_PER_ENTRY`: key plus
+    /// value, doubled because hash tables are oversized to avoid collisions.
+    pub const HASHTABLE_RAM_BYTES_PER_ENTRY: i64 = (2 * Self::NUM_BYTES_OBJECT_REF) * 2;
+
+    /// Approximate memory a linked-hash-table entry costs.
+    ///
+    /// Equivalent to `RamUsageEstimator.LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY`:
+    /// the hash-table entry plus the previous and next references.
+    pub const LINKED_HASHTABLE_RAM_BYTES_PER_ENTRY: i64 =
+        Self::HASHTABLE_RAM_BYTES_PER_ENTRY + 2 * Self::NUM_BYTES_OBJECT_REF;
+
+    /// How deep [`size_of_map`](Self::size_of_map) and
+    /// [`size_of_collection`](Self::size_of_collection) recurse.
+    ///
+    /// Equivalent to `RamUsageEstimator.MAX_DEPTH`.
+    pub const MAX_DEPTH: i32 = 1;
+
+    /// Shallow size of a `String` instance.
+    ///
+    /// Equivalent to `RamUsageEstimator.STRING_SIZE`, which Java derives at class
+    /// initialisation with `shallowSizeOfInstance(String.class)`. Rust has no
+    /// reflection, so the same arithmetic is spelled out: the object header, the
+    /// cached hash, and the reference to the character array, aligned.
+    pub const STRING_SIZE: i64 = Self::NUM_BYTES_OBJECT_HEADER + 4 + Self::NUM_BYTES_OBJECT_REF;
+
+    /// Returns the size in bytes of a `bool` array.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(boolean[])`.
+    pub fn size_of_bool(arr: &[bool]) -> i64 {
+        Self::align_object_size(Self::NUM_BYTES_ARRAY_HEADER + arr.len() as i64)
+    }
+
+    /// Returns the size in bytes of a UTF-16 code-unit array.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(char[])`.
+    pub fn size_of_char(arr: &[u16]) -> i64 {
+        Self::align_object_size(Self::NUM_BYTES_ARRAY_HEADER + 2 * arr.len() as i64)
+    }
+
+    /// Returns the size in bytes of a `short` array.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(short[])`.
+    pub fn size_of_short(arr: &[i16]) -> i64 {
+        Self::align_object_size(Self::NUM_BYTES_ARRAY_HEADER + 2 * arr.len() as i64)
+    }
+
+    /// Returns the size in bytes of a `float` array.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(float[])`.
+    pub fn size_of_float(arr: &[f32]) -> i64 {
+        Self::align_object_size(Self::NUM_BYTES_ARRAY_HEADER + 4 * arr.len() as i64)
+    }
+
+    /// Returns the size in bytes of a `double` array.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(double[])`.
+    pub fn size_of_double(arr: &[f64]) -> i64 {
+        Self::align_object_size(Self::NUM_BYTES_ARRAY_HEADER + 8 * arr.len() as i64)
+    }
+
+    /// Returns the size in bytes of a string.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(String)`: the string object, an
+    /// array header, and two bytes per UTF-16 code unit. Java notes that this may
+    /// overstate the cost under compact strings, and keeps the estimate anyway;
+    /// the port keeps it too, so that the accounting agrees with Lucene's.
+    pub fn size_of_string(s: &str) -> i64 {
+        let utf16_len: i64 = s.encode_utf16().count() as i64;
+        Self::align_object_size(Self::STRING_SIZE + Self::NUM_BYTES_ARRAY_HEADER + 2 * utf16_len)
+    }
+
+    /// Returns the memory an [`Accountable`] reports.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(Accountable)`.
+    pub fn size_of_accountable(accountable: &dyn Accountable) -> i64 {
+        accountable.ram_bytes_used()
+    }
+
+    /// Returns the shallow size of the slice plus the memory each element
+    /// reports.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOf(Accountable[])`.
+    pub fn size_of_accountables(accountables: &[&dyn Accountable]) -> i64 {
+        let mut size = Self::shallow_size_of(accountables);
+        for accountable in accountables {
+            size += accountable.ram_bytes_used();
+        }
+        size
+    }
+
+    /// Returns an estimate of the memory a map costs, given the size of one
+    /// entry's key and value.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOfMap(Map, long)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java walks the entries and calls
+    /// `sizeOfObject` on each key and value, which needs reflection over
+    /// arbitrary field layouts. Rust has none, so the per-entry cost is a
+    /// parameter: the caller, which knows the concrete types, supplies it. The
+    /// surrounding arithmetic — the shallow size, the per-entry overhead and the
+    /// final alignment — is Java's.
+    pub fn size_of_map(entry_count: usize, size_per_entry: i64) -> i64 {
+        let mut size = Self::align_object_size(Self::NUM_BYTES_OBJECT_HEADER);
+        size += entry_count as i64 * (Self::HASHTABLE_RAM_BYTES_PER_ENTRY + size_per_entry);
+        Self::align_object_size(size)
+    }
+
+    /// Returns an estimate of the memory a collection costs, given the size of
+    /// one element.
+    ///
+    /// Equivalent to `RamUsageEstimator.sizeOfCollection(Collection, long)`,
+    /// which assumes an array-backed collection and charges a reference per
+    /// element.
+    ///
+    /// **Divergence from Lucene 10.5.0.** As with [`size_of_map`](Self::size_of_map),
+    /// the per-element cost is a parameter rather than a reflective walk.
+    pub fn size_of_collection(element_count: usize, size_per_element: i64) -> i64 {
+        let mut size = Self::align_object_size(Self::NUM_BYTES_OBJECT_HEADER);
+        // Assume an array-backed collection and add the per-object references.
+        size += Self::NUM_BYTES_ARRAY_HEADER + element_count as i64 * Self::NUM_BYTES_OBJECT_REF;
+        size += element_count as i64 * size_per_element;
+        Self::align_object_size(size)
+    }
+
+    /// Returns the shallow size of an instance of `T`.
+    ///
+    /// Equivalent to `RamUsageEstimator.shallowSizeOfInstance(Class)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java walks the class hierarchy by
+    /// reflection, charging a reference per object field and the declared width
+    /// per primitive field. Rust knows the layout at compile time, so
+    /// `size_of::<T>()` gives the field block directly; the object header and the
+    /// alignment rule are Java's.
+    pub fn shallow_size_of_instance<T>() -> i64 {
+        Self::align_object_size(Self::NUM_BYTES_OBJECT_HEADER + size_of::<T>() as i64)
+    }
+
+    /// Renders `bytes` in human-readable units — GB, MB, KB, or bytes.
+    ///
+    /// Equivalent to `RamUsageEstimator.humanReadableUnits(long)`, which formats
+    /// with the pattern `0.#` under `Locale.ROOT`: at most one fractional digit,
+    /// and none when it would be zero.
+    pub fn human_readable_units(bytes: i64) -> String {
+        fn format_one_dp(value: f32) -> String {
+            // DecimalFormat("0.#") keeps at most one fractional digit and drops
+            // it when it rounds to zero.
+            let rounded = (value * 10.0).round() / 10.0;
+            if (rounded.fract()).abs() < f32::EPSILON {
+                format!("{}", rounded as i64)
+            } else {
+                format!("{rounded:.1}")
+            }
+        }
+
+        if bytes / Self::ONE_GB > 0 {
+            format!("{} GB", format_one_dp(bytes as f32 / Self::ONE_GB as f32))
+        } else if bytes / Self::ONE_MB > 0 {
+            format!("{} MB", format_one_dp(bytes as f32 / Self::ONE_MB as f32))
+        } else if bytes / Self::ONE_KB > 0 {
+            format!("{} KB", format_one_dp(bytes as f32 / Self::ONE_KB as f32))
+        } else {
+            format!("{bytes} bytes")
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1117,7 +1710,7 @@ pub fn set_default_info_stream(stream: Box<dyn InfoStream>) {
 // ---------------------------------------------------------------------------
 
 /// Bitset-like interface.
-pub trait Bits {
+pub trait Bits: Send + Sync + Debug {
     /// Returns the value of the bit at `index`.
     fn get(&self, index: usize) -> bool;
 
@@ -1270,6 +1863,68 @@ impl FixedBitSet {
         previous
     }
 
+    /// Returns the previous value of the bit at `index` and clears it.
+    ///
+    /// Equivalent to `FixedBitSet.getAndClear(long)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index` is out of bounds.
+    pub fn get_and_clear(&mut self, index: usize) -> bool {
+        assert!(index < self.num_bits, "index {} out of bounds", index);
+        let word = index >> 6;
+        let mask = 1u64 << (index & 0x3f);
+        let previous = (self.bits[word] & mask) != 0;
+        self.bits[word] &= !mask;
+        previous
+    }
+
+    /// Sets all bits in the range `[from, to)`.
+    ///
+    /// Equivalent to `FixedBitSet.set(long, long)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `from > to` or `to` exceeds the bit-set length.
+    pub fn set_range(&mut self, from: usize, to: usize) {
+        assert!(from <= to, "from {from} > to {to}");
+        assert!(to <= self.num_bits, "to {to} out of bounds");
+        if to <= from {
+            return;
+        }
+
+        let start_word = from >> 6;
+        let end_word = (to - 1) >> 6;
+
+        // Java relies on the JLS rule that a shift uses only the low 6 bits of
+        // the count, so `-1L >>> -endIndex` is a shift by `(-endIndex) & 63`.
+        let startmask = u64::MAX << (from & 63);
+        let endmask = u64::MAX >> (to.wrapping_neg() & 63);
+
+        if start_word == end_word {
+            self.bits[start_word] |= startmask & endmask;
+            return;
+        }
+
+        self.bits[start_word] |= startmask;
+        self.bits[(start_word + 1)..end_word].fill(u64::MAX);
+        self.bits[end_word] |= endmask;
+    }
+
+    /// Creates a `FixedBitSet` that is a copy of the given `Bits`.
+    ///
+    /// Equivalent to `FixedBitSet.copyOf(Bits)`.
+    pub fn copy_of(bits: &dyn Bits) -> Self {
+        let length = bits.length();
+        let mut copy = Self::new(length);
+        for i in 0..length {
+            if bits.get(i) {
+                copy.set(i);
+            }
+        }
+        copy
+    }
+
     /// Returns the number of set bits.
     pub fn cardinality(&self) -> usize {
         self.bits[..self.num_words]
@@ -1287,6 +1942,727 @@ impl FixedBitSet {
     pub fn get_bits(&self) -> &[u64] {
         &self.bits
     }
+
+    /// Ensures `bits` can store a value at `desired_bit`, growing it if needed.
+    ///
+    /// Equivalent to `FixedBitSet.ensureCapacity(FixedBitSet, int)`.
+    pub fn ensure_capacity(bits: FixedBitSet, desired_bit: usize) -> FixedBitSet {
+        Self::ensure_capacity_internal(bits, desired_bit, true)
+    }
+
+    /// Clears `bits` and ensures it can store a value at `desired_bit`.
+    ///
+    /// Equivalent to `FixedBitSet.ensureCapacityAndClear(FixedBitSet, int)`.
+    pub fn ensure_capacity_and_clear(bits: FixedBitSet, desired_bit: usize) -> FixedBitSet {
+        Self::ensure_capacity_internal(bits, desired_bit, false)
+    }
+
+    fn ensure_capacity_internal(
+        mut bits: FixedBitSet,
+        desired_bit: usize,
+        preserve_data: bool,
+    ) -> FixedBitSet {
+        if desired_bit < bits.num_bits {
+            if !preserve_data {
+                bits.clear_all();
+            }
+            bits
+        } else {
+            // Depends on the ghost bits being clear! Otherwise they would become
+            // visible in the new instance.
+            let num_words = Self::bits2words(desired_bit);
+            let mut arr = bits.bits;
+            if num_words >= arr.len() {
+                let target = ArrayUtil::oversize(num_words + 1, 8);
+                if preserve_data {
+                    arr.resize(target.max(num_words + 1), 0);
+                } else {
+                    arr = vec![0u64; target.max(num_words + 1)];
+                }
+            } else if !preserve_data {
+                arr.fill(0);
+            }
+            let num_bits = arr.len() << 6;
+            Self::from_bits(arr, num_bits)
+        }
+    }
+
+    /// Returns the cardinality of the intersection of two sets, modifying neither.
+    ///
+    /// Equivalent to `FixedBitSet.intersectionCount(FixedBitSet, FixedBitSet)`.
+    pub fn intersection_count(a: &FixedBitSet, b: &FixedBitSet) -> u64 {
+        // Depends on the ghost bits being clear!
+        let common = a.num_words.min(b.num_words);
+        (0..common)
+            .map(|i| (a.bits[i] & b.bits[i]).count_ones() as u64)
+            .sum()
+    }
+
+    /// Returns the cardinality of the union of two sets, modifying neither.
+    ///
+    /// Equivalent to `FixedBitSet.unionCount(FixedBitSet, FixedBitSet)`.
+    pub fn union_count(a: &FixedBitSet, b: &FixedBitSet) -> u64 {
+        // Depends on the ghost bits being clear!
+        let common = a.num_words.min(b.num_words);
+        let mut tot: u64 = (0..common)
+            .map(|i| (a.bits[i] | b.bits[i]).count_ones() as u64)
+            .sum();
+        tot += (common..a.num_words)
+            .map(|i| a.bits[i].count_ones() as u64)
+            .sum::<u64>();
+        tot += (common..b.num_words)
+            .map(|i| b.bits[i].count_ones() as u64)
+            .sum::<u64>();
+        tot
+    }
+
+    /// Returns the cardinality of `a AND NOT b`, modifying neither set.
+    ///
+    /// Equivalent to `FixedBitSet.andNotCount(FixedBitSet, FixedBitSet)`.
+    pub fn and_not_count(a: &FixedBitSet, b: &FixedBitSet) -> u64 {
+        // Depends on the ghost bits being clear!
+        let common = a.num_words.min(b.num_words);
+        let mut tot: u64 = (0..common)
+            .map(|i| (a.bits[i] & !b.bits[i]).count_ones() as u64)
+            .sum();
+        tot += (common..a.num_words)
+            .map(|i| a.bits[i].count_ones() as u64)
+            .sum::<u64>();
+        tot
+    }
+
+    /// Checks that the bits past `num_bits` are clear.
+    ///
+    /// Equivalent to `FixedBitSet.verifyGhostBitsClear()`. Several methods rely
+    /// on this implicit assumption; Lucene marks them "Depends on the ghost bits
+    /// being clear!".
+    pub fn verify_ghost_bits_clear(&self) -> bool {
+        for i in self.num_words..self.bits.len() {
+            if self.bits[i] != 0 {
+                return false;
+            }
+        }
+        if (self.num_bits & 0x3f) == 0 {
+            return true;
+        }
+        let mask = u64::MAX << (self.num_bits & 63);
+        (self.bits[self.num_words - 1] & mask) == 0
+    }
+
+    /// Returns the number of set bits between `from` inclusive and `to` exclusive.
+    ///
+    /// Equivalent to `FixedBitSet.cardinality(int, int)`.
+    pub fn cardinality_range(&self, mut from: usize, to: usize) -> usize {
+        assert!(
+            from <= to && to <= self.length(),
+            "range [{from}, {to}) out of bounds"
+        );
+        let mut cardinality = 0usize;
+
+        // First, align `from` with a word start, i.e. a multiple of 64.
+        if (from & 0x3f) != 0 {
+            let mut bits = self.bits[from >> 6] >> (from & 63);
+            let num_bits_til_next_word = from.wrapping_neg() & 0x3f;
+            if to - from < num_bits_til_next_word {
+                bits &= (1u64 << ((to - from) & 63)) - 1;
+                return bits.count_ones() as usize;
+            }
+            cardinality += bits.count_ones() as usize;
+            from += num_bits_til_next_word;
+            debug_assert_eq!(from & 0x3f, 0);
+        }
+
+        for i in (from >> 6)..(to >> 6) {
+            cardinality += self.bits[i].count_ones() as usize;
+        }
+
+        // Now handle the bits between the last complete word and `to`.
+        if (to & 0x3f) != 0 {
+            let bits = self.bits[to >> 6] << (to.wrapping_neg() & 63);
+            cardinality += bits.count_ones() as usize;
+        }
+
+        cardinality
+    }
+
+    /// Returns an approximation of the number of set bits, by sampling.
+    ///
+    /// Equivalent to `FixedBitSet.approximateCardinality()`: the popcount of the
+    /// first 16 words of every 1024 words, scaled by 1024/16.
+    pub fn approximate_cardinality(&self) -> usize {
+        const RANGE_LENGTH: usize = 16;
+        const INTERVAL: usize = 1024;
+
+        if self.num_words <= INTERVAL {
+            return self.cardinality();
+        }
+
+        let mut pop_count: u64 = 0;
+        let mut max_word = 0usize;
+        while max_word + INTERVAL < self.num_words {
+            for i in 0..RANGE_LENGTH {
+                pop_count += self.bits[max_word + i].count_ones() as u64;
+            }
+            max_word += INTERVAL;
+        }
+
+        pop_count *= ((INTERVAL / RANGE_LENGTH) * self.num_words / max_word) as u64;
+        pop_count as usize
+    }
+
+    /// ORs a small mask of consecutive bits starting at `start_bit`.
+    ///
+    /// Equivalent to `FixedBitSet.orMask(int, long, int)`. Useful for
+    /// bulk-setting bits from a SIMD comparison result without per-bit
+    /// extraction; the mask must carry at most `mask_len` significant bits.
+    pub fn or_mask(&mut self, start_bit: usize, mask: u64, mask_len: usize) {
+        assert!(
+            start_bit + mask_len <= self.num_bits,
+            "start_bit={start_bit}, mask_len={mask_len}, num_bits={}",
+            self.num_bits
+        );
+        let word_index = start_bit >> 6;
+        let bit_offset = start_bit & 63;
+        if bit_offset + mask_len <= 64 {
+            self.bits[word_index] |= mask << bit_offset;
+        } else {
+            self.bits[word_index] |= mask << bit_offset;
+            self.bits[word_index + 1] |= mask >> ((64 - bit_offset) & 63);
+        }
+    }
+
+    /// Reads `num_bits` (between 1 and 63) bits from `bit_set` at `from`.
+    ///
+    /// Equivalent to the private `FixedBitSet.readNBits(long[], int, int)`.
+    fn read_n_bits(bit_set: &[u64], from: usize, num_bits: usize) -> u64 {
+        debug_assert!(num_bits > 0 && num_bits < 64);
+        let mut bits = bit_set[from >> 6] >> (from & 63);
+        let num_bits_so_far = 64 - (from & 0x3f);
+        if num_bits_so_far < num_bits {
+            bits |= bit_set[(from >> 6) + 1] << (from.wrapping_neg() & 63);
+        }
+        bits & ((1u64 << (num_bits & 63)) - 1)
+    }
+
+    /// ORs `length` bits of `source` starting at `source_from` into `dest`
+    /// starting at `dest_from`.
+    ///
+    /// Equivalent to `FixedBitSet.orRange(FixedBitSet, int, FixedBitSet, int, int)`.
+    pub fn or_range(
+        source: &FixedBitSet,
+        mut source_from: usize,
+        dest: &mut FixedBitSet,
+        mut dest_from: usize,
+        mut length: usize,
+    ) {
+        assert!(
+            source_from + length <= source.length(),
+            "source range out of bounds"
+        );
+        assert!(
+            dest_from + length <= dest.length(),
+            "dest range out of bounds"
+        );
+
+        if length == 0 {
+            return;
+        }
+
+        // First, align `dest_from` with a word start, i.e. a multiple of 64.
+        if (dest_from & 0x3f) != 0 {
+            let num_bits_needed = (dest_from.wrapping_neg() & 0x3f).min(length);
+            let bits =
+                Self::read_n_bits(&source.bits, source_from, num_bits_needed) << (dest_from & 63);
+            dest.bits[dest_from >> 6] |= bits;
+
+            source_from += num_bits_needed;
+            dest_from += num_bits_needed;
+            length -= num_bits_needed;
+        }
+
+        if length == 0 {
+            return;
+        }
+
+        debug_assert_eq!(dest_from & 0x3f, 0);
+
+        // Now OR at the word level.
+        let num_full_words = length >> 6;
+        let source_word_from = source_from >> 6;
+        let dest_word_from = dest_from >> 6;
+
+        if (source_from & 0x3f) == 0 {
+            // source_from and dest_from are both word-aligned.
+            for i in 0..num_full_words {
+                dest.bits[dest_word_from + i] |= source.bits[source_word_from + i];
+            }
+        } else {
+            let shift = source_from & 63;
+            let back = source_from.wrapping_neg() & 63;
+            for i in 0..num_full_words {
+                dest.bits[dest_word_from + i] |= (source.bits[source_word_from + i] >> shift)
+                    | (source.bits[source_word_from + i + 1] << back);
+            }
+        }
+
+        source_from += num_full_words << 6;
+        dest_from += num_full_words << 6;
+        length -= num_full_words << 6;
+
+        // Finally handle the tail bits.
+        if length > 0 {
+            let bits = Self::read_n_bits(&source.bits, source_from, length);
+            dest.bits[dest_from >> 6] |= bits;
+        }
+    }
+
+    /// ANDs `length` bits of `source` starting at `source_from` into `dest`
+    /// starting at `dest_from`.
+    ///
+    /// Equivalent to `FixedBitSet.andRange(FixedBitSet, int, FixedBitSet, int, int)`.
+    pub fn and_range(
+        source: &FixedBitSet,
+        mut source_from: usize,
+        dest: &mut FixedBitSet,
+        mut dest_from: usize,
+        mut length: usize,
+    ) {
+        assert!(
+            source_from + length <= source.length(),
+            "source range out of bounds"
+        );
+        assert!(
+            dest_from + length <= dest.length(),
+            "dest range out of bounds"
+        );
+
+        if length == 0 {
+            return;
+        }
+
+        // First, align `dest_from` with a word start, i.e. a multiple of 64.
+        if (dest_from & 0x3f) != 0 {
+            let num_bits_needed = (dest_from.wrapping_neg() & 0x3f).min(length);
+            let mut bits =
+                Self::read_n_bits(&source.bits, source_from, num_bits_needed) << (dest_from & 63);
+            bits |= !(((1u64 << (num_bits_needed & 63)) - 1) << (dest_from & 63));
+            dest.bits[dest_from >> 6] &= bits;
+
+            source_from += num_bits_needed;
+            dest_from += num_bits_needed;
+            length -= num_bits_needed;
+        }
+
+        if length == 0 {
+            return;
+        }
+
+        debug_assert_eq!(dest_from & 0x3f, 0);
+
+        // Now AND at the word level.
+        let num_full_words = length >> 6;
+        let source_word_from = source_from >> 6;
+        let dest_word_from = dest_from >> 6;
+
+        if (source_from & 0x3f) == 0 {
+            for i in 0..num_full_words {
+                dest.bits[dest_word_from + i] &= source.bits[source_word_from + i];
+            }
+        } else {
+            let shift = source_from & 63;
+            let back = source_from.wrapping_neg() & 63;
+            for i in 0..num_full_words {
+                dest.bits[dest_word_from + i] &= (source.bits[source_word_from + i] >> shift)
+                    | (source.bits[source_word_from + i + 1] << back);
+            }
+        }
+
+        source_from += num_full_words << 6;
+        dest_from += num_full_words << 6;
+        length -= num_full_words << 6;
+
+        // Finally handle the tail bits.
+        if length > 0 {
+            let mut bits = Self::read_n_bits(&source.bits, source_from, length);
+            bits |= u64::MAX << (length & 63);
+            dest.bits[dest_from >> 6] &= bits;
+        }
+    }
+
+    /// `self = self OR other`.
+    ///
+    /// Equivalent to `FixedBitSet.or(FixedBitSet)`.
+    ///
+    /// **Divergence from Lucene 10.5.0, in the name only.** Java overloads `or`
+    /// for both a `FixedBitSet` and a `DocIdSetIterator`. Rust has no
+    /// overloading, and `or` is already taken on this type by
+    /// [`BitSet::or`](crate::util::bit_set::BitSet::or), which is the iterator
+    /// form. The set form therefore carries the `_set` suffix; the behaviour is
+    /// Java's, delegating to [`or_range`](Self::or_range).
+    pub fn or_set(&mut self, other: &FixedBitSet) {
+        let length = other.length();
+        Self::or_range(other, 0, self, 0, length);
+    }
+
+    /// `self = self XOR other`.
+    ///
+    /// Equivalent to `FixedBitSet.xor(FixedBitSet)`.
+    pub fn xor(&mut self, other: &FixedBitSet) {
+        self.xor_bits(&other.bits, other.num_words);
+    }
+
+    /// Equivalent to the private `FixedBitSet.xor(long[], int)`.
+    fn xor_bits(&mut self, other_bits: &[u64], other_num_words: usize) {
+        debug_assert!(other_num_words <= self.num_words);
+        let mut pos = self.num_words.min(other_num_words);
+        while pos > 0 {
+            pos -= 1;
+            self.bits[pos] ^= other_bits[pos];
+        }
+    }
+
+    /// Returns true if the two sets have any element in common.
+    ///
+    /// Equivalent to `FixedBitSet.intersects(FixedBitSet)`.
+    pub fn intersects(&self, other: &FixedBitSet) -> bool {
+        // Depends on the ghost bits being clear!
+        let mut pos = self.num_words.min(other.num_words);
+        while pos > 0 {
+            pos -= 1;
+            if (self.bits[pos] & other.bits[pos]) != 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// `self = self AND other`.
+    ///
+    /// Equivalent to `FixedBitSet.and(FixedBitSet)`.
+    pub fn and(&mut self, other: &FixedBitSet) {
+        self.and_bits(&other.bits, other.num_words);
+    }
+
+    /// Equivalent to the private `FixedBitSet.and(long[], int)`.
+    fn and_bits(&mut self, other_arr: &[u64], other_num_words: usize) {
+        let mut pos = self.num_words.min(other_num_words);
+        while pos > 0 {
+            pos -= 1;
+            self.bits[pos] &= other_arr[pos];
+        }
+        if self.num_words > other_num_words {
+            self.bits[other_num_words..self.num_words].fill(0);
+        }
+    }
+
+    /// `self = self AND NOT other`.
+    ///
+    /// Equivalent to `FixedBitSet.andNot(FixedBitSet)`.
+    pub fn and_not(&mut self, other: &FixedBitSet) {
+        self.and_not_offset(0, &other.bits, other.num_words);
+    }
+
+    /// Equivalent to the private `FixedBitSet.andNot(int, long[], int)`, which
+    /// `andNot(DocIdSetIterator)` uses for a `DocBaseBitSetIterator`.
+    pub fn and_not_offset(
+        &mut self,
+        other_offset_words: usize,
+        other_arr: &[u64],
+        other_num_words: usize,
+    ) {
+        let mut pos = self
+            .num_words
+            .saturating_sub(other_offset_words)
+            .min(other_num_words);
+        while pos > 0 {
+            pos -= 1;
+            self.bits[pos + other_offset_words] &= !other_arr[pos];
+        }
+    }
+
+    /// Scans the backing store to check whether every bit is clear.
+    ///
+    /// Equivalent to `FixedBitSet.scanIsEmpty()`. Deliberately not named
+    /// `is_empty`, as Lucene notes, to emphasise that it is not low cost.
+    pub fn scan_is_empty(&self) -> bool {
+        // Depends on the ghost bits being clear!
+        self.bits[..self.num_words].iter().all(|&w| w == 0)
+    }
+
+    /// Flips the bits in the range `[start_index, end_index)`.
+    ///
+    /// Equivalent to `FixedBitSet.flip(int, int)`.
+    pub fn flip_range(&mut self, start_index: usize, end_index: usize) {
+        debug_assert!(start_index < self.num_bits);
+        debug_assert!(end_index <= self.num_bits);
+        if end_index <= start_index {
+            return;
+        }
+
+        let start_word = start_index >> 6;
+        let end_word = (end_index - 1) >> 6;
+
+        // Java relies on the JLS rule that a shift uses only the low 6 bits of
+        // the count, so `-1L >>> -endIndex` is a shift by `(-endIndex) & 63`.
+        let startmask = u64::MAX << (start_index & 63);
+        let endmask = u64::MAX >> (end_index.wrapping_neg() & 63);
+
+        if start_word == end_word {
+            self.bits[start_word] ^= startmask & endmask;
+            return;
+        }
+
+        self.bits[start_word] ^= startmask;
+        for i in (start_word + 1)..end_word {
+            self.bits[i] = !self.bits[i];
+        }
+        self.bits[end_word] ^= endmask;
+    }
+
+    /// Flips the bit at `index`.
+    ///
+    /// Equivalent to `FixedBitSet.flip(int)`.
+    pub fn flip(&mut self, index: usize) {
+        debug_assert!(index < self.num_bits);
+        let word_num = index >> 6;
+        let bitmask = 1u64 << (index & 63);
+        self.bits[word_num] ^= bitmask;
+    }
+
+    /// Clears the bits in the range `[start_index, end_index)`.
+    ///
+    /// Equivalent to `FixedBitSet.clear(int, int)`.
+    pub fn clear_range(&mut self, start_index: usize, end_index: usize) {
+        debug_assert!(start_index < self.num_bits);
+        debug_assert!(end_index <= self.num_bits);
+        if end_index <= start_index {
+            return;
+        }
+
+        let start_word = start_index >> 6;
+        let end_word = (end_index - 1) >> 6;
+
+        // Inverted, since we are clearing.
+        let startmask = !(u64::MAX << (start_index & 63));
+        let endmask = !(u64::MAX >> (end_index.wrapping_neg() & 63));
+
+        if start_word == end_word {
+            self.bits[start_word] &= startmask | endmask;
+            return;
+        }
+
+        self.bits[start_word] &= startmask;
+        self.bits[(start_word + 1)..end_word].fill(0);
+        self.bits[end_word] &= endmask;
+    }
+
+    /// Returns this set as read-only [`Bits`].
+    ///
+    /// Equivalent to `FixedBitSet.asReadOnlyBits()`, which exists so that a
+    /// consumer handed a `Bits` cannot cast its way back to write access.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `FixedBits` wraps the same
+    /// `long[]`, so later changes to this set show through the view. The crate's
+    /// [`FixedBits`](crate::util::bit_set::FixedBits) owns its set, so this
+    /// copies the words and the view is a snapshot. Sharing the words instead
+    /// would need interior mutability that Java gets for free from an unguarded
+    /// array reference, and the read-only guarantee — the point of the method —
+    /// is preserved either way.
+    pub fn as_read_only_bits(&self) -> crate::util::bit_set::FixedBits {
+        crate::util::bit_set::FixedBits::new(self.bits.clone(), self.num_bits)
+    }
+
+    /// Restricts `bit_set` to the bits this set holds from `offset` on.
+    ///
+    /// Equivalent to `FixedBitSet.applyMask(FixedBitSet, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `bit_set` has bits set beyond the end of this set,
+    /// which is the `IllegalArgumentException` Java throws.
+    pub fn apply_mask(&self, bit_set: &mut FixedBitSet, offset: usize) -> crate::error::Result<()> {
+        // Some scorers do not track max_doc and may call this with an offset
+        // beyond bit_set.length().
+        let length = bit_set.length().min(self.length().saturating_sub(offset));
+        if length > 0 {
+            Self::and_range(self, offset, bit_set, 0, length);
+        }
+        if length < bit_set.length()
+            && BitSet::next_set_bit(bit_set, length as i32) != crate::search::NO_MORE_DOCS
+        {
+            return Err(LuceneError::IllegalArgument(
+                "Some bits are set beyond the end of live docs".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Calls `consumer` with `base` added to the index of every set bit in
+    /// `[from, to)`.
+    ///
+    /// Equivalent to `FixedBitSet.forEach(int, int, int, CheckedIntConsumer)`,
+    /// which queries use when a bit set is an intermediate representation of
+    /// their matches. Java's checked consumer becomes a closure returning
+    /// [`Result`].
+    pub fn for_each<F>(
+        &self,
+        mut from: usize,
+        to: usize,
+        base: i32,
+        consumer: &mut F,
+    ) -> crate::error::Result<()>
+    where
+        F: FnMut(i32) -> crate::error::Result<()>,
+    {
+        assert!(
+            from <= to && to <= self.length(),
+            "range [{from}, {to}) out of bounds"
+        );
+
+        // First, align `from` with a word start, i.e. a multiple of 64.
+        if (from & 0x3f) != 0 {
+            let mut bits = self.bits[from >> 6] >> (from & 63);
+            let num_bits_til_next_word = from.wrapping_neg() & 0x3f;
+            if to - from < num_bits_til_next_word {
+                // All the bits are in a single word.
+                bits &= (1u64 << ((to - from) & 63)) - 1;
+                return Self::for_each_word(bits, (from as i32).wrapping_add(base), consumer);
+            }
+            Self::for_each_word(bits, (from as i32).wrapping_add(base), consumer)?;
+            from += num_bits_til_next_word;
+            debug_assert_eq!(from & 0x3f, 0);
+        }
+
+        for i in (from >> 6)..(to >> 6) {
+            Self::for_each_word(self.bits[i], base.wrapping_add((i << 6) as i32), consumer)?;
+        }
+
+        // Now handle the remaining bits in the last partial word.
+        if (to & 0x3f) != 0 {
+            let bits = self.bits[to >> 6] & ((1u64 << (to & 63)) - 1);
+            Self::for_each_word(bits, base.wrapping_add((to & !0x3f) as i32), consumer)?;
+        }
+
+        Ok(())
+    }
+
+    /// Equivalent to the private `FixedBitSet.forEach(long, int, CheckedIntConsumer)`.
+    fn for_each_word<F>(mut bits: u64, base: i32, consumer: &mut F) -> crate::error::Result<()>
+    where
+        F: FnMut(i32) -> crate::error::Result<()>,
+    {
+        while bits != 0 {
+            let ntz = bits.trailing_zeros();
+            consumer(base.wrapping_add(ntz as i32))?;
+            bits ^= 1u64 << ntz;
+        }
+        Ok(())
+    }
+
+    /// Writes the set bits of `[from, to)` into `array` as document IDs, each
+    /// offset by `base`, and returns how many were written.
+    ///
+    /// Equivalent to `FixedBitSet.intoArray(int, int, int, int[])`. It stops at
+    /// the first of "no more set bits before `to`" and "no capacity left".
+    pub fn into_array(&self, mut from: usize, to: usize, base: i32, array: &mut [i32]) -> usize {
+        assert!(
+            from <= to && to <= self.length(),
+            "range [{from}, {to}) out of bounds"
+        );
+
+        let mut offset = 0usize;
+        // First, align `from` with a word start, i.e. a multiple of 64.
+        if (from & 0x3f) != 0 {
+            let mut word = self.bits[from >> 6] >> (from & 63);
+            let num_bits_til_next_word = from.wrapping_neg() & 0x3f;
+            if to - from < num_bits_til_next_word {
+                // All the bits are in a single word.
+                word &= (1u64 << ((to - from) & 63)) - 1;
+                return Self::word_to_array(word, (from as i32).wrapping_add(base), array, offset);
+            }
+            offset = Self::word_to_array(word, (from as i32).wrapping_add(base), array, offset);
+            from += num_bits_til_next_word;
+            debug_assert_eq!(from & 0x3f, 0);
+        }
+
+        for i in (from >> 6)..(to >> 6) {
+            let word = self.bits[i];
+            offset = Self::word_to_array(word, base.wrapping_add((i << 6) as i32), array, offset);
+        }
+
+        // Now handle the remaining bits in the last partial word.
+        if (to & 0x3f) != 0 {
+            let word = self.bits[to >> 6] & ((1u64 << (to & 63)) - 1);
+            offset =
+                Self::word_to_array(word, base.wrapping_add((to & !0x3f) as i32), array, offset);
+        }
+
+        offset
+    }
+
+    /// Equivalent to the private `FixedBitSet.word2Array(long, int, int[], int)`.
+    fn word_to_array(mut word: u64, base: i32, docs: &mut [i32], offset: usize) -> usize {
+        let bit_count = word.count_ones() as usize;
+
+        if bit_count >= 32 && docs.len() - offset > bit_count {
+            return Self::dense_word_to_array(word, base, docs, offset);
+        }
+
+        let num_bits_to_copy = bit_count.min(docs.len() - offset);
+
+        for i in 0..num_bits_to_copy {
+            let ntz = word.trailing_zeros();
+            docs[offset + i] = base.wrapping_add(ntz as i32);
+            word ^= 1u64 << ntz;
+        }
+
+        offset + num_bits_to_copy
+    }
+
+    /// Equivalent to the private `FixedBitSet.denseWord2Array(long, int, int[], int)`,
+    /// the branch-free path Lucene takes for a word with at least 32 bits set: it
+    /// writes speculatively at both halves and advances only on a set bit.
+    fn dense_word_to_array(word: u64, base: i32, docs: &mut [i32], mut offset: usize) -> usize {
+        debug_assert!(docs.len() - offset >= word.count_ones() as usize + 1);
+
+        let l_word = word as u32;
+        let h_word = (word >> 32) as u32;
+        let offset32 = offset + l_word.count_ones() as usize;
+        let mut h_offset = offset32;
+
+        for i in 0..32u32 {
+            docs[offset] = base.wrapping_add(i as i32);
+            docs[h_offset] = base.wrapping_add(i as i32).wrapping_add(32);
+            offset += ((l_word >> i) & 1) as usize;
+            h_offset += ((h_word >> i) & 1) as usize;
+        }
+
+        docs[offset32] = base
+            .wrapping_add(32)
+            .wrapping_add(h_word.trailing_zeros() as i32);
+
+        h_offset
+    }
+
+    /// Returns the hash Lucene's `FixedBitSet.hashCode()` computes.
+    ///
+    /// Kept as a named method, rather than only as [`Hash`], because the value
+    /// itself is part of the ported contract.
+    pub fn hash_code(&self) -> i32 {
+        // Depends on the ghost bits being clear!
+        let mut h: u64 = 0;
+        let mut i = self.num_words;
+        while i > 0 {
+            i -= 1;
+            h ^= self.bits[i];
+            h = (h << 1) | (h >> 63); // rotate left
+        }
+        // Fold the leftmost bits into the right and add a constant, so that an
+        // empty set does not hash to 0, which is too common.
+        // Java's `+ 0x98761234` is an int literal that wraps to -1737092556;
+        // Rust needs the wrap spelled out.
+        (((h >> 32) ^ h) as i32).wrapping_add(0x9876_1234u32 as i32)
+    }
 }
 
 impl Bits for FixedBitSet {
@@ -1302,6 +2678,26 @@ impl Bits for FixedBitSet {
 impl Accountable for FixedBitSet {
     fn ram_bytes_used(&self) -> i64 {
         RamUsageEstimator::size_of_u64(&self.bits)
+    }
+}
+
+impl PartialEq for FixedBitSet {
+    /// Equivalent to `FixedBitSet.equals(Object)`: two sets are equal when they
+    /// hold the same number of bits and the same backing words.
+    fn eq(&self, other: &Self) -> bool {
+        if self.num_bits != other.num_bits {
+            return false;
+        }
+        // Depends on the ghost bits being clear!
+        self.bits == other.bits
+    }
+}
+
+impl Eq for FixedBitSet {}
+
+impl Hash for FixedBitSet {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_i32(self.hash_code());
     }
 }
 

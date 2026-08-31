@@ -588,6 +588,61 @@ fn get_id_counter() -> &'static Mutex<u128> {
 // Standalone string serialization helpers
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// String ordering
+// ---------------------------------------------------------------------------
+
+/// Compares two strings the way `java.lang.String.compareTo` does.
+///
+/// Java compares strings by **UTF-16 code unit**, Rust's [`str`] ordering
+/// compares them by **UTF-8 byte**. The two agree for every string made of
+/// characters below `U+E000`, and disagree above it: a supplementary character
+/// (`U+10000` and above) is a surrogate pair in UTF-16, and surrogates occupy
+/// `U+D800..=U+DFFF`, which sorts *below* `U+E000..=U+FFFF`; in UTF-8 the same
+/// character starts with `0xF0` and sorts *above* it. `"\u{10000}"` therefore
+/// sorts before `"\u{FFFF}"` in Java and after it in Rust.
+///
+/// Lucene orders field names with `String.compareTo` — see
+/// `TermsHashPerField.compareTo(TermsHashPerField)` in
+/// `lucene/core/src/java/org/apache/lucene/index/TermsHashPerField.java` — and
+/// that order is written into the segment, so a port that used Rust's ordering
+/// would produce different bytes for such names. Use this comparator wherever
+/// an order reaches the index files.
+///
+/// # Examples
+///
+/// ```
+/// use std::cmp::Ordering;
+/// use rucene::util::compare_utf16;
+///
+/// assert_eq!(compare_utf16("a", "b"), Ordering::Less);
+/// // The supplementary character sorts first, exactly as in Java.
+/// assert_eq!(compare_utf16("\u{10000}", "\u{FFFF}"), Ordering::Less);
+/// // Rust's own ordering disagrees.
+/// assert_eq!("\u{10000}".cmp("\u{FFFF}"), Ordering::Greater);
+/// ```
+pub fn compare_utf16(left: &str, right: &str) -> std::cmp::Ordering {
+    // The fast path: while both strings stay inside the Basic Multilingual
+    // Plane below `U+E000`, UTF-8 byte order already is UTF-16 order, and
+    // `str::cmp` is a `memcmp`. Only strings that actually carry a character at
+    // `U+E000` or above pay for the code-unit walk.
+    if is_utf16_order_safe(left) && is_utf16_order_safe(right) {
+        return left.cmp(right);
+    }
+    left.encode_utf16().cmp(right.encode_utf16())
+}
+
+/// Returns `true` when the UTF-8 order of `text` equals its UTF-16 order
+/// against any other such string, i.e. when it holds no character at `U+E000`
+/// or above.
+///
+/// `U+E000` is `0xEE 0x80 0x80` in UTF-8, so every character from `U+E000` up
+/// — including every supplementary character, which starts at `0xF0` — has a
+/// lead byte of `0xEE` or more.
+fn is_utf16_order_safe(text: &str) -> bool {
+    !text.as_bytes().iter().any(|byte| *byte >= 0xEE)
+}
+
 /// Encodes a string as a VInt length followed by UTF-8 bytes.
 ///
 /// This matches the byte output of `DataOutput.writeString` in Lucene.
@@ -770,5 +825,77 @@ mod tests {
         let encoded = vec![0x02, 0xc3, 0x28]; // invalid UTF-8
         let mut pos = 0;
         assert!(read_string(&encoded, &mut pos).is_err());
+    }
+
+    // -- compare_utf16 -------------------------------------------------------
+
+    #[test]
+    fn compare_utf16_matches_rust_ordering_below_u_e000() {
+        for (left, right) in [
+            ("", "a"),
+            ("a", "a"),
+            ("a", "b"),
+            ("abc", "abd"),
+            ("abc", "ab"),
+            ("\u{7F}", "\u{80}"),
+            ("\u{07FF}", "\u{0800}"),
+            ("caf\u{e9}", "cafe"),
+            ("\u{D7FF}", "\u{E000}"),
+        ] {
+            assert_eq!(
+                compare_utf16(left, right),
+                left.cmp(right),
+                "{left:?} vs {right:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compare_utf16_orders_supplementary_characters_the_way_java_does() {
+        use std::cmp::Ordering;
+        // A supplementary character is a surrogate pair in UTF-16, and
+        // surrogates sit below `U+E000`; in UTF-8 it starts with `0xF0` and
+        // sits above it. Java's `String.compareTo` therefore disagrees with
+        // Rust's `str` ordering here.
+        assert_eq!(compare_utf16("\u{10000}", "\u{FFFF}"), Ordering::Less);
+        assert_eq!("\u{10000}".cmp("\u{FFFF}"), Ordering::Greater);
+        assert_eq!(compare_utf16("\u{10FFFF}", "\u{E000}"), Ordering::Less);
+        assert_eq!(compare_utf16("\u{FFFF}", "\u{10000}"), Ordering::Greater);
+        // Two supplementary characters still compare by code point.
+        assert_eq!(compare_utf16("\u{10000}", "\u{10001}"), Ordering::Less);
+        // A shared prefix does not disturb the rule.
+        assert_eq!(compare_utf16("x\u{10000}", "x\u{FFFF}"), Ordering::Less);
+    }
+
+    #[test]
+    fn compare_utf16_agrees_with_java_string_compare_to_on_utf16_units() {
+        // The reference definition: compare the UTF-16 code units directly.
+        let samples = [
+            "",
+            "a",
+            "ab",
+            "\u{80}",
+            "\u{7FF}",
+            "\u{800}",
+            "\u{D7FF}",
+            "\u{E000}",
+            "\u{FFFD}",
+            "\u{FFFF}",
+            "\u{10000}",
+            "\u{1F600}",
+            "\u{10FFFF}",
+            "a\u{10000}",
+            "a\u{FFFF}",
+        ];
+        for left in samples {
+            for right in samples {
+                let expected = left.encode_utf16().cmp(right.encode_utf16());
+                assert_eq!(
+                    compare_utf16(left, right),
+                    expected,
+                    "{left:?} vs {right:?}"
+                );
+            }
+        }
     }
 }

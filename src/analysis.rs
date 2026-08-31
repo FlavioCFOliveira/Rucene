@@ -7,11 +7,14 @@
 
 #![deny(unsafe_code)]
 
+pub mod automaton_conversion;
 pub mod caching_token_filter;
 pub mod char_array_map;
 pub mod char_array_set;
 pub mod character_utils;
+pub mod factories;
 pub mod filtering_token_filter;
+pub mod graph_token_filter;
 pub mod lower_case_filter;
 pub mod reusable_string_reader;
 pub mod standard;
@@ -24,7 +27,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 pub use caching_token_filter::{new_caching_token_filter, CachingTokenFilter};
@@ -756,7 +759,7 @@ pub struct AnalyzerState {
     id: u64,
     reuse_strategy: Box<dyn ReuseStrategy>,
     stored_value: CloseableThreadLocal<Option<Box<dyn Any>>>,
-    closed: RefCell<bool>,
+    closed: AtomicBool,
 }
 
 impl AnalyzerState {
@@ -767,7 +770,7 @@ impl AnalyzerState {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             reuse_strategy,
             stored_value: CloseableThreadLocal::new(|| None),
-            closed: RefCell::new(false),
+            closed: AtomicBool::new(false),
         }
     }
 
@@ -788,12 +791,12 @@ impl AnalyzerState {
 
     /// Returns whether the analyzer has been closed.
     pub fn is_closed(&self) -> bool {
-        *self.closed.borrow()
+        self.closed.load(Ordering::Acquire)
     }
 
     /// Closes the analyzer and frees thread-local resources.
     pub fn close(&self) {
-        *self.closed.borrow_mut() = true;
+        self.closed.store(true, Ordering::Release);
         self.stored_value.close();
     }
 }
@@ -906,7 +909,7 @@ impl ReuseStrategy for PerFieldReuseStrategy {
 /// Implementors supply an [`AnalyzerState`] and override [`create_components`]
 /// to define the analysis pipeline. All other methods have default
 /// implementations that match Lucene's defaults.
-pub trait Analyzer: Debug {
+pub trait Analyzer: Debug + Send + Sync {
     /// Returns the shared state for this analyzer.
     fn analyzer_state(&self) -> &AnalyzerState;
 
@@ -1106,7 +1109,7 @@ pub trait Analyzer: Debug {
 /// Customizable behavior for an [`AnalyzerWrapper`].
 ///
 /// Equivalent to the abstract parts of `AnalyzerWrapper`.
-pub trait AnalyzerWrapperLogic: Debug {
+pub trait AnalyzerWrapperLogic: Debug + Send + Sync {
     /// Returns the analyzer to delegate to for `field_name`.
     fn get_wrapped_analyzer(&self, field_name: &str) -> &dyn Analyzer;
 
@@ -1237,7 +1240,7 @@ impl Analyzer for AnalyzerWrapper {
 // -----------------------------------------------------------------------------
 
 /// Customizable behavior for a [`DelegatingAnalyzerWrapper`].
-pub trait DelegatingAnalyzerWrapperLogic: Debug {
+pub trait DelegatingAnalyzerWrapperLogic: Debug + Send + Sync {
     /// Returns the analyzer to delegate to for `field_name`.
     fn get_wrapped_analyzer(&self, field_name: &str) -> &dyn Analyzer;
 }

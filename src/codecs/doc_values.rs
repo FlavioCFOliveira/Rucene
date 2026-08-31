@@ -22,7 +22,7 @@ use crate::error::{LuceneError, Result};
 
 pub use crate::index::doc_values::{
     BinaryDocValues, DocValues, DocValuesIterator, DocValuesSkipper, EmptyBinaryDocValues,
-    EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
+    EmptyDocValuesProducer, EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
     EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues,
     SingletonSortedNumericDocValues, SingletonSortedSetDocValues, SortedDocValues,
     SortedNumericDocValues, SortedSetDocValues,
@@ -39,30 +39,31 @@ use super::stub::FieldInfo;
 /// Reads doc-values fields from a segment.
 ///
 /// Equivalent to `org.apache.lucene.codecs.DocValuesProducer`.
+/// The five value getters and the skipper return **single-threaded** views, as
+/// Lucene's do: `DocValuesProducer.getNumeric` and its siblings document that
+/// "the returned instance need not be thread-safe: it will only be used by a
+/// single thread", and `LeafReader.getNumericDocValues` repeats it. The
+/// producer itself is shared by the reader and so stays `Send + Sync`; the
+/// views it hands out are not, which is what lets them hold a cursor over the
+/// data file instead of a copy of its contents.
 pub trait DocValuesProducer: Send + Sync + fmt::Debug {
     /// Returns the numeric values for the given field.
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues + Send + Sync>>;
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>>;
 
     /// Returns the binary values for the given field.
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues + Send + Sync>>;
+    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>>;
 
     /// Returns the sorted values for the given field.
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues + Send + Sync>>;
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>>;
 
     /// Returns the sorted-numeric values for the given field.
-    fn get_sorted_numeric(
-        &self,
-        field: &FieldInfo,
-    ) -> Result<Box<dyn SortedNumericDocValues + Send + Sync>>;
+    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>>;
 
     /// Returns the sorted-set values for the given field.
-    fn get_sorted_set(
-        &self,
-        field: &FieldInfo,
-    ) -> Result<Box<dyn SortedSetDocValues + Send + Sync>>;
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>>;
 
     /// Returns the skip index for the given field.
-    fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper + Send + Sync>>;
+    fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>>;
 
     /// Checks consistency of this producer.
     fn check_integrity(&self) -> Result<()>;
@@ -144,7 +145,7 @@ pub trait DocValuesFormat: Send + Sync + fmt::Debug {
     fn fields_producer<'a>(
         &self,
         state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn DocValuesProducer + 'a>>;
+    ) -> Result<Box<dyn DocValuesProducer>>;
 }
 
 // -----------------------------------------------------------------------------
@@ -240,57 +241,28 @@ pub fn available_doc_values_formats() -> Vec<String> {
     GLOBAL_DOC_VALUES_REGISTRY.available_doc_values_formats()
 }
 
+/// Registers a doc-values format in the global registry.
+///
+/// This mirrors the service loading behind `DocValuesFormat.forName` in Apache
+/// Lucene: the per-field format resolves the format name a segment's
+/// field-info attributes record when it opens the segment for reading, so a
+/// format that writes fields must be resolvable by name afterwards — including
+/// when the same process merges or reopens segments it just wrote.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] if the name is invalid, or
+/// [`LuceneError::IllegalState`] if the name is already registered.
+pub fn register_doc_values_format(
+    name: impl Into<String>,
+    format: impl DocValuesFormat + 'static,
+) -> Result<()> {
+    GLOBAL_DOC_VALUES_REGISTRY.register(name, format)
+}
+
 // -----------------------------------------------------------------------------
 // No-op implementations
 // -----------------------------------------------------------------------------
-
-/// A no-op doc-values producer.
-#[derive(Debug, Default, Clone)]
-pub struct EmptyDocValuesProducer;
-
-impl DocValuesProducer for EmptyDocValuesProducer {
-    fn get_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues + Send + Sync>> {
-        Ok(Box::new(EmptyNumericDocValues::new()))
-    }
-
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues + Send + Sync>> {
-        Ok(Box::new(EmptyBinaryDocValues::new()))
-    }
-
-    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn SortedDocValues + Send + Sync>> {
-        Ok(Box::new(EmptySortedDocValues::new()))
-    }
-
-    fn get_sorted_numeric(
-        &self,
-        _field: &FieldInfo,
-    ) -> Result<Box<dyn SortedNumericDocValues + Send + Sync>> {
-        Ok(Box::new(EmptySortedNumericDocValues::new()))
-    }
-
-    fn get_sorted_set(
-        &self,
-        _field: &FieldInfo,
-    ) -> Result<Box<dyn SortedSetDocValues + Send + Sync>> {
-        Ok(Box::new(EmptySortedSetDocValues::new()))
-    }
-
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper + Send + Sync>> {
-        Ok(Box::new(EmptyDocValuesSkipper))
-    }
-
-    fn check_integrity(&self) -> Result<()> {
-        Ok(())
-    }
-
-    fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-        Ok(Box::new(self.clone()))
-    }
-
-    fn close(&mut self) -> Result<()> {
-        Ok(())
-    }
-}
 
 /// A no-op doc-values consumer.
 #[derive(Debug, Default, Clone)]
@@ -370,7 +342,7 @@ impl DocValuesFormat for EmptyDocValuesFormat {
     fn fields_producer<'a>(
         &self,
         _state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn DocValuesProducer + 'a>> {
+    ) -> Result<Box<dyn DocValuesProducer>> {
         Ok(Box::new(EmptyDocValuesProducer))
     }
 }

@@ -6,8 +6,24 @@
 
 #![deny(unsafe_code)]
 
+pub mod column;
+pub mod distance_feature_queries;
+pub mod distance_sort;
+pub mod doc_values_queries;
+pub mod feature_field;
+pub mod geo_fields;
+pub mod nearest_neighbor;
+pub mod point_queries;
+pub mod range_bulk_scorer;
+pub mod range_doc_values_fields;
+pub mod range_fields;
+pub mod shape;
+pub mod shape_doc_values;
+pub mod shape_field;
+pub mod spatial_query;
+
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::io::Read;
 use std::rc::Rc;
@@ -15,11 +31,53 @@ use std::rc::Rc;
 use crate::analysis::{Analyzer, TokenStream};
 use crate::error::{LuceneError, Result};
 use crate::index::{
-    DocValuesSkipIndexType, DocValuesType, IndexOptions, IndexableField, IndexableFieldType,
-    VectorEncoding, VectorSimilarityFunction, MAX_DIMENSIONS, MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
+    DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, IndexableField,
+    IndexableFieldType, StoredFieldVisitor, StoredFieldVisitorStatus, VectorEncoding,
+    VectorSimilarityFunction, MAX_DIMENSIONS, MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
 };
 use crate::store::DataInput;
 use crate::util::BytesRef;
+
+// -----------------------------------------------------------------------------
+// Re-exports
+// -----------------------------------------------------------------------------
+//
+// Java places every one of these types directly in `org.apache.lucene.document`.
+// This port groups them into submodules for readability, and re-exports them
+// here so that a name that is `org.apache.lucene.document.X` in Java is
+// `crate::document::X` in Rust.
+
+pub use distance_feature_queries::{
+    LatLonPointDistanceFeatureQuery, LatLonPointDistanceScorer, LongDistanceFeatureQuery,
+    LongDistanceScorer,
+};
+pub use distance_sort::{
+    LatLonPointDistanceComparator, LatLonPointSortField, XYPointDistanceComparator,
+    XYPointSortField,
+};
+pub use nearest_neighbor::{nearest, NearestHit, NearestNeighbor};
+pub use point_queries::{
+    LatLonDocValuesBoxQuery, LatLonDocValuesQuery, LatLonPointDistanceQuery, LatLonPointQuery,
+    XYDocValuesPointInGeometryQuery, XYPointInGeometryQuery,
+};
+pub use range_bulk_scorer::RangeBulkScorer;
+pub use range_doc_values_fields::{
+    DoubleRangeDocValuesField, DoubleRangeSlowRangeQuery, FloatRangeDocValuesField,
+    FloatRangeSlowRangeQuery, IntRangeDocValuesField, IntRangeSlowRangeQuery,
+    LongRangeDocValuesField, LongRangeSlowRangeQuery,
+};
+pub use shape::{
+    LatLonShape, LatLonShapeDocValuesBoxPlan, LatLonShapeQueryPlan, XYShape, XYShapeQueryPlan,
+};
+pub use shape_doc_values::{
+    LatLonShapeDocValues, LatLonShapeDocValuesField, ShapeDocValues, ShapeDocValuesField,
+    XYShapeDocValues, XYShapeDocValuesField,
+};
+pub use spatial_query::{
+    BaseShapeDocValuesQuery, EncodedRectangle, LatLonGeometryValue, LatLonShapeBoundingBoxQuery,
+    LatLonShapeDocValuesQuery, LatLonShapeQuery, SpatialQuery, SpatialVisitor, XYGeometryValue,
+    XYShapeDocValuesQuery, XYShapeQuery,
+};
 
 /// Describes how an `IndexableField` should be inverted for indexing terms and
 /// postings.
@@ -59,12 +117,349 @@ impl std::fmt::Display for NumericValue {
     }
 }
 
+/// The type of a [`StoredValue`].
+///
+/// Equivalent to `org.apache.lucene.document.StoredValue.Type`. The declaration
+/// order matches the Java enum, which is the order
+/// `StoredFieldsConsumer.writeField` switches on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(non_camel_case_types)]
+pub enum StoredValueType {
+    /// Type of integer values.
+    INTEGER,
+    /// Type of long values.
+    LONG,
+    /// Type of float values.
+    FLOAT,
+    /// Type of double values.
+    DOUBLE,
+    /// Type of binary values.
+    BINARY,
+    /// Type of data input values.
+    DATA_INPUT,
+    /// Type of string values.
+    STRING,
+}
+
+impl std::fmt::Display for StoredValueType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::INTEGER => "INTEGER",
+            Self::LONG => "LONG",
+            Self::FLOAT => "FLOAT",
+            Self::DOUBLE => "DOUBLE",
+            Self::BINARY => "BINARY",
+            Self::DATA_INPUT => "DATA_INPUT",
+            Self::STRING => "STRING",
+        };
+        f.write_str(name)
+    }
+}
+
 /// Abstraction around a stored value.
 ///
-/// Equivalent to `org.apache.lucene.document.StoredValue`. This is a minimal
-/// placeholder for the indexing support layer.
+/// Equivalent to `org.apache.lucene.document.StoredValue`, which is a tagged
+/// union: a `Type` plus one populated slot. Rust expresses exactly that as an
+/// enum, so an invalid combination is unrepresentable instead of being caught
+/// by a runtime check in every getter.
+///
+/// The Java accessors are still provided ([`Self::int_value`],
+/// [`Self::set_int_value`], ...) so that a port of Lucene code reads the same;
+/// they return [`LuceneError::IllegalArgument`] where Java throws
+/// `IllegalArgumentException`.
+///
+/// # Java to Rust adaptation: `DATA_INPUT`
+///
+/// Java's `DATA_INPUT` slot holds a `StoredFieldDataInput`, that is, a *live*
+/// cursor the writer drains. `IndexableField::storedValue()` takes `&self` in
+/// this port, so it cannot hand out the `&mut dyn DataInput` such a cursor
+/// needs. The variant therefore carries the bytes the cursor would have
+/// produced, read once out of the field. Nothing observable changes: the
+/// consumer still routes the value through
+/// [`StoredFieldsWriter::write_field_data_input`](crate::codecs::stored_fields::StoredFieldsWriter::write_field_data_input),
+/// which streams them into the codec exactly as Lucene does, and the bytes
+/// written to the `.fdt` file are identical.
 #[derive(Debug, Clone, PartialEq)]
-pub struct StoredValue;
+pub enum StoredValue {
+    /// An `int` value. Equivalent to `StoredValue.Type.INTEGER`.
+    Integer(i32),
+    /// A `long` value. Equivalent to `StoredValue.Type.LONG`.
+    Long(i64),
+    /// A `float` value. Equivalent to `StoredValue.Type.FLOAT`.
+    Float(f32),
+    /// A `double` value. Equivalent to `StoredValue.Type.DOUBLE`.
+    Double(f64),
+    /// A binary value. Equivalent to `StoredValue.Type.BINARY`.
+    Binary(BytesRef),
+    /// A binary value that came from a `StoredFieldDataInput`.
+    ///
+    /// Equivalent to `StoredValue.Type.DATA_INPUT`.
+    DataInput(BytesRef),
+    /// A string value. Equivalent to `StoredValue.Type.STRING`.
+    String(String),
+}
+
+impl StoredValue {
+    /// Returns the type of this stored value.
+    ///
+    /// Equivalent to `StoredValue.getType()`.
+    pub fn value_type(&self) -> StoredValueType {
+        match self {
+            Self::Integer(_) => StoredValueType::INTEGER,
+            Self::Long(_) => StoredValueType::LONG,
+            Self::Float(_) => StoredValueType::FLOAT,
+            Self::Double(_) => StoredValueType::DOUBLE,
+            Self::Binary(_) => StoredValueType::BINARY,
+            Self::DataInput(_) => StoredValueType::DATA_INPUT,
+            Self::String(_) => StoredValueType::STRING,
+        }
+    }
+
+    fn mismatch<T>(&self, wanted: &str) -> Result<T> {
+        Err(LuceneError::IllegalArgument(format!(
+            "Cannot get {wanted} on a {} value",
+            self.value_type()
+        )))
+    }
+
+    fn cannot_set(&self, wanted: &str) -> LuceneError {
+        LuceneError::IllegalArgument(format!(
+            "Cannot set {wanted} on a {} value",
+            self.value_type()
+        ))
+    }
+
+    /// Retrieves the integer value.
+    ///
+    /// Equivalent to `StoredValue.getIntValue()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if this is not an
+    /// [`Self::Integer`] value.
+    pub fn int_value(&self) -> Result<i32> {
+        match self {
+            Self::Integer(value) => Ok(*value),
+            other => other.mismatch("an integer"),
+        }
+    }
+
+    /// Retrieves the long value.
+    ///
+    /// Equivalent to `StoredValue.getLongValue()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if this is not a [`Self::Long`]
+    /// value.
+    pub fn long_value(&self) -> Result<i64> {
+        match self {
+            Self::Long(value) => Ok(*value),
+            other => other.mismatch("a long"),
+        }
+    }
+
+    /// Retrieves the float value.
+    ///
+    /// Equivalent to `StoredValue.getFloatValue()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// [`Self::Float`] value.
+    pub fn float_value(&self) -> Result<f32> {
+        match self {
+            Self::Float(value) => Ok(*value),
+            other => other.mismatch("a float"),
+        }
+    }
+
+    /// Retrieves the double value.
+    ///
+    /// Equivalent to `StoredValue.getDoubleValue()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// [`Self::Double`] value.
+    pub fn double_value(&self) -> Result<f64> {
+        match self {
+            Self::Double(value) => Ok(*value),
+            other => other.mismatch("a double"),
+        }
+    }
+
+    /// Retrieves the binary value.
+    ///
+    /// Equivalent to `StoredValue.getBinaryValue()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// [`Self::Binary`] value.
+    pub fn binary_value(&self) -> Result<&BytesRef> {
+        match self {
+            Self::Binary(value) => Ok(value),
+            other => other.mismatch("a binary value"),
+        }
+    }
+
+    /// Retrieves the data-input value.
+    ///
+    /// Equivalent to `StoredValue.getDataInputValue()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// [`Self::DataInput`] value.
+    pub fn data_input_value(&self) -> Result<&BytesRef> {
+        match self {
+            Self::DataInput(value) => Ok(value),
+            other => other.mismatch("a data input value"),
+        }
+    }
+
+    /// Retrieves the string value.
+    ///
+    /// Equivalent to `StoredValue.getStringValue()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// [`Self::String`] value.
+    pub fn string_value(&self) -> Result<&str> {
+        match self {
+            Self::String(value) => Ok(value),
+            other => other.mismatch("a string value"),
+        }
+    }
+
+    /// Sets the integer value.
+    ///
+    /// Equivalent to `StoredValue.setIntValue(int)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if this is not an
+    /// [`Self::Integer`] value.
+    pub fn set_int_value(&mut self, value: i32) -> Result<()> {
+        match self {
+            Self::Integer(slot) => {
+                *slot = value;
+                Ok(())
+            }
+            other => Err(other.cannot_set("an integer")),
+        }
+    }
+
+    /// Sets the long value.
+    ///
+    /// Equivalent to `StoredValue.setLongValue(long)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if this is not a [`Self::Long`]
+    /// value.
+    pub fn set_long_value(&mut self, value: i64) -> Result<()> {
+        match self {
+            Self::Long(slot) => {
+                *slot = value;
+                Ok(())
+            }
+            other => Err(other.cannot_set("a long")),
+        }
+    }
+
+    /// Sets the float value.
+    ///
+    /// Equivalent to `StoredValue.setFloatValue(float)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// [`Self::Float`] value.
+    pub fn set_float_value(&mut self, value: f32) -> Result<()> {
+        match self {
+            Self::Float(slot) => {
+                *slot = value;
+                Ok(())
+            }
+            other => Err(other.cannot_set("a float")),
+        }
+    }
+
+    /// Sets the double value.
+    ///
+    /// Equivalent to `StoredValue.setDoubleValue(double)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// [`Self::Double`] value.
+    pub fn set_double_value(&mut self, value: f64) -> Result<()> {
+        match self {
+            Self::Double(slot) => {
+                *slot = value;
+                Ok(())
+            }
+            other => Err(other.cannot_set("a double")),
+        }
+    }
+
+    /// Sets the binary value.
+    ///
+    /// Equivalent to `StoredValue.setBinaryValue(BytesRef)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// [`Self::Binary`] value.
+    pub fn set_binary_value(&mut self, value: BytesRef) -> Result<()> {
+        match self {
+            Self::Binary(slot) => {
+                *slot = value;
+                Ok(())
+            }
+            other => Err(other.cannot_set("a binary value")),
+        }
+    }
+
+    /// Sets the data-input value.
+    ///
+    /// Equivalent to `StoredValue.setDataInputValue(StoredFieldDataInput)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// [`Self::DataInput`] value.
+    pub fn set_data_input_value(&mut self, value: BytesRef) -> Result<()> {
+        match self {
+            Self::DataInput(slot) => {
+                *slot = value;
+                Ok(())
+            }
+            other => Err(other.cannot_set("a data input value")),
+        }
+    }
+
+    /// Sets the string value.
+    ///
+    /// Equivalent to `StoredValue.setStringValue(String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if this is not a
+    /// [`Self::String`] value.
+    pub fn set_string_value(&mut self, value: String) -> Result<()> {
+        match self {
+            Self::String(slot) => {
+                *slot = value;
+                Ok(())
+            }
+            other => Err(other.cannot_set("a string value")),
+        }
+    }
+}
 
 /// Describes the properties of a field.
 ///
@@ -316,9 +711,9 @@ impl FieldType {
     ) -> Result<()> {
         self.check_if_frozen()?;
         if num_dimensions <= 0 {
-            return Err(LuceneError::IllegalArgument(
-                "vector numDimensions must be > 0".to_string(),
-            ));
+            return Err(LuceneError::IllegalArgument(format!(
+                "vector numDimensions must be > 0; got {num_dimensions}"
+            )));
         }
         self.vector_dimension = num_dimensions;
         self.vector_encoding = encoding;
@@ -422,9 +817,16 @@ pub enum FieldData {
     /// A numeric value.
     Number(NumericValue),
     /// A stored-data input captured for later writing.
+    ///
+    /// Equivalent to a `Field` whose `fieldsData` is a
+    /// `org.apache.lucene.index.StoredFieldDataInput`. The cursor lives behind
+    /// a [`RefCell`] because [`IndexableField::stored_value`] takes `&self`
+    /// while draining the input needs `&mut`; Java gets the same effect for
+    /// free by handing out the object reference. Like Java's, the cursor is
+    /// single-use: the indexing chain reads it exactly once per document.
     StoredInput {
         /// The underlying data input.
-        input: Box<dyn DataInput>,
+        input: RefCell<Box<dyn DataInput>>,
         /// Length of the stored data.
         length: i32,
     },
@@ -591,7 +993,10 @@ impl Field {
         Ok(Self {
             name: name.to_string(),
             field_type,
-            fields_data: FieldData::StoredInput { input, length },
+            fields_data: FieldData::StoredInput {
+                input: RefCell::new(input),
+                length,
+            },
         })
     }
 
@@ -769,28 +1174,77 @@ impl IndexableField for Field {
         self.numeric_value()
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
+    /// Returns the value this field contributes to the stored-fields stream.
+    ///
+    /// Equivalent to `org.apache.lucene.document.Field.storedValue()`.
+    ///
+    /// Java throws `IllegalStateException("Cannot store value of type ...")`
+    /// when a stored field carries a `Reader` or a `TokenStream`; here those
+    /// two combinations are already rejected by [`Field::new_with_reader`] and
+    /// [`Field::new_with_token_stream`], so the arm is unreachable and returns
+    /// `Ok(None)`. The indexing chain turns a `None` on a stored field into
+    /// `IllegalArgument("Cannot store a null value")`, which is exactly the
+    /// error Lucene's `IndexingChain.invertAndStore` raises for a null
+    /// `storedValue()`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the I/O error raised while draining a
+    /// [`FieldData::StoredInput`], mirroring the `IOException` Java's
+    /// `Field.storedValue()` declares. The indexing chain treats it as an
+    /// aborting failure, not as a rejected document.
+    ///
+    /// # Single use
+    ///
+    /// Reading a [`FieldData::StoredInput`] drains its cursor, so this method
+    /// yields the bytes of such a field only once — the same single-use
+    /// contract Java's `StoredFieldDataInput` has. A second call returns
+    /// `Ok(None)` is *not* what happens: the read fails short and surfaces as
+    /// an I/O error, which the chain reports as an aborting failure.
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
         if !self.field_type.stored() {
-            return None;
+            return Ok(None);
         }
         match &self.fields_data {
-            FieldData::Number(_)
-            | FieldData::Bytes(_)
-            | FieldData::String(_)
-            | FieldData::StoredInput { .. } => Some(StoredValue),
-            _ => None,
+            FieldData::Number(NumericValue::Int(value)) => Ok(Some(StoredValue::Integer(*value))),
+            FieldData::Number(NumericValue::Long(value)) => Ok(Some(StoredValue::Long(*value))),
+            FieldData::Number(NumericValue::Float(value)) => Ok(Some(StoredValue::Float(*value))),
+            FieldData::Number(NumericValue::Double(value)) => Ok(Some(StoredValue::Double(*value))),
+            FieldData::Bytes(value) => Ok(Some(StoredValue::Binary(value.clone()))),
+            FieldData::String(value) => Ok(Some(StoredValue::String(value.clone()))),
+            FieldData::StoredInput { input, length } => {
+                let length = usize::try_from(*length).map_err(|_| {
+                    LuceneError::IllegalArgument(format!(
+                        "stored field \"{}\" declares a negative length: {length}",
+                        self.name
+                    ))
+                })?;
+                let mut bytes = vec![0u8; length];
+                // A failure here is a real I/O error, not a validation problem:
+                // it must reach the indexing chain as such so the segment is
+                // aborted, which is what Lucene's `IOException` from
+                // `Field.storedValue()` does.
+                input.borrow_mut().read_bytes(&mut bytes, 0, length)?;
+                Ok(Some(StoredValue::DataInput(BytesRef::new(bytes))))
+            }
+            FieldData::Reader(_) | FieldData::TokenStream(_) => Ok(None),
         }
     }
 
+    /// Returns [`InvertableType::TOKEN_STREAM`] for every indexed field.
+    ///
+    /// Matches `org.apache.lucene.document.Field.invertableType()`, which
+    /// returns `TOKEN_STREAM` unconditionally: [`Field::token_stream`] produces
+    /// a single-token stream for a non-tokenized value, so the inverter never
+    /// needs the binary path. Only `StringField` and `KeywordField` override
+    /// this to [`InvertableType::BINARY`], because they carry the term bytes
+    /// directly. `None` encodes Lucene's "field is not indexed", for which
+    /// `IndexingChain` never calls `invertableType()` at all.
     fn invertable_type(&self) -> Option<InvertableType> {
         if self.field_type.index_options() == IndexOptions::NONE {
             return None;
         }
-        if self.field_type.tokenized() {
-            Some(InvertableType::TOKEN_STREAM)
-        } else {
-            Some(InvertableType::BINARY)
-        }
+        Some(InvertableType::TOKEN_STREAM)
     }
 }
 
@@ -819,6 +1273,14 @@ impl Document {
     /// Adds a field to the document.
     pub fn add(&mut self, field: Box<dyn IndexableField>) {
         self.fields.push(field);
+    }
+
+    /// Consumes this document and returns its fields.
+    ///
+    /// This is used by parallel/composite stored-fields views that need to merge
+    /// the stored fields of several sub-readers for the same doc ID.
+    pub fn into_fields(self) -> Vec<Box<dyn IndexableField>> {
+        self.fields
     }
 
     /// Removes the first field with the given name.
@@ -986,8 +1448,10 @@ impl StringField {
             string_field_type_not_stored().clone()
         };
         let binary_value = Some(BytesRef::new(value.as_bytes().to_vec()));
+        // `StringField(String, Store.YES)` stores a STRING value, not the UTF-8
+        // bytes it indexes: Lucene's ctor keeps `fieldsData` as the String.
         let stored_value = if stored == Store::YES {
-            Some(StoredValue)
+            Some(StoredValue::String(value.clone()))
         } else {
             None
         };
@@ -1009,7 +1473,7 @@ impl StringField {
             string_field_type_not_stored().clone()
         };
         let stored_value = if stored == Store::YES {
-            Some(StoredValue)
+            Some(StoredValue::Binary(value.clone()))
         } else {
             None
         };
@@ -1063,8 +1527,8 @@ impl IndexableField for StringField {
         None
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        self.stored_value.clone()
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(self.stored_value.clone())
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -1128,7 +1592,7 @@ impl TextField {
             text_field_type_not_stored().clone()
         };
         let stored_value = if stored == Store::YES {
-            Some(StoredValue)
+            Some(StoredValue::String(value.clone()))
         } else {
             None
         };
@@ -1204,8 +1668,8 @@ impl IndexableField for TextField {
         None
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        self.stored_value.clone()
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(self.stored_value.clone())
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -1306,12 +1770,142 @@ impl IndexableField for StoredField {
         self.0.numeric_value()
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
         self.0.stored_value()
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
         self.0.invertable_type()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// DocumentStoredFieldVisitor
+// -----------------------------------------------------------------------------
+
+/// A [`StoredFieldVisitor`] that rebuilds a [`Document`] from stored fields.
+///
+/// Equivalent to `org.apache.lucene.document.DocumentStoredFieldVisitor`. It
+/// loads either every stored field or only the ones named in a filter set, and
+/// backs
+/// [`StoredFields::document`](crate::index::StoredFields::document) and
+/// [`StoredFields::document_fields`](crate::index::StoredFields::document_fields).
+///
+/// Only the *stored* content of a field is recovered. Indexing options, term
+/// vector options and doc-values settings are not part of the stored-fields
+/// stream and are therefore not restored, except for the three flags Lucene
+/// copies out of the [`FieldInfo`] of a string field.
+#[derive(Debug, Default)]
+pub struct DocumentStoredFieldVisitor {
+    doc: Document,
+    fields_to_add: Option<HashSet<String>>,
+}
+
+impl DocumentStoredFieldVisitor {
+    /// Loads every stored field.
+    ///
+    /// Equivalent to `DocumentStoredFieldVisitor()`.
+    pub fn new() -> Self {
+        Self {
+            doc: Document::new(),
+            fields_to_add: None,
+        }
+    }
+
+    /// Loads only the fields named in `fields_to_add`.
+    ///
+    /// Equivalent to `DocumentStoredFieldVisitor(Set<String>)` and
+    /// `DocumentStoredFieldVisitor(String...)`.
+    pub fn with_fields<I, S>(fields_to_add: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            doc: Document::new(),
+            fields_to_add: Some(fields_to_add.into_iter().map(Into::into).collect()),
+        }
+    }
+
+    /// Returns the document built from the visited fields.
+    ///
+    /// Equivalent to `DocumentStoredFieldVisitor.getDocument()`.
+    pub fn into_document(self) -> Document {
+        self.doc
+    }
+
+    /// Returns the document built so far.
+    ///
+    /// Equivalent to `DocumentStoredFieldVisitor.getDocument()` for callers
+    /// that keep visiting.
+    pub fn document(&self) -> &Document {
+        &self.doc
+    }
+}
+
+impl StoredFieldVisitor for DocumentStoredFieldVisitor {
+    fn binary_field(&mut self, field_info: &FieldInfo, value: &[u8]) -> Result<()> {
+        self.doc.add(Box::new(StoredField::new_bytes(
+            &field_info.name,
+            BytesRef::new(value.to_vec()),
+        )?));
+        Ok(())
+    }
+
+    fn string_field(&mut self, field_info: &FieldInfo, value: &str) -> Result<()> {
+        // Lucene rebuilds a `TextField.TYPE_STORED` and copies back the three
+        // properties the segment's FieldInfo does carry, so that a document
+        // round-tripped through the index keeps them.
+        let mut field_type = FieldType::new_from(text_field_type_stored());
+        field_type.set_store_term_vectors(field_info.has_term_vectors())?;
+        field_type.set_omit_norms(field_info.omits_norms())?;
+        field_type.set_index_options(field_info.index_options)?;
+        self.doc.add(Box::new(StoredField::new_with_field_type(
+            &field_info.name,
+            value.to_string(),
+            field_type,
+        )?));
+        Ok(())
+    }
+
+    fn int_field(&mut self, field_info: &FieldInfo, value: i32) -> Result<()> {
+        self.doc.add(Box::new(StoredField::new_number(
+            &field_info.name,
+            NumericValue::Int(value),
+        )?));
+        Ok(())
+    }
+
+    fn long_field(&mut self, field_info: &FieldInfo, value: i64) -> Result<()> {
+        self.doc.add(Box::new(StoredField::new_number(
+            &field_info.name,
+            NumericValue::Long(value),
+        )?));
+        Ok(())
+    }
+
+    fn float_field(&mut self, field_info: &FieldInfo, value: f32) -> Result<()> {
+        self.doc.add(Box::new(StoredField::new_number(
+            &field_info.name,
+            NumericValue::Float(value),
+        )?));
+        Ok(())
+    }
+
+    fn double_field(&mut self, field_info: &FieldInfo, value: f64) -> Result<()> {
+        self.doc.add(Box::new(StoredField::new_number(
+            &field_info.name,
+            NumericValue::Double(value),
+        )?));
+        Ok(())
+    }
+
+    fn needs_field(&mut self, field_info: &FieldInfo) -> Result<StoredFieldVisitorStatus> {
+        match &self.fields_to_add {
+            None => Ok(StoredFieldVisitorStatus::Yes),
+            Some(wanted) if wanted.contains(&field_info.name) => Ok(StoredFieldVisitorStatus::Yes),
+            Some(_) => Ok(StoredFieldVisitorStatus::No),
+        }
     }
 }
 
@@ -1364,7 +1958,7 @@ impl KeywordField {
             keyword_field_type().clone()
         };
         let stored_value = if stored == Store::YES {
-            Some(StoredValue)
+            Some(StoredValue::Binary(value.clone()))
         } else {
             None
         };
@@ -1377,10 +1971,33 @@ impl KeywordField {
         })
     }
 
-    /// Creates a new KeywordField from a string value.
+    /// Creates a new KeywordField from a string value, indexing its UTF-8
+    /// representation.
+    ///
+    /// Equivalent to `KeywordField(String, String, Field.Store)`, which keeps
+    /// the `String` as `fieldsData` and therefore stores a **STRING** value
+    /// while indexing the UTF-8 bytes. Delegating to
+    /// [`Self::new_with_bytes`] instead would store a binary value and change
+    /// the bytes written to the `.fdt` file.
     pub fn new(name: &str, value: String, stored: Store) -> Result<Self> {
+        let field_type = if stored == Store::YES {
+            keyword_field_type_stored().clone()
+        } else {
+            keyword_field_type().clone()
+        };
         let binary_value = BytesRef::new(value.as_bytes().to_vec());
-        Self::new_with_bytes(name, binary_value, stored)
+        let stored_value = if stored == Store::YES {
+            Some(StoredValue::String(value.clone()))
+        } else {
+            None
+        };
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            fields_data: FieldData::String(value),
+            binary_value: Some(binary_value),
+            stored_value,
+        })
     }
 
     /// Query stub: exact match on a binary value.
@@ -1431,6 +2048,7 @@ impl IndexableField for KeywordField {
 
     fn string_value(&self) -> Option<String> {
         match &self.fields_data {
+            FieldData::String(v) => Some(v.clone()),
             FieldData::Bytes(v) => String::from_utf8(v.slice().to_vec()).ok(),
             _ => None,
         }
@@ -1444,8 +2062,8 @@ impl IndexableField for KeywordField {
         None
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        self.stored_value.clone()
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(self.stored_value.clone())
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -1696,8 +2314,8 @@ impl IndexableField for IntPoint {
         None
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        None
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -1804,8 +2422,8 @@ impl IndexableField for LongPoint {
         None
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        None
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -1912,8 +2530,8 @@ impl IndexableField for FloatPoint {
         None
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        None
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -2020,8 +2638,8 @@ impl IndexableField for DoublePoint {
         None
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        None
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -2142,8 +2760,8 @@ impl IndexableField for BinaryPoint {
         None
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        None
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -2328,8 +2946,8 @@ impl IndexableField for NumericDocValuesField {
         Some(NumericValue::Long(self.value))
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        None
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -2393,8 +3011,8 @@ impl IndexableField for FloatDocValuesField {
         self.inner.numeric_value()
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        None
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -2458,8 +3076,8 @@ impl IndexableField for DoubleDocValuesField {
         self.inner.numeric_value()
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        None
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -2535,8 +3153,8 @@ impl IndexableField for SortedDocValuesField {
         None
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        None
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -2612,8 +3230,8 @@ impl IndexableField for SortedSetDocValuesField {
         None
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        None
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -2689,8 +3307,8 @@ impl IndexableField for SortedNumericDocValuesField {
         Some(NumericValue::Long(self.value))
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        None
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -2752,8 +3370,8 @@ impl IndexableField for BinaryDocValuesField {
         None
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        None
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -2885,7 +3503,7 @@ impl IntField {
     /// Creates a new IntField.
     pub fn new(name: &str, value: i32, stored: Store) -> Self {
         let stored_value = if stored == Store::YES {
-            Some(StoredValue)
+            Some(StoredValue::Integer(value))
         } else {
             None
         };
@@ -2898,8 +3516,16 @@ impl IntField {
     }
 
     /// Sets a new value.
+    ///
+    /// Mirrors Lucene's setter, which also refreshes the stored value so a
+    /// reused field instance stores what it indexes.
     pub fn set_value(&mut self, value: i32) {
         self.value = value;
+        if let Some(stored) = self.stored_value.as_mut() {
+            stored
+                .set_int_value(value)
+                .expect("INVARIANT: the stored value was built from this same type");
+        }
     }
 
     /// Query stub: exact match.
@@ -2956,8 +3582,8 @@ impl IndexableField for IntField {
         Some(NumericValue::Int(self.value))
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        self.stored_value.clone()
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(self.stored_value.clone())
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -2981,7 +3607,7 @@ impl LongField {
     /// Creates a new LongField.
     pub fn new(name: &str, value: i64, stored: Store) -> Self {
         let stored_value = if stored == Store::YES {
-            Some(StoredValue)
+            Some(StoredValue::Long(value))
         } else {
             None
         };
@@ -2994,8 +3620,16 @@ impl LongField {
     }
 
     /// Sets a new value.
+    ///
+    /// Mirrors Lucene's setter, which also refreshes the stored value so a
+    /// reused field instance stores what it indexes.
     pub fn set_value(&mut self, value: i64) {
         self.value = value;
+        if let Some(stored) = self.stored_value.as_mut() {
+            stored
+                .set_long_value(value)
+                .expect("INVARIANT: the stored value was built from this same type");
+        }
     }
 
     /// Query stub: exact match.
@@ -3052,8 +3686,8 @@ impl IndexableField for LongField {
         Some(NumericValue::Long(self.value))
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        self.stored_value.clone()
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(self.stored_value.clone())
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -3077,7 +3711,7 @@ impl FloatField {
     /// Creates a new FloatField.
     pub fn new(name: &str, value: f32, stored: Store) -> Self {
         let stored_value = if stored == Store::YES {
-            Some(StoredValue)
+            Some(StoredValue::Float(value))
         } else {
             None
         };
@@ -3090,8 +3724,16 @@ impl FloatField {
     }
 
     /// Sets a new value.
+    ///
+    /// Mirrors Lucene's setter, which also refreshes the stored value so a
+    /// reused field instance stores what it indexes.
     pub fn set_value(&mut self, value: f32) {
         self.value = value;
+        if let Some(stored) = self.stored_value.as_mut() {
+            stored
+                .set_float_value(value)
+                .expect("INVARIANT: the stored value was built from this same type");
+        }
     }
 
     fn value_as_sortable_bits(&self) -> i32 {
@@ -3152,8 +3794,8 @@ impl IndexableField for FloatField {
         Some(NumericValue::Long(self.value_as_sortable_bits() as i64))
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        self.stored_value.clone()
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(self.stored_value.clone())
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -3177,7 +3819,7 @@ impl DoubleField {
     /// Creates a new DoubleField.
     pub fn new(name: &str, value: f64, stored: Store) -> Self {
         let stored_value = if stored == Store::YES {
-            Some(StoredValue)
+            Some(StoredValue::Double(value))
         } else {
             None
         };
@@ -3190,8 +3832,16 @@ impl DoubleField {
     }
 
     /// Sets a new value.
+    ///
+    /// Mirrors Lucene's setter, which also refreshes the stored value so a
+    /// reused field instance stores what it indexes.
     pub fn set_value(&mut self, value: f64) {
         self.value = value;
+        if let Some(stored) = self.stored_value.as_mut() {
+            stored
+                .set_double_value(value)
+                .expect("INVARIANT: the stored value was built from this same type");
+        }
     }
 
     fn value_as_sortable_bits(&self) -> i64 {
@@ -3252,8 +3902,8 @@ impl IndexableField for DoubleField {
         Some(NumericValue::Long(self.value_as_sortable_bits()))
     }
 
-    fn stored_value(&self) -> Option<StoredValue> {
-        self.stored_value.clone()
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(self.stored_value.clone())
     }
 
     fn invertable_type(&self) -> Option<InvertableType> {
@@ -3389,6 +4039,429 @@ impl DateTools {
             17 => "%Y%m%d%H%M%S%3f",
             _ => "%Y%m%d%H%M%S%3f",
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KNN vector fields
+// ---------------------------------------------------------------------------
+
+/// Builds the frozen field type a `Knn*VectorField` constructor derives from
+/// its vector, shared by both encodings.
+///
+/// Equivalent to the `createType` of `KnnFloatVectorField`
+/// (`KnnFloatVectorField.java:42-61`) and of `KnnByteVectorField`
+/// (`KnnByteVectorField.java:42-61`), which differ only in the encoding they
+/// pass and in the zero check they run. The null checks Java performs on the
+/// vector and on the similarity function have no Rust counterpart: neither can
+/// be null here.
+fn knn_vector_field_type(
+    dimension: usize,
+    encoding: VectorEncoding,
+    similarity: VectorSimilarityFunction,
+    zero: bool,
+) -> Result<FieldType> {
+    if dimension == 0 {
+        return Err(LuceneError::IllegalArgument(
+            "cannot index an empty vector".to_string(),
+        ));
+    }
+    if similarity == VectorSimilarityFunction::COSINE && zero {
+        return Err(LuceneError::IllegalArgument(
+            "zero vector not allowed with cosine similarity function".to_string(),
+        ));
+    }
+    let mut field_type = FieldType::new();
+    field_type.set_vector_attributes(dimension as i32, encoding, similarity)?;
+    field_type.freeze();
+    Ok(field_type)
+}
+
+/// Rejects a vector that does not fit the field type it is being written under.
+///
+/// Equivalent to the body the three-argument constructors of
+/// `KnnFloatVectorField` (`KnnFloatVectorField.java:132-152`) and
+/// `KnnByteVectorField` (`KnnByteVectorField.java:132-152`) share.
+fn check_knn_vector_against_type(
+    name: &str,
+    field_type: &FieldType,
+    expected: VectorEncoding,
+    length: usize,
+    zero: bool,
+) -> Result<()> {
+    if field_type.vector_encoding() != expected {
+        let used = match expected {
+            VectorEncoding::FLOAT32 => "float[]",
+            VectorEncoding::BYTE => "byte[]",
+        };
+        return Err(LuceneError::IllegalArgument(format!(
+            "Attempt to create a vector for field {name} using {used} but the field encoding is {:?}",
+            field_type.vector_encoding()
+        )));
+    }
+    if length as i32 != field_type.vector_dimension() {
+        return Err(LuceneError::IllegalArgument(
+            "The number of vector dimensions does not match the field type".to_string(),
+        ));
+    }
+    if field_type.vector_similarity_function() == VectorSimilarityFunction::COSINE && zero {
+        return Err(LuceneError::IllegalArgument(
+            "zero vector not allowed with cosine similarity function".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// A field that indexes a `f32` vector for nearest-neighbour search.
+///
+/// Equivalent to `org.apache.lucene.document.KnnFloatVectorField`.
+///
+/// The field is neither inverted nor stored: it carries its value straight to
+/// the segment's KNN-vectors writer through
+/// [`IndexableField::float_vector_value`], which is this port's stand-in for
+/// the downcast `IndexingChain.indexVectorValue` performs.
+#[derive(Debug, Clone)]
+pub struct KnnFloatVectorField {
+    name: String,
+    field_type: FieldType,
+    vector: Vec<f32>,
+}
+
+impl KnnFloatVectorField {
+    /// Creates a float-vector field with the given similarity function.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for an empty vector, for a zero
+    /// vector under [`VectorSimilarityFunction::COSINE`], and for a vector with
+    /// a non-finite component.
+    pub fn new(name: &str, vector: &[f32], similarity: VectorSimilarityFunction) -> Result<Self> {
+        let field_type = knn_vector_field_type(
+            vector.len(),
+            VectorEncoding::FLOAT32,
+            similarity,
+            crate::util::vector_util::is_zero_vector_f32(vector),
+        )?;
+        crate::util::vector_util::check_finite(vector)?;
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            vector: vector.to_vec(),
+        })
+    }
+
+    /// Creates a float-vector field scored by
+    /// [`VectorSimilarityFunction::EUCLIDEAN`].
+    ///
+    /// # Errors
+    ///
+    /// As [`KnnFloatVectorField::new`].
+    pub fn with_euclidean(name: &str, vector: &[f32]) -> Result<Self> {
+        Self::new(name, vector, VectorSimilarityFunction::EUCLIDEAN)
+    }
+
+    /// Builds the field type a float-vector field of `dimension` dimensions
+    /// uses.
+    ///
+    /// Equivalent to the static
+    /// `KnnFloatVectorField.createFieldType(int, VectorSimilarityFunction)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the dimension is not
+    /// positive or exceeds [`MAX_DIMENSIONS`].
+    pub fn create_field_type(
+        dimension: i32,
+        similarity_function: VectorSimilarityFunction,
+    ) -> Result<FieldType> {
+        let mut field_type = FieldType::new();
+        field_type.set_vector_attributes(
+            dimension,
+            VectorEncoding::FLOAT32,
+            similarity_function,
+        )?;
+        field_type.freeze();
+        Ok(field_type)
+    }
+
+    /// Creates a float-vector field under a caller-supplied field type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the type does not declare
+    /// [`VectorEncoding::FLOAT32`], when the vector's length does not match the
+    /// type's dimension count, when the vector is zero under
+    /// [`VectorSimilarityFunction::COSINE`], and when a component is
+    /// non-finite.
+    pub fn with_field_type(name: &str, vector: &[f32], field_type: FieldType) -> Result<Self> {
+        check_knn_vector_against_type(
+            name,
+            &field_type,
+            VectorEncoding::FLOAT32,
+            vector.len(),
+            crate::util::vector_util::is_zero_vector_f32(vector),
+        )?;
+        crate::util::vector_util::check_finite(vector)?;
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            vector: vector.to_vec(),
+        })
+    }
+
+    /// Returns this field's vector value.
+    pub fn vector_value(&self) -> &[f32] {
+        &self.vector
+    }
+
+    /// Replaces this field's vector value.
+    ///
+    /// Equivalent to `KnnFloatVectorField.setVectorValue`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the length does not match
+    /// the field's dimension count, when the value is zero under
+    /// [`VectorSimilarityFunction::COSINE`], and when a component is
+    /// non-finite.
+    pub fn set_vector_value(&mut self, value: &[f32]) -> Result<()> {
+        if value.len() as i32 != self.field_type.vector_dimension() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "value length {} must match field dimension {}",
+                value.len(),
+                self.field_type.vector_dimension()
+            )));
+        }
+        if self.field_type.vector_similarity_function() == VectorSimilarityFunction::COSINE
+            && crate::util::vector_util::is_zero_vector_f32(value)
+        {
+            return Err(LuceneError::IllegalArgument(
+                "zero vector not allowed with cosine similarity function".to_string(),
+            ));
+        }
+        crate::util::vector_util::check_finite(value)?;
+        self.vector.clear();
+        self.vector.extend_from_slice(value);
+        Ok(())
+    }
+}
+
+impl IndexableField for KnnFloatVectorField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        // A vector field is never inverted: its `indexOptions` is `NONE`, so
+        // `IndexingChain.invertAndStore` skips it and never asks for a stream.
+        Box::new(crate::analysis::StringTokenStream::new(String::new()).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        None
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
+    }
+
+    fn float_vector_value(&self) -> Option<&[f32]> {
+        Some(&self.vector)
+    }
+}
+
+/// A field that indexes a `u8` vector for nearest-neighbour search.
+///
+/// Equivalent to `org.apache.lucene.document.KnnByteVectorField`.
+///
+/// Java's vector is a signed `byte[]`; the bytes reach the index unchanged, so
+/// this port carries the same bytes as `u8` and the on-disk value is identical.
+#[derive(Debug, Clone)]
+pub struct KnnByteVectorField {
+    name: String,
+    field_type: FieldType,
+    vector: Vec<u8>,
+}
+
+impl KnnByteVectorField {
+    /// Creates a byte-vector field with the given similarity function.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for an empty vector and for a
+    /// zero vector under [`VectorSimilarityFunction::COSINE`].
+    pub fn new(name: &str, vector: &[u8], similarity: VectorSimilarityFunction) -> Result<Self> {
+        let field_type = knn_vector_field_type(
+            vector.len(),
+            VectorEncoding::BYTE,
+            similarity,
+            crate::util::vector_util::is_zero_vector_bytes(vector),
+        )?;
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            vector: vector.to_vec(),
+        })
+    }
+
+    /// Creates a byte-vector field scored by
+    /// [`VectorSimilarityFunction::EUCLIDEAN`].
+    ///
+    /// # Errors
+    ///
+    /// As [`KnnByteVectorField::new`].
+    pub fn with_euclidean(name: &str, vector: &[u8]) -> Result<Self> {
+        Self::new(name, vector, VectorSimilarityFunction::EUCLIDEAN)
+    }
+
+    /// Builds the field type a byte-vector field of `dimension` dimensions
+    /// uses.
+    ///
+    /// Equivalent to the static
+    /// `KnnByteVectorField.createFieldType(int, VectorSimilarityFunction)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the dimension is not
+    /// positive or exceeds [`MAX_DIMENSIONS`].
+    pub fn create_field_type(
+        dimension: i32,
+        similarity_function: VectorSimilarityFunction,
+    ) -> Result<FieldType> {
+        let mut field_type = FieldType::new();
+        field_type.set_vector_attributes(dimension, VectorEncoding::BYTE, similarity_function)?;
+        field_type.freeze();
+        Ok(field_type)
+    }
+
+    /// Creates a byte-vector field under a caller-supplied field type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the type does not declare
+    /// [`VectorEncoding::BYTE`], when the vector's length does not match the
+    /// type's dimension count, and when the vector is zero under
+    /// [`VectorSimilarityFunction::COSINE`].
+    pub fn with_field_type(name: &str, vector: &[u8], field_type: FieldType) -> Result<Self> {
+        check_knn_vector_against_type(
+            name,
+            &field_type,
+            VectorEncoding::BYTE,
+            vector.len(),
+            crate::util::vector_util::is_zero_vector_bytes(vector),
+        )?;
+        Ok(Self {
+            name: name.to_string(),
+            field_type,
+            vector: vector.to_vec(),
+        })
+    }
+
+    /// Returns this field's vector value.
+    pub fn vector_value(&self) -> &[u8] {
+        &self.vector
+    }
+
+    /// Replaces this field's vector value.
+    ///
+    /// Equivalent to `KnnByteVectorField.setVectorValue`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the length does not match
+    /// the field's dimension count and when the value is zero under
+    /// [`VectorSimilarityFunction::COSINE`].
+    pub fn set_vector_value(&mut self, value: &[u8]) -> Result<()> {
+        if value.len() as i32 != self.field_type.vector_dimension() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "value length {} must match field dimension {}",
+                value.len(),
+                self.field_type.vector_dimension()
+            )));
+        }
+        if self.field_type.vector_similarity_function() == VectorSimilarityFunction::COSINE
+            && crate::util::vector_util::is_zero_vector_bytes(value)
+        {
+            return Err(LuceneError::IllegalArgument(
+                "zero vector not allowed with cosine similarity function".to_string(),
+            ));
+        }
+        self.vector.clear();
+        self.vector.extend_from_slice(value);
+        Ok(())
+    }
+}
+
+impl IndexableField for KnnByteVectorField {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        Box::new(crate::analysis::StringTokenStream::new(String::new()).unwrap())
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        // Java answers null here too: `KnnByteVectorField.fieldsData` is a bare
+        // `byte[]`, and `Field.binaryValue()` only unwraps a `BytesRef`
+        // (`Field.java:428-434`).
+        None
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
+    }
+
+    fn byte_vector_value(&self) -> Option<&[u8]> {
+        Some(&self.vector)
     }
 }
 
@@ -3545,7 +4618,7 @@ mod tests {
     fn string_field_stored_keeps_value() {
         let field = StringField::new("id", "abc".to_string(), Store::YES).unwrap();
         assert!(field.field_type().stored());
-        assert!(field.stored_value().is_some());
+        assert!(field.stored_value().unwrap().is_some());
     }
 
     #[test]
@@ -3771,5 +4844,356 @@ mod tests {
             DateTools::time_to_string(time, Resolution::MILLISECOND),
             original
         );
+    }
+
+    #[test]
+    fn field_invertable_type_matches_lucene_for_every_field_kind() {
+        // `org.apache.lucene.document.Field.invertableType()` returns
+        // TOKEN_STREAM unconditionally, because `Field.tokenStream` wraps a
+        // non-tokenized value in a single-token stream. Only `StringField` and
+        // `KeywordField` override it to BINARY, since they carry the term bytes
+        // directly. Reporting BINARY for a non-tokenized `Field` sent the
+        // indexing chain down the binary path, where `binaryValue()` of a
+        // string-valued field is `None`.
+        let mut not_tokenized = FieldType::new();
+        not_tokenized.set_tokenized(false).unwrap();
+        not_tokenized.set_index_options(IndexOptions::DOCS).unwrap();
+        not_tokenized.freeze();
+        let field = Field::new("body", "value".to_string(), not_tokenized).unwrap();
+        assert_eq!(
+            IndexableField::invertable_type(&field),
+            Some(InvertableType::TOKEN_STREAM)
+        );
+
+        let mut tokenized = FieldType::new();
+        tokenized.set_tokenized(true).unwrap();
+        tokenized
+            .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
+            .unwrap();
+        tokenized.freeze();
+        let field = Field::new("body", "value".to_string(), tokenized).unwrap();
+        assert_eq!(
+            IndexableField::invertable_type(&field),
+            Some(InvertableType::TOKEN_STREAM)
+        );
+
+        let mut not_indexed = FieldType::new();
+        not_indexed.set_stored(true).unwrap();
+        not_indexed.freeze();
+        let field = Field::new("meta", "value".to_string(), not_indexed).unwrap();
+        assert_eq!(
+            IndexableField::invertable_type(&field),
+            None,
+            "a field that is not indexed is never inverted"
+        );
+
+        let string_field = StringField::new("id", "abc".to_string(), Store::NO).unwrap();
+        assert_eq!(
+            IndexableField::invertable_type(&string_field),
+            Some(InvertableType::BINARY)
+        );
+    }
+    // -- StoredValue --------------------------------------------------------
+
+    #[test]
+    fn stored_value_reports_the_java_type_for_every_variant() {
+        assert_eq!(
+            StoredValue::Integer(1).value_type(),
+            StoredValueType::INTEGER
+        );
+        assert_eq!(StoredValue::Long(1).value_type(), StoredValueType::LONG);
+        assert_eq!(StoredValue::Float(1.0).value_type(), StoredValueType::FLOAT);
+        assert_eq!(
+            StoredValue::Double(1.0).value_type(),
+            StoredValueType::DOUBLE
+        );
+        assert_eq!(
+            StoredValue::Binary(BytesRef::new(vec![1])).value_type(),
+            StoredValueType::BINARY
+        );
+        assert_eq!(
+            StoredValue::DataInput(BytesRef::new(vec![1])).value_type(),
+            StoredValueType::DATA_INPUT
+        );
+        assert_eq!(
+            StoredValue::String(String::new()).value_type(),
+            StoredValueType::STRING
+        );
+    }
+
+    #[test]
+    fn stored_value_getters_reject_the_wrong_type() {
+        let value = StoredValue::Long(7);
+        assert_eq!(value.long_value().unwrap(), 7);
+        let error = value.int_value().expect_err("a LONG is not an INTEGER");
+        assert!(
+            error
+                .to_string()
+                .contains("Cannot get an integer on a LONG"),
+            "{error}"
+        );
+        assert!(value.float_value().is_err());
+        assert!(value.double_value().is_err());
+        assert!(value.binary_value().is_err());
+        assert!(value.data_input_value().is_err());
+        assert!(value.string_value().is_err());
+    }
+
+    #[test]
+    fn stored_value_setters_reject_the_wrong_type() {
+        let mut value = StoredValue::Integer(1);
+        value.set_int_value(9).expect("same type");
+        assert_eq!(value.int_value().unwrap(), 9);
+        let error = value
+            .set_string_value("nope".to_string())
+            .expect_err("an INTEGER is not a STRING");
+        assert!(
+            error
+                .to_string()
+                .contains("Cannot set a string value on a INTEGER"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn stored_value_binary_and_data_input_are_distinct_variants() {
+        // Both are written as BYTE_ARR, but Lucene keeps them apart because a
+        // DATA_INPUT value reaches a different writer overload.
+        let binary = StoredValue::Binary(BytesRef::new(vec![1, 2]));
+        let streamed = StoredValue::DataInput(BytesRef::new(vec![1, 2]));
+        assert_ne!(binary, streamed);
+        assert!(binary.data_input_value().is_err());
+        assert!(streamed.binary_value().is_err());
+    }
+
+    // -- Field.storedValue() ------------------------------------------------
+
+    fn stored_type() -> FieldType {
+        let mut ft = FieldType::new();
+        ft.set_stored(true).unwrap();
+        ft.freeze();
+        ft
+    }
+
+    #[test]
+    fn a_field_that_is_not_stored_has_no_stored_value() {
+        let field = StringField::new("id", "abc".to_string(), Store::NO).unwrap();
+        assert!(IndexableField::stored_value(&field).unwrap().is_none());
+    }
+
+    #[test]
+    fn field_stored_value_follows_the_kind_of_data_it_carries() {
+        let text = Field::new("s", "hello".to_string(), stored_type()).unwrap();
+        assert_eq!(
+            IndexableField::stored_value(&text).unwrap(),
+            Some(StoredValue::String("hello".to_string()))
+        );
+
+        let bytes = Field::new_with_bytes("b", BytesRef::new(vec![1, 2]), stored_type()).unwrap();
+        assert_eq!(
+            IndexableField::stored_value(&bytes).unwrap(),
+            Some(StoredValue::Binary(BytesRef::new(vec![1, 2])))
+        );
+
+        for (value, expected) in [
+            (NumericValue::Int(-3), StoredValue::Integer(-3)),
+            (NumericValue::Long(1 << 40), StoredValue::Long(1 << 40)),
+            (NumericValue::Float(0.5), StoredValue::Float(0.5)),
+            (NumericValue::Double(-0.25), StoredValue::Double(-0.25)),
+        ] {
+            let field = Field::new_with_number("n", value, stored_type()).unwrap();
+            assert_eq!(
+                IndexableField::stored_value(&field).unwrap(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn a_stored_data_input_field_yields_its_bytes_once() {
+        let input = Box::new(crate::store::ByteArrayDataInput::new(vec![9, 8, 7]));
+        let field = Field::new_with_stored_input("p", input, 3, stored_type()).unwrap();
+        assert_eq!(
+            IndexableField::stored_value(&field).unwrap(),
+            Some(StoredValue::DataInput(BytesRef::new(vec![9, 8, 7]))),
+            "the DATA_INPUT variant carries the bytes the cursor produced"
+        );
+        // The cursor is drained, exactly like Java's `StoredFieldDataInput`; a
+        // second read runs off the end and surfaces as an I/O error, which the
+        // indexing chain treats as an aborting failure rather than silently
+        // storing nothing.
+        let error = IndexableField::stored_value(&field)
+            .expect_err("the cursor is single-use, as it is in Lucene");
+        assert!(matches!(error, LuceneError::Io(_)), "{error:?}");
+    }
+
+    #[test]
+    fn stored_field_types_carry_the_value_lucene_stores() {
+        // Regression test: `KeywordField(String, String, Store.YES)` keeps the
+        // String as `fieldsData` and stores a STRING value. Routing it through
+        // the BytesRef constructor would store a BINARY value instead, which is
+        // a different type byte in the `.fdt` file.
+        let keyword = KeywordField::new("k", "value".to_string(), Store::YES).unwrap();
+        assert_eq!(
+            IndexableField::stored_value(&keyword).unwrap(),
+            Some(StoredValue::String("value".to_string())),
+            "a KeywordField built from a String stores a STRING"
+        );
+        assert_eq!(
+            IndexableField::binary_value(&keyword),
+            Some(BytesRef::new(b"value".to_vec())),
+            "it still indexes the UTF-8 bytes"
+        );
+        assert_eq!(
+            IndexableField::string_value(&keyword),
+            Some("value".to_string())
+        );
+
+        let keyword_bytes =
+            KeywordField::new_with_bytes("k", BytesRef::new(vec![1, 2]), Store::YES).unwrap();
+        assert_eq!(
+            IndexableField::stored_value(&keyword_bytes).unwrap(),
+            Some(StoredValue::Binary(BytesRef::new(vec![1, 2]))),
+            "a KeywordField built from bytes stores a BINARY value"
+        );
+
+        let string_field = StringField::new("s", "text".to_string(), Store::YES).unwrap();
+        assert_eq!(
+            IndexableField::stored_value(&string_field).unwrap(),
+            Some(StoredValue::String("text".to_string()))
+        );
+        let string_bytes =
+            StringField::new_with_bytes("s", BytesRef::new(vec![3]), Store::YES).unwrap();
+        assert_eq!(
+            IndexableField::stored_value(&string_bytes).unwrap(),
+            Some(StoredValue::Binary(BytesRef::new(vec![3])))
+        );
+
+        let text = TextField::new("t", "body".to_string(), Store::YES).unwrap();
+        assert_eq!(
+            IndexableField::stored_value(&text).unwrap(),
+            Some(StoredValue::String("body".to_string()))
+        );
+
+        assert_eq!(
+            IndexableField::stored_value(&IntField::new("i", 5, Store::YES)).unwrap(),
+            Some(StoredValue::Integer(5))
+        );
+        assert_eq!(
+            IndexableField::stored_value(&LongField::new("l", 5, Store::YES)).unwrap(),
+            Some(StoredValue::Long(5))
+        );
+        assert_eq!(
+            IndexableField::stored_value(&FloatField::new("f", 0.5, Store::YES)).unwrap(),
+            Some(StoredValue::Float(0.5))
+        );
+        assert_eq!(
+            IndexableField::stored_value(&DoubleField::new("d", 0.5, Store::YES)).unwrap(),
+            Some(StoredValue::Double(0.5))
+        );
+    }
+
+    #[test]
+    fn changing_a_numeric_field_value_also_changes_what_it_stores() {
+        let mut field = IntField::new("i", 1, Store::YES);
+        field.set_value(42);
+        assert_eq!(
+            IndexableField::stored_value(&field).unwrap(),
+            Some(StoredValue::Integer(42))
+        );
+
+        let mut unstored = IntField::new("i", 1, Store::NO);
+        unstored.set_value(42);
+        assert!(IndexableField::stored_value(&unstored).unwrap().is_none());
+    }
+
+    // -- DocumentStoredFieldVisitor -----------------------------------------
+
+    fn info(name: &str, number: i32) -> FieldInfo {
+        FieldInfo::new(name, number)
+    }
+
+    #[test]
+    fn the_document_visitor_rebuilds_every_stored_type() {
+        let mut visitor = DocumentStoredFieldVisitor::new();
+        visitor.string_field(&info("s", 0), "text").unwrap();
+        visitor.int_field(&info("i", 1), -1).unwrap();
+        visitor.long_field(&info("l", 2), -2).unwrap();
+        visitor.float_field(&info("f", 3), 0.5).unwrap();
+        visitor.double_field(&info("d", 4), 0.25).unwrap();
+        visitor.binary_field(&info("b", 5), &[7, 8]).unwrap();
+
+        let document = visitor.into_document();
+        let fields = document.get_fields();
+        assert_eq!(fields.len(), 6);
+        assert_eq!(fields[0].string_value(), Some("text".to_string()));
+        assert_eq!(fields[1].numeric_value(), Some(NumericValue::Int(-1)));
+        assert_eq!(fields[2].numeric_value(), Some(NumericValue::Long(-2)));
+        assert_eq!(fields[3].numeric_value(), Some(NumericValue::Float(0.5)));
+        assert_eq!(fields[4].numeric_value(), Some(NumericValue::Double(0.25)));
+        assert_eq!(fields[5].binary_value(), Some(BytesRef::new(vec![7, 8])));
+    }
+
+    #[test]
+    fn the_document_visitor_loads_only_the_requested_fields() {
+        let mut visitor = DocumentStoredFieldVisitor::with_fields(["b"]);
+        assert_eq!(
+            visitor.needs_field(&info("a", 0)).unwrap(),
+            StoredFieldVisitorStatus::No
+        );
+        assert_eq!(
+            visitor.needs_field(&info("b", 1)).unwrap(),
+            StoredFieldVisitorStatus::Yes
+        );
+        assert!(
+            visitor.document().get_fields().is_empty(),
+            "needs_field alone must not add anything"
+        );
+    }
+
+    #[test]
+    fn the_document_visitor_wants_every_field_when_no_filter_is_given() {
+        let mut visitor = DocumentStoredFieldVisitor::new();
+        assert_eq!(
+            visitor.needs_field(&info("anything", 0)).unwrap(),
+            StoredFieldVisitorStatus::Yes
+        );
+    }
+
+    #[test]
+    fn the_document_visitor_copies_the_field_info_flags_onto_a_string_field() {
+        // Lucene's `DocumentStoredFieldVisitor.stringField` rebuilds a
+        // `TextField.TYPE_STORED` and restores the three properties the
+        // segment's FieldInfo carries.
+        let field_info = FieldInfo::new_full(
+            "s",
+            0,
+            true,  // store_term_vector
+            true,  // omit_norms
+            false, // store_payloads
+            IndexOptions::DOCS_AND_FREQS,
+            DocValuesType::NONE,
+            DocValuesSkipIndexType::NONE,
+            -1,
+            HashMap::new(),
+            0,
+            0,
+            0,
+            0,
+            VectorEncoding::FLOAT32,
+            VectorSimilarityFunction::EUCLIDEAN,
+            false,
+            false,
+        )
+        .expect("field info");
+
+        let mut visitor = DocumentStoredFieldVisitor::new();
+        visitor.string_field(&field_info, "text").unwrap();
+        let document = visitor.into_document();
+        let field_type = document.get_fields()[0].field_type();
+        assert!(field_type.stored());
+        assert!(field_type.store_term_vectors());
+        assert!(field_type.omit_norms());
+        assert_eq!(field_type.index_options(), IndexOptions::DOCS_AND_FREQS);
     }
 }

@@ -28,7 +28,7 @@ use super::postings::{
     postings_for_name, Fields, FieldsConsumer, FieldsProducer, MergeState, NormsProducer,
     PostingsFormat, Terms,
 };
-use super::state::{SegmentReadState, SegmentWriteState};
+use super::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use super::stub::FieldInfo;
 
 // -----------------------------------------------------------------------------
@@ -93,10 +93,7 @@ impl PostingsFormat for PerFieldPostingsFormat {
         Ok(Box::new(FieldsWriter::new(state, self.resolver.clone())))
     }
 
-    fn fields_producer<'a>(
-        &self,
-        state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn FieldsProducer + 'a>> {
+    fn fields_producer<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn FieldsProducer>> {
         Ok(Box::new(FieldsReader::new(state)?))
     }
 }
@@ -328,14 +325,14 @@ impl FieldsProducer for NoOpFieldsProducer {
     }
 }
 
-struct FieldsReader<'a> {
-    formats: HashMap<String, Box<dyn FieldsProducer + 'a>>,
+struct FieldsReader {
+    formats: HashMap<String, Box<dyn FieldsProducer>>,
     fields: BTreeMap<String, String>,
 }
 
-impl<'a> FieldsReader<'a> {
-    fn new(read_state: &SegmentReadState<'a>) -> Result<Self> {
-        let mut formats: HashMap<String, Box<dyn FieldsProducer + 'a>> = HashMap::new();
+impl FieldsReader {
+    fn new(read_state: &SegmentReadState) -> Result<Self> {
+        let mut formats: HashMap<String, Box<dyn FieldsProducer>> = HashMap::new();
         let mut fields: BTreeMap<String, String> = BTreeMap::new();
 
         let result = (|| -> Result<()> {
@@ -388,7 +385,7 @@ impl<'a> FieldsReader<'a> {
     }
 }
 
-impl<'a> std::fmt::Debug for FieldsReader<'a> {
+impl std::fmt::Debug for FieldsReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PerFieldPostingsReader")
             .field("formats", &self.formats.len())
@@ -396,7 +393,7 @@ impl<'a> std::fmt::Debug for FieldsReader<'a> {
     }
 }
 
-impl<'a> Fields for FieldsReader<'a> {
+impl Fields for FieldsReader {
     fn size(&self) -> i32 {
         self.fields.len() as i32
     }
@@ -420,7 +417,7 @@ impl<'a> Fields for FieldsReader<'a> {
     }
 }
 
-impl<'a> FieldsProducer for FieldsReader<'a> {
+impl FieldsProducer for FieldsReader {
     fn check_integrity(&self) -> Result<()> {
         for producer in self.formats.values() {
             producer.check_integrity()?;
@@ -510,7 +507,7 @@ impl DocValuesFormat for PerFieldDocValuesFormat {
     fn fields_producer<'a>(
         &self,
         state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn DocValuesProducer + 'a>> {
+    ) -> Result<Box<dyn DocValuesProducer>> {
         Ok(Box::new(DvFieldsReader::new(state)?))
     }
 }
@@ -718,14 +715,14 @@ impl<'a> DocValuesConsumer for DvFieldsWriter<'a> {
     }
 }
 
-struct DvFieldsReader<'a> {
-    formats: HashMap<String, Box<dyn DocValuesProducer + 'a>>,
+struct DvFieldsReader {
+    formats: HashMap<String, Box<dyn DocValuesProducer>>,
     fields: HashMap<i32, String>,
 }
 
-impl<'a> DvFieldsReader<'a> {
-    fn new(read_state: &SegmentReadState<'a>) -> Result<Self> {
-        let mut formats: HashMap<String, Box<dyn DocValuesProducer + 'a>> = HashMap::new();
+impl DvFieldsReader {
+    fn new(read_state: &SegmentReadState) -> Result<Self> {
+        let mut formats: HashMap<String, Box<dyn DocValuesProducer>> = HashMap::new();
         let mut fields: HashMap<i32, String> = HashMap::new();
 
         let result = (|| -> Result<()> {
@@ -782,7 +779,7 @@ impl<'a> DvFieldsReader<'a> {
         Ok(Self { formats, fields })
     }
 
-    fn producer_for(&self, field: &FieldInfo) -> Result<&(dyn DocValuesProducer + 'a)> {
+    fn producer_for(&self, field: &FieldInfo) -> Result<&(dyn DocValuesProducer + '_)> {
         let suffix = self.fields.get(&field.number).ok_or_else(|| {
             LuceneError::IllegalArgument(format!(
                 "field \"{}\" has no doc-values producer",
@@ -795,7 +792,7 @@ impl<'a> DvFieldsReader<'a> {
     }
 }
 
-impl<'a> std::fmt::Debug for DvFieldsReader<'a> {
+impl std::fmt::Debug for DvFieldsReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PerFieldDocValuesReader")
             .field("formats", &self.formats.len())
@@ -803,46 +800,40 @@ impl<'a> std::fmt::Debug for DvFieldsReader<'a> {
     }
 }
 
-impl<'a> DocValuesProducer for DvFieldsReader<'a> {
+impl DocValuesProducer for DvFieldsReader {
     fn get_numeric(
         &self,
         field: &FieldInfo,
-    ) -> Result<Box<dyn super::doc_values::NumericDocValues + Send + Sync>> {
+    ) -> Result<Box<dyn super::doc_values::NumericDocValues>> {
         self.producer_for(field)?.get_numeric(field)
     }
 
-    fn get_binary(
-        &self,
-        field: &FieldInfo,
-    ) -> Result<Box<dyn super::doc_values::BinaryDocValues + Send + Sync>> {
+    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn super::doc_values::BinaryDocValues>> {
         self.producer_for(field)?.get_binary(field)
     }
 
-    fn get_sorted(
-        &self,
-        field: &FieldInfo,
-    ) -> Result<Box<dyn super::doc_values::SortedDocValues + Send + Sync>> {
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn super::doc_values::SortedDocValues>> {
         self.producer_for(field)?.get_sorted(field)
     }
 
     fn get_sorted_numeric(
         &self,
         field: &FieldInfo,
-    ) -> Result<Box<dyn super::doc_values::SortedNumericDocValues + Send + Sync>> {
+    ) -> Result<Box<dyn super::doc_values::SortedNumericDocValues>> {
         self.producer_for(field)?.get_sorted_numeric(field)
     }
 
     fn get_sorted_set(
         &self,
         field: &FieldInfo,
-    ) -> Result<Box<dyn super::doc_values::SortedSetDocValues + Send + Sync>> {
+    ) -> Result<Box<dyn super::doc_values::SortedSetDocValues>> {
         self.producer_for(field)?.get_sorted_set(field)
     }
 
     fn get_skipper(
         &self,
         field: &FieldInfo,
-    ) -> Result<Box<dyn super::doc_values::DocValuesSkipper + Send + Sync>> {
+    ) -> Result<Box<dyn super::doc_values::DocValuesSkipper>> {
         self.producer_for(field)?.get_skipper(field)
     }
 
@@ -924,17 +915,11 @@ impl KnnVectorsFormat for PerFieldKnnVectorsFormat {
         PER_FIELD_KNN_VECTORS_NAME
     }
 
-    fn fields_writer<'a>(
-        &self,
-        state: &SegmentWriteState<'a>,
-    ) -> Result<Box<dyn KnnVectorsWriter + 'a>> {
+    fn fields_writer(&self, state: &OwnedSegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>> {
         Ok(Box::new(KnnFieldsWriter::new(state, self.resolver.clone())))
     }
 
-    fn fields_reader<'a>(
-        &self,
-        state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn KnnVectorsReader + 'a>> {
+    fn fields_reader<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn KnnVectorsReader>> {
         Ok(Box::new(KnnFieldsReader::new(state)?))
     }
 
@@ -943,20 +928,28 @@ impl KnnVectorsFormat for PerFieldKnnVectorsFormat {
     }
 }
 
-struct WriterAndSuffix<'a> {
+struct WriterAndSuffix {
     suffix: i32,
-    writer: Box<dyn KnnVectorsWriter + 'a>,
-    _phantom: std::marker::PhantomData<&'a ()>,
+    writer: Box<dyn KnnVectorsWriter>,
 }
 
-struct KnnFieldsWriter<'a> {
-    segment_write_state: SegmentWriteState<'a>,
+/// Equivalent to `PerFieldKnnVectorsFormat.FieldsWriter`.
+///
+/// Java's writer stores the `SegmentWriteState` it was built from and derives a
+/// suffixed copy of it for every field it dispatches
+/// (`PerFieldKnnVectorsFormat.java:96-136`). This one does the same, over the
+/// owned [`OwnedSegmentWriteState`]: unlike the postings and doc-values
+/// per-field writers, which live and die inside one flush call, this writer is
+/// created when the first vector field of the first document is indexed and
+/// must survive until the segment flushes, so it cannot borrow the state.
+struct KnnFieldsWriter {
+    segment_write_state: OwnedSegmentWriteState,
     resolver: Arc<dyn Fn(&str) -> Arc<dyn KnnVectorsFormat> + Send + Sync>,
-    formats: HashMap<String, WriterAndSuffix<'a>>,
+    formats: HashMap<String, WriterAndSuffix>,
     suffixes: HashMap<String, i32>,
 }
 
-impl<'a> std::fmt::Debug for KnnFieldsWriter<'a> {
+impl std::fmt::Debug for KnnFieldsWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KnnFieldsWriter")
             .field("segment_suffix", &self.segment_write_state.segment_suffix)
@@ -965,20 +958,21 @@ impl<'a> std::fmt::Debug for KnnFieldsWriter<'a> {
     }
 }
 
-impl<'a> KnnFieldsWriter<'a> {
+impl KnnFieldsWriter {
     fn new(
-        segment_write_state: &SegmentWriteState<'a>,
+        segment_write_state: &OwnedSegmentWriteState,
         resolver: Arc<dyn Fn(&str) -> Arc<dyn KnnVectorsFormat> + Send + Sync>,
     ) -> Self {
         Self {
-            segment_write_state: segment_write_state.clone(),
+            segment_write_state: segment_write_state
+                .with_new_suffix(segment_write_state.segment_suffix.clone()),
             resolver,
             formats: HashMap::new(),
             suffixes: HashMap::new(),
         }
     }
 
-    fn get_instance(&mut self, field: &FieldInfo) -> Result<&mut Box<dyn KnnVectorsWriter + 'a>> {
+    fn get_instance(&mut self, field: &FieldInfo) -> Result<&mut Box<dyn KnnVectorsWriter>> {
         let format = (self.resolver)(&field.name);
         let format_name = format.name().to_string();
 
@@ -993,14 +987,8 @@ impl<'a> KnnFieldsWriter<'a> {
             );
             let state = self.segment_write_state.with_new_suffix(segment_suffix);
             let writer = format.fields_writer(&state)?;
-            self.formats.insert(
-                format_name.clone(),
-                WriterAndSuffix {
-                    suffix,
-                    writer,
-                    _phantom: std::marker::PhantomData,
-                },
-            );
+            self.formats
+                .insert(format_name.clone(), WriterAndSuffix { suffix, writer });
         }
 
         let entry = self
@@ -1012,7 +1000,7 @@ impl<'a> KnnFieldsWriter<'a> {
     }
 }
 
-impl<'a> KnnVectorsWriter for KnnFieldsWriter<'a> {
+impl KnnVectorsWriter for KnnFieldsWriter {
     fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
         self.get_instance(field_info)?.add_field(field_info)
     }
@@ -1050,16 +1038,26 @@ impl<'a> KnnVectorsWriter for KnnFieldsWriter<'a> {
         }
         Ok(())
     }
+
+    /// Equivalent to `PerFieldKnnVectorsFormat.FieldsWriter.ramBytesUsed()`
+    /// (`PerFieldKnnVectorsFormat.java:182-189`), which sums the delegates and
+    /// counts nothing for itself.
+    fn ram_bytes_used(&self) -> i64 {
+        self.formats
+            .values()
+            .map(|entry| entry.writer.ram_bytes_used())
+            .sum()
+    }
 }
 
-struct KnnFieldsReader<'a> {
-    formats: HashMap<String, Box<dyn KnnVectorsReader + 'a>>,
+struct KnnFieldsReader {
+    formats: HashMap<String, Box<dyn KnnVectorsReader>>,
     fields: HashMap<i32, String>,
 }
 
-impl<'a> KnnFieldsReader<'a> {
-    fn new(read_state: &SegmentReadState<'a>) -> Result<Self> {
-        let mut formats: HashMap<String, Box<dyn KnnVectorsReader + 'a>> = HashMap::new();
+impl KnnFieldsReader {
+    fn new(read_state: &SegmentReadState) -> Result<Self> {
+        let mut formats: HashMap<String, Box<dyn KnnVectorsReader>> = HashMap::new();
         let mut fields: HashMap<i32, String> = HashMap::new();
 
         let result = (|| -> Result<()> {
@@ -1116,7 +1114,7 @@ impl<'a> KnnFieldsReader<'a> {
         Ok(Self { formats, fields })
     }
 
-    fn reader_for(&self, field: &FieldInfo) -> Result<&(dyn KnnVectorsReader + 'a)> {
+    fn reader_for(&self, field: &FieldInfo) -> Result<&(dyn KnnVectorsReader + '_)> {
         let suffix = self.fields.get(&field.number).ok_or_else(|| {
             LuceneError::IllegalArgument(format!(
                 "field \"{}\" has no KNN-vectors reader",
@@ -1128,14 +1126,14 @@ impl<'a> KnnFieldsReader<'a> {
         })
     }
 
-    fn reader_for_name(&self, field: &str) -> Result<(&(dyn KnnVectorsReader + 'a), FieldInfo)> {
+    fn reader_for_name(&self, field: &str) -> Result<(&(dyn KnnVectorsReader + '_), FieldInfo)> {
         let info = FieldInfo::new(field, 0);
         let reader = self.reader_for(&info)?;
         Ok((reader, info))
     }
 }
 
-impl<'a> std::fmt::Debug for KnnFieldsReader<'a> {
+impl std::fmt::Debug for KnnFieldsReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PerFieldKnnVectorsReader")
             .field("formats", &self.formats.len())
@@ -1143,7 +1141,7 @@ impl<'a> std::fmt::Debug for KnnFieldsReader<'a> {
     }
 }
 
-impl<'a> KnnVectorsReader for KnnFieldsReader<'a> {
+impl KnnVectorsReader for KnnFieldsReader {
     fn check_integrity(&self) -> Result<()> {
         for reader in self.formats.values() {
             reader.check_integrity()?;
@@ -1162,7 +1160,7 @@ impl<'a> KnnVectorsReader for KnnFieldsReader<'a> {
     }
 
     fn search(
-        &mut self,
+        &self,
         field: &str,
         target: &[f32],
         knn_collector: &mut dyn KnnCollector,
@@ -1179,14 +1177,14 @@ impl<'a> KnnVectorsReader for KnnFieldsReader<'a> {
                 })?
                 .clone()
         };
-        let reader = self.formats.get_mut(&suffix).ok_or_else(|| {
+        let reader = self.formats.get(&suffix).ok_or_else(|| {
             LuceneError::IllegalState(format!("missing KNN-vectors reader for suffix {suffix}"))
         })?;
         reader.search(field, target, knn_collector, accept_docs)
     }
 
     fn search_byte(
-        &mut self,
+        &self,
         field: &str,
         target: &[u8],
         knn_collector: &mut dyn KnnCollector,
@@ -1203,7 +1201,7 @@ impl<'a> KnnVectorsReader for KnnFieldsReader<'a> {
                 })?
                 .clone()
         };
-        let reader = self.formats.get_mut(&suffix).ok_or_else(|| {
+        let reader = self.formats.get(&suffix).ok_or_else(|| {
             LuceneError::IllegalState(format!("missing KNN-vectors reader for suffix {suffix}"))
         })?;
         reader.search_byte(field, target, knn_collector, accept_docs)
@@ -1278,8 +1276,14 @@ impl PerFieldMergeState {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let mut restricted = MergeState::new(fields_producers, merge_state.max_docs.clone())
-            .with_field_infos(field_infos, merge_field_infos);
+        let mut restricted = MergeState::from_fields_producers(
+            fields_producers
+                .into_iter()
+                .map(|p| p.map(Arc::from))
+                .collect(),
+            merge_state.max_docs.clone(),
+        )
+        .with_field_infos(field_infos, merge_field_infos);
         // The remaining reader arrays are not needed by the per-field postings
         // merge path; concrete doc-values/points/vectors consumers that do need
         // them are responsible for sharing the original merge state directly.
@@ -1410,7 +1414,7 @@ mod tests {
         fn fields_producer<'a>(
             &self,
             _state: &SegmentReadState<'a>,
-        ) -> Result<Box<dyn FieldsProducer + 'a>> {
+        ) -> Result<Box<dyn FieldsProducer>> {
             Ok(Box::new(NamedFieldsProducer(self.0)))
         }
     }
@@ -1534,8 +1538,8 @@ mod tests {
         let merge_field_infos = FieldInfos::new(vec![body.clone(), title.clone()]).unwrap();
         let segment_field_infos = FieldInfos::new(vec![body, title]).unwrap();
 
-        let producer_a = Box::new(NamedFieldsProducer("A")) as Box<dyn FieldsProducer>;
-        let merge_state = MergeState::new(vec![Some(producer_a)], vec![10])
+        let producer_a = Arc::new(NamedFieldsProducer("A")) as Arc<dyn FieldsProducer>;
+        let merge_state = MergeState::from_fields_producers(vec![Some(producer_a)], vec![10])
             .with_field_infos(vec![segment_field_infos], merge_field_infos);
 
         let restricted =

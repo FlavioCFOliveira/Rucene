@@ -364,13 +364,17 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
             .index_options
             .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
         state.write_payloads = field_info.has_payloads();
+        // A field that stores payloads but not offsets must request PAYLOADS
+        // only. Requesting ALL (which subsumes OFFSETS) makes a conforming
+        // `Fields` implementation refuse the request, exactly as Lucene's
+        // `FreqProxFields` does with "did not index offsets".
         state.enum_flags = if !state.write_freqs {
             crate::codecs::postings::POSTINGS_ENUM_NONE
         } else if !state.write_positions {
             crate::codecs::postings::POSTINGS_ENUM_FREQS
         } else if !state.write_offsets {
             if state.write_payloads {
-                crate::codecs::postings::POSTINGS_ENUM_ALL
+                crate::codecs::postings::POSTINGS_ENUM_PAYLOADS
             } else {
                 crate::codecs::postings::POSTINGS_ENUM_POSITIONS
             }

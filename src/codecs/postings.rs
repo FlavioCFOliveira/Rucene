@@ -28,7 +28,7 @@ use crate::codecs::knn_vectors::KnnVectorsReader;
 use crate::codecs::points::PointsReader;
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stored_fields::StoredFieldsReader;
-use crate::codecs::stub::{FieldInfo, FieldInfos};
+use crate::codecs::stub::FieldInfo;
 use crate::codecs::term_vectors::TermVectorsReader;
 use crate::error::{LuceneError, Result};
 use crate::index::IndexOptions;
@@ -55,67 +55,7 @@ pub use crate::codecs::term_state::{
 
 /// State passed to [`FieldsConsumer::merge`] describing the source segments.
 ///
-/// Equivalent to `org.apache.lucene.index.MergeState`.
-#[derive(Default)]
-pub struct MergeState {
-    /// Per-segment field metadata for each source segment.
-    pub field_infos: Vec<FieldInfos>,
-    /// Merged field metadata describing the output segment.
-    pub merge_field_infos: FieldInfos,
-    /// Stored-fields readers for each source segment.
-    pub stored_fields_readers: Vec<Option<Box<dyn StoredFieldsReader>>>,
-    /// Term-vectors readers for each source segment.
-    pub term_vectors_readers: Vec<Option<Box<dyn TermVectorsReader>>>,
-    /// Norms producers for each source segment.
-    pub norms_producers: Vec<Option<Box<dyn NormsProducer>>>,
-    /// Doc-values producers for each source segment.
-    pub doc_values_producers: Vec<Option<Box<dyn DocValuesProducer>>>,
-    /// Postings producers for each source segment, in the same order as
-    /// `max_docs`.
-    pub fields_producers: Vec<Option<Box<dyn FieldsProducer>>>,
-    /// Points readers for each source segment.
-    pub points_readers: Vec<Option<Box<dyn PointsReader>>>,
-    /// KNN-vectors readers for each source segment.
-    pub knn_vectors_readers: Vec<Option<Box<dyn KnnVectorsReader>>>,
-    /// Maximum document ID (exclusive) for each source segment.
-    pub max_docs: Vec<i32>,
-}
-
-impl MergeState {
-    /// Creates a new merge state.
-    pub fn new(fields_producers: Vec<Option<Box<dyn FieldsProducer>>>, max_docs: Vec<i32>) -> Self {
-        Self {
-            field_infos: Vec::new(),
-            merge_field_infos: FieldInfos::default(),
-            stored_fields_readers: Vec::new(),
-            term_vectors_readers: Vec::new(),
-            norms_producers: Vec::new(),
-            doc_values_producers: Vec::new(),
-            fields_producers,
-            points_readers: Vec::new(),
-            knn_vectors_readers: Vec::new(),
-            max_docs,
-        }
-    }
-
-    /// Attaches per-segment and merged field metadata to this merge state.
-    pub fn with_field_infos(
-        mut self,
-        field_infos: Vec<FieldInfos>,
-        merge_field_infos: FieldInfos,
-    ) -> Self {
-        self.field_infos = field_infos;
-        self.merge_field_infos = merge_field_infos;
-        self
-    }
-
-    /// Called periodically by long-running merge operations.
-    ///
-    /// The default implementation does nothing.
-    pub fn check_aborted(&self) -> Result<()> {
-        Ok(())
-    }
-}
+pub use crate::index::merge::MergeState;
 
 // -----------------------------------------------------------------------------
 // Doc-values / norms abstractions used by postings
@@ -304,10 +244,7 @@ pub trait PostingsFormat: Send + Sync + fmt::Debug {
     ) -> Result<Box<dyn FieldsConsumer + 'a>>;
 
     /// Creates a reader for an existing segment.
-    fn fields_producer<'a>(
-        &self,
-        state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn FieldsProducer + 'a>>;
+    fn fields_producer<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn FieldsProducer>>;
 }
 
 /// A registry mapping postings-format short names to [`PostingsFormat`]
@@ -1029,7 +966,7 @@ mod tests {
         fn fields_producer<'a>(
             &self,
             _state: &SegmentReadState<'a>,
-        ) -> Result<Box<dyn FieldsProducer + 'a>> {
+        ) -> Result<Box<dyn FieldsProducer>> {
             Ok(Box::new(StubFieldsProducer))
         }
     }
@@ -1238,7 +1175,10 @@ mod tests {
         let mut consumer = format.fields_consumer(&write_state).unwrap();
         consumer.write(&StubFields, &StubNormsProducer).unwrap();
         consumer
-            .merge(&MergeState::default(), &StubNormsProducer)
+            .merge(
+                &MergeState::from_fields_producers(Vec::new(), Vec::new()),
+                &StubNormsProducer,
+            )
             .unwrap();
         consumer.close().unwrap();
 

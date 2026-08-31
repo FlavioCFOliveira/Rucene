@@ -1,15 +1,26 @@
 #!/usr/bin/env python3
 """Executa um ficheiro Cypher em batches via rmp graph create/update."""
 import subprocess
+import time
 import sys
 import argparse
 
 
-def run_batch(cmd, query, idx, total, use_stdin):
-    if use_stdin:
-        result = subprocess.run(cmd, input=query, text=True, capture_output=True)
-    else:
-        result = subprocess.run(cmd + ['-q', query], text=True, capture_output=True)
+def run_batch(cmd, query, idx, total, use_stdin, attempts=6):
+    # A concurrent writer (an `rmp web` session is enough) makes the store reject
+    # a write. Dying here leaves the load half-applied, which later reads as real
+    # drift, so retry the transient case with backoff.
+    delay = 1.0
+    for attempt in range(1, attempts + 1):
+        if use_stdin:
+            result = subprocess.run(cmd, input=query, text=True, capture_output=True)
+        else:
+            result = subprocess.run(cmd + ['-q', query], text=True, capture_output=True)
+        if result.returncode == 0 or 'store is busy' not in result.stderr:
+            break
+        if attempt < attempts:
+            time.sleep(delay)
+            delay = min(delay * 2, 20)
     if result.returncode != 0:
         print(f"\nBATCH {idx}/{total} FAILED (exit {result.returncode})", file=sys.stderr)
         print(result.stderr, file=sys.stderr)

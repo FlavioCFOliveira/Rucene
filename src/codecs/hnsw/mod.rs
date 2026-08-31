@@ -6,6 +6,8 @@
 //! flat field writers/readers, vector scoring, and the `DefaultFlatVectorScorer`.
 
 pub mod flat_vectors;
+pub mod graph_provider;
+pub mod scalar_quantized_scorer;
 
 pub use flat_vectors::{
     DefaultFlatVectorScorer, DocsWithFieldSet, FlatFieldVectorsWriter, FlatVectorScorerUtil,

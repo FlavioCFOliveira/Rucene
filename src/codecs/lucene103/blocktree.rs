@@ -8,9 +8,13 @@
 
 #![deny(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
-use crate::codecs::codec_util::{write_be_long, write_footer, write_index_header};
+use crate::codecs::codec_util;
+use crate::codecs::codec_util::{write_footer, write_index_header};
+use crate::codecs::lucene103::field_reader::{BlockTreeShared, FieldReader};
 use crate::codecs::postings::{
     Fields, FieldsConsumer, FieldsProducer, MergeState, NormsProducer, PostingsReaderBase,
     PostingsWriterBase, Terms, TermsEnum,
@@ -22,7 +26,9 @@ use crate::error::{LuceneError, Result};
 use crate::index::index_file_names::segment_file_name;
 use crate::index::IndexOptions;
 use crate::index::SegmentInfo;
-use crate::store::{ByteBuffersDataOutput, DataOutput, Directory, IOContext, IndexOutput};
+use crate::store::{
+    ByteBuffersDataOutput, DataInput, DataOutput, Directory, IOContext, IndexOutput,
+};
 use crate::util::compress::{LowercaseAsciiCompression, Lz4, Lz4HashTable};
 use crate::util::{BytesRef, BytesRefBuilder, FixedBitSet, StringHelper};
 
@@ -355,10 +361,14 @@ impl TrieBuilder {
     pub fn save(&self, meta: &mut dyn DataOutput, index_out: &mut dyn IndexOutput) -> Result<()> {
         let index_start_fp = index_out.file_pointer();
         meta.write_v_long(index_start_fp)?;
-        let root_fp = index_out.file_pointer();
+        // Java's `TrieBuilder.saveNodes` returns the root node's file pointer
+        // *relative* to the start of the trie, because `TrieReader` adds the
+        // start back when it seeks. Writing an absolute pointer here would make
+        // the reader jump past the root of every non-empty trie.
+        let root_fp = index_out.file_pointer() - index_start_fp;
         // Trivial trie: single leaf node with output.
         let output_fp_bytes = Self::bytes_required_v_long(self.index_start_fp);
-        let header = 0x00 | ((output_fp_bytes - 1) << 2) | if self.has_terms { 1 << 5 } else { 0 };
+        let header = ((output_fp_bytes - 1) << 2) | if self.has_terms { 1 << 5 } else { 0 };
         index_out.write_byte(header as u8)?;
         Self::write_long_n_bytes(index_out, self.index_start_fp, output_fp_bytes)?;
         index_out.write_long(0)?;
@@ -378,25 +388,6 @@ impl TrieBuilder {
             v >>= 8;
         }
         Ok(())
-    }
-}
-
-/// Reader for the blocktree term index trie.
-///
-/// This is a minimal skeleton for the current checkpoint. It records the file
-/// pointer of the trie root so that later work can load the on-disk nodes.
-///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.TrieReader`.
-#[derive(Debug, Default, Clone)]
-pub struct TrieReader {
-    /// File pointer in the `.tip` file where this field's trie root is stored.
-    pub root_fp: i64,
-}
-
-impl TrieReader {
-    /// Creates a trie reader rooted at `root_fp`.
-    pub fn new(root_fp: i64) -> Self {
-        Self { root_fp }
     }
 }
 
@@ -497,6 +488,10 @@ struct TermsWriter<'a> {
     suffix_lengths_writer: ByteBuffersDataOutput,
     suffix_writer: BytesRefBuilder,
     stats_writer: ByteBuffersDataOutput,
+    /// Number of consecutive singleton terms buffered but not yet written.
+    ///
+    /// Equivalent to `Lucene103BlockTreeTermsWriter.StatsWriter.singletonCount`.
+    stats_singleton_count: i32,
     meta_writer: ByteBuffersDataOutput,
     spare_writer: ByteBuffersDataOutput,
     spare_bytes: Vec<u8>,
@@ -536,6 +531,7 @@ impl<'a> TermsWriter<'a> {
             suffix_lengths_writer: ByteBuffersDataOutput::new_resettable_instance(),
             suffix_writer: BytesRefBuilder::new(),
             stats_writer: ByteBuffersDataOutput::new_resettable_instance(),
+            stats_singleton_count: 0,
             meta_writer: ByteBuffersDataOutput::new_resettable_instance(),
             spare_writer: ByteBuffersDataOutput::new_resettable_instance(),
             spare_bytes: Vec::new(),
@@ -729,7 +725,10 @@ impl<'a> TermsWriter<'a> {
         let start_fp = self.terms_out.file_pointer();
         let has_floor_lead_label = is_floor && floor_lead_label != -1;
         let prefix_len = prefix_length as usize + if has_floor_lead_label { 1 } else { 0 };
-        let mut prefix = BytesRef::with_capacity(prefix_len);
+        // `BytesRef::with_capacity` reserves capacity but leaves the buffer
+        // empty, so the block prefix must be materialised before it is written
+        // into; the extra byte is the floor lead label appended below.
+        let mut prefix = BytesRef::new(vec![0u8; prefix_len]);
         let last = self.last_term.get();
         prefix.bytes[..prefix_length as usize]
             .copy_from_slice(&last.bytes[last.offset..last.offset + prefix_length as usize]);
@@ -775,6 +774,7 @@ impl<'a> TermsWriter<'a> {
                     panic!("leaf block contains a sub-block");
                 }
             }
+            self.finish_term_stats()?;
         } else {
             for ent in entries {
                 match ent {
@@ -805,15 +805,20 @@ impl<'a> TermsWriter<'a> {
                             block.prefix.offset + prefix_length as usize,
                             suffix,
                         );
-                        self.terms_out.write_v_long(start_fp - block.fp)?;
+                        // The pointer back to the sub-block belongs to the
+                        // suffix-lengths blob, which is written after the suffix
+                        // bytes; writing it straight to the terms output would
+                        // put it before them.
+                        self.suffix_lengths_writer
+                            .write_v_long(start_fp - block.fp)?;
                         if let Some(idx) = &block.index {
                             sub_indices.as_mut().unwrap().push(idx.clone());
                         }
                     }
                 }
             }
+            self.finish_term_stats()?;
         }
-        // Stats are written as we go; the stats_writer is a simple ByteBuffersDataOutput.
 
         // Suffix compression (disabled in this checkpoint: always no compression).
         let compression_alg = CompressionAlgorithm::NoCompression;
@@ -844,7 +849,11 @@ impl<'a> TermsWriter<'a> {
         self.spare_bytes.resize(suffix_lengths_out.len(), 0);
         self.spare_bytes
             .copy_from_slice(suffix_lengths_out.as_inner());
-        if num_suffix_bytes > 1
+        // Java tests `allEqual(spareBytes, 1, numSuffixBytes, spareBytes[0])`,
+        // which is vacuously true for a single length byte — the common case of
+        // a block holding one term. Requiring more than one byte here produced
+        // the uncompressed encoding where Lucene uses the all-equal one.
+        if num_suffix_bytes > 0
             && Self::all_equal(&self.spare_bytes, 1, num_suffix_bytes, self.spare_bytes[0])
         {
             self.terms_out
@@ -882,15 +891,33 @@ impl<'a> TermsWriter<'a> {
         ))
     }
 
+    /// Appends the statistics of one term.
+    ///
+    /// Equivalent to `Lucene103BlockTreeTermsWriter.StatsWriter.add(int, long)`:
+    /// singleton terms (one document, one occurrence) are run-length encoded
+    /// and only materialise when [`Self::finish_term_stats`] closes the run.
     fn write_term_stats(&mut self, doc_freq: i32, total_term_freq: i64) -> Result<()> {
         if doc_freq == 1 && (!self.has_freqs || total_term_freq == 1) {
-            self.stats_writer.write_v_int(1)?;
+            self.stats_singleton_count += 1;
         } else {
+            self.finish_term_stats()?;
             self.stats_writer.write_v_int(doc_freq << 1)?;
             if self.has_freqs {
                 self.stats_writer
                     .write_v_long(total_term_freq - doc_freq as i64)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Closes an open run of singleton terms.
+    ///
+    /// Equivalent to `Lucene103BlockTreeTermsWriter.StatsWriter.finish()`.
+    fn finish_term_stats(&mut self) -> Result<()> {
+        if self.stats_singleton_count > 0 {
+            self.stats_writer
+                .write_v_int(((self.stats_singleton_count - 1) << 1) | 1)?;
+            self.stats_singleton_count = 0;
         }
         Ok(())
     }
@@ -1109,15 +1136,20 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
             &self.segment_suffix,
         )?;
 
+        // The postings writer stamps its own index header into the metadata
+        // file, and that header carries the segment suffix. Passing a state
+        // without the suffix would write an empty one, which the reader
+        // rejects when it validates the header of `.tmd`.
         self.postings_writer.init(
             meta_out.as_mut(),
-            &SegmentWriteState::new(
+            &SegmentWriteState::with_suffix(
                 crate::util::default_info_stream(),
                 self.directory,
                 self.segment_info,
                 &self.field_infos,
                 &crate::codecs::stub::BufferedUpdates,
                 self.context,
+                self.segment_suffix.clone(),
             ),
         )?;
 
@@ -1159,9 +1191,11 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
         }
 
         write_footer(index_out.as_mut())?;
-        write_be_long(meta_out.as_mut(), index_out.file_pointer())?;
+        // `DataOutput.writeLong` is little-endian since Lucene 9; the reader
+        // uses these two lengths to retrieve the checksums of `.tip`/`.tim`.
+        meta_out.write_long(index_out.file_pointer())?;
         write_footer(terms_out.as_mut())?;
-        write_be_long(meta_out.as_mut(), terms_out.file_pointer())?;
+        meta_out.write_long(terms_out.file_pointer())?;
         write_footer(meta_out.as_mut())?;
 
         meta_out.close()?;
@@ -1243,9 +1277,11 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
 
         meta_out.write_v_int(self.fields.len() as i32)?;
         write_footer(index_out.as_mut())?;
-        write_be_long(meta_out.as_mut(), index_out.file_pointer())?;
+        // `DataOutput.writeLong` is little-endian since Lucene 9; the reader
+        // uses these two lengths to retrieve the checksums of `.tip`/`.tim`.
+        meta_out.write_long(index_out.file_pointer())?;
         write_footer(terms_out.as_mut())?;
-        write_be_long(meta_out.as_mut(), terms_out.file_pointer())?;
+        meta_out.write_long(terms_out.file_pointer())?;
         write_footer(meta_out.as_mut())?;
 
         meta_out.close()?;
@@ -1270,6 +1306,9 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
 /// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.Lucene103BlockTreeTermsReader`.
 pub struct Lucene103BlockTreeTermsReader {
     postings_reader: Box<dyn PostingsReaderBase>,
+    shared: Arc<BlockTreeShared>,
+    /// One reader per field that has terms, keyed by field name.
+    fields: BTreeMap<String, FieldReader>,
     segment: String,
     segment_suffix: String,
     version: i32,
@@ -1281,21 +1320,162 @@ impl std::fmt::Debug for Lucene103BlockTreeTermsReader {
             .field("segment", &self.segment)
             .field("segment_suffix", &self.segment_suffix)
             .field("version", &self.version)
+            .field("fields", &self.fields.len())
             .finish_non_exhaustive()
     }
 }
 
 impl Lucene103BlockTreeTermsReader {
-    /// Creates a new skeleton reader.
+    /// Opens the terms dictionary of a segment.
+    ///
+    /// Equivalent to the `Lucene103BlockTreeTermsReader` constructor: it opens
+    /// the `.tim` and `.tip` files, then reads the per-field entries out of the
+    /// `.tmd` file, each of which names a field's statistics and its offsets
+    /// into the other two.
     pub fn new(
-        postings_reader: Box<dyn PostingsReaderBase>,
+        mut postings_reader: Box<dyn PostingsReaderBase>,
         state: &SegmentReadState,
     ) -> Result<Self> {
+        let segment = state.segment_info.name.clone();
+        let segment_suffix = state.segment_suffix.clone();
+
+        let terms_name = segment_file_name(&segment, &segment_suffix, TERMS_EXTENSION);
+        let mut terms_in = state.directory.open_input(&terms_name, state.context)?;
+        let version = codec_util::check_index_header(
+            terms_in.as_mut(),
+            TERMS_CODEC_NAME,
+            VERSION_START,
+            VERSION_CURRENT,
+            &state.segment_info.id(),
+            &segment_suffix,
+        )?;
+
+        let index_name = segment_file_name(&segment, &segment_suffix, TERMS_INDEX_EXTENSION);
+        let mut index_in = state.directory.open_input(&index_name, state.context)?;
+        codec_util::check_index_header(
+            index_in.as_mut(),
+            TERMS_INDEX_CODEC_NAME,
+            version,
+            version,
+            &state.segment_info.id(),
+            &segment_suffix,
+        )?;
+
+        let shared = Arc::new(BlockTreeShared {
+            terms_in: Arc::from(terms_in),
+            index_in: Arc::from(index_in),
+            segment: segment.clone(),
+            version,
+        });
+
+        let meta_name = segment_file_name(&segment, &segment_suffix, TERMS_META_EXTENSION);
+        let mut meta_in = state.directory.open_checksum_input(&meta_name)?;
+        codec_util::check_index_header(
+            meta_in.as_mut(),
+            TERMS_META_CODEC_NAME,
+            version,
+            version,
+            &state.segment_info.id(),
+            &segment_suffix,
+        )?;
+        postings_reader.init(meta_in.as_mut(), state)?;
+
+        let num_fields = meta_in.read_v_int()?;
+        if num_fields < 0 {
+            return Err(LuceneError::corrupt_index(
+                format!("invalid numFields: {num_fields}"),
+                &meta_name,
+            ));
+        }
+
+        let max_doc = state.segment_info.max_doc()?;
+        let mut fields = BTreeMap::new();
+        for _ in 0..num_fields {
+            let field_number = meta_in.read_v_int()?;
+            let num_terms = meta_in.read_v_long()?;
+            if num_terms <= 0 {
+                return Err(LuceneError::corrupt_index(
+                    format!("illegal numTerms for field number {field_number}"),
+                    &meta_name,
+                ));
+            }
+            let field_info = state
+                .field_infos
+                .field_info_by_number(field_number)
+                .ok_or_else(|| {
+                    LuceneError::corrupt_index(
+                        format!("invalid field number: {field_number}"),
+                        &meta_name,
+                    )
+                })?
+                .clone();
+
+            let sum_total_term_freq = meta_in.read_v_long()?;
+            // With frequencies omitted the two sums are equal and only one is
+            // written.
+            let sum_doc_freq = if field_info.index_options == IndexOptions::DOCS {
+                sum_total_term_freq
+            } else {
+                meta_in.read_v_long()?
+            };
+            let doc_count = meta_in.read_v_int()?;
+            let min_term = read_bytes_ref(meta_in.as_mut(), &meta_name)?;
+            let max_term = if num_terms == 1 {
+                min_term.clone()
+            } else {
+                read_bytes_ref(meta_in.as_mut(), &meta_name)?
+            };
+
+            if doc_count < 0 || doc_count > max_doc {
+                return Err(LuceneError::corrupt_index(
+                    format!("invalid docCount: {doc_count} maxDoc: {max_doc}"),
+                    &meta_name,
+                ));
+            }
+            if sum_doc_freq < i64::from(doc_count) {
+                return Err(LuceneError::corrupt_index(
+                    format!("invalid sumDocFreq: {sum_doc_freq} docCount: {doc_count}"),
+                    &meta_name,
+                ));
+            }
+            if sum_total_term_freq < sum_doc_freq {
+                return Err(LuceneError::corrupt_index(
+                    format!(
+                        "invalid sumTotalTermFreq: {sum_total_term_freq} sumDocFreq: {sum_doc_freq}"
+                    ),
+                    &meta_name,
+                ));
+            }
+
+            let name = field_info.name.clone();
+            let reader = FieldReader::new(
+                Arc::clone(&shared),
+                field_info,
+                num_terms,
+                sum_total_term_freq,
+                sum_doc_freq,
+                doc_count,
+                min_term,
+                max_term,
+                meta_in.as_mut(),
+            )?;
+            if fields.insert(name.clone(), reader).is_some() {
+                return Err(LuceneError::corrupt_index(
+                    format!("duplicate field: {name}"),
+                    &meta_name,
+                ));
+            }
+        }
+
+        codec_util::check_footer(meta_in.as_mut())?;
+
         Ok(Self {
             postings_reader,
-            segment: state.segment_info.name.clone(),
-            segment_suffix: state.segment_suffix.clone(),
-            version: VERSION_CURRENT,
+            shared,
+            fields,
+            segment,
+            segment_suffix,
+            version,
         })
     }
 
@@ -1313,30 +1493,60 @@ impl Lucene103BlockTreeTermsReader {
     pub fn version(&self) -> i32 {
         self.version
     }
+
+    /// Returns the shared file handles the field readers use.
+    pub fn shared(&self) -> &Arc<BlockTreeShared> {
+        &self.shared
+    }
+
+    /// Returns the postings reader that decodes each term's metadata.
+    pub fn postings_reader(&mut self) -> &mut dyn PostingsReaderBase {
+        self.postings_reader.as_mut()
+    }
+}
+
+/// Reads a length-prefixed byte string, as the metadata file stores the minimum
+/// and maximum term of each field.
+///
+/// Equivalent to `Lucene103BlockTreeTermsReader.readBytesRef`.
+fn read_bytes_ref(input: &mut dyn DataInput, resource: &str) -> Result<BytesRef> {
+    let num_bytes = input.read_v_int()?;
+    if num_bytes < 0 {
+        return Err(LuceneError::corrupt_index(
+            format!("invalid bytes length: {num_bytes}"),
+            resource,
+        ));
+    }
+    let mut bytes = vec![0u8; num_bytes as usize];
+    input.read_bytes(&mut bytes, 0, num_bytes as usize)?;
+    Ok(BytesRef::new(bytes))
 }
 
 impl Fields for Lucene103BlockTreeTermsReader {
     fn size(&self) -> i32 {
-        0
+        self.fields.len() as i32
     }
 
-    fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
-        Ok(None)
+    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        Ok(self
+            .fields
+            .get(field)
+            .map(|reader| Box::new(reader.clone()) as Box<dyn Terms>))
     }
 
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
-        Box::new(std::iter::empty::<String>())
+        Box::new(self.fields.keys().cloned())
     }
 }
 
 impl FieldsProducer for Lucene103BlockTreeTermsReader {
     fn check_integrity(&self) -> Result<()> {
-        Ok(())
+        self.postings_reader.check_integrity()
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
         Err(LuceneError::UnsupportedOperation(
-            "Lucene103BlockTreeTermsReader skeleton does not support merge instances".to_string(),
+            "Lucene103BlockTreeTermsReader does not build a separate merge instance".to_string(),
         ))
     }
 

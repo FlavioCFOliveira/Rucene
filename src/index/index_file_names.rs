@@ -207,8 +207,25 @@ pub fn matches_extension(filename: &str, ext: &str) -> bool {
 /// Locates the boundary of the segment name in `filename`, or `None`.
 fn index_of_segment_name(filename: &str) -> Option<usize> {
     // If it is a .del file, there's an '_' after the first character.
-    if let Some(idx) = filename[1..].find('_') {
-        return Some(idx + 1);
+    //
+    // Java writes `filename.indexOf('_', 1)` (`IndexFileNames.java:121`),
+    // which starts the search one *UTF-16 code unit* in, and so never matches a
+    // leading underscore. Slicing `filename[1..]` would instead skip one *byte*
+    // and panic whenever the name begins with a multi-byte UTF-8 character —
+    // and these names are not always well-formed, because `IndexFileDeleter`
+    // feeds this function the directory's pending-deletion set, which is
+    // unfiltered (`IndexFileDeleter.java:211-217`). Starting one *character* in
+    // reaches the same underscore as Java for every input, because the units a
+    // multi-byte character occupies can never themselves be `'_'`, and it never
+    // panics.
+    let after_first = {
+        let mut chars = filename.chars();
+        chars.next();
+        chars.as_str()
+    };
+    let offset = filename.len() - after_first.len();
+    if let Some(idx) = after_first.find('_') {
+        return Some(idx + offset);
     }
     filename.find('.')
 }

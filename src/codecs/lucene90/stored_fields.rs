@@ -13,13 +13,47 @@
 //!
 //! Two compression modes are supported, matching Lucene's `Mode`:
 //!
-//! * `Mode::BestSpeed` – LZ4 (`CompressionMode::FAST`), 80 KiB target chunks.
-//! * `Mode::BestCompression` – Deflate (`CompressionMode::HIGH_COMPRESSION`),
-//!   480 KiB target chunks.
+//! * `Mode::BestSpeed` – LZ4 over a preset dictionary
+//!   ([`CompressionMode::LZ4_WITH_PRESET_DICT`]), 80 KiB target chunks, 1024
+//!   documents per chunk. This is what `Lucene104Codec` selects, and its bytes
+//!   are verified against Lucene 10.5.0 in
+//!   `tests/portability/stored_fields.rs`.
+//! * `Mode::BestCompression` – raw deflate over a preset dictionary
+//!   ([`CompressionMode::DEFLATE_WITH_PRESET_DICT`]), 480 KiB target chunks,
+//!   4096 documents per chunk. Reachable through `Lucene104Codec::with_mode`.
+//!
+//! # What "compatible" means per mode
+//!
+//! `BEST_SPEED` compresses with `org.apache.lucene.util.compress.LZ4`, an
+//! encoder Lucene specifies itself and this crate ports directly, so the files
+//! are **byte-identical** to Lucene's. `tests/portability/stored_fields.rs`
+//! asserts exactly that.
+//!
+//! `BEST_COMPRESSION` delegates to `java.util.zip.Deflater`, that is, to
+//! whichever zlib the JVM happens to be linked against. Deflate output is
+//! implementation-defined within RFC 1951 — two zlib builds, or zlib and
+//! zlib-ng, legitimately emit different bytes for the same input — so byte
+//! equality is not a property Lucene itself guarantees across JVMs.
+//!
+//! On the default `zlib-rs` backend this port therefore does not claim it. What
+//! *is* guaranteed, and what the portability tests prove in both directions, is
+//! that Lucene 10.5.0 reads every byte this port writes and this port reads
+//! every byte Lucene writes; a ratio guard keeps the compression itself within
+//! 10% of Lucene's. Building with `--features zlib-c` links the same C zlib
+//! family the JVM uses and *does* give byte identity, which the same tests then
+//! assert.
+//!
+//! Where the two differ is narrow and measured. Comparing a `zlib-rs`
+//! `BEST_COMPRESSION` `.fdt` with Lucene's for the same content and segment id,
+//! everything structural is identical: the chunk header, the `numStoredFields`
+//! and `lengths` arrays, `dictLength`, `blockLength` and the count of one
+//! dictionary plus ten sub blocks. What differs is the deflate payloads **and
+//! the per-block `vInt` length prefixes that describe their sizes**, since
+//! those prefixes record how long each payload turned out to be.
 
 use std::cmp;
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use crate::codecs::codec_util::{
     check_footer, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
@@ -31,13 +65,13 @@ use crate::codecs::stub::{
     FieldInfo, FieldInfos, SegmentInfo, StoredFieldVisitor, StoredFieldVisitorStatus,
 };
 use crate::error::{LuceneError, Result};
-use crate::index::segment_file_name;
+use crate::index::{segment_file_name, StoredFieldDataInput};
 use crate::store::{
     ByteArrayDataInput, ByteBuffersDataOutput, DataInput, DataOutput, Directory, IOContext,
     IndexInput, IndexOutput,
 };
-use crate::util::extra::LongValues;
 use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter};
+use crate::util::Accountable;
 use crate::util::BitUtil;
 use crate::util::BytesRef;
 
@@ -69,6 +103,13 @@ const DATA_VERSION_CURRENT: i32 = DATA_VERSION_START;
 // version written into the meta and index files
 const INDEX_VERSION_START: i32 = 0;
 const INDEX_VERSION_CURRENT: i32 = INDEX_VERSION_START;
+/// Oldest version the `.fdm` metadata header may carry.
+///
+/// Equivalent to `Lucene90CompressingStoredFieldsWriter.META_VERSION_START`.
+/// The metadata header is *written* with [`DATA_VERSION_CURRENT`], not with
+/// [`INDEX_VERSION_CURRENT`]: it belongs to the stored-fields data, and only
+/// the `.fdx` file carries the fields-index version.
+const META_VERSION_START: i32 = 0;
 
 // timestamp compression multipliers
 const SECOND_MS: i64 = 1000;
@@ -153,7 +194,7 @@ impl StoredFieldsInts {
                     | ((values[step + 80 + i] as u64) << 16)
                     | ((values[step + 96 + i] as u64) << 8)
                     | (values[step + 112 + i] as u64);
-                Self::write_be_long(out, l)?;
+                Self::write_le_long(out, l)?;
             }
             k += STORED_FIELDS_INTS_BLOCK_SIZE;
         }
@@ -177,12 +218,12 @@ impl StoredFieldsInts {
                     | ((values[step + 32 + i] as u64) << 32)
                     | ((values[step + 64 + i] as u64) << 16)
                     | (values[step + 96 + i] as u64);
-                Self::write_be_long(out, l)?;
+                Self::write_le_long(out, l)?;
             }
             k += STORED_FIELDS_INTS_BLOCK_SIZE;
         }
         for k in k..count {
-            Self::write_be_short(out, values[offset + k] as u16)?;
+            Self::write_le_short(out, values[offset + k] as u16)?;
         }
         Ok(())
     }
@@ -198,35 +239,31 @@ impl StoredFieldsInts {
             let step = offset + k;
             for i in 0..64 {
                 let l: u64 = ((values[step + i] as u64) << 32) | (values[step + 64 + i] as u64);
-                Self::write_be_long(out, l)?;
+                Self::write_le_long(out, l)?;
             }
             k += STORED_FIELDS_INTS_BLOCK_SIZE;
         }
         for k in k..count {
-            Self::write_be_int(out, values[offset + k] as u32)?;
+            Self::write_le_int(out, values[offset + k] as u32)?;
         }
         Ok(())
     }
 
-    fn write_be_short(out: &mut dyn DataOutput, s: u16) -> Result<()> {
-        out.write_byte((s >> 8) as u8)?;
-        out.write_byte(s as u8)?;
-        Ok(())
+    // Java's `DataOutput.writeShort/writeInt/writeLong` and the matching
+    // `DataInput` readers are **little-endian**, and every fixed-width value of
+    // this format goes through them. The helpers below exist only to spell that
+    // out at each call site; they are the plain little-endian primitives.
+
+    fn write_le_short(out: &mut dyn DataOutput, s: u16) -> Result<()> {
+        out.write_short(s as i16)
     }
 
-    fn write_be_int(out: &mut dyn DataOutput, i: u32) -> Result<()> {
-        out.write_byte((i >> 24) as u8)?;
-        out.write_byte((i >> 16) as u8)?;
-        out.write_byte((i >> 8) as u8)?;
-        out.write_byte(i as u8)?;
-        Ok(())
+    fn write_le_int(out: &mut dyn DataOutput, i: u32) -> Result<()> {
+        out.write_int(i as i32)
     }
 
-    fn write_be_long(out: &mut dyn DataOutput, l: u64) -> Result<()> {
-        for shift in (0..64).step_by(8).rev() {
-            out.write_byte((l >> shift) as u8)?;
-        }
-        Ok(())
+    fn write_le_long(out: &mut dyn DataOutput, l: u64) -> Result<()> {
+        out.write_long(l as i64)
     }
 
     /// Reads `count` integers into `values[offset..]`. Each value is
@@ -268,7 +305,7 @@ impl StoredFieldsInts {
         while k + STORED_FIELDS_INTS_BLOCK_SIZE - 1 < count {
             let step = offset + k;
             for i in 0..16 {
-                let l = Self::read_be_long(input)?;
+                let l = Self::read_le_long(input)?;
                 values[step + i] = ((l >> 56) & 0xFF) as i64;
                 values[step + 16 + i] = ((l >> 48) & 0xFF) as i64;
                 values[step + 32 + i] = ((l >> 40) & 0xFF) as i64;
@@ -296,7 +333,7 @@ impl StoredFieldsInts {
         while k + STORED_FIELDS_INTS_BLOCK_SIZE - 1 < count {
             let step = offset + k;
             for i in 0..32 {
-                let l = Self::read_be_long(input)?;
+                let l = Self::read_le_long(input)?;
                 values[step + i] = ((l >> 48) & 0xFFFF) as i64;
                 values[step + 32 + i] = ((l >> 32) & 0xFFFF) as i64;
                 values[step + 64 + i] = ((l >> 16) & 0xFFFF) as i64;
@@ -305,7 +342,7 @@ impl StoredFieldsInts {
             k += STORED_FIELDS_INTS_BLOCK_SIZE;
         }
         for k in k..count {
-            values[offset + k] = Self::read_be_short(input)? as i64;
+            values[offset + k] = Self::read_le_short(input)? as i64;
         }
         Ok(())
     }
@@ -320,38 +357,28 @@ impl StoredFieldsInts {
         while k + STORED_FIELDS_INTS_BLOCK_SIZE - 1 < count {
             let step = offset + k;
             for i in 0..64 {
-                let l = Self::read_be_long(input)?;
+                let l = Self::read_le_long(input)?;
                 values[step + i] = ((l >> 32) & 0xFFFFFFFF) as i64;
                 values[step + 64 + i] = (l & 0xFFFFFFFF) as i64;
             }
             k += STORED_FIELDS_INTS_BLOCK_SIZE;
         }
         for k in k..count {
-            values[offset + k] = Self::read_be_int(input)? as i64;
+            values[offset + k] = Self::read_le_int(input)? as i64;
         }
         Ok(())
     }
 
-    fn read_be_short(input: &mut dyn DataInput) -> Result<u16> {
-        let b1 = input.read_byte()? as u16;
-        let b2 = input.read_byte()? as u16;
-        Ok((b1 << 8) | b2)
+    fn read_le_short(input: &mut dyn DataInput) -> Result<u16> {
+        Ok(input.read_short()? as u16)
     }
 
-    fn read_be_int(input: &mut dyn DataInput) -> Result<u32> {
-        let b1 = input.read_byte()? as u32;
-        let b2 = input.read_byte()? as u32;
-        let b3 = input.read_byte()? as u32;
-        let b4 = input.read_byte()? as u32;
-        Ok((b1 << 24) | (b2 << 16) | (b3 << 8) | b4)
+    fn read_le_int(input: &mut dyn DataInput) -> Result<u32> {
+        Ok(input.read_int()? as u32)
     }
 
-    fn read_be_long(input: &mut dyn DataInput) -> Result<u64> {
-        let mut l: u64 = 0;
-        for _ in 0..8 {
-            l = (l << 8) | (input.read_byte()? as u64);
-        }
-        Ok(l)
+    fn read_le_long(input: &mut dyn DataInput) -> Result<u64> {
+        Ok(input.read_long()? as u64)
     }
 }
 
@@ -401,25 +428,39 @@ pub(crate) struct FieldsIndexReader {
     start_pointers_start_pointer: i64,
     start_pointers_end_pointer: i64,
     max_pointer: i64,
-    directory: Arc<dyn Directory>,
-    index_file: String,
-    io_context: Box<dyn IOContext>,
+    /// The `.fdx` file, kept open so that every use clones it rather than
+    /// re-opening the file, and so that the reader never needs to remember
+    /// which directory it came from. Lucene keeps the same handle.
+    index_input: Box<dyn IndexInput>,
 }
 
 impl FieldsIndexReader {
     pub(crate) fn new(
-        directory: Arc<dyn Directory>,
+        directory: &dyn Directory,
         segment: &str,
         suffix: &str,
         extension: &str,
         codec_name: &str,
         id: [u8; 16],
         meta_in: &mut dyn DataInput,
-        io_context: Box<dyn IOContext>,
+        io_context: &dyn IOContext,
     ) -> Result<Self> {
         let max_doc = meta_in.read_int()?;
         let block_shift = meta_in.read_int()?;
-        let num_values = meta_in.read_int()? as usize;
+        let num_values = meta_in.read_int()?;
+        // Both come off disk. `FieldsIndexWriter.finish` writes `totalChunks + 1`
+        // here (`FieldsIndexWriter.java:120`) and `writeIndex` is called once
+        // per chunk with at least one document, so Lucene's own invariant is
+        // `numValues <= maxDoc + 1`. Checking it turns a corrupt count into an
+        // error instead of a loop that fills two vectors with billions of
+        // entries.
+        if max_doc < 0 || num_values < 0 || i64::from(num_values) > i64::from(max_doc) + 1 {
+            return Err(LuceneError::CorruptIndex(format!(
+                "the fields index of {segment}{suffix}.{extension} claims {num_values} chunk \
+                 boundaries for {max_doc} documents"
+            )));
+        }
+        let num_values = num_values as usize;
         let docs_start_pointer = meta_in.read_long()?;
         let docs_meta = DirectMonotonicMeta::load(meta_in, num_values as i64, block_shift)?;
         let start_pointers_start_pointer = meta_in.read_long()?;
@@ -429,7 +470,7 @@ impl FieldsIndexReader {
         let max_pointer = meta_in.read_long()?;
 
         let index_file = segment_file_name(segment, suffix, extension);
-        let mut index_input = directory.open_input(&index_file, io_context.as_ref())?;
+        let mut index_input = directory.open_input(&index_file, io_context)?;
 
         let header_name = format!("{codec_name}Idx");
         check_index_header(
@@ -457,11 +498,15 @@ impl FieldsIndexReader {
         let start_pointers_reader =
             DirectMonotonicReader::new(start_pointers_meta, start_pointers_data)?;
 
-        let mut docs = Vec::with_capacity(num_values);
-        let mut start_pointers = Vec::with_capacity(num_values);
+        // Nothing is reserved up front and every read is checked: `num_values`
+        // is a file value, and the two monotonic readers are built over slices
+        // whose length is a file value too, so an index they cannot serve must
+        // be an error rather than the panic `LongValues::get` would raise.
+        let mut docs = Vec::new();
+        let mut start_pointers = Vec::new();
         for i in 0..num_values {
-            docs.push(docs_reader.get(i as i64));
-            start_pointers.push(start_pointers_reader.get(i as i64));
+            docs.push(docs_reader.get_checked(i as i64)?);
+            start_pointers.push(start_pointers_reader.get_checked(i as i64)?);
         }
 
         Ok(Self {
@@ -474,16 +519,21 @@ impl FieldsIndexReader {
             start_pointers_start_pointer,
             start_pointers_end_pointer,
             max_pointer,
-            directory,
-            index_file,
-            io_context,
+            index_input,
         })
     }
 
     fn read_slice(input: &mut dyn IndexInput, start: i64, end: i64) -> Result<Vec<u8>> {
-        if end < start {
-            return Err(LuceneError::IllegalArgument(format!(
-                "invalid slice: start={start}, end={end}"
+        // The bounds come out of the `.fdm` metadata, so they are untrusted.
+        // Java reaches this through `IndexInput.slice`, which validates the
+        // range against the file length and throws `IllegalArgumentException`
+        // without allocating anything; allocating first would let a corrupt
+        // pointer pair request petabytes and abort the process on a failed
+        // allocation, which no exception can catch.
+        let length = input.length();
+        if start < 0 || end < start || end > length {
+            return Err(LuceneError::CorruptIndex(format!(
+                "slice [{start}, {end}) is outside the {length}-byte fields index"
             )));
         }
         let len = (end - start) as usize;
@@ -551,9 +601,7 @@ impl FieldsIndex for FieldsIndexReader {
     }
 
     fn check_integrity(&self) -> Result<()> {
-        let mut input = self
-            .directory
-            .open_input(&self.index_file, self.io_context.as_ref())?;
+        let mut input = self.index_input.clone_input()?;
         input.seek(0)?;
         checksum_entire_file(input.as_mut())?;
         Ok(())
@@ -570,24 +618,13 @@ impl FieldsIndex for FieldsIndexReader {
             start_pointers_start_pointer: self.start_pointers_start_pointer,
             start_pointers_end_pointer: self.start_pointers_end_pointer,
             max_pointer: self.max_pointer,
-            directory: Arc::clone(&self.directory),
-            index_file: self.index_file.clone(),
-            io_context: dyn_io_context_clone(self.io_context.as_ref()),
+            index_input: self.index_input.clone_input()?,
         }))
     }
 
     fn close(&mut self) -> Result<()> {
         Ok(())
     }
-}
-
-/// Returns an owned clone of an [`IOContext`] trait object.
-///
-/// The `IOContext` trait does not require `Clone`, but every implementation
-/// provides `with_hints` which returns a `Box<dyn IOContext>`. Re-hinting with
-/// the same hints yields an equivalent owned context.
-fn dyn_io_context_clone(ctx: &dyn IOContext) -> Box<dyn IOContext> {
-    ctx.with_hints(ctx.hints())
 }
 
 // -----------------------------------------------------------------------------
@@ -604,6 +641,7 @@ pub(crate) struct FieldsIndexWriter {
     start_pointer_deltas: Vec<i64>,
     total_docs: i32,
     previous_fp: i64,
+    closed: bool,
 }
 
 impl fmt::Debug for FieldsIndexWriter {
@@ -644,6 +682,7 @@ impl FieldsIndexWriter {
             start_pointer_deltas: Vec::new(),
             total_docs: 0,
             previous_fp: 0,
+            closed: false,
         })
     }
 
@@ -722,8 +761,23 @@ impl FieldsIndexWriter {
         meta_out.write_long(max_pointer)?;
 
         write_footer(self.data_out.as_mut())?;
-        self.data_out.close()?;
-        Ok(())
+        self.close()
+    }
+
+    /// Releases the `.fdx` output.
+    ///
+    /// Equivalent to `FieldsIndexWriter.close()`, which Lucene's
+    /// `Lucene90CompressingStoredFieldsWriter.close()` calls alongside the two
+    /// streams. The `.fdx` is created eagerly in the constructor, so without
+    /// this the handle survives every abort until the value is dropped.
+    /// Closing twice is a no-op, because [`Self::finish`] already closes it on
+    /// the success path.
+    pub(crate) fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        self.closed = true;
+        self.data_out.close()
     }
 }
 
@@ -771,7 +825,7 @@ impl Lucene90CompressingStoredFieldsWriter {
         write_index_header(
             meta_stream.as_mut(),
             &format!("{INDEX_CODEC_NAME}Meta"),
-            INDEX_VERSION_CURRENT,
+            DATA_VERSION_CURRENT,
             &id,
             segment_suffix,
         )?;
@@ -915,11 +969,11 @@ impl Lucene90CompressingStoredFieldsWriter {
             out.write_byte((0x80 | (1 + int_val)) as u8)
         } else if (float_bits >> 31) == 0 {
             out.write_byte((float_bits >> 24) as u8)?;
-            StoredFieldsInts::write_be_short(out, (float_bits >> 8) as u16)?;
+            StoredFieldsInts::write_le_short(out, (float_bits >> 8) as u16)?;
             out.write_byte(float_bits as u8)
         } else {
             out.write_byte(0xFF)?;
-            StoredFieldsInts::write_be_int(out, float_bits)
+            StoredFieldsInts::write_le_int(out, float_bits)
         }
     }
 
@@ -935,15 +989,15 @@ impl Lucene90CompressingStoredFieldsWriter {
             out.write_byte((0x80 | (int_val + 1)) as u8)
         } else if value == (value as f32) as f64 {
             out.write_byte(0xFE)?;
-            StoredFieldsInts::write_be_int(out, (value as f32).to_bits())
+            StoredFieldsInts::write_le_int(out, (value as f32).to_bits())
         } else if (double_bits >> 63) == 0 {
             out.write_byte((double_bits >> 56) as u8)?;
-            StoredFieldsInts::write_be_int(out, (double_bits >> 24) as u32)?;
-            StoredFieldsInts::write_be_short(out, (double_bits >> 8) as u16)?;
+            StoredFieldsInts::write_le_int(out, (double_bits >> 24) as u32)?;
+            StoredFieldsInts::write_le_short(out, (double_bits >> 8) as u16)?;
             out.write_byte(double_bits as u8)
         } else {
             out.write_byte(0xFF)?;
-            StoredFieldsInts::write_be_long(out, double_bits)
+            StoredFieldsInts::write_le_long(out, double_bits)
         }
     }
 
@@ -964,7 +1018,10 @@ impl Lucene90CompressingStoredFieldsWriter {
 
         let zigzag = BitUtil::zig_zag_encode_long(value);
         let mut header = header | (zigzag & 0x1F) as u8;
-        let upper = zigzag >> 5;
+        // Java shifts with `>>>`: the zig-zag encoding of a value of magnitude
+        // 2^62 or more has its top bit set, and an arithmetic shift would keep
+        // that bit, yielding a negative `upperBits` that no `vLong` can carry.
+        let upper = ((zigzag as u64) >> 5) as i64;
         if upper != 0 {
             header |= 0x20;
         }
@@ -986,6 +1043,22 @@ impl fmt::Debug for Lucene90CompressingStoredFieldsWriter {
             .field("doc_base", &self.doc_base)
             .field("num_buffered_docs", &self.num_buffered_docs)
             .finish_non_exhaustive()
+    }
+}
+
+impl Accountable for Lucene90CompressingStoredFieldsWriter {
+    /// Bytes buffered for the documents of the chunk being built.
+    ///
+    /// Equivalent to `Lucene90CompressingStoredFieldsWriter.ramBytesUsed()`.
+    /// Java adds `bufferedDocs.ramBytesUsed()`, the *allocated* size of the
+    /// byte blocks; `ByteBuffersDataOutput` here reports the bytes actually
+    /// written, so the estimate is slightly lower than Lucene's for a
+    /// partially filled block. Both are estimates feeding the same
+    /// flush-by-RAM decision, and neither reaches the index files.
+    fn ram_bytes_used(&self) -> i64 {
+        self.buffered_docs.size() as i64
+            + (self.num_stored_fields.capacity() as i64) * 4
+            + (self.end_offsets.capacity() as i64) * 4
     }
 }
 
@@ -1042,6 +1115,27 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
         self.buffered_docs.write_bytes(value, 0, value.len())
     }
 
+    fn write_field_data_input(
+        &mut self,
+        info: &FieldInfo,
+        value: &mut StoredFieldDataInput<'_>,
+    ) -> Result<()> {
+        let length = value.length();
+        if length < 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "stored binary field \"{}\" has a negative length: {length}",
+                info.name
+            )));
+        }
+        self.num_stored_fields_in_doc += 1;
+        self.write_field_header(info, TYPE_BYTE_ARR)?;
+        self.buffered_docs.write_v_int(length)?;
+        // `copyBytes` in Lucene: the bytes go from the input straight into the
+        // chunk buffer, never through an intermediate array.
+        self.buffered_docs
+            .copy_bytes(value.data_input(), i64::from(length))
+    }
+
     fn write_field_string(&mut self, info: &FieldInfo, value: &str) -> Result<()> {
         self.num_stored_fields_in_doc += 1;
         self.write_field_header(info, TYPE_STRING)?;
@@ -1069,10 +1163,23 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
         Ok(())
     }
 
+    /// Releases every resource of the writer.
+    ///
+    /// Equivalent to `Lucene90CompressingStoredFieldsWriter.close()`, which is
+    /// `IOUtils.close(metaStream, fieldsStream, indexWriter, compressor)`:
+    /// **all four** are closed even when one of them fails, and the first
+    /// failure is what propagates. Short-circuiting on the first error would
+    /// leak the remaining handles, which on Windows blocks the very files an
+    /// aborted flush is about to delete. Rust has no suppressed-exception
+    /// chain, so the later failures are dropped rather than attached.
     fn close(&mut self) -> Result<()> {
-        self.meta_stream.close()?;
-        self.fields_stream.close()?;
-        self.compressor.close()
+        let outcomes = [
+            self.meta_stream.close(),
+            self.fields_stream.close(),
+            self.index_writer.close(),
+            self.compressor.close(),
+        ];
+        outcomes.into_iter().find(Result::is_err).unwrap_or(Ok(()))
     }
 }
 
@@ -1093,9 +1200,11 @@ pub struct Lucene90CompressingStoredFieldsReader {
     num_chunks: i64,
     num_dirty_chunks: i64,
     num_dirty_docs: i64,
-    directory: Arc<dyn Directory>,
-    fields_file: String,
-    io_context: Box<dyn IOContext>,
+    /// The `.fdt` file, kept open exactly as Lucene keeps `fieldsStream`. Every
+    /// read clones it, so the reader works on whatever directory it was opened
+    /// from — including a compound-file directory, whose files no `SegmentInfo`
+    /// can point at.
+    fields_stream: Box<dyn IndexInput>,
     merging: bool,
     state: Mutex<BlockState>,
 }
@@ -1125,10 +1234,53 @@ impl BlockState {
     }
 
     fn contains(&self, doc_id: i32) -> bool {
-        doc_id >= self.doc_base && doc_id < self.doc_base + self.chunk_docs
+        // `contains` runs on a header that has been read but not yet
+        // validated, so a corrupt `docBase`/`chunkDocs` pair reaches it. Java's
+        // `int` arithmetic wraps here (`Reader.java:442-444`) and the
+        // validation that follows rejects the block. No corrupt header has been
+        // found that actually overflows the sum — the short circuit means
+        // `docBase <= docID`, which keeps it small — so this is defensive
+        // rather than a fix for a reproduced abort; it costs nothing and makes
+        // the arithmetic match Java's exactly instead of relying on that
+        // argument staying true.
+        doc_id >= self.doc_base && doc_id < self.doc_base.wrapping_add(self.chunk_docs)
     }
 
+    /// Loads the block that contains `doc_id`.
+    ///
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.BlockState.reset`,
+    /// whose `finally` sets `chunkDocs = 0` whenever `doReset` failed: a block
+    /// whose header was read but whose body turned out to be corrupt must not
+    /// stay cached, or the next read of a document in that block would be
+    /// served from half-decoded state instead of raising the same corruption
+    /// error again.
     fn reset(
+        &mut self,
+        doc_id: i32,
+        fields_stream: &mut dyn IndexInput,
+        num_docs: i32,
+        chunk_size: usize,
+        decompressor: &mut dyn Decompressor,
+        merging: bool,
+    ) -> Result<()> {
+        let outcome = self.do_reset(
+            doc_id,
+            fields_stream,
+            num_docs,
+            chunk_size,
+            decompressor,
+            merging,
+        );
+        if outcome.is_err() {
+            // Condemn the block: `contains` now answers `false` for every doc,
+            // so the header is decoded again on the next attempt.
+            self.chunk_docs = 0;
+        }
+        outcome
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn do_reset(
         &mut self,
         doc_id: i32,
         fields_stream: &mut dyn IndexInput,
@@ -1193,9 +1345,15 @@ impl BlockState {
                 while decompressed < total_length {
                     let to_decompress = cmp::min(total_length - decompressed, chunk_size);
                     let mut spare = BytesRef::default();
+                    // Every slice was compressed independently and carries its
+                    // own framing, so its *own* uncompressed length is the
+                    // `originalLength` the decompressor must be given — not the
+                    // length of the whole chunk. Passing the chunk length makes
+                    // a framed codec such as LZ4-with-preset-dictionary read
+                    // compressed payload as framing and decode garbage.
                     decompressor.decompress(
                         fields_stream,
-                        total_length,
+                        to_decompress,
                         0,
                         to_decompress,
                         &mut spare,
@@ -1239,8 +1397,21 @@ impl BlockState {
             )));
         }
         let index = (doc_id - self.doc_base) as usize;
-        let offset = self.offsets[index] as usize;
-        let length = (self.offsets[index + 1] - self.offsets[index]) as usize;
+        // The offsets are a running sum decoded from the chunk header, so a
+        // corrupt header can make them non-monotonic or overflow an `i32`.
+        // Java's `Math.toIntExact` raises `ArithmeticException` for the latter
+        // and the negative length that the former produces trips its array
+        // bounds; both surface as an exception, so both are reported here
+        // rather than turning into a wild slice index.
+        let start = self.offsets[index];
+        let end = self.offsets[index + 1];
+        if end < start || start < 0 || end > i64::from(i32::MAX) {
+            return Err(LuceneError::CorruptIndex(format!(
+                "document {doc_id} spans [{start}, {end}) inside its chunk"
+            )));
+        }
+        let offset = start as usize;
+        let length = (end - start) as usize;
         let num_stored_fields = self.num_stored_fields[index] as i32;
 
         if length == 0 {
@@ -1258,13 +1429,34 @@ impl BlockState {
                 .ok_or_else(|| LuceneError::IllegalState("missing fields input".to_string()))?;
             let total_length = self.offsets[self.chunk_docs as usize] as usize;
             input.seek(self.start_pointer)?;
+            // A known deviation, tracked as its own task: Java returns a lazy
+            // `DataInput` that starts inflating at the document's own offset
+            // (`Lucene90CompressingStoredFieldsReader.java:563-566`) and stops
+            // as soon as the visitor is satisfied, whereas this port inflates
+            // the whole chunk on every document read. The bytes the visitor
+            // sees are identical; the cost is not.
+            //
+            // *Time*: measured with 300 reads each on a Lucene-written sliced
+            // chunk — reading the 6-byte document that merely neighbours a
+            // 243 001-byte one costs 0.460 ms here against 0.006 ms for the
+            // same read in an ordinary chunk, a factor of 77; the large
+            // document itself costs 0.625 ms.
+            //
+            // *Memory*: Java's buffer is bounded by `dictLength + blockLength`,
+            // about 90 KiB at `BEST_SPEED`, no matter how large the document
+            // is. This port allocates the whole chunk *and* a second full copy
+            // of the document, so for a document near Lucene's documented 2 GiB
+            // limit that is roughly 4 GiB against a fixed 90 KiB. The
+            // difference is unbounded versus bounded, not merely "higher".
             if self.sliced {
                 let mut full = Vec::with_capacity(total_length);
                 let mut decompressed = 0;
                 while decompressed < total_length {
                     let to_decompress = cmp::min(total_length - decompressed, chunk_size);
                     let mut spare = BytesRef::default();
-                    decompressor.decompress(input, total_length, 0, to_decompress, &mut spare)?;
+                    // See the merging branch of `reset`: each slice frames its
+                    // own uncompressed length.
+                    decompressor.decompress(input, to_decompress, 0, to_decompress, &mut spare)?;
                     full.extend_from_slice(spare.slice());
                     decompressed += to_decompress;
                 }
@@ -1299,11 +1491,11 @@ struct SerializedDocument {
 
 impl Lucene90CompressingStoredFieldsReader {
     fn new(
-        directory: Arc<dyn Directory>,
+        directory: &dyn Directory,
         segment_info: &SegmentInfo,
         segment_suffix: &str,
         field_infos: &FieldInfos,
-        io_context: Box<dyn IOContext>,
+        io_context: &dyn IOContext,
         format_name: &str,
         compression_mode: CompressionMode,
     ) -> Result<Self> {
@@ -1312,7 +1504,7 @@ impl Lucene90CompressingStoredFieldsReader {
         let num_docs = segment_info.max_doc()?;
 
         let fields_file = segment_file_name(&segment, segment_suffix, FIELDS_EXTENSION);
-        let mut fields_stream = directory.open_input(&fields_file, io_context.as_ref())?;
+        let mut fields_stream = directory.open_input(&fields_file, io_context)?;
         let version = check_index_header(
             fields_stream.as_mut(),
             format_name,
@@ -1322,14 +1514,13 @@ impl Lucene90CompressingStoredFieldsReader {
             segment_suffix,
         )?;
         retrieve_checksum(fields_stream.as_mut())?;
-        fields_stream.close()?;
 
         let meta_file = segment_file_name(&segment, segment_suffix, META_EXTENSION);
         let mut meta_in = directory.open_checksum_input(&meta_file)?;
         check_index_header(
             meta_in.as_mut(),
             &format!("{INDEX_CODEC_NAME}Meta"),
-            INDEX_VERSION_START,
+            META_VERSION_START,
             version,
             &id,
             segment_suffix,
@@ -1338,14 +1529,14 @@ impl Lucene90CompressingStoredFieldsReader {
         let chunk_size = meta_in.read_v_int()? as usize;
 
         let index_reader = FieldsIndexReader::new(
-            Arc::clone(&directory),
+            directory,
             &segment,
             segment_suffix,
             INDEX_EXTENSION,
             INDEX_CODEC_NAME,
             id,
             meta_in.as_mut(),
-            dyn_io_context_clone(io_context.as_ref()),
+            io_context,
         )?;
         let max_pointer = index_reader.max_pointer;
 
@@ -1387,9 +1578,7 @@ impl Lucene90CompressingStoredFieldsReader {
             num_chunks,
             num_dirty_chunks,
             num_dirty_docs,
-            directory,
-            fields_file,
-            io_context,
+            fields_stream,
             merging: false,
             state: Mutex::new(BlockState::new()),
         })
@@ -1413,9 +1602,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
     fn document(&self, doc_id: i32, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         if !state.contains(doc_id) {
-            let mut input = self
-                .directory
-                .open_input(&self.fields_file, self.io_context.as_ref())?;
+            let mut input = self.fields_stream.clone_input()?;
             let start_pointer = self.index_reader.get_start_pointer(doc_id)?;
             input.seek(start_pointer)?;
             state.reset(
@@ -1432,9 +1619,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
         let doc = if self.merging {
             state.document(doc_id, None, self.chunk_size, &mut **decompressor, true)?
         } else {
-            let mut inp = self
-                .directory
-                .open_input(&self.fields_file, self.io_context.as_ref())?;
+            let mut inp = self.fields_stream.clone_input()?;
             let start_pointer = self.index_reader.get_start_pointer(doc_id)?;
             inp.seek(start_pointer)?;
             state.document(
@@ -1461,7 +1646,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
                     LuceneError::CorruptIndex(format!("field number {field_number} not found"))
                 })?;
 
-            match visitor.needs_field(field_info) {
+            match visitor.needs_field(field_info)? {
                 StoredFieldVisitorStatus::Yes => {
                     Self::read_field(input.as_mut(), visitor, field_info, bits)?;
                 }
@@ -1479,9 +1664,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
 
     fn check_integrity(&self) -> Result<()> {
         self.index_reader.check_integrity()?;
-        let mut input = self
-            .directory
-            .open_input(&self.fields_file, self.io_context.as_ref())?;
+        let mut input = self.fields_stream.clone_input()?;
         input.seek(0)?;
         checksum_entire_file(input.as_mut())?;
         Ok(())
@@ -1501,9 +1684,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             num_chunks: self.num_chunks,
             num_dirty_chunks: self.num_dirty_chunks,
             num_dirty_docs: self.num_dirty_docs,
-            directory: Arc::clone(&self.directory),
-            fields_file: self.fields_file.clone(),
-            io_context: dyn_io_context_clone(self.io_context.as_ref()),
+            fields_stream: self.fields_stream.clone_input().expect("clone failed"),
             merging: false,
             state: Mutex::new(BlockState::new()),
         })
@@ -1523,9 +1704,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             num_chunks: self.num_chunks,
             num_dirty_chunks: self.num_dirty_chunks,
             num_dirty_docs: self.num_dirty_docs,
-            directory: Arc::clone(&self.directory),
-            fields_file: self.fields_file.clone(),
-            io_context: dyn_io_context_clone(self.io_context.as_ref()),
+            fields_stream: self.fields_stream.clone_input().expect("clone failed"),
             merging: true,
             state: Mutex::new(BlockState::new()),
         })
@@ -1541,10 +1720,14 @@ impl Lucene90CompressingStoredFieldsReader {
     ) -> Result<()> {
         match bits & TYPE_MASK {
             TYPE_BYTE_ARR => {
-                let length = input.read_v_int()? as usize;
-                let mut buf = vec![0u8; length];
-                input.read_bytes(&mut buf, 0, length)?;
-                visitor.binary_field(info, &buf)
+                // Java hands the visitor a `StoredFieldDataInput` over the live
+                // document cursor so that a visitor which only forwards the
+                // bytes (`SortingStoredFieldsConsumer.CopyVisitor`) never
+                // materialises them. The default visitor callback still copies
+                // into a fresh buffer, so a plain visitor sees the same bytes.
+                let length = input.read_v_int()?;
+                let mut value = StoredFieldDataInput::new(input, length);
+                visitor.binary_field_data_input(info, &mut value)
             }
             TYPE_STRING => {
                 let s = input.read_string()?;
@@ -1591,12 +1774,15 @@ impl Lucene90CompressingStoredFieldsReader {
     fn read_z_float(input: &mut dyn DataInput) -> Result<f32> {
         let b = input.read_byte()? as u32;
         if b == 0xFF {
-            Ok(f32::from_bits(StoredFieldsInts::read_be_int(input)?))
+            Ok(f32::from_bits(StoredFieldsInts::read_le_int(input)?))
         } else if (b & 0x80) != 0 {
-            Ok(((b & 0x7F) - 1) as i32 as f32)
+            // Small integer in [-1..125]. Java computes `(b & 0x7f) - 1` in a
+            // signed `int`; doing it in `u32` underflows for the encoding of
+            // -1, whose header byte is exactly 0x80.
+            Ok(((b & 0x7F) as i32 - 1) as f32)
         } else {
             let bits = (b << 24)
-                | ((StoredFieldsInts::read_be_short(input)? as u32) << 8)
+                | ((StoredFieldsInts::read_le_short(input)? as u32) << 8)
                 | (input.read_byte()? as u32);
             Ok(f32::from_bits(bits))
         }
@@ -1605,16 +1791,18 @@ impl Lucene90CompressingStoredFieldsReader {
     fn read_z_double(input: &mut dyn DataInput) -> Result<f64> {
         let b = input.read_byte()? as u64;
         if b == 0xFF {
-            Ok(f64::from_bits(StoredFieldsInts::read_be_long(input)?))
+            Ok(f64::from_bits(StoredFieldsInts::read_le_long(input)?))
         } else if b == 0xFE {
-            let float_bits = StoredFieldsInts::read_be_int(input)?;
+            let float_bits = StoredFieldsInts::read_le_int(input)?;
             Ok(f64::from(f32::from_bits(float_bits)))
         } else if (b & 0x80) != 0 {
-            Ok(((b & 0x7F) - 1) as i32 as f64)
+            // Small integer in [-1..124]; see `read_z_float` for why this must
+            // be signed arithmetic.
+            Ok(((b & 0x7F) as i32 - 1) as f64)
         } else {
             let bits = (b << 56)
-                | ((StoredFieldsInts::read_be_int(input)? as u64) << 24)
-                | ((StoredFieldsInts::read_be_short(input)? as u64) << 8)
+                | ((StoredFieldsInts::read_le_int(input)? as u64) << 24)
+                | ((StoredFieldsInts::read_le_short(input)? as u64) << 8)
                 | (input.read_byte()? as u64);
             Ok(f64::from_bits(bits))
         }
@@ -1627,10 +1815,16 @@ impl Lucene90CompressingStoredFieldsReader {
             bits |= input.read_v_long()? << 5;
         }
         let mut l = BitUtil::zig_zag_decode_long(bits);
+        // A corrupt stream can encode a magnitude that overflows the scaling
+        // step. Java multiplies in a `long` and wraps silently
+        // (`Reader.java:373-382`), returning a nonsensical timestamp rather
+        // than failing, so this port wraps too: a decoder must not abort the
+        // process on bytes it did not write, and inventing an error here would
+        // reject values Lucene accepts.
         match header as i32 & DAY_ENCODING {
-            SECOND_ENCODING => l *= SECOND_MS,
-            HOUR_ENCODING => l *= HOUR_MS,
-            DAY_ENCODING => l *= DAY_MS,
+            SECOND_ENCODING => l = l.wrapping_mul(SECOND_MS),
+            HOUR_ENCODING => l = l.wrapping_mul(HOUR_MS),
+            DAY_ENCODING => l = l.wrapping_mul(DAY_MS),
             0 => {}
             _ => {
                 return Err(LuceneError::CorruptIndex(
@@ -1701,18 +1895,17 @@ impl StoredFieldsFormat for Lucene90CompressingStoredFieldsFormat {
 
     fn fields_reader(
         &self,
-        _directory: &dyn Directory,
+        directory: &dyn Directory,
         segment_info: &SegmentInfo,
         field_infos: &FieldInfos,
         context: &dyn IOContext,
     ) -> Result<Box<dyn StoredFieldsReader>> {
-        let _ = _directory;
         Ok(Box::new(Lucene90CompressingStoredFieldsReader::new(
-            Arc::clone(&segment_info.directory),
+            directory,
             segment_info,
             "",
             field_infos,
-            dyn_io_context_clone(context),
+            context,
             self.format_name,
             self.compression_mode,
         )?))
@@ -1855,14 +2048,19 @@ fn impl_for_mode(mode: Mode) -> Lucene90CompressingStoredFieldsFormat {
     match mode {
         Mode::BestSpeed => Lucene90CompressingStoredFieldsFormat {
             format_name: "Lucene90StoredFieldsFastData",
-            compression_mode: CompressionMode::FAST,
+            // `Lucene90StoredFieldsFormat.BEST_SPEED_MODE` is
+            // `LZ4WithPresetDictCompressionMode`, not plain LZ4: the chunk is
+            // split into ten sub blocks sharing one dictionary.
+            compression_mode: CompressionMode::LZ4_WITH_PRESET_DICT,
             chunk_size: 10 * 8 * 1024,
             max_docs_per_chunk: 1024,
             block_shift: 10,
         },
         Mode::BestCompression => Lucene90CompressingStoredFieldsFormat {
             format_name: "Lucene90StoredFieldsHighData",
-            compression_mode: CompressionMode::HIGH_COMPRESSION,
+            // `Lucene90StoredFieldsFormat.BEST_COMPRESSION_MODE` is
+            // `DeflateWithPresetDictCompressionMode`, not plain deflate.
+            compression_mode: CompressionMode::DEFLATE_WITH_PRESET_DICT,
             chunk_size: 10 * 48 * 1024,
             max_docs_per_chunk: 4096,
             block_shift: 10,
@@ -1938,8 +2136,8 @@ mod tests {
             Ok(())
         }
 
-        fn needs_field(&mut self, _info: &FieldInfo) -> StoredFieldVisitorStatus {
-            StoredFieldVisitorStatus::Yes
+        fn needs_field(&mut self, _info: &FieldInfo) -> Result<StoredFieldVisitorStatus> {
+            Ok(StoredFieldVisitorStatus::Yes)
         }
     }
 
@@ -2105,8 +2303,17 @@ mod tests {
         write_read_round_trip(Mode::BestSpeed);
     }
 
+    /// `BEST_COMPRESSION` round-trips **within Rucene only**.
+    ///
+    /// Lucene's `BEST_COMPRESSION` uses
+    /// `DeflateWithPresetDictCompressionMode`, which this port cannot reproduce
+    /// while its deflate backend has no preset-dictionary support (see the
+    /// module documentation). This test therefore pins self-consistency, not
+    /// byte compatibility; `BEST_SPEED`, the mode every codec selects by
+    /// default, is verified against Lucene in
+    /// `tests/portability/stored_fields.rs`.
     #[test]
-    fn round_trip_best_compression() {
+    fn round_trip_best_compression_within_rucene() {
         write_read_round_trip(Mode::BestCompression);
     }
 
@@ -2122,6 +2329,841 @@ mod tests {
     #[test]
     fn mode_default_is_best_speed() {
         assert_eq!(Mode::default(), Mode::BestSpeed);
+    }
+
+    /// Regression test for a signed-shift bug in `write_t_long`.
+    ///
+    /// `Lucene90CompressingStoredFieldsWriter.writeTLong` splits the zig-zag
+    /// encoding of the value into a 5-bit header remainder and an `upperBits`
+    /// `vLong`, using Java's **unsigned** shift `>>>`. This port used Rust's
+    /// `>>` on an `i64`, which is arithmetic: for any value whose zig-zag
+    /// encoding has the sign bit set — magnitude 2^62 and above — `upperBits`
+    /// came out negative and `write_v_long` rejected it outright, so those
+    /// longs could not be stored at all.
+    #[test]
+    fn stored_longs_beyond_two_to_the_sixty_two_round_trip() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let field_infos = make_field_infos();
+        let value_field = field_infos.field_info("value").unwrap();
+
+        // Every one of these has |zigZag(v)| >= 2^63, which is exactly the
+        // range the arithmetic shift corrupted. 86_400_000_000_000_000 is the
+        // same magnitude expressed as a whole number of days, so it also
+        // exercises the DAY_ENCODING branch, where the scaling happens before
+        // the shift.
+        let values = [
+            i64::MAX,
+            i64::MIN,
+            i64::MAX - 1,
+            i64::MIN + 1,
+            1i64 << 62,
+            -(1i64 << 62),
+            (1i64 << 62) + 12345,
+            86_400_000 * 100_000_000_000i64,
+        ];
+        let segment_info = make_segment_info(Arc::clone(&dir), "_0", values.len() as i32);
+        let format = Lucene90StoredFieldsFormat::new();
+        {
+            let mut writer = format
+                .fields_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                .unwrap();
+            for value in values {
+                writer.start_document().unwrap();
+                writer
+                    .write_field_i64(value_field, value)
+                    .unwrap_or_else(|error| panic!("writing {value} must succeed: {error}"));
+                writer.finish_document().unwrap();
+            }
+            writer.finish(values.len() as i32).unwrap();
+            writer.close().unwrap();
+        }
+
+        let reader = format
+            .fields_reader(
+                dir.as_ref(),
+                &segment_info,
+                &field_infos,
+                &*DEFAULT_IO_CONTEXT,
+            )
+            .unwrap();
+        for (doc_id, expected) in values.iter().enumerate() {
+            let mut visitor = CollectingVisitor::default();
+            reader.document(doc_id as i32, &mut visitor).unwrap();
+            assert_eq!(
+                visitor.fields,
+                vec![("value".to_string(), StoredValue::Long(*expected))],
+                "doc {doc_id}"
+            );
+        }
+    }
+
+    /// The codec overrides `write_field_data_input` to stream the bytes, so the
+    /// result must be indistinguishable from `write_field_bytes`, which is what
+    /// Lucene's `writeField(FieldInfo, StoredFieldDataInput)` guarantees: both
+    /// write a `BYTE_ARR` field.
+    #[test]
+    fn a_streamed_binary_field_is_byte_identical_to_a_copied_one() {
+        use crate::index::StoredFieldDataInput;
+        use crate::store::ByteArrayDataInput;
+
+        let payload: Vec<u8> = (0..=255u8).collect();
+
+        let write = |streamed: bool| -> Vec<u8> {
+            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let field_infos = make_field_infos();
+            let text_field = field_infos.field_info("text").unwrap();
+            let segment_info = make_segment_info(Arc::clone(&dir), "_0", 1);
+            let format = Lucene90StoredFieldsFormat::new();
+            {
+                let mut writer = format
+                    .fields_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                    .unwrap();
+                writer.start_document().unwrap();
+                if streamed {
+                    let mut input = ByteArrayDataInput::new(payload.clone());
+                    let mut value = StoredFieldDataInput::new(&mut input, payload.len() as i32);
+                    writer
+                        .write_field_data_input(text_field, &mut value)
+                        .unwrap();
+                } else {
+                    writer.write_field_bytes(text_field, &payload).unwrap();
+                }
+                writer.finish_document().unwrap();
+                writer.finish(1).unwrap();
+                writer.close().unwrap();
+            }
+            let mut input = dir
+                .open_input("_0_Lucene90FieldsIndex-doc_ids.fdt", &*DEFAULT_IO_CONTEXT)
+                .or_else(|_| dir.open_input("_0.fdt", &*DEFAULT_IO_CONTEXT))
+                .expect("the stored-fields data file");
+            let length = input.length() as usize;
+            let mut bytes = vec![0u8; length];
+            input.read_bytes(&mut bytes, 0, length).expect("read");
+            bytes
+        };
+
+        assert_eq!(
+            write(true),
+            write(false),
+            "the streaming path must produce the same .fdt bytes as the copying path"
+        );
+    }
+
+    /// A visitor that overrides the data-input callback must receive the value
+    /// without the reader materialising it first, which is what
+    /// `SortingStoredFieldsConsumer.CopyVisitor` relies on.
+    #[test]
+    fn the_reader_offers_binary_values_through_the_data_input_callback() {
+        use crate::index::StoredFieldDataInput;
+
+        #[derive(Default)]
+        struct StreamingVisitor {
+            streamed: Vec<Vec<u8>>,
+            materialised: usize,
+        }
+
+        impl StoredFieldVisitor for StreamingVisitor {
+            fn binary_field_data_input(
+                &mut self,
+                _info: &FieldInfo,
+                value: &mut StoredFieldDataInput<'_>,
+            ) -> Result<()> {
+                let length = value.length() as usize;
+                let mut bytes = vec![0u8; length];
+                value.data_input().read_bytes(&mut bytes, 0, length)?;
+                self.streamed.push(bytes);
+                Ok(())
+            }
+
+            fn binary_field(&mut self, _info: &FieldInfo, _value: &[u8]) -> Result<()> {
+                self.materialised += 1;
+                Ok(())
+            }
+
+            fn needs_field(&mut self, _info: &FieldInfo) -> Result<StoredFieldVisitorStatus> {
+                Ok(StoredFieldVisitorStatus::Yes)
+            }
+        }
+
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let field_infos = make_field_infos();
+        let text_field = field_infos.field_info("text").unwrap();
+        let segment_info = make_segment_info(Arc::clone(&dir), "_0", 1);
+        let format = Lucene90StoredFieldsFormat::new();
+        {
+            let mut writer = format
+                .fields_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                .unwrap();
+            writer.start_document().unwrap();
+            writer.write_field_bytes(text_field, b"first").unwrap();
+            writer.write_field_bytes(text_field, b"second").unwrap();
+            writer.finish_document().unwrap();
+            writer.finish(1).unwrap();
+            writer.close().unwrap();
+        }
+        let reader = format
+            .fields_reader(
+                dir.as_ref(),
+                &segment_info,
+                &field_infos,
+                &*DEFAULT_IO_CONTEXT,
+            )
+            .unwrap();
+        let mut visitor = StreamingVisitor::default();
+        reader.document(0, &mut visitor).unwrap();
+        assert_eq!(
+            visitor.streamed,
+            vec![b"first".to_vec(), b"second".to_vec()]
+        );
+        assert_eq!(
+            visitor.materialised, 0,
+            "the reader must not copy the bytes when the visitor streams them"
+        );
+    }
+
+    /// Regression test for a byte-order bug in the fixed-width primitives.
+    ///
+    /// Lucene's `DataOutput.writeShort/writeInt/writeLong` are **little-endian**
+    /// and `writeZFloat`/`writeZDouble` go through them. This port wrote them
+    /// big-endian, so every stored float and double, and every
+    /// `StoredFieldsInts` block of 128 or more values, had the wrong byte order
+    /// on disk: readable by Rucene, unreadable by Lucene.
+    ///
+    /// The expected bytes below are derived from the Java algorithm, not from
+    /// this port's output.
+    #[test]
+    fn z_float_and_z_double_use_lucenes_little_endian_byte_order() {
+        fn write_float(value: f32) -> Vec<u8> {
+            let mut out = crate::store::ByteArrayDataOutput::new();
+            Lucene90CompressingStoredFieldsWriter::write_z_float(&mut out, value).unwrap();
+            out.into_inner()
+        }
+        fn write_double(value: f64) -> Vec<u8> {
+            let mut out = crate::store::ByteArrayDataOutput::new();
+            Lucene90CompressingStoredFieldsWriter::write_z_double(&mut out, value).unwrap();
+            out.into_inner()
+        }
+
+        // Float.MAX_VALUE: writeByte(bits>>24), writeShort(bits>>>8) LE,
+        // writeByte(bits).
+        assert_eq!(write_float(f32::MAX), vec![0x7f, 0xff, 0x7f, 0xff]);
+        // A negative float: writeByte(0xFF) then writeInt(bits) LE.
+        assert_eq!(write_float(-1.5), vec![0xff, 0x00, 0x00, 0xc0, 0xbf]);
+        // Double.MAX_VALUE: writeByte(bits>>56), writeInt(bits>>>24) LE,
+        // writeShort(bits>>>8) LE, writeByte(bits).
+        assert_eq!(
+            write_double(f64::MAX),
+            vec![0x7f, 0xff, 0xff, 0xff, 0xef, 0xff, 0xff, 0xff]
+        );
+        // A negative double with no exact float form: writeByte(0xFF) then
+        // writeLong(bits) LE.
+        assert_eq!(
+            write_double(-0.1),
+            vec![0xff, 0x9a, 0x99, 0x99, 0x99, 0x99, 0x99, 0xb9, 0xbf]
+        );
+
+        // And every one of them still reads back to the value written.
+        for value in [f32::MAX, f32::MIN, -1.5f32, 0.0f32, -0.0f32, 1.0f32] {
+            let bytes = write_float(value);
+            let mut input = ByteArrayDataInput::new(bytes);
+            let read = Lucene90CompressingStoredFieldsReader::read_z_float(&mut input).unwrap();
+            assert_eq!(read.to_bits(), value.to_bits(), "float {value}");
+        }
+        for value in [
+            f64::MAX,
+            f64::MIN,
+            -0.1f64,
+            0.0f64,
+            -0.0f64,
+            1.0f64,
+            -1.5f64,
+        ] {
+            let bytes = write_double(value);
+            let mut input = ByteArrayDataInput::new(bytes);
+            let read = Lucene90CompressingStoredFieldsReader::read_z_double(&mut input).unwrap();
+            assert_eq!(read.to_bits(), value.to_bits(), "double {value}");
+        }
+    }
+
+    /// Regression test for the same byte-order bug in `StoredFieldsInts`.
+    ///
+    /// A block of 128 values is transposed into sixteen longs and written with
+    /// `DataOutput.writeLong`, which is little-endian; the first byte on disk is
+    /// therefore `values[112]`, not `values[0]`. Writing the long big-endian
+    /// reversed every group of eight values.
+    #[test]
+    fn stored_fields_ints_writes_full_blocks_little_endian() {
+        let values: Vec<i32> = (0..128).collect();
+        let mut out = crate::store::ByteArrayDataOutput::new();
+        StoredFieldsInts::write_ints(&values, 0, values.len(), &mut out).unwrap();
+        let bytes = out.into_inner();
+
+        assert_eq!(bytes[0], 8, "the maximum is 127, so eight bits per value");
+        // First long: values[0]<<56 | values[16]<<48 | ... | values[112],
+        // written little-endian.
+        assert_eq!(
+            &bytes[1..9],
+            &[112u8, 96, 80, 64, 48, 32, 16, 0],
+            "the first byte written must be values[112]"
+        );
+
+        let mut input = ByteArrayDataInput::new(bytes);
+        let mut read = vec![0i64; 128];
+        StoredFieldsInts::read_ints(&mut input, 128, &mut read, 0).unwrap();
+        let expected: Vec<i64> = (0..128).collect();
+        assert_eq!(read, expected);
+    }
+
+    /// Regression test: the reader must use the directory it is handed.
+    ///
+    /// `Lucene90CompressingStoredFieldsFormat.fieldsReader` used to read from
+    /// `segmentInfo.directory` instead of the `Directory` argument. That is
+    /// wrong for a compound-file segment, whose files exist only inside the
+    /// `.cfs`, and it made every Java-written index unreadable: Rucene's
+    /// `SegmentInfoFormat` deliberately attaches an empty placeholder directory
+    /// when it parses a `.si`, precisely because the real files are reached
+    /// through the directory passed to the format.
+    #[test]
+    fn the_reader_uses_the_directory_it_is_given_not_the_one_on_the_segment_info() {
+        let data_dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let field_infos = make_field_infos();
+        let segment_info = make_segment_info(Arc::clone(&data_dir), "_0", 1);
+        let format = Lucene90StoredFieldsFormat::new();
+        {
+            let mut writer = format
+                .fields_writer(data_dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                .unwrap();
+            writer.start_document().unwrap();
+            writer
+                .write_field_string(field_infos.field_info("id").unwrap(), "only")
+                .unwrap();
+            writer.finish_document().unwrap();
+            writer.finish(1).unwrap();
+            writer.close().unwrap();
+        }
+
+        // The segment info now points at an unrelated, empty directory, exactly
+        // as it does after `SegmentInfos.readLatestCommit`.
+        let elsewhere: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let detached = make_segment_info(Arc::clone(&elsewhere), "_0", 1);
+        detached.put_attribute(
+            Lucene90StoredFieldsFormat::MODE_KEY.to_string(),
+            "BEST_SPEED".to_string(),
+        );
+        assert!(
+            elsewhere.list_all().unwrap().is_empty(),
+            "the placeholder directory must really be empty"
+        );
+
+        let reader = format
+            .fields_reader(
+                data_dir.as_ref(),
+                &detached,
+                &field_infos,
+                &*DEFAULT_IO_CONTEXT,
+            )
+            .expect("the reader must read from the directory it is given");
+        let mut visitor = CollectingVisitor::default();
+        reader.document(0, &mut visitor).unwrap();
+        assert_eq!(
+            visitor.fields,
+            vec![("id".to_string(), StoredValue::String("only".to_string()))]
+        );
+        reader.check_integrity().unwrap();
+    }
+
+    /// Regression test: a block whose header parsed but whose body is corrupt
+    /// must not stay cached.
+    ///
+    /// `Lucene90CompressingStoredFieldsReader.BlockState.reset` wraps `doReset`
+    /// and sets `chunkDocs = 0` on failure, so `contains` stops matching and
+    /// the header is decoded again. Without that, the first read reported the
+    /// corruption and every later read of the same block was served from the
+    /// half-decoded state — returning an empty document instead of an error.
+    #[test]
+    fn a_corrupt_chunk_reports_the_same_error_on_every_read() {
+        // Five documents whose stored lengths are all different, so the chunk
+        // header records them one byte each and the sequence can be located
+        // unambiguously in the uncompressed part of the `.fdt`.
+        let values: Vec<String> = (0..5).map(|i| "x".repeat(10 + i)).collect();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let field_infos = make_field_infos();
+        let id_field = field_infos.field_info("id").unwrap();
+        let segment_info = make_segment_info(Arc::clone(&dir), "_0", 5);
+        let format = Lucene90StoredFieldsFormat::new();
+        {
+            let mut writer = format
+                .fields_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                .unwrap();
+            for value in &values {
+                writer.start_document().unwrap();
+                writer.write_field_string(id_field, value).unwrap();
+                writer.finish_document().unwrap();
+            }
+            writer.finish(5).unwrap();
+            writer.close().unwrap();
+        }
+
+        let mut bytes = {
+            let mut input = dir.open_input("_0.fdt", &*DEFAULT_IO_CONTEXT).unwrap();
+            let length = input.length() as usize;
+            let mut buffer = vec![0u8; length];
+            input.read_bytes(&mut buffer, 0, length).unwrap();
+            buffer
+        };
+
+        // `saveInts` writes `08` (eight bits per value) followed by one byte per
+        // document; each stored value is a one-byte field header, a one-byte
+        // length and the characters.
+        let lengths: Vec<u8> = values.iter().map(|v| (v.len() + 2) as u8).collect();
+        let mut needle = vec![8u8];
+        needle.extend_from_slice(&lengths);
+        let position = bytes
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .expect("the per-document lengths must appear verbatim in the chunk header");
+        assert!(
+            bytes[position + 1..]
+                .windows(needle.len())
+                .all(|window| window != needle),
+            "the pattern must be unique, or the corruption would be ambiguous"
+        );
+        // Doc 4 now claims zero bytes while still claiming one stored field,
+        // which is exactly the inconsistency `doReset` validates.
+        let last = position + needle.len() - 1;
+        bytes[last] = 0;
+
+        let corrupt: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        {
+            let mut output = corrupt
+                .create_output("_0.fdt", &*DEFAULT_IO_CONTEXT)
+                .unwrap();
+            output.write_bytes(&bytes, 0, bytes.len()).unwrap();
+            output.close().unwrap();
+        }
+        for name in ["_0.fdx", "_0.fdm"] {
+            let mut input = dir.open_input(name, &*DEFAULT_IO_CONTEXT).unwrap();
+            let length = input.length() as usize;
+            let mut buffer = vec![0u8; length];
+            input.read_bytes(&mut buffer, 0, length).unwrap();
+            let mut output = corrupt.create_output(name, &*DEFAULT_IO_CONTEXT).unwrap();
+            output.write_bytes(&buffer, 0, buffer.len()).unwrap();
+            output.close().unwrap();
+        }
+
+        let reader = format
+            .fields_reader(
+                corrupt.as_ref(),
+                &segment_info,
+                &field_infos,
+                &*DEFAULT_IO_CONTEXT,
+            )
+            .unwrap();
+
+        let mut messages = Vec::new();
+        for attempt in 0..3 {
+            let mut visitor = CollectingVisitor::default();
+            match reader.document(0, &mut visitor) {
+                Ok(()) => panic!(
+                    "read {attempt} of a corrupt block must fail, \
+                     not return {:?}",
+                    visitor.fields
+                ),
+                Err(error) => messages.push(error.to_string()),
+            }
+        }
+        assert_eq!(messages.len(), 3);
+        assert!(
+            messages.iter().all(|message| *message == messages[0]),
+            "every read must report the same corruption: {messages:?}"
+        );
+        assert!(
+            messages[0].contains("num_stored_fields"),
+            "unexpected error: {}",
+            messages[0]
+        );
+    }
+
+    /// Regression test: `close()` must release every resource, not stop at the
+    /// first failure, and must include the fields index.
+    ///
+    /// Equivalent to `IOUtils.close(metaStream, fieldsStream, indexWriter,
+    /// compressor)`. `FieldsIndexWriter` opens the `.fdx` eagerly, so a writer
+    /// that is closed without being finished — the abort path — used to leave
+    /// that handle open.
+    #[test]
+    fn closing_the_writer_releases_every_stream() {
+        let dir = Arc::new(CountingDirectory::new(RamDirectory::new()));
+        let field_infos = make_field_infos();
+        let segment_info = make_segment_info(Arc::clone(&dir) as Arc<dyn Directory>, "_0", 1);
+        let format = Lucene90StoredFieldsFormat::new();
+        let mut writer = format
+            .fields_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+            .unwrap();
+        writer.start_document().unwrap();
+        writer
+            .write_field_string(field_infos.field_info("id").unwrap(), "abandoned")
+            .unwrap();
+        writer.finish_document().unwrap();
+        assert_eq!(dir.opened(), 3, "the .fdm, .fdt and .fdx are all created");
+        assert_eq!(dir.closed(), 0);
+
+        // Abort: close without finishing, exactly as `StoredFieldsConsumer.abort`
+        // does.
+        writer.close().unwrap();
+        assert_eq!(
+            dir.closed(),
+            3,
+            "the fields index must be closed alongside the two streams"
+        );
+    }
+
+    /// A `Directory` that counts how many outputs it handed out and how many
+    /// of them were closed.
+    #[derive(Debug)]
+    struct CountingDirectory {
+        inner: RamDirectory,
+        opened: Arc<std::sync::atomic::AtomicUsize>,
+        closed: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl CountingDirectory {
+        fn new(inner: RamDirectory) -> Self {
+            Self {
+                inner,
+                opened: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                closed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+        fn opened(&self) -> usize {
+            self.opened.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn closed(&self) -> usize {
+            self.closed.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    /// Wraps an `IndexOutput` and records the close.
+    struct CountingOutput {
+        inner: Box<dyn IndexOutput>,
+        closed: Arc<std::sync::atomic::AtomicUsize>,
+        already: bool,
+    }
+
+    impl crate::store::DataOutput for CountingOutput {
+        fn write_byte(&mut self, b: u8) -> Result<()> {
+            self.inner.write_byte(b)
+        }
+        fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
+            self.inner.write_bytes(b, offset, len)
+        }
+    }
+
+    impl fmt::Debug for CountingOutput {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("CountingOutput").finish_non_exhaustive()
+        }
+    }
+
+    impl IndexOutput for CountingOutput {
+        fn resource_description(&self) -> &str {
+            self.inner.resource_description()
+        }
+
+        fn close(&mut self) -> Result<()> {
+            if !self.already {
+                self.already = true;
+                self.closed
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.inner.close()
+        }
+        fn file_pointer(&self) -> i64 {
+            self.inner.file_pointer()
+        }
+        fn checksum(&self) -> Result<i64> {
+            self.inner.checksum()
+        }
+        fn name(&self) -> &str {
+            self.inner.name()
+        }
+    }
+
+    impl Directory for CountingDirectory {
+        fn list_all(&self) -> Result<Vec<String>> {
+            self.inner.list_all()
+        }
+        fn delete_file(&self, name: &str) -> Result<()> {
+            self.inner.delete_file(name)
+        }
+        fn file_length(&self, name: &str) -> Result<i64> {
+            self.inner.file_length(name)
+        }
+        fn create_output(
+            &self,
+            name: &str,
+            context: &dyn IOContext,
+        ) -> Result<Box<dyn IndexOutput>> {
+            self.opened
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Box::new(CountingOutput {
+                inner: self.inner.create_output(name, context)?,
+                closed: Arc::clone(&self.closed),
+                already: false,
+            }))
+        }
+        fn create_temp_output(
+            &self,
+            prefix: &str,
+            suffix: &str,
+            context: &dyn IOContext,
+        ) -> Result<Box<dyn IndexOutput>> {
+            self.inner.create_temp_output(prefix, suffix, context)
+        }
+        fn sync(&self, names: &[String]) -> Result<()> {
+            self.inner.sync(names)
+        }
+        fn sync_metadata(&self) -> Result<()> {
+            self.inner.sync_metadata()
+        }
+        fn rename(&self, source: &str, dest: &str) -> Result<()> {
+            self.inner.rename(source, dest)
+        }
+        fn open_input(
+            &self,
+            name: &str,
+            context: &dyn IOContext,
+        ) -> Result<Box<dyn crate::store::IndexInput>> {
+            self.inner.open_input(name, context)
+        }
+        fn obtain_lock(&self, name: &str) -> Result<Box<dyn crate::store::Lock>> {
+            self.inner.obtain_lock(name)
+        }
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {
+            self.inner.get_pending_deletions()
+        }
+    }
+
+    /// Regression test for the single-byte small-integer form of `ZFloat` and
+    /// `ZDouble`.
+    ///
+    /// `readZFloat`/`readZDouble` decode it as `(b & 0x7f) - 1` in a *signed*
+    /// `int`. The value `-1` is written with header byte `0x80`, so `b & 0x7f`
+    /// is zero and unsigned arithmetic underflows: a debug build panicked and a
+    /// release build only got the right answer by wrapping around.
+    #[test]
+    fn the_small_integer_form_decodes_minus_one() {
+        // -1 is the boundary; the rest of the range and the wide forms are
+        // checked alongside it so the fix cannot narrow the encoding.
+        for value in [-1.0f32, 0.0f32, 1.0f32, 125.0f32, 126.0f32, -2.0f32] {
+            let mut out = crate::store::ByteArrayDataOutput::new();
+            Lucene90CompressingStoredFieldsWriter::write_z_float(&mut out, value).unwrap();
+            let encoded = out.into_inner();
+            if (-1.0..=125.0).contains(&value) && value.fract() == 0.0 {
+                assert_eq!(encoded.len(), 1, "{value} must use the one-byte form");
+            }
+            let mut input = ByteArrayDataInput::new(encoded);
+            let read = Lucene90CompressingStoredFieldsReader::read_z_float(&mut input).unwrap();
+            assert_eq!(read.to_bits(), value.to_bits(), "float {value}");
+        }
+        for value in [-1.0f64, 0.0f64, 1.0f64, 124.0f64, 125.0f64, -2.0f64] {
+            let mut out = crate::store::ByteArrayDataOutput::new();
+            Lucene90CompressingStoredFieldsWriter::write_z_double(&mut out, value).unwrap();
+            let encoded = out.into_inner();
+            if (-1.0..=124.0).contains(&value) && value.fract() == 0.0 {
+                assert_eq!(encoded.len(), 1, "{value} must use the one-byte form");
+            }
+            let mut input = ByteArrayDataInput::new(encoded);
+            let read = Lucene90CompressingStoredFieldsReader::read_z_double(&mut input).unwrap();
+            assert_eq!(read.to_bits(), value.to_bits(), "double {value}");
+        }
+        // The one-byte encoding of -1 really is 0x80, which is what underflows.
+        let mut out = crate::store::ByteArrayDataOutput::new();
+        Lucene90CompressingStoredFieldsWriter::write_z_float(&mut out, -1.0).unwrap();
+        assert_eq!(out.into_inner(), vec![0x80]);
+    }
+
+    /// Regression test: a chunk large enough to be *sliced* must read back.
+    ///
+    /// The writer slices once the buffered bytes reach twice the chunk size and
+    /// compresses each slice independently, framing it with its own
+    /// uncompressed length. Passing the whole chunk's length to the
+    /// decompressor made a framed codec read compressed payload as framing.
+    #[test]
+    fn a_sliced_chunk_round_trips_in_both_modes() {
+        for mode in [Mode::BestSpeed, Mode::BestCompression] {
+            // BEST_SPEED chunks are 80 KiB, BEST_COMPRESSION 480 KiB; three
+            // times the larger guarantees slicing in both.
+            let payload: String = (0..1_500_000 / 12)
+                .map(|i: usize| format!("slice{:06} ", i % 99991))
+                .collect();
+            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let field_infos = make_field_infos();
+            let id_field = field_infos.field_info("id").unwrap();
+            let segment_info = make_segment_info(Arc::clone(&dir), "_0", 3);
+            let format = Lucene90StoredFieldsFormat::with_mode(mode);
+            {
+                let mut writer = format
+                    .fields_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                    .unwrap();
+                writer.start_document().unwrap();
+                writer.write_field_string(id_field, "before").unwrap();
+                writer.finish_document().unwrap();
+                writer.start_document().unwrap();
+                writer.write_field_string(id_field, &payload).unwrap();
+                writer.finish_document().unwrap();
+                writer.start_document().unwrap();
+                writer.write_field_string(id_field, "after").unwrap();
+                writer.finish_document().unwrap();
+                writer.finish(3).unwrap();
+                writer.close().unwrap();
+            }
+
+            for merging in [false, true] {
+                let base = format
+                    .fields_reader(
+                        dir.as_ref(),
+                        &segment_info,
+                        &field_infos,
+                        &*DEFAULT_IO_CONTEXT,
+                    )
+                    .unwrap();
+                let reader = if merging {
+                    base.get_merge_instance()
+                } else {
+                    base
+                };
+                for (doc_id, expected) in [(0i32, "before"), (1, payload.as_str()), (2, "after")] {
+                    let mut visitor = CollectingVisitor::default();
+                    reader.document(doc_id, &mut visitor).unwrap();
+                    assert_eq!(
+                        visitor.fields,
+                        vec![("id".to_string(), StoredValue::String(expected.to_string()))],
+                        "mode={mode} merging={merging} doc={doc_id}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Regression test: the `TLong` scaling step must wrap, as Java's does.
+    ///
+    /// `readTLong` multiplies the decoded value by 1000, 3 600 000 or
+    /// 86 400 000 depending on the header
+    /// (`Lucene90CompressingStoredFieldsReader.java:373-382`). Java does that in
+    /// a `long` and wraps silently, returning a nonsensical timestamp; a
+    /// checked multiply aborts a debug build on bytes Lucene reads without
+    /// complaint. The expected values below are computed from Java's semantics,
+    /// not read off this port's output.
+    #[test]
+    fn the_t_long_scaling_step_wraps_like_java() {
+        /// Encodes the header and zig-zag payload `readTLong` expects.
+        fn encode(encoding: i32, zigzag: i64) -> Vec<u8> {
+            let mut out = crate::store::ByteArrayDataOutput::new();
+            let upper = ((zigzag as u64) >> 5) as i64;
+            let mut header = (encoding as u8) | ((zigzag & 0x1F) as u8);
+            if upper != 0 {
+                header |= 0x20;
+            }
+            out.write_byte(header).unwrap();
+            if upper != 0 {
+                out.write_v_long(upper).unwrap();
+            }
+            out.into_inner()
+        }
+
+        for (encoding, scale) in [
+            (SECOND_ENCODING, SECOND_MS),
+            (HOUR_ENCODING, HOUR_MS),
+            (DAY_ENCODING, DAY_MS),
+        ] {
+            for value in [i64::MAX / 3, i64::MIN / 3, 1 << 60, -(1 << 60)] {
+                let zigzag = BitUtil::zig_zag_encode_long(value);
+                let mut input = ByteArrayDataInput::new(encode(encoding, zigzag));
+                let read = Lucene90CompressingStoredFieldsReader::read_t_long(&mut input)
+                    .expect("a corrupt magnitude is a value, not an error");
+                assert_eq!(
+                    read,
+                    value.wrapping_mul(scale),
+                    "encoding {encoding:#x}, value {value}"
+                );
+            }
+        }
+
+        // And the ordinary values still round-trip through the writer.
+        for value in [0i64, 1, -1, 1_000, 3_600_000, 86_400_000, -86_400_000] {
+            let mut out = crate::store::ByteArrayDataOutput::new();
+            Lucene90CompressingStoredFieldsWriter::write_t_long(&mut out, value).unwrap();
+            let mut input = ByteArrayDataInput::new(out.into_inner());
+            assert_eq!(
+                Lucene90CompressingStoredFieldsReader::read_t_long(&mut input).unwrap(),
+                value
+            );
+        }
+    }
+
+    /// Regression test: non-monotonic chunk offsets must be reported, not
+    /// turned into a wild slice index.
+    ///
+    /// The per-document offsets are a running sum of the `lengths` array, which
+    /// `StoredFieldsInts` can write with 32 bits per value; a corrupt entry is
+    /// then a negative number and the sum goes backwards. Java computes the
+    /// length as `Math.toIntExact(offsets[index + 1]) - offset`, so a negative
+    /// length trips its array bounds and raises an exception. Casting the
+    /// difference to `usize` produced a length near 2^64 and a panicking slice
+    /// instead.
+    ///
+    /// The block state is built directly rather than through a corrupted file:
+    /// the reader condemns a block as soon as any earlier check fails, so a
+    /// file-level corruption reaches this particular guard only by accident.
+    #[test]
+    fn a_chunk_whose_offsets_go_backwards_is_reported() {
+        let mut state = BlockState::new();
+        state.doc_base = 0;
+        state.chunk_docs = 2;
+        state.sliced = false;
+        // Document 1 would span [10, 5): a negative length.
+        state.offsets = vec![0, 10, 5];
+        state.num_stored_fields = vec![1, 1];
+        state.start_pointer = 0;
+        state.bytes = vec![0u8; 32];
+
+        let mut decompressor = CompressionMode::LZ4_WITH_PRESET_DICT.new_decompressor();
+        let error = match state.document(1, None, 1024, &mut *decompressor, true) {
+            Ok(_) => panic!("a document cannot have a negative length"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, LuceneError::CorruptIndex(_)), "{error:?}");
+
+        // An offset past the range an `int` can hold is the other half of the
+        // same guard: Java's `Math.toIntExact` raises `ArithmeticException`.
+        let mut huge = BlockState::new();
+        huge.doc_base = 0;
+        huge.chunk_docs = 1;
+        huge.offsets = vec![0, i64::from(i32::MAX) + 1];
+        huge.num_stored_fields = vec![1];
+        huge.bytes = vec![0u8; 32];
+        let error = match huge.document(0, None, 1024, &mut *decompressor, true) {
+            Ok(_) => panic!("an offset past int range is corrupt"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, LuceneError::CorruptIndex(_)), "{error:?}");
+
+        // And a well-formed block still reads.
+        let mut good = BlockState::new();
+        good.doc_base = 0;
+        good.chunk_docs = 1;
+        good.offsets = vec![0, 4];
+        good.num_stored_fields = vec![0];
+        good.bytes = vec![1u8, 2, 3, 4];
+        assert!(
+            good.document(0, None, 1024, &mut *decompressor, true)
+                .is_ok(),
+            "a valid block must still read"
+        );
     }
 
     #[test]

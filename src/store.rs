@@ -6,8 +6,43 @@
 
 #![deny(unsafe_code)]
 
+pub mod exceptions;
+pub mod lock_stress_test;
+pub mod lock_validating_directory_wrapper;
+pub mod lock_verify_server;
+#[cfg(feature = "mmap")]
+pub mod memory_segment;
+#[cfg(feature = "mmap")]
+pub mod memory_segment_index_input;
+#[cfg(feature = "mmap")]
+pub mod memory_segment_index_input_provider;
 #[cfg(feature = "mmap")]
 pub mod mmap;
+#[cfg(feature = "mmap")]
+pub mod native_access;
+pub mod rate_limited_index_output;
+pub mod sleeping_lock_wrapper;
+pub mod verifying_lock_factory;
+
+pub use exceptions::{
+    AlreadyClosedException, LockObtainFailedException, LockReleaseFailedException,
+};
+pub use lock_stress_test::LockStressTest;
+pub use lock_validating_directory_wrapper::LockValidatingDirectoryWrapper;
+pub use lock_verify_server::LockVerifyServer;
+#[cfg(feature = "mmap")]
+pub use memory_segment::{Arena, MemorySegment, RefCountedSharedArena, Scope};
+#[cfg(feature = "mmap")]
+pub use memory_segment_index_input::{
+    MemorySegmentAccessInput, MemorySegmentIndexInput, ToReadAdvice,
+};
+#[cfg(feature = "mmap")]
+pub use memory_segment_index_input_provider::MemorySegmentIndexInputProvider;
+#[cfg(feature = "mmap")]
+pub use native_access::{NativeAccess, PosixNativeAccess};
+pub use rate_limited_index_output::RateLimitedIndexOutput;
+pub use sleeping_lock_wrapper::SleepingLockWrapper;
+pub use verifying_lock_factory::VerifyingLockFactory;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -111,11 +146,19 @@ pub trait DataInput {
     fn read_v_int(&mut self) -> Result<i32> {
         let mut b = self.read_byte()? as i32;
         let mut i = b & 0x7F;
-        let mut shift = 7;
+        let mut shift = 0u32;
         while (b & 0x80) != 0 {
             b = self.read_byte()? as i32;
-            i |= (b & 0x7F) << shift;
             shift += 7;
+            // Java's loop is unbounded too (`DataInput.java:127-135`) and the
+            // JVM masks the shift count to five bits, so a malformed varint
+            // yields a garbage value rather than an error. `wrapping_shl` is
+            // that same masked shift; a plain `<<` would abort a debug build on
+            // bytes that Lucene decodes without complaint. Termination is
+            // bounded by the input either way: the loop only continues while
+            // the continuation bit is set, and a truncated stream ends in an
+            // I/O error.
+            i |= (b & 0x7F).wrapping_shl(shift);
         }
         Ok(i)
     }
@@ -138,11 +181,12 @@ pub trait DataInput {
     fn read_v_long(&mut self) -> Result<i64> {
         let mut b = self.read_byte()? as i64;
         let mut i = b & 0x7F;
-        let mut shift = 7;
+        let mut shift = 0u32;
         while (b & 0x80) != 0 {
             b = self.read_byte()? as i64;
-            i |= (b & 0x7F_i64) << shift;
             shift += 7;
+            // See `read_v_int`: Java masks the shift count, here to six bits.
+            i |= (b & 0x7F_i64).wrapping_shl(shift);
         }
         Ok(i)
     }
@@ -163,19 +207,58 @@ pub trait DataInput {
     }
 
     /// Reads a string written as a VInt length followed by UTF-8 bytes.
+    ///
+    /// Equivalent to `DataInput.readString()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::CorruptIndex`] when the length is negative: Java
+    /// reaches `new byte[length]` with it and throws
+    /// `NegativeArraySizeException` (`DataInput.java:230-234`), which is a
+    /// failure, not a value, so this port reports one too.
+    ///
+    /// Otherwise propagates the end of file the underlying input raises when
+    /// the length is longer than what is left to read. Java allocates the
+    /// whole length up front, so it fails the same way for a length that fits
+    /// in memory but not in the file, and throws `OutOfMemoryError` for one
+    /// that does not fit at all. This port never allocates more than the input
+    /// actually delivers, so it reports the end of file in both cases. The
+    /// chunk below is an I/O buffer, not a bound on what is accepted: no
+    /// length Java could read is refused here.
     fn read_string(&mut self) -> Result<String> {
-        let length = self.read_v_int()? as usize;
-        let mut bytes = vec![0u8; length];
-        self.read_bytes(&mut bytes, 0, length)?;
+        /// How much is allocated before any of it has been read.
+        const CHUNK: usize = 16 * 1024;
+        let length = self.read_v_int()?;
+        if length < 0 {
+            return Err(LuceneError::CorruptIndex(format!(
+                "invalid string length: {length}"
+            )));
+        }
+        let mut remaining = length as usize;
+        let mut bytes: Vec<u8> = Vec::new();
+        while remaining > 0 {
+            let take = remaining.min(CHUNK);
+            let filled = bytes.len();
+            bytes.resize(filled + take, 0u8);
+            self.read_bytes(&mut bytes, filled, take)?;
+            remaining -= take;
+        }
         String::from_utf8(bytes)
             .map_err(|e| LuceneError::IllegalArgument(format!("invalid UTF-8 reading string: {e}")))
     }
 
     /// Reads a `HashMap<String, String>` previously written with
     /// [`DataOutput::write_map_of_strings`].
+    ///
+    /// Equivalent to `DataInput.readMapOfStrings()`, which sizes nothing from
+    /// the count — it builds a plain `HashMap`/`TreeMap` and lets the entries
+    /// grow it (`DataInput.java:261-276`) — and whose loop runs zero times for
+    /// a negative count, returning an empty map. Reserving the count instead
+    /// would allocate whatever a corrupt file names before a single entry has
+    /// been read.
     fn read_map_of_strings(&mut self) -> Result<HashMap<String, String>> {
-        let count = self.read_v_int()? as usize;
-        let mut map = HashMap::with_capacity(count);
+        let count = self.read_v_int()?;
+        let mut map = HashMap::new();
         for _ in 0..count {
             let key = self.read_string()?;
             let value = self.read_string()?;
@@ -186,9 +269,13 @@ pub trait DataInput {
 
     /// Reads a `HashSet<String>` previously written with
     /// [`DataOutput::write_set_of_strings`].
+    ///
+    /// Equivalent to `DataInput.readSetOfStrings()`; see
+    /// [`read_map_of_strings`](Self::read_map_of_strings) for why neither the
+    /// capacity nor the loop trusts the count.
     fn read_set_of_strings(&mut self) -> Result<HashSet<String>> {
-        let count = self.read_v_int()? as usize;
-        let mut set = HashSet::with_capacity(count);
+        let count = self.read_v_int()?;
+        let mut set = HashSet::new();
         for _ in 0..count {
             set.insert(self.read_string()?);
         }
@@ -1678,6 +1765,18 @@ impl FilterIndexOutput {
         self.inner.as_ref()
     }
 
+    /// Returns the wrapped output for mutation.
+    ///
+    /// Java exposes the delegate as the `protected final IndexOutput out`
+    /// field, which subclasses such as
+    /// [`RateLimitedIndexOutput`](crate::store::RateLimitedIndexOutput) write
+    /// through directly. Rust has no protected fields, so this accessor takes
+    /// its place; `get_delegate` remains the read-only equivalent of
+    /// `getDelegate()`.
+    pub fn get_delegate_mut(&mut self) -> &mut dyn IndexOutput {
+        self.inner.as_mut()
+    }
+
     /// Unwraps nested `FilterIndexOutput` wrappers and returns the first
     /// non-filter output.
     ///
@@ -2333,7 +2432,14 @@ pub trait FileOpenHint: AsAny + std::fmt::Debug + Send + Sync {
     fn same_type(&self, other: &dyn FileOpenHint) -> bool;
 }
 
-macro_rules! impl_singleton_hint {
+/// Implements [`FileOpenHint`] for a hint type whose identity, for the
+/// "at most one hint of each type" rule, is its own concrete type.
+///
+/// This is the Rust counterpart of Java grouping hints by
+/// `FileOpenHint::getClass()` in `DefaultIOContext`: because every Lucene hint
+/// is an `enum`, all constants of one hint enum share a class and therefore
+/// count as the same type.
+macro_rules! impl_file_open_hint {
     ($name:ident) => {
         impl FileOpenHint for $name {
             fn same_type(&self, other: &dyn FileOpenHint) -> bool {
@@ -2343,35 +2449,26 @@ macro_rules! impl_singleton_hint {
     };
 }
 
-/// Hint that the file access pattern is completely random.
+/// Hint on the data access pattern likely to be used.
 ///
-/// Equivalent to `org.apache.lucene.store.DataAccessHint.RANDOM`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct RandomHint;
-
-impl_singleton_hint!(RandomHint);
-
-impl RandomHint {
-    /// Returns the singleton instance.
-    pub fn instance() -> Self {
-        Self
-    }
+/// Equivalent to `org.apache.lucene.store.DataAccessHint`.
+///
+/// Both variants are the *same* hint type, so an [`IOContext`] may carry only
+/// one of them: supplying both to [`DefaultIOContext::new`] is rejected, just
+/// as Lucene rejects two constants of one hint enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DataAccessHint {
+    /// The access pattern is completely random.
+    ///
+    /// Equivalent to `DataAccessHint.RANDOM`.
+    Random,
+    /// The access pattern is only sequential (forwards-only).
+    ///
+    /// Equivalent to `DataAccessHint.SEQUENTIAL`.
+    Sequential,
 }
 
-/// Hint that the file access pattern is only sequential.
-///
-/// Equivalent to `org.apache.lucene.store.DataAccessHint.SEQUENTIAL`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct SequentialHint;
-
-impl_singleton_hint!(SequentialHint);
-
-impl SequentialHint {
-    /// Returns the singleton instance.
-    pub fn instance() -> Self {
-        Self
-    }
-}
+impl_file_open_hint!(DataAccessHint);
 
 /// Hint that the file will only be read once, sequentially.
 ///
@@ -2379,7 +2476,7 @@ impl SequentialHint {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ReadOnceHint;
 
-impl_singleton_hint!(ReadOnceHint);
+impl_file_open_hint!(ReadOnceHint);
 
 impl ReadOnceHint {
     /// Returns the singleton instance.
@@ -2394,7 +2491,7 @@ impl ReadOnceHint {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PreloadHint;
 
-impl_singleton_hint!(PreloadHint);
+impl_file_open_hint!(PreloadHint);
 
 impl PreloadHint {
     /// Returns the singleton instance.
@@ -2403,65 +2500,49 @@ impl PreloadHint {
     }
 }
 
-/// Hint that the file contains index data.
+/// Hint on the type of file being opened.
 ///
-/// Equivalent to `org.apache.lucene.store.FileTypeHint.INDEX`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct IndexFileHint;
-
-impl_singleton_hint!(IndexFileHint);
-
-impl IndexFileHint {
-    /// Returns the singleton instance.
-    pub fn instance() -> Self {
-        Self
-    }
+/// Equivalent to `org.apache.lucene.store.FileTypeHint`.
+///
+/// There is no variant for metadata files: those are opened with
+/// [`Directory::open_checksum_input`], which takes no hints.
+///
+/// Both variants are the *same* hint type, so an [`IOContext`] may carry only
+/// one of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FileTypeHint {
+    /// The file contains indexes. It is small (~1% or less of the data size)
+    /// and generally fits in the page cache.
+    ///
+    /// Equivalent to `FileTypeHint.INDEX`.
+    Index,
+    /// The file contains field data.
+    ///
+    /// Equivalent to `FileTypeHint.DATA`.
+    Data,
 }
 
-/// Hint that the file contains field data.
+impl_file_open_hint!(FileTypeHint);
+
+/// Hint on the type of data stored in the file.
 ///
-/// Equivalent to `org.apache.lucene.store.FileTypeHint.DATA`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct DataFileHint;
-
-impl_singleton_hint!(DataFileHint);
-
-impl DataFileHint {
-    /// Returns the singleton instance.
-    pub fn instance() -> Self {
-        Self
-    }
+/// Equivalent to `org.apache.lucene.store.FileDataHint`.
+///
+/// Both variants are the *same* hint type, so an [`IOContext`] may carry only
+/// one of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FileDataHint {
+    /// The file contains postings data.
+    ///
+    /// Equivalent to `FileDataHint.POSTINGS`.
+    Postings,
+    /// The file contains vector data for kNN search.
+    ///
+    /// Equivalent to `FileDataHint.KNN_VECTORS`.
+    KnnVectors,
 }
 
-/// Hint that the file contains postings data.
-///
-/// Equivalent to `org.apache.lucene.store.FileDataHint.POSTINGS`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct PostingsHint;
-
-impl_singleton_hint!(PostingsHint);
-
-impl PostingsHint {
-    /// Returns the singleton instance.
-    pub fn instance() -> Self {
-        Self
-    }
-}
-
-/// Hint that the file contains vector data for kNN search.
-///
-/// Equivalent to `org.apache.lucene.store.FileDataHint.KNN_VECTORS`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct KnnVectorsHint;
-
-impl_singleton_hint!(KnnVectorsHint);
-
-impl KnnVectorsHint {
-    /// Returns the singleton instance.
-    pub fn instance() -> Self {
-        Self
-    }
-}
+impl_file_open_hint!(FileDataHint);
 
 /// Metadata associated with a merge [`Context`].
 ///
@@ -2611,7 +2692,7 @@ pub static DEFAULT_IO_CONTEXT: std::sync::LazyLock<DefaultIOContext> =
 pub static READONCE_IO_CONTEXT: std::sync::LazyLock<DefaultIOContext> =
     std::sync::LazyLock::new(|| {
         DefaultIOContext::new(vec![
-            Arc::new(SequentialHint::instance()),
+            Arc::new(DataAccessHint::Sequential),
             Arc::new(ReadOnceHint::instance()),
         ])
         .expect("READONCE hints are unique")
@@ -9009,7 +9090,7 @@ mod tests {
         assert!(merge.flush_info().is_none());
         assert!(merge.hints().is_empty());
         // Merge context ignores hint changes.
-        let merge_with_hint = merge.with_hints(&[Arc::new(RandomHint::instance())]);
+        let merge_with_hint = merge.with_hints(&[Arc::new(DataAccessHint::Random)]);
         assert_eq!(merge_with_hint.context(), Context::Merge);
         assert!(merge_with_hint.hints().is_empty());
 
@@ -9018,7 +9099,7 @@ mod tests {
         assert_eq!(flush.flush_info().unwrap().num_docs, 10);
         assert!(flush.merge_info().is_none());
         // Flush context ignores hint changes too.
-        let flush_with_hint = flush.with_hints(&[Arc::new(SequentialHint::instance())]);
+        let flush_with_hint = flush.with_hints(&[Arc::new(DataAccessHint::Sequential)]);
         assert_eq!(flush_with_hint.context(), Context::Flush);
         assert!(flush_with_hint.hints().is_empty());
     }
@@ -9027,14 +9108,22 @@ mod tests {
     #[test]
     fn default_io_context_rejects_duplicate_hints() {
         let hints: Vec<Arc<dyn FileOpenHint>> = vec![
-            Arc::new(RandomHint::instance()),
-            Arc::new(RandomHint::instance()),
+            Arc::new(DataAccessHint::Random),
+            Arc::new(DataAccessHint::Random),
         ];
         assert!(DefaultIOContext::new(hints).is_err());
 
+        // `RANDOM` and `SEQUENTIAL` are two constants of the same hint enum, so
+        // Lucene's `getClass()` grouping rejects them together as well.
+        let both: Vec<Arc<dyn FileOpenHint>> = vec![
+            Arc::new(DataAccessHint::Random),
+            Arc::new(DataAccessHint::Sequential),
+        ];
+        assert!(DefaultIOContext::new(both).is_err());
+
         let ok = DefaultIOContext::new(vec![
-            Arc::new(RandomHint::instance()),
-            Arc::new(SequentialHint::instance()),
+            Arc::new(DataAccessHint::Random),
+            Arc::new(ReadOnceHint::instance()) as Arc<dyn FileOpenHint>,
         ])
         .unwrap();
         assert_eq!(ok.hints().len(), 2);
@@ -10221,5 +10310,118 @@ mod tests {
         for i in 0..2000i32 {
             assert_eq!(target_input.read_int().unwrap(), i);
         }
+    }
+    /// Regression test: a malformed varint must not abort the process.
+    ///
+    /// Lucene's `readVInt`/`readVLong` loop until a byte without the
+    /// continuation bit (`DataInput.java:127-135`) and the JVM masks the shift
+    /// count, so a stream of continuation bytes yields a garbage value and then
+    /// an `EOFException`. This port shifted without masking, so a debug build
+    /// aborted with "attempt to shift left with overflow" on bytes Lucene reads
+    /// without complaint — reachable from any corrupt index file, since every
+    /// codec length and pointer is a varint.
+    #[test]
+    fn a_malformed_varint_yields_a_value_or_an_error_but_never_a_panic() {
+        // Ten continuation bytes then a terminator: far past the five bytes a
+        // well-formed vInt can occupy.
+        let mut bytes = vec![0xFFu8; 10];
+        bytes.push(0x00);
+        let mut input = ByteArrayDataInput::new(bytes.clone());
+        let _ = input.read_v_int().expect("a garbage value, not a panic");
+        let mut input = ByteArrayDataInput::new(bytes.clone());
+        let _ = input.read_v_long().expect("a garbage value, not a panic");
+
+        // Unterminated: the loop must end at the end of the input.
+        let mut input = ByteArrayDataInput::new(vec![0xFFu8; 32]);
+        assert!(input.read_v_int().is_err(), "a truncated vInt must error");
+        let mut input = ByteArrayDataInput::new(vec![0xFFu8; 32]);
+        assert!(input.read_v_long().is_err(), "a truncated vLong must error");
+
+        // And well-formed values still round-trip, including the widest ones.
+        for value in [0i32, 1, 127, 128, i32::MAX, -1, i32::MIN] {
+            let mut out = ByteArrayDataOutput::new();
+            out.write_v_int(value).unwrap();
+            let mut input = ByteArrayDataInput::new(out.into_inner());
+            assert_eq!(input.read_v_int().unwrap(), value, "vInt {value}");
+        }
+        for value in [0i64, 1, 127, 128, i64::MAX] {
+            let mut out = ByteArrayDataOutput::new();
+            out.write_v_long(value).unwrap();
+            let mut input = ByteArrayDataInput::new(out.into_inner());
+            assert_eq!(input.read_v_long().unwrap(), value, "vLong {value}");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: lengths and counts read off disk must not size an allocation
+    // -----------------------------------------------------------------------
+
+    /// Encodes `value` the way `DataOutput.writeVInt` does, including the
+    /// five-byte form a negative value takes.
+    fn v_int(value: i32) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut i = value as u32;
+        while (i & !0x7f) != 0 {
+            out.push(((i & 0x7f) | 0x80) as u8);
+            i >>= 7;
+        }
+        out.push(i as u8);
+        out
+    }
+
+    #[test]
+    fn a_negative_string_length_is_refused_not_allocated() {
+        // Java reaches `new byte[length]` with it and throws
+        // `NegativeArraySizeException` (`DataInput.java:230-234`). Before this
+        // was fixed the cast to `usize` turned -1 into 2^64-1 and the
+        // allocation aborted the process.
+        for length in [-1i32, -2, i32::MIN] {
+            let mut input = ByteArrayDataInput::new(v_int(length));
+            let error = input
+                .read_string()
+                .expect_err("a negative length is not a string");
+            assert!(
+                matches!(error, LuceneError::CorruptIndex(_)),
+                "length={length}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_over_long_string_length_ends_at_the_end_of_file() {
+        // A length far larger than the input must fail as end-of-file after
+        // allocating only what the input could deliver, never by trying to
+        // reserve the length itself.
+        let mut bytes = v_int(i32::MAX);
+        bytes.extend_from_slice(b"abc");
+        let mut input = ByteArrayDataInput::new(bytes);
+        assert!(
+            input.read_string().is_err(),
+            "a length the file cannot back must fail"
+        );
+    }
+
+    #[test]
+    fn a_negative_map_or_set_count_reads_nothing() {
+        // `DataInput.readMapOfStrings` and `readSetOfStrings` loop
+        // `for (int i = 0; i < count; i++)`, which runs zero times for a
+        // negative count and returns an empty collection
+        // (`DataInput.java:261-296`). Before this was fixed the cast to
+        // `usize` turned the count into 2^64-1 and `with_capacity` aborted.
+        let mut input = ByteArrayDataInput::new(v_int(-1));
+        assert!(input.read_map_of_strings().expect("empty map").is_empty());
+        let mut input = ByteArrayDataInput::new(v_int(-7));
+        assert!(input.read_set_of_strings().expect("empty set").is_empty());
+    }
+
+    #[test]
+    fn strings_longer_than_one_read_chunk_round_trip() {
+        // The chunked read must reassemble a string that spans several chunks
+        // exactly, or every long field name in a `.fnm` would come back cut.
+        let text: String = std::iter::repeat_n('a', 40_000).collect();
+        let mut out = ByteArrayDataOutput::new();
+        out.write_string(&text).expect("write");
+        let mut input = ByteArrayDataInput::new(out.into_inner());
+        assert_eq!(input.read_string().expect("read"), text);
     }
 }

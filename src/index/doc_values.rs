@@ -2,7 +2,9 @@
 //!
 //! Equivalent to `org.apache.lucene.index.NumericDocValues`, `BinaryDocValues`,
 //! `SortedDocValues`, `SortedNumericDocValues`, `SortedSetDocValues`,
-//! `DocValuesSkipper`, and the `DocValues` utility helper.
+//! `DocValuesSkipper`, the `DocValues` utility helper, the filter adapters,
+//! `EmptyDocValuesProducer`, the singleton wrappers, `OrdinalMap`, and the
+//! `SortedDocValuesTermsEnum` / `SortedSetDocValuesTermsEnum` term iterators.
 //!
 //! The doc-value iterators extend [`DocIdSetIterator`] and add an
 //! `advance_exact` positioning method. Value accessors follow the Java
@@ -13,9 +15,20 @@
 
 use std::cmp::Ordering;
 
+use crate::codecs::doc_values::DocValuesProducer;
+use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, Result};
+use std::fmt::Debug;
+
+use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
+use crate::index::terms::{OrdTermState, SeekStatus, TermState, TermsEnum};
+use crate::index::terms_enum_index::{TermsEnumIndex, TermsEnumIndexState};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
-use crate::util::{BytesRef, FixedBitSet};
+use crate::util::attribute::AttributeSource;
+use crate::util::extra::{
+    IdentityLongValues, LongValues, PriorityQueue, PriorityQueueComparator, ZeroesLongValues,
+};
+use crate::util::{BytesRef, BytesRefBuilder, FixedBitSet};
 
 // -----------------------------------------------------------------------------
 // Doc-values iterator base trait
@@ -965,6 +978,891 @@ impl<T: NumericDocValues + ?Sized> NumericDocValues for Box<T> {
 }
 
 // -----------------------------------------------------------------------------
+// Filter adapters
+// -----------------------------------------------------------------------------
+
+/// Delegates all methods to a wrapped [`NumericDocValues`].
+///
+/// Equivalent to `org.apache.lucene.index.FilterNumericDocValues`.
+pub struct FilterNumericDocValues {
+    inner: Box<dyn NumericDocValues>,
+}
+
+impl FilterNumericDocValues {
+    /// Creates a filter wrapping the provided numeric doc values.
+    pub fn new(inner: Box<dyn NumericDocValues>) -> Self {
+        Self { inner }
+    }
+
+    /// Returns the wrapped numeric doc values.
+    pub fn get_inner(&self) -> &dyn NumericDocValues {
+        self.inner.as_ref()
+    }
+}
+
+impl DocIdSetIterator for FilterNumericDocValues {
+    fn doc_id(&self) -> i32 {
+        self.inner.doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.inner.next_doc()
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.inner.advance(target)
+    }
+
+    fn cost(&self) -> i64 {
+        self.inner.cost()
+    }
+
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        self.inner.into_bit_set(up_to, bit_set, offset)
+    }
+}
+
+impl DocValuesIterator for FilterNumericDocValues {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        self.inner.advance_exact(target)
+    }
+}
+
+impl NumericDocValues for FilterNumericDocValues {
+    fn long_value(&self) -> Result<i64> {
+        self.inner.long_value()
+    }
+}
+
+/// Delegates all methods to a wrapped [`BinaryDocValues`].
+///
+/// Equivalent to `org.apache.lucene.index.FilterBinaryDocValues`.
+pub struct FilterBinaryDocValues {
+    inner: Box<dyn BinaryDocValues>,
+}
+
+impl FilterBinaryDocValues {
+    /// Creates a filter wrapping the provided binary doc values.
+    pub fn new(inner: Box<dyn BinaryDocValues>) -> Self {
+        Self { inner }
+    }
+
+    /// Returns the wrapped binary doc values.
+    pub fn get_inner(&self) -> &dyn BinaryDocValues {
+        self.inner.as_ref()
+    }
+}
+
+impl DocIdSetIterator for FilterBinaryDocValues {
+    fn doc_id(&self) -> i32 {
+        self.inner.doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.inner.next_doc()
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.inner.advance(target)
+    }
+
+    fn cost(&self) -> i64 {
+        self.inner.cost()
+    }
+
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        self.inner.into_bit_set(up_to, bit_set, offset)
+    }
+}
+
+impl DocValuesIterator for FilterBinaryDocValues {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        self.inner.advance_exact(target)
+    }
+}
+
+impl BinaryDocValues for FilterBinaryDocValues {
+    fn binary_value(&self) -> Result<BytesRef> {
+        self.inner.binary_value()
+    }
+}
+
+/// Delegates all methods to a wrapped [`SortedDocValues`].
+///
+/// Equivalent to `org.apache.lucene.index.FilterSortedDocValues`.
+pub struct FilterSortedDocValues {
+    inner: Box<dyn SortedDocValues>,
+}
+
+impl FilterSortedDocValues {
+    /// Creates a filter wrapping the provided sorted doc values.
+    pub fn new(inner: Box<dyn SortedDocValues>) -> Self {
+        Self { inner }
+    }
+
+    /// Returns the wrapped sorted doc values.
+    pub fn get_inner(&self) -> &dyn SortedDocValues {
+        self.inner.as_ref()
+    }
+}
+
+impl DocIdSetIterator for FilterSortedDocValues {
+    fn doc_id(&self) -> i32 {
+        self.inner.doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.inner.next_doc()
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.inner.advance(target)
+    }
+
+    fn cost(&self) -> i64 {
+        self.inner.cost()
+    }
+
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        self.inner.into_bit_set(up_to, bit_set, offset)
+    }
+}
+
+impl DocValuesIterator for FilterSortedDocValues {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        self.inner.advance_exact(target)
+    }
+}
+
+impl SortedDocValues for FilterSortedDocValues {
+    fn ord_value(&self) -> Result<i32> {
+        self.inner.ord_value()
+    }
+
+    fn get_value_count(&self) -> Result<i32> {
+        self.inner.get_value_count()
+    }
+
+    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+        self.inner.lookup_ord(ord)
+    }
+
+    fn lookup_term(&self, key: &BytesRef) -> Result<i32> {
+        self.inner.lookup_term(key)
+    }
+}
+
+/// Delegates all methods to a wrapped [`SortedNumericDocValues`].
+///
+/// Equivalent to `org.apache.lucene.index.FilterSortedNumericDocValues`.
+pub struct FilterSortedNumericDocValues {
+    inner: Box<dyn SortedNumericDocValues>,
+}
+
+impl FilterSortedNumericDocValues {
+    /// Creates a filter wrapping the provided sorted-numeric doc values.
+    pub fn new(inner: Box<dyn SortedNumericDocValues>) -> Self {
+        Self { inner }
+    }
+
+    /// Returns the wrapped sorted-numeric doc values.
+    pub fn get_inner(&self) -> &dyn SortedNumericDocValues {
+        self.inner.as_ref()
+    }
+}
+
+impl DocIdSetIterator for FilterSortedNumericDocValues {
+    fn doc_id(&self) -> i32 {
+        self.inner.doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.inner.next_doc()
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.inner.advance(target)
+    }
+
+    fn cost(&self) -> i64 {
+        self.inner.cost()
+    }
+
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        self.inner.into_bit_set(up_to, bit_set, offset)
+    }
+}
+
+impl DocValuesIterator for FilterSortedNumericDocValues {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        self.inner.advance_exact(target)
+    }
+}
+
+impl SortedNumericDocValues for FilterSortedNumericDocValues {
+    fn next_value(&mut self) -> Result<i64> {
+        self.inner.next_value()
+    }
+
+    fn doc_value_count(&self) -> Result<i32> {
+        self.inner.doc_value_count()
+    }
+}
+
+/// Delegates all methods to a wrapped [`SortedSetDocValues`].
+///
+/// Equivalent to `org.apache.lucene.index.FilterSortedSetDocValues`.
+pub struct FilterSortedSetDocValues {
+    inner: Box<dyn SortedSetDocValues>,
+}
+
+impl FilterSortedSetDocValues {
+    /// Creates a filter wrapping the provided sorted-set doc values.
+    pub fn new(inner: Box<dyn SortedSetDocValues>) -> Self {
+        Self { inner }
+    }
+
+    /// Returns the wrapped sorted-set doc values.
+    pub fn get_inner(&self) -> &dyn SortedSetDocValues {
+        self.inner.as_ref()
+    }
+}
+
+impl DocIdSetIterator for FilterSortedSetDocValues {
+    fn doc_id(&self) -> i32 {
+        self.inner.doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.inner.next_doc()
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.inner.advance(target)
+    }
+
+    fn cost(&self) -> i64 {
+        self.inner.cost()
+    }
+
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        self.inner.into_bit_set(up_to, bit_set, offset)
+    }
+}
+
+impl DocValuesIterator for FilterSortedSetDocValues {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        self.inner.advance_exact(target)
+    }
+}
+
+impl SortedSetDocValues for FilterSortedSetDocValues {
+    fn next_ord(&mut self) -> Result<i64> {
+        self.inner.next_ord()
+    }
+
+    fn doc_value_count(&self) -> Result<i32> {
+        self.inner.doc_value_count()
+    }
+
+    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+        self.inner.lookup_ord(ord)
+    }
+
+    fn get_value_count(&self) -> Result<i64> {
+        self.inner.get_value_count()
+    }
+
+    fn lookup_term(&self, key: &BytesRef) -> Result<i64> {
+        self.inner.lookup_term(key)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Empty doc-values producer
+// -----------------------------------------------------------------------------
+
+/// Abstract base class implementing a [`DocValuesProducer`] that has no doc values.
+///
+/// Equivalent to `org.apache.lucene.index.EmptyDocValuesProducer`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct EmptyDocValuesProducer;
+
+impl DocValuesProducer for EmptyDocValuesProducer {
+    fn get_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+        Ok(Box::new(EmptyNumericDocValues::new()))
+    }
+
+    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
+        Ok(Box::new(EmptyBinaryDocValues::new()))
+    }
+
+    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
+        Ok(Box::new(EmptySortedDocValues::new()))
+    }
+
+    fn get_sorted_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
+        Ok(Box::new(EmptySortedNumericDocValues::new()))
+    }
+
+    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
+        Ok(Box::new(EmptySortedSetDocValues::new()))
+    }
+
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
+        Ok(Box::new(EmptyDocValuesSkipper))
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
+        Ok(Box::new(*self))
+    }
+
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Ordinal map
+// -----------------------------------------------------------------------------
+
+/// Maps per-segment ordinals to/from global ordinal space.
+///
+/// Equivalent to `org.apache.lucene.index.OrdinalMap`.
+///
+/// This is a costly operation that merge-sorts all terms. It is better to operate
+/// in segment-private ordinal space when possible.
+pub struct OrdinalMap {
+    value_count: i64,
+    global_ord_deltas: Box<dyn LongValues>,
+    first_segments: Box<dyn LongValues>,
+    segment_to_global_ords: Vec<Box<dyn LongValues>>,
+    segment_map: SegmentMap,
+}
+
+impl Debug for OrdinalMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrdinalMap")
+            .field("value_count", &self.value_count)
+            .field("segment_map", &self.segment_map)
+            .field("num_segments", &self.segment_to_global_ords.len())
+            .finish()
+    }
+}
+
+impl OrdinalMap {
+    /// Build an ordinal map using the value counts of each [`SortedDocValues`]
+    /// instance as weights.
+    ///
+    /// Equivalent to `OrdinalMap.build(IndexReader.CacheKey, SortedDocValues[], float)`.
+    pub fn build_sorted(
+        values: Vec<Box<dyn SortedDocValues>>,
+        acceptable_overhead_ratio: f32,
+    ) -> Result<Self> {
+        let mut subs: Vec<Box<dyn TermsEnum>> = Vec::with_capacity(values.len());
+        let mut weights = Vec::with_capacity(values.len());
+        for dv in values {
+            let weight = dv.get_value_count()? as i64;
+            subs.push(SortedDocValuesTermsEnum::new(dv));
+            weights.push(weight);
+        }
+        Self::build(subs, &weights, acceptable_overhead_ratio)
+    }
+
+    /// Build an ordinal map using the value counts of each [`SortedSetDocValues`]
+    /// instance as weights.
+    ///
+    /// Equivalent to `OrdinalMap.build(IndexReader.CacheKey, SortedSetDocValues[], float)`.
+    pub fn build_sorted_set(
+        values: Vec<Box<dyn SortedSetDocValues>>,
+        acceptable_overhead_ratio: f32,
+    ) -> Result<Self> {
+        let mut subs: Vec<Box<dyn TermsEnum>> = Vec::with_capacity(values.len());
+        let mut weights = Vec::with_capacity(values.len());
+        for dv in values {
+            let weight = dv.get_value_count()?;
+            subs.push(SortedSetDocValuesTermsEnum::new(dv));
+            weights.push(weight);
+        }
+        Self::build(subs, &weights, acceptable_overhead_ratio)
+    }
+
+    /// Build an ordinal map that maps ords to/from a merged space from `subs`.
+    ///
+    /// Equivalent to `OrdinalMap.build(IndexReader.CacheKey, TermsEnum[], long[], float)`.
+    ///
+    /// `subs` must support [`TermsEnum::ord`]. They need not be dense (for example,
+    /// they may be filtered terms enums).
+    pub fn build(
+        subs: Vec<Box<dyn TermsEnum>>,
+        weights: &[i64],
+        _acceptable_overhead_ratio: f32,
+    ) -> Result<Self> {
+        if subs.len() != weights.len() {
+            return Err(LuceneError::IllegalArgument(
+                "subs and weights must have the same length".to_string(),
+            ));
+        }
+
+        let segment_map = SegmentMap::new(weights);
+        let num_subs = subs.len();
+
+        let mut global_ord_deltas: Vec<i64> = Vec::new();
+        let mut first_segments: Vec<i64> = Vec::new();
+        let mut ord_deltas: Vec<Vec<i64>> = vec![Vec::new(); num_subs];
+        let mut segment_ords = vec![0i64; num_subs];
+        let mut ord_delta_bits = vec![0i64; num_subs];
+
+        let mut subs: Vec<Option<Box<dyn TermsEnum>>> = subs.into_iter().map(Some).collect();
+        let mut queue = PriorityQueue::new(num_subs, TermsEnumIndexComparator)?;
+        for i in 0..num_subs {
+            let old_index = segment_map.new_to_old(i);
+            let terms_enum = subs[old_index].take().ok_or_else(|| {
+                LuceneError::IllegalState("duplicate use of a terms enum".to_string())
+            })?;
+            let mut tei = TermsEnumIndex::new(terms_enum, i);
+            if tei.next()?.is_some() {
+                queue.add(tei);
+            }
+        }
+
+        let mut global_ord = 0i64;
+        while queue.size() > 0 {
+            let top_state = TermsEnumIndexState::copy_from(queue.top().unwrap());
+            let mut first_segment_index = usize::MAX;
+            let mut global_ord_delta = i64::MAX;
+
+            loop {
+                let mut top = queue.pop().unwrap();
+                let segment_ord = top.terms_enum().ord()?;
+                let segment_index = top.sub_index();
+                let delta = global_ord - segment_ord;
+                if segment_index < first_segment_index {
+                    first_segment_index = segment_index;
+                    global_ord_delta = delta;
+                }
+                ord_delta_bits[segment_index] |= delta;
+
+                while segment_ords[segment_index] <= segment_ord {
+                    ord_deltas[segment_index].push(delta);
+                    segment_ords[segment_index] += 1;
+                }
+
+                let advanced = top.next()?.is_some();
+                if advanced {
+                    queue.add(top);
+                }
+
+                match queue.top() {
+                    Some(next_top) if next_top.term_equals(&top_state) => continue,
+                    _ => break,
+                }
+            }
+
+            first_segments.push(first_segment_index as i64);
+            global_ord_deltas.push(global_ord_delta);
+            global_ord += 1;
+        }
+
+        let value_count = global_ord;
+
+        let (global_ord_deltas, first_segments) =
+            if num_subs > 0 && ord_delta_bits[0] == 0 && first_segments.iter().all(|&x| x == 0) {
+                (
+                    Box::new(ZeroesLongValues) as Box<dyn LongValues>,
+                    Box::new(ZeroesLongValues) as Box<dyn LongValues>,
+                )
+            } else {
+                (
+                    Box::new(ArrayLongValues(global_ord_deltas)) as Box<dyn LongValues>,
+                    Box::new(ArrayLongValues(first_segments)) as Box<dyn LongValues>,
+                )
+            };
+
+        let mut segment_to_global_ords: Vec<Box<dyn LongValues>> = Vec::with_capacity(num_subs);
+        for i in 0..num_subs {
+            if ord_delta_bits[i] == 0 {
+                segment_to_global_ords.push(Box::new(IdentityLongValues));
+            } else {
+                segment_to_global_ords.push(Box::new(DeltaLongValues(ord_deltas[i].clone())));
+            }
+        }
+
+        Ok(Self {
+            value_count,
+            global_ord_deltas,
+            first_segments,
+            segment_to_global_ords,
+            segment_map,
+        })
+    }
+
+    /// Returns a [`LongValues`] instance that maps segment ordinals to global
+    /// ordinals for the given segment number.
+    pub fn get_global_ords(&self, segment_index: usize) -> &dyn LongValues {
+        let new_index = self.segment_map.old_to_new(segment_index);
+        self.segment_to_global_ords[new_index].as_ref()
+    }
+
+    /// Returns the ordinal of the first segment that contains the given global
+    /// ordinal.
+    pub fn get_first_segment_ord(&self, global_ord: i64) -> i64 {
+        global_ord - self.global_ord_deltas.get(global_ord)
+    }
+
+    /// Returns the original segment index of the first segment that contains the
+    /// given global ordinal.
+    pub fn get_first_segment_number(&self, global_ord: i64) -> usize {
+        let new_index = self.first_segments.get(global_ord) as usize;
+        self.segment_map.new_to_old(new_index)
+    }
+
+    /// Returns the total number of unique values in global ordinal space.
+    pub fn get_value_count(&self) -> i64 {
+        self.value_count
+    }
+}
+
+/// Segment ordering by descending weight.
+#[derive(Debug)]
+struct SegmentMap {
+    new_to_old: Vec<usize>,
+    old_to_new: Vec<usize>,
+}
+
+impl SegmentMap {
+    fn new(weights: &[i64]) -> Self {
+        let mut new_to_old: Vec<usize> = (0..weights.len()).collect();
+        new_to_old.sort_by(|&a, &b| weights[b].cmp(&weights[a]));
+        let mut old_to_new = vec![0usize; weights.len()];
+        for (new, &old) in new_to_old.iter().enumerate() {
+            old_to_new[old] = new;
+        }
+        Self {
+            new_to_old,
+            old_to_new,
+        }
+    }
+
+    fn new_to_old(&self, segment: usize) -> usize {
+        self.new_to_old[segment]
+    }
+
+    fn old_to_new(&self, segment: usize) -> usize {
+        self.old_to_new[segment]
+    }
+}
+
+/// Priority queue ordering for [`TermsEnumIndex`] by current term.
+struct TermsEnumIndexComparator;
+
+impl PriorityQueueComparator<TermsEnumIndex> for TermsEnumIndexComparator {
+    fn less_than(&self, a: &TermsEnumIndex, b: &TermsEnumIndex) -> bool {
+        // `compare_term_to` already sorts exhausted enums last, so no separate
+        // emptiness check is needed here.
+        a.compare_term_to(b) == Ordering::Less
+    }
+}
+
+/// Long values backed by a plain vector.
+#[derive(Debug)]
+struct ArrayLongValues(Vec<i64>);
+
+impl LongValues for ArrayLongValues {
+    fn get(&self, index: i64) -> i64 {
+        self.0[index as usize]
+    }
+}
+
+/// Long values that add a per-index delta.
+#[derive(Debug)]
+struct DeltaLongValues(Vec<i64>);
+
+impl LongValues for DeltaLongValues {
+    fn get(&self, index: i64) -> i64 {
+        index + self.0[index as usize]
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Sorted doc-values terms enums
+// -----------------------------------------------------------------------------
+
+/// Implements a [`TermsEnum`] wrapping a provided [`SortedDocValues`].
+///
+/// Equivalent to `org.apache.lucene.index.SortedDocValuesTermsEnum`.
+pub struct SortedDocValuesTermsEnum {
+    values: Box<dyn SortedDocValues>,
+    current_ord: i64,
+    scratch: BytesRefBuilder,
+    atts: AttributeSource,
+}
+
+impl SortedDocValuesTermsEnum {
+    /// Creates a new terms enum over the provided sorted doc values.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(values: Box<dyn SortedDocValues>) -> Box<dyn TermsEnum> {
+        Box::new(Self {
+            values,
+            current_ord: -1,
+            scratch: BytesRefBuilder::new(),
+            atts: AttributeSource::new(),
+        })
+    }
+}
+
+impl TermsEnum for SortedDocValuesTermsEnum {
+    fn attributes(&mut self) -> &mut AttributeSource {
+        &mut self.atts
+    }
+
+    fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {
+        let ord = self.values.lookup_term(text)?;
+        if ord >= 0 {
+            self.current_ord = ord as i64;
+            self.scratch.copy_ref(text);
+            Ok(SeekStatus::FOUND)
+        } else {
+            self.current_ord = -ord as i64 - 1;
+            let value_count = self.values.get_value_count()? as i64;
+            if self.current_ord == value_count {
+                Ok(SeekStatus::END)
+            } else {
+                let term = self.values.lookup_ord(self.current_ord as i32)?;
+                self.scratch.copy_ref(&term);
+                Ok(SeekStatus::NOT_FOUND)
+            }
+        }
+    }
+
+    fn seek_exact(&mut self, text: &BytesRef) -> Result<bool> {
+        let ord = self.values.lookup_term(text)?;
+        if ord >= 0 {
+            self.current_ord = ord as i64;
+            self.scratch.copy_ref(text);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn seek_ord(&mut self, ord: i64) -> Result<()> {
+        let value_count = self.values.get_value_count()? as i64;
+        if ord < 0 || ord >= value_count {
+            return Err(LuceneError::IllegalArgument(format!(
+                "ord {ord} out of range [0, {value_count})"
+            )));
+        }
+        self.current_ord = ord;
+        let term = self.values.lookup_ord(ord as i32)?;
+        self.scratch.copy_ref(&term);
+        Ok(())
+    }
+
+    fn term(&self) -> Result<BytesRef> {
+        Ok(self.scratch.get())
+    }
+
+    fn ord(&self) -> Result<i64> {
+        Ok(self.current_ord)
+    }
+
+    fn doc_freq(&self) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(
+            "docFreq not supported by SortedDocValuesTermsEnum".to_string(),
+        ))
+    }
+
+    fn total_term_freq(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "totalTermFreq not supported by SortedDocValuesTermsEnum".to_string(),
+        ))
+    }
+
+    fn postings(
+        &mut self,
+        _reuse: Option<Box<dyn PostingsEnum>>,
+        _flags: i32,
+    ) -> Result<Box<dyn PostingsEnum>> {
+        Err(LuceneError::UnsupportedOperation(
+            "postings not supported by SortedDocValuesTermsEnum".to_string(),
+        ))
+    }
+
+    fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+        Err(LuceneError::UnsupportedOperation(
+            "impacts not supported by SortedDocValuesTermsEnum".to_string(),
+        ))
+    }
+
+    fn seek_term_state(&mut self, _text: &BytesRef, state: &dyn TermState) -> Result<()> {
+        let state = state
+            .as_any()
+            .downcast_ref::<OrdTermState>()
+            .ok_or_else(|| {
+                LuceneError::IllegalArgument("state must be an OrdTermState".to_string())
+            })?;
+        self.seek_ord(state.ord)
+    }
+
+    fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        Ok(Box::new(OrdTermState {
+            ord: self.current_ord,
+        }))
+    }
+
+    fn next(&mut self) -> Result<Option<BytesRef>> {
+        self.current_ord += 1;
+        let value_count = self.values.get_value_count()? as i64;
+        if self.current_ord >= value_count {
+            return Ok(None);
+        }
+        let term = self.values.lookup_ord(self.current_ord as i32)?;
+        self.scratch.copy_ref(&term);
+        Ok(Some(self.scratch.get()))
+    }
+}
+
+/// Implements a [`TermsEnum`] wrapping a provided [`SortedSetDocValues`].
+///
+/// Equivalent to `org.apache.lucene.index.SortedSetDocValuesTermsEnum`.
+pub struct SortedSetDocValuesTermsEnum {
+    values: Box<dyn SortedSetDocValues>,
+    current_ord: i64,
+    scratch: BytesRefBuilder,
+    atts: AttributeSource,
+}
+
+impl SortedSetDocValuesTermsEnum {
+    /// Creates a new terms enum over the provided sorted-set doc values.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(values: Box<dyn SortedSetDocValues>) -> Box<dyn TermsEnum> {
+        Box::new(Self {
+            values,
+            current_ord: -1,
+            scratch: BytesRefBuilder::new(),
+            atts: AttributeSource::new(),
+        })
+    }
+}
+
+impl TermsEnum for SortedSetDocValuesTermsEnum {
+    fn attributes(&mut self) -> &mut AttributeSource {
+        &mut self.atts
+    }
+
+    fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {
+        let ord = self.values.lookup_term(text)?;
+        if ord >= 0 {
+            self.current_ord = ord;
+            self.scratch.copy_ref(text);
+            Ok(SeekStatus::FOUND)
+        } else {
+            self.current_ord = -ord - 1;
+            let value_count = self.values.get_value_count()?;
+            if self.current_ord == value_count {
+                Ok(SeekStatus::END)
+            } else {
+                let term = self.values.lookup_ord(self.current_ord)?;
+                self.scratch.copy_ref(&term);
+                Ok(SeekStatus::NOT_FOUND)
+            }
+        }
+    }
+
+    fn seek_exact(&mut self, text: &BytesRef) -> Result<bool> {
+        let ord = self.values.lookup_term(text)?;
+        if ord >= 0 {
+            self.current_ord = ord;
+            self.scratch.copy_ref(text);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn seek_ord(&mut self, ord: i64) -> Result<()> {
+        let value_count = self.values.get_value_count()?;
+        if ord < 0 || ord >= value_count {
+            return Err(LuceneError::IllegalArgument(format!(
+                "ord {ord} out of range [0, {value_count})"
+            )));
+        }
+        self.current_ord = ord;
+        let term = self.values.lookup_ord(ord)?;
+        self.scratch.copy_ref(&term);
+        Ok(())
+    }
+
+    fn term(&self) -> Result<BytesRef> {
+        Ok(self.scratch.get())
+    }
+
+    fn ord(&self) -> Result<i64> {
+        Ok(self.current_ord)
+    }
+
+    fn doc_freq(&self) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(
+            "docFreq not supported by SortedSetDocValuesTermsEnum".to_string(),
+        ))
+    }
+
+    fn total_term_freq(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "totalTermFreq not supported by SortedSetDocValuesTermsEnum".to_string(),
+        ))
+    }
+
+    fn postings(
+        &mut self,
+        _reuse: Option<Box<dyn PostingsEnum>>,
+        _flags: i32,
+    ) -> Result<Box<dyn PostingsEnum>> {
+        Err(LuceneError::UnsupportedOperation(
+            "postings not supported by SortedSetDocValuesTermsEnum".to_string(),
+        ))
+    }
+
+    fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+        Err(LuceneError::UnsupportedOperation(
+            "impacts not supported by SortedSetDocValuesTermsEnum".to_string(),
+        ))
+    }
+
+    fn seek_term_state(&mut self, _text: &BytesRef, state: &dyn TermState) -> Result<()> {
+        let state = state
+            .as_any()
+            .downcast_ref::<OrdTermState>()
+            .ok_or_else(|| {
+                LuceneError::IllegalArgument("state must be an OrdTermState".to_string())
+            })?;
+        self.seek_ord(state.ord)
+    }
+
+    fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        Ok(Box::new(OrdTermState {
+            ord: self.current_ord,
+        }))
+    }
+
+    fn next(&mut self) -> Result<Option<BytesRef>> {
+        self.current_ord += 1;
+        let value_count = self.values.get_value_count()?;
+        if self.current_ord >= value_count {
+            return Ok(None);
+        }
+        let term = self.values.lookup_ord(self.current_ord)?;
+        self.scratch.copy_ref(&term);
+        Ok(Some(self.scratch.get()))
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
 
@@ -1642,5 +2540,225 @@ mod tests {
         };
         skipper.advance_range(20, 30).unwrap();
         assert_eq!(skipper.min_doc_id(0), NO_MORE_DOCS);
+    }
+
+    #[test]
+    fn empty_doc_values_producer_returns_empty_iterators() {
+        use crate::codecs::doc_values::DocValuesProducer;
+
+        let producer = EmptyDocValuesProducer;
+        let field = crate::index::FieldInfo::default();
+        let mut numeric = producer.get_numeric(&field).unwrap();
+        assert_eq!(numeric.next_doc().unwrap(), NO_MORE_DOCS);
+        let mut binary = producer.get_binary(&field).unwrap();
+        assert_eq!(binary.next_doc().unwrap(), NO_MORE_DOCS);
+        let mut sorted = producer.get_sorted(&field).unwrap();
+        assert_eq!(sorted.next_doc().unwrap(), NO_MORE_DOCS);
+        let mut sorted_numeric = producer.get_sorted_numeric(&field).unwrap();
+        assert_eq!(sorted_numeric.next_doc().unwrap(), NO_MORE_DOCS);
+        let mut sorted_set = producer.get_sorted_set(&field).unwrap();
+        assert_eq!(sorted_set.next_doc().unwrap(), NO_MORE_DOCS);
+        let skipper = producer.get_skipper(&field).unwrap();
+        assert_eq!(skipper.num_levels(), 1);
+        producer.check_integrity().unwrap();
+        let mut clone = producer.get_merge_instance().unwrap();
+        clone.close().unwrap();
+    }
+
+    #[test]
+    fn filter_numeric_doc_values_forwards_calls() {
+        let inner = Box::new(VecNumericDocValues::new(vec![(0, 10), (2, 30)]));
+        let mut filtered = FilterNumericDocValues::new(inner);
+        assert_eq!(filtered.next_doc().unwrap(), 0);
+        assert_eq!(filtered.long_value().unwrap(), 10);
+        assert_eq!(filtered.advance(2).unwrap(), 2);
+        assert!(filtered.advance_exact(2).unwrap());
+        assert_eq!(filtered.long_value().unwrap(), 30);
+        assert_eq!(filtered.get_inner().doc_id(), 2);
+    }
+
+    #[test]
+    fn filter_binary_doc_values_forwards_calls() {
+        let inner = Box::new(VecBinaryDocValues::new(vec![
+            (0, b"a".to_vec()),
+            (2, b"b".to_vec()),
+        ]));
+        let mut filtered = FilterBinaryDocValues::new(inner);
+        assert_eq!(filtered.next_doc().unwrap(), 0);
+        assert_eq!(filtered.binary_value().unwrap().slice(), b"a");
+        assert_eq!(filtered.advance(2).unwrap(), 2);
+        assert_eq!(filtered.binary_value().unwrap().slice(), b"b");
+    }
+
+    #[test]
+    fn filter_sorted_doc_values_forwards_calls() {
+        let dict = vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()];
+        let ords = vec![0, -1, 2, 1];
+        let inner = Box::new(VecSortedDocValues::new(dict, ords));
+        let mut filtered = FilterSortedDocValues::new(inner);
+        assert_eq!(filtered.next_doc().unwrap(), 0);
+        assert_eq!(filtered.ord_value().unwrap(), 0);
+        assert_eq!(filtered.lookup_ord(2).unwrap().slice(), b"c");
+        assert_eq!(
+            filtered.lookup_term(&BytesRef::new(b"b".to_vec())).unwrap(),
+            1
+        );
+        assert_eq!(filtered.get_value_count().unwrap(), 3);
+    }
+
+    #[test]
+    fn filter_sorted_numeric_doc_values_forwards_calls() {
+        let values_data: Vec<Vec<i64>> = vec![vec![10, 20], vec![], vec![30]];
+        let inner = Box::new(VecSortedNumericDocValues::new(values_data));
+        let mut filtered = FilterSortedNumericDocValues::new(inner);
+        assert_eq!(filtered.next_doc().unwrap(), 0);
+        assert_eq!(filtered.doc_value_count().unwrap(), 2);
+        assert_eq!(filtered.next_value().unwrap(), 10);
+        assert_eq!(filtered.next_value().unwrap(), 20);
+    }
+
+    #[test]
+    fn filter_sorted_set_doc_values_forwards_calls() {
+        let dict = vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()];
+        let ords: Vec<Vec<i64>> = vec![vec![0, 2], vec![], vec![1]];
+        let inner = Box::new(VecSortedSetDocValues::new(dict, ords));
+        let mut filtered = FilterSortedSetDocValues::new(inner);
+        assert_eq!(filtered.next_doc().unwrap(), 0);
+        assert_eq!(filtered.doc_value_count().unwrap(), 2);
+        assert_eq!(filtered.next_ord().unwrap(), 0);
+        assert_eq!(filtered.next_ord().unwrap(), 2);
+        assert_eq!(filtered.lookup_ord(1).unwrap().slice(), b"b");
+        assert_eq!(filtered.get_value_count().unwrap(), 3);
+    }
+
+    #[test]
+    fn sorted_doc_values_terms_enum_iteration_and_seek() {
+        let dict = vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()];
+        let ords = vec![0, -1, 2, 1];
+        let values = Box::new(VecSortedDocValues::new(dict, ords));
+        let mut terms = SortedDocValuesTermsEnum::new(values);
+        assert_eq!(terms.next().unwrap().unwrap().slice(), b"a");
+        assert_eq!(terms.ord().unwrap(), 0);
+        assert_eq!(terms.term().unwrap().slice(), b"a");
+        assert_eq!(
+            terms.seek_ceil(&BytesRef::new(b"bb".to_vec())).unwrap(),
+            SeekStatus::NOT_FOUND
+        );
+        assert_eq!(terms.term().unwrap().slice(), b"c");
+        assert!(terms.seek_exact(&BytesRef::new(b"b".to_vec())).unwrap());
+        assert_eq!(terms.ord().unwrap(), 1);
+        terms.seek_ord(2).unwrap();
+        assert_eq!(terms.term().unwrap().slice(), b"c");
+        let state = terms.term_state().unwrap();
+        terms
+            .seek_term_state(&BytesRef::new(Vec::new()), state.as_ref())
+            .unwrap();
+        assert_eq!(terms.ord().unwrap(), 2);
+        assert!(terms.next().unwrap().is_none());
+    }
+
+    #[test]
+    fn sorted_set_doc_values_terms_enum_iteration_and_seek() {
+        let dict = vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()];
+        let ords: Vec<Vec<i64>> = vec![vec![0, 2], vec![], vec![1], vec![]];
+        let values = Box::new(VecSortedSetDocValues::new(dict, ords));
+        let mut terms = SortedSetDocValuesTermsEnum::new(values);
+        assert_eq!(terms.next().unwrap().unwrap().slice(), b"a");
+        assert_eq!(terms.ord().unwrap(), 0);
+        assert_eq!(terms.term().unwrap().slice(), b"a");
+        assert!(!terms.seek_exact(&BytesRef::new(b"z".to_vec())).unwrap());
+        assert_eq!(
+            terms.seek_ceil(&BytesRef::new(b"b".to_vec())).unwrap(),
+            SeekStatus::FOUND
+        );
+        assert_eq!(terms.ord().unwrap(), 1);
+        terms.seek_ord(2).unwrap();
+        assert_eq!(terms.term().unwrap().slice(), b"c");
+        let state = terms.term_state().unwrap();
+        terms
+            .seek_term_state(&BytesRef::new(Vec::new()), state.as_ref())
+            .unwrap();
+        assert_eq!(terms.ord().unwrap(), 2);
+    }
+
+    #[test]
+    fn ordinal_map_merge_sorted_doc_values() {
+        // Segment 0: values {a, c} -> ords [0, 1]
+        // Segment 1: values {b, d} -> ords [0, 1]
+        // Segment 2: values {a, e} -> ords [0, 1]
+        let seg0 = Box::new(VecSortedDocValues::new(
+            vec![b"a".to_vec(), b"c".to_vec()],
+            vec![0, 1],
+        )) as Box<dyn SortedDocValues>;
+        let seg1 = Box::new(VecSortedDocValues::new(
+            vec![b"b".to_vec(), b"d".to_vec()],
+            vec![0, 1],
+        )) as Box<dyn SortedDocValues>;
+        let seg2 = Box::new(VecSortedDocValues::new(
+            vec![b"a".to_vec(), b"e".to_vec()],
+            vec![0, 1],
+        )) as Box<dyn SortedDocValues>;
+
+        let map = OrdinalMap::build_sorted(vec![seg0, seg1, seg2], 0.0).unwrap();
+        // Global order: a, b, c, d, e -> 5 unique values
+        assert_eq!(map.get_value_count(), 5);
+
+        // Segment 0 (weight 2) maps local ords 0->a->global 0, 1->c->global 2
+        let g0 = map.get_global_ords(0);
+        assert_eq!(g0.get(0), 0);
+        assert_eq!(g0.get(1), 2);
+
+        // Segment 1 (weight 2) maps local ords 0->b->global 1, 1->d->global 3
+        let g1 = map.get_global_ords(1);
+        assert_eq!(g1.get(0), 1);
+        assert_eq!(g1.get(1), 3);
+
+        // Segment 2 (weight 2) maps local ords 0->a->global 0, 1->e->global 4
+        let g2 = map.get_global_ords(2);
+        assert_eq!(g2.get(0), 0);
+        assert_eq!(g2.get(1), 4);
+
+        // First segment for each global ord
+        assert_eq!(map.get_first_segment_number(0), 0); // a first in seg0
+        assert_eq!(map.get_first_segment_number(1), 1); // b first in seg1
+        assert_eq!(map.get_first_segment_number(2), 0); // c first in seg0
+        assert_eq!(map.get_first_segment_number(3), 1); // d first in seg1
+        assert_eq!(map.get_first_segment_number(4), 2); // e first in seg2
+        assert_eq!(map.get_first_segment_ord(0), 0);
+        assert_eq!(map.get_first_segment_ord(1), 0);
+        assert_eq!(map.get_first_segment_ord(2), 1);
+        assert_eq!(map.get_first_segment_ord(3), 1);
+        assert_eq!(map.get_first_segment_ord(4), 1);
+    }
+
+    #[test]
+    fn ordinal_map_merge_sorted_set_doc_values() {
+        // Segment 0: values {a, c}
+        // Segment 1: values {a, b, c}
+        let seg0 = Box::new(VecSortedSetDocValues::new(
+            vec![b"a".to_vec(), b"c".to_vec()],
+            vec![vec![0, 1], vec![]],
+        )) as Box<dyn SortedSetDocValues>;
+        let seg1 = Box::new(VecSortedSetDocValues::new(
+            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()],
+            vec![vec![0, 1, 2], vec![]],
+        )) as Box<dyn SortedSetDocValues>;
+
+        let map = OrdinalMap::build_sorted_set(vec![seg0, seg1], 0.0).unwrap();
+        // Global order: a, b, c -> 3 unique values
+        assert_eq!(map.get_value_count(), 3);
+
+        let g0 = map.get_global_ords(0);
+        assert_eq!(g0.get(0), 0);
+        assert_eq!(g0.get(1), 2);
+
+        let g1 = map.get_global_ords(1);
+        assert_eq!(g1.get(0), 0);
+        assert_eq!(g1.get(1), 1);
+        assert_eq!(g1.get(2), 2);
+
+        assert_eq!(map.get_first_segment_number(0), 1); // a: seg1 has weight 3, sorted first
+        assert_eq!(map.get_first_segment_number(1), 1); // b: only in seg1
+        assert_eq!(map.get_first_segment_number(2), 1); // c: seg1 first by weight
     }
 }

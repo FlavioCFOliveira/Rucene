@@ -21,6 +21,7 @@ pub mod postings_format;
 pub mod postings_reader;
 pub mod postings_util;
 pub mod postings_writer;
+pub mod scalar_quantized_vectors;
 
 pub use codec::{Lucene104Codec, Mode};
 pub use for_util::{ForUtil, BLOCK_SIZE as FOR_BLOCK_SIZE, BLOCK_SIZE_LOG2 as FOR_BLOCK_SIZE_LOG2};
