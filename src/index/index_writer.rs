@@ -1366,8 +1366,16 @@ impl IndexWriter {
         let policy = self.config.merge_policy();
         let infos = clone_infos(&state.segment_infos)?;
         let spec = if max_num_segments > 0 {
-            let to_merge: HashSet<String> =
-                infos.iter().map(|info| info.info.name.clone()).collect();
+            // `IndexWriter.forceMerge` maps every segment present when the
+            // force-merge was requested to `Boolean.TRUE` — "original" — and
+            // later maps each merge product to `Boolean.FALSE`
+            // (`IndexWriter.java:2211-2214, 4800-4801`), which is how
+            // `LogMergePolicy.isMerged` tells a segment the caller asked for
+            // from one this force-merge itself produced.
+            let to_merge: HashMap<String, bool> = infos
+                .iter()
+                .map(|info| (info.info.name.clone(), true))
+                .collect();
             policy.find_forced_merges(&infos, max_num_segments, &to_merge, self)?
         } else {
             policy.find_merges(trigger, &infos, self)?
@@ -3237,8 +3245,10 @@ impl IndexWriter {
             let mut state = self.state()?;
             let infos = clone_infos(&state.segment_infos)?;
             let spec = if max_num_segments > 0 {
-                let to_merge: HashSet<String> =
-                    infos.iter().map(|info| info.info.name.clone()).collect();
+                let to_merge: HashMap<String, bool> = infos
+                    .iter()
+                    .map(|info| (info.info.name.clone(), true))
+                    .collect();
                 merge_policy.find_forced_merges(&infos, max_num_segments, &to_merge, self)?
             } else {
                 merge_policy.find_merges(trigger, &infos, self)?

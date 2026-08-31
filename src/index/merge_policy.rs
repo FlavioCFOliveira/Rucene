@@ -309,6 +309,115 @@ pub const DEFAULT_NO_CFS_RATIO: f64 = 1.0;
 /// Default size above which a merged segment is not written as a compound file.
 pub const DEFAULT_MAX_CFS_SEGMENT_SIZE: i64 = i64::MAX;
 
+/// The two compound-file settings every merge policy carries.
+///
+/// Equivalent to the protected `MergePolicy.noCFSRatio` and
+/// `MergePolicy.maxCFSSegmentSize` fields, which the base class declares once
+/// and every subclass shares. Rust has no implementation inheritance, so the
+/// pair is a value each policy composes.
+///
+/// Java's setters are public and reachable through any alias of the policy —
+/// `FilterMergePolicy.setNoCFSRatio` calls straight into the wrapped policy —
+/// so the fields are held in atomics and written through `&self`, which is what
+/// lets a policy behind an `Arc` still be configured.
+#[derive(Debug)]
+pub struct CfsSettings {
+    /// `noCFSRatio`, held as the bit pattern of an `f64`.
+    no_cfs_ratio: std::sync::atomic::AtomicU64,
+    /// `maxCFSSegmentSize`, in bytes.
+    max_cfs_segment_size: std::sync::atomic::AtomicI64,
+}
+
+impl Clone for CfsSettings {
+    fn clone(&self) -> Self {
+        Self::new(self.get_no_cfs_ratio(), self.get_max_cfs_segment_size())
+    }
+}
+
+impl Default for CfsSettings {
+    fn default() -> Self {
+        Self::new(DEFAULT_NO_CFS_RATIO, DEFAULT_MAX_CFS_SEGMENT_SIZE)
+    }
+}
+
+impl CfsSettings {
+    /// Creates the pair with the given ratio and byte cap.
+    pub fn new(no_cfs_ratio: f64, max_cfs_segment_size: i64) -> Self {
+        Self {
+            no_cfs_ratio: std::sync::atomic::AtomicU64::new(no_cfs_ratio.to_bits()),
+            max_cfs_segment_size: std::sync::atomic::AtomicI64::new(max_cfs_segment_size),
+        }
+    }
+
+    /// Returns the current `noCFSRatio`.
+    ///
+    /// Equivalent to `MergePolicy.getNoCFSRatio()`.
+    pub fn get_no_cfs_ratio(&self) -> f64 {
+        f64::from_bits(self.no_cfs_ratio.load(Ordering::Relaxed))
+    }
+
+    /// Sets the fraction of the index above which a merged segment is left out
+    /// of a compound file even when compound files are enabled.
+    ///
+    /// Equivalent to `MergePolicy.setNoCFSRatio(double)`. Set it to `1.0` to
+    /// always use a compound file regardless of merge size.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// when `no_cfs_ratio` is outside `[0.0, 1.0]`.
+    pub fn set_no_cfs_ratio(&self, no_cfs_ratio: f64) -> Result<()> {
+        if !(0.0..=1.0).contains(&no_cfs_ratio) {
+            return Err(crate::error::LuceneError::IllegalArgument(format!(
+                "noCFSRatio must be 0.0 to 1.0 inclusive; got {no_cfs_ratio}"
+            )));
+        }
+        self.no_cfs_ratio
+            .store(no_cfs_ratio.to_bits(), Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Returns the largest size allowed for a compound-file segment, in bytes.
+    pub fn get_max_cfs_segment_size(&self) -> i64 {
+        self.max_cfs_segment_size.load(Ordering::Relaxed)
+    }
+
+    /// Returns the largest size allowed for a compound-file segment, in MB.
+    ///
+    /// Equivalent to `MergePolicy.getMaxCFSSegmentSizeMB()`.
+    pub fn get_max_cfs_segment_size_mb(&self) -> f64 {
+        self.get_max_cfs_segment_size() as f64 / 1024. / 1024.
+    }
+
+    /// Sets the size above which a merged segment is left out of a compound
+    /// file even when compound files are enabled.
+    ///
+    /// Equivalent to `MergePolicy.setMaxCFSSegmentSizeMB(double)`. Set it to
+    /// `f64::INFINITY` (the default) with a ratio of `1.0` to always use a
+    /// compound file regardless of merge size.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// when `v` is negative.
+    pub fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
+        if v < 0.0 {
+            return Err(crate::error::LuceneError::IllegalArgument(format!(
+                "maxCFSSegmentSizeMB must be >=0 (got {v})"
+            )));
+        }
+        let v = v * 1024. * 1024.;
+        // Java casts the double to long, which saturates at Long.MAX_VALUE.
+        let bytes = if v > i64::MAX as f64 {
+            i64::MAX
+        } else {
+            v as i64
+        };
+        self.max_cfs_segment_size.store(bytes, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 /// Decides which segments to merge and when.
 ///
 /// Equivalent to `org.apache.lucene.index.MergePolicy`.
@@ -331,7 +440,7 @@ pub trait MergePolicy: Send + Sync {
         &self,
         segment_infos: &SegmentInfos,
         max_num_segments: i32,
-        segments_to_merge: &HashSet<String>,
+        segments_to_merge: &HashMap<String, bool>,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>>;
 
@@ -473,6 +582,8 @@ pub trait MergePolicy: Send + Sync {
     }
 
     /// Returns the ratio above which a merged segment is not a compound file.
+    ///
+    /// Equivalent to `MergePolicy.getNoCFSRatio()`.
     fn get_no_cfs_ratio(&self) -> f64 {
         DEFAULT_NO_CFS_RATIO
     }
@@ -480,6 +591,71 @@ pub trait MergePolicy: Send + Sync {
     /// Returns the size above which a merged segment is not a compound file.
     fn get_max_cfs_segment_size(&self) -> i64 {
         DEFAULT_MAX_CFS_SEGMENT_SIZE
+    }
+
+    /// Returns the largest size allowed for a compound-file segment, in MB.
+    ///
+    /// Equivalent to `MergePolicy.getMaxCFSSegmentSizeMB()`.
+    fn get_max_cfs_segment_size_mb(&self) -> f64 {
+        self.get_max_cfs_segment_size() as f64 / 1024. / 1024.
+    }
+
+    /// Sets the fraction of the index above which a merged segment is left out
+    /// of a compound file even when compound files are enabled.
+    ///
+    /// Equivalent to `MergePolicy.setNoCFSRatio(double)`. The default reports
+    /// that this policy has no such setting to write; every policy that carries
+    /// [`CfsSettings`] overrides it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// when the ratio is outside `[0.0, 1.0]`, and
+    /// [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation)
+    /// when the policy holds no compound-file settings.
+    fn set_no_cfs_ratio(&self, no_cfs_ratio: f64) -> Result<()> {
+        let _ = no_cfs_ratio;
+        Err(crate::error::LuceneError::UnsupportedOperation(
+            "this merge policy has no compound-file settings to set".to_string(),
+        ))
+    }
+
+    /// Sets the size above which a merged segment is left out of a compound
+    /// file even when compound files are enabled.
+    ///
+    /// Equivalent to `MergePolicy.setMaxCFSSegmentSizeMB(double)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// when `v` is negative, and
+    /// [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation)
+    /// when the policy holds no compound-file settings.
+    fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
+        let _ = v;
+        Err(crate::error::LuceneError::UnsupportedOperation(
+            "this merge policy has no compound-file settings to set".to_string(),
+        ))
+    }
+
+    /// Asserts that `del_count` is a valid delete count for `info`.
+    ///
+    /// Equivalent to `MergePolicy.assertDelCount(int, SegmentCommitInfo)`,
+    /// which Java only ever calls from inside an `assert`, so the check runs in
+    /// a test build and vanishes otherwise. `debug_assert!` is the same
+    /// arrangement here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `info`'s document count cannot be read.
+    fn assert_del_count(&self, del_count: i32, info: &SegmentCommitInfo) -> Result<bool> {
+        debug_assert!(del_count >= 0, "delCount must be positive: {del_count}");
+        let max_doc = info.info.max_doc()?;
+        debug_assert!(
+            del_count <= max_doc,
+            "delCount: {del_count} must be leq than maxDoc: {max_doc}"
+        );
+        Ok(true)
     }
 }
 
@@ -519,8 +695,32 @@ pub fn mp_verbose(merge_context: &dyn MergeContext) -> bool {
 /// A policy that never merges.
 ///
 /// Equivalent to `org.apache.lucene.index.NoMergePolicy`.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NoMergePolicy;
+#[derive(Debug, Clone)]
+pub struct NoMergePolicy {
+    /// The compound-file settings Java's `NoMergePolicy` inherits from
+    /// `MergePolicy` and whose setters it overrides to call `super`.
+    cfs: CfsSettings,
+}
+
+impl Default for NoMergePolicy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NoMergePolicy {
+    /// Creates the policy, with the compound-file defaults of the base class.
+    ///
+    /// Equivalent to `NoMergePolicy.INSTANCE`, which Java exposes as a
+    /// singleton; here each holder owns its own settings, because the settings
+    /// are writable and a shared singleton would let one writer's configuration
+    /// reach another's.
+    pub fn new() -> Self {
+        Self {
+            cfs: CfsSettings::default(),
+        }
+    }
+}
 
 impl MergePolicy for NoMergePolicy {
     fn find_merges(
@@ -536,7 +736,7 @@ impl MergePolicy for NoMergePolicy {
         &self,
         _segment_infos: &SegmentInfos,
         _max_num_segments: i32,
-        _segments_to_merge: &HashSet<String>,
+        _segments_to_merge: &HashMap<String, bool>,
         _merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
         Ok(None)
@@ -557,6 +757,25 @@ impl MergePolicy for NoMergePolicy {
         _merge_context: &dyn MergeContext,
     ) -> Result<bool> {
         Ok(false)
+    }
+    fn get_no_cfs_ratio(&self) -> f64 {
+        self.cfs.get_no_cfs_ratio()
+    }
+
+    fn get_max_cfs_segment_size(&self) -> i64 {
+        self.cfs.get_max_cfs_segment_size()
+    }
+
+    fn get_max_cfs_segment_size_mb(&self) -> f64 {
+        self.cfs.get_max_cfs_segment_size_mb()
+    }
+
+    fn set_no_cfs_ratio(&self, no_cfs_ratio: f64) -> Result<()> {
+        self.cfs.set_no_cfs_ratio(no_cfs_ratio)
+    }
+
+    fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
+        self.cfs.set_max_cfs_segment_size_mb(v)
     }
 }
 
@@ -595,7 +814,7 @@ impl MergePolicy for FilterMergePolicy {
         &self,
         segment_infos: &SegmentInfos,
         max_num_segments: i32,
-        segments_to_merge: &HashSet<String>,
+        segments_to_merge: &HashMap<String, bool>,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
         self.inner.find_forced_merges(
@@ -642,6 +861,18 @@ impl MergePolicy for FilterMergePolicy {
     fn get_max_cfs_segment_size(&self) -> i64 {
         self.inner.get_max_cfs_segment_size()
     }
+
+    fn get_max_cfs_segment_size_mb(&self) -> f64 {
+        self.inner.get_max_cfs_segment_size_mb()
+    }
+
+    fn set_no_cfs_ratio(&self, no_cfs_ratio: f64) -> Result<()> {
+        self.inner.set_no_cfs_ratio(no_cfs_ratio)
+    }
+
+    fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
+        self.inner.set_max_cfs_segment_size_mb(v)
+    }
 }
 
 /// A policy that wraps every merge another policy produces.
@@ -685,7 +916,7 @@ impl MergePolicy for OneMergeWrappingMergePolicy {
         &self,
         segment_infos: &SegmentInfos,
         max_num_segments: i32,
-        segments_to_merge: &HashSet<String>,
+        segments_to_merge: &HashMap<String, bool>,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
         Ok(self.wrap_spec(self.inner.find_forced_merges(
@@ -757,8 +988,7 @@ pub struct TieredMergePolicy {
     force_merge_deletes_pct_allowed: f64,
     deletes_pct_allowed: f64,
     target_search_concurrency: i32,
-    no_cfs_ratio: f64,
-    max_cfs_segment_size: i64,
+    cfs: CfsSettings,
 }
 
 impl Default for TieredMergePolicy {
@@ -778,8 +1008,7 @@ impl TieredMergePolicy {
             force_merge_deletes_pct_allowed: 10.0,
             deletes_pct_allowed: 20.0,
             target_search_concurrency: 1,
-            no_cfs_ratio: TIERED_DEFAULT_NO_CFS_RATIO,
-            max_cfs_segment_size: DEFAULT_MAX_CFS_SEGMENT_SIZE,
+            cfs: CfsSettings::new(TIERED_DEFAULT_NO_CFS_RATIO, DEFAULT_MAX_CFS_SEGMENT_SIZE),
         }
     }
 
@@ -1185,7 +1414,7 @@ impl MergePolicy for TieredMergePolicy {
         &self,
         segment_infos: &SegmentInfos,
         max_num_segments: i32,
-        _segments_to_merge: &HashSet<String>,
+        _segments_to_merge: &HashMap<String, bool>,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
         let sorted = self.sorted_by_segment_size(segment_infos, merge_context)?;
@@ -1240,11 +1469,19 @@ impl MergePolicy for TieredMergePolicy {
     }
 
     fn get_no_cfs_ratio(&self) -> f64 {
-        self.no_cfs_ratio
+        self.cfs.get_no_cfs_ratio()
     }
 
     fn get_max_cfs_segment_size(&self) -> i64 {
-        self.max_cfs_segment_size
+        self.cfs.get_max_cfs_segment_size()
+    }
+
+    fn set_no_cfs_ratio(&self, no_cfs_ratio: f64) -> Result<()> {
+        self.cfs.set_no_cfs_ratio(no_cfs_ratio)
+    }
+
+    fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
+        self.cfs.set_max_cfs_segment_size_mb(v)
     }
 }
 
@@ -1297,8 +1534,7 @@ pub struct LogMergePolicy {
     calibrate_size_by_deletes: bool,
     target_search_concurrency: i32,
     size_kind: LogSizeKind,
-    no_cfs_ratio: f64,
-    max_cfs_segment_size: i64,
+    cfs: CfsSettings,
 }
 
 impl LogMergePolicy {
@@ -1315,8 +1551,7 @@ impl LogMergePolicy {
             calibrate_size_by_deletes: true,
             target_search_concurrency: 1,
             size_kind: LogSizeKind::Bytes,
-            no_cfs_ratio: LOG_DEFAULT_NO_CFS_RATIO,
-            max_cfs_segment_size: DEFAULT_MAX_CFS_SEGMENT_SIZE,
+            cfs: CfsSettings::new(LOG_DEFAULT_NO_CFS_RATIO, DEFAULT_MAX_CFS_SEGMENT_SIZE),
         }
     }
 
@@ -1358,6 +1593,95 @@ impl LogMergePolicy {
     pub fn set_calibrate_size_by_deletes(&mut self, v: bool) -> &mut Self {
         self.calibrate_size_by_deletes = v;
         self
+    }
+
+    /// Sets the largest segment, in MB, that may be merged with other segments.
+    ///
+    /// Equivalent to `LogByteSizeMergePolicy.setMaxMergeMB(double)`. Small
+    /// values — under 50 MB, say — suit interactive indexing, because they cap
+    /// how long a merge can pause it; larger values suit batch indexing and
+    /// faster searches. [`set_max_merge_docs`](Self::set_max_merge_docs) caps
+    /// the same thing by document count, and either bound can stop a merge.
+    pub fn set_max_merge_mb(&mut self, mb: f64) -> &mut Self {
+        self.max_merge_size = Self::mb_to_bytes(mb);
+        self
+    }
+
+    /// Returns the largest segment, in MB, that may be merged with other
+    /// segments.
+    ///
+    /// Equivalent to `LogByteSizeMergePolicy.getMaxMergeMB()`.
+    pub fn get_max_merge_mb(&self) -> f64 {
+        self.max_merge_size as f64 / 1024. / 1024.
+    }
+
+    /// Sets the largest segment, in MB, that may be merged during a forced
+    /// merge.
+    ///
+    /// Equivalent to `LogByteSizeMergePolicy.setMaxMergeMBForForcedMerge(double)`.
+    /// Setting it low leaves the index with more than one segment even after
+    /// `forceMerge`.
+    pub fn set_max_merge_mb_for_forced_merge(&mut self, mb: f64) -> &mut Self {
+        self.max_merge_size_for_forced_merge = Self::mb_to_bytes(mb);
+        self
+    }
+
+    /// Returns the largest segment, in MB, that may be merged during a forced
+    /// merge.
+    ///
+    /// Equivalent to `LogByteSizeMergePolicy.getMaxMergeMBForForcedMerge()`.
+    pub fn get_max_merge_mb_for_forced_merge(&self) -> f64 {
+        self.max_merge_size_for_forced_merge as f64 / 1024. / 1024.
+    }
+
+    /// Sets the minimum size, in MB, of the lowest level of segments.
+    ///
+    /// Equivalent to `LogByteSizeMergePolicy.setMinMergeMB(double)`. Segments
+    /// below this size are candidates for a full-flush merge and are merged
+    /// more aggressively, so that the index does not accumulate a long tail of
+    /// small segments; a large value raises the merge cost of indexing when
+    /// small segments are flushed.
+    pub fn set_min_merge_mb(&mut self, mb: f64) -> &mut Self {
+        self.min_merge_size = Self::mb_to_bytes(mb);
+        self
+    }
+
+    /// Returns the minimum size, in MB, for a segment to remain un-merged.
+    ///
+    /// Equivalent to `LogByteSizeMergePolicy.getMinMergeMB()`.
+    pub fn get_min_merge_mb(&self) -> f64 {
+        self.min_merge_size as f64 / 1024. / 1024.
+    }
+
+    /// Sets the minimum size, in documents, of the lowest level of segments.
+    ///
+    /// Equivalent to `LogDocMergePolicy.setMinMergeDocs(int)`.
+    pub fn set_min_merge_docs(&mut self, min_merge_docs: i32) -> &mut Self {
+        self.min_merge_size = i64::from(min_merge_docs);
+        self
+    }
+
+    /// Returns the minimum size, in documents, for a segment to remain
+    /// un-merged.
+    ///
+    /// Equivalent to `LogDocMergePolicy.getMinMergeDocs()`.
+    pub fn get_min_merge_docs(&self) -> i32 {
+        self.min_merge_size as i32
+    }
+
+    /// Converts megabytes to bytes the way Java's `(long) (mb * 1024 * 1024)`
+    /// does: a product too large for a `long` becomes `Long.MAX_VALUE`, which
+    /// is how `DEFAULT_MAX_MERGE_MB_FOR_FORCED_MERGE` — itself `Long.MAX_VALUE`
+    /// — ends up meaning "no limit".
+    fn mb_to_bytes(mb: f64) -> i64 {
+        let bytes = mb * 1024. * 1024.;
+        if bytes >= i64::MAX as f64 {
+            i64::MAX
+        } else if bytes <= i64::MIN as f64 {
+            i64::MIN
+        } else {
+            bytes as i64
+        }
     }
 
     /// Returns the live document count of `info`, or its full `max_doc` when
@@ -1403,6 +1727,172 @@ impl LogMergePolicy {
             LogSizeKind::Bytes => self.size_bytes(info, merge_context),
             LogSizeKind::Docs => self.size_docs(info, merge_context),
         }
+    }
+
+    /// Returns whether the number of segments eligible for merging is at most
+    /// `max_num_segments`.
+    ///
+    /// Equivalent to `LogMergePolicy.isMerged(SegmentInfos, int, Map, MergeContext)`.
+    fn is_merged_to(
+        &self,
+        infos: &SegmentInfos,
+        max_num_segments: i32,
+        segments_to_merge: &HashMap<String, bool>,
+        merge_context: &dyn MergeContext,
+    ) -> Result<bool> {
+        let num_segments = infos.size();
+        let mut num_to_merge = 0i32;
+        let mut merge_info: Option<&SegmentCommitInfo> = None;
+        let mut segment_is_original = false;
+        let mut i = 0;
+        while i < num_segments && num_to_merge <= max_num_segments {
+            let info = infos.info(i);
+            if let Some(&is_original) = segments_to_merge.get(&info.info.name) {
+                segment_is_original = is_original;
+                num_to_merge += 1;
+                merge_info = Some(info);
+            }
+            i += 1;
+        }
+
+        if num_to_merge > max_num_segments {
+            return Ok(false);
+        }
+        if num_to_merge != 1 || !segment_is_original {
+            return Ok(true);
+        }
+        let merge_info = merge_info.expect("INVARIANT: numToMerge == 1 implies a segment was seen");
+        self.is_merged(infos, merge_info, merge_context)
+    }
+
+    /// Returns the merges needed to force-merge the index, honouring
+    /// `maxMergeSizeForForcedMerge` and `maxMergeDocs`.
+    ///
+    /// Equivalent to the private
+    /// `LogMergePolicy.findForcedMergesSizeLimit(SegmentInfos, int, MergeContext)`.
+    /// It tries to respect `maxNumSegments`, but a size constraint may leave
+    /// more segments than that behind.
+    fn find_forced_merges_size_limit(
+        &self,
+        infos: &SegmentInfos,
+        mut last: usize,
+        merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        let mut spec = MergeSpecification::new();
+        let segments = infos.as_slice();
+
+        // Java walks `start` down from `last - 1` to 0 and then reads it once
+        // more after the pre-increment in the tail condition; the loop below
+        // keeps `start` one greater so it never goes below zero, and the tail
+        // reads it directly.
+        let mut start = last;
+        while start > 0 {
+            start -= 1;
+            let info = infos.info(start);
+            if self.size(info, merge_context)? > self.max_merge_size_for_forced_merge
+                || self.size_docs(info, merge_context)? > i64::from(self.max_merge_docs)
+            {
+                if mp_verbose(merge_context) {
+                    mp_message(
+                        &format!(
+                            "findForcedMergesSizeLimit: skip segment={}: size is > maxMergeSize ({}) or sizeDocs is > maxMergeDocs ({})",
+                            info.info.name, self.max_merge_size_for_forced_merge, self.max_merge_docs
+                        ),
+                        merge_context,
+                    );
+                }
+                // Skip that segment, and add a merge for the segments to its
+                // right unless there is only one and it is already merged.
+                if last - start - 1 > 1
+                    || (start != last - 1
+                        && !self.is_merged(infos, infos.info(start + 1), merge_context)?)
+                {
+                    spec.add(OneMerge::new(segments[start + 1..last].to_vec())?);
+                }
+                last = start;
+            } else if last - start == self.merge_factor as usize {
+                // mergeFactor eligible segments were found; add them as a merge.
+                spec.add(OneMerge::new(segments[start..last].to_vec())?);
+                last = start;
+            }
+        }
+
+        // Add any left-over segments, unless there is just one already fully
+        // merged.
+        if last > 0
+            && (start + 1 < last || !self.is_merged(infos, infos.info(start), merge_context)?)
+        {
+            spec.add(OneMerge::new(segments[start..last].to_vec())?);
+        }
+
+        Ok(if spec.is_empty() { None } else { Some(spec) })
+    }
+
+    /// Returns the merges needed to force-merge the index down to exactly
+    /// `max_num_segments` segments.
+    ///
+    /// Equivalent to the private
+    /// `LogMergePolicy.findForcedMergesMaxNumSegments(SegmentInfos, int, int, MergeContext)`,
+    /// which is constrained only by `maxNumSegments`.
+    fn find_forced_merges_max_num_segments(
+        &self,
+        infos: &SegmentInfos,
+        max_num_segments: i32,
+        mut last: usize,
+        merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        let mut spec = MergeSpecification::new();
+        let segments = infos.as_slice();
+        let merge_factor = self.merge_factor as usize;
+
+        // First enrol all "full" merges — mergeFactor segments each — so they
+        // can run concurrently.
+        while last as i64 - i64::from(max_num_segments) + 1 >= merge_factor as i64 {
+            spec.add(OneMerge::new(segments[last - merge_factor..last].to_vec())?);
+            last -= merge_factor;
+        }
+
+        // Only when no full merge is pending do we add a final partial merge of
+        // fewer than mergeFactor segments.
+        if spec.is_empty() {
+            if max_num_segments == 1 {
+                // We must merge down to one segment, so the choice is simple.
+                if last > 1 || !self.is_merged(infos, infos.info(0), merge_context)? {
+                    spec.add(OneMerge::new(segments[0..last].to_vec())?);
+                }
+            } else if last > max_num_segments as usize {
+                // Pick the least costly partial merge that does not make the
+                // index lopsided: always taking the tail would, over time.
+                //
+                // This many segments must be merged to leave maxNumSegments in
+                // the index, counting from when forceMerge was first started.
+                let final_merge_size = last - max_num_segments as usize + 1;
+
+                // Consider every possible starting point.
+                let mut best_size = 0i64;
+                let mut best_start = 0usize;
+
+                for i in 0..(last - final_merge_size + 1) {
+                    let mut sum_size = 0i64;
+                    for j in 0..final_merge_size {
+                        sum_size += self.size(infos.info(j + i), merge_context)?;
+                    }
+                    if i == 0
+                        || (sum_size < 2 * self.size(infos.info(i - 1), merge_context)?
+                            && sum_size < best_size)
+                    {
+                        best_start = i;
+                        best_size = sum_size;
+                    }
+                }
+
+                spec.add(OneMerge::new(
+                    segments[best_start..best_start + final_merge_size].to_vec(),
+                )?);
+            }
+        }
+
+        Ok(if spec.is_empty() { None } else { Some(spec) })
     }
 }
 
@@ -1544,48 +2034,85 @@ impl MergePolicy for LogMergePolicy {
         &self,
         segment_infos: &SegmentInfos,
         max_num_segments: i32,
-        _segments_to_merge: &HashSet<String>,
+        segments_to_merge: &HashMap<String, bool>,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
-        let merging = merge_context.get_merging_segments();
-        let eligible: Vec<usize> = (0..segment_infos.size())
-            .filter(|&i| !merging.contains(&segment_infos.info(i).info.name))
-            .collect();
-        if eligible.len() as i32 <= max_num_segments {
+        debug_assert!(max_num_segments > 0);
+        if mp_verbose(merge_context) {
+            mp_message(
+                &format!(
+                    "findForcedMerges: maxNumSegs={max_num_segments} segsToMerge={segments_to_merge:?}"
+                ),
+                merge_context,
+            );
+        }
+
+        // If the segments are already merged — there is only one, say — or
+        // there are fewer than maxNumSegments of them.
+        if self.is_merged_to(
+            segment_infos,
+            max_num_segments,
+            segments_to_merge,
+            merge_context,
+        )? {
+            if mp_verbose(merge_context) {
+                mp_message("already merged; skip", merge_context);
+            }
             return Ok(None);
         }
 
-        let mut spec = MergeSpecification::new();
-        let mut start = 0usize;
-        // Merge the oldest segments first, mergeFactor at a time, until the
-        // count is down to the target.
-        let mut remaining = eligible.len() as i32;
-        while remaining > max_num_segments && start < eligible.len() {
-            let end = (start + self.merge_factor as usize).min(eligible.len());
-            if end - start < 2 {
+        // Find the newest (rightmost) segment that needs to be merged; others
+        // may have been flushed since merging started.
+        let mut last = segment_infos.size();
+        while last > 0 {
+            last -= 1;
+            let info = segment_infos.info(last);
+            if segments_to_merge.contains_key(&info.info.name) {
+                last += 1;
                 break;
             }
-            let mut segments = Vec::with_capacity(end - start);
-            let mut merge_size = 0i64;
-            for &i in &eligible[start..end] {
-                let info = segment_infos.info(i);
-                let size = self.size(info, merge_context)?;
-                if merge_size + size > self.max_merge_size_for_forced_merge && !segments.is_empty()
-                {
-                    break;
-                }
-                merge_size += size;
-                segments.push(info.clone());
-            }
-            if segments.len() < 2 {
-                break;
-            }
-            remaining -= segments.len() as i32 - 1;
-            start += segments.len();
-            spec.add(OneMerge::new(segments)?);
         }
 
-        Ok(if spec.is_empty() { None } else { Some(spec) })
+        if last == 0 {
+            if mp_verbose(merge_context) {
+                mp_message("last == 0; skip", merge_context);
+            }
+            return Ok(None);
+        }
+
+        // There is only one segment already, and it is merged.
+        if max_num_segments == 1
+            && last == 1
+            && self.is_merged(segment_infos, segment_infos.info(0), merge_context)?
+        {
+            if mp_verbose(merge_context) {
+                mp_message("already 1 seg; skip", merge_context);
+            }
+            return Ok(None);
+        }
+
+        // Check whether any segment is above the threshold.
+        let mut any_too_large = false;
+        for i in 0..last {
+            let info = segment_infos.info(i);
+            if self.size(info, merge_context)? > self.max_merge_size_for_forced_merge
+                || self.size_docs(info, merge_context)? > i64::from(self.max_merge_docs)
+            {
+                any_too_large = true;
+                break;
+            }
+        }
+
+        if any_too_large {
+            self.find_forced_merges_size_limit(segment_infos, last, merge_context)
+        } else {
+            self.find_forced_merges_max_num_segments(
+                segment_infos,
+                max_num_segments,
+                last,
+                merge_context,
+            )
+        }
     }
 
     fn find_forced_deletes_merges(
@@ -1615,11 +2142,19 @@ impl MergePolicy for LogMergePolicy {
     }
 
     fn get_no_cfs_ratio(&self) -> f64 {
-        self.no_cfs_ratio
+        self.cfs.get_no_cfs_ratio()
     }
 
     fn get_max_cfs_segment_size(&self) -> i64 {
-        self.max_cfs_segment_size
+        self.cfs.get_max_cfs_segment_size()
+    }
+
+    fn set_no_cfs_ratio(&self, no_cfs_ratio: f64) -> Result<()> {
+        self.cfs.set_no_cfs_ratio(no_cfs_ratio)
+    }
+
+    fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
+        self.cfs.set_max_cfs_segment_size_mb(v)
     }
 }
 
@@ -1710,15 +2245,18 @@ impl MergePolicy for UpgradeIndexMergePolicy {
         &self,
         segment_infos: &SegmentInfos,
         max_num_segments: i32,
-        segments_to_merge: &HashSet<String>,
+        segments_to_merge: &HashMap<String, bool>,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
-        let mut old_segments: HashSet<String> = segment_infos
+        // Java keeps the caller's `Boolean` for each old segment, so the
+        // wrapped policy still sees which ones were original
+        // (`UpgradeIndexMergePolicy.java:87-93`).
+        let mut old_segments: HashMap<String, bool> = segment_infos
             .iter()
-            .filter(|info| {
-                segments_to_merge.contains(&info.info.name) && Self::should_upgrade_segment(info)
+            .filter_map(|info| {
+                let original = segments_to_merge.get(&info.info.name)?;
+                Self::should_upgrade_segment(info).then(|| (info.info.name.clone(), *original))
             })
-            .map(|info| info.info.name.clone())
             .collect();
         if old_segments.is_empty() {
             return Ok(None);
@@ -1744,7 +2282,7 @@ impl MergePolicy for UpgradeIndexMergePolicy {
         if !old_segments.is_empty() {
             let leftovers: Vec<SegmentCommitInfo> = segment_infos
                 .iter()
-                .filter(|info| old_segments.contains(&info.info.name))
+                .filter(|info| old_segments.contains_key(&info.info.name))
                 .cloned()
                 .collect();
             if !leftovers.is_empty() {
@@ -1771,6 +2309,18 @@ impl MergePolicy for UpgradeIndexMergePolicy {
 
     fn get_max_cfs_segment_size(&self) -> i64 {
         self.inner.get_max_cfs_segment_size()
+    }
+
+    fn get_max_cfs_segment_size_mb(&self) -> f64 {
+        self.inner.get_max_cfs_segment_size_mb()
+    }
+
+    fn set_no_cfs_ratio(&self, no_cfs_ratio: f64) -> Result<()> {
+        self.inner.set_no_cfs_ratio(no_cfs_ratio)
+    }
+
+    fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
+        self.inner.set_max_cfs_segment_size_mb(v)
     }
 }
 
@@ -2334,7 +2884,7 @@ impl MergePolicy for TemporalMergePolicy {
         &self,
         segment_infos: &SegmentInfos,
         max_num_segments: i32,
-        _segments_to_merge: &HashSet<String>,
+        _segments_to_merge: &HashMap<String, bool>,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
         if max_num_segments < 1 {
@@ -2427,7 +2977,7 @@ impl MergePolicy for SoftDeletesRetentionMergePolicy {
         &self,
         segment_infos: &SegmentInfos,
         max_num_segments: i32,
-        segments_to_merge: &HashSet<String>,
+        segments_to_merge: &HashMap<String, bool>,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
         self.inner.find_forced_merges(
@@ -2453,6 +3003,18 @@ impl MergePolicy for SoftDeletesRetentionMergePolicy {
 
     fn get_max_cfs_segment_size(&self) -> i64 {
         self.inner.get_max_cfs_segment_size()
+    }
+
+    fn get_max_cfs_segment_size_mb(&self) -> f64 {
+        self.inner.get_max_cfs_segment_size_mb()
+    }
+
+    fn set_no_cfs_ratio(&self, no_cfs_ratio: f64) -> Result<()> {
+        self.inner.set_no_cfs_ratio(no_cfs_ratio)
+    }
+
+    fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
+        self.inner.set_max_cfs_segment_size_mb(v)
     }
 }
 
