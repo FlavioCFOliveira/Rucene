@@ -83,9 +83,12 @@ use std::time::Duration;
 use crate::codecs::Codec;
 use crate::document::Document;
 use crate::error::{LuceneError, Result};
+use crate::index::doc_values_update::{DocValuesUpdate, DocValuesUpdateValue};
 use crate::index::field_infos::{FieldInfosBuilder, FieldNumbers};
+use crate::index::field_updates_buffer::FieldUpdatesBuffer;
 use crate::index::index_writer_config::LiveIndexWriterConfig;
 use crate::index::indexing_chain::DefaultIndexingChain;
+use crate::index::DocValuesType;
 use crate::index::{FieldInfos, SegmentCommitInfo, SegmentInfo, Term};
 use crate::store::{
     flush_io_context, BufferedChecksumIndexInput, Directory, FlushInfo, IOContext, IndexInput,
@@ -254,10 +257,6 @@ pub struct TermDelete {
 /// Deletes and doc-values updates buffered either by one DWPT or globally.
 ///
 /// Equivalent to `org.apache.lucene.index.BufferedUpdates`.
-///
-/// Doc-values field updates (`FieldUpdatesBuffer`) are not ported yet; the
-/// counter Lucene keeps for them is preserved so that [`any`](Self::any) and
-/// the flush triggers behave identically once they land.
 #[derive(Debug, Default)]
 pub struct BufferedUpdates {
     /// Name of the segment (or `"global"`) this buffer belongs to.
@@ -270,6 +269,13 @@ pub struct BufferedUpdates {
     delete_queries: HashMap<String, (Box<dyn Query>, i32)>,
     /// Number of buffered doc-values field updates.
     num_field_updates: i32,
+    /// Doc-values field updates, one buffer per field.
+    ///
+    /// Equivalent to `BufferedUpdates.fieldUpdates`.
+    field_updates: HashMap<String, FieldUpdatesBuffer>,
+    /// RAM charged to `field_updates`, kept apart exactly as Java keeps
+    /// `fieldUpdatesBytesUsed` apart from `bytesUsed`.
+    field_updates_bytes_used: i64,
     /// Running RAM estimate for queries and terms.
     bytes_used: i64,
     /// Generation assigned by the delete queue that produced this buffer.
@@ -348,6 +354,74 @@ impl BufferedUpdates {
         self.num_field_updates += count;
     }
 
+    /// Buffers one numeric doc-values update.
+    ///
+    /// Equivalent to `BufferedUpdates.addNumericUpdate(NumericDocValuesUpdate, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error [`FieldUpdatesBuffer`] raises when an update does
+    /// not match the buffer's numeric/binary kind.
+    pub fn add_numeric_update(&mut self, update: &DocValuesUpdate, doc_id_upto: i32) -> Result<()> {
+        self.add_doc_values_update(update, doc_id_upto)
+    }
+
+    /// Buffers one binary doc-values update.
+    ///
+    /// Equivalent to `BufferedUpdates.addBinaryUpdate(BinaryDocValuesUpdate, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error [`FieldUpdatesBuffer`] raises when an update does
+    /// not match the buffer's numeric/binary kind.
+    pub fn add_binary_update(&mut self, update: &DocValuesUpdate, doc_id_upto: i32) -> Result<()> {
+        self.add_doc_values_update(update, doc_id_upto)
+    }
+
+    /// The body `addNumericUpdate` and `addBinaryUpdate` share.
+    ///
+    /// Java writes the two out separately because the static types of the
+    /// updates differ; [`DocValuesUpdateValue`] already carries that distinction,
+    /// so one body serves both and the two public entry points stay for parity
+    /// with the Java call sites.
+    fn add_doc_values_update(&mut self, update: &DocValuesUpdate, doc_id_upto: i32) -> Result<()> {
+        let before = match self.field_updates.get(&update.field) {
+            Some(buffer) => buffer.ram_bytes_used(),
+            None => {
+                let buffer = FieldUpdatesBuffer::new(update.clone(), doc_id_upto)?;
+                self.field_updates_bytes_used += buffer.ram_bytes_used();
+                self.field_updates.insert(update.field.clone(), buffer);
+                self.num_field_updates += 1;
+                return Ok(());
+            }
+        };
+        let buffer = self
+            .field_updates
+            .get_mut(&update.field)
+            .expect("INVARIANT: the buffer was just looked up");
+        match &update.value {
+            DocValuesUpdateValue::Numeric(value) => {
+                buffer.add_numeric_update(&update.term, *value, doc_id_upto)?;
+            }
+            DocValuesUpdateValue::Binary(value) => {
+                buffer.add_binary_update(&update.term, value.clone(), doc_id_upto)?;
+            }
+            DocValuesUpdateValue::None => {
+                buffer.add_reset(&update.field, &update.term, doc_id_upto)?;
+            }
+        }
+        self.field_updates_bytes_used += buffer.ram_bytes_used() - before;
+        self.num_field_updates += 1;
+        Ok(())
+    }
+
+    /// Returns the buffered doc-values updates, keyed by field.
+    ///
+    /// Equivalent to reading `BufferedUpdates.fieldUpdates`.
+    pub fn field_updates(&self) -> &HashMap<String, FieldUpdatesBuffer> {
+        &self.field_updates
+    }
+
     /// Returns the number of buffered doc-values field updates.
     pub fn num_field_updates(&self) -> i32 {
         self.num_field_updates
@@ -406,7 +480,9 @@ impl BufferedUpdates {
         self.terms_size = 0;
         self.delete_queries.clear();
         self.num_field_updates = 0;
+        self.field_updates.clear();
         self.bytes_used = 0;
+        self.field_updates_bytes_used = 0;
     }
 
     /// Returns `true` when anything is buffered.
@@ -422,11 +498,14 @@ impl BufferedUpdates {
             terms_size: self.terms_size,
             delete_queries: std::mem::take(&mut self.delete_queries),
             num_field_updates: self.num_field_updates,
+            field_updates: std::mem::take(&mut self.field_updates),
+            field_updates_bytes_used: self.field_updates_bytes_used,
             bytes_used: self.bytes_used,
             gen: self.gen,
         };
         self.terms_size = 0;
         self.num_field_updates = 0;
+        self.field_updates_bytes_used = 0;
         self.bytes_used = 0;
         taken
     }
@@ -434,7 +513,7 @@ impl BufferedUpdates {
 
 impl Accountable for BufferedUpdates {
     fn ram_bytes_used(&self) -> i64 {
-        self.bytes_used
+        self.bytes_used + self.field_updates_bytes_used
     }
 }
 
@@ -727,6 +806,13 @@ enum DeleteItem {
     Query(Box<dyn Query>),
     /// A batch of delete-by-queries issued in one call.
     Queries(Vec<Box<dyn Query>>),
+    /// A batch of doc-values updates applied atomically.
+    ///
+    /// Equivalent to `DocumentsWriterDeleteQueue.DocValuesUpdatesNode`. Unlike
+    /// every other item, this one is not a delete: `is_delete` reports `false`,
+    /// which is what keeps a soft update from also hard-deleting the documents
+    /// its term matches.
+    DocValuesUpdates(Vec<DocValuesUpdate>),
 }
 
 impl Debug for DeleteItem {
@@ -739,6 +825,18 @@ impl Debug for DeleteItem {
             Self::Queries(queries) => {
                 let rendered: Vec<String> = queries.iter().map(|q| q.to_query_string()).collect();
                 write!(f, "dels={rendered:?}")
+            }
+            Self::DocValuesUpdates(updates) => {
+                write!(f, "docValuesUpdates: ")?;
+                if let Some(first) = updates.first() {
+                    write!(f, "term={:?}; updates: [", first.term)?;
+                    let rendered: Vec<String> = updates
+                        .iter()
+                        .map(|u| format!("{}:{}", u.field, u.value.value_to_string()))
+                        .collect();
+                    write!(f, "{}]", rendered.join(","))?;
+                }
+                Ok(())
             }
         }
     }
@@ -785,6 +883,23 @@ impl DeleteNode {
         Self::new(DeleteItem::Query(query))
     }
 
+    /// Creates a doc-values-update node.
+    ///
+    /// Equivalent to `DocumentsWriterDeleteQueue.newNode(DocValuesUpdate...)`,
+    /// the node `IndexWriter.updateDocValues` and the soft-delete methods
+    /// enqueue.
+    pub fn new_doc_values_updates(updates: Vec<DocValuesUpdate>) -> Arc<Self> {
+        Self::new(DeleteItem::DocValuesUpdates(updates))
+    }
+
+    /// Returns whether applying this node deletes documents.
+    ///
+    /// Equivalent to `DocumentsWriterDeleteQueue.Node.isDelete()`, which every
+    /// node answers `true` to except the doc-values-update node.
+    pub fn is_delete(&self) -> bool {
+        !matches!(self.item, DeleteItem::DocValuesUpdates(_))
+    }
+
     fn next(&self) -> Option<Arc<DeleteNode>> {
         self.next
             .read()
@@ -799,7 +914,7 @@ impl DeleteNode {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(node);
     }
 
-    fn apply(&self, updates: &mut BufferedUpdates, doc_id_upto: i32) {
+    fn apply(&self, updates: &mut BufferedUpdates, doc_id_upto: i32) -> Result<()> {
         match &self.item {
             DeleteItem::Sentinel => {
                 debug_assert!(false, "sentinel item must never be applied");
@@ -818,7 +933,25 @@ impl DeleteNode {
                     updates.add_query(Box::new(ClonedQuery::of(query.as_ref())), doc_id_upto);
                 }
             }
+            DeleteItem::DocValuesUpdates(dv_updates) => {
+                for update in dv_updates {
+                    match update.doc_values_type {
+                        DocValuesType::NUMERIC => {
+                            updates.add_numeric_update(update, doc_id_upto)?;
+                        }
+                        DocValuesType::BINARY => {
+                            updates.add_binary_update(update, doc_id_upto)?;
+                        }
+                        other => {
+                            return Err(LuceneError::IllegalArgument(format!(
+                                "{other:?} DocValues updates not supported yet!"
+                            )));
+                        }
+                    }
+                }
+            }
         }
+        Ok(())
     }
 }
 
@@ -865,22 +998,23 @@ impl DeleteSlice {
     /// Applies every delete in this slice to `updates` and resets it.
     ///
     /// `doc_id_upto` is the exclusive upper docID bound the deletes apply to.
-    pub fn apply(&mut self, updates: &mut BufferedUpdates, doc_id_upto: i32) {
+    pub fn apply(&mut self, updates: &mut BufferedUpdates, doc_id_upto: i32) -> Result<()> {
         if self.is_empty() {
-            return;
+            return Ok(());
         }
         let mut current = Arc::clone(&self.head);
         loop {
             let next = current
                 .next()
                 .expect("INVARIANT: a slice never ends before its tail");
-            next.apply(updates, doc_id_upto);
+            next.apply(updates, doc_id_upto)?;
             if Arc::ptr_eq(&next, &self.tail) {
                 break;
             }
             current = next;
         }
         self.reset();
+        Ok(())
     }
 
     /// Turns this slice into a zero-length slice at its current tail.
@@ -990,7 +1124,7 @@ impl DocumentsWriterDeleteQueue {
     /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed.
     pub fn add_delete_terms(&self, terms: Vec<Term>) -> Result<i64> {
         let seq_no = self.add(DeleteNode::new(DeleteItem::Terms(terms)))?;
-        self.try_apply_global_slice();
+        self.try_apply_global_slice()?;
         Ok(seq_no)
     }
 
@@ -1003,7 +1137,22 @@ impl DocumentsWriterDeleteQueue {
     /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed.
     pub fn add_delete_queries(&self, queries: Vec<Box<dyn Query>>) -> Result<i64> {
         let seq_no = self.add(DeleteNode::new(DeleteItem::Queries(queries)))?;
-        self.try_apply_global_slice();
+        self.try_apply_global_slice()?;
+        Ok(seq_no)
+    }
+
+    /// Buffers a batch of doc-values updates applied atomically.
+    ///
+    /// Equivalent to `DocumentsWriterDeleteQueue.addDocValuesUpdates(DocValuesUpdate...)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed, or
+    /// [`LuceneError::IllegalArgument`] if an update targets a doc-values kind
+    /// other than `NUMERIC` or `BINARY`.
+    pub fn add_doc_values_updates(&self, updates: Vec<DocValuesUpdate>) -> Result<i64> {
+        let seq_no = self.add(DeleteNode::new_doc_values_updates(updates))?;
+        self.try_apply_global_slice()?;
         Ok(seq_no)
     }
 
@@ -1026,7 +1175,7 @@ impl DocumentsWriterDeleteQueue {
             !Arc::ptr_eq(&slice.head, &slice.tail),
             "slice head and tail must differ after add"
         );
-        self.try_apply_global_slice();
+        self.try_apply_global_slice()?;
         Ok(seq_no)
     }
 
@@ -1116,9 +1265,9 @@ impl DocumentsWriterDeleteQueue {
         }
     }
 
-    fn try_apply_global_slice(&self) {
+    fn try_apply_global_slice(&self) -> Result<()> {
         if self.closed.load(Ordering::Acquire) {
-            return;
+            return Ok(());
         }
         if let Ok(mut global) = self.global.try_lock() {
             let current_tail = self.read_tail();
@@ -1126,9 +1275,10 @@ impl DocumentsWriterDeleteQueue {
             if self.update_slice_no_seq_no(&mut global.slice, &current_tail) {
                 global
                     .slice
-                    .apply(&mut global.updates, BufferedUpdates::MAX_INT);
+                    .apply(&mut global.updates, BufferedUpdates::MAX_INT)?;
             }
         }
+        Ok(())
     }
 
     /// Freezes the global buffer and advances `caller_slice` to the tail that
@@ -1149,7 +1299,7 @@ impl DocumentsWriterDeleteQueue {
         if let Some(slice) = caller_slice {
             slice.tail = Arc::clone(&current_tail);
         }
-        Ok(self.freeze_global_buffer_internal(&mut global, &current_tail))
+        self.freeze_global_buffer_internal(&mut global, &current_tail)
     }
 
     /// Freezes the global buffer unless the queue is already closed.
@@ -1165,27 +1315,41 @@ impl DocumentsWriterDeleteQueue {
             return None;
         }
         let current_tail = self.read_tail();
-        self.freeze_global_buffer_internal(&mut global, &current_tail)
+        // Java's `maybeFreezeGlobalBuffer()` declares no checked exception: the
+        // only failure the applied slice can raise is a doc-values update whose
+        // type `IndexWriter.buildDocValuesUpdate` already rejected, so it is
+        // unreachable from a well-formed queue. Confine it here the way Java
+        // confines the unchecked exception, reporting it rather than losing it.
+        match self.freeze_global_buffer_internal(&mut global, &current_tail) {
+            Ok(frozen) => frozen,
+            Err(error) => {
+                if self.info_stream.is_enabled("BD") {
+                    self.info_stream
+                        .message("BD", &format!("maybeFreezeGlobalBuffer failed: {error}"));
+                }
+                None
+            }
+        }
     }
 
     fn freeze_global_buffer_internal(
         &self,
         global: &mut GlobalBuffer,
         current_tail: &Arc<DeleteNode>,
-    ) -> Option<FrozenBufferedUpdates> {
+    ) -> Result<Option<FrozenBufferedUpdates>> {
         if self.update_slice_no_seq_no(&mut global.slice, current_tail) {
             global
                 .slice
-                .apply(&mut global.updates, BufferedUpdates::MAX_INT);
+                .apply(&mut global.updates, BufferedUpdates::MAX_INT)?;
         }
         if global.updates.any() {
-            Some(FrozenBufferedUpdates::new(
+            Ok(Some(FrozenBufferedUpdates::new(
                 global.updates.take(),
                 None,
                 self.generation,
-            ))
+            )))
         } else {
-            None
+            Ok(None)
         }
     }
 
@@ -1221,9 +1385,20 @@ impl DocumentsWriterDeleteQueue {
         let current_tail = self.read_tail();
         let global = &mut *global;
         if self.update_slice_no_seq_no(&mut global.slice, &current_tail) {
-            global
+            // As in `maybe_freeze_global_buffer`, Java's
+            // `getBufferedUpdatesTermsSize()` declares no exception; the count is
+            // reported over whatever was applied.
+            if let Err(error) = global
                 .slice
-                .apply(&mut global.updates, BufferedUpdates::MAX_INT);
+                .apply(&mut global.updates, BufferedUpdates::MAX_INT)
+            {
+                if self.info_stream.is_enabled("BD") {
+                    self.info_stream.message(
+                        "BD",
+                        &format!("getBufferedUpdatesTermsSize failed: {error}"),
+                    );
+                }
+            }
         }
         global.updates.terms_size()
     }
@@ -2441,7 +2616,7 @@ impl DwptGuard {
                 );
                 state
                     .delete_slice
-                    .apply(&mut state.pending_updates, doc_id_upto);
+                    .apply(&mut state.pending_updates, doc_id_upto)?;
                 Ok(seq_no)
             }
             None => {
@@ -2449,7 +2624,7 @@ impl DwptGuard {
                 if seq_no < 0 {
                     state
                         .delete_slice
-                        .apply(&mut state.pending_updates, doc_id_upto);
+                        .apply(&mut state.pending_updates, doc_id_upto)?;
                     Ok(-seq_no)
                 } else {
                     state.delete_slice.reset();
@@ -2505,7 +2680,7 @@ impl DwptGuard {
         // frozen, so this segment sees every delete issued before this flush.
         state
             .delete_slice
-            .apply(&mut state.pending_updates, num_docs_in_ram);
+            .apply(&mut state.pending_updates, num_docs_in_ram)?;
         debug_assert!(state.delete_slice.is_empty());
         state.delete_slice.reset();
         Ok(global)
@@ -3858,6 +4033,19 @@ impl DocumentsWriter {
     /// Propagates delete-queue and flush errors.
     pub fn delete_queries(&self, queries: Vec<Box<dyn Query>>) -> Result<i64> {
         self.apply_delete_or_update(|queue| queue.add_delete_queries(queries))
+    }
+
+    /// Buffers doc-values updates, applied atomically to the documents their
+    /// terms match.
+    ///
+    /// Equivalent to `DocumentsWriter.updateDocValues(DocValuesUpdate...)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`DocumentsWriterDeleteQueue::add_doc_values_updates`]
+    /// raises.
+    pub fn update_doc_values(&self, updates: Vec<DocValuesUpdate>) -> Result<i64> {
+        self.apply_delete_or_update(|queue| queue.add_doc_values_updates(updates))
     }
 
     fn apply_delete_or_update<F>(&self, function: F) -> Result<i64>

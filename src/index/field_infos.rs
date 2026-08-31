@@ -1557,6 +1557,107 @@ impl FieldNumbers {
         self.lock().field_properties.contains_key(name)
     }
 
+    /// Returns every field name this registry knows about.
+    ///
+    /// Equivalent to `FieldInfos.FieldNumbers.getFieldNames()`, which hands back
+    /// an unmodifiable copy; the Rust counterpart returns an owned set for the
+    /// same reason — the caller must not be able to mutate the registry through
+    /// it, and the lock must not be held past the call.
+    pub fn get_field_names(&self) -> HashSet<String> {
+        self.lock().field_properties.keys().cloned().collect()
+    }
+
+    /// Checks that `field_name` may carry `dv_type` doc-values updates, creating
+    /// a doc-values-only field when it does not exist yet.
+    ///
+    /// Equivalent to
+    /// `FieldInfos.FieldNumbers.verifyOrCreateDvOnlyField(String, DocValuesType, boolean)`,
+    /// which `IndexWriter.updateNumericDocValue`, `updateBinaryDocValue` and
+    /// `updateDocValues` call before buffering an update. A field that is also
+    /// indexed with postings, points or vectors, or that carries a doc-values
+    /// skip index, cannot be updated in place, so each of those is rejected with
+    /// the same message Java produces.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field does not exist and
+    /// `field_must_exist` is set, when its doc-values type differs from
+    /// `dv_type`, or when it is not a doc-values-only field.
+    pub fn verify_or_create_dv_only_field(
+        &self,
+        field_name: &str,
+        dv_type: DocValuesType,
+        field_must_exist: bool,
+    ) -> Result<()> {
+        let existing = self.lock().field_properties.get(field_name).cloned();
+        let Some(properties) = existing else {
+            if field_must_exist {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "Can't update [{dv_type:?}] doc values; the field [{field_name}] doesn't exist."
+                )));
+            }
+            // Create a doc-values-only field, exactly as Java does: no postings,
+            // no points, no vectors, and the field number left to `add_or_get`.
+            let soft_deletes = self.soft_deletes_field_name.as_deref() == Some(field_name);
+            let is_parent = self.parent_field_name.as_deref() == Some(field_name);
+            let info = FieldInfo::new_full(
+                field_name,
+                -1,
+                false,
+                false,
+                false,
+                IndexOptions::NONE,
+                dv_type,
+                DocValuesSkipIndexType::NONE,
+                -1,
+                HashMap::new(),
+                0,
+                0,
+                0,
+                0,
+                VectorEncoding::FLOAT32,
+                VectorSimilarityFunction::EUCLIDEAN,
+                soft_deletes,
+                is_parent,
+            )?;
+            self.add_or_get(&info)?;
+            return Ok(());
+        };
+
+        if dv_type != properties.doc_values_type {
+            return Err(LuceneError::IllegalArgument(format!(
+                "Can't update [{dv_type:?}] doc values; the field [{field_name}] has inconsistent \
+                 doc values' type of [{:?}].",
+                properties.doc_values_type
+            )));
+        }
+        if properties.doc_values_skip_index_type != DocValuesSkipIndexType::NONE {
+            return Err(LuceneError::IllegalArgument(format!(
+                "Can't update [{dv_type:?}] doc values; the field [{field_name}] must be doc \
+                 values only field, bit it has doc values skip index"
+            )));
+        }
+        if properties.point_dimension_count != 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "Can't update [{dv_type:?}] doc values; the field [{field_name}] must be doc \
+                 values only field, but is also indexed with points."
+            )));
+        }
+        if properties.index_options != IndexOptions::NONE {
+            return Err(LuceneError::IllegalArgument(format!(
+                "Can't update [{dv_type:?}] doc values; the field [{field_name}] must be doc \
+                 values only field, but is also indexed with postings."
+            )));
+        }
+        if properties.vector_dimension != 0 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "Can't update [{dv_type:?}] doc values; the field [{field_name}] must be doc \
+                 values only field, but is also indexed with vectors."
+            )));
+        }
+        Ok(())
+    }
+
     /// Returns the number of registered field names.
     pub fn len(&self) -> usize {
         self.lock().field_properties.len()

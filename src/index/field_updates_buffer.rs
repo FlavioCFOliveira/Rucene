@@ -6,7 +6,19 @@
 use crate::error::{LuceneError, Result};
 use crate::index::doc_values_update::{DocValuesUpdate, DocValuesUpdateValue};
 use crate::index::Term;
-use crate::util::BytesRef;
+use crate::util::{Accountable, BytesRef};
+
+/// Shallow size Lucene charges for the buffer object itself.
+///
+/// Equivalent to `FieldUpdatesBuffer.SELF_SHALLOW_SIZE`.
+const SELF_SHALLOW_SIZE: i64 = 96;
+
+/// What one buffered record costs beyond the bytes of its field and term.
+///
+/// This port stores a record per update rather than Lucene's parallel arrays
+/// (see the type's divergence note), so the per-record constant covers the
+/// `String`, `BytesRef` and enum headers instead of Lucene's packed slots.
+const BYTES_PER_UPDATE: i64 = 84;
 
 /// One buffered update, as the buffer stores it.
 #[derive(Debug, Clone)]
@@ -184,6 +196,28 @@ impl FieldUpdatesBuffer {
             doc_up_to: update.doc_up_to,
             value: &update.value,
         })
+    }
+}
+
+impl Accountable for FieldUpdatesBuffer {
+    /// Equivalent to `FieldUpdatesBuffer.ramBytesUsed()`.
+    ///
+    /// Java sums a shallow size with the RAM of its `BytesRefArray` and its
+    /// packed value arrays. This port charges the same shallow size plus, per
+    /// record, a fixed header cost and the bytes the field name, the term and
+    /// the value actually occupy.
+    fn ram_bytes_used(&self) -> i64 {
+        SELF_SHALLOW_SIZE
+            + self
+                .updates
+                .iter()
+                .map(|update| {
+                    BYTES_PER_UPDATE
+                        + update.field.len() as i64
+                        + update.term.length as i64
+                        + update.value.value_size_in_bytes()
+                })
+                .sum::<i64>()
     }
 }
 

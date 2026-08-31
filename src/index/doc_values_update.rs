@@ -52,7 +52,11 @@ impl DocValuesUpdateValue {
     }
 
     /// Renders the value the way Lucene's `valueToString()` does.
-    fn value_to_string(&self) -> String {
+    ///
+    /// Crate-visible, matching the package-private visibility of Java's
+    /// `DocValuesUpdate.valueToString()`, which only the delete queue's node
+    /// rendering uses.
+    pub(crate) fn value_to_string(&self) -> String {
         match self {
             DocValuesUpdateValue::Numeric(value) => value.to_string(),
             DocValuesUpdateValue::Binary(bytes) => format!("{bytes:?}"),

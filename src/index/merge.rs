@@ -370,16 +370,6 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
         self.current_index().map(|idx| &mut self.subs[idx])
     }
 
-    /// Index into `subs` of the sub returned by the last [`Self::next_sub`].
-    fn current_index(&self) -> Option<usize> {
-        match &self.state {
-            MergerState::Empty => None,
-            MergerState::Sequential { current, .. } | MergerState::Sorted { current, .. } => {
-                *current
-            }
-        }
-    }
-
     /// Resets the merger to the beginning.
     pub fn reset(&mut self) -> Result<()> {
         self.state = if self.subs.is_empty() {
@@ -474,6 +464,33 @@ impl<T: DocIDMergerSub> DocIDMerger<T> {
                 Ok(current.map(|idx| &mut self.subs[idx]))
             }
         }
+    }
+
+    /// Returns the index of the sub the last [`next_sub`](Self::next_sub) call
+    /// returned, or `None` once the merger is exhausted.
+    ///
+    /// Java reads the current sub straight off the reference `DocIDMerger.next()`
+    /// returns and keeps holding it while it pulls values. Rust's borrow rules do
+    /// not allow a merged view to hold that `&mut` across later calls, so the
+    /// view records the index instead and reaches the sub through
+    /// [`sub_mut`](Self::sub_mut) when it needs a value.
+    pub fn current_index(&self) -> Option<usize> {
+        match &self.state {
+            MergerState::Empty => None,
+            MergerState::Sequential { current, .. } => *current,
+            MergerState::Sorted { current, .. } => *current,
+        }
+    }
+
+    /// Returns the sub at `index`, which a caller obtains from
+    /// [`current_index`](Self::current_index).
+    pub fn sub_mut(&mut self, index: usize) -> &mut T {
+        &mut self.subs[index]
+    }
+
+    /// Returns the sub at `index` for reading.
+    pub fn sub(&self, index: usize) -> &T {
+        &self.subs[index]
     }
 }
 

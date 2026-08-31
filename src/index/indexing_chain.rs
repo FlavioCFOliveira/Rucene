@@ -2161,9 +2161,9 @@ mod tests {
         Field, FieldType, IntField, KnnFloatVectorField, Store, StoredField, StringField, TextField,
     };
     use crate::index::documents_writer::TermDelete;
-    use crate::search::similarities::{CollectionStatistics, SimScorer, TermStatistics};
     use crate::index::field_infos::FieldNumbers;
     use crate::index::{SegmentInfo, Term, VectorEncoding, VectorSimilarityFunction};
+    use crate::search::similarities::{CollectionStatistics, SimScorer, TermStatistics};
     use crate::store::{
         flush_io_context, ByteBuffersDirectory, Directory, FlushInfo, TrackingDirectoryWrapper,
     };

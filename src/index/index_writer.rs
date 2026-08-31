@@ -9,20 +9,24 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::document::Document;
+use crate::analysis::Analyzer;
+use crate::document::{Document, Field, NumericValue};
 use crate::error::{LuceneError, Result};
 use crate::index::codec_reader::CodecReader;
+use crate::index::doc_values_update::{DocValuesUpdate, DocValuesUpdateValue};
 use crate::index::documents_writer::Query;
 use crate::index::documents_writer::{DeleteNode, DocumentsWriter, FlushNotifications, MAX_DOCS};
+use crate::index::field_infos::FieldNumbers;
 use crate::index::index_file_deleter::{IndexFileDeleter, WRITE_LOCK_NAME};
 use crate::index::index_writer_config::{IndexWriterConfig, LiveIndexWriterConfig, OpenMode};
 use crate::index::merge_policy::{MergeContext, MergeTrigger, OneMerge};
 use crate::index::merge_scheduler::MergeSource;
+use crate::index::readers_and_updates::ReaderPool;
 use crate::index::segment_info::{SegmentCommitInfo, SegmentInfo};
 use crate::index::segment_infos::SegmentInfos;
 use crate::index::segment_merger::SegmentMerger;
 use crate::index::segment_reader::SegmentReader;
-use crate::index::Term;
+use crate::index::{DocValuesType, IndexableFieldType, Term};
 use crate::store::{DefaultIOContext, Directory, IOContext, Lock};
 use crate::util::extra::Version;
 use crate::util::string_helper::StringHelper;
@@ -65,6 +69,14 @@ pub struct IndexWriter {
     config: Arc<LiveIndexWriterConfig>,
     info_stream: Arc<dyn InfoStream>,
     documents_writer: Arc<DocumentsWriter>,
+    /// Segment readers shared between deletes, merges and NRT reopen.
+    ///
+    /// Equivalent to `IndexWriter.readerPool`.
+    reader_pool: Arc<ReaderPool>,
+    /// The index-wide field-number registry.
+    ///
+    /// Equivalent to `IndexWriter.globalFieldNumberMap`.
+    global_field_numbers: Arc<FieldNumbers>,
     state: Mutex<WriterState>,
     /// Held for the writer's whole life, so only one writer opens a directory.
     _write_lock: Box<dyn Lock>,
@@ -203,6 +215,19 @@ impl IndexWriter {
             })
         };
 
+        let global_field_numbers = Arc::new(FieldNumbers::new(
+            live_config.soft_deletes_field().map(str::to_string),
+            live_config.parent_field().map(str::to_string),
+        )?);
+
+        let reader_pool = Arc::new(ReaderPool::new(
+            Arc::clone(&directory),
+            Arc::clone(&global_field_numbers),
+            Arc::clone(&info_stream),
+            live_config.soft_deletes_field().map(str::to_string),
+        ));
+        reader_pool.enable_reader_pooling(live_config.reader_pooling());
+
         let documents_writer = Arc::new(DocumentsWriter::with_default_chain(
             notifications,
             segment_infos.index_created_version_major(),
@@ -211,7 +236,7 @@ impl IndexWriter {
             Arc::clone(&live_config),
             Arc::clone(&directory),
             Arc::clone(&directory),
-            Arc::new(crate::index::field_infos::FieldNumbers::new(None, None)?),
+            Arc::clone(&global_field_numbers),
         ));
 
         Ok(Self {
@@ -219,6 +244,8 @@ impl IndexWriter {
             config: live_config,
             info_stream,
             documents_writer,
+            reader_pool,
+            global_field_numbers,
             state: Mutex::new(WriterState {
                 segment_infos,
                 rollback_segments,
@@ -240,6 +267,301 @@ impl IndexWriter {
     /// Returns the directory this writer writes to.
     pub fn get_directory(&self) -> &Arc<dyn Directory> {
         &self.directory
+    }
+
+    /// Returns the info stream this writer reports to.
+    ///
+    /// Equivalent to `IndexWriter.getInfoStream()`.
+    pub fn get_info_stream(&self) -> &Arc<dyn InfoStream> {
+        &self.info_stream
+    }
+
+    /// Returns the analyzer the configuration installed.
+    ///
+    /// Equivalent to `IndexWriter.getAnalyzer()`.
+    pub fn get_analyzer(&self) -> Result<Arc<dyn Analyzer>> {
+        self.ensure_open()?;
+        Ok(self.config.analyzer_arc())
+    }
+
+    /// Returns `true` while the writer is neither closing nor closed.
+    ///
+    /// Equivalent to `IndexWriter.isOpen()`.
+    pub fn is_open(&self) -> bool {
+        !self.closed.load(Ordering::Acquire)
+    }
+
+    /// Returns the tragic error that forced this writer closed, if any.
+    ///
+    /// Equivalent to `IndexWriter.getTragicException()`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java returns the `Throwable` itself.
+    /// A [`LuceneError`] is not clonable and the writer must keep its own copy,
+    /// so the port records and returns the rendered message. It answers the same
+    /// question — whether a tragedy happened and what it was.
+    pub fn get_tragic_exception(&self) -> Option<String> {
+        self.tragedy
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().cloned())
+    }
+
+    /// Records a tragic error, closing the writer to further work.
+    ///
+    /// Equivalent to `IndexWriter.onTragicEvent(Throwable, String)`, which sets
+    /// the tragedy exactly once and leaves the first cause in place.
+    pub fn on_tragic_event(&self, error: &LuceneError, location: &str) {
+        if self.info_stream.is_enabled(IW) {
+            self.info_stream
+                .message(IW, &format!("hit tragic error inside {location}: {error}"));
+        }
+        if let Ok(mut guard) = self.tragedy.lock() {
+            if guard.is_none() {
+                *guard = Some(format!("{location}: {error}"));
+            }
+        }
+    }
+
+    /// Fails once the writer has been closed, and optionally while it closes.
+    ///
+    /// Equivalent to `IndexWriter.ensureOpen(boolean)`.
+    ///
+    /// This port has no separate `closing` phase — `close` and `rollback` flip
+    /// `closed` under the writer's own lock — so `fail_if_closing` selects the
+    /// same two behaviours Java offers over one flag.
+    pub fn ensure_open_with(&self, fail_if_closing: bool) -> Result<()> {
+        if fail_if_closing {
+            return self.ensure_open();
+        }
+        if self.closed.load(Ordering::Acquire) {
+            return Err(LuceneError::AlreadyClosed(
+                "this IndexWriter is closed".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // RAM and document accounting
+    // -------------------------------------------------------------------------
+
+    /// Returns the RAM the buffered documents occupy.
+    ///
+    /// Equivalent to `IndexWriter.ramBytesUsed()`.
+    pub fn ram_bytes_used(&self) -> Result<i64> {
+        self.ensure_open()?;
+        Ok(self.documents_writer.flush_control().active_bytes()
+            + self.documents_writer.flush_control().delete_bytes_used())
+    }
+
+    /// Returns how many bytes are being flushed right now.
+    ///
+    /// Equivalent to `IndexWriter.getFlushingBytes()`.
+    pub fn get_flushing_bytes(&self) -> Result<i64> {
+        self.ensure_open()?;
+        Ok(self.documents_writer.flushing_bytes())
+    }
+
+    /// Returns how many documents sit in the RAM buffer.
+    ///
+    /// Equivalent to `IndexWriter.numRamDocs()`.
+    pub fn num_ram_docs(&self) -> Result<i32> {
+        self.ensure_open()?;
+        Ok(self.documents_writer.num_docs())
+    }
+
+    /// Returns the number of documents the index holds, reserved ones included.
+    ///
+    /// Equivalent to `IndexWriter.getPendingNumDocs()`.
+    pub fn get_pending_num_docs(&self) -> i64 {
+        self.pending_num_docs.load(Ordering::Acquire)
+    }
+
+    /// Returns the highest sequence number across completed operations.
+    ///
+    /// Equivalent to `IndexWriter.getMaxCompletedSequenceNumber()`.
+    pub fn get_max_completed_sequence_number(&self) -> Result<i64> {
+        self.ensure_open()?;
+        Ok(self.documents_writer.max_completed_sequence_number())
+    }
+
+    /// Returns the deleted-document count for `info`.
+    ///
+    /// Equivalent to `IndexWriter.numDeletedDocs(SegmentCommitInfo)`, which
+    /// prefers a pooled reader's live count because the `SegmentCommitInfo` may
+    /// change concurrently.
+    pub fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> Result<i32> {
+        self.ensure_open_with(false)?;
+        self.validate(info)?;
+        if let Some(rld) = self
+            .reader_pool
+            .get(info, false, self.created_version_major()?)?
+        {
+            return Ok(rld.get_del_count());
+        }
+        Ok(info.get_del_count())
+    }
+
+    /// Returns how many deletes a merge of `info` would reclaim.
+    ///
+    /// Equivalent to `IndexWriter.numDeletesToMerge(SegmentCommitInfo)`.
+    pub fn num_deletes_to_merge_for(&self, info: &SegmentCommitInfo) -> Result<i32> {
+        self.ensure_open_with(false)?;
+        self.validate(info)?;
+        if let Some(rld) = self
+            .reader_pool
+            .get(info, false, self.created_version_major()?)?
+        {
+            return Ok(rld.get_del_count());
+        }
+        // Without a pooled instance the hard deletes are the safe answer, as
+        // Java notes at the same point.
+        Ok(info.get_del_count())
+    }
+
+    /// The major version the index was created with, which the reader pool needs
+    /// to build a `ReadersAndUpdates`.
+    fn created_version_major(&self) -> Result<i32> {
+        Ok(self.state()?.segment_infos.index_created_version_major())
+    }
+
+    /// Returns accurate document statistics for this writer.
+    ///
+    /// Equivalent to `IndexWriter.getDocStats()`. Java exists precisely because
+    /// reading `maxDoc()` and `numDocs()` separately can observe a concurrent
+    /// change between the two calls; both numbers are taken here under one lock.
+    pub fn get_doc_stats(&self) -> Result<DocStats> {
+        self.ensure_open()?;
+        let state = self.state()?;
+        let mut num_docs = self.documents_writer.num_docs();
+        let mut max_doc = num_docs;
+        for info in state.segment_infos.iter() {
+            let segment_max_doc = info.info.max_doc()?;
+            max_doc += segment_max_doc;
+            num_docs += segment_max_doc - info.get_del_count();
+        }
+        Ok(DocStats { max_doc, num_docs })
+    }
+
+    /// Fails when `info` was not produced by this writer's directory.
+    ///
+    /// Equivalent to `IndexWriter.validate(SegmentCommitInfo)`.
+    fn validate(&self, info: &SegmentCommitInfo) -> Result<()> {
+        let state = self.state()?;
+        if state.segment_infos.contains(info) {
+            return Ok(());
+        }
+        Err(LuceneError::IllegalArgument(
+            "SegmentCommitInfo must be from the same directory".to_string(),
+        ))
+    }
+
+    // -------------------------------------------------------------------------
+    // SegmentInfos bookkeeping
+    // -------------------------------------------------------------------------
+
+    /// Raises the segment-infos version to `new_version` when it is below it.
+    ///
+    /// Equivalent to `IndexWriter.advanceSegmentInfosVersion(long)`.
+    pub fn advance_segment_infos_version(&self, new_version: i64) -> Result<()> {
+        self.ensure_open()?;
+        let mut state = self.state()?;
+        if state.segment_infos.version() < new_version {
+            state.segment_infos.set_version(new_version)?;
+        }
+        state.segment_infos.changed();
+        Ok(())
+    }
+
+    /// Raises the segment-infos counter to `new_counter` when it is below it.
+    ///
+    /// Equivalent to `IndexWriter.advanceSegmentInfosCounter(long)`.
+    pub fn advance_segment_infos_counter(&self, new_counter: i64) -> Result<()> {
+        self.ensure_open()?;
+        let mut state = self.state()?;
+        if state.segment_infos.counter < new_counter {
+            state.segment_infos.counter = new_counter;
+        }
+        state.segment_infos.changed();
+        Ok(())
+    }
+
+    /// Returns the segment-infos counter.
+    ///
+    /// Equivalent to `IndexWriter.getSegmentInfosCounter()`.
+    pub fn get_segment_infos_counter(&self) -> Result<i64> {
+        self.ensure_open()?;
+        Ok(self.state()?.segment_infos.counter)
+    }
+
+    /// Returns a snapshot of the current segments.
+    ///
+    /// Equivalent to `IndexWriter.cloneSegmentInfos()`, which Java exposes so a
+    /// caller can read a consistent view rather than a live one.
+    pub fn clone_segment_infos(&self) -> Result<SegmentInfos> {
+        clone_infos(&self.state()?.segment_infos)
+    }
+
+    /// Returns every field name visible to this writer.
+    ///
+    /// Equivalent to `IndexWriter.getFieldNames()`.
+    pub fn get_field_names(&self) -> HashSet<String> {
+        self.global_field_numbers.get_field_names()
+    }
+
+    /// Returns the user data attached to the next commit.
+    ///
+    /// Equivalent to `IndexWriter.getLiveCommitData()`.
+    pub fn get_live_commit_data(&self) -> Result<HashMap<String, String>> {
+        Ok(self.state()?.commit_user_data.clone())
+    }
+
+    /// Records that the files of `segment_infos` are in use.
+    ///
+    /// Equivalent to `IndexWriter.incRefDeleter(SegmentInfos)`, which an NRT
+    /// reader calls so a commit cannot delete the files it is reading.
+    pub fn inc_ref_deleter(&self, segment_infos: &SegmentInfos) -> Result<()> {
+        self.ensure_open()?;
+        let mut state = self.state()?;
+        state.deleter.inc_ref_segment_infos(segment_infos, false)?;
+        if self.info_stream.is_enabled(IW) {
+            self.info_stream.message(
+                IW,
+                &format!(
+                    "incRefDeleter for NRT reader version={}",
+                    segment_infos.version()
+                ),
+            );
+        }
+        Ok(())
+    }
+
+    /// Records that the files of `segment_infos` are no longer in use.
+    ///
+    /// Equivalent to `IndexWriter.decRefDeleter(SegmentInfos)`. Only call it
+    /// after a matching [`inc_ref_deleter`](Self::inc_ref_deleter).
+    pub fn dec_ref_deleter(&self, segment_infos: &SegmentInfos) -> Result<()> {
+        self.ensure_open()?;
+        let mut state = self.state()?;
+        state.deleter.dec_ref_segment_infos(segment_infos)?;
+        if self.info_stream.is_enabled(IW) {
+            self.info_stream.message(
+                IW,
+                &format!(
+                    "decRefDeleter for NRT reader version={}",
+                    segment_infos.version()
+                ),
+            );
+        }
+        Ok(())
+    }
+
+    /// Deletes files no commit references any more.
+    ///
+    /// Equivalent to `IndexWriter.deleteUnusedFiles()`.
+    pub fn delete_unused_files(&self) -> Result<()> {
+        self.ensure_open_with(false)?;
+        self.state()?.deleter.revisit_policy()
     }
 
     /// Returns the live configuration.
@@ -325,6 +647,201 @@ impl IndexWriter {
     pub fn delete_documents_by_queries(&self, queries: Vec<Box<dyn Query>>) -> Result<i64> {
         self.ensure_open()?;
         self.documents_writer.delete_queries(queries)
+    }
+
+    /// Replaces every document matching `term` with `doc`, marking the old ones
+    /// soft-deleted instead of deleting them.
+    ///
+    /// Equivalent to `IndexWriter.softUpdateDocument(Term, Iterable, Field...)`.
+    /// The matched documents stay in the index and are only tagged through the
+    /// `soft_deletes` doc-values fields, which is what lets a caller keep older
+    /// versions of a document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `soft_deletes` is empty, or
+    /// when a field is not an updatable doc-values field.
+    pub fn soft_update_document(
+        &self,
+        term: Term,
+        doc: &Document,
+        soft_deletes: &[Field],
+    ) -> Result<i64> {
+        if soft_deletes.is_empty() {
+            return Err(LuceneError::IllegalArgument(
+                "at least one soft delete must be present".to_string(),
+            ));
+        }
+        self.ensure_open()?;
+        let updates = self.build_doc_values_update(&term, soft_deletes)?;
+        self.documents_writer
+            .update_document(doc, Some(DeleteNode::new_doc_values_updates(updates)))
+    }
+
+    /// Replaces every document matching `term` with the block `docs`, marking the
+    /// old ones soft-deleted instead of deleting them.
+    ///
+    /// Equivalent to `IndexWriter.softUpdateDocuments(Term, Iterable, Field...)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `soft_deletes` is empty, or
+    /// when a field is not an updatable doc-values field.
+    pub fn soft_update_documents(
+        &self,
+        term: Term,
+        docs: &[Document],
+        soft_deletes: &[Field],
+    ) -> Result<i64> {
+        if soft_deletes.is_empty() {
+            return Err(LuceneError::IllegalArgument(
+                "at least one soft delete must be present".to_string(),
+            ));
+        }
+        self.ensure_open()?;
+        let updates = self.build_doc_values_update(&term, soft_deletes)?;
+        self.documents_writer
+            .update_documents(docs, Some(DeleteNode::new_doc_values_updates(updates)))
+    }
+
+    /// Sets the numeric doc-values of `field` to `value` on every document
+    /// `term` matches.
+    ///
+    /// Equivalent to `IndexWriter.updateNumericDocValue(Term, String, long)`.
+    /// The field must already exist and must be doc-values only.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field does not exist, is
+    /// not a numeric doc-values-only field, or takes part in the index sort.
+    pub fn update_numeric_doc_value(&self, term: Term, field: &str, value: i64) -> Result<i64> {
+        self.ensure_open()?;
+        self.global_field_numbers.verify_or_create_dv_only_field(
+            field,
+            DocValuesType::NUMERIC,
+            true,
+        )?;
+        self.reject_index_sort_field(field)?;
+        let update = DocValuesUpdate::numeric(term, field, value);
+        self.documents_writer.update_doc_values(vec![update])
+    }
+
+    /// Sets the binary doc-values of `field` to `value` on every document `term`
+    /// matches.
+    ///
+    /// Equivalent to `IndexWriter.updateBinaryDocValue(Term, String, BytesRef)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field does not exist or
+    /// is not a binary doc-values-only field.
+    pub fn update_binary_doc_value(
+        &self,
+        term: Term,
+        field: &str,
+        value: crate::util::BytesRef,
+    ) -> Result<i64> {
+        self.ensure_open()?;
+        self.global_field_numbers.verify_or_create_dv_only_field(
+            field,
+            DocValuesType::BINARY,
+            true,
+        )?;
+        let update = DocValuesUpdate::binary(term, field, value);
+        self.documents_writer.update_doc_values(vec![update])
+    }
+
+    /// Applies `updates` to every document `term` matches, atomically.
+    ///
+    /// Equivalent to `IndexWriter.updateDocValues(Term, Field...)`. A field whose
+    /// value is absent is cleared on the matching documents.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when a field is not an updatable
+    /// doc-values field or takes part in the index sort.
+    pub fn update_doc_values(&self, term: Term, updates: &[Field]) -> Result<i64> {
+        self.ensure_open()?;
+        let dv_updates = self.build_doc_values_update(&term, updates)?;
+        self.documents_writer.update_doc_values(dv_updates)
+    }
+
+    /// Turns `updates` into the doc-values updates the delete queue carries.
+    ///
+    /// Equivalent to `IndexWriter.buildDocValuesUpdate(Term, Field[])`, including
+    /// its registration of a field that does not exist yet and its rejection of
+    /// anything but `NUMERIC` and `BINARY`.
+    fn build_doc_values_update(
+        &self,
+        term: &Term,
+        updates: &[Field],
+    ) -> Result<Vec<DocValuesUpdate>> {
+        let mut out = Vec::with_capacity(updates.len());
+        for field in updates {
+            let dv_type = field.field_type().doc_values_type();
+            if dv_type == DocValuesType::NONE {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "can only update NUMERIC or BINARY fields! field={}",
+                    field.name()
+                )));
+            }
+            // If the field does not exist we try to add it; if it exists with a
+            // different doc-values type, or is not doc-values only, this fails.
+            self.global_field_numbers.verify_or_create_dv_only_field(
+                field.name(),
+                dv_type,
+                false,
+            )?;
+            self.reject_index_sort_field(field.name())?;
+
+            let update = match dv_type {
+                DocValuesType::NUMERIC => {
+                    let value = field.numeric_value().map(numeric_as_long);
+                    DocValuesUpdate::new(
+                        DocValuesType::NUMERIC,
+                        term.clone(),
+                        field.name(),
+                        i32::MAX,
+                        match value {
+                            Some(value) => DocValuesUpdateValue::Numeric(value),
+                            None => DocValuesUpdateValue::None,
+                        },
+                    )
+                }
+                DocValuesType::BINARY => DocValuesUpdate::new(
+                    DocValuesType::BINARY,
+                    term.clone(),
+                    field.name(),
+                    i32::MAX,
+                    match field.binary_value() {
+                        Some(value) => DocValuesUpdateValue::Binary(value),
+                        None => DocValuesUpdateValue::None,
+                    },
+                ),
+                other => {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "can only update NUMERIC or BINARY fields: field={}, type={other:?}",
+                        field.name()
+                    )));
+                }
+            };
+            out.push(update);
+        }
+        Ok(out)
+    }
+
+    /// Rejects an update to a field the index is sorted on.
+    ///
+    /// Equivalent to the `config.getIndexSortFields().contains(...)` guard Java
+    /// repeats in `updateNumericDocValue` and `buildDocValuesUpdate`: rewriting
+    /// such a field would invalidate the order the segments are stored in.
+    fn reject_index_sort_field(&self, field: &str) -> Result<()> {
+        if self.config.index_sort_fields().contains(field) {
+            return Err(LuceneError::IllegalArgument(format!(
+                "cannot update docvalues field involved in the index sort, field={field}"
+            )));
+        }
+        Ok(())
     }
 
     /// Deletes every document in the index.
@@ -794,6 +1311,36 @@ impl MergeContext for IndexWriter {
     }
 }
 
+impl IndexWriter {
+    /// Returns the segments currently taking part in a running merge.
+    ///
+    /// Equivalent to `IndexWriter.getMergingSegments()`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java returns a `Set`; `SegmentCommitInfo`
+    /// does not implement `Hash` in this port (see its own doc comment), so the
+    /// result is a `Vec`. `segment_infos` never holds the same segment twice, so
+    /// the contents are the same set either way.
+    pub fn get_merging_segments_pub(&self) -> Result<Vec<SegmentCommitInfo>> {
+        self.ensure_open()?;
+        let state = self.state()?;
+        Ok(state
+            .segment_infos
+            .iter()
+            .filter(|info| state.merging_segments.contains(&info.info.name))
+            .cloned()
+            .collect())
+    }
+
+    /// Returns whether the policy has queued merges the scheduler has not
+    /// started yet.
+    ///
+    /// Equivalent to `IndexWriter.hasPendingMerges()`.
+    pub fn has_pending_merges_pub(&self) -> Result<bool> {
+        self.ensure_open()?;
+        Ok(!self.state()?.pending_merges.is_empty())
+    }
+}
+
 impl MergeSource for IndexWriter {
     fn get_next_merge(&self) -> Option<OneMerge> {
         self.state().ok().and_then(|mut state| {
@@ -857,4 +1404,34 @@ fn clone_infos(source: &SegmentInfos) -> Result<SegmentInfos> {
     let mut copy = SegmentInfos::new(source.index_created_version_major())?;
     copy.replace(source);
     Ok(copy)
+}
+
+/// Document statistics taken in one consistent snapshot.
+///
+/// Equivalent to `org.apache.lucene.index.IndexWriter.DocStats`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DocStats {
+    /// Every document in the index, buffered and deleted ones included.
+    ///
+    /// **NOTE:** buffered deletions are not counted. Call
+    /// [`IndexWriter::commit`] first if they must be.
+    pub max_doc: i32,
+    /// Every document in the index, buffered ones included but deleted ones
+    /// excluded.
+    pub num_docs: i32,
+}
+
+/// Converts a document field's numeric value to the `long` Lucene stores.
+///
+/// Equivalent to the `(Long) f.numericValue()` cast in
+/// `IndexWriter.buildDocValuesUpdate`. Java's doc-values updates are always
+/// `long`; a field holding a narrower or floating value is widened the way
+/// `Number.longValue()` does.
+fn numeric_as_long(value: NumericValue) -> i64 {
+    match value {
+        NumericValue::Int(v) => i64::from(v),
+        NumericValue::Long(v) => v,
+        NumericValue::Float(v) => v as i64,
+        NumericValue::Double(v) => v as i64,
+    }
 }

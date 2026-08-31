@@ -97,6 +97,25 @@ impl<T: QueryVisitor + ?Sized> QueryVisitor for &mut T {
     fn accept_field(&self, field: &str) -> bool {
         (**self).accept_field(field)
     }
+
+    /// Delegates to the wrapped visitor.
+    ///
+    /// This override is load-bearing, not a convenience: the default body boxes
+    /// `self`, so for `&mut T` it would box a `&mut &mut T`, whose own default
+    /// would box a `&mut &mut &mut T`, and so on without end. Delegating to `T`
+    /// terminates the chain and is also the faithful behaviour — Java's
+    /// `getSubVisitor` returns the same visitor object, and reaching through the
+    /// reference preserves exactly that identity.
+    fn get_sub_visitor<'a>(
+        &'a mut self,
+        occur: Occur,
+        parent: &dyn Query,
+    ) -> Box<dyn QueryVisitor + 'a>
+    where
+        Self: 'a,
+    {
+        (**self).get_sub_visitor(occur, parent)
+    }
 }
 
 /// A [`QueryVisitor`] implementation that does nothing.
