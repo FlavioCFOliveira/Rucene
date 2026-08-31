@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::error::Result;
 use crate::index::segment_info::SegmentCommitInfo;
 use crate::index::segment_infos::SegmentInfos;
+use crate::util::InfoStream;
 
 /// Why a merge is being considered.
 ///
@@ -53,6 +54,11 @@ pub trait MergeContext {
     ///
     /// Equivalent to `MergeContext.getMergingSegments()`.
     fn get_merging_segments(&self) -> HashSet<String>;
+
+    /// Returns the info stream messages can be logged to.
+    ///
+    /// Equivalent to `MergeContext.getInfoStream()`.
+    fn get_info_stream(&self) -> Arc<dyn InfoStream>;
 }
 
 /// One merge the policy wants performed.
@@ -214,29 +220,132 @@ pub trait MergePolicy: Send + Sync {
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>>;
 
-    /// Returns the merges to run as part of a full flush. Defaults to none, as
-    /// Java's default method does.
+    /// Identifies merges to run synchronously on commit.
     ///
-    /// Equivalent to `MergePolicy.findFullFlushMerges`.
+    /// Equivalent to `MergePolicy.findFullFlushMerges`. The default returns the
+    /// natural merges from [`find_merges`](Self::find_merges) whose segments are
+    /// all below [`max_full_flush_merge_size`](Self::max_full_flush_merge_size).
     fn find_full_flush_merges(
         &self,
-        _merge_trigger: MergeTrigger,
-        _segment_infos: &SegmentInfos,
-        _merge_context: &dyn MergeContext,
+        merge_trigger: MergeTrigger,
+        segment_infos: &SegmentInfos,
+        merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
-        Ok(None)
+        let Some(merge_spec) = self.find_merges(merge_trigger, segment_infos, merge_context)?
+        else {
+            return Ok(None);
+        };
+        let max_size = self.max_full_flush_merge_size();
+        let mut new_spec: Option<MergeSpecification> = None;
+        for one_merge in merge_spec.merges {
+            let mut below_max = true;
+            for sci in &one_merge.segments {
+                if self.size(sci, merge_context)? >= max_size {
+                    below_max = false;
+                    break;
+                }
+            }
+            if below_max {
+                new_spec
+                    .get_or_insert_with(MergeSpecification::new)
+                    .add(one_merge);
+            }
+        }
+        Ok(new_spec)
     }
 
     /// Returns whether the merged segment should be written as a compound file.
     ///
-    /// Equivalent to `MergePolicy.useCompoundFile`.
+    /// Equivalent to `MergePolicy.useCompoundFile`. The default returns `true`
+    /// exactly when the merged segment's size is at or below both
+    /// [`get_max_cfs_segment_size`](Self::get_max_cfs_segment_size) and
+    /// [`get_no_cfs_ratio`](Self::get_no_cfs_ratio) times the total index size.
     fn use_compound_file(
         &self,
-        _infos: &SegmentInfos,
-        _merged_info: &SegmentCommitInfo,
-        _merge_context: &dyn MergeContext,
+        infos: &SegmentInfos,
+        merged_info: &SegmentCommitInfo,
+        merge_context: &dyn MergeContext,
     ) -> Result<bool> {
+        if self.get_no_cfs_ratio() == 0.0 {
+            return Ok(false);
+        }
+        let merged_info_size = self.size(merged_info, merge_context)?;
+        if merged_info_size > self.get_max_cfs_segment_size() {
+            return Ok(false);
+        }
+        if self.get_no_cfs_ratio() >= 1.0 {
+            return Ok(true);
+        }
+        let mut total_size = 0i64;
+        for info in infos.iter() {
+            total_size += self.size(info, merge_context)?;
+        }
+        Ok(merged_info_size as f64 <= self.get_no_cfs_ratio() * total_size as f64)
+    }
+
+    /// Returns the byte size of `info`, prorated by the fraction of its
+    /// documents that are not deleted.
+    ///
+    /// Equivalent to `MergePolicy.size(SegmentCommitInfo, MergeContext)`.
+    fn size(&self, info: &SegmentCommitInfo, merge_context: &dyn MergeContext) -> Result<i64> {
+        let byte_size = info.size_in_bytes_uncached()?;
+        let del_count = merge_context.num_deletes_to_merge(info)?;
+        let max_doc = info.info.max_doc()?;
+        if max_doc <= 0 {
+            return Ok(byte_size);
+        }
+        let del_ratio = f64::from(del_count) / f64::from(max_doc);
+        Ok((byte_size as f64 * (1.0 - del_ratio)) as i64)
+    }
+
+    /// Returns the largest segment size a full-flush merge may include.
+    ///
+    /// Equivalent to `MergePolicy.maxFullFlushMergeSize()`.
+    fn max_full_flush_merge_size(&self) -> i64 {
+        0
+    }
+
+    /// Returns whether `info` is already fully merged: no pending deletes, and
+    /// its compound-file state already matches what this policy would choose.
+    ///
+    /// Equivalent to `MergePolicy.isMerged(SegmentInfos, SegmentCommitInfo, MergeContext)`.
+    fn is_merged(
+        &self,
+        infos: &SegmentInfos,
+        info: &SegmentCommitInfo,
+        merge_context: &dyn MergeContext,
+    ) -> Result<bool> {
+        let del_count = merge_context.num_deletes_to_merge(info)?;
+        Ok(del_count == 0
+            && self.use_compound_file(infos, info, merge_context)?
+                == info.info.get_use_compound_file())
+    }
+
+    /// Returns whether a fully deleted segment must be kept anyway.
+    ///
+    /// Equivalent to `MergePolicy.keepFullyDeletedSegment(IOSupplier<CodecReader>)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java passes an `IOSupplier<CodecReader>`
+    /// so a policy can inspect the reader (soft-deletes retention needs the
+    /// live doc values). `CodecReader` is not yet a trait object this crate can
+    /// hand out lazily from a `SegmentCommitInfo` alone, so the default and
+    /// every override that does not need the reader take none; a caller that
+    /// does — [`SoftDeletesRetentionMergePolicy`] — reaches the reader through
+    /// its own reader pool argument instead. Every concrete policy in this
+    /// module answers independently of the reader, so the divergence has no
+    /// observable effect yet; it will need to be revisited once a policy that
+    /// inspects live docs to decide retention is ported.
+    fn keep_fully_deleted_segment(&self) -> Result<bool> {
         Ok(false)
+    }
+
+    /// Returns the number of deletes a merge would claim back for `info`.
+    ///
+    /// Equivalent to `MergePolicy.numDeletesToMerge(SegmentCommitInfo, int, IOSupplier<CodecReader>)`.
+    /// The default returns `del_count` unchanged; a soft-deletes-aware policy
+    /// overrides it to exclude deletes that must survive the merge.
+    fn num_deletes_to_merge_default(&self, _info: &SegmentCommitInfo, del_count: i32) -> i32 {
+        del_count
     }
 
     /// Returns the ratio above which a merged segment is not a compound file.
@@ -248,6 +357,39 @@ pub trait MergePolicy: Send + Sync {
     fn get_max_cfs_segment_size(&self) -> i64 {
         DEFAULT_MAX_CFS_SEGMENT_SIZE
     }
+}
+
+/// Renders `infos` the way `MergePolicy.segString(MergeContext, Iterable)` does.
+pub fn seg_string<'a>(
+    merge_context: &dyn MergeContext,
+    infos: impl IntoIterator<Item = &'a SegmentCommitInfo>,
+) -> String {
+    infos
+        .into_iter()
+        .map(|info| {
+            info.info.to_string_with_del_count(
+                merge_context.num_deleted_docs(info) - info.get_del_count(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Logs `message` to the merge context's info stream under the `"MP"` component,
+/// when it is enabled.
+///
+/// Equivalent to `MergePolicy.message(String, MergeContext)`.
+pub fn mp_message(message: &str, merge_context: &dyn MergeContext) {
+    if mp_verbose(merge_context) {
+        merge_context.get_info_stream().message("MP", message);
+    }
+}
+
+/// Returns whether the merge context's info stream is enabled for `"MP"`.
+///
+/// Equivalent to `MergePolicy.verbose(MergeContext)`.
+pub fn mp_verbose(merge_context: &dyn MergeContext) -> bool {
+    merge_context.get_info_stream().is_enabled("MP")
 }
 
 /// A policy that never merges.
@@ -1397,6 +1539,10 @@ impl MergeContext for CachingMergeContext<'_> {
 
     fn get_merging_segments(&self) -> HashSet<String> {
         self.inner.get_merging_segments()
+    }
+
+    fn get_info_stream(&self) -> Arc<dyn InfoStream> {
+        self.inner.get_info_stream()
     }
 }
 

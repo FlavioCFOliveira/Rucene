@@ -1297,17 +1297,27 @@ impl IndexWriter {
 
 impl MergeContext for IndexWriter {
     fn num_deletes_to_merge(&self, info: &SegmentCommitInfo) -> Result<i32> {
-        Ok(info.get_del_count())
+        self.num_deletes_to_merge_for(info)
     }
 
     fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32 {
-        info.get_del_count()
+        // Java's override declares no checked exception even though
+        // `ensureOpen`/`validate` can raise one; a merge policy only calls this
+        // through an already-open, already-validated writer, so falling back to
+        // the segment's own recorded delete count on the (unreachable in
+        // practice) error path is the closest infallible equivalent.
+        self.num_deleted_docs(info)
+            .unwrap_or_else(|_| info.get_del_count())
     }
 
     fn get_merging_segments(&self) -> HashSet<String> {
         self.state()
             .map(|state| state.merging_segments.clone())
             .unwrap_or_default()
+    }
+
+    fn get_info_stream(&self) -> Arc<dyn InfoStream> {
+        Arc::clone(&self.info_stream)
     }
 }
 
