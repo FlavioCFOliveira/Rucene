@@ -76,11 +76,16 @@ use crate::analysis::tokenattributes::{
     TermToBytesRefAttribute,
 };
 use crate::analysis::Analyzer;
+use crate::analysis::TokenStream;
 use crate::codecs::doc_values::DocValuesConsumer;
 use crate::codecs::knn_vectors::FieldVectorWriter;
 use crate::codecs::points::PointsWriter;
 use crate::codecs::postings::{NormsProducer, NumericDocValues};
 use crate::codecs::state::SegmentWriteState;
+use crate::document::column::{
+    create_column_field_adapter, BinaryColumn, ColumnBatch, ColumnFieldAdapter, ColumnValidation,
+    Density, DictionaryColumn, LongColumn, NumericKind, TypedColumn, VectorColumn,
+};
 use crate::document::{Document, InvertableType, StoredValueType};
 use crate::error::{LuceneError, Result};
 use crate::index::doc_values_writer::DocValuesWriter;
@@ -100,9 +105,12 @@ use crate::index::vector_values_consumer::VectorValuesConsumer;
 use crate::index::{
     DocValuesType, FieldInfo, IndexOptions, IndexableField, IndexableFieldType, SegmentInfo,
 };
+use crate::index::{NumericValue, StoredValue};
 use crate::search::Similarity;
+use crate::search::NO_MORE_DOCS;
 use crate::store::TrackingDirectoryWrapper;
 use crate::util::byte_block_pool::MAX_TERM_LENGTH;
+use crate::util::NumericUtils;
 use crate::util::{AttributeSource, BytesRef, InfoStream};
 
 /// Highest position a token may occupy.
@@ -432,6 +440,13 @@ struct PerField {
     /// crate owns: it is a handle into the codec's vectors writer, which does
     /// the buffering itself.
     knn_field_vectors_writer: Option<FieldVectorWriter>,
+    /// Which indexing features the columns of the current batch have claimed
+    /// for this field.
+    ///
+    /// Equivalent to `IndexingChain.PerField.columnFeatures`, which
+    /// `processBatch` uses to refuse two columns of one field claiming the same
+    /// feature.
+    column_features: u8,
 }
 
 /// Which attributes a field instance's token stream actually carries.
@@ -623,6 +638,69 @@ pub struct DefaultIndexingChain {
     /// segment it writes. Equivalent to `IndexingChain.vectorValuesConsumer`,
     /// which Lucene builds in the constructor (`IndexingChain.java:134-135`).
     vector_values_consumer: Option<VectorValuesConsumer>,
+}
+
+/// Presents a column's name and field type as an
+/// [`IndexableField`](crate::index::IndexableField), so that `describe_field`
+/// can build the column's `FieldInfo`.
+///
+/// Java's `processBatch` reads `column.name()` and `column.fieldType()`
+/// straight off the column and hands them to `initializeFieldInfo`, which takes
+/// a `PerField`. This port's `describe_field` takes an `IndexableField`, as
+/// `process_document` gives it, so the two members are carried in one.
+struct ColumnFieldTypeCarrier {
+    name: String,
+    field_type: Arc<dyn IndexableFieldType>,
+}
+
+impl std::fmt::Debug for ColumnFieldTypeCarrier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ColumnFieldTypeCarrier")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl IndexableField for ColumnFieldTypeCarrier {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        self.field_type.as_ref()
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: &dyn Analyzer,
+        _reuse: Option<&mut dyn TokenStream>,
+    ) -> Box<dyn TokenStream> {
+        unreachable!("INVARIANT: the carrier only ever answers name() and field_type()")
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        None
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&mut self) -> Option<&mut dyn std::io::Read> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
+    }
 }
 
 impl DefaultIndexingChain {
@@ -1055,6 +1133,7 @@ impl DefaultIndexingChain {
             doc_values,
             point_values,
             knn_field_vectors_writer,
+            column_features: 0,
         });
         self.per_field_index.insert(field_info.name.clone(), index);
         Ok(index)
@@ -1874,9 +1953,918 @@ impl DefaultIndexingChain {
         };
         norms.add_value(doc_id, norm_value)
     }
+
+    /// Feeds the row-oriented features — stored fields and term inversion — of
+    /// every column that has one.
+    ///
+    /// Equivalent to `IndexingChain.processRowColumns(int, int,
+    /// Iterable<Column>)`. The outer loop frames every batch-local document
+    /// id, so the stored-fields stream and the terms hash stay aligned with the
+    /// reserved document ids even for a document with no row-oriented value;
+    /// the column cursors themselves stay sparse.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when a cursor returns a
+    /// document id out of order or outside the batch, and propagates whatever
+    /// inverting or storing a value raises.
+    fn process_row_columns(
+        &mut self,
+        base_doc_id: i32,
+        num_docs: i32,
+        columns: &[TypedColumn<'_>],
+        doc_fields: &[usize],
+        field_infos: &mut FieldInfosBuilder,
+    ) -> Result<()> {
+        // Collect the row-oriented columns. The per-fields come from the
+        // validation pass's cache, indexed by the column's original position,
+        // so `row_pf_indices` records that position for each row-mode column.
+        let mut adapters: Vec<Box<dyn ColumnFieldAdapter + '_>> = Vec::new();
+        let mut heads: Vec<i32> = Vec::new();
+        let mut row_pf_indices: Vec<usize> = Vec::new();
+        let mut has_inverted = false;
+        let mut has_stored = false;
+
+        for (original_idx, column) in columns.iter().enumerate() {
+            let field_type = Arc::clone(column.column().field_type());
+            if !field_type.stored() && field_type.index_options() == IndexOptions::NONE {
+                continue;
+            }
+            let mut adapter = create_column_field_adapter(match column {
+                TypedColumn::Long(c) => TypedColumn::Long(*c),
+                TypedColumn::Binary(c) => TypedColumn::Binary(*c),
+                TypedColumn::Dictionary(c) => TypedColumn::Dictionary(*c),
+                TypedColumn::TokenStream(c) => TypedColumn::TokenStream(*c),
+                TypedColumn::VectorFloat(c) => TypedColumn::VectorFloat(*c),
+                TypedColumn::VectorByte(c) => TypedColumn::VectorByte(*c),
+            })?;
+            heads.push(adapter.next_doc()?);
+            adapters.push(adapter);
+            row_pf_indices.push(original_idx);
+            if field_type.index_options() != IndexOptions::NONE {
+                has_inverted = true;
+            }
+            if field_type.stored() {
+                has_stored = true;
+            }
+        }
+
+        let num_row_cols = adapters.len();
+        let analyzer = self.config.analyzer_arc();
+        let info_stream = self.config.info_stream();
+        let similarity = self.config.similarity();
+
+        // Row-dense outer loop: frame every document in `[0, num_docs)`.
+        for batch_doc_id in 0..num_docs {
+            let seg_doc_id = base_doc_id + batch_doc_id;
+            let field_gen = self.next_field_gen;
+            self.next_field_gen += 1;
+            let mut indexed: Vec<usize> = Vec::new();
+
+            if has_inverted {
+                if let Some(consumer) = self.term_vectors_consumer.as_mut() {
+                    consumer.start_document();
+                }
+            }
+            if has_stored {
+                self.start_stored_fields(seg_doc_id)?;
+            }
+
+            let mut outcome: Result<()> = Ok(());
+            'columns: for i in 0..num_row_cols {
+                let mut head = heads[i];
+                if head < batch_doc_id {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "Row column \"{}\" returned out-of-order batch doc-id {head}",
+                        adapters[i].name()
+                    )));
+                }
+                while head == batch_doc_id {
+                    let pf = doc_fields[row_pf_indices[i]];
+                    if self.per_fields[pf].field_gen != field_gen {
+                        self.per_fields[pf].field_gen = field_gen;
+                        self.per_fields[pf].first = true;
+                    }
+                    match self.invert_and_store(
+                        seg_doc_id,
+                        adapters[i].as_ref(),
+                        pf,
+                        analyzer.as_ref(),
+                        info_stream.as_ref(),
+                        field_infos,
+                    ) {
+                        Ok(true) => indexed.push(pf),
+                        Ok(false) => {}
+                        Err(e) => {
+                            outcome = Err(e);
+                            break 'columns;
+                        }
+                    }
+                    head = adapters[i].next_doc()?;
+                }
+                heads[i] = head;
+            }
+
+            // Lucene's `finally` runs the whole tail only when no aborting
+            // exception was recorded, because in that case the segment is
+            // discarded and none of it matters.
+            if self.aborting_error.is_none() {
+                for pf in indexed {
+                    if let Err(e) = Self::finish_norms(
+                        similarity.as_ref(),
+                        &mut self.per_fields[pf],
+                        seg_doc_id,
+                    ) {
+                        if outcome.is_ok() {
+                            outcome = Err(e);
+                        }
+                    }
+                    let per_field = &self.per_fields[pf];
+                    if let Some(writer_index) = per_field.writer_index {
+                        if self.terms_writer.field(writer_index).saw_payloads() {
+                            if let Some(info) =
+                                field_infos.field_info_mut(&per_field.field_info.name)
+                            {
+                                info.set_store_payloads();
+                            }
+                        }
+                    }
+                    if let (Some(consumer), Some(vectors_index)) =
+                        (self.term_vectors_consumer.as_mut(), per_field.vectors_index)
+                    {
+                        consumer.finish_field(vectors_index);
+                    }
+                }
+                if has_stored {
+                    self.finish_stored_fields()?;
+                }
+                if has_inverted {
+                    if let Some(consumer) = self.term_vectors_consumer.as_mut() {
+                        if let Err(e) =
+                            consumer.finish_document(seg_doc_id, self.terms_writer.pool())
+                        {
+                            self.on_aborting_exception(LuceneError::CorruptIndex(format!(
+                                "the term vectors of segment may be corrupt after doc \
+                                 {seg_doc_id}: {e}"
+                            )));
+                            return Err(e);
+                        }
+                        for per_field in &self.per_fields {
+                            let Some(vectors_index) = per_field.vectors_index else {
+                                continue;
+                            };
+                            if consumer.field(vectors_index).wrote_vectors() {
+                                if let Some(info) =
+                                    field_infos.field_info_mut(&per_field.field_info.name)
+                                {
+                                    info.set_store_term_vectors()?;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            outcome?;
+        }
+
+        // Any cursor head left after the outer loop names a document at or past
+        // the end of the batch.
+        for i in 0..num_row_cols {
+            if heads[i] != NO_MORE_DOCS {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "Row column \"{}\" returned batch doc-id {} which is out of range [0, \
+                     {num_docs})",
+                    adapters[i].name(),
+                    heads[i]
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Inverts one field instance and stores it, returning whether it was
+    /// indexed for the first time in this document.
+    ///
+    /// Equivalent to `IndexingChain.invertAndStore(int, IndexableField,
+    /// PerField)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever inverting or storing the value raises.
+    fn invert_and_store(
+        &mut self,
+        doc_id: i32,
+        field: &dyn IndexableField,
+        pf: usize,
+        analyzer: &dyn Analyzer,
+        info_stream: &dyn InfoStream,
+        field_infos: &mut FieldInfosBuilder,
+    ) -> Result<bool> {
+        let _ = field_infos;
+        let mut indexed_field = false;
+        if field.field_type().index_options() != IndexOptions::NONE {
+            let first = self.per_fields[pf].first;
+            Self::invert(
+                analyzer,
+                info_stream,
+                &mut self.terms_writer,
+                self.term_vectors_consumer.as_mut(),
+                &mut self.per_fields[pf],
+                doc_id,
+                field,
+                first,
+            )?;
+            if first {
+                self.per_fields[pf].first = false;
+                indexed_field = true;
+            }
+        }
+        if field.field_type().stored() {
+            self.store_field(pf, field)?;
+        }
+        Ok(indexed_field)
+    }
+
+    /// Feeds a numeric column's doc values and points.
+    ///
+    /// Equivalent to `IndexingChain.processLongColumn(int, int, LongColumn,
+    /// PerField, IndexableFieldType)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for a doc-values type a numeric
+    /// column cannot fill, and propagates whatever reading the column or
+    /// writing a buffer raises.
+    fn process_long_column(
+        &mut self,
+        base_doc_id: i32,
+        num_docs: i32,
+        column: &dyn LongColumn,
+        pf: usize,
+        field_type: &dyn IndexableFieldType,
+    ) -> Result<()> {
+        let dv_type = field_type.doc_values_type();
+        let has_points = field_type.point_dimension_count() != 0;
+
+        // Dense fast path: bulk-feed doc values and points from a values cursor.
+        if column.column().density() == Density::Dense {
+            return self.process_dense_long_column(
+                base_doc_id,
+                num_docs,
+                column,
+                pf,
+                dv_type,
+                has_points,
+            );
+        }
+
+        let name = column.column().name().to_string();
+
+        // Sparse, doc-values only: per-document tuple-cursor path.
+        if !has_points {
+            let mut cursor = column.tuples()?;
+            loop {
+                let batch_doc_id = cursor.next_doc()?;
+                if batch_doc_id == NO_MORE_DOCS {
+                    break;
+                }
+                ColumnValidation::check_doc_id(&name, batch_doc_id, num_docs)?;
+                let value = cursor.long_value();
+                let doc = base_doc_id + batch_doc_id;
+                match (dv_type, self.per_fields[pf].doc_values.as_mut()) {
+                    (DocValuesType::NUMERIC, Some(DocValuesWriter::Numeric(w))) => {
+                        w.add_value(doc, value)?;
+                    }
+                    (DocValuesType::SORTED_NUMERIC, Some(DocValuesWriter::SortedNumeric(w))) => {
+                        w.add_value(doc, value)?;
+                    }
+                    _ => return Err(Self::incompatible_dv("LongColumn", &name, dv_type)),
+                }
+            }
+            return Ok(());
+        }
+
+        // Sparse, with points and optionally numeric doc values.
+        let kind = column.numeric_kind();
+        let byte_width = match kind {
+            NumericKind::Int | NumericKind::Float => 4,
+            NumericKind::Long | NumericKind::Double => 8,
+        };
+        let mut point_scratch = vec![0u8; byte_width];
+        let mut cursor = column.tuples()?;
+        loop {
+            let batch_doc_id = cursor.next_doc()?;
+            if batch_doc_id == NO_MORE_DOCS {
+                break;
+            }
+            ColumnValidation::check_doc_id(&name, batch_doc_id, num_docs)?;
+            let seg_doc_id = base_doc_id + batch_doc_id;
+            let raw = cursor.long_value();
+            match dv_type {
+                DocValuesType::NONE => {}
+                DocValuesType::NUMERIC => match self.per_fields[pf].doc_values.as_mut() {
+                    Some(DocValuesWriter::Numeric(w)) => w.add_value(seg_doc_id, raw)?,
+                    _ => return Err(Self::incompatible_dv("LongColumn", &name, dv_type)),
+                },
+                DocValuesType::SORTED_NUMERIC => match self.per_fields[pf].doc_values.as_mut() {
+                    Some(DocValuesWriter::SortedNumeric(w)) => w.add_value(seg_doc_id, raw)?,
+                    _ => return Err(Self::incompatible_dv("LongColumn", &name, dv_type)),
+                },
+                _ => return Err(Self::incompatible_dv("LongColumn", &name, dv_type)),
+            }
+            Self::encode_sortable_point_bytes(raw, kind, &mut point_scratch);
+            let value = BytesRef::new(point_scratch.clone());
+            let Some(point_writer) = self.per_fields[pf].point_values.as_mut() else {
+                return Err(LuceneError::IllegalState(format!(
+                    "field=\"{name}\" declares point dimensions but has no points writer"
+                )));
+            };
+            point_writer.add_packed_value(seg_doc_id, &value)?;
+        }
+        Ok(())
+    }
+
+    /// Encodes one numeric value in the sortable-bytes form its point field
+    /// uses.
+    ///
+    /// Equivalent to the private
+    /// `IndexingChain.encodeSortablePointBytes(long, LongColumn.NumericKind,
+    /// byte[])`.
+    fn encode_sortable_point_bytes(raw: i64, kind: NumericKind, scratch: &mut [u8]) {
+        match kind {
+            NumericKind::Int | NumericKind::Float => {
+                NumericUtils::int_to_sortable_bytes(raw as i32, scratch, 0);
+            }
+            NumericKind::Long | NumericKind::Double => {
+                NumericUtils::long_to_sortable_bytes(raw, scratch, 0);
+            }
+        }
+    }
+
+    /// The error Lucene raises for a column whose field declares a doc-values
+    /// type that column cannot fill.
+    fn incompatible_dv(kind: &str, name: &str, dv_type: DocValuesType) -> LuceneError {
+        LuceneError::IllegalArgument(format!(
+            "{kind} \"{name}\" has incompatible docValuesType: {dv_type:?}"
+        ))
+    }
+
+    /// Bulk-feeds the doc values and points of a dense numeric column.
+    ///
+    /// Equivalent to the private `IndexingChain.processDenseLongColumn(int,
+    /// int, LongColumn, PerField, DocValuesType, boolean)`. The doc-values pass
+    /// runs first: it transforms the backing values least, so the cursor's
+    /// source stays warm in cache for the heavier points pass that follows.
+    ///
+    /// # Errors
+    ///
+    /// As [`process_long_column`](Self::process_long_column).
+    fn process_dense_long_column(
+        &mut self,
+        base_doc_id: i32,
+        num_docs: i32,
+        column: &dyn LongColumn,
+        pf: usize,
+        dv_type: DocValuesType,
+        has_points: bool,
+    ) -> Result<()> {
+        let name = column.column().name().to_string();
+        if dv_type != DocValuesType::NONE {
+            let mut dv_cursor = column.values()?;
+            ColumnValidation::check_dense_count(&name, dv_cursor.size(), num_docs)?;
+            match (dv_type, self.per_fields[pf].doc_values.as_mut()) {
+                (DocValuesType::NUMERIC, Some(DocValuesWriter::Numeric(w))) => {
+                    w.add_dense_values(base_doc_id, dv_cursor.as_mut())?;
+                }
+                (DocValuesType::SORTED_NUMERIC, Some(DocValuesWriter::SortedNumeric(w))) => {
+                    w.add_dense_values(base_doc_id, dv_cursor.as_mut())?;
+                }
+                _ => return Err(Self::incompatible_dv("LongColumn", &name, dv_type)),
+            }
+        }
+        if has_points {
+            let mut points_cursor = column.values()?;
+            ColumnValidation::check_dense_count(&name, points_cursor.size(), num_docs)?;
+            let kind = column.numeric_kind();
+            let Some(point_writer) = self.per_fields[pf].point_values.as_mut() else {
+                return Err(LuceneError::IllegalState(format!(
+                    "field=\"{name}\" declares point dimensions but has no points writer"
+                )));
+            };
+            match kind {
+                NumericKind::Int | NumericKind::Float => {
+                    point_writer.add_dense_1d_int_values(base_doc_id, points_cursor.as_mut())?;
+                }
+                NumericKind::Long | NumericKind::Double => {
+                    point_writer.add_dense_1d_long_values(base_doc_id, points_cursor.as_mut())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Feeds a binary column's doc values and points.
+    ///
+    /// Equivalent to `IndexingChain.processBinaryColumn(int, int, BinaryColumn,
+    /// PerField, IndexableFieldType)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`process_long_column`](Self::process_long_column).
+    fn process_binary_column(
+        &mut self,
+        base_doc_id: i32,
+        num_docs: i32,
+        column: &dyn BinaryColumn,
+        pf: usize,
+        field_type: &dyn IndexableFieldType,
+    ) -> Result<()> {
+        let dv_type = field_type.doc_values_type();
+        let has_points = field_type.point_dimension_count() != 0;
+
+        if column.column().density() == Density::Dense {
+            return self.process_dense_binary_column(
+                base_doc_id,
+                num_docs,
+                column,
+                pf,
+                dv_type,
+                has_points,
+            );
+        }
+
+        let name = column.column().name().to_string();
+        let mut cursor = column.tuples()?;
+
+        if dv_type == DocValuesType::NONE {
+            // Points only: the bytes pass through unchanged, and the caller is
+            // responsible for producing sort-encoded bytes of the right length.
+            loop {
+                let batch_doc_id = cursor.next_doc()?;
+                if batch_doc_id == NO_MORE_DOCS {
+                    break;
+                }
+                ColumnValidation::check_doc_id(&name, batch_doc_id, num_docs)?;
+                let value = cursor.value();
+                let Some(point_writer) = self.per_fields[pf].point_values.as_mut() else {
+                    return Err(LuceneError::IllegalState(format!(
+                        "field=\"{name}\" declares point dimensions but has no points writer"
+                    )));
+                };
+                point_writer.add_packed_value(base_doc_id + batch_doc_id, &value)?;
+            }
+            return Ok(());
+        }
+
+        loop {
+            let batch_doc_id = cursor.next_doc()?;
+            if batch_doc_id == NO_MORE_DOCS {
+                break;
+            }
+            ColumnValidation::check_doc_id(&name, batch_doc_id, num_docs)?;
+            let seg_doc_id = base_doc_id + batch_doc_id;
+            let value = cursor.value();
+            match (dv_type, self.per_fields[pf].doc_values.as_mut()) {
+                (DocValuesType::BINARY, Some(DocValuesWriter::Binary(w))) => {
+                    w.add_value(seg_doc_id, value.slice())?;
+                }
+                (DocValuesType::SORTED, Some(DocValuesWriter::Sorted(w))) => {
+                    w.add_value(seg_doc_id, value.slice())?;
+                }
+                (DocValuesType::SORTED_SET, Some(DocValuesWriter::SortedSet(w))) => {
+                    w.add_value(seg_doc_id, value.slice())?;
+                }
+                _ => return Err(Self::incompatible_dv("BinaryColumn", &name, dv_type)),
+            }
+            if has_points {
+                let Some(point_writer) = self.per_fields[pf].point_values.as_mut() else {
+                    return Err(LuceneError::IllegalState(format!(
+                        "field=\"{name}\" declares point dimensions but has no points writer"
+                    )));
+                };
+                point_writer.add_packed_value(seg_doc_id, &value)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Bulk-feeds the doc values and points of a dense binary column.
+    ///
+    /// Equivalent to the private `IndexingChain.processDenseBinaryColumn(int,
+    /// int, BinaryColumn, PerField, DocValuesType, boolean)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`process_long_column`](Self::process_long_column).
+    fn process_dense_binary_column(
+        &mut self,
+        base_doc_id: i32,
+        num_docs: i32,
+        column: &dyn BinaryColumn,
+        pf: usize,
+        dv_type: DocValuesType,
+        has_points: bool,
+    ) -> Result<()> {
+        let name = column.column().name().to_string();
+        // Doc-values pass first, over a dense values cursor.
+        if dv_type != DocValuesType::NONE {
+            let mut dv_cursor = column.values()?;
+            let size = dv_cursor.size();
+            ColumnValidation::check_dense_count(&name, size, num_docs)?;
+            for i in 0..size {
+                let value = dv_cursor.next_value()?;
+                let doc = base_doc_id + i;
+                match (dv_type, self.per_fields[pf].doc_values.as_mut()) {
+                    (DocValuesType::BINARY, Some(DocValuesWriter::Binary(w))) => {
+                        w.add_value(doc, value.slice())?;
+                    }
+                    (DocValuesType::SORTED, Some(DocValuesWriter::Sorted(w))) => {
+                        w.add_value(doc, value.slice())?;
+                    }
+                    (DocValuesType::SORTED_SET, Some(DocValuesWriter::SortedSet(w))) => {
+                        w.add_value(doc, value.slice())?;
+                    }
+                    _ => return Err(Self::incompatible_dv("BinaryColumn", &name, dv_type)),
+                }
+            }
+        }
+        if has_points {
+            // Points pass: a fresh dense values cursor, bulk-added.
+            let mut pc = column.values()?;
+            ColumnValidation::check_dense_count(&name, pc.size(), num_docs)?;
+            let Some(point_writer) = self.per_fields[pf].point_values.as_mut() else {
+                return Err(LuceneError::IllegalState(format!(
+                    "field=\"{name}\" declares point dimensions but has no points writer"
+                )));
+            };
+            point_writer.add_dense_nd_values(base_doc_id, pc.as_mut())?;
+        }
+        Ok(())
+    }
+
+    /// Feeds a dictionary-encoded column's doc values.
+    ///
+    /// Equivalent to `IndexingChain.processDictionaryColumn(int, int,
+    /// DictionaryColumn, PerField, IndexableFieldType)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`process_long_column`](Self::process_long_column).
+    fn process_dictionary_column(
+        &mut self,
+        base_doc_id: i32,
+        num_docs: i32,
+        column: &dyn DictionaryColumn,
+        pf: usize,
+        field_type: &dyn IndexableFieldType,
+    ) -> Result<()> {
+        let dv_type = field_type.doc_values_type();
+        let dict = column.dictionary();
+        let name = column.column().name().to_string();
+
+        match dv_type {
+            DocValuesType::SORTED => {
+                let dense = column.column().density() == Density::Dense;
+                if dense {
+                    let mut cursor = column.values()?;
+                    ColumnValidation::check_dense_count(&name, cursor.size(), num_docs)?;
+                    match self.per_fields[pf].doc_values.as_mut() {
+                        Some(DocValuesWriter::Sorted(w)) => {
+                            w.add_dense_ordinal_values(base_doc_id, dict, cursor.as_mut())?;
+                        }
+                        _ => return Err(Self::incompatible_dv("DictionaryColumn", &name, dv_type)),
+                    }
+                } else {
+                    let mut cursor = column.tuples()?;
+                    match self.per_fields[pf].doc_values.as_mut() {
+                        Some(DocValuesWriter::Sorted(w)) => {
+                            w.add_ordinal_tuples(base_doc_id, dict, cursor.as_mut())?;
+                        }
+                        _ => return Err(Self::incompatible_dv("DictionaryColumn", &name, dv_type)),
+                    }
+                }
+            }
+            DocValuesType::SORTED_SET => {
+                let mut cursor = column.tuples()?;
+                match self.per_fields[pf].doc_values.as_mut() {
+                    Some(DocValuesWriter::SortedSet(w)) => {
+                        w.add_ordinal_tuples(base_doc_id, dict, cursor.as_mut())?;
+                    }
+                    _ => return Err(Self::incompatible_dv("DictionaryColumn", &name, dv_type)),
+                }
+            }
+            _ => return Err(Self::incompatible_dv("DictionaryColumn", &name, dv_type)),
+        }
+        Ok(())
+    }
+
+    /// Feeds a float-vector column.
+    ///
+    /// Equivalent to `IndexingChain.processVectorColumn(int, int, VectorColumn,
+    /// PerField, IndexableFieldType)` under `VectorEncoding.FLOAT32`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when a document id repeats or
+    /// goes backwards, when a vector has the wrong dimension, or when the
+    /// column names a document outside the batch.
+    fn process_vector_column_float(
+        &mut self,
+        base_doc_id: i32,
+        num_docs: i32,
+        column: &dyn VectorColumn<Vec<f32>>,
+        pf: usize,
+        field_type: &dyn IndexableFieldType,
+    ) -> Result<()> {
+        let dimension = field_type.vector_dimension();
+        let name = column.column().name().to_string();
+        let mut cursor = column.tuples()?;
+        let mut prev_batch_doc_id = -1;
+        let mut consumed = 0;
+        loop {
+            let batch_doc_id = cursor.next_doc()?;
+            if batch_doc_id == NO_MORE_DOCS {
+                break;
+            }
+            ColumnValidation::check_doc_id(&name, batch_doc_id, num_docs)?;
+            ColumnValidation::check_vector_doc_id_strictly_increasing(
+                &name,
+                batch_doc_id,
+                prev_batch_doc_id,
+            )?;
+            let vec = cursor.value();
+            ColumnValidation::check_vector_dimension(
+                &name,
+                vec.len() as i32,
+                dimension,
+                batch_doc_id,
+            )?;
+            match self.per_fields[pf].knn_field_vectors_writer.as_mut() {
+                Some(FieldVectorWriter::Float(writer)) => {
+                    writer.add_value(base_doc_id + batch_doc_id, vec.clone())?;
+                }
+                _ => {
+                    return Err(LuceneError::IllegalState(format!(
+                        "field=\"{name}\" is indexed with FLOAT32 vectors but has no float vectors \
+                         writer"
+                    )))
+                }
+            }
+            prev_batch_doc_id = batch_doc_id;
+            consumed += 1;
+        }
+        if column.column().density() == Density::Dense {
+            ColumnValidation::check_dense_count(&name, consumed, num_docs)?;
+        }
+        Ok(())
+    }
+
+    /// Feeds a byte-vector column.
+    ///
+    /// Equivalent to `IndexingChain.processVectorColumn(int, int, VectorColumn,
+    /// PerField, IndexableFieldType)` under `VectorEncoding.BYTE`.
+    ///
+    /// # Errors
+    ///
+    /// As [`process_vector_column_float`](Self::process_vector_column_float).
+    fn process_vector_column_byte(
+        &mut self,
+        base_doc_id: i32,
+        num_docs: i32,
+        column: &dyn VectorColumn<Vec<u8>>,
+        pf: usize,
+        field_type: &dyn IndexableFieldType,
+    ) -> Result<()> {
+        let dimension = field_type.vector_dimension();
+        let name = column.column().name().to_string();
+        let mut cursor = column.tuples()?;
+        let mut prev_batch_doc_id = -1;
+        let mut consumed = 0;
+        loop {
+            let batch_doc_id = cursor.next_doc()?;
+            if batch_doc_id == NO_MORE_DOCS {
+                break;
+            }
+            ColumnValidation::check_doc_id(&name, batch_doc_id, num_docs)?;
+            ColumnValidation::check_vector_doc_id_strictly_increasing(
+                &name,
+                batch_doc_id,
+                prev_batch_doc_id,
+            )?;
+            let vec = cursor.value();
+            ColumnValidation::check_vector_dimension(
+                &name,
+                vec.len() as i32,
+                dimension,
+                batch_doc_id,
+            )?;
+            match self.per_fields[pf].knn_field_vectors_writer.as_mut() {
+                Some(FieldVectorWriter::Byte(writer)) => {
+                    writer.add_value(base_doc_id + batch_doc_id, vec.clone())?;
+                }
+                _ => {
+                    return Err(LuceneError::IllegalState(format!(
+                        "field=\"{name}\" is indexed with BYTE vectors but has no byte vectors \
+                         writer"
+                    )))
+                }
+            }
+            prev_batch_doc_id = batch_doc_id;
+            consumed += 1;
+        }
+        if column.column().density() == Density::Dense {
+            ColumnValidation::check_dense_count(&name, consumed, num_docs)?;
+        }
+        Ok(())
+    }
 }
 
 impl IndexingChain for DefaultIndexingChain {
+    /// Indexes a column-oriented batch of documents.
+    ///
+    /// Equivalent to `IndexingChain.processBatch(int, ColumnBatch)`: the
+    /// columns are validated and their fields initialised first, then the
+    /// row-oriented features — stored fields and term inversion — are fed
+    /// document by document, and finally the column-oriented ones — doc values,
+    /// points and vectors — are fed column by column.
+    ///
+    /// `base_doc_id` is the segment-level document id of the batch's first
+    /// document: batch-local document 0 maps to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when a column is invalid, when
+    /// two columns of one field claim the same indexing feature, or when a
+    /// cursor names a document outside the batch; and propagates whatever
+    /// reading a column or writing a buffer raises.
+    fn process_batch(
+        &mut self,
+        base_doc_id: i32,
+        column_batch: &dyn ColumnBatch,
+        field_infos: &mut FieldInfosBuilder,
+    ) -> Result<()> {
+        let num_docs = column_batch.num_docs();
+        let columns = column_batch.columns();
+        let mut has_row_columns = false;
+        let batch_gen = self.next_field_gen;
+        self.next_field_gen += 1;
+        let codec = self.config.codec();
+
+        // First pass: validate every column and accumulate each field's
+        // schema. A batch may carry more than one column for a field name, to
+        // combine distinct features — see `ColumnValidation::feature_mask`.
+        let mut doc_fields: Vec<usize> = Vec::with_capacity(columns.len());
+        for column in &columns {
+            let field_name = column.column().name();
+            let field_type = Arc::clone(column.column().field_type());
+
+            ColumnValidation::validate_column_has_indexing_feature(
+                field_name,
+                field_type.as_ref(),
+            )?;
+
+            match column {
+                TypedColumn::Binary(bc) => ColumnValidation::validate_binary_column(
+                    field_name,
+                    bc.stored_type(),
+                    field_type.as_ref(),
+                )?,
+                TypedColumn::Long(lc) => ColumnValidation::validate_long_column(
+                    field_name,
+                    lc.numeric_kind(),
+                    lc.stored_type(),
+                    field_type.as_ref(),
+                )?,
+                TypedColumn::Dictionary(dc) => ColumnValidation::validate_dictionary_column(
+                    field_name,
+                    dc.stored_type(),
+                    field_type.as_ref(),
+                )?,
+                TypedColumn::VectorFloat(_) | TypedColumn::VectorByte(_) => {
+                    ColumnValidation::validate_vector_column(field_name, field_type.as_ref())?;
+                }
+                TypedColumn::TokenStream(_) => {
+                    ColumnValidation::validate_token_stream_column(
+                        field_name,
+                        field_type.as_ref(),
+                    )?;
+                }
+            }
+
+            if field_type.stored() || field_type.index_options() != IndexOptions::NONE {
+                has_row_columns = true;
+            }
+
+            // Java looks the `PerField` up by name and initialises its
+            // `FieldInfo` after the loop; this port's `get_or_add_per_field`
+            // does both at once, over the `FieldInfo` the builder registers —
+            // the same arrangement `process_document` uses.
+            let adapter = ColumnFieldTypeCarrier {
+                name: field_name.to_string(),
+                field_type: Arc::clone(&field_type),
+            };
+            let described = Self::describe_field(&adapter, field_infos, codec.as_ref())?;
+            let registered = field_infos.add(&described)?;
+            let index = self.get_or_add_per_field(registered)?;
+
+            let column_features = ColumnValidation::feature_mask(field_type.as_ref());
+            if self.per_fields[index].field_gen != batch_gen {
+                // The first column for this field name in this batch: start a
+                // fresh feature set.
+                self.per_fields[index].field_gen = batch_gen;
+                self.per_fields[index].column_features = column_features as u8;
+            } else {
+                // Each indexing feature must come from a single column for a
+                // given field name.
+                let overlap = i32::from(self.per_fields[index].column_features) & column_features;
+                if overlap != 0 {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "ColumnBatch has multiple columns for field \"{field_name}\" claiming the \
+                         same indexing feature {}; each feature may appear in at most one column.",
+                        ColumnValidation::feature_names(overlap)
+                    )));
+                }
+                self.per_fields[index].column_features |= column_features as u8;
+            }
+
+            doc_fields.push(index);
+        }
+
+        // Row-oriented pass: stored fields and term inversion only.
+        if has_row_columns {
+            self.process_row_columns(base_doc_id, num_docs, &columns, &doc_fields, field_infos)?;
+        }
+
+        // Column-oriented pass: doc values, points and vectors. Each column is
+        // asked for a fresh cursor.
+        for (col_oriented_idx, column) in columns.iter().enumerate() {
+            let field_type = Arc::clone(column.column().field_type());
+            if field_type.doc_values_type() == DocValuesType::NONE
+                && field_type.point_dimension_count() == 0
+                && field_type.vector_dimension() == 0
+            {
+                // No column-oriented feature.
+                continue;
+            }
+            let pf = doc_fields[col_oriented_idx];
+            match column {
+                TypedColumn::Long(long_col) => {
+                    self.process_long_column(
+                        base_doc_id,
+                        num_docs,
+                        *long_col,
+                        pf,
+                        field_type.as_ref(),
+                    )?;
+                }
+                TypedColumn::Binary(binary_col) => {
+                    self.process_binary_column(
+                        base_doc_id,
+                        num_docs,
+                        *binary_col,
+                        pf,
+                        field_type.as_ref(),
+                    )?;
+                }
+                TypedColumn::Dictionary(dict_col) => {
+                    self.process_dictionary_column(
+                        base_doc_id,
+                        num_docs,
+                        *dict_col,
+                        pf,
+                        field_type.as_ref(),
+                    )?;
+                }
+                TypedColumn::VectorFloat(vector_col) => {
+                    self.process_vector_column_float(
+                        base_doc_id,
+                        num_docs,
+                        *vector_col,
+                        pf,
+                        field_type.as_ref(),
+                    )?;
+                }
+                TypedColumn::VectorByte(vector_col) => {
+                    self.process_vector_column_byte(
+                        base_doc_id,
+                        num_docs,
+                        *vector_col,
+                        pf,
+                        field_type.as_ref(),
+                    )?;
+                }
+                TypedColumn::TokenStream(tsc) => {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "Unknown column type: token-stream column \"{}\" has no column-oriented \
+                         feature",
+                        tsc.column().name()
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn process_document(
         &mut self,
         doc_id: i32,

@@ -109,7 +109,13 @@ pub trait ColumnBatch {
     fn num_docs(&self) -> i32;
 
     /// Returns the batch's columns.
-    fn columns(&self) -> Vec<&dyn ColumnValues>;
+    ///
+    /// Equivalent to `ColumnBatch.columns()`, which returns an
+    /// `Iterable<Column>` over the sealed `Column` hierarchy. Rust cannot
+    /// downcast a trait object back to the concrete column, so the elements are
+    /// [`TypedColumn`]s: the same set of alternatives, named where Java leaves
+    /// them to `instanceof`.
+    fn columns(&self) -> Vec<TypedColumn<'_>>;
 }
 
 /// What every typed column exposes.
@@ -785,6 +791,32 @@ pub enum TypedColumn<'a> {
     Dictionary(&'a dyn DictionaryColumn),
     /// A token-stream column.
     TokenStream(&'a dyn TokenStreamColumn),
+    /// A column of 32-bit float vectors.
+    ///
+    /// Java writes `VectorColumn<?>` and casts the cursor's value to
+    /// `float[]` or `byte[]` after switching on the field's
+    /// `VectorEncoding`. `VectorColumn` is generic here, so the two encodings
+    /// Lucene supports are two variants instead of one wildcard plus a cast.
+    VectorFloat(&'a dyn VectorColumn<Vec<f32>>),
+    /// A column of byte vectors.
+    VectorByte(&'a dyn VectorColumn<Vec<u8>>),
+}
+
+impl TypedColumn<'_> {
+    /// Returns the column's identity, whatever its kind.
+    ///
+    /// Equivalent to reading `Column.name()`, `Column.fieldType()` and
+    /// `Column.density()` off the value the `switch` matched.
+    pub fn column(&self) -> &Column {
+        match self {
+            Self::Long(c) => c.column(),
+            Self::Binary(c) => c.column(),
+            Self::Dictionary(c) => c.column(),
+            Self::TokenStream(c) => c.column(),
+            Self::VectorFloat(c) => c.column(),
+            Self::VectorByte(c) => c.column(),
+        }
+    }
 }
 
 /// Presents a [`Column`]'s current cursor value as an
@@ -860,6 +892,19 @@ pub fn create_column_field_adapter<'a>(
             tsc.column().name(),
             Arc::clone(tsc.column().field_type()),
             tsc.tuples()?,
+        ))),
+        // Java's `ColumnFieldAdapter.create` permits only `LongColumn` and
+        // `BinaryColumn` (and the two that present as one), and its `default`
+        // arm throws "Unknown column type". A vector column never reaches here,
+        // because `validateVectorColumn` refuses a vector field that is also
+        // stored or indexed, and only those take the row-oriented pass.
+        TypedColumn::VectorFloat(vc) => Err(LuceneError::IllegalArgument(format!(
+            "Unknown column type: vector column \"{}\"",
+            vc.column().name()
+        ))),
+        TypedColumn::VectorByte(vc) => Err(LuceneError::IllegalArgument(format!(
+            "Unknown column type: vector column \"{}\"",
+            vc.column().name()
         ))),
     }
 }

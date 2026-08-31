@@ -738,6 +738,29 @@ pub trait IndexingChain: Send + Debug {
         field_infos: &mut FieldInfosBuilder,
     ) -> Result<()>;
 
+    /// Indexes a column-oriented batch of documents starting at the
+    /// per-segment `base_doc_id`.
+    ///
+    /// Equivalent to `IndexingChain.processBatch(int, ColumnBatch)`. The
+    /// default refuses the call, which is what a chain that only understands
+    /// documents — or a test double — wants.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::UnsupportedOperation`] by default, and propagates
+    /// whatever an implementation raises.
+    fn process_batch(
+        &mut self,
+        base_doc_id: i32,
+        column_batch: &dyn crate::document::column::ColumnBatch,
+        field_infos: &mut FieldInfosBuilder,
+    ) -> Result<()> {
+        let _ = (base_doc_id, column_batch, field_infos);
+        Err(LuceneError::UnsupportedOperation(
+            "this indexing chain does not accept column batches".to_string(),
+        ))
+    }
+
     /// Binds the chain to the segment it will write.
     ///
     /// Lucene passes the directory and the `SegmentInfo` to the
