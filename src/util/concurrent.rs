@@ -276,17 +276,25 @@ impl NamedThreadFactory {
     /// An empty prefix becomes `Lucene`, as `NamedThreadFactory.checkPrefix`
     /// specifies.
     pub fn new(thread_name_prefix: &str) -> Self {
-        let prefix = if thread_name_prefix.is_empty() {
-            "Lucene"
-        } else {
-            thread_name_prefix
-        };
+        let prefix = Self::check_prefix(thread_name_prefix);
         Self {
             thread_name_prefix: format!(
                 "{prefix}-{}-thread",
                 THREAD_POOL_NUMBER.fetch_add(1, Ordering::SeqCst)
             ),
             thread_number: AtomicUsize::new(1),
+        }
+    }
+
+    /// Returns `prefix`, or `Lucene` when it is empty.
+    ///
+    /// Equivalent to the private `NamedThreadFactory.checkPrefix(String)`.
+    /// Java also accepts a null prefix, which `&str` cannot be.
+    fn check_prefix(prefix: &str) -> &str {
+        if prefix.is_empty() {
+            "Lucene"
+        } else {
+            prefix
         }
     }
 

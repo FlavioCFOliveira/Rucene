@@ -951,7 +951,33 @@ impl Version {
                 prerelease, minor, bugfix
             )));
         }
-        Ok(Self::new_const(major, minor, bugfix, prerelease))
+        let version = Self::new_const(major, minor, bugfix, prerelease);
+        debug_assert!(version.encoded_is_valid());
+        Ok(version)
+    }
+
+    /// Returns whether the encoded value agrees with the four components.
+    ///
+    /// Equivalent to the private `Version.encodedIsValid()`, which Java only
+    /// evaluates inside an `assert` at the end of the constructor;
+    /// `debug_assert!` is the same arrangement here.
+    fn encoded_is_valid(&self) -> bool {
+        debug_assert_eq!(i32::from(self.major), (self.encoded >> 18) & 0xFF);
+        debug_assert_eq!(i32::from(self.minor), (self.encoded >> 10) & 0xFF);
+        debug_assert_eq!(i32::from(self.bugfix), (self.encoded >> 2) & 0xFF);
+        debug_assert_eq!(i32::from(self.prerelease), self.encoded & 0x03);
+        true
+    }
+
+    /// Returns the crate's full implementation version.
+    ///
+    /// Equivalent to `Version.getPackageImplementationVersion()`, which reads
+    /// the `Implementation-Version` attribute the build stamps into the JAR
+    /// manifest and falls back to `"unknown"`. Cargo stamps the same fact into
+    /// `CARGO_PKG_VERSION` at compile time, so the value is read from there and
+    /// is never absent.
+    pub fn get_package_implementation_version() -> &'static str {
+        env!("CARGO_PKG_VERSION")
     }
 
     /// Parses a dot-separated version of the form `major.minor.bugfix.prerelease`.

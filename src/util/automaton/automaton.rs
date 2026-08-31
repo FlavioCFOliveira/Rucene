@@ -222,6 +222,48 @@ impl Automaton {
         self.add_transition_range(source, dest, label, label);
     }
 
+    /// Returns whether the transition `t` is about to read comes after the one
+    /// before it, in the order transitions are stored in.
+    ///
+    /// Equivalent to the private `Automaton.transitionSorted(Transition)`,
+    /// which Java only evaluates inside an `assert`; `debug_assert!` is the
+    /// same arrangement here.
+    fn transition_sorted(&self, t: &Transition) -> bool {
+        let upto = t.transition_upto;
+        if upto == self.states[2 * t.source as usize] {
+            // The transition is not initialised yet — this is the first one —
+            // so there is nothing to check.
+            return true;
+        }
+
+        let upto = upto as usize;
+        let next_dest = self.transitions[upto];
+        let next_min = self.transitions[upto + 1];
+        let next_max = self.transitions[upto + 2];
+        if next_min > t.min {
+            return true;
+        } else if next_min < t.min {
+            return false;
+        }
+
+        // Min is equal; now test max.
+        if next_max > t.max {
+            return true;
+        } else if next_max < t.max {
+            return false;
+        }
+
+        // Max is also equal; now test dest.
+        if next_dest > t.dest {
+            return true;
+        } else if next_dest < t.dest {
+            return false;
+        }
+
+        // Fully equal transitions should never be seen here.
+        false
+    }
+
     /// Add a new transition with the specified source, dest, min, max.
     ///
     /// # Panics
@@ -650,6 +692,14 @@ impl TransitionAccessor for Automaton {
     }
 
     fn get_next_transition(&self, t: &mut Transition) {
+        // Make sure there is still a transition left.
+        debug_assert!(
+            (t.transition_upto + 3 - self.states[2 * t.source as usize])
+                <= 3 * self.states[2 * t.source as usize + 1]
+        );
+        // Make sure transitions are in fact sorted.
+        debug_assert!(self.transition_sorted(t));
+
         let upto = t.transition_upto as usize;
         t.dest = self.transitions[upto];
         t.min = self.transitions[upto + 1];

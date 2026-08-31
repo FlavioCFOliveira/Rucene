@@ -62,6 +62,11 @@ pub struct BytesRefHash {
     hash_mask: i32,
     high_mask: i32,
     count: i32,
+    /// The count the previous [`clear`](BytesRefHash::clear) saw, which is the
+    /// size the table shrinks towards on the next one. `-1` before the first.
+    ///
+    /// Equivalent to `BytesRefHash.lastCount`.
+    last_count: i32,
     bytes_used: Arc<AtomicI64>,
     /// `true` when the table is keyed by the pool offset of already-interned
     /// bytes (`BytesRefHash.addByPoolOffset`) rather than by the bytes
@@ -112,6 +117,7 @@ impl BytesRefHash {
             hash_mask: capacity as i32 - 1,
             high_mask: !(capacity as i32 - 1),
             count: 0,
+            last_count: -1,
             bytes_used,
             keyed_by_pool_offset: false,
         }
@@ -295,8 +301,64 @@ impl BytesRefHash {
             Ordering::AcqRel,
         );
         self.bytes_start.clear();
+        self.last_count = self.count;
         self.count = 0;
-        self.ids.fill(-1);
+        // `shrink` clears the hash entries when it resizes; when it does not,
+        // they must be cleared here.
+        if self.last_count == -1 || !self.shrink(self.last_count) {
+            self.ids.fill(-1);
+        }
+    }
+
+    /// Shrinks the table towards `target_size`, keeping it a power of two.
+    ///
+    /// Equivalent to the private `BytesRefHash.shrink(int)`, which halves the
+    /// table while a quarter of it would still hold `target_size`. Returns
+    /// whether the table was resized — a resize also clears every slot.
+    fn shrink(&mut self, target_size: i32) -> bool {
+        // ArrayUtil.shrink cannot be used: a power of two is required.
+        let hash_size = self.ids.len();
+        let mut new_size = hash_size;
+        while new_size >= 8 && (new_size / 4) as i32 > target_size {
+            new_size /= 2;
+        }
+        if new_size == hash_size {
+            return false;
+        }
+        self.bytes_used.fetch_sub(
+            (std::mem::size_of::<i32>() * (hash_size - new_size)) as i64,
+            Ordering::AcqRel,
+        );
+        self.ids = vec![-1; new_size];
+        self.hash_half_size = new_size / 2;
+        self.hash_mask = new_size as i32 - 1;
+        self.high_mask = !self.hash_mask;
+        true
+    }
+
+    /// Renumbers the slots so that the first `size()` of them hold the term ids
+    /// in the order the terms were added, and returns the slot array.
+    ///
+    /// Equivalent to `BytesRefHash.compact()`, which [`sort`](Self::sort) runs
+    /// first so it can use the freed tail of the array as scratch space.
+    pub fn compact(&mut self) -> &mut [i32] {
+        // The id is the sequence number the bytes were added to the pool with.
+        for i in 0..self.count as usize {
+            self.ids[i] = i as i32;
+        }
+        let count = self.count as usize;
+        self.ids[count..].fill(-1);
+        self.last_count = self.count;
+        &mut self.ids
+    }
+
+    /// Hashes `bytes` the way the table does.
+    ///
+    /// Equivalent to the package-private `BytesRefHash.doHash(byte[], int,
+    /// int)`, which is `StringHelper.murmurhash3_x86_32` under
+    /// `GOOD_FAST_HASH_SEED`.
+    pub fn do_hash(bytes: &[u8], offset: usize, length: usize) -> i32 {
+        hash_bytes(&bytes[offset..offset + length])
     }
 
     /// Returns the slot `bytes` hashes to: either the slot holding it, or the

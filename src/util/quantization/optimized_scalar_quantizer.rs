@@ -303,6 +303,131 @@ impl OptimizedScalarQuantizer {
     /// Packs one bit per component into `packed`, most significant bit first.
     ///
     /// Equivalent to `OptimizedScalarQuantizer.packAsBinary`.
+    /// Transposes a 4-bit quantized vector into four bit-planes.
+    ///
+    /// Equivalent to `OptimizedScalarQuantizer.transposeHalfByte(byte[],
+    /// byte[])`: each of the four bits of a component goes to its own quarter
+    /// of `quant_query_byte`, most significant bit first inside each byte.
+    ///
+    /// # Panics
+    ///
+    /// Panics in a debug build when a component is outside `[0, 15]`, which is
+    /// Java's `assert`.
+    pub fn transpose_half_byte(q: &[u8], quant_query_byte: &mut [u8]) {
+        let quarter = quant_query_byte.len() / 4;
+        let half = quant_query_byte.len() / 2;
+        let three_quarters = 3 * quant_query_byte.len() / 4;
+        let mut i = 0usize;
+        while i < q.len() {
+            debug_assert!(q[i] <= 15);
+            let mut lower_byte = 0i32;
+            let mut lower_middle_byte = 0i32;
+            let mut upper_middle_byte = 0i32;
+            let mut upper_byte = 0i32;
+            let mut j = 7i32;
+            while j >= 0 && i < q.len() {
+                let v = i32::from(q[i]);
+                lower_byte |= (v & 1) << j;
+                lower_middle_byte |= ((v >> 1) & 1) << j;
+                upper_middle_byte |= ((v >> 2) & 1) << j;
+                upper_byte |= ((v >> 3) & 1) << j;
+                i += 1;
+                j -= 1;
+            }
+            let index = ((i + 7) / 8) - 1;
+            quant_query_byte[index] = lower_byte as u8;
+            quant_query_byte[index + quarter] = lower_middle_byte as u8;
+            quant_query_byte[index + half] = upper_middle_byte as u8;
+            quant_query_byte[index + three_quarters] = upper_byte as u8;
+        }
+    }
+
+    /// Transposes a 2-bit quantized vector into two bit-planes.
+    ///
+    /// Equivalent to `OptimizedScalarQuantizer.transposeDibit(byte[], byte[])`,
+    /// which is [`transpose_half_byte`](Self::transpose_half_byte) for two bits
+    /// instead of four.
+    ///
+    /// # Panics
+    ///
+    /// Panics in a debug build when a component is outside `[0, 3]`, which is
+    /// Java's `assert`.
+    pub fn transpose_dibit(vector: &[u8], packed: &mut [u8]) {
+        let stripe_size = packed.len() / 2;
+        let limit = vector.len().saturating_sub(7);
+        let mut i = 0usize;
+        let mut index = 0usize;
+        while i < limit {
+            let lower_byte = (i32::from(vector[i] & 1) << 7)
+                | (i32::from(vector[i + 1] & 1) << 6)
+                | (i32::from(vector[i + 2] & 1) << 5)
+                | (i32::from(vector[i + 3] & 1) << 4)
+                | (i32::from(vector[i + 4] & 1) << 3)
+                | (i32::from(vector[i + 5] & 1) << 2)
+                | (i32::from(vector[i + 6] & 1) << 1)
+                | i32::from(vector[i + 7] & 1);
+            let upper_byte = (i32::from((vector[i] >> 1) & 1) << 7)
+                | (i32::from((vector[i + 1] >> 1) & 1) << 6)
+                | (i32::from((vector[i + 2] >> 1) & 1) << 5)
+                | (i32::from((vector[i + 3] >> 1) & 1) << 4)
+                | (i32::from((vector[i + 4] >> 1) & 1) << 3)
+                | (i32::from((vector[i + 5] >> 1) & 1) << 2)
+                | (i32::from((vector[i + 6] >> 1) & 1) << 1)
+                | i32::from((vector[i + 7] >> 1) & 1);
+            packed[index] = lower_byte as u8;
+            packed[index + stripe_size] = upper_byte as u8;
+            i += 8;
+            index += 1;
+        }
+        if i == vector.len() {
+            return;
+        }
+        let mut lower_byte = 0i32;
+        let mut upper_byte = 0i32;
+        let mut j = 7i32;
+        while i < vector.len() {
+            debug_assert!(vector[i] <= 3);
+            lower_byte |= i32::from(vector[i] & 1) << j;
+            upper_byte |= i32::from((vector[i] >> 1) & 1) << j;
+            j -= 1;
+            i += 1;
+        }
+        packed[index] = lower_byte as u8;
+        packed[index + stripe_size] = upper_byte as u8;
+    }
+
+    /// Rebuilds a 2-bit quantized vector from its two bit-planes.
+    ///
+    /// Equivalent to `OptimizedScalarQuantizer.untransposeDibit(byte[],
+    /// byte[])`, the inverse of
+    /// [`transpose_dibit`](Self::transpose_dibit).
+    pub fn untranspose_dibit(packed: &[u8], vector: &mut [u8]) {
+        let stripe_size = packed.len() / 2;
+        let limit = vector.len().saturating_sub(7);
+        let mut i = 0usize;
+        let mut index = 0usize;
+        while i < limit {
+            let lower_byte = packed[index];
+            let upper_byte = packed[index + stripe_size];
+            for k in 0..8usize {
+                let shift = 7 - k as u32;
+                vector[i + k] = ((lower_byte >> shift) & 1) | (((upper_byte >> shift) & 1) << 1);
+            }
+            i += 8;
+            index += 1;
+        }
+        if i < vector.len() {
+            let lower_byte = packed[index];
+            let upper_byte = packed[index + stripe_size];
+            let mut j = 7u32;
+            while i < vector.len() {
+                vector[i] = ((lower_byte >> j) & 1) | (((upper_byte >> j) & 1) << 1);
+                j = j.wrapping_sub(1);
+                i += 1;
+            }
+        }
+    }
+
     pub fn pack_as_binary(vector: &[u8], packed: &mut [u8]) {
         packed.fill(0);
         for (i, &v) in vector.iter().enumerate() {

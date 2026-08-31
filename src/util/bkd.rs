@@ -335,7 +335,11 @@ impl BKDUtil {
         i
     }
 
-    fn common_prefix_length4(a: &[u8], a_offset: usize, b: &[u8], b_offset: usize) -> usize {
+    /// Returns the length of the common prefix across the next 4 bytes of both
+    /// arrays.
+    ///
+    /// Equivalent to `BKDUtil.commonPrefixLength4(byte[], int, byte[], int)`.
+    pub fn common_prefix_length4(a: &[u8], a_offset: usize, b: &[u8], b_offset: usize) -> usize {
         let a_int = BitUtil::read_le_int(a, a_offset) as u32;
         let b_int = BitUtil::read_le_int(b, b_offset) as u32;
         let xor = a_int ^ b_int;
@@ -343,7 +347,11 @@ impl BKDUtil {
         (leading / 8) as usize
     }
 
-    fn common_prefix_length8(a: &[u8], a_offset: usize, b: &[u8], b_offset: usize) -> usize {
+    /// Returns the length of the common prefix across the next 8 bytes of both
+    /// arrays.
+    ///
+    /// Equivalent to `BKDUtil.commonPrefixLength8(byte[], int, byte[], int)`.
+    pub fn common_prefix_length8(a: &[u8], a_offset: usize, b: &[u8], b_offset: usize) -> usize {
         let a_long = BitUtil::read_le_long(a, a_offset) as u64;
         let b_long = BitUtil::read_le_long(b, b_offset) as u64;
         let xor = a_long ^ b_long;
@@ -361,12 +369,62 @@ impl BKDUtil {
         }
     }
 
-    fn equals4(a: &[u8], a_offset: usize, b: &[u8], b_offset: usize) -> bool {
+    /// Returns whether the next 4 bytes are exactly the same in both arrays.
+    ///
+    /// Equivalent to `BKDUtil.equals4(byte[], int, byte[], int)`.
+    pub fn equals4(a: &[u8], a_offset: usize, b: &[u8], b_offset: usize) -> bool {
         BitUtil::read_le_int(a, a_offset) == BitUtil::read_le_int(b, b_offset)
     }
 
-    fn equals8(a: &[u8], a_offset: usize, b: &[u8], b_offset: usize) -> bool {
+    /// Returns whether the next 8 bytes are exactly the same in both arrays.
+    ///
+    /// Equivalent to `BKDUtil.equals8(byte[], int, byte[], int)`.
+    pub fn equals8(a: &[u8], a_offset: usize, b: &[u8], b_offset: usize) -> bool {
         BitUtil::read_le_long(a, a_offset) == BitUtil::read_le_long(b, b_offset)
+    }
+
+    /// Returns the common-prefix comparator specialised for keys of `num_bytes`
+    /// bytes.
+    ///
+    /// Equivalent to `BKDUtil.getPrefixLengthComparator(int)`, which
+    /// specialises on the two widths that dominate — 8 and 4 — so a hot loop
+    /// binds the comparison once instead of branching on the width per call.
+    pub fn get_prefix_length_comparator(
+        num_bytes: usize,
+    ) -> Box<dyn Fn(&[u8], usize, &[u8], usize) -> usize + Send + Sync> {
+        if num_bytes == 8 {
+            // Used by LongPoint, DoublePoint.
+            Box::new(Self::common_prefix_length8)
+        } else if num_bytes == 4 {
+            // Used by IntPoint, FloatPoint, LatLonPoint, LatLonShape.
+            Box::new(Self::common_prefix_length4)
+        } else {
+            Box::new(move |a, a_offset, b, b_offset| {
+                Self::common_prefix_length_n(a, a_offset, b, b_offset, num_bytes)
+            })
+        }
+    }
+
+    /// Returns the equality predicate specialised for keys of `num_bytes`
+    /// bytes.
+    ///
+    /// Equivalent to `BKDUtil.getEqualsPredicate(int)`.
+    pub fn get_equals_predicate(
+        num_bytes: usize,
+    ) -> Box<dyn Fn(&[u8], usize, &[u8], usize) -> bool + Send + Sync> {
+        if num_bytes == 8 {
+            // Used by LongPoint, DoublePoint.
+            Box::new(Self::equals8)
+        } else if num_bytes == 4 {
+            // Used by IntPoint, FloatPoint, LatLonPoint, LatLonShape.
+            Box::new(Self::equals4)
+        } else {
+            Box::new(
+                move |a: &[u8], a_offset: usize, b: &[u8], b_offset: usize| {
+                    a[a_offset..a_offset + num_bytes] == b[b_offset..b_offset + num_bytes]
+                },
+            )
+        }
     }
 
     /// Computes the unsigned span `max - min` for dimension `dim` into
