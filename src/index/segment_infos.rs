@@ -232,6 +232,42 @@ impl SegmentInfos {
     }
 
     /// Returns a slice view of the contained segments.
+    /// Reads a codec name and resolves it to the registered codec.
+    ///
+    /// Equivalent to the private `SegmentInfos.readCodec(DataInput)`. A name
+    /// that starts with `Lucene` and cannot be resolved is reported as an index
+    /// written by a version whose codec is no longer on the path, which is what
+    /// Java's `IndexFormatTooOldException` says.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IndexFormatNotSupported`] when the codec cannot
+    /// be resolved, and propagates any I/O error.
+    fn read_codec(
+        input: &mut dyn crate::store::DataInput,
+    ) -> Result<std::sync::Arc<dyn crate::codecs::Codec>> {
+        let name = input.read_string()?;
+        crate::codecs::for_name(&name).ok_or_else(|| {
+            if name.starts_with("Lucene") {
+                // Maybe it is an old default codec that has moved.
+                LuceneError::IndexFormatNotSupported(format!(
+                    "Could not load codec '{name}'. Did you forget to add \
+                     lucene-backward-codecs.jar?"
+                ))
+            } else {
+                LuceneError::IndexFormatNotSupported(format!("Could not load codec '{name}'."))
+            }
+        })
+    }
+
+    /// Returns the segments as a slice.
+    ///
+    /// Equivalent to `SegmentInfos.asList()`, which Java wraps in
+    /// `Collections.unmodifiableList`; a shared slice is already read-only.
+    pub fn as_list(&self) -> &[SegmentCommitInfo] {
+        self.as_slice()
+    }
+
     pub fn as_slice(&self) -> &[SegmentCommitInfo] {
         &self.segments
     }
@@ -632,12 +668,7 @@ impl SegmentInfos {
             let seg_name = input.read_string()?;
             let mut segment_id = [0u8; ID_LENGTH];
             input.read_bytes(&mut segment_id, 0, ID_LENGTH)?;
-            let codec_name = input.read_string()?;
-            let codec = crate::codecs::for_name(&codec_name).ok_or_else(|| {
-                LuceneError::IndexFormatNotSupported(format!(
-                    "Could not load codec '{codec_name}'. Did you forget to add backward-codecs?"
-                ))
-            })?;
+            let codec = Self::read_codec(input)?;
 
             let mut info = codec.segment_info_format().read(
                 directory,

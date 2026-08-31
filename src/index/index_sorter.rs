@@ -683,6 +683,13 @@ impl SortFieldProviders {
     /// Returns every registered provider name.
     ///
     /// Equivalent to `SortFieldProvider.availableSortFieldProviders()`.
+    pub fn available_sort_field_providers(&self) -> Vec<String> {
+        self.available()
+    }
+
+    /// Returns every registered provider name.
+    ///
+    /// Equivalent to `SortFieldProvider.availableSortFieldProviders()`.
     pub fn available(&self) -> Vec<String> {
         let mut names: Vec<String> = self.providers.keys().cloned().collect();
         names.sort();
@@ -702,4 +709,52 @@ impl SortFieldProviders {
         output.write_string(provider_name)?;
         provider.write_sort_field(sort_field, output)
     }
+}
+
+// ---------------------------------------------------------------------------
+// The global registry behind SortFieldProvider's static entry points
+// ---------------------------------------------------------------------------
+
+/// The registry behind [`SortFieldProvider`]'s static entry points.
+///
+/// Equivalent to `SortFieldProvider.Holder.LOADER`, which Java hides in a
+/// holder class so the providers are only discovered when first needed.
+static SORT_FIELD_PROVIDERS: std::sync::LazyLock<std::sync::RwLock<SortFieldProviders>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(SortFieldProviders::new()));
+
+/// Looks a sort-field provider up by name.
+///
+/// Equivalent to `SortFieldProvider.forName(String)`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when no provider is registered
+/// under `name`.
+pub fn sort_field_provider_for_name(name: &str) -> Result<Arc<dyn SortFieldProvider>> {
+    SORT_FIELD_PROVIDERS
+        .read()
+        .expect("INVARIANT: the sort-field provider lock is never poisoned")
+        .for_name(name)
+}
+
+/// Returns the names of every registered sort-field provider.
+///
+/// Equivalent to `SortFieldProvider.availableSortFieldProviders()`.
+pub fn available_sort_field_providers() -> Vec<String> {
+    SORT_FIELD_PROVIDERS
+        .read()
+        .expect("INVARIANT: the sort-field provider lock is never poisoned")
+        .available()
+}
+
+/// Adds `provider` to the global registry under its own name.
+///
+/// Equivalent to `SortFieldProvider.reloadSortFieldProviders(ClassLoader)`,
+/// which rescans a classloader for providers it has not seen. Rust has no
+/// run-time service discovery, so the caller supplies the provider.
+pub fn reload_sort_field_providers(provider: Arc<dyn SortFieldProvider>) {
+    SORT_FIELD_PROVIDERS
+        .write()
+        .expect("INVARIANT: the sort-field provider lock is never poisoned")
+        .register(provider);
 }
