@@ -195,11 +195,269 @@ pub struct Lucene90DocValuesConsumer<'a> {
     skip_name: String,
 }
 
+/// One interval of the doc-values skip index: the document range it covers and
+/// the value range within it.
+///
+/// Equivalent to `Lucene90DocValuesConsumer.SkipAccumulator`. A range query can
+/// skip a whole interval whose value range does not meet it, which is the
+/// entire purpose of the `.dvs` file.
+#[derive(Debug, Clone)]
+struct SkipAccumulator {
+    min_doc_id: i32,
+    max_doc_id: i32,
+    doc_count: i32,
+    min_value: i64,
+    max_value: i64,
+}
+
+impl SkipAccumulator {
+    /// Starts an interval at `doc_id`.
+    fn new(doc_id: i32) -> Self {
+        Self {
+            min_doc_id: doc_id,
+            max_doc_id: doc_id,
+            doc_count: 0,
+            min_value: i64::MAX,
+            max_value: i64::MIN,
+        }
+    }
+
+    /// Returns whether this interval is full.
+    ///
+    /// Equivalent to `SkipAccumulator.isDone(int, int, long, int)`. Past the
+    /// interval size the accumulator keeps taking documents while doing so
+    /// costs nothing: while the next document is single-valued, holds the one
+    /// value this interval already holds, and continues it without a gap. Such
+    /// documents narrow no range, so splitting on them would only add intervals
+    /// a query still has to read.
+    fn is_done(
+        &self,
+        skip_index_interval_size: i32,
+        value_count: i32,
+        next_value: i64,
+        next_doc: i32,
+    ) -> bool {
+        if self.doc_count < skip_index_interval_size {
+            return false;
+        }
+        value_count > 1
+            || self.min_value != self.max_value
+            || self.min_value != next_value
+            || self.doc_count != next_doc - self.min_doc_id
+    }
+
+    /// Widens the value range by one value.
+    ///
+    /// Equivalent to `SkipAccumulator.accumulate(long)`.
+    fn accumulate(&mut self, value: i64) {
+        self.min_value = self.min_value.min(value);
+        self.max_value = self.max_value.max(value);
+    }
+
+    /// Widens this interval to cover another one.
+    ///
+    /// Equivalent to `SkipAccumulator.accumulate(SkipAccumulator)`.
+    fn accumulate_other(&mut self, other: &Self) {
+        debug_assert!(self.min_doc_id <= other.min_doc_id && self.max_doc_id < other.max_doc_id);
+        self.max_doc_id = other.max_doc_id;
+        self.min_value = self.min_value.min(other.min_value);
+        self.max_value = self.max_value.max(other.max_value);
+        self.doc_count += other.doc_count;
+    }
+
+    /// Extends this interval to `doc_id`.
+    ///
+    /// Equivalent to `SkipAccumulator.nextDoc(int)`.
+    fn next_doc(&mut self, doc_id: i32) {
+        self.max_doc_id = doc_id;
+        self.doc_count += 1;
+    }
+
+    /// Merges `length` consecutive intervals into one.
+    ///
+    /// Equivalent to `SkipAccumulator.merge(List, int, int)`, which is how a
+    /// higher level of the skip index is built out of the level below it.
+    fn merge(list: &[Self], index: usize, length: usize) -> Self {
+        let mut acc = Self::new(list[index].min_doc_id);
+        for i in 0..length {
+            acc.accumulate_other(&list[index + i]);
+        }
+        acc
+    }
+}
+
+/// Builds the level above `accumulators` by merging every group of
+/// `1 << SKIP_INDEX_LEVEL_SHIFT` intervals.
+///
+/// Equivalent to `Lucene90DocValuesConsumer.buildLevel(List)`. A trailing group
+/// that is not full is dropped: a partial interval at a higher level would
+/// claim to cover documents the level below still has to be read for.
+fn build_level(accumulators: &[SkipAccumulator]) -> Vec<SkipAccumulator> {
+    let level_size = 1usize << SKIP_INDEX_LEVEL_SHIFT;
+    let mut collector = Vec::new();
+    if accumulators.len() < level_size {
+        return collector;
+    }
+    let mut i = 0usize;
+    while i + level_size <= accumulators.len() {
+        collector.push(SkipAccumulator::merge(accumulators, i, level_size));
+        i += level_size;
+    }
+    collector
+}
+
+/// Returns how many levels the interval at `index` starts.
+///
+/// Equivalent to `Lucene90DocValuesConsumer.getLevels(int, int)`. An interval
+/// starts a level only where its index is aligned to that level's span and
+/// enough intervals remain to fill it, which is what lets a reader skip a whole
+/// level by reading one entry.
+fn get_levels(index: usize, size: usize) -> usize {
+    if (index as u32).trailing_zeros() >= SKIP_INDEX_LEVEL_SHIFT as u32 {
+        let left = size - index;
+        for level in (1..SKIP_INDEX_MAX_LEVEL).rev() {
+            let number_intervals = 1usize << (SKIP_INDEX_LEVEL_SHIFT as usize * level);
+            if left >= number_intervals && index % number_intervals == 0 {
+                return level + 1;
+            }
+        }
+    }
+    1
+}
+
 impl fmt::Debug for Lucene90DocValuesConsumer<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Lucene90DocValuesConsumer")
             .field("max_doc", &self.max_doc)
             .finish_non_exhaustive()
+    }
+}
+
+impl Lucene90DocValuesConsumer<'_> {
+    /// Writes one field's skip index: the value range of every interval, at
+    /// every level.
+    ///
+    /// Equivalent to `Lucene90DocValuesConsumer.writeSkipIndex(FieldInfo, DocValuesProducer)`.
+    /// The metadata entry that follows records where the index starts, how long
+    /// it is, and the field's global range — which is what lets a query decide
+    /// in one read whether the field can match at all.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the values or writing the index raises.
+    fn write_skip_index(
+        &mut self,
+        field: &FieldInfo,
+        values_producer: &dyn DocValuesProducer,
+    ) -> Result<()> {
+        debug_assert_ne!(
+            field.doc_values_skip_index_type,
+            crate::index::DocValuesSkipIndexType::NONE
+        );
+        let start = self.skip_index.file_pointer();
+        let mut values = values_producer.get_sorted_numeric(field)?;
+        let mut global_max_value = i64::MIN;
+        let mut global_min_value = i64::MAX;
+        let mut global_doc_count = 0i32;
+        let mut global_max_value_count = 0i32;
+        let mut max_doc_id = -1i32;
+        let mut accumulators: Vec<SkipAccumulator> = Vec::new();
+        let mut accumulator: Option<SkipAccumulator> = None;
+        let max_accumulators =
+            1usize << (SKIP_INDEX_LEVEL_SHIFT as usize * (SKIP_INDEX_MAX_LEVEL - 1));
+
+        let mut doc = values.next_doc()?;
+        while doc != NO_MORE_DOCS {
+            let value_count = values.doc_value_count()?;
+            let first_value = values.next_value()?;
+            global_max_value_count = global_max_value_count.max(value_count);
+            if let Some(acc) = accumulator.as_ref() {
+                if acc.is_done(self.skip_index_interval_size, value_count, first_value, doc) {
+                    global_max_value = global_max_value.max(acc.max_value);
+                    global_min_value = global_min_value.min(acc.min_value);
+                    global_doc_count += acc.doc_count;
+                    max_doc_id = acc.max_doc_id;
+                    accumulator = None;
+                    if accumulators.len() == max_accumulators {
+                        self.write_levels(&accumulators)?;
+                        accumulators.clear();
+                    }
+                }
+            }
+            if accumulator.is_none() {
+                accumulator = Some(SkipAccumulator::new(doc));
+            }
+            let acc = accumulator
+                .as_mut()
+                .expect("INVARIANT: an accumulator was just created if there was none");
+            acc.next_doc(doc);
+            acc.accumulate(first_value);
+            for _ in 1..value_count {
+                let value = values.next_value()?;
+                acc.accumulate(value);
+            }
+            if accumulators.len() < max_accumulators {
+                // The interval is recorded once, when it is opened; the loop
+                // above keeps widening the one at the end.
+                if accumulators.last().map(|last| last.min_doc_id) != Some(acc.min_doc_id) {
+                    accumulators.push(acc.clone());
+                } else if let Some(last) = accumulators.last_mut() {
+                    *last = acc.clone();
+                }
+            }
+            doc = values.next_doc()?;
+        }
+
+        if let Some(acc) = accumulator.as_ref() {
+            global_max_value = global_max_value.max(acc.max_value);
+            global_min_value = global_min_value.min(acc.min_value);
+            global_doc_count += acc.doc_count;
+            max_doc_id = acc.max_doc_id;
+        }
+        if !accumulators.is_empty() {
+            self.write_levels(&accumulators)?;
+        }
+
+        self.meta.write_long(start)?;
+        self.meta
+            .write_long(self.skip_index.file_pointer() - start)?;
+        debug_assert!(global_doc_count == 0 || global_max_value >= global_min_value);
+        self.meta.write_long(global_max_value)?;
+        self.meta.write_long(global_min_value)?;
+        debug_assert!(global_doc_count <= max_doc_id + 1);
+        self.meta.write_int(global_doc_count)?;
+        self.meta.write_int(max_doc_id)?;
+        self.meta.write_int(global_max_value_count)?;
+        Ok(())
+    }
+
+    /// Writes every interval, each preceded by the number of levels it starts.
+    ///
+    /// Equivalent to `Lucene90DocValuesConsumer.writeLevels(List)`. The levels
+    /// of one interval are written from the highest down, so a reader that
+    /// skips at the top level never has to read the lower ones.
+    fn write_levels(&mut self, accumulators: &[SkipAccumulator]) -> Result<()> {
+        let mut levels: Vec<Vec<SkipAccumulator>> = Vec::with_capacity(SKIP_INDEX_MAX_LEVEL);
+        levels.push(accumulators.to_vec());
+        for i in 0..SKIP_INDEX_MAX_LEVEL - 1 {
+            let next = build_level(&levels[i]);
+            levels.push(next);
+        }
+        let total_accumulators = accumulators.len();
+        for index in 0..total_accumulators {
+            let level_count = get_levels(index, total_accumulators);
+            self.skip_index.write_byte(level_count as u8)?;
+            for level in (0..level_count).rev() {
+                let accumulator =
+                    &levels[level][index >> (SKIP_INDEX_LEVEL_SHIFT as usize * level)];
+                self.skip_index.write_int(accumulator.max_doc_id)?;
+                self.skip_index.write_int(accumulator.min_doc_id)?;
+                self.skip_index.write_long(accumulator.max_value)?;
+                self.skip_index.write_long(accumulator.min_value)?;
+                self.skip_index.write_int(accumulator.doc_count)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -914,6 +1172,18 @@ impl<'a> DocValuesConsumer for Lucene90DocValuesConsumer<'a> {
     ) -> Result<()> {
         self.meta.write_int(field.number)?;
         self.meta.write_byte(TYPE_NUMERIC)?;
+        // Lucene writes the skip index between the type byte and the values,
+        // and the reader reads it in the same place
+        // (`Lucene90DocValuesConsumer.java:160-165`). A numeric field is seen
+        // as a single-valued sorted-numeric one, which is the shape the skip
+        // index is built from.
+        if field.doc_values_skip_index_type != crate::index::DocValuesSkipIndexType::NONE {
+            let producer = SingletonNumericProducer {
+                inner: values,
+                field: field.clone(),
+            };
+            self.write_skip_index(field, &producer)?;
+        }
 
         let mut numeric = values.get_numeric(field)?;
         let mut docs = Vec::new();
@@ -978,6 +1248,11 @@ impl<'a> DocValuesConsumer for Lucene90DocValuesConsumer<'a> {
         field: &FieldInfo,
         values: &dyn DocValuesProducer,
     ) -> Result<()> {
+        if field.doc_values_skip_index_type != crate::index::DocValuesSkipIndexType::NONE {
+            // A sorted-numeric field is already the shape the skip index is
+            // built from (`Lucene90DocValuesConsumer.java:730-737`).
+            self.write_skip_index(field, values)?;
+        }
         self.meta.write_int(field.number)?;
         self.meta.write_byte(TYPE_SORTED_NUMERIC)?;
 
@@ -1025,6 +1300,12 @@ impl<'a> DocValuesConsumer for Lucene90DocValuesConsumer<'a> {
         field: &FieldInfo,
         values: &dyn DocValuesProducer,
     ) -> Result<()> {
+        if field.doc_values_skip_index_type != crate::index::DocValuesSkipIndexType::NONE {
+            // A sorted-set field's skip index is built over its ordinals
+            // (`Lucene90DocValuesConsumer.java:905-910`).
+            let producer = OrdinalsAsSortedNumericProducer { inner: values };
+            self.write_skip_index(field, &producer)?;
+        }
         self.meta.write_int(field.number)?;
         self.meta.write_byte(TYPE_SORTED_SET)?;
 
@@ -3643,5 +3924,149 @@ mod tests {
         assert_eq!(dvd1, dvd2);
         assert_eq!(dvm1, dvm2);
         assert_eq!(dvs1, dvs2);
+    }
+}
+
+/// Presents a numeric field as the single-valued sorted-numeric field the skip
+/// index is built from.
+///
+/// Equivalent to the anonymous `EmptyDocValuesProducer` in
+/// `Lucene90DocValuesConsumer.addNumericField`, whose `getSortedNumeric`
+/// answers `DocValues.singleton(valuesProducer.getNumeric(field))`.
+#[derive(Debug)]
+struct SingletonNumericProducer<'a> {
+    inner: &'a dyn DocValuesProducer,
+    field: FieldInfo,
+}
+
+impl DocValuesProducer for SingletonNumericProducer<'_> {
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+        self.inner.get_numeric(field)
+    }
+
+    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
+        corrupt("a singleton numeric producer has no binary values".to_string())
+    }
+
+    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
+        corrupt("a singleton numeric producer has no sorted values".to_string())
+    }
+
+    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
+        Ok(Box::new(crate::index::DocValues::singleton_numeric(
+            self.inner.get_numeric(field)?,
+        )))
+    }
+
+    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
+        corrupt("a singleton numeric producer has no sorted set values".to_string())
+    }
+
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
+        corrupt("a singleton numeric producer has no skipper".to_string())
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
+        corrupt("a singleton numeric producer has no merge instance".to_string())
+    }
+
+    fn close(&mut self) -> Result<()> {
+        let _ = &self.field;
+        Ok(())
+    }
+}
+
+/// Presents a sorted-set field's ordinals as the sorted-numeric values the skip
+/// index is built from.
+///
+/// Equivalent to the anonymous `EmptyDocValuesProducer` in
+/// `Lucene90DocValuesConsumer.addSortedSetField`, whose `getSortedNumeric`
+/// serves the ordinals of each document. A skip index over a dictionary field
+/// bounds ordinals, not terms — which is what makes it comparable at all.
+#[derive(Debug)]
+struct OrdinalsAsSortedNumericProducer<'a> {
+    inner: &'a dyn DocValuesProducer,
+}
+
+impl DocValuesProducer for OrdinalsAsSortedNumericProducer<'_> {
+    fn get_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+        corrupt("an ordinals producer has no numeric values".to_string())
+    }
+
+    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
+        corrupt("an ordinals producer has no binary values".to_string())
+    }
+
+    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
+        corrupt("an ordinals producer has no sorted values".to_string())
+    }
+
+    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
+        Ok(Box::new(SortedSetOrdinals {
+            values: self.inner.get_sorted_set(field)?,
+        }))
+    }
+
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
+        self.inner.get_sorted_set(field)
+    }
+
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
+        corrupt("an ordinals producer has no skipper".to_string())
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
+        corrupt("an ordinals producer has no merge instance".to_string())
+    }
+
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// A sorted-set field's ordinals, seen as sorted-numeric values.
+struct SortedSetOrdinals {
+    values: Box<dyn SortedSetDocValues>,
+}
+
+impl DocIdSetIterator for SortedSetOrdinals {
+    fn doc_id(&self) -> i32 {
+        self.values.doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.values.next_doc()
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.values.advance(target)
+    }
+
+    fn cost(&self) -> i64 {
+        self.values.cost()
+    }
+}
+
+impl DocValuesIterator for SortedSetOrdinals {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        self.values.advance_exact(target)
+    }
+}
+
+impl SortedNumericDocValues for SortedSetOrdinals {
+    fn next_value(&mut self) -> Result<i64> {
+        self.values.next_ord()
+    }
+
+    fn doc_value_count(&self) -> Result<i32> {
+        self.values.doc_value_count()
     }
 }
