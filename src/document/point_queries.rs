@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 use crate::document::geo_fields::{LatLonPoint, XYPointField};
 use crate::document::shape_field::QueryRelation;
+use crate::document::spatial_query::{spatial_create_weight, SpatialMatcher};
 use crate::document::spatial_query::{
     LatLonGeometryValue, SpatialQuery, SpatialVisitor, XYGeometryValue,
 };
@@ -31,6 +32,7 @@ use crate::geo::Component2D;
 use crate::index::point_values::{IntersectVisitor, Relation};
 use crate::index::{LeafReader, SortedNumericDocValues};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
+use crate::search::{IndexSearcher, Query, QueryVisitor, ScoreMode, Weight};
 use crate::util::doc_id_set::DocIdSetBuilder;
 use crate::util::{IntsRef, NumericUtils};
 
@@ -1491,5 +1493,146 @@ impl PartialEq for LatLonPointDistanceQuery {
             && self.latitude.to_bits() == other.latitude.to_bits()
             && self.longitude.to_bits() == other.longitude.to_bits()
             && self.radius_meters.to_bits() == other.radius_meters.to_bits()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Executing the point queries
+// -----------------------------------------------------------------------------
+//
+// Java's LatLonPointQuery and LatLonPointDistanceQuery each extend
+// SpatialQuery, which extends Query and supplies the ConstantScoreWeight. Rust
+// has no implementation inheritance, so each states how it iterates through
+// SpatialMatcher and the weight is built once by `spatial_create_weight`.
+
+impl SpatialMatcher for LatLonPointQuery {
+    fn spatial_field(&self) -> &str {
+        self.query.get_field()
+    }
+
+    fn spatial_matching_docs(
+        &self,
+        reader: &dyn LeafReader,
+    ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        self.matching_docs(reader)
+    }
+
+    fn spatial_cost(&self, reader: &dyn LeafReader) -> Result<i64> {
+        let Some(values) = reader.get_point_values(self.query.get_field())? else {
+            return Ok(0);
+        };
+        self.query.cost(values.as_ref(), &self.visitor)
+    }
+}
+
+impl Query for LatLonPointQuery {
+    fn to_query_string(&self, field: &str) -> String {
+        self.query.to_query_string(
+            "LatLonPointQuery",
+            field,
+            &self
+                .geometries
+                .iter()
+                .map(|g| format!("{g:?}"))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn visit(&self, visitor: &mut dyn QueryVisitor) {
+        if visitor.accept_field(self.query.get_field()) {
+            visitor.visit_leaf(self);
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        let matcher = Arc::new(self.clone());
+        let query: Arc<dyn Query> = Arc::new(self.clone());
+        spatial_create_weight(matcher, query, score_mode, boost)
+    }
+
+    fn query_eq(&self, other: &dyn Query) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|other| self.query == other.query && self.geometries == other.geometries)
+    }
+
+    fn query_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.query.get_field().hash(&mut hasher);
+        format!("{:?}", self.query.get_query_relation()).hash(&mut hasher);
+        format!("{:?}", self.geometries).hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+impl SpatialMatcher for LatLonPointDistanceQuery {
+    fn spatial_field(&self) -> &str {
+        &self.field
+    }
+
+    fn spatial_matching_docs(
+        &self,
+        reader: &dyn LeafReader,
+    ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        self.matching_docs(reader)
+    }
+
+    fn spatial_cost(&self, reader: &dyn LeafReader) -> Result<i64> {
+        self.cost(reader)
+    }
+}
+
+impl Query for LatLonPointDistanceQuery {
+    fn to_query_string(&self, field: &str) -> String {
+        LatLonPointDistanceQuery::to_query_string(self, field)
+    }
+
+    fn visit(&self, visitor: &mut dyn QueryVisitor) {
+        if visitor.accept_field(&self.field) {
+            visitor.visit_leaf(self);
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        let matcher = Arc::new(self.clone());
+        let query: Arc<dyn Query> = Arc::new(self.clone());
+        spatial_create_weight(matcher, query, score_mode, boost)
+    }
+
+    fn query_eq(&self, other: &dyn Query) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|o| self == o)
+    }
+
+    fn query_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.field.hash(&mut hasher);
+        self.latitude.to_bits().hash(&mut hasher);
+        self.longitude.to_bits().hash(&mut hasher);
+        self.radius_meters.to_bits().hash(&mut hasher);
+        hasher.finish()
     }
 }

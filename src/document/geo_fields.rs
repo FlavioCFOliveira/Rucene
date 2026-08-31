@@ -4,13 +4,22 @@
 //! coordinate systems, as points for a BKD lookup or as doc values for a scan.
 
 use std::io::Read;
+use std::sync::Arc;
 
 use crate::analysis::{Analyzer, TokenStream};
+use crate::document::point_queries::{LatLonPointDistanceQuery, LatLonPointQuery};
+use crate::document::shape_field::QueryRelation;
+use crate::document::spatial_query::LatLonGeometryValue;
 use crate::document::{FieldData, FieldType, InvertableType, NumericValue, StoredValue};
 use crate::error::{LuceneError, Result};
 use crate::geo::encoding::{GeoEncodingUtils, XYEncodingUtils};
 use crate::geo::geometry::{Rectangle, XYRectangle};
 use crate::index::{DocValuesType, IndexableField, IndexableFieldType};
+use crate::search::boolean_query::Builder as BooleanQueryBuilder;
+use crate::search::constant_score_query::ConstantScoreQuery;
+use crate::search::match_no_docs_query::MatchNoDocsQuery;
+use crate::search::point_range_query::{DimensionFormatter, PointRangeQuery};
+use crate::search::{Occur, Query};
 use crate::util::{BytesRef, NumericUtils};
 
 /// Body shared by every packed-point field's `IndexableField::token_stream`.
@@ -123,6 +132,201 @@ impl LatLonPoint {
     ///
     /// Equivalent to the encoding `LatLonPoint.newBoxQuery` performs before it
     /// builds a `PointRangeQuery`.
+    /// Encodes one point, rounding both coordinates up.
+    ///
+    /// Equivalent to `LatLonPoint.encodeCeil(double, double)`, which
+    /// `new_box_query` uses for the lower corner so the encoding's rounding
+    /// cannot exclude a point that is inside the box.
+    pub fn encode_ceil(latitude: f64, longitude: f64) -> Result<Vec<u8>> {
+        let mut bytes = vec![0u8; 2 * COORDINATE_BYTES];
+        NumericUtils::int_to_sortable_bytes(
+            GeoEncodingUtils::encode_latitude_ceil(latitude)?,
+            &mut bytes,
+            0,
+        );
+        NumericUtils::int_to_sortable_bytes(
+            GeoEncodingUtils::encode_longitude_ceil(longitude)?,
+            &mut bytes,
+            COORDINATE_BYTES,
+        );
+        Ok(bytes)
+    }
+
+    /// Matches documents whose point falls inside the given box.
+    ///
+    /// Equivalent to `LatLonPoint.newBoxQuery(String, double, double, double, double)`.
+    /// A box crossing the date line becomes the union of two boxes, each with
+    /// an open longitude bound, under a constant score — so a multi-valued
+    /// document matching both is not boosted for it.
+    pub fn new_box_query(
+        field: &str,
+        min_latitude: f64,
+        max_latitude: f64,
+        mut min_longitude: f64,
+        max_longitude: f64,
+    ) -> Result<Arc<dyn Query>> {
+        // Latitude 90.0 and longitude 180.0 have no exact representation in the
+        // encoding, so they are dealt with before anything is encoded.
+        if min_latitude == 90.0 {
+            // The range cannot match: 90.0 can never exist.
+            return Ok(Arc::new(MatchNoDocsQuery::new(
+                "LatLonPoint.newBoxQuery with minLatitude=90.0",
+            )));
+        }
+        if min_longitude == 180.0 {
+            if max_longitude == 180.0 {
+                return Ok(Arc::new(MatchNoDocsQuery::new(
+                    "LatLonPoint.newBoxQuery with minLongitude=maxLongitude=180.0",
+                )));
+            } else if max_longitude < min_longitude {
+                // `encode_ceil` with date-line wrapping.
+                min_longitude = -180.0;
+            }
+        }
+        let lower = Self::encode_ceil(min_latitude, min_longitude)?;
+        let mut upper = vec![0u8; 2 * COORDINATE_BYTES];
+        NumericUtils::int_to_sortable_bytes(
+            GeoEncodingUtils::encode_latitude(max_latitude)?,
+            &mut upper,
+            0,
+        );
+        NumericUtils::int_to_sortable_bytes(
+            GeoEncodingUtils::encode_longitude(max_longitude)?,
+            &mut upper,
+            COORDINATE_BYTES,
+        );
+
+        if max_longitude < min_longitude {
+            // Crosses the date line: rewrite as the union of two boxes, each
+            // with longitude left open on one side.
+            let mut left_open = lower.clone();
+            NumericUtils::int_to_sortable_bytes(i32::MIN, &mut left_open, COORDINATE_BYTES);
+            let left = Self::new_box_internal(field, left_open, upper.clone())?;
+
+            let mut right_open = upper;
+            NumericUtils::int_to_sortable_bytes(i32::MAX, &mut right_open, COORDINATE_BYTES);
+            let right = Self::new_box_internal(field, lower, right_open)?;
+
+            let mut builder = BooleanQueryBuilder::new();
+            builder.add(left, Occur::SHOULD)?;
+            builder.add(right, Occur::SHOULD)?;
+            return Ok(Arc::new(ConstantScoreQuery::new(Arc::new(builder.build()))));
+        }
+        Self::new_box_internal(field, lower, upper)
+    }
+
+    /// Builds the point-range query one box corresponds to.
+    ///
+    /// Equivalent to `LatLonPoint.newBoxInternal(String, byte[], byte[])`,
+    /// whose anonymous subclass exists only to print dimension 0 as a latitude
+    /// and dimension 1 as a longitude.
+    fn new_box_internal(field: &str, min: Vec<u8>, max: Vec<u8>) -> Result<Arc<dyn Query>> {
+        Ok(Arc::new(PointRangeQuery::new(
+            field,
+            min,
+            max,
+            2,
+            Arc::new(LatLonPointFormatter),
+        )?))
+    }
+
+    /// Matches documents within `radius_meters` of a point.
+    ///
+    /// Equivalent to `LatLonPoint.newDistanceQuery(String, double, double, double)`.
+    pub fn new_distance_query(
+        field: &str,
+        latitude: f64,
+        longitude: f64,
+        radius_meters: f64,
+    ) -> Result<Arc<dyn Query>> {
+        Ok(Arc::new(LatLonPointDistanceQuery::new(
+            field,
+            latitude,
+            longitude,
+            radius_meters,
+        )?))
+    }
+
+    /// Matches documents whose point intersects any of the given polygons.
+    ///
+    /// Equivalent to `LatLonPoint.newPolygonQuery(String, Polygon...)`.
+    pub fn new_polygon_query(
+        field: &str,
+        polygons: Vec<LatLonGeometryValue>,
+    ) -> Result<Arc<dyn Query>> {
+        Self::new_geometry_query(field, QueryRelation::Intersects, polygons)
+    }
+
+    /// Matches documents whose point stands in `query_relation` to the given
+    /// geometries.
+    ///
+    /// Equivalent to `LatLonPoint.newGeometryQuery(String, ShapeField.QueryRelation, LatLonGeometry...)`.
+    /// A single rectangle or circle under `Intersects` is rewritten into the
+    /// box or the distance query, which read the BKD tree more cheaply.
+    pub fn new_geometry_query(
+        field: &str,
+        query_relation: QueryRelation,
+        geometries: Vec<LatLonGeometryValue>,
+    ) -> Result<Arc<dyn Query>> {
+        if query_relation == QueryRelation::Intersects && geometries.len() == 1 {
+            match &geometries[0] {
+                LatLonGeometryValue::Rectangle(rect) => {
+                    return Self::new_box_query(
+                        field,
+                        rect.min_lat(),
+                        rect.max_lat(),
+                        rect.min_lon(),
+                        rect.max_lon(),
+                    );
+                }
+                LatLonGeometryValue::Circle(circle) => {
+                    return Self::new_distance_query(
+                        field,
+                        circle.get_lat(),
+                        circle.get_lon(),
+                        circle.get_radius(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        if query_relation == QueryRelation::Contains {
+            return Self::make_contains_geometry_query(field, geometries);
+        }
+        Ok(Arc::new(LatLonPointQuery::new(
+            field,
+            query_relation,
+            geometries,
+        )?))
+    }
+
+    /// Builds the conjunction a `Contains` geometry query becomes.
+    ///
+    /// Equivalent to `LatLonPoint.makeContainsGeometryQuery(String, LatLonGeometry...)`.
+    /// A point can only contain a point, so anything else matches nothing.
+    fn make_contains_geometry_query(
+        field: &str,
+        geometries: Vec<LatLonGeometryValue>,
+    ) -> Result<Arc<dyn Query>> {
+        let mut builder = BooleanQueryBuilder::new();
+        for geometry in geometries {
+            if !matches!(geometry, LatLonGeometryValue::Point(_)) {
+                return Ok(Arc::new(MatchNoDocsQuery::new(
+                    "Contains LatLonPoint.newGeometryQuery with non-point geometries",
+                )));
+            }
+            builder.add(
+                Arc::new(LatLonPointQuery::new(
+                    field,
+                    QueryRelation::Contains,
+                    vec![geometry],
+                )?),
+                Occur::MUST,
+            )?;
+        }
+        Ok(Arc::new(ConstantScoreQuery::new(Arc::new(builder.build()))))
+    }
+
     pub fn encode_box(rectangle: &Rectangle) -> Result<(Vec<u8>, Vec<u8>)> {
         let mut lower = vec![0u8; 2 * COORDINATE_BYTES];
         let mut upper = vec![0u8; 2 * COORDINATE_BYTES];
@@ -872,4 +1076,26 @@ fn check_doc_values_compatible(
         )));
     }
     Ok(())
+}
+
+/// Renders a latitude/longitude dimension for a box query's string form.
+///
+/// Equivalent to the anonymous `PointRangeQuery` subclass in
+/// `LatLonPoint.newBoxInternal`, whose only job is to override
+/// `toString(int, byte[])`.
+#[derive(Debug, Clone, Copy)]
+struct LatLonPointFormatter;
+
+impl DimensionFormatter for LatLonPointFormatter {
+    fn format(&self, dimension: i32, value: &[u8]) -> String {
+        match dimension {
+            0 => GeoEncodingUtils::decode_latitude_bytes(value, 0).to_string(),
+            1 => GeoEncodingUtils::decode_longitude_bytes(value, 0).to_string(),
+            other => format!("<unexpected dimension {other}>"),
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }

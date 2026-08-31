@@ -59,15 +59,10 @@
     ]
   },
   "org.apache.lucene.document.LatLonPoint": {
-    "reason": "The five query factories (newBoxQuery, newBoxInternal, newDistanceQuery, newPolygonQuery, newGeometryQuery, makeContainsGeometryQuery, newDistanceFeatureQuery) each return a Query. None of the geo query types they build \u2014 LatLonPointQuery, LatLonPointDistanceQuery, LatLonPointDistanceFeatureQuery \u2014 implements the search::Query trait yet: they exist as standalone types carrying their own visitors and bounds. Wiring them into the search API (create_weight, to_query_string, visit, query_eq, query_hash, and SpatialQuery::getScorerSupplier) is the work these factories depend on, and is tracked as its own gap rather than hidden inside this one.",
+    "reason": "newDistanceFeatureQuery returns a LatLonPointDistanceFeatureQuery, which scores by distance rather than matching at a constant score, so it needs its own Weight and Scorer rather than the spatial constant-score path; nearest() needs the NearestNeighbor search over several readers to be exposed as a public entry point. Both are tracked as their own gaps.",
     "methods": [
-      "makeContainsGeometryQuery",
-      "newBoxInternal",
-      "newBoxQuery",
       "newDistanceFeatureQuery",
-      "newDistanceQuery",
-      "newGeometryQuery",
-      "newPolygonQuery"
+      "nearest"
     ]
   }
 }

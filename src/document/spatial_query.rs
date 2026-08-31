@@ -10,17 +10,20 @@
 //! answers into the set of matching documents, choosing between a sparse and a
 //! dense strategy exactly as Lucene does.
 //!
-//! # Divergence from Lucene 10.5.0: the query hierarchy
+//! # How a spatial query is executed
 //!
 //! Java's `SpatialQuery` extends `org.apache.lucene.search.Query` and produces
 //! a `Weight` whose `ScorerSupplier` builds a `ConstantScoreScorer` over the
-//! iterator computed here. The `Query`/`Weight`/`Scorer` hierarchy is not part
-//! of this crate's public search surface yet, so these types stop one step
-//! earlier and expose the [`DocIdSetIterator`] the scorer would have wrapped,
-//! through [`SpatialQuery::matching_docs`]. Every decision that selects
-//! documents — the relation, the predicates, the sparse/dense choice, the
-//! adversarial `hasAnyHits` short-circuit — is ported unchanged; only the
-//! constant-score wrapper is missing.
+//! iterator computed here; every subclass inherits both. Rust has no
+//! implementation inheritance, so the shared half is named as
+//! [`SpatialMatcher`] — the field, the iterator and its cost — and
+//! [`spatial_create_weight`] builds the weight, the supplier and the
+//! constant-score wrapper once, for every spatial query type.
+//!
+//! [`SpatialQuery::matching_docs`] remains the entry point that computes the
+//! iterator: the relation, the predicates, the sparse/dense choice and the
+//! adversarial `hasAnyHits` short-circuit are all decided there, exactly as
+//! Lucene decides them.
 
 use std::sync::Arc;
 
@@ -689,6 +692,18 @@ pub struct SpatialQuery {
     field: String,
     query_relation: QueryRelation,
     query_component2d: Arc<dyn Component2D>,
+}
+
+impl PartialEq for SpatialQuery {
+    /// Two spatial queries are equal when they read the same field under the
+    /// same relation.
+    ///
+    /// Equivalent to `SpatialQuery.equalsTo(Object)`, which compares the field
+    /// and the relation; the geometries are compared by the subclass, because
+    /// they are what the subclass carries.
+    fn eq(&self, other: &Self) -> bool {
+        self.field == other.field && self.query_relation == other.query_relation
+    }
 }
 
 impl std::fmt::Debug for SpatialQuery {
@@ -2849,4 +2864,153 @@ impl XYShapeDocValuesQuery {
                 .collect::<Vec<_>>(),
         )
     }
+}
+
+// -----------------------------------------------------------------------------
+// Executing a spatial query
+// -----------------------------------------------------------------------------
+
+/// What a spatial query supplies to the constant-score weight that runs it.
+///
+/// Java's `SpatialQuery` extends `Query` directly and builds its own
+/// `ConstantScoreWeight`; every subclass inherits both. Rust has no
+/// implementation inheritance, so the shared behaviour is named here and each
+/// query type states how it iterates and what that costs — leaving the weight,
+/// the supplier and the constant-score wrapper written once.
+pub trait SpatialMatcher: std::fmt::Debug + Send + Sync {
+    /// Returns the field this query reads.
+    fn spatial_field(&self) -> &str;
+
+    /// Returns the documents of `reader` this query matches, or `None` when it
+    /// matches none.
+    ///
+    /// Equivalent to the iterator
+    /// `SpatialQuery.RelationScorerSupplier.getScorer` wraps.
+    fn spatial_matching_docs(
+        &self,
+        reader: &dyn LeafReader,
+    ) -> Result<Option<Box<dyn DocIdSetIterator>>>;
+
+    /// Returns the estimated number of documents matched in `reader`.
+    ///
+    /// Equivalent to `SpatialQuery.RelationScorerSupplier.cost()`.
+    fn spatial_cost(&self, reader: &dyn LeafReader) -> Result<i64>;
+
+    /// Returns whether a weight over this query may be cached.
+    ///
+    /// Equivalent to `SpatialQuery`'s `isCacheable`, which answers `true`.
+    fn spatial_is_cacheable(&self) -> bool {
+        true
+    }
+}
+
+/// Hands out the iterator a spatial query matched.
+///
+/// Equivalent to `SpatialQuery.RelationScorerSupplier`, whose `cost()` Lucene
+/// computes lazily because walking the tree to estimate it is expensive.
+pub struct SpatialIteratorSupplier<M: SpatialMatcher> {
+    matcher: Arc<M>,
+    iterator: Option<Box<dyn DocIdSetIterator>>,
+    cost: i64,
+}
+
+impl<M: SpatialMatcher> std::fmt::Debug for SpatialIteratorSupplier<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpatialIteratorSupplier")
+            .field("matcher", &self.matcher)
+            .field("cost", &self.cost)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<M: SpatialMatcher> crate::search::ConstantScoreIteratorSupplier
+    for SpatialIteratorSupplier<M>
+{
+    fn iterator(&mut self, _lead_cost: i64) -> Result<crate::search::ScorerIterator> {
+        // Java's supplier may be asked for its scorer only once; the iterator
+        // is taken here for the same reason.
+        let iterator = self.iterator.take().ok_or_else(|| {
+            LuceneError::IllegalState(
+                "a spatial scorer supplier may be asked for its scorer only once".to_string(),
+            )
+        })?;
+        Ok(crate::search::ScorerIterator::Simple(iterator))
+    }
+
+    fn cost(&self) -> i64 {
+        let _ = &self.matcher;
+        self.cost
+    }
+}
+
+/// The weight a spatial query produces.
+///
+/// Equivalent to the anonymous `ConstantScoreWeight` in
+/// `SpatialQuery.createWeight`.
+#[derive(Debug)]
+pub struct SpatialWeight<M: SpatialMatcher> {
+    matcher: Arc<M>,
+    score: f32,
+    score_mode: crate::search::ScoreMode,
+}
+
+impl<M: SpatialMatcher> SpatialWeight<M> {
+    /// Creates the weight over `matcher`.
+    pub fn new(matcher: Arc<M>, score: f32, score_mode: crate::search::ScoreMode) -> Self {
+        Self {
+            matcher,
+            score,
+            score_mode,
+        }
+    }
+}
+
+impl<M: SpatialMatcher + 'static> crate::search::ConstantScoreWeightImpl for SpatialWeight<M> {
+    fn scorer_supplier(
+        &self,
+        context: &crate::index::LeafReaderContext,
+    ) -> Result<Option<Box<dyn crate::search::ScorerSupplier>>> {
+        let leaf = context.leaf_reader();
+        let reader = leaf.as_ref();
+        let Some(iterator) = self.matcher.spatial_matching_docs(reader)? else {
+            return Ok(None);
+        };
+        let cost = self.matcher.spatial_cost(reader)?;
+        let inner = SpatialIteratorSupplier {
+            matcher: Arc::clone(&self.matcher),
+            iterator: Some(iterator),
+            cost,
+        };
+        Ok(Some(Box::new(
+            crate::search::ConstantScoreScorerSupplier::new(
+                self.score,
+                self.score_mode,
+                reader.max_doc(),
+                inner,
+            ),
+        )))
+    }
+
+    fn is_cacheable(&self, _ctx: &crate::index::LeafReaderContext) -> bool {
+        self.matcher.spatial_is_cacheable()
+    }
+}
+
+/// Builds the weight a spatial query's `create_weight` returns.
+///
+/// Equivalent to the body of `SpatialQuery.createWeight(IndexSearcher,
+/// ScoreMode, float)`, shared by every spatial query type.
+pub fn spatial_create_weight<M>(
+    matcher: Arc<M>,
+    query: Arc<dyn crate::search::Query>,
+    score_mode: crate::search::ScoreMode,
+    boost: f32,
+) -> Result<Arc<dyn crate::search::Weight>>
+where
+    M: SpatialMatcher + 'static,
+{
+    let inner = SpatialWeight::new(matcher, boost, score_mode);
+    Ok(Arc::new(crate::search::ConstantScoreWeight::new(
+        query, boost, inner,
+    )))
 }
