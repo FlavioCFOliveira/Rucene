@@ -1416,7 +1416,7 @@ impl Lucene99HnswVectorsReader {
             let mut graph = OffHeapHnswGraph::new(entry, self.vector_index.as_ref(), self.version)?;
             let mut searcher = HnswGraphSearcher::new(
                 NeighborQueue::new(k, true),
-                FixedBitSet::new(graph.max_node_id().max(0) as usize + 1),
+                Box::new(FixedBitSet::new(graph.max_node_id().max(0) as usize + 1)),
             );
             searcher.search_graph(&mut internal, scorer.as_mut(), &mut graph, None)?;
         } else {

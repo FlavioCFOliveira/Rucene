@@ -101,7 +101,7 @@ impl FilteredHnswGraphSearcher {
         )) as i32;
         let entry_point_searcher = HnswGraphSearcher::new(
             NeighborQueue::new(k, true),
-            FixedBitSet::new(graph.max_node_id().max(0) as usize + 1),
+            Box::new(FixedBitSet::new(graph.max_node_id().max(0) as usize + 1)),
         );
         Self {
             entry_point_searcher,

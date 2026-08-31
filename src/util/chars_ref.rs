@@ -171,6 +171,55 @@ impl CharsRef {
     /// # Errors
     ///
     /// Returns `LuceneError::IllegalState` if the offset/length invariants are violated.
+    /// Returns the comparator that orders UTF-16 sequences by the order their
+    /// UTF-8 encodings would have.
+    ///
+    /// Equivalent to `CharsRef.getUTF16SortedAsUTF8Comparator()`, which Java
+    /// marks deprecated as a transition mechanism and keeps for the callers
+    /// that still need it. Java returns a singleton `Comparator`; a function
+    /// pointer is the same thing here.
+    pub fn get_utf16_sorted_as_utf8_comparator() -> fn(&Self, &Self) -> std::cmp::Ordering {
+        Self::utf16_sorted_as_utf8_compare
+    }
+
+    /// Orders two sequences by the order their UTF-8 encodings would have.
+    ///
+    /// Equivalent to `CharsRef.UTF16SortedAsUTF8Comparator.compare(CharsRef,
+    /// CharsRef)`. The surrogate fix-up is the one described in
+    /// <http://icu-project.org/docs/papers/utf16_code_point_order.html>.
+    fn utf16_sorted_as_utf8_compare(a: &Self, b: &Self) -> std::cmp::Ordering {
+        let a_chars = &a.chars[a.offset..a.offset + a.length];
+        let b_chars = &b.chars[b.offset..b.offset + b.length];
+        let mismatch = a_chars.iter().zip(b_chars.iter()).position(|(x, y)| x != y);
+
+        if let Some(i) = mismatch {
+            // Java compares UTF-16 code units; a `char` here is a scalar value,
+            // so only the two that fit in one code unit can differ inside the
+            // surrogate range, and the fix-up applies to exactly those.
+            let mut a_char = a_chars[i] as u32;
+            let mut b_char = b_chars[i] as u32;
+            // aChar != bChar; fix up each one if they are both in or above the
+            // surrogate range, then compare them.
+            if a_char >= 0xd800 && b_char >= 0xd800 {
+                if a_char >= 0xe000 {
+                    a_char -= 0x800;
+                } else {
+                    a_char += 0x2000;
+                }
+                if b_char >= 0xe000 {
+                    b_char -= 0x800;
+                } else {
+                    b_char += 0x2000;
+                }
+            }
+            // Now a_char and b_char are in code-point order.
+            return a_char.cmp(&b_char);
+        }
+
+        // One is a prefix of the other, or they are equal.
+        a.length.cmp(&b.length)
+    }
+
     pub fn is_valid(&self) -> Result<(), LuceneError> {
         if self.length > self.chars.len() {
             return Err(LuceneError::IllegalState(format!(

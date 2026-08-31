@@ -9,7 +9,8 @@ use std::f32;
 
 use crate::search::knn::{KnnCollector, TopKnnCollector};
 use crate::search::NO_MORE_DOCS;
-use crate::util::{Bits, FixedBitSet};
+use crate::util::bit_set::BitSet;
+use crate::util::{Bits, FixedBitSet, SparseFixedBitSet};
 
 use super::abstract_searcher::AbstractHnswGraphSearcher;
 use super::neighbor::{NeighborArray, NeighborQueue};
@@ -42,7 +43,7 @@ pub(crate) fn next_up_f32(x: f32) -> f32 {
 #[derive(Debug)]
 pub struct HnswGraphSearcher {
     candidates: NeighborQueue,
-    visited: FixedBitSet,
+    visited: Box<dyn BitSet>,
     bulk_nodes: Vec<i32>,
     bulk_scores: Vec<f32>,
 }
@@ -50,7 +51,7 @@ pub struct HnswGraphSearcher {
 impl HnswGraphSearcher {
     /// Creates a new searcher. `candidates` is a max-heap used to track nodes
     /// to explore; `visited` tracks already-visited nodes.
-    pub fn new(candidates: NeighborQueue, visited: FixedBitSet) -> Self {
+    pub fn new(candidates: NeighborQueue, visited: Box<dyn BitSet>) -> Self {
         Self {
             candidates,
             visited,
@@ -71,7 +72,7 @@ impl HnswGraphSearcher {
         let mut collector = TopKnnCollector::new(top_k, visited_limit);
         let mut searcher = OnHeapSearcher::new(
             NeighborQueue::new(top_k, true),
-            FixedBitSet::new(graph.max_node_id().max(0) as usize + 1),
+            create_bit_set(top_k, get_graph_size(graph)),
         );
         searcher.search(&mut collector, scorer, graph, accept_ords)?;
         Ok(collector)
@@ -176,7 +177,7 @@ impl HnswGraphSearcher {
         score_entry_points(
             results,
             scorer,
-            &mut self.visited,
+            self.visited.as_mut(),
             eps,
             accept_ords,
             &mut self.candidates,
@@ -251,7 +252,10 @@ impl HnswGraphSearcher {
         self.candidates.clear();
         let cap = capacity.max(0) as usize;
         if self.visited.length() < cap {
-            self.visited = FixedBitSet::new(cap);
+            // Java casts `visited` to a FixedBitSet here and calls
+            // `FixedBitSet.ensureCapacityAndClear`, so the grown set is always
+            // a dense one whatever `createBitSet` chose at construction.
+            self.visited = Box::new(FixedBitSet::new(cap));
         } else {
             self.visited.clear_all();
         }
@@ -292,7 +296,7 @@ pub(crate) fn score_entry_points(
 /// Thread-safe searcher for `OnHeapHnswGraph` that avoids mutating the graph.
 struct OnHeapSearcher {
     candidates: NeighborQueue,
-    visited: FixedBitSet,
+    visited: Box<dyn BitSet>,
     bulk_nodes: Vec<i32>,
     bulk_scores: Vec<f32>,
     cur_level: i32,
@@ -302,7 +306,7 @@ struct OnHeapSearcher {
 }
 
 impl OnHeapSearcher {
-    fn new(candidates: NeighborQueue, visited: FixedBitSet) -> Self {
+    fn new(candidates: NeighborQueue, visited: Box<dyn BitSet>) -> Self {
         Self {
             candidates,
             visited,
@@ -351,7 +355,10 @@ impl OnHeapSearcher {
         self.candidates.clear();
         let cap = capacity.max(0) as usize;
         if self.visited.length() < cap {
-            self.visited = FixedBitSet::new(cap);
+            // Java casts `visited` to a FixedBitSet here and calls
+            // `FixedBitSet.ensureCapacityAndClear`, so the grown set is always
+            // a dense one whatever `createBitSet` chose at construction.
+            self.visited = Box::new(FixedBitSet::new(cap));
         } else {
             self.visited.clear_all();
         }
@@ -442,7 +449,7 @@ impl OnHeapSearcher {
         score_entry_points(
             results,
             scorer,
-            &mut self.visited,
+            self.visited.as_mut(),
             eps,
             accept_ords,
             &mut self.candidates,
@@ -534,5 +541,34 @@ impl AbstractHnswGraphSearcher for HnswGraphSearcher {
         collector: &mut dyn KnnCollector,
     ) -> Result<Vec<i32>> {
         HnswGraphSearcher::find_best_entry_point(self, scorer, graph, collector)
+    }
+}
+
+/// Returns the number of nodes a graph can address.
+///
+/// Equivalent to the package-private `HnswGraphSearcher.getGraphSize(HnswGraph)`.
+pub fn get_graph_size(graph: &dyn HnswGraph) -> i32 {
+    graph.max_node_id() + 1
+}
+
+/// Returns how many nodes a search for `k` neighbours is expected to visit.
+///
+/// Equivalent to `HnswGraphSearcher.expectedVisitedNodes(int, int)`.
+pub fn expected_visited_nodes(k: i32, graph_size: i32) -> i32 {
+    (f64::from(graph_size).ln() * f64::from(k)) as i32
+}
+
+/// Returns the bit set best suited to tracking the nodes a search will visit.
+///
+/// Equivalent to the package-private `HnswGraphSearcher.createBitSet(int,
+/// int)`, which follows the same reasoning as `FixedBitSet.of`: a search
+/// expected to touch under a 128th of the graph is better served by a sparse
+/// set than by one word per 64 nodes.
+pub fn create_bit_set(k: i32, graph_size: i32) -> Box<dyn BitSet> {
+    let size = graph_size.max(1) as usize;
+    if expected_visited_nodes(k, graph_size) < (graph_size >> 7) {
+        Box::new(SparseFixedBitSet::new(size))
+    } else {
+        Box::new(FixedBitSet::new(size))
     }
 }

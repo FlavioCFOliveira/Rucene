@@ -166,11 +166,20 @@ where
         self.next_is_set || self.set_next()
     }
 
+    /// Returns whether `object` passes the filter.
+    ///
+    /// Equivalent to the abstract `FilterIterator.predicateFunction(InnerT)`,
+    /// which a Java subclass overrides; here it calls the closure the
+    /// constructor was given.
+    fn predicate_function(&mut self, object: &I::Item) -> bool {
+        (self.predicate)(object)
+    }
+
     /// Equivalent to the private `FilterIterator.setNext`.
     fn set_next(&mut self) -> bool {
         debug_assert!(!self.next_is_set);
-        for object in self.iterator.by_ref() {
-            if (self.predicate)(&object) {
+        while let Some(object) = self.iterator.next() {
+            if self.predicate_function(&object) {
                 self.next = Some(object);
                 self.next_is_set = true;
                 return true;

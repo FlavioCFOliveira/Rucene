@@ -125,7 +125,9 @@ impl HnswGraphBuilder {
         let ml = if m == 1 { 1.0 } else { 1.0 / (m as f64).ln() };
         let graph_searcher = HnswGraphSearcher::new(
             NeighborQueue::new(beam_width, true),
-            crate::util::FixedBitSet::new(hnsw.max_node_id().max(0) as usize + 1),
+            Box::new(crate::util::FixedBitSet::new(
+                hnsw.max_node_id().max(0) as usize + 1,
+            )),
         );
         Ok(Self {
             m,

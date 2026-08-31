@@ -159,11 +159,23 @@ impl FileDeleter {
     /// Increments the reference count of `file_name`.
     ///
     /// Equivalent to `FileDeleter.incRef(String)`.
-    pub fn inc_ref(&mut self, file_name: &str) {
-        let rc = self
-            .ref_counts
+    /// Returns the reference count of `file_name`, creating it at zero when the
+    /// file is not tracked yet.
+    ///
+    /// Equivalent to the private `FileDeleter.getRefCountInternal(String)`.
+    /// Java calls it on `this`; Rust would then borrow the whole deleter while
+    /// the caller still needs to log through it, so the map is passed in.
+    fn get_ref_count_internal<'a>(
+        ref_counts: &'a mut HashMap<String, RefCount>,
+        file_name: &str,
+    ) -> &'a mut RefCount {
+        ref_counts
             .entry(file_name.to_string())
-            .or_insert_with(|| RefCount::new(file_name));
+            .or_insert_with(|| RefCount::new(file_name))
+    }
+
+    pub fn inc_ref(&mut self, file_name: &str) {
+        let rc = Self::get_ref_count_internal(&mut self.ref_counts, file_name);
         let pre = rc.count;
         rc.inc_ref();
         self.message(MsgType::Ref, || {

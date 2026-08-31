@@ -92,6 +92,15 @@ impl SparseFixedBitSet {
     }
 
     /// Returns the number of bits the set can hold.
+    /// Returns whether `index` is inside this set's range.
+    ///
+    /// Equivalent to the private `SparseFixedBitSet.consistent(int)`, which
+    /// Java only evaluates inside an `assert` at the head of each accessor.
+    fn consistent(&self, index: usize) -> bool {
+        debug_assert!(index < self.length, "index={index},length={}", self.length);
+        true
+    }
+
     pub fn length(&self) -> usize {
         self.length
     }
@@ -102,6 +111,7 @@ impl SparseFixedBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn get(&self, index: usize) -> bool {
+        debug_assert!(self.consistent(index));
         assert!(index < self.length, "index={index} out of bounds");
         let i4096 = index >> 12;
         let i64 = index >> 6;
@@ -123,6 +133,7 @@ impl SparseFixedBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn set(&mut self, index: usize) {
+        debug_assert!(self.consistent(index));
         assert!(index < self.length, "index={index} out of bounds");
         let i4096 = index >> 12;
         let i64 = index >> 6;
@@ -144,6 +155,7 @@ impl SparseFixedBitSet {
     ///
     /// Panics if `index` is out of bounds.
     pub fn clear(&mut self, index: usize) {
+        debug_assert!(self.consistent(index));
         assert!(index < self.length, "index={index} out of bounds");
         let i4096 = index >> 12;
         let i64 = index >> 6;

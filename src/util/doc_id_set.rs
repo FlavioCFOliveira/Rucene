@@ -138,6 +138,19 @@ impl IntArrayDocIdSet {
     ///
     /// Returns [`LuceneError::IllegalArgument`] when the sentinel is missing,
     /// which is Java's bare `IllegalArgumentException`.
+    /// Returns whether the first `length` entries of `docs` are non-decreasing.
+    ///
+    /// Equivalent to the private `IntArrayDocIdSet.assertArraySorted(int[],
+    /// int)`, which Java only evaluates inside an `assert`.
+    fn assert_array_sorted(docs: &[i32], length: usize) -> bool {
+        for i in 1..length {
+            if docs[i] < docs[i - 1] {
+                return false;
+            }
+        }
+        true
+    }
+
     pub fn new(docs: Vec<i32>, length: usize) -> Result<Self> {
         if docs[length] != NO_MORE_DOCS {
             return Err(LuceneError::IllegalArgument(
@@ -145,7 +158,7 @@ impl IntArrayDocIdSet {
             ));
         }
         debug_assert!(
-            docs[..length].windows(2).all(|w| w[0] <= w[1]),
+            Self::assert_array_sorted(&docs, length),
             "IntArrayDocIdSet need docs to be sorted"
         );
         Ok(Self {
@@ -670,9 +683,7 @@ impl DocIdSetBuilder {
             dedup(&mut concatenated.array, concatenated.length)
         } else {
             debug_assert!(
-                concatenated.array[..concatenated.length]
-                    .windows(2)
-                    .all(|w| w[0] < w[1]),
+                no_dups(&concatenated.array, concatenated.length),
                 "duplicate doc ids in a single-valued source"
             );
             concatenated.length
@@ -790,4 +801,17 @@ impl BulkAdder<'_> {
             }
         }
     }
+}
+
+/// Returns whether the first `len` entries of `a` are strictly increasing.
+///
+/// Equivalent to the private `DocIdSetBuilder.noDups(int[], int)`, which Java
+/// only evaluates inside an `assert`.
+fn no_dups(a: &[i32], len: usize) -> bool {
+    for i in 1..len {
+        if a[i - 1] >= a[i] {
+            return false;
+        }
+    }
+    true
 }

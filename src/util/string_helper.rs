@@ -48,6 +48,13 @@ impl IntsRef {
     pub fn slice(&self) -> &[i32] {
         &self.ints[self.offset..self.offset + self.length]
     }
+
+    /// Returns whether `other` holds the same integers as this reference.
+    ///
+    /// Equivalent to `IntsRef.intsEquals(IntsRef)`.
+    pub fn ints_equals(&self, other: &Self) -> bool {
+        self.slice() == other.slice()
+    }
 }
 
 // ---------------------------------------------------------------------------
