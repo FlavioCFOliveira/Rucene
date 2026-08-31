@@ -7,13 +7,17 @@ use std::io::Read;
 use std::sync::Arc;
 
 use crate::analysis::{Analyzer, TokenStream};
-use crate::document::point_queries::{LatLonPointDistanceQuery, LatLonPointQuery};
+use crate::document::distance_sort::{LatLonPointSortField, XYPointSortField};
+use crate::document::point_queries::{
+    LatLonDocValuesBoxQuery, LatLonDocValuesQuery, LatLonPointDistanceQuery, LatLonPointQuery,
+    XYDocValuesPointInGeometryQuery,
+};
 use crate::document::shape_field::QueryRelation;
-use crate::document::spatial_query::LatLonGeometryValue;
+use crate::document::spatial_query::{LatLonGeometryValue, XYGeometryValue};
 use crate::document::{FieldData, FieldType, InvertableType, NumericValue, StoredValue};
 use crate::error::{LuceneError, Result};
 use crate::geo::encoding::{GeoEncodingUtils, XYEncodingUtils};
-use crate::geo::geometry::{Rectangle, XYRectangle};
+use crate::geo::geometry::{Circle, Polygon, Rectangle, XYCircle, XYRectangle};
 use crate::index::{DocValuesType, IndexableField, IndexableFieldType};
 use crate::search::boolean_query::Builder as BooleanQueryBuilder;
 use crate::search::constant_score_query::ConstantScoreQuery;
@@ -447,6 +451,148 @@ impl LatLonDocValuesField {
         self.value
     }
 
+    /// Creates a query matching documents whose point falls in the box.
+    ///
+    /// Equivalent to `LatLonDocValuesField.newSlowBoxQuery(String, double,
+    /// double, double, double)`. The exact values `lat=90.0` and `lon=180.0`
+    /// are treated specially: neither exists in the encoding, so a range that
+    /// starts there can never match.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the query raises.
+    pub fn new_slow_box_query(
+        field: &str,
+        min_latitude: f64,
+        max_latitude: f64,
+        mut min_longitude: f64,
+        max_longitude: f64,
+    ) -> Result<Arc<dyn Query>> {
+        if min_latitude == 90.0 {
+            // The range cannot match: 90.0 can never exist.
+            return Ok(Arc::new(MatchNoDocsQuery::new(
+                "LatLonDocValuesField.newBoxQuery with minLatitude=90.0",
+            )));
+        }
+        if min_longitude == 180.0 {
+            if max_longitude == 180.0 {
+                // The range cannot match: 180.0 can never exist.
+                return Ok(Arc::new(MatchNoDocsQuery::new(
+                    "LatLonDocValuesField.newBoxQuery with minLongitude=maxLongitude=180.0",
+                )));
+            } else if max_longitude < min_longitude {
+                // `encodeCeil` with dateline wrapping.
+                min_longitude = -180.0;
+            }
+        }
+        Ok(Arc::new(LatLonDocValuesBoxQuery::new(
+            field,
+            min_latitude,
+            max_latitude,
+            min_longitude,
+            max_longitude,
+        )?))
+    }
+
+    /// Creates a query matching documents within `radius_meters` of the point.
+    ///
+    /// Equivalent to `LatLonDocValuesField.newSlowDistanceQuery(String, double,
+    /// double, double)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the circle or the query raises.
+    pub fn new_slow_distance_query(
+        field: &str,
+        latitude: f64,
+        longitude: f64,
+        radius_meters: f64,
+    ) -> Result<Arc<dyn Query>> {
+        let circle = Circle::new(latitude, longitude, radius_meters)?;
+        Self::new_slow_geometry_query(
+            field,
+            QueryRelation::Intersects,
+            vec![LatLonGeometryValue::Circle(circle)],
+        )
+    }
+
+    /// Creates a query matching documents inside any of the polygons.
+    ///
+    /// Equivalent to `LatLonDocValuesField.newSlowPolygonQuery(String,
+    /// Polygon...)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the query raises.
+    pub fn new_slow_polygon_query(field: &str, polygons: Vec<Polygon>) -> Result<Arc<dyn Query>> {
+        Self::new_slow_geometry_query(
+            field,
+            QueryRelation::Intersects,
+            polygons
+                .into_iter()
+                .map(LatLonGeometryValue::Polygon)
+                .collect(),
+        )
+    }
+
+    /// Creates a query relating documents to the geometries.
+    ///
+    /// Equivalent to `LatLonDocValuesField.newSlowGeometryQuery(String,
+    /// QueryRelation, LatLonGeometry...)`, which short-circuits a single
+    /// intersecting rectangle into a box query and refuses a `CONTAINS` query
+    /// over anything but points.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the query raises.
+    pub fn new_slow_geometry_query(
+        field: &str,
+        query_relation: QueryRelation,
+        geometries: Vec<LatLonGeometryValue>,
+    ) -> Result<Arc<dyn Query>> {
+        if query_relation == QueryRelation::Intersects && geometries.len() == 1 {
+            if let LatLonGeometryValue::Rectangle(rect) = &geometries[0] {
+                return Self::new_slow_box_query(
+                    field,
+                    rect.min_lat(),
+                    rect.max_lat(),
+                    rect.min_lon(),
+                    rect.max_lon(),
+                );
+            }
+        }
+        if query_relation == QueryRelation::Contains
+            && geometries
+                .iter()
+                .any(|g| !matches!(g, LatLonGeometryValue::Point(_)))
+        {
+            return Ok(Arc::new(MatchNoDocsQuery::new(
+                "Contains LatLonDocValuesField.newSlowGeometryQuery with non-point geometries",
+            )));
+        }
+        Ok(Arc::new(LatLonDocValuesQuery::new(
+            field,
+            query_relation,
+            geometries,
+        )?))
+    }
+
+    /// Creates a sort ordering documents by distance from the point.
+    ///
+    /// Equivalent to `LatLonDocValuesField.newDistanceSort(String, double,
+    /// double)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the sort field raises.
+    pub fn new_distance_sort(
+        field: &str,
+        latitude: f64,
+        longitude: f64,
+    ) -> Result<LatLonPointSortField> {
+        LatLonPointSortField::new(field, latitude, longitude)
+    }
+
     /// Checks that `field_info` describes a field this doc-values type can
     /// read.
     ///
@@ -702,6 +848,89 @@ impl XYDocValuesField {
     /// Returns the packed value.
     pub fn numeric_value(&self) -> i64 {
         self.value
+    }
+
+    /// Creates a query matching documents whose point falls in the box.
+    ///
+    /// Equivalent to `XYDocValuesField.newSlowBoxQuery(String, float, float,
+    /// float, float)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the rectangle or the query raises.
+    pub fn new_slow_box_query(
+        field: &str,
+        min_x: f32,
+        max_x: f32,
+        min_y: f32,
+        max_y: f32,
+    ) -> Result<Arc<dyn Query>> {
+        let rectangle = XYRectangle::new(min_x, max_x, min_y, max_y)?;
+        Self::new_slow_geometry_query(field, vec![XYGeometryValue::Rectangle(rectangle)])
+    }
+
+    /// Creates a query matching documents within `radius` of the point.
+    ///
+    /// Equivalent to `XYDocValuesField.newSlowDistanceQuery(String, float,
+    /// float, float)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the circle or the query raises.
+    pub fn new_slow_distance_query(
+        field: &str,
+        x: f32,
+        y: f32,
+        radius: f32,
+    ) -> Result<Arc<dyn Query>> {
+        let circle = XYCircle::new(x, y, radius)?;
+        Self::new_slow_geometry_query(field, vec![XYGeometryValue::Circle(circle)])
+    }
+
+    /// Creates a query matching documents inside any of the polygons.
+    ///
+    /// Equivalent to `XYDocValuesField.newSlowPolygonQuery(String,
+    /// XYPolygon...)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the query raises.
+    pub fn new_slow_polygon_query(
+        field: &str,
+        polygons: Vec<crate::geo::geometry::XYPolygon>,
+    ) -> Result<Arc<dyn Query>> {
+        Self::new_slow_geometry_query(
+            field,
+            polygons.into_iter().map(XYGeometryValue::Polygon).collect(),
+        )
+    }
+
+    /// Creates a query matching documents inside any of the geometries.
+    ///
+    /// Equivalent to `XYDocValuesField.newSlowGeometryQuery(String,
+    /// XYGeometry...)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the query raises.
+    pub fn new_slow_geometry_query(
+        field: &str,
+        geometries: Vec<XYGeometryValue>,
+    ) -> Result<Arc<dyn Query>> {
+        Ok(Arc::new(XYDocValuesPointInGeometryQuery::new(
+            field, geometries,
+        )?))
+    }
+
+    /// Creates a sort ordering documents by distance from the point.
+    ///
+    /// Equivalent to `XYDocValuesField.newDistanceSort(String, float, float)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the sort field raises.
+    pub fn new_distance_sort(field: &str, x: f32, y: f32) -> Result<XYPointSortField> {
+        XYPointSortField::new(field, x, y)
     }
 
     /// Checks that `field_info` describes a field this doc-values type can

@@ -1650,3 +1650,205 @@ impl Query for LatLonPointDistanceQuery {
         hasher.finish()
     }
 }
+
+// -----------------------------------------------------------------------------
+// The Query wrappers of the three doc-values queries
+// -----------------------------------------------------------------------------
+//
+// Java's three doc-values queries each extend Query and supply a
+// ConstantScoreWeight whose scorer wraps a TwoPhaseIterator over the field's
+// sorted-numeric values. Rust has no implementation inheritance, so each states
+// how it iterates through SpatialMatcher and the weight is built once by
+// `spatial_create_weight`, exactly as the point queries above do.
+
+impl SpatialMatcher for LatLonDocValuesBoxQuery {
+    fn spatial_field(&self) -> &str {
+        &self.field
+    }
+
+    fn spatial_matching_docs(
+        &self,
+        reader: &dyn LeafReader,
+    ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        self.matching_docs(reader)
+    }
+
+    fn spatial_cost(&self, reader: &dyn LeafReader) -> Result<i64> {
+        Ok(reader
+            .get_sorted_numeric_doc_values(&self.field)?
+            .map_or(0, |values| values.cost()))
+    }
+}
+
+impl Query for LatLonDocValuesBoxQuery {
+    fn to_query_string(&self, field: &str) -> String {
+        LatLonDocValuesBoxQuery::to_query_string(self, field)
+    }
+
+    fn visit(&self, visitor: &mut dyn QueryVisitor) {
+        if visitor.accept_field(&self.field) {
+            visitor.visit_leaf(self);
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn query_eq(&self, other: &dyn Query) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|other| self == other)
+    }
+
+    fn query_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.class_hash().hash(&mut hasher);
+        self.field.hash(&mut hasher);
+        self.matcher_min_latitude.hash(&mut hasher);
+        self.matcher_max_latitude.hash(&mut hasher);
+        self.matcher_min_longitude.hash(&mut hasher);
+        self.matcher_max_longitude.hash(&mut hasher);
+        self.crosses_dateline.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        let matcher = Arc::new(self.clone());
+        let query: Arc<dyn Query> = Arc::new(self.clone());
+        spatial_create_weight(matcher, query, score_mode, boost)
+    }
+}
+
+impl SpatialMatcher for LatLonDocValuesQuery {
+    fn spatial_field(&self) -> &str {
+        &self.field
+    }
+
+    fn spatial_matching_docs(
+        &self,
+        reader: &dyn LeafReader,
+    ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        self.matching_docs(reader)
+    }
+
+    fn spatial_cost(&self, reader: &dyn LeafReader) -> Result<i64> {
+        Ok(reader
+            .get_sorted_numeric_doc_values(&self.field)?
+            .map_or(0, |values| values.cost()))
+    }
+}
+
+impl Query for LatLonDocValuesQuery {
+    fn to_query_string(&self, field: &str) -> String {
+        LatLonDocValuesQuery::to_query_string(self, field)
+    }
+
+    fn visit(&self, visitor: &mut dyn QueryVisitor) {
+        if visitor.accept_field(&self.field) {
+            visitor.visit_leaf(self);
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn query_eq(&self, other: &dyn Query) -> bool {
+        other.as_any().downcast_ref::<Self>().is_some_and(|other| {
+            self.field == other.field
+                && self.query_relation == other.query_relation
+                && self.geometries == other.geometries
+        })
+    }
+
+    fn query_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.class_hash().hash(&mut hasher);
+        self.field.hash(&mut hasher);
+        format!("{:?}", self.query_relation).hash(&mut hasher);
+        format!("{:?}", self.geometries).hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        let matcher = Arc::new(self.clone());
+        let query: Arc<dyn Query> = Arc::new(self.clone());
+        spatial_create_weight(matcher, query, score_mode, boost)
+    }
+}
+
+impl SpatialMatcher for XYDocValuesPointInGeometryQuery {
+    fn spatial_field(&self) -> &str {
+        &self.field
+    }
+
+    fn spatial_matching_docs(
+        &self,
+        reader: &dyn LeafReader,
+    ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        self.matching_docs(reader)
+    }
+
+    fn spatial_cost(&self, reader: &dyn LeafReader) -> Result<i64> {
+        Ok(reader
+            .get_sorted_numeric_doc_values(&self.field)?
+            .map_or(0, |values| values.cost()))
+    }
+}
+
+impl Query for XYDocValuesPointInGeometryQuery {
+    fn to_query_string(&self, field: &str) -> String {
+        XYDocValuesPointInGeometryQuery::to_query_string(self, field)
+    }
+
+    fn visit(&self, visitor: &mut dyn QueryVisitor) {
+        if visitor.accept_field(&self.field) {
+            visitor.visit_leaf(self);
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn query_eq(&self, other: &dyn Query) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|other| self.field == other.field && self.geometries == other.geometries)
+    }
+
+    fn query_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.class_hash().hash(&mut hasher);
+        self.field.hash(&mut hasher);
+        format!("{:?}", self.geometries).hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        let matcher = Arc::new(self.clone());
+        let query: Arc<dyn Query> = Arc::new(self.clone());
+        spatial_create_weight(matcher, query, score_mode, boost)
+    }
+}
