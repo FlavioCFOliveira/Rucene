@@ -33,6 +33,10 @@ pub const SPI_NAME: &str = "name";
 pub struct AbstractAnalysisFactory {
     original_args: HashMap<String, String>,
     lucene_match_version: Version,
+    /// Whether the caller passed `luceneMatchVersion` explicitly.
+    ///
+    /// Equivalent to `AbstractAnalysisFactory.isExplicitLuceneMatchVersion`.
+    is_explicit_lucene_match_version: bool,
 }
 
 impl AbstractAnalysisFactory {
@@ -42,15 +46,17 @@ impl AbstractAnalysisFactory {
     /// Equivalent to `AbstractAnalysisFactory(Map<String, String>)`.
     pub fn new(args: &mut HashMap<String, String>) -> Result<Self> {
         let original_args = args.clone();
-        let lucene_match_version = match args.remove(LUCENE_MATCH_VERSION_PARAM) {
-            Some(version) => Version::parse_leniently(&version)?,
-            None => Version::LATEST,
+        let (lucene_match_version, explicit_version) = match args.remove(LUCENE_MATCH_VERSION_PARAM)
+        {
+            Some(version) => (Version::parse_leniently(&version)?, true),
+            None => (Version::LATEST, false),
         };
         args.remove(CLASS_NAME);
         args.remove(SPI_NAME);
         Ok(Self {
             original_args,
             lucene_match_version,
+            is_explicit_lucene_match_version: explicit_version,
         })
     }
 
@@ -66,6 +72,190 @@ impl AbstractAnalysisFactory {
     /// Equivalent to `getLuceneMatchVersion()`.
     pub fn get_lucene_match_version(&self) -> Version {
         self.lucene_match_version
+    }
+
+    /// Returns whether the caller passed an explicit `luceneMatchVersion`.
+    ///
+    /// Equivalent to `AbstractAnalysisFactory.isExplicitLuceneMatchVersion()`.
+    pub fn is_explicit_lucene_match_version(&self) -> bool {
+        self.is_explicit_lucene_match_version
+    }
+
+    /// Records whether the caller passed an explicit `luceneMatchVersion`.
+    ///
+    /// Equivalent to `AbstractAnalysisFactory.setExplicitLuceneMatchVersion(boolean)`.
+    pub fn set_explicit_lucene_match_version(&mut self, explicit: bool) {
+        self.is_explicit_lucene_match_version = explicit;
+    }
+
+    /// Returns the error a no-argument factory constructor must raise.
+    ///
+    /// Equivalent to `AbstractAnalysisFactory.defaultCtorException()`, which
+    /// every subclass's no-argument constructor throws: a factory is only ever
+    /// built from its argument map.
+    pub fn default_ctor_exception() -> LuceneError {
+        LuceneError::UnsupportedOperation(
+            "Analysis factories cannot be instantiated without arguments. Use applicable factory \
+             methods of TokenizerFactory, CharFilterFactory, or TokenFilterFactory."
+                .to_string(),
+        )
+    }
+
+    /// Consumes an optional single-character argument.
+    ///
+    /// Equivalent to `AbstractAnalysisFactory.getChar(Map, String, char)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the value is not exactly
+    /// one character long.
+    pub fn get_char(
+        args: &mut HashMap<String, String>,
+        name: &str,
+        default_value: char,
+    ) -> Result<char> {
+        match args.remove(name) {
+            None => Ok(default_value),
+            Some(s) => {
+                let mut chars = s.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => Ok(c),
+                    _ => Err(LuceneError::IllegalArgument(format!(
+                        "{name} should be a char. \"{s}\" is invalid"
+                    ))),
+                }
+            }
+        }
+    }
+
+    /// Consumes a required single-character argument.
+    ///
+    /// Equivalent to `AbstractAnalysisFactory.requireChar(Map, String)`, which
+    /// takes the first character of the required value.
+    pub fn require_char(args: &mut HashMap<String, String>, name: &str) -> Result<char> {
+        let value = Self::require(args, name)?;
+        value.chars().next().ok_or_else(|| {
+            LuceneError::IllegalArgument(format!("{name} should be a char but is empty"))
+        })
+    }
+
+    /// Splits `list` on `separator`, honouring a backslash escape.
+    ///
+    /// Equivalent to `AbstractAnalysisFactory.splitAt(char, String)`. A
+    /// separator preceded by a backslash is part of the item, and the backslash
+    /// is removed.
+    pub fn split_at(separator: char, list: Option<&str>) -> Vec<String> {
+        let Some(list) = list else {
+            return Vec::new();
+        };
+        let mut result = Vec::new();
+        let mut current = String::new();
+        let mut escaped = false;
+        for c in list.chars() {
+            if escaped {
+                // A backslash only escapes the separator; anything else keeps
+                // both characters, as Java's regex does.
+                if c != separator {
+                    current.push('\\');
+                }
+                current.push(c);
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == separator {
+                result.push(std::mem::take(&mut current));
+            } else {
+                current.push(c);
+            }
+        }
+        if escaped {
+            current.push('\\');
+        }
+        result.push(current);
+        result
+    }
+
+    /// Splits a comma-separated list of file names.
+    ///
+    /// Equivalent to `AbstractAnalysisFactory.splitFileNames(String)`.
+    pub fn split_file_names(file_names: Option<&str>) -> Vec<String> {
+        Self::split_at(',', file_names)
+    }
+
+    /// Returns the argument as a set of comma-separated values.
+    ///
+    /// Equivalent to `AbstractAnalysisFactory.getClassArg()` in its general
+    /// form: the value is split on commas and each item trimmed.
+    pub fn get_class_arg(&self, name: &str) -> Option<Vec<String>> {
+        self.original_args.get(name).map(|value| {
+            Self::split_at(',', Some(value))
+                .into_iter()
+                .map(|item| item.trim().to_string())
+                .collect()
+        })
+    }
+
+    /// Reads the lines of one resource.
+    ///
+    /// Equivalent to `AbstractAnalysisFactory.getLines(ResourceLoader, String)`,
+    /// which decodes the resource as UTF-8 through `WordlistLoader.getLines`.
+    pub fn get_lines(
+        loader: &dyn crate::util::resource_loader::ResourceLoader,
+        resource: &str,
+    ) -> Result<Vec<String>> {
+        let mut reader = loader.open_resource(resource)?;
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut reader, &mut text)?;
+        Ok(text.lines().map(str::to_string).collect())
+    }
+
+    /// Reads one or more word-list resources into a set.
+    ///
+    /// Equivalent to `AbstractAnalysisFactory.getWordSet(ResourceLoader, String, boolean)`.
+    /// Returns `None` when no file is named, which is how Lucene signals "no
+    /// word set configured" as distinct from an empty one.
+    pub fn get_word_set(
+        loader: &dyn crate::util::resource_loader::ResourceLoader,
+        word_files: Option<&str>,
+        ignore_case: bool,
+    ) -> Result<Option<crate::analysis::CharArraySet>> {
+        let files = Self::split_file_names(word_files);
+        if files.is_empty() {
+            return Ok(None);
+        }
+        // The default stop-word list holds around 35 words; ten per file is
+        // the starting size Lucene picks.
+        let mut words = crate::analysis::CharArraySet::new(files.len() * 10, ignore_case);
+        for file in &files {
+            for line in Self::get_lines(loader, file.trim())? {
+                words.add(line);
+            }
+        }
+        Ok(Some(words))
+    }
+
+    /// Reads one or more Snowball-format word-list resources into a set.
+    ///
+    /// Equivalent to `AbstractAnalysisFactory.getSnowballWordSet(ResourceLoader, String, boolean)`.
+    /// The Snowball format allows a `|` comment on any line and blank lines
+    /// between entries.
+    pub fn get_snowball_word_set(
+        loader: &dyn crate::util::resource_loader::ResourceLoader,
+        word_files: Option<&str>,
+        ignore_case: bool,
+    ) -> Result<Option<crate::analysis::CharArraySet>> {
+        let files = Self::split_file_names(word_files);
+        if files.is_empty() {
+            return Ok(None);
+        }
+        let mut words = crate::analysis::CharArraySet::new(files.len() * 10, ignore_case);
+        for file in &files {
+            let lines = Self::get_lines(loader, file.trim())?;
+            for word in crate::analysis::wordlist_loader::get_snowball_word_set(lines).iter() {
+                words.add(word.iter().collect::<String>());
+            }
+        }
+        Ok(Some(words))
     }
 
     /// Consumes and returns a required argument.

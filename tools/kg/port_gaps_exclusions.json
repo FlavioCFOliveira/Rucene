@@ -51,5 +51,11 @@
       "zzUnpackcmap_blocks",
       "zzUnpackcmap_top"
     ]
+  },
+  "org.apache.lucene.analysis.AbstractAnalysisFactory": {
+    "reason": "getPattern returns a java.util.regex.Pattern. The crate has no regular-expression engine of that kind (util::automaton::RegExp implements Lucene's own regexp syntax over an automaton, not Java's), so porting it means adopting a new dependency. CLAUDE.md 13.3 requires the user's approval before adopting a dependency, so this one member is held open pending that decision rather than resolved unilaterally.",
+    "methods": [
+      "getPattern"
+    ]
   }
 }

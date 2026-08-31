@@ -5,7 +5,7 @@
 //! `FilterMergePolicy`, `OneMergeWrappingMergePolicy`, `LogMergePolicy`,
 //! `LogByteSizeMergePolicy` and `LogDocMergePolicy`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -1934,6 +1934,288 @@ impl TemporalMergePolicy {
     /// Plans the merges of one window, newest segment first.
     ///
     /// Equivalent to `TemporalMergePolicy.planWindowMerges`.
+    /// Returns the configured maximum window size, in seconds.
+    ///
+    /// Equivalent to `TemporalMergePolicy.getMaxWindowSizeSeconds()`.
+    pub fn get_max_window_size_seconds(&self) -> i64 {
+        self.max_window_size_seconds
+    }
+
+    /// Sets the maximum window size, in seconds.
+    ///
+    /// Equivalent to `TemporalMergePolicy.setMaxWindowSizeSeconds(long)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// when the value is not positive.
+    pub fn set_max_window_size_seconds(&mut self, seconds: i64) -> Result<&mut Self> {
+        if seconds <= 0 {
+            return Err(crate::error::LuceneError::IllegalArgument(
+                "maxWindowSizeSeconds must be positive".to_string(),
+            ));
+        }
+        self.max_window_size_seconds = seconds;
+        Ok(self)
+    }
+
+    /// Returns the percentage of deletions above which `force_merge_deletes`
+    /// rewrites a segment.
+    ///
+    /// Equivalent to `TemporalMergePolicy.getForceMergeDeletesPctAllowed()`.
+    pub fn get_force_merge_deletes_pct_allowed(&self) -> f64 {
+        self.force_merge_deletes_pct_allowed
+    }
+
+    /// Sets the percentage of deletions above which `force_merge_deletes`
+    /// rewrites a segment.
+    ///
+    /// Equivalent to `TemporalMergePolicy.setForceMergeDeletesPctAllowed(double)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// when the value is negative.
+    pub fn set_force_merge_deletes_pct_allowed(&mut self, pct: f64) -> Result<&mut Self> {
+        if pct < 0.0 {
+            return Err(crate::error::LuceneError::IllegalArgument(
+                "forceMergeDeletesPctAllowed must be >= 0".to_string(),
+            ));
+        }
+        self.force_merge_deletes_pct_allowed = pct;
+        Ok(self)
+    }
+
+    /// Returns whether the window sizes grow exponentially with age.
+    ///
+    /// Equivalent to `TemporalMergePolicy.getUseExponentialBuckets()`.
+    pub fn get_use_exponential_buckets(&self) -> bool {
+        self.use_exponential_buckets
+    }
+
+    /// Infers the unit of the temporal field from the largest value it holds,
+    /// and returns the factor that converts it to milliseconds.
+    ///
+    /// Equivalent to `TemporalMergePolicy.getTemporalFieldDivisor(long)`. A
+    /// positive result divides, a negative one multiplies by its magnitude:
+    /// values above 10^14 are microseconds, above 10^11 milliseconds, and
+    /// anything else seconds. The schema is not available to the policy, so the
+    /// unit has to be inferred from the data — which is exactly what Lucene
+    /// does here.
+    fn get_temporal_field_divisor(&self, max_value: i64) -> i64 {
+        if max_value > 100_000_000_000_000 {
+            // Above 10^14: microseconds.
+            1_000
+        } else if max_value > 100_000_000_000 {
+            // Above 10^11: milliseconds.
+            1
+        } else {
+            // Otherwise: seconds.
+            -1000
+        }
+    }
+
+    /// Places one segment in the bucket its newest value falls into.
+    ///
+    /// Equivalent to `TemporalMergePolicy.assignToBucket(Map, long, SegmentCommitInfo, SegmentDateRange)`.
+    fn assign_to_bucket(
+        &self,
+        buckets: &mut BTreeMap<i64, Vec<SegmentCommitInfo>>,
+        now_millis: i64,
+        segment: &SegmentCommitInfo,
+        date_range: &SegmentDateRange,
+    ) {
+        let max_date_seconds = date_range.max_date / 1000;
+        let bucket = self.bucket_for_timestamp(max_date_seconds, now_millis / 1000);
+        buckets.entry(bucket).or_default().push(segment.clone());
+    }
+
+    /// Groups the segments into time windows by their newest value.
+    ///
+    /// Equivalent to `TemporalMergePolicy.groupSegmentsByTimeWindow(Map)`. The
+    /// map is ordered by bucket, so the windows come out oldest first.
+    fn group_segments_by_time_window(
+        &self,
+        segment_date_ranges: &[(SegmentCommitInfo, SegmentDateRange)],
+    ) -> BTreeMap<i64, Vec<SegmentCommitInfo>> {
+        let mut buckets: BTreeMap<i64, Vec<SegmentCommitInfo>> = BTreeMap::new();
+        let now_millis = now_millis();
+        for (segment, date_range) in segment_date_ranges {
+            self.assign_to_bucket(&mut buckets, now_millis, segment, date_range);
+        }
+        buckets
+    }
+
+    /// Plans the merges that bring `candidates` down to `max_segment_count`
+    /// segments.
+    ///
+    /// Equivalent to `TemporalMergePolicy.buildForcedMerges(List, int)`. Each
+    /// batch is sized to the reduction still needed, capped at the maximum
+    /// number of inputs one merge may take.
+    fn build_forced_merges(
+        &self,
+        candidates: &[SegmentCommitInfo],
+        max_segment_count: usize,
+    ) -> Option<MergeSpecification> {
+        if candidates.len() < 2 {
+            return None;
+        }
+        let mut spec: Option<MergeSpecification> = None;
+        let mut remaining = candidates.len();
+        let mut offset = 0usize;
+
+        while remaining > max_segment_count && candidates.len() - offset >= 2 {
+            let needed_reduction = remaining - max_segment_count;
+            let mut merge_inputs = self.max_threshold.min(2.max(needed_reduction + 1));
+            merge_inputs = merge_inputs.min(candidates.len() - offset);
+
+            let batch = candidates[offset..offset + merge_inputs].to_vec();
+            if let Ok(merge) = OneMerge::new(batch) {
+                spec.get_or_insert_with(MergeSpecification::new).add(merge);
+            }
+            offset += merge_inputs;
+            remaining -= merge_inputs - 1;
+        }
+        spec
+    }
+
+    /// Plans one merge per full batch of `max_threshold` segments, in order.
+    ///
+    /// Equivalent to `TemporalMergePolicy.buildSequentialMerges(List)`.
+    fn build_sequential_merges(
+        &self,
+        candidates: &[SegmentCommitInfo],
+    ) -> Option<MergeSpecification> {
+        if candidates.len() < 2 {
+            return None;
+        }
+        let mut spec: Option<MergeSpecification> = None;
+        let mut batch: Vec<SegmentCommitInfo> = Vec::with_capacity(self.max_threshold);
+
+        for info in candidates {
+            batch.push(info.clone());
+            if batch.len() == self.max_threshold {
+                if let Ok(merge) = OneMerge::new(std::mem::take(&mut batch)) {
+                    spec.get_or_insert_with(MergeSpecification::new).add(merge);
+                }
+                batch.clear();
+            }
+        }
+        if batch.len() > 1 {
+            if let Ok(merge) = OneMerge::new(batch) {
+                spec.get_or_insert_with(MergeSpecification::new).add(merge);
+            }
+        }
+        spec
+    }
+
+    /// Reads the newest and oldest value of the temporal field in one segment.
+    ///
+    /// Equivalent to `TemporalMergePolicy.extractDateRangeFromSegment(SegmentCommitInfo)`.
+    /// Returns `None` when the segment does not carry the field, or carries it
+    /// as something other than a point field — a legacy segment, or one written
+    /// before a schema change.
+    fn extract_date_range_from_segment(
+        &self,
+        segment_info: &SegmentCommitInfo,
+    ) -> Result<Option<SegmentDateRange>> {
+        let si = &segment_info.info;
+        let codec = si.codec().ok_or_else(|| {
+            crate::error::LuceneError::IllegalState(format!("segment {} has no codec", si.name))
+        })?;
+        let context = &*crate::store::READONCE_IO_CONTEXT;
+
+        // The compound reader is opened and dropped here; `si.directory` is
+        // never closed.
+        let compound;
+        let reader_dir: &dyn crate::store::Directory = if si.get_use_compound_file() {
+            compound = codec
+                .compound_format()
+                .get_compound_reader(si.directory.as_ref(), si)?;
+            &*compound
+        } else {
+            si.directory.as_ref()
+        };
+
+        let field_infos = codec
+            .field_infos_format()
+            .read(reader_dir, si, "", context)?;
+        let Some(field_info) = field_infos.field_info(&self.temporal_field) else {
+            return Ok(None);
+        };
+        if field_info.point_dimension_count == 0 {
+            // The temporal field is not a point field here, so this segment
+            // cannot take part in date-tiered merging.
+            return Ok(None);
+        }
+
+        let read_state =
+            crate::codecs::state::SegmentReadState::new(reader_dir, si, &field_infos, context);
+        let points_reader = codec.points_format().fields_reader(&read_state)?;
+        let point_values = points_reader.get_values(&self.temporal_field)?;
+        let (Some(min_packed), Some(max_packed)) = (
+            point_values.min_packed_value()?,
+            point_values.max_packed_value()?,
+        ) else {
+            return Ok(None);
+        };
+
+        // The schema is not available, so the values are decoded as `long`
+        // points and their unit inferred from their magnitude.
+        let min_date = crate::document::LongPoint::decode_dimension(&min_packed, 0);
+        let max_date = crate::document::LongPoint::decode_dimension(&max_packed, 0);
+        let divisor = self.get_temporal_field_divisor(max_date);
+        let (min_date_millis, max_date_millis) = if divisor < 0 {
+            let multiplier = -divisor;
+            (min_date * multiplier, max_date * multiplier)
+        } else {
+            (min_date / divisor, max_date / divisor)
+        };
+        Ok(Some(SegmentDateRange {
+            min_date: min_date_millis,
+            max_date: max_date_millis,
+        }))
+    }
+
+    /// Reads the date range of every segment that carries the temporal field.
+    ///
+    /// Equivalent to `TemporalMergePolicy.extractSegmentDateRanges(SegmentInfos)`.
+    /// A segment whose points cannot be read is skipped rather than failing the
+    /// whole planning pass, as Java's does.
+    fn extract_segment_date_ranges(
+        &self,
+        segments: &SegmentInfos,
+    ) -> Vec<(SegmentCommitInfo, SegmentDateRange)> {
+        let mut ranges = Vec::new();
+        for segment_info in segments.iter() {
+            if let Ok(Some(range)) = self.extract_date_range_from_segment(segment_info) {
+                ranges.push((segment_info.clone(), range));
+            }
+        }
+        ranges
+    }
+
+    /// Returns the date ranges to plan against: the ones set on the policy when
+    /// there are any, otherwise the ones read from the segments.
+    ///
+    /// Equivalent to `TemporalMergePolicy.resolveSegmentDateRanges(SegmentInfos)`.
+    fn resolve_segment_date_ranges(
+        &self,
+        segments: &SegmentInfos,
+    ) -> Vec<(SegmentCommitInfo, SegmentDateRange)> {
+        if !self.segment_date_ranges.is_empty() {
+            return segments
+                .iter()
+                .filter_map(|info| {
+                    self.segment_date_ranges
+                        .get(&info.info.name)
+                        .map(|range| (info.clone(), *range))
+                })
+                .collect();
+        }
+        self.extract_segment_date_ranges(segments)
+    }
+
     fn plan_window_merges(
         &self,
         mut ordered: Vec<SegmentCommitInfo>,
@@ -2172,4 +2454,15 @@ impl MergePolicy for SoftDeletesRetentionMergePolicy {
     fn get_max_cfs_segment_size(&self) -> i64 {
         self.inner.get_max_cfs_segment_size()
     }
+}
+
+/// Returns the current time in milliseconds since the Unix epoch.
+///
+/// Equivalent to `System.currentTimeMillis()`, which `TemporalMergePolicy`
+/// reads to decide which time window a segment belongs to.
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
 }
