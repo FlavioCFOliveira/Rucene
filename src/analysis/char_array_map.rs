@@ -51,7 +51,87 @@ impl<V> CharArrayMap<V> {
         }
     }
 
-    /// Returns the number of entries.
+    /// Returns a copy of this map.
+    ///
+    /// Equivalent to `CharArrayMap.copy(Map)`, whose fast path copies the two
+    /// backing arrays rather than re-hashing every entry — even on a very small
+    /// map that is about ten times quicker.
+    pub fn copy(&self) -> Self
+    where
+        V: Clone,
+    {
+        Self {
+            ignore_case: self.ignore_case,
+            count: self.count,
+            keys: self.keys.clone(),
+            values: self.values.clone(),
+        }
+    }
+
+    /// Returns an empty map.
+    ///
+    /// Equivalent to `CharArrayMap.emptyMap()`.
+    pub fn empty_map() -> Self {
+        Self::new(0, false)
+    }
+
+    /// Returns the hash Lucene computes for a key.
+    ///
+    /// Equivalent to `CharArrayMap.getHashCode(char[], int, int)`: a
+    /// `31 * h + c` walk over the code points, lower-cased first when the map
+    /// ignores case.
+    pub fn get_hash_code(&self, text: &[char]) -> i32 {
+        let mut code: i32 = 0;
+        if self.ignore_case {
+            for c in text {
+                for lower in c.to_lowercase() {
+                    code = code.wrapping_mul(31).wrapping_add(lower as i32);
+                }
+            }
+        } else {
+            for c in text {
+                code = code.wrapping_mul(31).wrapping_add(*c as i32);
+            }
+        }
+        code
+    }
+
+    /// Removing an entry is not supported.
+    ///
+    /// Equivalent to `CharArrayMap.remove(Object)`, which throws
+    /// `UnsupportedOperationException`: the open-addressed table has no tombstone,
+    /// so an entry cannot be taken out without rebuilding it.
+    pub fn remove(&mut self, _key: &[char]) -> crate::error::Result<Option<V>> {
+        Err(crate::error::LuceneError::UnsupportedOperation(
+            "CharArrayMap does not support removal".to_string(),
+        ))
+    }
+
+    /// Returns every key in the map.
+    ///
+    /// Equivalent to `CharArrayMap.keySet()`, and to `originalKeySet()`, which
+    /// Java distinguishes only so an unmodifiable view can reject writes
+    /// through the returned set. This port returns owned keys, which cannot
+    /// write back at all.
+    pub fn key_set(&self) -> Vec<Vec<char>> {
+        self.keys.iter().flatten().cloned().collect()
+    }
+
+    /// Returns every key with its value.
+    ///
+    /// Equivalent to `CharArrayMap.entrySet()`.
+    pub fn entry_set(&self) -> Vec<(Vec<char>, &V)> {
+        self.keys
+            .iter()
+            .zip(self.values.iter())
+            .filter_map(|(key, value)| match (key, value) {
+                (Some(key), Some(value)) => Some((key.clone(), value)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Returns the number of entries.    /// Returns the number of entries.
     pub fn size(&self) -> usize {
         self.count
     }
@@ -276,5 +356,44 @@ mod tests {
         assert_eq!(map.get(""), Some(&"empty"));
         assert!(map.contains_key(""));
         assert_eq!(map.size(), 1);
+    }
+}
+
+impl<V: std::fmt::Debug> std::fmt::Display for CharArrayMap<V> {
+    /// Renders the map as `{key=value, …}`.
+    ///
+    /// Equivalent to `CharArrayMap.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{")?;
+        let mut first = true;
+        for (key, value) in self.entry_set() {
+            if !first {
+                write!(f, ", ")?;
+            }
+            first = false;
+            write!(f, "{}={value:?}", key.iter().collect::<String>())?;
+        }
+        write!(f, "}}")
+    }
+}
+
+impl<V: PartialEq> PartialEq for CharArrayMap<V> {
+    /// Two maps are equal when they hold the same keys with the same values.
+    ///
+    /// Equivalent to `AbstractMap.equals(Object)`, which `CharArrayMap`
+    /// inherits.
+    fn eq(&self, other: &Self) -> bool {
+        if self.size() != other.size() {
+            return false;
+        }
+        self.keys
+            .iter()
+            .zip(self.values.iter())
+            .filter_map(|(k, v)| k.as_ref().zip(v.as_ref()))
+            .all(|(key, value)| {
+                other
+                    .get_chars(key, 0, key.len())
+                    .is_some_and(|found| found == value)
+            })
     }
 }

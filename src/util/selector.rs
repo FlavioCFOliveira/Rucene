@@ -685,14 +685,48 @@ impl RadixSelector {
     /// Java splits this across four methods to work around a JVM crash
     /// (apache/lucene#12898); that is a codegen workaround, not behaviour, so
     /// this port keeps it in one place.
-    fn common_prefix_length_and_histogram(
+    /// Returns the bucket byte `k` of element `i` falls into.
+    ///
+    /// Equivalent to `RadixSelector.getBucket(int, int)`. The `+ 1` shifts the
+    /// "past the end" sentinel `-1` into slot 0, so the histogram is indexable.
+    fn get_bucket(&self, ops: &dyn RadixSelectorOps, i: usize, k: usize) -> usize {
+        (ops.byte_at(i, k) + 1) as usize
+    }
+
+    /// Counts the bucket of every element in `[from, to)`.
+    ///
+    /// Equivalent to `RadixSelector.buildHistogram(int, int, int, int[])`.
+    fn build_histogram(&mut self, ops: &dyn RadixSelectorOps, from: usize, to: usize, k: usize) {
+        for i in from..to {
+            let bucket = self.get_bucket(ops, i, k);
+            self.histogram[bucket] += 1;
+        }
+    }
+
+    /// Checks that the histogram agrees with the common prefix length.
+    ///
+    /// Equivalent to `RadixSelector.assertHistogram(int, int[])`: one distinct
+    /// byte means there is a common prefix of at least one, and more than one
+    /// means there is none.
+    fn assert_histogram(&self, common_prefix_length: usize) -> bool {
+        let number_of_unique_bytes = self.histogram.iter().filter(|&&freq| freq > 0).count();
+        if number_of_unique_bytes == 1 {
+            common_prefix_length >= 1
+        } else {
+            common_prefix_length == 0
+        }
+    }
+
+    /// Reads the prefix of the first element, up to the scratch buffer's
+    /// length.
+    ///
+    /// Equivalent to `RadixSelector.computeInitialCommonPrefixLength(int, int)`.
+    fn compute_initial_common_prefix_length(
         &mut self,
         ops: &dyn RadixSelectorOps,
         from: usize,
-        to: usize,
         k: usize,
     ) -> usize {
-        // The prefix of the first element, up to the scratch buffer's length.
         let mut common_prefix_length = self.common_prefix.len().min(self.max_length - k);
         for j in 0..common_prefix_length {
             let b = ops.byte_at(from, k + j);
@@ -702,10 +736,24 @@ impl RadixSelector {
                 break;
             }
         }
+        common_prefix_length
+    }
 
-        // Java's inner loop re-reads `commonPrefixLength` on every iteration
-        // because the body shortens it, so the index is explicit here rather
-        // than a range that would be captured once.
+    /// Shortens the common prefix against the remaining elements, stopping at
+    /// the first one that shares nothing.
+    ///
+    /// Equivalent to `RadixSelector.computeCommonPrefixLengthAndBuildHistogramPart1`.
+    fn compute_common_prefix_length_and_build_histogram_part1(
+        &mut self,
+        ops: &dyn RadixSelectorOps,
+        from: usize,
+        to: usize,
+        k: usize,
+        mut common_prefix_length: usize,
+    ) -> usize {
+        // Java re-reads `commonPrefixLength` on every iteration because the
+        // body shortens it, so the index is explicit here rather than a range
+        // that would be captured once.
         let mut i = from + 1;
         'outer: while i < to {
             let mut j = 0;
@@ -726,15 +774,60 @@ impl RadixSelector {
             }
             i += 1;
         }
+        self.compute_common_prefix_length_and_build_histogram_part2(
+            ops,
+            from,
+            to,
+            k,
+            common_prefix_length,
+            i,
+        )
+    }
 
+    /// Finishes the histogram, either by counting the elements past the break
+    /// or by recording that they all share the prefix.
+    ///
+    /// Equivalent to `RadixSelector.computeCommonPrefixLengthAndBuildHistogramPart2`.
+    fn compute_common_prefix_length_and_build_histogram_part2(
+        &mut self,
+        ops: &dyn RadixSelectorOps,
+        from: usize,
+        to: usize,
+        k: usize,
+        common_prefix_length: usize,
+        i: usize,
+    ) -> usize {
         if i < to {
-            for slot in (i + 1)..to {
-                let bucket = (ops.byte_at(slot, k) + 1) as usize;
-                self.histogram[bucket] += 1;
-            }
+            // The loop broke because there is no common prefix.
+            debug_assert_eq!(common_prefix_length, 0);
+            self.build_histogram(ops, i + 1, to, k);
         } else {
+            debug_assert!(common_prefix_length > 0);
             self.histogram[(self.common_prefix[0] + 1) as usize] = (to - from) as i32;
         }
+        common_prefix_length
+    }
+
+    /// Returns the length of the common prefix of `[from, to)` at depth `k`,
+    /// filling the histogram along the way.
+    ///
+    /// Equivalent to `RadixSelector.computeCommonPrefixLengthAndBuildHistogram(int, int, int, int[])`.
+    fn common_prefix_length_and_histogram(
+        &mut self,
+        ops: &dyn RadixSelectorOps,
+        from: usize,
+        to: usize,
+        k: usize,
+    ) -> usize {
+        let common_prefix_length = self.compute_initial_common_prefix_length(ops, from, k);
+        let common_prefix_length = self.compute_common_prefix_length_and_build_histogram_part1(
+            ops,
+            from,
+            to,
+            k,
+            common_prefix_length,
+        );
+        debug_assert!(self.assert_histogram(common_prefix_length));
         common_prefix_length
     }
 }
