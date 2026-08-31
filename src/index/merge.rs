@@ -127,6 +127,115 @@ impl MergeState {
         }
     }
 
+    /// Builds the doc map of a reader with deletions: the mapping from its own
+    /// document ids to those of the merged segment.
+    ///
+    /// Equivalent to the static `MergeState.removeDeletes(int, Bits)`, which
+    /// Java stores in a monotonic `PackedLongValues`; a plain vector holds the
+    /// same values here.
+    pub fn remove_deletes(max_doc: i32, live_docs: &dyn Bits) -> Vec<i32> {
+        let mut doc_map = Vec::with_capacity(max_doc.max(0) as usize);
+        let mut del = 0i32;
+        for i in 0..max_doc {
+            doc_map.push(i - del);
+            if !live_docs.get(i as usize) {
+                del += 1;
+            }
+        }
+        doc_map
+    }
+
+    /// Builds one doc map per reader, remapping around deletions and rebasing
+    /// into the merged segment's document-id space.
+    ///
+    /// Equivalent to the private `MergeState.buildDeletionDocMaps(List)`. Each
+    /// map answers `-1` for a document the reader has deleted.
+    pub fn build_deletion_doc_maps(
+        live_docs: &[Option<Box<dyn Bits>>],
+        max_docs: &[i32],
+        num_docs: &[i32],
+    ) -> Vec<DocMap> {
+        let mut total_docs = 0i32;
+        let mut doc_maps: Vec<DocMap> = Vec::with_capacity(live_docs.len());
+        for i in 0..live_docs.len() {
+            let doc_base = total_docs;
+            let doc_map: DocMap = match live_docs[i].as_ref() {
+                None => Arc::new(move |doc_id: i32| doc_base + doc_id),
+                Some(bits) => {
+                    let del_doc_map = Self::remove_deletes(max_docs[i], bits.as_ref());
+                    // Java's lambda closes over the reader's live docs; the
+                    // vector of set bits is captured here instead, because a
+                    // `Box<dyn Bits>` cannot be shared into a closure.
+                    let present: Vec<bool> =
+                        (0..max_docs[i]).map(|d| bits.get(d as usize)).collect();
+                    Arc::new(move |doc_id: i32| {
+                        if present.get(doc_id as usize).copied().unwrap_or(false) {
+                            doc_base + del_doc_map[doc_id as usize]
+                        } else {
+                            -1
+                        }
+                    })
+                }
+            };
+            doc_maps.push(doc_map);
+            total_docs += num_docs[i];
+        }
+        doc_maps
+    }
+
+    /// Builds the doc maps of a merge that has no index sort.
+    ///
+    /// Equivalent to `MergeState.buildDocMaps(List, Sort)` with a null sort:
+    /// the readers only need remapping around deletions. Java's sorted branch
+    /// calls `MultiSorter.sort`, which is not reachable from here — the merge
+    /// state does not hold the readers themselves — so a caller with an index
+    /// sort builds the maps and passes them to [`new`](Self::new).
+    pub fn build_doc_maps(
+        live_docs: &[Option<Box<dyn Bits>>],
+        max_docs: &[i32],
+        num_docs: &[i32],
+    ) -> Vec<DocMap> {
+        Self::build_deletion_doc_maps(live_docs, max_docs, num_docs)
+    }
+
+    /// Refuses a merge whose readers do not all carry a sort congruent with
+    /// the merged segment's.
+    ///
+    /// Equivalent to the private static
+    /// `MergeState.verifyIndexSort(List<CodecReader>, SegmentInfo)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::LuceneError::IllegalArgument`] naming both sorts
+    /// when one does not match.
+    pub fn verify_index_sort(
+        index_sort: Option<&crate::search::Sort>,
+        segment_sorts: &[Option<crate::search::Sort>],
+    ) -> crate::error::Result<()> {
+        let Some(index_sort) = index_sort else {
+            return Ok(());
+        };
+        for segment_sort in segment_sorts {
+            let congruent = match segment_sort {
+                None => false,
+                Some(sort) => {
+                    crate::index::index_writer::IndexWriter::is_congruent_sort(index_sort, sort)
+                }
+            };
+            if !congruent {
+                return Err(crate::error::LuceneError::IllegalArgument(format!(
+                    "index sort mismatch: merged segment has sort={index_sort} but to-be-merged \
+                     segment has sort={}",
+                    match segment_sort {
+                        None => "null".to_string(),
+                        Some(sort) => sort.to_string(),
+                    }
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Returns the number of source segments.
     /// Creates a merge state carrying only the postings producers and document
     /// counts, for a codec that merges one kind of data.

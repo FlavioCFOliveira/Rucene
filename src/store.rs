@@ -388,6 +388,19 @@ pub trait DataOutput {
                 "cannot write negative vLong (got: {i})"
             )));
         }
+        self.write_signed_v_long(i)
+    }
+
+    /// Writes a possibly negative `i64` in variable-length format.
+    ///
+    /// Equivalent to the private `DataOutput.writeSignedVLong(long)`, which
+    /// `writeVLong` and `writeZLong` both end in: the shift is unsigned, so a
+    /// negative value simply takes all ten bytes.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever writing a byte raises.
+    fn write_signed_v_long(&mut self, mut i: i64) -> Result<()> {
         while (i & !0x7F_i64) != 0 {
             self.write_byte((0x80 | (i & 0x7F_i64)) as u8)?;
             i = (i as u64 >> 7) as i64;
@@ -396,13 +409,8 @@ pub trait DataOutput {
     }
 
     /// Writes a zig-zag-encoded variable-length `i64`.
-    fn write_z_long(&mut self, mut i: i64) -> Result<()> {
-        i = BitUtil::zig_zag_encode_long(i);
-        while (i & !0x7F_i64) != 0 {
-            self.write_byte((0x80 | (i & 0x7F_i64)) as u8)?;
-            i = (i as u64 >> 7) as i64;
-        }
-        self.write_byte(i as u8)
+    fn write_z_long(&mut self, i: i64) -> Result<()> {
+        self.write_signed_v_long(BitUtil::zig_zag_encode_long(i))
     }
 
     /// Writes a `f32`.
@@ -1728,6 +1736,55 @@ pub trait IndexOutput: DataOutput + Send + Sync {
 
     /// Returns the name used to create this output.
     fn name(&self) -> &str;
+
+    /// Aligns the file pointer to the next multiple of `alignment_bytes` by
+    /// writing zero bytes, and returns the aligned position.
+    ///
+    /// Equivalent to the `final IndexOutput.alignFilePointer(int)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the alignment is not a
+    /// positive power of two, and propagates whatever writing a byte raises.
+    fn align_file_pointer(&mut self, alignment_bytes: i32) -> Result<i64> {
+        let offset = self.file_pointer();
+        let aligned_offset = align_offset(offset, alignment_bytes)?;
+        let count = (aligned_offset - offset) as usize;
+        for _ in 0..count {
+            self.write_byte(0)?;
+        }
+        Ok(aligned_offset)
+    }
+}
+
+/// Rounds `offset` up to the next multiple of `alignment_bytes`.
+///
+/// Equivalent to the `static final IndexOutput.alignOffset(long, int)`. The
+/// alignment must be a power of two.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when `offset` is negative or the
+/// alignment is not a positive power of two — the two
+/// `IllegalArgumentException`s Java raises.
+pub fn align_offset(offset: i64, alignment_bytes: i32) -> Result<i64> {
+    if offset < 0 {
+        return Err(LuceneError::IllegalArgument(
+            "Offset must be positive".to_string(),
+        ));
+    }
+    if alignment_bytes < 0 || alignment_bytes.count_ones() != 1 {
+        return Err(LuceneError::IllegalArgument(
+            "Alignment must be a power of 2".to_string(),
+        ));
+    }
+    let alignment = i64::from(alignment_bytes);
+    match (offset - 1).checked_add(alignment) {
+        Some(sum) => Ok(sum & -alignment),
+        None => Err(LuceneError::IllegalArgument(
+            "Offset overflows when aligned".to_string(),
+        )),
+    }
 }
 
 /// An [`IndexOutput`] implementation that delegates every call to a wrapped
@@ -3069,6 +3126,29 @@ impl Lock for SingleInstanceLock {
 pub struct NativeFSLockFactory;
 
 impl NativeFSLockFactory {
+    /// Removes `path` from the set of paths this process holds.
+    ///
+    /// Equivalent to the private static
+    /// `NativeFSLockFactory.clearLockHeld(Path)`, which refuses to clear a path
+    /// that was never marked held — a sign that two locks over the same path
+    /// have been released.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::AlreadyClosed`] when the path was not held.
+    fn clear_lock_held(path: &str) -> Result<()> {
+        let removed = NATIVE_HELD_LOCKS
+            .lock()
+            .expect("native held locks mutex poisoned")
+            .remove(path);
+        if !removed {
+            return Err(LuceneError::AlreadyClosed(format!(
+                "Lock path was cleared but never marked as held: {path}"
+            )));
+        }
+        Ok(())
+    }
+
     /// Returns the singleton instance.
     pub fn instance() -> &'static NativeFSLockFactory {
         static INSTANCE: std::sync::LazyLock<NativeFSLockFactory> =
@@ -3166,11 +3246,9 @@ impl Lock for NativeFSLock {
         let unlock_result = lock.unlock();
         drop(lock);
 
-        let mut held = NATIVE_HELD_LOCKS
-            .lock()
-            .expect("native held locks mutex poisoned");
-        held.remove(&self.path_str);
-        drop(held);
+        // `clearLockHeld` runs last, as in Java, so a failure to unlock still
+        // leaves the path marked held.
+        let cleared = NativeFSLockFactory::clear_lock_held(&self.path_str);
 
         unlock_result.map_err(|e| {
             LuceneError::Io(std::io::Error::other(format!(
@@ -3179,7 +3257,7 @@ impl Lock for NativeFSLock {
             )))
         })?;
 
-        Ok(())
+        cleared
     }
 
     fn ensure_valid(&self) -> Result<()> {
@@ -3478,14 +3556,29 @@ pub trait ChecksumIndexInput: IndexInput {
         if skip == 0 {
             return Ok(());
         }
+        self.skip_by_reading(skip)
+    }
+
+    /// Skips `num_bytes` bytes, reading them so the checksum stays correct.
+    ///
+    /// Equivalent to the private `ChecksumIndexInput.skipByReading(long)`,
+    /// whose contract is that it behaves exactly as reading the same number of
+    /// bytes into a buffer and discarding them. Negative counts are not
+    /// supported.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the bytes raises.
+    fn skip_by_reading(&mut self, num_bytes: i64) -> Result<()> {
         let mut skipped = 0i64;
         // Temporarily move the per-instance buffer out of `self` so it can be
         // passed to `read_bytes_buffered` without holding a borrow on `self`.
         // The buffer is restored before returning, even if the read fails.
         let mut buf = std::mem::replace(self.skip_buffer(), [0u8; CHECKSUM_SKIP_BUFFER_SIZE]);
+        debug_assert_eq!(buf.len(), CHECKSUM_SKIP_BUFFER_SIZE);
         let result = (|| -> Result<()> {
-            while skipped < skip {
-                let step = ((skip - skipped) as usize).min(buf.len());
+            while skipped < num_bytes {
+                let step = ((num_bytes - skipped) as usize).min(buf.len());
                 self.read_bytes_buffered(&mut buf, 0, step, false)?;
                 skipped += step as i64;
             }
@@ -4537,6 +4630,18 @@ impl NRTCachingDirectory {
     /// Returns the names of files currently held in the cache.
     pub fn list_cached_files(&self) -> Result<Vec<String>> {
         self.cache.list_all()
+    }
+
+    /// Returns whether `file_name` is currently held in the cache.
+    ///
+    /// Equivalent to the private synchronized
+    /// `NRTCachingDirectory.isCachedFile(String)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever consulting the cache directory raises.
+    pub fn is_cached_file(&self, file_name: &str) -> Result<bool> {
+        self.cache.file_exists(file_name)
     }
 
     /// Returns the total number of bytes currently cached.
