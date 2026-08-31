@@ -597,6 +597,51 @@ ORDER BY meanDepth ASC
 The thinnest ports at `41051f8` are `internal.hppc` (10%), `codecs.hnsw` (23%)
 and `document` (44%); the mean over all 857 measured types is 68.7%.
 
+#### `memberCoverage` is a floor, and a loose one
+
+The graph's `memberCoverage` counts a Java method as present when its name maps
+to a function attached to *the one Rust node* the survey linked the type to. A
+port that spreads its functions over several `impl` blocks, over a supertrait,
+over a `macro_rules!` expansion, or under an idiomatic rename therefore reads as
+far less complete than it is. Measured on `41051f8` it scored `Tessellator` at 4
+of 42 when every one of the 42 is present.
+
+`tools/kg/port_gaps.py` re-derives the gap from the two sources of truth
+instead: the Java members the graph records, against **every** Rust function
+declared by the files that port the type — its own, its supertypes', and the
+sibling `macros.rs` that stands in for Lucene's code generator. It also knows
+the shapes Rust uses for Java's contracts:
+
+| Java | Rust |
+|---|---|
+| `equals`, `equalsTo` | `PartialEq::eq`, or a `#[derive(PartialEq)]` |
+| `hashCode` | `Hash::hash`, or a `#[derive(Hash)]` |
+| `toString` | `Display::fmt` |
+| `compareTo` | `Ord::cmp` |
+| `iterator` | `IntoIterator::iter` / `into_iter` |
+| `getX`, `isX` | `x` |
+| `getPolyLat`, `toComponent2D` | `get_polylat`, `to_component2d` |
+
+`tools/kg/port_gaps_exclusions.json` records the members that are **deliberately
+not ported**, each with its reason, so that work decided against is not counted
+as work still open. Four entries at the time of writing: the SIMD lane kernels
+of `PanamaVectorUtilSupport`, which stable Rust has no portable SIMD to express;
+the JFlex-generated tables and reader protocol of `StandardTokenizerImpl`, which
+this port replaces with the same UAX #29 rules applied through
+`unicode-segmentation`; `AbstractAnalysisFactory.getPattern`, which needs a
+regular-expression dependency the user has not yet approved; and `LatLonPoint`'s
+query factories, which are blocked on the geo query types implementing the
+`Query` trait.
+
+Run it as
+
+```bash
+python3 tools/kg/port_gaps.py /tmp/gaps.json
+```
+
+which prints the total and the worst types, and writes the per-type detail —
+including the exact Java method names still absent — as JSON.
+
 Where the unverified share still sits:
 
 | Package | ported | candidate | in scope |
