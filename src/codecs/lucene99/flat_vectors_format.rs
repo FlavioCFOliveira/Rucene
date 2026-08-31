@@ -320,6 +320,112 @@ impl Lucene99FlatVectorsWriter {
         )
     }
 
+    /// Writes a float field of a sorted segment, in the new ordinal order.
+    ///
+    /// Equivalent to `Lucene99FlatVectorsWriter.writeSortingField(FlatFieldVectorsWriter, FieldInfo, int, Sorter.DocMap)`
+    /// for the `FLOAT32` encoding. The vectors are written in the order the
+    /// sort puts their documents in, so a reader can address ordinal *n* by
+    /// multiplying, exactly as for an unsorted segment.
+    fn write_sorting_field_float(
+        &mut self,
+        field_writer: &mut DefaultFlatFieldVectorsWriter<Vec<f32>>,
+        field_info: &FieldInfo,
+        max_doc: i32,
+        sort_map: &SorterDocMap,
+    ) -> Result<()> {
+        let old_doc_ids = docs_with_field_to_docs(field_writer.docs_with_field_set())?;
+        let (_old_to_new, ord_map) =
+            crate::codecs::knn_vectors::map_old_ord_to_new_ord(&old_doc_ids, sort_map)?;
+        let new_docs_with_field = new_docs_with_field(&old_doc_ids, sort_map)?;
+
+        let vector_data = self.vector_data.as_mut().ok_or_else(|| {
+            LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
+        })?;
+        let vector_data_offset = align_output(vector_data.as_mut(), VectorEncoding::FLOAT32)?;
+        Self::write_sorted_float32_vectors(vector_data.as_mut(), field_writer, &ord_map)?;
+        let vector_data_length = vector_data.file_pointer() - vector_data_offset;
+
+        let meta = self.meta.as_mut().ok_or_else(|| {
+            LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
+        })?;
+        write_meta(
+            meta.as_mut(),
+            vector_data.as_mut(),
+            field_info,
+            max_doc,
+            vector_data_offset,
+            vector_data_length,
+            &new_docs_with_field,
+        )
+    }
+
+    /// Writes a byte field of a sorted segment, in the new ordinal order.
+    ///
+    /// Equivalent to `Lucene99FlatVectorsWriter.writeSortingField(...)` for the
+    /// `BYTE` encoding.
+    fn write_sorting_field_byte(
+        &mut self,
+        field_writer: &mut DefaultFlatFieldVectorsWriter<Vec<u8>>,
+        field_info: &FieldInfo,
+        max_doc: i32,
+        sort_map: &SorterDocMap,
+    ) -> Result<()> {
+        let old_doc_ids = docs_with_field_to_docs(field_writer.docs_with_field_set())?;
+        let (_old_to_new, ord_map) =
+            crate::codecs::knn_vectors::map_old_ord_to_new_ord(&old_doc_ids, sort_map)?;
+        let new_docs_with_field = new_docs_with_field(&old_doc_ids, sort_map)?;
+
+        let vector_data = self.vector_data.as_mut().ok_or_else(|| {
+            LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
+        })?;
+        let vector_data_offset = align_output(vector_data.as_mut(), VectorEncoding::BYTE)?;
+        Self::write_sorted_byte_vectors(vector_data.as_mut(), field_writer, &ord_map)?;
+        let vector_data_length = vector_data.file_pointer() - vector_data_offset;
+
+        let meta = self.meta.as_mut().ok_or_else(|| {
+            LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
+        })?;
+        write_meta(
+            meta.as_mut(),
+            vector_data.as_mut(),
+            field_info,
+            max_doc,
+            vector_data_offset,
+            vector_data_length,
+            &new_docs_with_field,
+        )
+    }
+
+    /// Writes the float vectors in the order `ord_map` gives.
+    ///
+    /// Equivalent to `Lucene99FlatVectorsWriter.writeSortedFloat32Vectors(FlatFieldVectorsWriter, FieldInfo, int[])`.
+    fn write_sorted_float32_vectors(
+        vector_data: &mut dyn IndexOutput,
+        field_writer: &DefaultFlatFieldVectorsWriter<Vec<f32>>,
+        ord_map: &[i32],
+    ) -> Result<()> {
+        for &ordinal in ord_map {
+            let vector = &field_writer.vectors()[ordinal as usize];
+            vector_data.write_floats(vector, 0, vector.len())?;
+        }
+        Ok(())
+    }
+
+    /// Writes the byte vectors in the order `ord_map` gives.
+    ///
+    /// Equivalent to `Lucene99FlatVectorsWriter.writeSortedByteVectors(FlatFieldVectorsWriter, int[])`.
+    fn write_sorted_byte_vectors(
+        vector_data: &mut dyn IndexOutput,
+        field_writer: &DefaultFlatFieldVectorsWriter<Vec<u8>>,
+        ord_map: &[i32],
+    ) -> Result<()> {
+        for &ordinal in ord_map {
+            let vector = &field_writer.vectors()[ordinal as usize];
+            vector_data.write_bytes(vector, 0, vector.len())?;
+        }
+        Ok(())
+    }
+
     fn write_field_byte(
         &mut self,
         field_writer: &mut DefaultFlatFieldVectorsWriter<Vec<u8>>,
@@ -386,7 +492,7 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
         }
     }
 
-    fn flush(&mut self, max_doc: i32, _sort_map: Option<&SorterDocMap>) -> Result<()> {
+    fn flush(&mut self, max_doc: i32, sort_map: Option<&SorterDocMap>) -> Result<()> {
         let entries = std::mem::take(&mut self.fields);
         for entry in entries {
             match entry {
@@ -396,7 +502,12 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
                             "FlatFieldVectorsWriter mutex was poisoned".to_string(),
                         )
                     })?;
-                    self.write_field_float(&mut guard, &info, max_doc)?;
+                    match sort_map {
+                        Some(sort_map) => {
+                            self.write_sorting_field_float(&mut guard, &info, max_doc, sort_map)?
+                        }
+                        None => self.write_field_float(&mut guard, &info, max_doc)?,
+                    }
                     guard.finish()?;
                 }
                 FieldWriterEntry::Byte(writer, info) => {
@@ -405,7 +516,12 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
                             "FlatFieldVectorsWriter mutex was poisoned".to_string(),
                         )
                     })?;
-                    self.write_field_byte(&mut guard, &info, max_doc)?;
+                    match sort_map {
+                        Some(sort_map) => {
+                            self.write_sorting_field_byte(&mut guard, &info, max_doc, sort_map)?
+                        }
+                        None => self.write_field_byte(&mut guard, &info, max_doc)?,
+                    }
                     guard.finish()?;
                 }
             }
@@ -1572,4 +1688,39 @@ mod tests {
         assert!(files.contains(&segment_file_name("test", "", "vec")));
         Ok(())
     }
+}
+
+/// Returns the documents a field carries, in ordinal order.
+///
+/// Java iterates the `DocsWithFieldSet` where it needs this; the list is what
+/// the iteration produces, and both callers below need it twice.
+fn docs_with_field_to_docs(docs_with_field: &DocsWithFieldSet) -> Result<Vec<i32>> {
+    let mut docs = Vec::with_capacity(docs_with_field.cardinality() as usize);
+    let mut iterator = docs_with_field.iterator()?;
+    loop {
+        let doc = iterator.next_doc()?;
+        if doc == crate::search::NO_MORE_DOCS {
+            break;
+        }
+        docs.push(doc);
+    }
+    Ok(docs)
+}
+
+/// Returns the document set of a field under the new numbering.
+///
+/// Equivalent to the `newDocsWithField` that
+/// `KnnVectorsWriter.mapOldOrdToNewOrd` fills as its fifth argument: the same
+/// documents, at the positions the sort moved them to.
+fn new_docs_with_field(old_doc_ids: &[i32], sort_map: &SorterDocMap) -> Result<DocsWithFieldSet> {
+    let mut new_ids: Vec<i32> = old_doc_ids
+        .iter()
+        .map(|&doc| sort_map.old_to_new(doc))
+        .collect();
+    new_ids.sort_unstable();
+    let mut set = DocsWithFieldSet::new();
+    for doc in new_ids {
+        set.add(doc)?;
+    }
+    Ok(set)
 }
