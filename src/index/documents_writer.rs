@@ -83,19 +83,25 @@ use std::time::Duration;
 use crate::codecs::Codec;
 use crate::document::Document;
 use crate::error::{LuceneError, Result};
+use crate::index::buffered_updates_stream::SegmentState;
+use crate::index::doc_values_field_updates::DocValuesFieldUpdates;
 use crate::index::doc_values_update::{DocValuesUpdate, DocValuesUpdateValue};
 use crate::index::field_infos::{FieldInfosBuilder, FieldNumbers};
 use crate::index::field_updates_buffer::FieldUpdatesBuffer;
 use crate::index::index_writer_config::LiveIndexWriterConfig;
 use crate::index::indexing_chain::DefaultIndexingChain;
+use crate::index::leaf_reader::LeafReader;
+use crate::index::postings_enum::{PostingsEnum, POSTINGS_ENUM_NONE};
+use crate::index::terms::{SeekStatus, TermsEnum};
 use crate::index::DocValuesType;
 use crate::index::{FieldInfos, SegmentCommitInfo, SegmentInfo, Term};
+use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::store::{
     flush_io_context, BufferedChecksumIndexInput, Directory, FlushInfo, IOContext, IndexInput,
     IndexOutput, Lock, TrackingDirectoryWrapper,
 };
 use crate::util::string_helper::StringHelper;
-use crate::util::{Accountable, FixedBitSet, InfoStream, Version};
+use crate::util::{Accountable, BytesRef, FixedBitSet, InfoStream, Version};
 
 /// Maximum number of documents a single index may contain.
 ///
@@ -529,6 +535,18 @@ pub struct FrozenBufferedUpdates {
     updates: BufferedUpdates,
     private_segment_name: Option<String>,
     delete_queue_generation: i64,
+    /// The generation `BufferedUpdatesStream.push` assigned to this packet, or
+    /// `-1` while it has not been pushed.
+    ///
+    /// Equivalent to `FrozenBufferedUpdates.delGen`.
+    del_gen: AtomicI64,
+    /// How many documents this packet has deleted or updated so far.
+    ///
+    /// Equivalent to `FrozenBufferedUpdates.totalDelCount`. Java increments a
+    /// plain field from `apply`, which it reaches through a mutable reference;
+    /// `IndexWriter.forceApply` only ever holds a shared one in this port, so
+    /// the counter is atomic.
+    total_del_count: AtomicI64,
 }
 
 impl FrozenBufferedUpdates {
@@ -545,6 +563,8 @@ impl FrozenBufferedUpdates {
             updates,
             private_segment_name,
             delete_queue_generation,
+            del_gen: AtomicI64::new(-1),
+            total_del_count: AtomicI64::new(0),
         }
     }
 
@@ -566,6 +586,437 @@ impl FrozenBufferedUpdates {
     /// Returns `true` when the packet carries no deletes at all.
     pub fn is_empty(&self) -> bool {
         !self.updates.any()
+    }
+
+    /// Records the generation this packet was pushed with.
+    ///
+    /// Equivalent to `FrozenBufferedUpdates.setDelGen(long)`. Java also stamps
+    /// the generation onto the `PrefixCodedTerms` it froze; this port keeps the
+    /// terms in the [`BufferedUpdates`] map and reads the generation from here
+    /// instead, so there is nothing else to stamp.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the generation was already set, which is Lucene's
+    /// `assert this.delGen == -1`.
+    pub fn set_del_gen(&self, del_gen: i64) {
+        let previous = self.del_gen.swap(del_gen, Ordering::AcqRel);
+        assert_eq!(
+            previous, -1,
+            "delGen was already previously set to {previous}"
+        );
+    }
+
+    /// Returns the generation this packet was pushed with.
+    ///
+    /// Equivalent to `FrozenBufferedUpdates.delGen()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the packet has not been pushed yet, which is Lucene's
+    /// `assert delGen != -1`.
+    pub fn del_gen(&self) -> i64 {
+        let del_gen = self.del_gen.load(Ordering::Acquire);
+        assert_ne!(del_gen, -1, "gen is not yet set; call push first");
+        del_gen
+    }
+
+    /// Returns how many documents this packet has deleted or updated in total.
+    ///
+    /// Equivalent to the `FrozenBufferedUpdates.totalDelCount` field.
+    pub fn total_del_count(&self) -> i64 {
+        self.total_del_count.load(Ordering::Acquire)
+    }
+
+    /// Applies the pending delete-by-term and doc-values updates to every
+    /// segment in `seg_states`, and returns the running total of new deleted or
+    /// updated documents.
+    ///
+    /// Equivalent to `FrozenBufferedUpdates.apply(
+    /// BufferedUpdatesStream.SegmentState[])`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `apply` runs three passes:
+    /// `applyTermDeletes`, `applyQueryDeletes` and `applyDocValuesUpdates`.
+    /// The delete-by-query pass is absent here, because
+    /// [`Query`](crate::index::documents_writer::Query) is still a placeholder
+    /// in this module: a delete-by-query entry survives freezing only as its
+    /// canonical string, so there is no query left to rewrite into a `Weight`
+    /// and score against the segment's reader. Porting that pass requires
+    /// replacing the placeholder with `crate::search::Query` throughout the
+    /// delete pipeline, which is a change to the whole pipeline rather than to
+    /// this method. Delete-by-term and doc-values updates are applied in full,
+    /// in the order Java applies them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the packet has not been
+    /// pushed yet, and propagates whatever reading a segment's terms or writing
+    /// its deletions raises.
+    pub fn apply(&self, seg_states: &[SegmentState]) -> Result<i64> {
+        if self.del_gen.load(Ordering::Acquire) == -1 {
+            // we were not yet pushed
+            return Err(LuceneError::IllegalArgument(
+                "gen is not yet set; call BufferedUpdatesStream.push first".to_string(),
+            ));
+        }
+        debug_assert!(
+            self.private_segment_name.is_none() || seg_states.len() == 1,
+            "a segment-private packet reaches exactly one segment"
+        );
+
+        let mut total = self.total_del_count.load(Ordering::Acquire);
+        total += self.apply_term_deletes(seg_states)?;
+        total += self.apply_doc_values_updates(seg_states)?;
+        self.total_del_count.store(total, Ordering::Release);
+        Ok(total)
+    }
+
+    /// Deletes, in every segment older than this packet, the documents that
+    /// carry one of its delete terms.
+    ///
+    /// Equivalent to `FrozenBufferedUpdates.applyTermDeletes(
+    /// BufferedUpdatesStream.SegmentState[])`.
+    ///
+    /// Java freezes the terms into a sorted `PrefixCodedTerms` when the packet
+    /// is built, and relies on that order to walk each segment's term
+    /// dictionary forwards. This port keeps the deduplicated
+    /// [`BufferedUpdates`] and sorts the same `(field, term)` pairs here, which
+    /// yields exactly the order `BufferedUpdates.DeletedTerms.forEachOrdered`
+    /// produces: fields by name, then terms by their bytes.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading a segment's terms or recording a deletion
+    /// raises.
+    fn apply_term_deletes(&self, seg_states: &[SegmentState]) -> Result<i64> {
+        if self.updates.terms_size() == 0 {
+            return Ok(0);
+        }
+        // We apply segment-private deletes on flush.
+        debug_assert!(self.private_segment_name.is_none());
+
+        let del_gen = self.del_gen();
+        let mut delete_terms = self.updates.delete_terms();
+        delete_terms.sort_by(|left, right| {
+            left.term
+                .field()
+                .cmp(right.term.field())
+                .then_with(|| left.term.bytes().cmp(right.term.bytes()))
+        });
+
+        let mut del_count = 0i64;
+        for seg_state in seg_states {
+            debug_assert_ne!(
+                seg_state.del_gen, del_gen,
+                "segState.delGen={} vs this.gen={del_gen}",
+                seg_state.del_gen
+            );
+            if seg_state.del_gen > del_gen {
+                // our deletes don't apply to this segment
+                continue;
+            }
+            if seg_state.rld.ref_count() == 1 {
+                // This means we are the only remaining reference to this
+                // segment, meaning it was merged away while we were running, so
+                // we can safely skip running because we will run on the newly
+                // merged segment next.
+                continue;
+            }
+
+            let mut term_docs = TermDocsIterator::new(seg_state.reader.as_ref(), true);
+            for del in &delete_terms {
+                if !term_docs.next_term(del.term.field(), del.term.bytes())? {
+                    continue;
+                }
+                loop {
+                    let doc_id = term_docs.docs()?.next_doc()?;
+                    if doc_id == NO_MORE_DOCS {
+                        break;
+                    }
+                    // NOTE: there is no limit check on the docID when deleting
+                    // by Term (unlike by Query) because on flush we apply all
+                    // Term deletes to each segment. So all Term deleting here is
+                    // against prior segments.
+                    if seg_state.rld.delete(doc_id)? {
+                        del_count += 1;
+                    }
+                }
+            }
+        }
+        Ok(del_count)
+    }
+
+    /// Resolves the buffered doc-values updates against every segment older
+    /// than this packet.
+    ///
+    /// Equivalent to `FrozenBufferedUpdates.applyDocValuesUpdates(
+    /// BufferedUpdatesStream.SegmentState[])`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading a segment's terms or publishing the resolved
+    /// updates raises.
+    fn apply_doc_values_updates(&self, seg_states: &[SegmentState]) -> Result<i64> {
+        let field_updates = self.updates.field_updates();
+        if field_updates.is_empty() {
+            return Ok(0);
+        }
+        let del_gen = self.del_gen();
+        let mut update_count = 0i64;
+        for seg_state in seg_states {
+            if del_gen < seg_state.del_gen {
+                // segment is newer than this deletes packet
+                continue;
+            }
+            if seg_state.rld.ref_count() == 1 {
+                // merged away while we were running; the newly merged segment
+                // is handled next.
+                continue;
+            }
+            let is_segment_private_deletes = self.private_segment_name.is_some();
+            update_count += Self::apply_doc_values_updates_to_segment(
+                seg_state,
+                field_updates,
+                del_gen,
+                is_segment_private_deletes,
+            )?;
+        }
+        Ok(update_count)
+    }
+
+    /// Resolves the buffered doc-values updates against one segment.
+    ///
+    /// Equivalent to the private static
+    /// `FrozenBufferedUpdates.applyDocValuesUpdates(
+    /// BufferedUpdatesStream.SegmentState, Map, long, boolean)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java has a second loop for a segment
+    /// that was sorted on flush, which maps each document back through
+    /// `segState.rld.sortMap` before comparing it with the segment-private
+    /// limit. `ReadersAndUpdates` carries no sort map in this port — the flush
+    /// path does not produce one yet — so that branch has nothing to switch on
+    /// and only the unsorted loop is reproduced. It becomes reachable, and must
+    /// be restored, as soon as a flush can sort a segment.
+    fn apply_doc_values_updates_to_segment(
+        seg_state: &SegmentState,
+        updates: &HashMap<String, FieldUpdatesBuffer>,
+        del_gen: i64,
+        segment_private_deletes: bool,
+    ) -> Result<i64> {
+        let mut update_count = 0i64;
+        // We first write all our updates private, and only in the end publish to
+        // the ReadersAndUpdates.
+        let mut resolved_updates: Vec<DocValuesFieldUpdates> = Vec::new();
+        let max_doc = seg_state.reader.max_doc();
+        for (update_field, value) in updates {
+            let mut dv_updates: Option<usize> = None;
+            let is_numeric = value.is_numeric();
+            // The buffer of this port iterates its updates in the order they
+            // were added and never sorts them, so the term dictionary cannot be
+            // walked forwards: this is Java's `iterator.isSortedTerms() == false`
+            // case.
+            let mut term_docs = TermDocsIterator::new(seg_state.reader.as_ref(), false);
+            for buffered_update in value.iter() {
+                // NOTE: we traverse the terms in update order (not term order)
+                // so that we apply the updates in the correct order, i.e. if two
+                // terms update the same document, the last one that came in
+                // wins, irrespective of the terms' lexical order.
+                if !term_docs.next_term(buffered_update.field, buffered_update.term)? {
+                    continue;
+                }
+                let limit = if del_gen == seg_state.del_gen {
+                    debug_assert!(segment_private_deletes);
+                    buffered_update.doc_up_to
+                } else {
+                    i32::MAX
+                };
+                let index = match dv_updates {
+                    Some(index) => index,
+                    None => {
+                        let dv_type = if is_numeric {
+                            DocValuesType::NUMERIC
+                        } else {
+                            DocValuesType::BINARY
+                        };
+                        resolved_updates.push(DocValuesFieldUpdates::new(
+                            max_doc,
+                            del_gen,
+                            update_field.clone(),
+                            dv_type,
+                        ));
+                        let index = resolved_updates.len() - 1;
+                        dv_updates = Some(index);
+                        index
+                    }
+                };
+                let accept_docs = seg_state.rld.get_live_docs();
+                loop {
+                    let doc = term_docs.docs()?.next_doc()?;
+                    if doc == NO_MORE_DOCS || doc >= limit {
+                        // no more docs that can be updated for this term
+                        break;
+                    }
+                    if accept_docs
+                        .as_ref()
+                        .map_or(true, |bits| bits.get(doc as usize))
+                    {
+                        let update = &mut resolved_updates[index];
+                        match buffered_update.value {
+                            DocValuesUpdateValue::Numeric(numeric) => {
+                                update.add_long(doc, *numeric)
+                            }
+                            DocValuesUpdateValue::Binary(binary) => update.add_binary(doc, binary),
+                            DocValuesUpdateValue::None => update.reset(doc),
+                        }
+                        update_count += 1;
+                    }
+                }
+            }
+        }
+
+        // now freeze & publish:
+        for mut update in resolved_updates {
+            if update.any() {
+                update.finish()?;
+                seg_state.rld.add_dv_update(update)?;
+            }
+        }
+        Ok(update_count)
+    }
+}
+
+/// Walks a segment's term dictionary and hands out the postings of each term.
+///
+/// Equivalent to `FrozenBufferedUpdates.TermDocsIterator`. It accepts a
+/// `(field, value)` pair and reports whether the field holds an entry for that
+/// value; when the terms arrive in sorted order it takes advantage of the
+/// "seeking forward" property, which lets the term dictionary reuse its internal
+/// state across seeks.
+///
+/// Java hands the caller the `DocIdSetIterator` while keeping the same
+/// `PostingsEnum` for reuse on the next term. A Rust caller cannot hold that
+/// borrow across the next call, so [`next_term`](Self::next_term) reports
+/// whether the term exists and the postings are read back through
+/// [`docs`](Self::docs); the reuse is the same.
+struct TermDocsIterator<'a> {
+    reader: &'a dyn LeafReader,
+    field: Option<String>,
+    terms_enum: Option<Box<dyn TermsEnum>>,
+    postings_enum: Option<Box<dyn PostingsEnum>>,
+    sorted_terms: bool,
+    reader_term: Option<BytesRef>,
+}
+
+impl<'a> TermDocsIterator<'a> {
+    /// Creates an iterator over `reader`'s term dictionary.
+    ///
+    /// Equivalent to `TermDocsIterator(LeafReader, boolean)`.
+    fn new(reader: &'a dyn LeafReader, sorted_terms: bool) -> Self {
+        Self {
+            reader,
+            field: None,
+            terms_enum: None,
+            postings_enum: None,
+            sorted_terms,
+            reader_term: None,
+        }
+    }
+
+    /// Equivalent to `TermDocsIterator.setField(String)`.
+    fn set_field(&mut self, field: &str) -> Result<()> {
+        if self.field.as_deref() != Some(field) {
+            self.field = Some(field.to_string());
+            match self.reader.terms(field)? {
+                Some(terms) => {
+                    let mut terms_enum = terms.iterator()?;
+                    self.reader_term = if self.sorted_terms {
+                        // need to reset, otherwise the sortedness check below
+                        // fails, since we sort per field
+                        terms_enum.next()?
+                    } else {
+                        None
+                    };
+                    self.terms_enum = Some(terms_enum);
+                }
+                None => self.terms_enum = None,
+            }
+        }
+        Ok(())
+    }
+
+    /// Positions this iterator on `term` of `field`, returning whether the
+    /// segment holds it.
+    ///
+    /// Equivalent to `TermDocsIterator.nextTerm(String, BytesRef)`, which
+    /// returns the postings or `null`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the term dictionary raises.
+    fn next_term(&mut self, field: &str, term: &BytesRef) -> Result<bool> {
+        self.set_field(field)?;
+        let Some(terms_enum) = self.terms_enum.as_mut() else {
+            return Ok(false);
+        };
+        if self.sorted_terms && !terms_enum.prefer_seek_exact() {
+            // In the sorted case we can take advantage of the "seeking forward"
+            // property; depending on the term dictionary implementation this
+            // reuses internal data structures and speeds up iteration over terms
+            // and docs significantly.
+            let Some(reader_term) = self.reader_term.as_ref() else {
+                // no more terms in this segment
+                return Ok(false);
+            };
+            match term.cmp(reader_term) {
+                std::cmp::Ordering::Less => {
+                    // requested term does not exist in this segment
+                    return Ok(false);
+                }
+                std::cmp::Ordering::Equal => return self.get_docs(),
+                std::cmp::Ordering::Greater => match terms_enum.seek_ceil(term)? {
+                    SeekStatus::FOUND => return self.get_docs(),
+                    SeekStatus::NOT_FOUND => {
+                        self.reader_term = Some(terms_enum.term()?);
+                        return Ok(false);
+                    }
+                    SeekStatus::END => {
+                        // no more terms in this segment
+                        self.terms_enum = None;
+                        return Ok(false);
+                    }
+                },
+            }
+        }
+        if terms_enum.seek_exact(term)? {
+            return self.get_docs();
+        }
+        Ok(false)
+    }
+
+    /// Equivalent to `TermDocsIterator.getDocs()`.
+    fn get_docs(&mut self) -> Result<bool> {
+        let terms_enum = self
+            .terms_enum
+            .as_mut()
+            .expect("INVARIANT: a term was positioned, so the enum exists");
+        let reuse = self.postings_enum.take();
+        self.postings_enum = Some(terms_enum.postings(reuse, POSTINGS_ENUM_NONE)?);
+        Ok(true)
+    }
+
+    /// Returns the postings of the term [`next_term`](Self::next_term) last
+    /// reported as present.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when no term is positioned.
+    fn docs(&mut self) -> Result<&mut dyn PostingsEnum> {
+        match self.postings_enum.as_mut() {
+            Some(postings) => Ok(postings.as_mut()),
+            None => Err(LuceneError::IllegalState(
+                "no term is positioned on this TermDocsIterator".to_string(),
+            )),
+        }
     }
 }
 
@@ -1494,13 +1945,25 @@ impl DocumentsWriterDeleteQueue {
         *advanced = true;
         let seq_no = self.last_sequence_number() + max_num_pending_ops as i64 + 1;
         self.max_seq_no.store(seq_no, Ordering::Release);
-        let previous = Arc::clone(&self.next_seq_no);
         Ok(Arc::new(Self::with_generation(
             Arc::clone(&self.info_stream),
             self.generation + 1,
             seq_no + 1,
-            Box::new(move || previous.load(Ordering::Acquire) - 1),
+            // don't pass `max_completed_seq_no` here, otherwise the successor
+            // would keep a reference to this queue and leak it.
+            Self::prev_max_seq_id_supplier(Arc::clone(&self.next_seq_no)),
         )))
+    }
+
+    /// Builds the closure the successor queue uses to read this queue's last
+    /// completed sequence number.
+    ///
+    /// Equivalent to `DocumentsWriterDeleteQueue.getPrevMaxSeqIdSupplier(
+    /// AtomicLong)`. Lucene takes the counter rather than the queue on purpose:
+    /// a method reference to `getMaxCompletedSeqNo` would implicitly capture the
+    /// queue and keep every advanced queue alive (LUCENE-9478).
+    fn prev_max_seq_id_supplier(next_seq_no: Arc<AtomicI64>) -> Box<dyn Fn() -> i64 + Send + Sync> {
+        Box::new(move || next_seq_no.load(Ordering::Acquire) - 1)
     }
 
     fn ensure_open(&self) -> Result<()> {
@@ -1676,7 +2139,9 @@ impl DocumentsWriterFlushQueue {
         F: FnOnce() -> Result<Option<FlushTicket>>,
     {
         let mut queue = self.lock_queue();
-        self.ticket_count.fetch_add(1, Ordering::AcqRel);
+        // First inc the ticket count — freeze opens a window for `any_changes`
+        // to fail.
+        self.inc_tickets();
         match supplier() {
             Ok(Some(ticket)) => {
                 let ticket = Arc::new(ticket);
@@ -1684,14 +2149,30 @@ impl DocumentsWriterFlushQueue {
                 Ok(Some(ticket))
             }
             Ok(None) => {
-                self.ticket_count.fetch_sub(1, Ordering::AcqRel);
+                self.dec_tickets();
                 Ok(None)
             }
             Err(error) => {
-                self.ticket_count.fetch_sub(1, Ordering::AcqRel);
+                self.dec_tickets();
                 Err(error)
             }
         }
+    }
+
+    /// Reserves one queue slot.
+    ///
+    /// Equivalent to `DocumentsWriterFlushQueue.incTickets()`.
+    fn inc_tickets(&self) {
+        let num_tickets = self.ticket_count.fetch_add(1, Ordering::AcqRel) + 1;
+        debug_assert!(num_tickets > 0);
+    }
+
+    /// Releases one queue slot.
+    ///
+    /// Equivalent to `DocumentsWriterFlushQueue.decTickets()`.
+    fn dec_tickets(&self) {
+        let num_tickets = self.ticket_count.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(num_tickets >= 1, "ticket count must not go negative");
     }
 
     /// Attaches the flushed segment to its ticket.
@@ -1767,7 +2248,7 @@ impl DocumentsWriterFlushQueue {
             {
                 let mut queue = self.lock_queue();
                 let polled = queue.pop_front();
-                self.ticket_count.fetch_sub(1, Ordering::AcqRel);
+                self.dec_tickets();
                 debug_assert!(polled.is_some_and(|p| Arc::ptr_eq(&p, &head)));
             }
             outcome?;
@@ -1790,6 +2271,12 @@ impl DocumentsWriterFlushQueue {
 struct StallState {
     num_waiting: usize,
     was_stalled: bool,
+    /// Identities of the threads currently parked in
+    /// [`DocumentsWriterStallControl::wait_if_stalled`].
+    ///
+    /// Equivalent to `DocumentsWriterStallControl.waiting`, the
+    /// `IdentityHashMap<Thread, Boolean>` that backs `isThreadQueued`.
+    waiting: HashSet<std::thread::ThreadId>,
 }
 
 /// Back-pressure gate that parks indexing threads when flushing falls behind.
@@ -1832,14 +2319,49 @@ impl DocumentsWriterStallControl {
         }
         let mut state = self.lock();
         if self.stalled.load(Ordering::Acquire) {
-            state.num_waiting += 1;
+            Self::inc_waiters(&mut state);
             let (guard, _timeout) = self
                 .healthy
                 .wait_timeout(state, Duration::from_secs(1))
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             state = guard;
-            state.num_waiting -= 1;
+            Self::decr_waiters(&mut state);
         }
+    }
+
+    /// Registers the calling thread as parked.
+    ///
+    /// Equivalent to `DocumentsWriterStallControl.incWaiters()`.
+    ///
+    /// Java keeps the thread identity in a map it only populates under
+    /// `assert`, so `isThreadQueued` answers nothing when assertions are off.
+    /// A `HashSet<ThreadId>` insertion cannot be expressed inside a Rust
+    /// `debug_assert!`, whose expression is not evaluated in release builds, so
+    /// this port maintains the set unconditionally; the only difference is that
+    /// [`is_thread_queued`](Self::is_thread_queued) also answers truthfully in
+    /// a release build.
+    fn inc_waiters(state: &mut StallState) {
+        state.num_waiting += 1;
+        let inserted = state.waiting.insert(std::thread::current().id());
+        debug_assert!(inserted, "thread is already queued");
+        debug_assert!(state.num_waiting > 0);
+    }
+
+    /// Deregisters the calling thread.
+    ///
+    /// Equivalent to `DocumentsWriterStallControl.decrWaiters()`.
+    fn decr_waiters(state: &mut StallState) {
+        state.num_waiting -= 1;
+        let removed = state.waiting.remove(&std::thread::current().id());
+        debug_assert!(removed, "thread was not queued");
+    }
+
+    /// Returns `true` if the thread identified by `thread` is parked right now.
+    ///
+    /// Equivalent to `DocumentsWriterStallControl.isThreadQueued(Thread)`,
+    /// which Lucene only uses from tests.
+    pub fn is_thread_queued(&self, thread: std::thread::ThreadId) -> bool {
+        self.lock().waiting.contains(&thread)
     }
 
     /// Returns `true` while indexing threads are being stalled.
@@ -1935,7 +2457,8 @@ impl FlushControlHandle<'_> {
     ///
     /// Equivalent to `DocumentsWriterFlushControl.setFlushPending(DWPT)`.
     pub fn set_flush_pending(&mut self, per_thread: &DocumentsWriterPerThread) {
-        DocumentsWriterFlushControl::set_flush_pending_locked(per_thread, self.inner);
+        self.control
+            .set_flush_pending_locked(per_thread, self.inner);
     }
 
     /// Returns the non-pending DWPT holding the most RAM.
@@ -1971,6 +2494,39 @@ pub trait FlushPolicy: Send + Sync + Debug {
 
     /// Binds the live configuration to this policy. Called once.
     fn init(&self, config: Arc<LiveIndexWriterConfig>);
+
+    /// Returns the non-pending DWPT with at least one buffered document that
+    /// consumes the most RAM.
+    ///
+    /// Equivalent to `FlushPolicy.findLargestNonPendingWriter(
+    /// DocumentsWriterFlushControl, DocumentsWriterPerThread)`.
+    fn find_largest_non_pending_writer(
+        &self,
+        control: &FlushControlHandle<'_>,
+        per_thread: &DocumentsWriterPerThread,
+    ) -> Option<Arc<DocumentsWriterPerThread>> {
+        debug_assert!(per_thread.num_docs_in_ram() > 0);
+        // the dwpt which needs to be flushed eventually
+        let max_ram_using_writer = control.find_largest_non_pending_writer();
+        debug_assert!(self.assert_message(
+            control,
+            "set largest ram consuming thread pending on lower watermark"
+        ));
+        max_ram_using_writer
+    }
+
+    /// Reports `message` on the `"FP"` channel and returns `true`.
+    ///
+    /// Equivalent to `FlushPolicy.assertMessage(String)`, which Lucene only
+    /// evaluates from an `assert` expression, so the message is emitted only
+    /// when assertions are enabled. Java declares it `private`; a Rust trait has
+    /// no private members, so it is part of the trait's surface here.
+    fn assert_message(&self, control: &FlushControlHandle<'_>, message: &str) -> bool {
+        if control.info_stream().is_enabled("FP") {
+            control.info_stream().message("FP", message);
+        }
+        true
+    }
 }
 
 /// Flushes on buffered-document count or on buffered RAM, whichever hits first.
@@ -2019,6 +2575,7 @@ impl FlushByRamOrCountsPolicy {
         &self,
         control: &mut FlushControlHandle<'_>,
         config: &LiveIndexWriterConfig,
+        per_thread: &DocumentsWriterPerThread,
     ) {
         if control.info_stream().is_enabled("FP") {
             let message = format!(
@@ -2029,8 +2586,21 @@ impl FlushByRamOrCountsPolicy {
             );
             control.info_stream().message("FP", &message);
         }
-        if let Some(largest) = control.find_largest_non_pending_writer() {
-            control.set_flush_pending(&largest);
+        self.mark_largest_writer_pending(control, per_thread);
+    }
+
+    /// Marks the most RAM-consuming active DWPT as pending flush.
+    ///
+    /// Equivalent to `FlushByRamOrCountsPolicy.markLargestWriterPending(
+    /// DocumentsWriterFlushControl, DocumentsWriterPerThread)`.
+    pub fn mark_largest_writer_pending(
+        &self,
+        control: &mut FlushControlHandle<'_>,
+        per_thread: &DocumentsWriterPerThread,
+    ) {
+        let largest_non_pending_writer = self.find_largest_non_pending_writer(control, per_thread);
+        if let Some(largest_non_pending_writer) = largest_non_pending_writer {
+            control.set_flush_pending(&largest_non_pending_writer);
         }
     }
 }
@@ -2064,12 +2634,14 @@ impl FlushPolicy for FlushByRamOrCountsPolicy {
         let deletes_ram = control.delete_bytes_used();
 
         if deletes_ram >= limit && active_ram >= limit && per_thread.is_some() {
+            let per_thread = per_thread.expect("INVARIANT: presence checked above");
             self.flush_deletes(control, &config);
-            self.flush_active_bytes(control, &config);
+            self.flush_active_bytes(control, &config, per_thread);
         } else if deletes_ram >= limit {
             self.flush_deletes(control, &config);
         } else if active_ram + deletes_ram >= limit && per_thread.is_some() {
-            self.flush_active_bytes(control, &config);
+            let per_thread = per_thread.expect("INVARIANT: presence checked above");
+            self.flush_active_bytes(control, &config, per_thread);
         }
     }
 
@@ -2142,6 +2714,14 @@ struct DwptState {
     delete_slice: DeleteSlice,
     delete_doc_ids: Vec<i32>,
     files_to_delete: HashSet<String>,
+    /// The exception that makes this DWPT unusable, if one was raised.
+    ///
+    /// Equivalent to `DocumentsWriterPerThread.abortingException`. Lucene lets
+    /// the indexing chain report into this same field through the
+    /// `Consumer<Throwable>` it is constructed with; in this port the chain
+    /// keeps its own and hands it over in `maybe_abort`, so this field carries
+    /// only what the DWPT itself records.
+    aborting_error: Option<LuceneError>,
 }
 
 /// Buffers documents for one segment on behalf of one indexing thread.
@@ -2271,6 +2851,7 @@ impl DocumentsWriterPerThread {
                 delete_slice,
                 delete_doc_ids: Vec::new(),
                 files_to_delete: HashSet::new(),
+                aborting_error: None,
             })),
             unlocked: Condvar::new(),
             segment_name,
@@ -2282,6 +2863,16 @@ impl DocumentsWriterPerThread {
     ///
     /// Equivalent to `DocumentsWriterPerThread.lock()`. Written as an
     /// associated function because the returned guard owns the `Arc`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** `DocumentsWriterPerThread` implements
+    /// `java.util.concurrent.locks.Lock`, whose remaining members have no
+    /// counterpart here. `lockInterruptibly()` and `tryLock(long, TimeUnit)`
+    /// delegate to `ReentrantLock`, and both rest on JVM thread interruption,
+    /// which Rust has no equivalent of: `Mutex::lock` and `Condvar::wait` cannot
+    /// be interrupted or given a deadline that a third party can trip. Lucene
+    /// itself never calls either method on a DWPT — they exist only because the
+    /// class implements the interface — so nothing is lost. `newCondition()`
+    /// throws `UnsupportedOperationException` in Lucene and is likewise absent.
     pub fn lock(dwpt: &Arc<Self>) -> DwptGuard {
         let mut slot = dwpt
             .state
@@ -2381,6 +2972,33 @@ impl DocumentsWriterPerThread {
     /// Returns the RAM usage last reported to the flush control.
     pub fn last_committed_bytes_used(&self) -> i64 {
         self.last_committed_bytes_used.load(Ordering::Acquire)
+    }
+
+    /// Rebuilds a live-docs bit set in the sorted document space of a segment
+    /// that was sorted on flush.
+    ///
+    /// `live_docs` is expressed in the order the documents were buffered in and
+    /// `sort_map` is the permutation the index sort produced; the returned set
+    /// marks the same documents live in the sorted order the segment is written
+    /// in.
+    ///
+    /// Equivalent to `DocumentsWriterPerThread.sortLiveDocs(Bits,
+    /// Sorter.DocMap)`. Java declares it `private` because its only caller,
+    /// `sealFlushedSegment`, sits on the same class; sealing a flushed segment
+    /// is the `IndexWriter`'s job in this port, so the method is public here.
+    pub fn sort_live_docs(
+        live_docs: &dyn crate::util::Bits,
+        sort_map: &crate::index::index_sorter::SorterDocMap,
+    ) -> FixedBitSet {
+        let length = live_docs.length();
+        let mut sorted_live_docs = FixedBitSet::new(length);
+        sorted_live_docs.set_range(0, length);
+        for i in 0..length {
+            if !live_docs.get(i) {
+                sorted_live_docs.clear(sort_map.old_to_new(i as i32) as usize);
+            }
+        }
+        sorted_live_docs
     }
 
     /// Emits a test point message when test points are enabled.
@@ -2780,19 +3398,54 @@ impl DwptGuard {
         state.delete_doc_ids.extend(from..num_docs_in_ram);
     }
 
-    fn maybe_abort(&mut self, location: &str, notifications: &dyn FlushNotifications) {
-        let aborting = self
-            .state
-            .as_mut()
-            .expect("INVARIANT: state is only taken in Drop")
-            .indexing_chain
-            .take_aborting_error();
-        if let Some(error) = aborting {
-            if !self.dwpt.is_aborted() {
-                self.abort();
-                notifications.on_tragic_event(&error, location);
-            }
+    /// Records `error` as the exception that makes this DWPT unusable.
+    ///
+    /// Equivalent to `DocumentsWriterPerThread.onAbortingException(Throwable)`.
+    ///
+    /// Java asserts that the field is still unset, because the single consumer
+    /// it installs on the indexing chain writes the very same field. This port
+    /// lets the chain keep its own aborting error and merges the two in
+    /// [`maybe_abort`](Self::maybe_abort), so the first error recorded is still
+    /// the one the tragic event carries, which is what Java's invariant
+    /// guarantees.
+    fn on_aborting_exception(&mut self, error: LuceneError) {
+        self.state_mut().aborting_error = Some(error);
+    }
+
+    /// Aborts this DWPT and fires the tragic event when an aborting exception
+    /// was recorded, and returns the error this DWPT itself recorded.
+    ///
+    /// Equivalent to `DocumentsWriterPerThread.maybeAbort(String,
+    /// DocumentsWriter.FlushNotifications)`. The error is returned so that
+    /// [`flush`](Self::flush) can still propagate the very error it caught:
+    /// [`LuceneError`] is not `Clone`, so it cannot be both stored and returned.
+    fn maybe_abort(
+        &mut self,
+        location: &str,
+        notifications: &dyn FlushNotifications,
+    ) -> Option<LuceneError> {
+        let (chain_error, own_error) = {
+            let state = self
+                .state
+                .as_mut()
+                .expect("INVARIANT: state is only taken in Drop");
+            (
+                state.indexing_chain.take_aborting_error(),
+                state.aborting_error.take(),
+            )
+        };
+        if (chain_error.is_some() || own_error.is_some()) && !self.dwpt.is_aborted() {
+            self.abort();
+            // whatever we do here we have to fire this tragic event up. The
+            // chain's error wins when both are present: it is the first one
+            // recorded, and the one Java would have kept.
+            let error = chain_error
+                .as_ref()
+                .or(own_error.as_ref())
+                .expect("INVARIANT: presence checked above");
+            notifications.on_tragic_event(error, location);
         }
+        own_error
     }
 
     /// Freezes the global deletes visible to this segment and applies its own
@@ -2841,8 +3494,21 @@ impl DwptGuard {
             "all deletes must be applied in prepareFlush"
         );
 
-        let outcome = self.flush_inner();
-        self.maybe_abort("flush", notifications);
+        let outcome = match self.flush_inner() {
+            Ok(value) => {
+                self.maybe_abort("flush", notifications);
+                Ok(value)
+            }
+            Err(error) => {
+                // Java's `catch (Throwable t) { onAbortingException(t); throw t; }`
+                // makes every failed flush an aborting one, not only the ones the
+                // indexing chain itself declared corrupt. The error is handed back
+                // by `maybe_abort` so that it can still be propagated unchanged.
+                self.on_aborting_exception(error);
+                let recorded = self.maybe_abort("flush", notifications);
+                Err(recorded.expect("INVARIANT: on_aborting_exception recorded it just above"))
+            }
+        };
         self.dwpt.has_flushed.store(true, Ordering::Release);
         outcome
     }
@@ -3160,7 +3826,7 @@ impl DocumentsWriterPerThreadPool {
             guard.is_queue_advanced()
         );
         debug_assert!(
-            self.is_registered(guard.dwpt()),
+            self.contains(guard.dwpt()),
             "we tried to add a DWPT back to the pool but the pool doesn't know about this DWPT"
         );
         let dwpt = Arc::clone(guard.dwpt());
@@ -3221,9 +3887,26 @@ impl DocumentsWriterPerThreadPool {
         true
     }
 
+    /// Returns `true` when `state` is one of the DWPTs this pool created and
+    /// has not checked out.
+    ///
+    /// Equivalent to `DocumentsWriterPerThreadPool.contains(
+    /// DocumentsWriterPerThread)`. Java compares by identity through
+    /// `Set.contains`, because `DocumentsWriterPerThread` inherits
+    /// `Object.equals`; the pointer comparison here is the same test.
+    fn contains(&self, state: &Arc<DocumentsWriterPerThread>) -> bool {
+        self.lock_state()
+            .dwpts
+            .iter()
+            .any(|d| Arc::ptr_eq(d, state))
+    }
+
     /// Returns `true` while `dwpt` still belongs to the pool.
+    ///
+    /// Equivalent to `DocumentsWriterPerThreadPool.isRegistered(
+    /// DocumentsWriterPerThread)`.
     pub fn is_registered(&self, dwpt: &Arc<DocumentsWriterPerThread>) -> bool {
-        self.lock_state().dwpts.iter().any(|d| Arc::ptr_eq(d, dwpt))
+        self.contains(dwpt)
     }
 
     /// Closes the pool; no new DWPT may be created afterwards.
@@ -3341,6 +4024,31 @@ struct FlushControlInner {
     flush_queue: VecDeque<Arc<DocumentsWriterPerThread>>,
     blocked_flushes: VecDeque<Arc<DocumentsWriterPerThread>>,
     flushing_writers: Vec<Arc<DocumentsWriterPerThread>>,
+
+    // The bookkeeping Lucene keeps "only with assert", used by
+    // `DocumentsWriterFlushControl.assertMemory()`.
+    /// Equivalent to `DocumentsWriterFlushControl.numDocsSinceStalled`.
+    num_docs_since_stalled: i32,
+    /// Equivalent to `DocumentsWriterFlushControl.maxConfiguredRamBuffer`.
+    max_configured_ram_buffer: f64,
+    /// Equivalent to `DocumentsWriterFlushControl.peakActiveBytes`.
+    peak_active_bytes: i64,
+    /// Equivalent to `DocumentsWriterFlushControl.peakFlushBytes`.
+    peak_flush_bytes: i64,
+    /// Equivalent to `DocumentsWriterFlushControl.peakNetBytes`.
+    peak_net_bytes: i64,
+    /// Equivalent to `DocumentsWriterFlushControl.peakDelta`.
+    peak_delta: i64,
+    /// Equivalent to `DocumentsWriterFlushControl.flushByRAMWasDisabled`.
+    flush_by_ram_was_disabled: bool,
+}
+
+impl FlushControlInner {
+    /// Equivalent to `DocumentsWriterFlushControl.netBytes()`, evaluated with
+    /// the monitor already held.
+    fn net_bytes(&self) -> i64 {
+        self.flush_bytes + self.active_bytes
+    }
 }
 
 /// Decides when a DWPT must flush and hands flushable DWPTs to the writer.
@@ -3509,8 +4217,10 @@ impl DocumentsWriterFlushControl {
         guard.commit_last_bytes_used(delta);
         if guard.is_flush_pending() {
             inner.flush_bytes += delta;
+            debug_assert!(Self::update_peaks(&mut inner, delta));
         } else {
             inner.active_bytes += delta;
+            debug_assert!(Self::update_peaks(&mut inner, delta));
             {
                 let mut handle = FlushControlHandle {
                     control: self,
@@ -3520,11 +4230,15 @@ impl DocumentsWriterFlushControl {
                     .on_change(&mut handle, Some(guard.dwpt().as_ref()));
             }
             if !guard.is_flush_pending() && guard.ram_bytes_used() > self.hard_max_bytes_per_dwpt {
-                Self::set_flush_pending_locked(guard.dwpt(), &mut inner);
+                self.set_flush_pending_locked(guard.dwpt(), &mut inner);
             }
         }
         let result = self.checkout(guard, false, &mut inner);
-        self.update_stall_state_locked(&mut inner);
+        let stalled = self.update_stall_state_locked(&mut inner);
+        debug_assert!(
+            Self::assert_num_docs_since_stalled(&mut inner, stalled)
+                && self.assert_memory(&mut inner)
+        );
         result
     }
 
@@ -3551,6 +4265,7 @@ impl DocumentsWriterFlushControl {
         } else {
             inner.active_bytes -= bytes;
         }
+        debug_assert!(self.assert_memory(&mut inner));
         self.update_stall_state_locked(&mut inner);
         drop(inner);
         self.per_thread_pool.checkout(guard);
@@ -3565,9 +4280,19 @@ impl DocumentsWriterFlushControl {
             .flushing_writers
             .retain(|candidate| !Arc::ptr_eq(candidate, dwpt));
         inner.flush_bytes -= dwpt.last_committed_bytes_used();
+        debug_assert!(self.assert_memory(&mut inner));
         self.update_stall_state_locked(&mut inner);
         drop(inner);
         self.flush_done.notify_all();
+    }
+
+    /// Returns a snapshot of every currently active DWPT.
+    ///
+    /// Equivalent to `DocumentsWriterFlushControl.allActiveWriters()`, which
+    /// returns `perThreadPool.iterator()`; that iterator is itself a snapshot
+    /// (`List.copyOf(dwpts).iterator()`), so this returns the same list.
+    pub fn all_active_writers(&self) -> Vec<Arc<DocumentsWriterPerThread>> {
+        self.per_thread_pool.snapshot()
     }
 
     /// Blocks until every running flush has finished.
@@ -3588,10 +4313,11 @@ impl DocumentsWriterFlushControl {
     /// Equivalent to `setFlushPending(DocumentsWriterPerThread)`.
     pub fn set_flush_pending(&self, per_thread: &Arc<DocumentsWriterPerThread>) {
         let mut inner = self.lock();
-        Self::set_flush_pending_locked(per_thread, &mut inner);
+        self.set_flush_pending_locked(per_thread, &mut inner);
     }
 
     fn set_flush_pending_locked(
+        &self,
         per_thread: &DocumentsWriterPerThread,
         inner: &mut FlushControlInner,
     ) {
@@ -3604,7 +4330,10 @@ impl DocumentsWriterFlushControl {
             inner.flush_bytes += bytes;
             inner.active_bytes -= bytes;
             inner.num_pending += 1;
+            debug_assert!(self.assert_memory(inner));
         }
+        // don't assert on numDocs since we could hit an abort exception while
+        // selecting that DWPT for flushing
     }
 
     /// Returns the next DWPT that must be flushed, if any.
@@ -3653,7 +4382,7 @@ impl DocumentsWriterFlushControl {
             }
         } else {
             if mark_pending {
-                Self::set_flush_pending_locked(guard.dwpt(), inner);
+                self.set_flush_pending_locked(guard.dwpt(), inner);
             }
             if guard.is_flush_pending() {
                 return Some(self.check_out_for_flush(guard, inner));
@@ -3788,7 +4517,7 @@ impl DocumentsWriterFlushControl {
         {
             if guard.num_docs_in_ram() > 0 {
                 let mut inner = self.lock();
-                Self::set_flush_pending_locked(guard.dwpt(), &mut inner);
+                self.set_flush_pending_locked(guard.dwpt(), &mut inner);
                 full_flush_buffer.push(self.check_out_for_flush(&guard, &mut inner));
             } else {
                 let checked_out = self.per_thread_pool.checkout(&guard);
@@ -3801,6 +4530,8 @@ impl DocumentsWriterFlushControl {
         inner.flush_queue.extend(full_flush_buffer);
         self.update_stall_state_locked(&mut inner);
         inner.full_flush_mark_done = true;
+        drop(inner);
+        debug_assert!(self.assert_active_delete_queue(&self.shared.delete_queue()));
         debug_assert!(flushing_queue.last_sequence_number() <= flushing_queue.max_seq_no());
         Ok(seq_no)
     }
@@ -3896,6 +4627,137 @@ impl DocumentsWriterFlushControl {
         } else {
             self.per_thread_pool.mark_as_free_and_unlock(guard);
         }
+    }
+
+    /// Checks that the RAM this control accounts for stays within the upper
+    /// bound the configured buffer implies.
+    ///
+    /// Equivalent to `DocumentsWriterFlushControl.assertMemory()`, which Lucene
+    /// only evaluates from `assert assertMemory()`; this port calls it the same
+    /// way, from `debug_assert!`, so the check disappears from release builds.
+    /// Like Java it returns `true` so that it can sit inside the assertion.
+    fn assert_memory(&self, inner: &mut FlushControlInner) -> bool {
+        let max_ram_mb = self.config.ram_buffer_size_mb();
+        // We can only assert if we have always been flushing by RAM usage;
+        // otherwise the assert will false trip if e.g. the flush-by-doc-count *
+        // doc size was large enough to use far more RAM than the sudden change
+        // to IWC's maxRAMBufferSizeMB.
+        if max_ram_mb != f64::from(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)
+            && !inner.flush_by_ram_was_disabled
+        {
+            // for this assert we must be tolerant to ram buffer changes!
+            inner.max_configured_ram_buffer = max_ram_mb.max(inner.max_configured_ram_buffer);
+            let ram = inner.flush_bytes + inner.active_bytes;
+            let ram_buffer_bytes = (inner.max_configured_ram_buffer * 1024.0 * 1024.0) as i64;
+            // Take `peak_delta` into account — the worst case is that all
+            // flushing, pending and blocked DWPTs held the maximum and the last
+            // document added the peak delta:
+            //
+            // * `2 * ram_buffer_bytes` — before stalling, the 2x RAM buffer
+            //   border has to be crossed, which is still a valid limit;
+            // * `(num_pending + num_flushing + num_blocked) * peak_delta` —
+            //   the DWPTs that are no longer active but not yet fully flushed,
+            //   each of which could in theory have crossed the RAM buffer with
+            //   the last document being the peak delta;
+            // * `num_docs_since_stalled * peak_delta` — at any moment there
+            //   may be threads in flight that passed the stall control before
+            //   the limit was reached, each holding a peak document.
+            let in_flight = i64::from(inner.num_pending)
+                + inner.flushing_writers.len() as i64
+                + inner.blocked_flushes.len() as i64;
+            let expected = (2 * ram_buffer_bytes)
+                + (in_flight * inner.peak_delta)
+                + (i64::from(inner.num_docs_since_stalled) * inner.peak_delta);
+            // The expected RAM consumption is an upper bound at this point and
+            // not really the expected consumption.
+            if inner.peak_delta < (ram_buffer_bytes >> 1) {
+                // If we are indexing with a very low maxRamBuffer, like 0.1MB,
+                // memory can easily overflow if some DWPTs are checked out on
+                // doc count while several DWPTs in flight index large documents
+                // compared to the RAM buffer. Those DWPTs and their threads
+                // would not hit the stall control before asserting the memory,
+                // which would in turn fail. To prevent this we only assert if
+                // the largest document seen is smaller than half of the
+                // maxRamBufferMB.
+                assert!(
+                    ram <= expected,
+                    "actual mem: {ram} byte, expected mem: {expected} byte, flush mem: {}, \
+                     active mem: {}, pending DWPT: {}, flushing DWPT: {}, blocked DWPT: {}, \
+                     peakDelta mem: {} bytes, ramBufferBytes={ram_buffer_bytes}, \
+                     maxConfiguredRamBuffer={}",
+                    inner.flush_bytes,
+                    inner.active_bytes,
+                    inner.num_pending,
+                    inner.flushing_writers.len(),
+                    inner.blocked_flushes.len(),
+                    inner.peak_delta,
+                    inner.max_configured_ram_buffer
+                );
+            }
+        } else {
+            inner.flush_by_ram_was_disabled = true;
+        }
+        true
+    }
+
+    /// Records the high-water marks the memory assertion reasons about.
+    ///
+    /// Equivalent to `DocumentsWriterFlushControl.updatePeaks(long)`, which
+    /// Lucene also runs only from an `assert`, so the peaks stay at zero in a
+    /// release build exactly as they do in a JVM without `-ea`.
+    fn update_peaks(inner: &mut FlushControlInner, delta: i64) -> bool {
+        inner.peak_active_bytes = inner.peak_active_bytes.max(inner.active_bytes);
+        inner.peak_flush_bytes = inner.peak_flush_bytes.max(inner.flush_bytes);
+        inner.peak_net_bytes = inner.peak_net_bytes.max(inner.net_bytes());
+        inner.peak_delta = inner.peak_delta.max(delta);
+        true
+    }
+
+    /// Counts the documents that finished while indexing was stalled.
+    ///
+    /// Equivalent to `DocumentsWriterFlushControl.assertNumDocsSinceStalled(
+    /// boolean)`. The count matters to [`assert_memory`](Self::assert_memory):
+    /// it corresponds to the number of threads that were in flight and had
+    /// already passed the stall-control check when the stall began.
+    fn assert_num_docs_since_stalled(inner: &mut FlushControlInner, stalled: bool) -> bool {
+        if stalled {
+            inner.num_docs_since_stalled += 1;
+        } else {
+            inner.num_docs_since_stalled = 0;
+        }
+        true
+    }
+
+    /// Checks that every registered DWPT still belongs to `queue`.
+    ///
+    /// Equivalent to `DocumentsWriterFlushControl.assertActiveDeleteQueue(
+    /// DocumentsWriterDeleteQueue)`, run after a full flush has swapped the
+    /// writer's delete queue.
+    fn assert_active_delete_queue(&self, queue: &Arc<DocumentsWriterDeleteQueue>) -> bool {
+        for next in self.per_thread_pool.snapshot() {
+            assert!(
+                Arc::ptr_eq(next.delete_queue(), queue),
+                "numDocs: {}",
+                next.num_docs_in_ram()
+            );
+        }
+        true
+    }
+
+    /// Returns the peak of [`active_bytes`](Self::active_bytes) observed so far.
+    ///
+    /// Equivalent to `DocumentsWriterFlushControl.getPeakActiveBytes()`. Like
+    /// Java without `-ea`, this stays at zero unless assertions are enabled.
+    pub fn get_peak_active_bytes(&self) -> i64 {
+        self.lock().peak_active_bytes
+    }
+
+    /// Returns the peak of [`net_bytes`](Self::net_bytes) observed so far.
+    ///
+    /// Equivalent to `DocumentsWriterFlushControl.getPeakNetBytes()`. Like Java
+    /// without `-ea`, this stays at zero unless assertions are enabled.
+    pub fn get_peak_net_bytes(&self) -> i64 {
+        self.lock().peak_net_bytes
     }
 
     fn ram_buffer_granularity(&self) -> i64 {
@@ -4488,7 +5350,7 @@ impl DocumentsWriter {
                 .store(self.any_changes(), Ordering::Release);
             let flushing_delete_queue = self.shared.delete_queue();
             let seq_no = self.flush_control.mark_for_full_flush()?;
-            *self.lock_full_flush_queue() = Some(Arc::clone(&flushing_delete_queue));
+            debug_assert!(self.set_flushing_delete_queue(Some(Arc::clone(&flushing_delete_queue))));
             (flushing_delete_queue, seq_no)
         };
 
@@ -4531,7 +5393,7 @@ impl DocumentsWriter {
             self.info_stream
                 .message("DW", &format!("finishFullFlush success={success}"));
         }
-        *self.lock_full_flush_queue() = None;
+        debug_assert!(self.set_flushing_delete_queue(None));
         if success {
             self.flush_control.finish_full_flush();
         } else {
@@ -4692,6 +5554,25 @@ impl DocumentsWriter {
         } else {
             Ok(())
         }
+    }
+
+    /// Records which delete queue the running full flush belongs to.
+    ///
+    /// Equivalent to `DocumentsWriter.setFlushingDeleteQueue(
+    /// DocumentsWriterDeleteQueue)`. Lucene calls it only from
+    /// `assert setFlushingDeleteQueue(...)`, so the field it writes — and the
+    /// [`assert_ticket_queue_modification`](Self::assert_ticket_queue_modification)
+    /// check that reads it — exist only when assertions are enabled; this port
+    /// calls it from `debug_assert!` for the same reason. Like Java it returns
+    /// `true` so that it can sit inside the assertion.
+    fn set_flushing_delete_queue(&self, session: Option<Arc<DocumentsWriterDeleteQueue>>) -> bool {
+        let mut current = self.lock_full_flush_queue();
+        assert!(
+            current.as_ref().map_or(true, |queue| !queue.is_open()),
+            "Can not replace a full flush queue if the queue is not closed"
+        );
+        *current = session;
+        true
     }
 
     fn assert_ticket_queue_modification(

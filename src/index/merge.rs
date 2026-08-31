@@ -411,10 +411,26 @@ enum MergerState {
 
 impl<T: DocIDMergerSub> DocIDMerger<T> {
     /// Creates a merger for the given sub-readers.
-    pub fn new(mut subs: Vec<T>, index_is_sorted: bool) -> Result<Self> {
+    ///
+    /// Equivalent to `DocIDMerger.of(List<T>, boolean)`, which forwards to the
+    /// three-argument [`of`](Self::of) with `maxCount = subs.size()`.
+    pub fn new(subs: Vec<T>, index_is_sorted: bool) -> Result<Self> {
+        let max_count = subs.len();
+        Self::of(subs, max_count, index_is_sorted)
+    }
+
+    /// Creates a merger for the given sub-readers, specifying the maximum
+    /// number of sub-readers it will ever see.
+    ///
+    /// Equivalent to `DocIDMerger.of(List<T>, int, boolean)`. Java picks
+    /// `SortedDocIDMerger` when the index is sorted and `maxCount > 1`, and
+    /// `SequentialDocIDMerger` otherwise; `max_count` is what decides, not the
+    /// current length of `subs`, because a reused merger may be reset with more
+    /// subs later.
+    pub fn of(mut subs: Vec<T>, max_count: usize, index_is_sorted: bool) -> Result<Self> {
         let state = if subs.is_empty() {
             MergerState::Empty
-        } else if index_is_sorted && subs.len() > 1 {
+        } else if index_is_sorted && max_count > 1 {
             let mut queue = Vec::with_capacity(subs.len() - 1);
             let current = 0usize;
             // The first sub is held out as `current`; initialize the rest.

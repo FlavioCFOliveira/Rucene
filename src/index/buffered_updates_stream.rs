@@ -6,12 +6,19 @@
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::error::{LuceneError, Result};
 use crate::index::documents_writer::FrozenBufferedUpdates;
+use crate::index::index_writer::IndexWriter;
 use crate::index::segment_info::SegmentCommitInfo;
-use crate::util::BytesRef;
+use crate::util::{BytesRef, InfoStream, NoOutputInfoStream};
+
+/// The info-stream component name Lucene logs buffered deletes under.
+///
+/// Equivalent to the `"BD"` literal `BufferedUpdatesStream` passes to the info
+/// stream.
+const BD: &str = "BD";
 
 /// Iterates the terms of one field, remembering which delete generation they
 /// came from.
@@ -124,6 +131,13 @@ impl FinishedSegments {
         }
     }
 
+    /// Returns the generation below which every packet has finished applying.
+    ///
+    /// Equivalent to `BufferedUpdatesStream.FinishedSegments.getCompletedDelGen()`.
+    fn get_completed_del_gen(&self) -> i64 {
+        self.completed_del_gen.load(Ordering::Acquire)
+    }
+
     /// Returns whether `del_gen` is still being applied.
     fn still_running(&self, del_gen: i64) -> bool {
         if del_gen <= self.completed_del_gen.load(Ordering::Acquire) {
@@ -164,41 +178,129 @@ impl FinishedSegments {
 /// own responsibilities — ordering the packets by generation, tracking which
 /// generations are still running, and selecting the segments a packet reaches —
 /// and leaves resolution to the caller that owns the readers.
-#[derive(Debug, Default)]
 pub struct BufferedUpdatesStream {
-    updates: Mutex<Vec<FrozenBufferedUpdates>>,
+    /// The packets still waiting to be applied.
+    ///
+    /// Equivalent to `BufferedUpdatesStream.updates`, a `Set<FrozenBufferedUpdates>`.
+    /// The port holds shared handles so that a snapshot can be taken for
+    /// `waitApply` without removing the packets from the stream, which is what
+    /// Java's `new HashSet<>(updates)` does with references.
+    updates: Mutex<Vec<Arc<FrozenBufferedUpdates>>>,
     next_gen: AtomicI64,
     bytes_used: AtomicI64,
     finished_segments: FinishedSegments,
+    /// Where the stream reports what it applied.
+    ///
+    /// Equivalent to `BufferedUpdatesStream.infoStream`.
+    info_stream: Arc<dyn InfoStream>,
+}
+
+impl std::fmt::Debug for BufferedUpdatesStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BufferedUpdatesStream")
+            .field("packets", &self.get_pending_updates_count())
+            .field("bytes_used", &self.bytes_used.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for BufferedUpdatesStream {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BufferedUpdatesStream {
-    /// Creates an empty stream. The first generation handed out is `1`, as in
-    /// Java.
+    /// Creates an empty stream that reports nothing. The first generation
+    /// handed out is `1`, as in Java.
     pub fn new() -> Self {
+        Self::with_info_stream(Arc::new(NoOutputInfoStream))
+    }
+
+    /// Creates an empty stream reporting to `info_stream`.
+    ///
+    /// Equivalent to `BufferedUpdatesStream(InfoStream)`.
+    pub fn with_info_stream(info_stream: Arc<dyn InfoStream>) -> Self {
         Self {
             updates: Mutex::new(Vec::new()),
             next_gen: AtomicI64::new(1),
             bytes_used: AtomicI64::new(0),
             finished_segments: FinishedSegments::default(),
+            info_stream,
         }
+    }
+
+    /// Returns the RAM a single packet accounts for.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java reads `packet.bytesUsed`, which
+    /// `FrozenBufferedUpdates` computes when it freezes the packet's
+    /// `PrefixCodedTerms` and query array. `BufferedUpdates` in this port does
+    /// not track its own RAM yet, so the weight is counted from the operations
+    /// the packet carries — which is what `any()` and `ram_bytes_used()` are
+    /// actually used for here. Both `push` and
+    /// [`check_delete_stats`](Self::check_delete_stats) go through this one
+    /// function, so the running total and the check always agree.
+    fn packet_bytes_used(packet: &FrozenBufferedUpdates) -> i64 {
+        (packet.updates().terms_size() + packet.updates().queries_size()) as i64
     }
 
     /// Appends `packet` to the stream and returns the generation it was given.
     ///
     /// Equivalent to `BufferedUpdatesStream.push`.
     pub fn push(&self, packet: FrozenBufferedUpdates) -> Result<i64> {
-        let del_gen = self.next_gen.fetch_add(1, Ordering::AcqRel);
-        // `BufferedUpdates` does not track its own RAM yet, so the packet's
-        // weight is counted from the operations it carries, which is what
-        // `any()` and `ram_bytes_used()` are actually used for here.
-        let bytes = (packet.updates().terms_size() + packet.updates().queries_size()) as i64;
         let mut guard = self.updates.lock().map_err(|_| {
             LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
         })?;
-        guard.push(packet);
+        // The insert operation must be atomic: letting threads increment the
+        // generation and push afterwards risks packets landing out of order,
+        // which would apply deletes to the wrong segments.
+        let del_gen = self.next_gen.fetch_add(1, Ordering::AcqRel);
+        // Stamp the generation onto the packet, exactly where Java does it:
+        // `FrozenBufferedUpdates.apply` refuses to run without it.
+        packet.set_del_gen(del_gen);
+        debug_assert!(!packet.is_empty());
+        debug_assert!(self.check_delete_stats(&guard));
+
+        let bytes = Self::packet_bytes_used(&packet);
+        guard.push(Arc::new(packet));
         self.bytes_used.fetch_add(bytes, Ordering::Relaxed);
+        if self.info_stream.is_enabled(BD) {
+            self.info_stream.message(
+                BD,
+                &format!(
+                    "push new packet, packetCount={}, bytesUsed={:.3} MB",
+                    guard.len(),
+                    self.bytes_used.load(Ordering::Relaxed) as f64 / 1024. / 1024.
+                ),
+            );
+        }
+        debug_assert!(self.check_delete_stats(&guard));
+
         Ok(del_gen)
+    }
+
+    /// Checks that the running RAM total agrees with the buffered packets.
+    ///
+    /// Equivalent to the assert-only `org.apache.lucene.index.BufferedUpdatesStream#checkDeleteStats`.
+    ///
+    /// Java takes no argument and reads the `updates` set under the method's own
+    /// `synchronized`; a Rust `Mutex` is not reentrant, so the already-locked
+    /// packets are passed in by the caller that holds them.
+    ///
+    /// # Panics
+    ///
+    /// Panics with Java's message when the totals disagree.
+    fn check_delete_stats(&self, updates: &[Arc<FrozenBufferedUpdates>]) -> bool {
+        let mut bytes_used2 = 0i64;
+        for packet in updates {
+            bytes_used2 += Self::packet_bytes_used(packet);
+        }
+        let bytes_used = self.bytes_used.load(Ordering::Relaxed);
+        assert_eq!(
+            bytes_used2, bytes_used,
+            "bytesUsed2={bytes_used2} vs {bytes_used}"
+        );
+        true
     }
 
     /// Returns how many packets are waiting.
@@ -288,12 +390,172 @@ impl BufferedUpdatesStream {
     ///
     /// The caller resolves them against its readers and then reports each
     /// generation through [`finished_segment`](Self::finished_segment).
-    pub fn take_packets(&self) -> Result<Vec<FrozenBufferedUpdates>> {
+    pub fn take_packets(&self) -> Result<Vec<Arc<FrozenBufferedUpdates>>> {
         let mut guard = self.updates.lock().map_err(|_| {
             LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
         })?;
         let taken = std::mem::take(&mut *guard);
         self.bytes_used.store(0, Ordering::Release);
         Ok(taken)
+    }
+
+    /// Records that `packet` has finished being resolved, and drops it.
+    ///
+    /// Equivalent to `BufferedUpdatesStream.finished(FrozenBufferedUpdates)`,
+    /// which indexing threads call once they are fully done resolving a packet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the stream's lock is
+    /// poisoned.
+    pub fn finished(&self, packet: &Arc<FrozenBufferedUpdates>) -> Result<()> {
+        {
+            let mut guard = self.updates.lock().map_err(|_| {
+                LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
+            })?;
+            guard.retain(|held| !Arc::ptr_eq(held, packet));
+            self.bytes_used
+                .fetch_sub(Self::packet_bytes_used(packet), Ordering::Relaxed);
+        }
+        self.finished_segment(packet.del_gen());
+        Ok(())
+    }
+
+    /// Returns the generation up to and including which every packet is known
+    /// to have finished applying.
+    ///
+    /// Equivalent to `BufferedUpdatesStream.getCompletedDelGen()`.
+    pub fn get_completed_del_gen(&self) -> i64 {
+        self.finished_segments.get_completed_del_gen()
+    }
+
+    /// Waits for every in-flight packet to finish being resolved.
+    ///
+    /// Equivalent to `BufferedUpdatesStream.waitApplyAll(IndexWriter)`, which
+    /// a refresh or a commit calls. Java asserts that the caller does **not**
+    /// hold the writer's monitor; in this port that is structural, because
+    /// `writer` is borrowed shared and the writer's own state guard is taken
+    /// inside `try_apply`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever resolving a packet raises.
+    pub fn wait_apply_all(&self, writer: &IndexWriter) -> Result<()> {
+        let wait_for = {
+            let guard = self.updates.lock().map_err(|_| {
+                LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
+            })?;
+            guard.clone()
+        };
+        self.wait_apply(wait_for, writer)
+    }
+
+    /// Waits only for the in-flight packets that apply to the segments a merge
+    /// is about to consume.
+    ///
+    /// Equivalent to `BufferedUpdatesStream.waitApplyForMerge(List<SegmentCommitInfo>,
+    /// IndexWriter)`: a packet whose generation is at most the largest
+    /// buffered-deletes generation among `merge_infos` still has deletes for a
+    /// subset of those segments, so the merge must not finish before it does.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever resolving a packet raises.
+    pub fn wait_apply_for_merge(
+        &self,
+        merge_infos: &[SegmentCommitInfo],
+        writer: &IndexWriter,
+    ) -> Result<()> {
+        let mut max_del_gen = i64::MIN;
+        for info in merge_infos {
+            max_del_gen = max_del_gen.max(info.get_buffered_deletes_gen());
+        }
+
+        let wait_for: Vec<Arc<FrozenBufferedUpdates>> = {
+            let guard = self.updates.lock().map_err(|_| {
+                LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
+            })?;
+            guard
+                .iter()
+                .filter(|packet| packet.del_gen() <= max_del_gen)
+                .cloned()
+                .collect()
+        };
+
+        if self.info_stream.is_enabled(BD) {
+            self.info_stream.message(
+                BD,
+                &format!(
+                    "waitApplyForMerge: {} packets, {} merging segments",
+                    wait_for.len(),
+                    merge_infos.len()
+                ),
+            );
+        }
+
+        self.wait_apply(wait_for, writer)
+    }
+
+    /// Resolves every packet in `wait_for`, blocking on the ones another thread
+    /// is already resolving.
+    ///
+    /// Equivalent to the private `org.apache.lucene.index.BufferedUpdatesStream#waitApply`.
+    /// Frozen packets are normally resolved by the indexing threads that create
+    /// them; a packet that is still unresolved when this runs is resolved here
+    /// instead, and one that somebody else is currently applying is set aside
+    /// and then waited for, so that all of them are due before the caller
+    /// continues.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever resolving a packet raises.
+    fn wait_apply(
+        &self,
+        wait_for: Vec<Arc<FrozenBufferedUpdates>>,
+        writer: &IndexWriter,
+    ) -> Result<()> {
+        let start_ns = std::time::Instant::now();
+        let packet_count = wait_for.len();
+
+        if wait_for.is_empty() {
+            if self.info_stream.is_enabled(BD) {
+                self.info_stream
+                    .message(BD, "waitApply: no deletes to apply");
+            }
+            return Ok(());
+        }
+
+        if self.info_stream.is_enabled(BD) {
+            self.info_stream
+                .message(BD, &format!("waitApply: {packet_count} packets"));
+        }
+
+        let mut pending_packets = Vec::new();
+        let mut total_del_count = 0i64;
+        for packet in &wait_for {
+            // If somebody else is currently applying it, move on to the next one
+            // and force-apply below.
+            if !writer.try_apply(packet)? {
+                pending_packets.push(Arc::clone(packet));
+            }
+            total_del_count += packet.total_del_count();
+        }
+        for packet in &pending_packets {
+            // Now block on all the packets that were concurrently applied, to
+            // ensure they are due before we continue.
+            writer.force_apply(packet)?;
+        }
+
+        if self.info_stream.is_enabled(BD) {
+            self.info_stream.message(
+                BD,
+                &format!(
+                    "waitApply: done {packet_count} packets; totalDelCount={total_del_count}; totBytesUsed={}; took {:.2} msec",
+                    self.bytes_used.load(Ordering::Relaxed),
+                    start_ns.elapsed().as_secs_f64() * 1000.0
+                ),
+            );
+        }
+        Ok(())
     }
 }

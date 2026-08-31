@@ -39,6 +39,20 @@ struct BufferedUpdate {
 /// nothing. This port keeps one record per update. The iteration order, the
 /// `doc_up_to` semantics and the numeric/binary split are unchanged; only the
 /// memory footprint differs.
+///
+/// Three of Lucene's members exist only to serve that packed representation and
+/// have no counterpart here:
+///
+/// * `getArrayIndex(int, int)` resolves `min(arrayLength - 1, index)` so that an
+///   array holding a single, repeated value can be read at any ordinal; with one
+///   record per update the ordinal is always the record's own index.
+/// * `sizeOfString(String)` accounts the field names Java keeps in an elided
+///   `String[]`; [`ram_bytes_used`](Accountable::ram_bytes_used) charges each
+///   record's own field name instead.
+/// * `assertTermAndDocInOrder()` validates the sort state `finish()` builds when
+///   the buffer qualifies for Lucene's sorted-terms optimisation. This port
+///   never sorts, so `FieldUpdatesBuffer.BufferedUpdateIterator.isSortedTerms()`
+///   is always `false` for it and there is no state to validate.
 #[derive(Debug)]
 pub struct FieldUpdatesBuffer {
     updates: Vec<BufferedUpdate>,
@@ -76,6 +90,17 @@ impl FieldUpdatesBuffer {
         Ok(buffer)
     }
 
+    /// Appends one update to the buffer.
+    ///
+    /// Equivalent to `FieldUpdatesBuffer.append(Term)` followed by
+    /// `FieldUpdatesBuffer.add(String, int, int, boolean)`, which Java keeps
+    /// apart only because `append` returns the ordinal the parallel arrays are
+    /// then indexed by. This port stores one record per update, so there is no
+    /// ordinal to hand around and the two steps are one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] once the buffer is finished.
     fn push(
         &mut self,
         field: String,

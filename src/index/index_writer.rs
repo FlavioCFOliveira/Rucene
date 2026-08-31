@@ -6,6 +6,7 @@
 //! scheduler.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -21,19 +22,21 @@ use crate::index::documents_writer::{DeleteNode, DocumentsWriter, FlushNotificat
 use crate::index::field_infos::FieldNumbers;
 use crate::index::index_file_deleter::{IndexFileDeleter, WRITE_LOCK_NAME};
 use crate::index::index_writer_config::{IndexWriterConfig, LiveIndexWriterConfig, OpenMode};
-use crate::index::merge_policy::{MergeContext, MergeTrigger, OneMerge};
+use crate::index::merge_policy::{MergeContext, MergePolicy, MergeTrigger, OneMerge};
 use crate::index::merge_scheduler::MergeSource;
 use crate::index::readers_and_updates::ReaderPool;
 use crate::index::segment_info::{SegmentCommitInfo, SegmentInfo};
 use crate::index::segment_infos::SegmentInfos;
 use crate::index::segment_merger::SegmentMerger;
-use crate::index::segment_reader::SegmentReader;
 use crate::index::{DocValuesType, IndexableFieldType, Term};
 use crate::search::Sort;
-use crate::store::{DefaultIOContext, Directory, IOContext, Lock};
+use crate::store::{
+    BufferedChecksumIndexInput, DefaultIOContext, Directory, IOContext, IndexInput, IndexOutput,
+    Lock,
+};
 use crate::util::extra::Version;
 use crate::util::string_helper::StringHelper;
-use crate::util::InfoStream;
+use crate::util::{Bits, InfoStream};
 
 /// Component name used in info-stream messages, as Java does.
 const IW: &str = "IW";
@@ -132,6 +135,14 @@ pub struct IndexWriter {
     /// flushing and committing after it has claimed the close: `ensure_open`
     /// fails on it, while the internal `ensure_open_with(false)` does not.
     closing: AtomicBool,
+    /// Bumped every time a merge folds its inputs' deletes into the merged
+    /// segment.
+    ///
+    /// Equivalent to `IndexWriter.mergeFinishedGen`. A packet of deletes being
+    /// resolved reads it before and after its pass: if a merge landed in
+    /// between, the merged segment may have missed some of the packet's
+    /// updates, so the pass is repeated against the new segment.
+    merge_finished_gen: AtomicI64,
 }
 
 impl std::fmt::Debug for IndexWriter {
@@ -289,7 +300,7 @@ impl IndexWriter {
         Ok(Self {
             directory,
             config: live_config,
-            info_stream,
+            info_stream: Arc::clone(&info_stream),
             documents_writer,
             reader_pool,
             global_field_numbers,
@@ -316,8 +327,9 @@ impl IndexWriter {
             flush_deletes_count: AtomicI32::new(0),
             did_message_state: AtomicBool::new(false),
             soft_deletes_enabled,
-            buffered_updates_stream: BufferedUpdatesStream::new(),
+            buffered_updates_stream: BufferedUpdatesStream::with_info_stream(info_stream),
             closing: AtomicBool::new(false),
+            merge_finished_gen: AtomicI64::new(0),
         })
     }
 
@@ -1648,7 +1660,16 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.commitMerge(OneMerge, MergeState.DocMap[])`.
     /// Returns whether the merge was committed; an aborted merge returns
     /// `false` and leaves the index untouched.
-    fn commit_merge(&self, merge: &OneMerge, merged: Option<SegmentCommitInfo>) -> Result<bool> {
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever carrying the deletes over, dropping the segment, or
+    /// checkpointing raises.
+    fn commit_merge(
+        &self,
+        merge: &mut OneMerge,
+        doc_maps: &[crate::index::merge::DocMap],
+    ) -> Result<bool> {
         self.test_point("startCommitMerge");
         if let Some(tragedy) = self.get_tragic_exception() {
             return Err(LuceneError::IllegalState(format!(
@@ -1667,8 +1688,6 @@ impl IndexWriter {
         }
         debug_assert!(merge.register_done);
 
-        let mut state = self.state()?;
-
         if merge.is_aborted() {
             if self.info_stream.is_enabled(IW) {
                 self.info_stream
@@ -1678,26 +1697,59 @@ impl IndexWriter {
                 // Drop any reader pooled for this segment before its files are
                 // deleted.
                 let _ = ReaderPool::drop(&self.reader_pool, info);
-                drop(state);
                 self.delete_new_files(info.files()?)?;
             }
             return Ok(false);
         }
 
-        // A merge that produced no live document drops its segment rather than
-        // inserting it.
-        let merged_max_doc = match merged.as_ref() {
+        let merged_max_doc = match merge.info.as_ref() {
             Some(info) => info.info.max_doc()?,
             None => 0,
         };
-        let all_deleted = merge.segments.is_empty() || merged_max_doc == 0;
+        let merged_updates = if merged_max_doc == 0 {
+            None
+        } else {
+            self.commit_merged_deletes_and_updates(merge, doc_maps)?
+        };
+
+        // A merge that produced no live document drops its segment rather than
+        // inserting it.
+        let all_deleted = merge.segments.is_empty()
+            || merged_max_doc == 0
+            || match merged_updates.as_ref() {
+                Some(rld) => self.is_fully_deleted(rld)?,
+                None => false,
+            };
         if all_deleted && self.info_stream.is_enabled(IW) {
             self.info_stream
                 .message(IW, "merged segment is 100% deleted; skipping insert");
         }
         let drop_segment = all_deleted;
+        // If we merged no segments then we had better be dropping the new one.
+        debug_assert!(!merge.segments.is_empty() || drop_segment);
+        debug_assert!(merged_max_doc != 0 || drop_segment);
 
-        match merged.as_ref() {
+        if let Some(rld) = merged_updates.as_ref() {
+            if drop_segment {
+                rld.drop_changes();
+            }
+            // Pass false for `assert_info_live`, because the merged segment is
+            // not live yet: only below is it committed to the segment infos.
+            if let Err(err) = self.release(rld, false) {
+                rld.drop_changes();
+                if let Some(info) = merge.info.as_ref() {
+                    let _ = ReaderPool::drop(&self.reader_pool, info);
+                }
+                return Err(err);
+            }
+        }
+
+        let mut state = self.state()?;
+
+        // Must be done after releasing into the pool, in case an exception is
+        // hit writing the live docs of the merged segment, in which case the
+        // merge has to be aborted.
+        match merge.info.as_ref() {
             Some(info) => {
                 state
                     .segment_infos
@@ -1720,13 +1772,18 @@ impl IndexWriter {
         self.adjust_pending_num_docs(-i64::from(del_doc_count));
 
         if drop_segment {
-            if let Some(info) = merged.as_ref() {
+            if let Some(info) = merge.info.as_ref() {
                 let _ = ReaderPool::drop(&self.reader_pool, info);
                 let files = info.files()?;
                 state.deleter.delete_new_files(files)?;
             }
         }
 
+        // Must close the merge readers before the checkpoint, or the deleter
+        // cannot delete the files they hold open.
+        drop(state);
+        self.close_merge_readers(merge, false, drop_segment)?;
+        let mut state = self.state()?;
         self.checkpoint(&mut state)?;
 
         if self.info_stream.is_enabled(IW) {
@@ -1737,30 +1794,580 @@ impl IndexWriter {
         Ok(true)
     }
 
-    /// Runs one merge end to end: opens a reader over each input segment,
-    /// drives [`SegmentMerger`] over them, and replaces the inputs with the
-    /// merged segment.
+    /// Does the actual, time-consuming work of one merge.
     ///
-    /// Equivalent to the body of `IndexWriter.merge(OneMerge)` together with
-    /// `mergeMiddle`.
-    fn execute_merge(&self, merge: &OneMerge) -> Result<()> {
-        let context: Arc<dyn IOContext> = Arc::new(DefaultIOContext::new(Vec::new())?);
+    /// Equivalent to the private `org.apache.lucene.index.IndexWriter#mergeMiddle`,
+    /// which Java runs without holding the writer's monitor. Returns the number
+    /// of documents the merged segment holds, or `0` when the merge produced
+    /// nothing (every input was fully deleted, or the merge was aborted).
+    ///
+    /// **Divergences from Lucene 10.5.0**, each forced by machinery this port
+    /// does not carry:
+    ///
+    /// * Java throttles the merge's writes by wrapping the directory with
+    ///   `mergeScheduler.wrapForMerge(merge, directory)`. This port's
+    ///   [`MergeScheduler`](crate::index::merge_scheduler::MergeScheduler) hands
+    ///   out a [`MergeRateLimiter`](crate::index::merge_scheduler::MergeRateLimiter)
+    ///   rather than a wrapped `Directory`, so the merge writes straight to the
+    ///   directory and is not rate-limited.
+    /// * Java passes an intra-merge `Executor` to `SegmentMerger` so a codec can
+    ///   parallelise one merge; `SegmentMerger` carries none here, so the merge
+    ///   runs on the calling thread.
+    /// * Java warms the merged segment through
+    ///   `IndexWriterConfig.getMergedSegmentWarmer()`. The port's
+    ///   [`MergedSegmentWarmer`](crate::index::index_writer_config::MergedSegmentWarmer)
+    ///   is still an empty marker trait with no `warm` method, so there is
+    ///   nothing to call.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the readers, merging them, writing the
+    /// compound file or the segment info, or committing the merge raises.
+    fn merge_middle(&self, merge: &mut OneMerge, merge_policy: &dyn MergePolicy) -> Result<i32> {
+        self.test_point("mergeMiddleStart");
+        merge.check_aborted()?;
 
-        // Open a codec reader over each input segment.
-        let created_version_major = {
-            let state = self.state()?;
-            state.segment_infos.index_created_version_major()
-        };
-        let mut readers: Vec<Arc<dyn CodecReader>> = Vec::with_capacity(merge.segments.len());
-        for info in &merge.segments {
-            let reader = SegmentReader::new(info.clone(), created_version_major, context.as_ref())?;
-            readers.push(Arc::new(reader) as Arc<dyn CodecReader>);
+        let context: Arc<dyn IOContext> = Arc::new(DefaultIOContext::new(Vec::new())?);
+        let dir_wrapper = Arc::new(crate::store::TrackingDirectoryWrapper::new(Box::new(
+            SharedDirectory(Arc::clone(&self.directory)),
+        )));
+
+        if self.info_stream.is_enabled(IW) {
+            self.info_stream.message(
+                IW,
+                &format!("merging {}", self.seg_string_infos(&merge.segments)?),
+            );
         }
 
-        // Build the merged field infos from the inputs.
-        let global_field_numbers =
-            Arc::new(crate::index::field_infos::FieldNumbers::new(None, None)?);
-        let mut builder = crate::index::field_infos::FieldInfosBuilder::new(global_field_numbers);
+        // This is try/finally in Java, to make sure the merger's readers are
+        // closed; the same guard is spelled out at every early return below.
+        match self.merge_middle_inner(merge, merge_policy, &context, &dir_wrapper) {
+            Ok(doc_count) => Ok(doc_count),
+            Err(err) => {
+                // Readers are already closed in `commit_merge` when no exception
+                // was hit.
+                let _ = self.close_merge_readers(merge, true, false);
+                Err(err)
+            }
+        }
+    }
+
+    /// The body of [`merge_middle`](Self::merge_middle), split out so that the
+    /// reader cleanup Java performs in its `finally` has one place to run.
+    fn merge_middle_inner(
+        &self,
+        merge: &mut OneMerge,
+        merge_policy: &dyn MergePolicy,
+        context: &Arc<dyn IOContext>,
+        dir_wrapper: &Arc<crate::store::TrackingDirectoryWrapper>,
+    ) -> Result<i32> {
+        let created_version_major = { self.state()?.segment_infos.index_created_version_major() };
+        let _ = created_version_major;
+
+        merge.init_merge_readers(|sci| {
+            let rld = self.get_pooled_instance(sci, true)?.ok_or_else(|| {
+                LuceneError::IllegalState(format!("segment {} has no pooled reader", sci.info.name))
+            })?;
+            rld.set_is_merging();
+            let mut state = self.state()?;
+            rld.get_reader_for_merge(context.as_ref(), |mr| {
+                if let Some(reader) = mr.reader.as_ref() {
+                    state
+                        .deleter
+                        .inc_ref_files(reader.get_segment_info().files()?.iter());
+                }
+                Ok(())
+            })
+        })?;
+
+        // Let the merge wrap readers.
+        let mut merge_readers: Vec<Arc<dyn CodecReader>> = Vec::new();
+        let mut soft_delete_count = 0i64;
+        for merge_reader in merge.get_merge_reader() {
+            let reader = Arc::clone(&merge_reader.codec_reader);
+            let wrapped_reader = merge.wrap_for_merge(Arc::clone(&reader))?;
+            {
+                let state = self.state()?;
+                self.validate_merge_reader(&state, wrapped_reader.as_ref())?;
+            }
+            let mut wrapped_reader = wrapped_reader;
+            if self.soft_deletes_enabled && !Arc::ptr_eq(&reader, &wrapped_reader) {
+                // Without a wrapped reader we would not preserve any soft
+                // deletes.
+                match merge_reader.hard_live_docs.as_ref() {
+                    Some(hard_live_docs) => {
+                        // Only needed if we have mixed deletes.
+                        let wrapped_live_docs = wrapped_reader.get_live_docs();
+                        let (soft, hard) = self.count_soft_deletes(
+                            wrapped_reader.as_ref(),
+                            wrapped_live_docs.as_deref(),
+                            Some(hard_live_docs.as_ref()),
+                        )?;
+                        soft_delete_count += i64::from(soft);
+                        // Wrap the wrapped reader again if we have excluded some
+                        // hard-deleted docs.
+                        if hard > 0 {
+                            let live_docs: Arc<dyn Bits> = match wrapped_live_docs {
+                                None => Arc::clone(hard_live_docs),
+                                Some(wrapped_live_docs) => Arc::new(HardAndWrappedLiveDocs {
+                                    hard_live_docs: Arc::clone(hard_live_docs),
+                                    wrapped_live_docs: Arc::from(wrapped_live_docs),
+                                }),
+                            };
+                            let num_docs = wrapped_reader.num_docs() - hard;
+                            wrapped_reader = Arc::new(
+                                crate::index::filter_reader::FilterCodecReader::wrap_live_docs(
+                                    wrapped_reader,
+                                    Some(live_docs),
+                                    num_docs,
+                                ),
+                            );
+                        }
+                    }
+                    None => {
+                        let segment_soft_del_count = merge_reader
+                            .reader
+                            .as_ref()
+                            .map(|r| r.get_segment_info().get_soft_del_count())
+                            .unwrap_or(0);
+                        let carry_over_soft_deletes = segment_soft_del_count
+                            - (wrapped_reader.max_doc() - wrapped_reader.num_docs());
+                        debug_assert!(
+                            carry_over_soft_deletes >= 0,
+                            "carry-over soft-deletes must be positive"
+                        );
+                        debug_assert!(self
+                            .assert_soft_deletes_count(
+                                wrapped_reader.as_ref(),
+                                carry_over_soft_deletes
+                            )
+                            .unwrap_or(false));
+                        soft_delete_count += i64::from(carry_over_soft_deletes);
+                    }
+                }
+            }
+            merge_readers.push(wrapped_reader);
+        }
+
+        // Don't reorder if an explicit sort is configured, and don't reorder if
+        // blocks cannot be identified through the parent field.
+        let has_index_sort = self.config.index_sort().is_some();
+        let has_blocks_but_no_parent_field =
+            merge_readers.iter().any(|r| r.get_meta_data().has_blocks())
+                && merge_readers
+                    .iter()
+                    .any(|r| r.get_field_infos().get_parent_field().is_none());
+
+        let mut reorder_doc_maps: Option<Vec<crate::index::merge::DocMap>> = None;
+        if !has_index_sort && !has_blocks_but_no_parent_field && !merge_readers.is_empty() {
+            // Create a merged view of the input segments; this effectively does
+            // the merge.
+            let merged_view =
+                crate::index::sorting_codec_reader::SlowCompositeCodecReaderWrapper::wrap(
+                    merge_readers.clone(),
+                )?;
+            if let Some(doc_map) = merge.reorder(Arc::clone(&merged_view), &self.directory)? {
+                let mut maps: Vec<crate::index::merge::DocMap> =
+                    Vec::with_capacity(merge_readers.len());
+                let mut doc_base = 0i32;
+                for reader in &merge_readers {
+                    let current_doc_base = doc_base;
+                    let max_doc = reader.max_doc();
+                    let doc_map = Arc::clone(&doc_map);
+                    maps.push(Arc::new(move |doc_id: i32| {
+                        assert!(doc_id >= 0 && doc_id < max_doc, "doc id out of range");
+                        doc_map.old_to_new(current_doc_base + doc_id)
+                    }));
+                    doc_base += max_doc;
+                }
+                reorder_doc_maps = Some(maps);
+                // This makes merging more expensive, as it disables some bulk
+                // merging optimisations, so only do it when a doc map came back.
+                merge_readers = vec![Arc::new(
+                    crate::index::sorting_codec_reader::SortingCodecReader::wrap(
+                        merged_view,
+                        doc_map,
+                    ),
+                )];
+            }
+        }
+
+        // Build the merged field infos and the per-reader doc maps the port's
+        // `SegmentMerger` takes; Java derives both inside `MergeState`.
+        let mut builder = crate::index::field_infos::FieldInfosBuilder::new(Arc::clone(
+            &self.global_field_numbers,
+        ));
+        for reader in &merge_readers {
+            for field in reader.get_field_infos().iter() {
+                builder.add(field)?;
+            }
+        }
+        let merge_field_infos = builder.finish()?;
+
+        let mut doc_maps: Vec<crate::index::merge::DocMap> =
+            Vec::with_capacity(merge_readers.len());
+        let mut doc_base = 0i32;
+        let mut merged_max_doc = 0i32;
+        for reader in &merge_readers {
+            let max_doc = reader.max_doc();
+            match reader.get_live_docs() {
+                Some(live_docs) => {
+                    doc_maps.push(crate::index::merge::deletion_doc_map(
+                        max_doc, live_docs, doc_base,
+                    ));
+                    doc_base += reader.num_docs();
+                    merged_max_doc += reader.num_docs();
+                }
+                None => {
+                    doc_maps.push(crate::index::merge::identity_doc_map(max_doc, doc_base));
+                    doc_base += max_doc;
+                    merged_max_doc += max_doc;
+                }
+            }
+        }
+
+        // `_merge_init` created `merge.info` and named the segment; take the
+        // `SegmentInfo` out of it, as Java's `merge.info.info` is what
+        // `SegmentMerger` writes into.
+        // Java shares one `SegmentInfo` object between `merge.info.info` and the
+        // merger's `MergeState`, and `MergeState`'s constructor stamps `maxDoc`
+        // on it — which is why `merge.info.setSoftDelCount(...)`, a few lines
+        // below in Java, can already read it. This port's `SegmentMerger` owns
+        // its copy, so the count is stamped on the writer's copy here and the
+        // merged copy is assigned back once the merge has run.
+        let merged_info = {
+            let commit_info = merge.info.as_mut().ok_or_else(|| {
+                LuceneError::IllegalState("mergeMiddle ran before mergeInit".to_string())
+            })?;
+            commit_info.info.set_max_doc(merged_max_doc)?;
+            commit_info.info.clone()
+        };
+        let codec = self.config.codec();
+
+        let mut merger = SegmentMerger::new(
+            &merge_readers,
+            merged_info,
+            merge_field_infos,
+            doc_maps.clone(),
+            has_index_sort,
+            Arc::clone(&codec),
+            Arc::clone(dir_wrapper) as Arc<dyn Directory>,
+            Arc::clone(context),
+            Arc::clone(&self.info_stream),
+        )?;
+        if let Some(info) = merge.info.as_mut() {
+            info.set_soft_del_count(i32::try_from(soft_delete_count).map_err(|_| {
+                LuceneError::IllegalState(format!(
+                    "soft-delete count {soft_delete_count} overflows"
+                ))
+            })?)?;
+        }
+        merge.check_aborted()?;
+
+        // When the readers were reordered, `SegmentMerger` saw a single merged
+        // view, so its doc map has to be composed with the per-reader maps.
+        let doc_maps = match reorder_doc_maps {
+            None => doc_maps,
+            Some(reorder_doc_maps) => {
+                debug_assert_eq!(
+                    merger.merge_state.doc_maps.len(),
+                    1,
+                    "Got {} docMaps, but expected 1",
+                    merger.merge_state.doc_maps.len()
+                );
+                let compaction_doc_map = Arc::clone(&merger.merge_state.doc_maps[0]);
+                reorder_doc_maps
+                    .into_iter()
+                    .map(|reorder_doc_map| {
+                        let compaction_doc_map = Arc::clone(&compaction_doc_map);
+                        Arc::new(move |doc_id: i32| compaction_doc_map(reorder_doc_map(doc_id)))
+                            as crate::index::merge::DocMap
+                    })
+                    .collect()
+            }
+        };
+
+        merge.merge_start_ns = crate::index::merge_scheduler::now_ns();
+
+        // This is where all the work happens.
+        let should_merge = merger.should_merge()?;
+        if should_merge {
+            merger.merge()?;
+        }
+
+        let merged_info = merger.into_segment_info();
+        merged_info.set_files(dir_wrapper.get_created_files());
+        let merged_max_doc = merged_info.max_doc()?;
+        if let Some(info) = merge.info.as_mut() {
+            info.info = merged_info;
+        }
+
+        if self.info_stream.is_enabled(IW) {
+            if should_merge {
+                let sec = crate::index::merge_scheduler::ns_to_sec(
+                    crate::index::merge_scheduler::now_ns() - merge.merge_start_ns,
+                );
+                self.info_stream.message(
+                    IW,
+                    &format!(
+                        "merge codec={} maxDoc={merged_max_doc}; {sec:.1} sec to merge segment",
+                        codec.name()
+                    ),
+                );
+            } else {
+                self.info_stream
+                    .message(IW, "skip merging fully deleted segments");
+            }
+        }
+
+        if !should_merge {
+            // The merge would produce a 0-doc segment, so do nothing except
+            // commit the merge, which removes all the 0-doc segments we merged.
+            debug_assert_eq!(merged_max_doc, 0);
+            self.commit_merge(merge, &doc_maps)?;
+            return Ok(0);
+        }
+        debug_assert!(merged_max_doc > 0);
+
+        // Very important to do this before opening the reader, because the codec
+        // must know whether prox was written for this segment.
+        let use_compound_file = {
+            let state = self.state()?;
+            let infos = clone_infos(&state.segment_infos)?;
+            let info = merge
+                .info
+                .as_ref()
+                .expect("merge info was set by mergeInit")
+                .clone();
+            drop(state);
+            merge_policy.use_compound_file(&infos, &info, self)?
+        };
+
+        if use_compound_file {
+            let files_to_remove = merge
+                .info
+                .as_ref()
+                .expect("merge info was set by mergeInit")
+                .files()?;
+            // The compound file must be created against the original directory
+            // rather than the merging one, so that it is not throttled.
+            let tracking_cfs_dir = crate::store::TrackingDirectoryWrapper::new(Box::new(
+                SharedDirectory(Arc::clone(&self.directory)),
+            ));
+            let outcome = {
+                let info = &merge
+                    .info
+                    .as_ref()
+                    .expect("merge info was set by mergeInit")
+                    .info;
+                let mut delete_files =
+                    |files: HashSet<String>| -> Result<()> { self.delete_new_files(files) };
+                Self::create_compound_file(
+                    self.info_stream.as_ref(),
+                    &tracking_cfs_dir,
+                    info,
+                    context.as_ref(),
+                    &mut delete_files,
+                )
+            };
+            if let Err(err) = outcome {
+                if merge.is_aborted() {
+                    // Rollback was called while we were building the compound
+                    // file; fall through to remove the non-compound files.
+                    if self.info_stream.is_enabled(IW) {
+                        self.info_stream.message(
+                            IW,
+                            "hit merge abort exception creating compound file during merge",
+                        );
+                    }
+                    return Ok(0);
+                }
+                if self.info_stream.is_enabled(IW) {
+                    self.info_stream
+                        .message(IW, "hit exception creating compound file during merge");
+                }
+                // Safe: these files must exist.
+                let files = merge
+                    .info
+                    .as_ref()
+                    .expect("merge info was set by mergeInit")
+                    .files()?;
+                self.delete_new_files(files)?;
+                return Err(err);
+            }
+
+            // Delete the new non-compound files directly: they were never
+            // registered with the deleter.
+            self.delete_new_files(files_to_remove)?;
+
+            if merge.is_aborted() {
+                if self.info_stream.is_enabled(IW) {
+                    self.info_stream
+                        .message(IW, "abort merge after building CFS");
+                }
+                // Safe: these files must exist.
+                let files = merge
+                    .info
+                    .as_ref()
+                    .expect("merge info was set by mergeInit")
+                    .files()?;
+                self.delete_new_files(files)?;
+                return Ok(0);
+            }
+
+            merge
+                .info
+                .as_mut()
+                .expect("merge info was set by mergeInit")
+                .info
+                .set_use_compound_file(true);
+        }
+
+        // Have the codec write the SegmentInfo. This must happen after creating
+        // the compound file, so that the `.si` is not slurped into it and so
+        // that it records `useCompoundFile=true`.
+        {
+            let info = &merge
+                .info
+                .as_ref()
+                .expect("merge info was set by mergeInit")
+                .info;
+            if let Err(err) =
+                codec
+                    .segment_info_format()
+                    .write(self.directory.as_ref(), info, context.as_ref())
+            {
+                // Safe: these files must exist.
+                self.delete_new_files(info.files()?)?;
+                return Err(err);
+            }
+        }
+
+        if !self.commit_merge(merge, &doc_maps)? {
+            // `commit_merge` returns false when the merge was aborted.
+            return Ok(0);
+        }
+
+        Ok(merged_max_doc)
+    }
+
+    /// Runs a single merge for `addIndexes(CodecReader...)`.
+    ///
+    /// Equivalent to `org.apache.lucene.index.IndexWriter#addIndexesReaderMerge`.
+    /// It merges the readers grouped in `merge` into one new segment and
+    /// records it on the merge, **without** registering the segment's files
+    /// with the writer: an `addIndexes` call registers all of its merges
+    /// together, so that the operation stays transactional.
+    ///
+    /// **Divergences from Lucene 10.5.0**, both shared with
+    /// [`merge_middle`](Self::merge_middle): the merge directory is not
+    /// throttled, because this port's merge scheduler hands out a rate limiter
+    /// rather than a wrapped `Directory`; and `SegmentMerger` gets no
+    /// intra-merge executor. In addition, Java walks `reader.codecReader.leaves()`
+    /// to decide `hasBlocks`; a `CodecReader` *is* a leaf, so its own metadata
+    /// is consulted directly here.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever merging, writing the compound file, or writing the
+    /// segment info raises.
+    pub fn add_indexes_reader_merge(&self, merge: &mut OneMerge) -> Result<()> {
+        merge.merge_init();
+        merge.check_aborted()?;
+
+        // `i64` so that an `i32` overflow can be detected.
+        let mut num_docs: i64 = 0;
+        let merged_name = {
+            let mut state = self.state()?;
+            self.new_segment_name(&mut state)
+        };
+        let mut num_soft_deleted = 0i32;
+        let mut has_blocks = false;
+        let merge_readers = merge.get_merge_reader();
+        for merge_reader in &merge_readers {
+            let leaf = &merge_reader.codec_reader;
+            num_docs += i64::from(leaf.num_docs());
+            has_blocks |= leaf.get_meta_data().has_blocks();
+            if self.soft_deletes_enabled {
+                if let Some(field) = self.config.soft_deletes_field() {
+                    let iterator =
+                        crate::search::field_exists_query::FieldExistsQuery::get_doc_values_doc_id_set_iterator(
+                            field,
+                            leaf.as_ref(),
+                        )?;
+                    num_soft_deleted += match iterator {
+                        Some(mut iterator) => {
+                            crate::index::readers_and_updates::PendingSoftDeletes::count_soft_deletes(
+                                Some(iterator.as_mut()),
+                                merge_reader.hard_live_docs.as_deref(),
+                            )?
+                        }
+                        None => crate::index::readers_and_updates::PendingSoftDeletes::count_soft_deletes(
+                            None,
+                            merge_reader.hard_live_docs.as_deref(),
+                        )?,
+                    };
+                }
+            }
+        }
+
+        // Best-effort up-front check.
+        self.test_reserve_docs(num_docs)?;
+
+        let context: Arc<dyn IOContext> = Arc::new(DefaultIOContext::new(Vec::new())?);
+        let tracking_dir = Arc::new(crate::store::TrackingDirectoryWrapper::new(Box::new(
+            SharedDirectory(Arc::clone(&self.directory)),
+        )));
+        let codec = self.config.codec();
+        // The minimum version is left null for now; `SegmentMerger` sets it.
+        let seg_info = SegmentInfo::new(
+            Arc::clone(&self.directory),
+            Version::LATEST,
+            None,
+            merged_name,
+            -1,
+            false,
+            has_blocks,
+            Arc::clone(&codec),
+            HashMap::new(),
+            StringHelper::random_id(),
+            HashMap::new(),
+            self.config.index_sort().cloned().unwrap_or_default(),
+        )?;
+
+        let mut readers: Vec<Arc<dyn CodecReader>> = Vec::with_capacity(merge_readers.len());
+        for merge_reader in &merge_readers {
+            readers.push(merge.wrap_for_merge(Arc::clone(&merge_reader.codec_reader))?);
+        }
+
+        // Don't reorder if an explicit sort is configured, and don't reorder if
+        // blocks cannot be identified through the parent field.
+        let has_index_sort = self.config.index_sort().is_some();
+        let has_blocks_but_no_parent_field = readers.iter().any(|r| r.get_meta_data().has_blocks())
+            && readers
+                .iter()
+                .any(|r| r.get_field_infos().get_parent_field().is_none());
+
+        if !has_index_sort && !has_blocks_but_no_parent_field && !readers.is_empty() {
+            let merged_reader =
+                crate::index::sorting_codec_reader::SlowCompositeCodecReaderWrapper::wrap(
+                    readers.clone(),
+                )?;
+            if let Some(doc_map) = merge.reorder(Arc::clone(&merged_reader), &self.directory)? {
+                readers = vec![Arc::new(
+                    crate::index::sorting_codec_reader::SortingCodecReader::wrap(
+                        merged_reader,
+                        doc_map,
+                    ),
+                )];
+            }
+        }
+
+        // Build the merged field infos and the per-reader doc maps this port's
+        // `SegmentMerger` takes; Java derives both inside `MergeState`.
+        let mut builder = crate::index::field_infos::FieldInfosBuilder::new(Arc::clone(
+            &self.global_field_numbers,
+        ));
         for reader in &readers {
             for field in reader.get_field_infos().iter() {
                 builder.add(field)?;
@@ -1768,8 +2375,6 @@ impl IndexWriter {
         }
         let merge_field_infos = builder.finish()?;
 
-        // Doc maps: each input segment's documents shift by the number of
-        // documents already merged before it, and deleted documents drop out.
         let mut doc_maps: Vec<crate::index::merge::DocMap> = Vec::with_capacity(readers.len());
         let mut doc_base = 0i32;
         let mut merged_max_doc = 0i32;
@@ -1790,62 +2395,309 @@ impl IndexWriter {
                 }
             }
         }
-
-        let codec = self.config.codec();
-        let segment_name = {
-            let n = self.segment_counter.fetch_add(1, Ordering::AcqRel);
-            format!("_{}", radix_36(i64::from(n)))
-        };
-        let segment_info = SegmentInfo::new(
-            Arc::clone(&self.directory),
-            Version::LATEST,
-            None,
-            segment_name,
-            merged_max_doc,
-            false,
-            false,
-            Arc::clone(&codec),
-            HashMap::new(),
-            StringHelper::random_id(),
-            HashMap::new(),
-            crate::search::Sort::default(),
-        )?;
+        let mut seg_info = seg_info;
+        seg_info.set_max_doc(merged_max_doc)?;
 
         let mut merger = SegmentMerger::new(
             &readers,
-            segment_info,
+            seg_info,
             merge_field_infos,
             doc_maps,
-            false,
-            codec,
-            Arc::clone(&self.directory),
-            context,
+            has_index_sort,
+            Arc::clone(&codec),
+            Arc::clone(&tracking_dir) as Arc<dyn Directory>,
+            Arc::clone(&context),
             Arc::clone(&self.info_stream),
         )?;
 
         if !merger.should_merge()? {
-            // An all-deleted merge writes nothing; the inputs simply go away.
-            return self.replace_merged_segments(merge, None);
+            return Ok(());
         }
+
+        merge.check_aborted()?;
+        merge.merge_start_ns = crate::index::merge_scheduler::now_ns();
         merger.merge()?;
 
         let merged_info = merger.into_segment_info();
-        let commit_info =
-            SegmentCommitInfo::new(merged_info, 0, 0, -1, -1, -1, StringHelper::random_id())?;
-        self.replace_merged_segments(merge, Some(commit_info))
+        merge.set_merge_info(SegmentCommitInfo::new(
+            merged_info,
+            0,
+            num_soft_deleted,
+            -1,
+            -1,
+            -1,
+            StringHelper::random_id(),
+        )?);
+        merge
+            .get_merge_info()
+            .expect("just set")
+            .info
+            .set_files(tracking_dir.get_created_files());
+        tracking_dir.clear_created_files();
+
+        Self::set_diagnostics(
+            &mut merge.info.as_mut().expect("just set").info,
+            SOURCE_ADDINDEXES_READERS,
+        );
+
+        let merge_policy = self.config.merge_policy();
+        let use_compound_file = {
+            let state = self.state()?;
+            let infos = clone_infos(&state.segment_infos)?;
+            drop(state);
+            merge.check_aborted()?;
+            let info = merge.get_merge_info().expect("just set").clone();
+            merge_policy.use_compound_file(&infos, &info, self)?
+        };
+
+        // Now create the compound file if needed.
+        if use_compound_file {
+            let files_to_delete = merge.get_merge_info().expect("just set").files()?;
+            let tracking_cfs_dir = crate::store::TrackingDirectoryWrapper::new(Box::new(
+                SharedDirectory(Arc::clone(&self.directory)),
+            ));
+            // `create_compound_file` tries to clean up, but it might not always
+            // be able to.
+            {
+                let info = &merge.get_merge_info().expect("just set").info;
+                let mut delete_files =
+                    |files: HashSet<String>| -> Result<()> { self.delete_new_files(files) };
+                Self::create_compound_file(
+                    self.info_stream.as_ref(),
+                    &tracking_cfs_dir,
+                    info,
+                    context.as_ref(),
+                    &mut delete_files,
+                )?;
+            }
+            // Creating the compound file resets the files tracked on the
+            // `SegmentInfo`; on success the non-compound files are no longer
+            // tracked, so they are deleted directly.
+            self.delete_new_files(files_to_delete)?;
+            merge
+                .info
+                .as_mut()
+                .expect("just set")
+                .info
+                .set_use_compound_file(true);
+        }
+
+        // Have the codec write the SegmentInfo. This must happen after creating
+        // the compound file, so that the `.si` is not slurped into it and so
+        // that it records `useCompoundFile=true`.
+        {
+            let info = &merge.get_merge_info().expect("just set").info;
+            codec
+                .segment_info_format()
+                .write(tracking_dir.as_ref(), info, context.as_ref())?;
+            info.add_files(
+                &tracking_dir
+                    .get_created_files()
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+            )?;
+        }
+        // Return without registering the segment files with the writer: that is
+        // done for every merge of one `addIndexes` call together, to keep the
+        // API transactional.
+        Ok(())
     }
 
-    /// Swaps the merged segment in for the segments it replaced.
+    /// Checks that a reader carries exactly the number of soft deletions the
+    /// merge expects to carry over.
     ///
-    /// Delegates to [`commit_merge`](Self::commit_merge), which is the port of
-    /// `IndexWriter.commitMerge`.
-    fn replace_merged_segments(
+    /// Equivalent to the private `org.apache.lucene.index.IndexWriter#assertSoftDeletesCount`,
+    /// which Java reaches only from an assertion in `mergeMiddle`: it walks the
+    /// soft-deletes doc values of the whole reader, so it must stay behind
+    /// `debug_assert!`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the soft-deletes doc values raises.
+    ///
+    /// # Panics
+    ///
+    /// Panics with Java's message when the counts disagree.
+    fn assert_soft_deletes_count(
         &self,
-        merge: &OneMerge,
-        merged: Option<SegmentCommitInfo>,
-    ) -> Result<()> {
-        self.commit_merge(merge, merged)?;
-        Ok(())
+        reader: &dyn CodecReader,
+        expected_count: i32,
+    ) -> Result<bool> {
+        let live_docs = reader.get_live_docs();
+        let (count, _hard_deletes) = self.count_soft_deletes(reader, live_docs.as_deref(), None)?;
+        assert_eq!(
+            count, expected_count,
+            "soft-deletes count mismatch expected: {expected_count} but actual: {count}"
+        );
+        Ok(true)
+    }
+
+    /// Carries the deletions and doc-values updates that arrived while a merge
+    /// was running onto the merged segment.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.index.IndexWriter#commitMergedDeletesAndUpdates`.
+    /// A merge compacts away every deletion the inputs had when it started, but
+    /// new deletions and updates may have been flushed since; this remaps them
+    /// onto the merged document numbering and buffers them on the merged
+    /// segment's [`ReadersAndUpdates`], which writes them out later.
+    ///
+    /// Returns the merged segment's pooled entry, which the caller must release.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the input segments' pooled state raises.
+    fn commit_merged_deletes_and_updates(
+        &self,
+        merge: &mut OneMerge,
+        doc_maps: &[crate::index::merge::DocMap],
+    ) -> Result<Option<Arc<crate::index::readers_and_updates::ReadersAndUpdates>>> {
+        self.merge_finished_gen.fetch_add(1, Ordering::AcqRel);
+        self.test_point("startCommitMergeDeletes");
+
+        let source_segments = &merge.segments;
+        if self.info_stream.is_enabled(IW) {
+            self.info_stream.message(
+                IW,
+                &format!(
+                    "commitMergeDeletes {}",
+                    self.seg_string_infos(source_segments)?
+                ),
+            );
+        }
+
+        // Carefully merge the deletes that occurred after we started merging.
+        let mut min_gen = i64::MAX;
+
+        let merged_info = merge
+            .info
+            .as_ref()
+            .ok_or_else(|| LuceneError::IllegalState("merge has no merged segment".to_string()))?
+            .clone();
+        let Some(merged_deletes_and_updates) = self.get_pooled_instance(&merged_info, true)? else {
+            return Ok(None);
+        };
+        let num_deletes_before = merged_deletes_and_updates.get_del_count();
+        // field -> delGen -> dv field updates
+        let mut mapped_dv_updates: HashMap<String, HashMap<i64, DocValuesFieldUpdates>> =
+            HashMap::new();
+        let mut any_dv_updates = false;
+
+        let merge_readers = merge.get_merge_reader();
+        debug_assert_eq!(source_segments.len(), doc_maps.len());
+        for (i, info) in source_segments.iter().enumerate() {
+            min_gen = min_gen.min(info.get_buffered_deletes_gen());
+            let max_doc = info.info.max_doc()?;
+            // We hold a ref from when we opened the readers during mergeInit, so
+            // the segment had better still be in the pool.
+            let rld = self.get_pooled_instance(info, false)?.ok_or_else(|| {
+                LuceneError::IllegalState(format!("seg={} is no longer pooled", info.info.name))
+            })?;
+
+            let seg_doc_map = &doc_maps[i];
+
+            let prev_hard_live_docs = merge_readers
+                .get(i)
+                .and_then(|mr| mr.hard_live_docs.clone());
+            let current_hard_live_docs = rld.get_hard_live_docs();
+            Self::carry_over_hard_deletes(
+                &merged_deletes_and_updates,
+                max_doc,
+                prev_hard_live_docs.as_deref(),
+                current_hard_live_docs.as_deref(),
+                seg_doc_map,
+            )?;
+
+            // Now carry over all the doc-values updates that were resolved while
+            // we were merging, remapping the doc IDs onto the merged numbering.
+            // Only packets that finished resolving are carried over: one still
+            // running will notice that our merge completed and re-resolve
+            // against the newly merged segment.
+            let merging_dv_updates = rld.get_merging_dv_updates();
+            for (field, updates) in merging_dv_updates {
+                let mapped_field = mapped_dv_updates.entry(field.clone()).or_default();
+                for update in updates {
+                    if self.buffered_updates_stream.still_running(update.del_gen) {
+                        continue;
+                    }
+                    debug_assert_eq!(field, update.field);
+                    let mapped_updates = mapped_field.entry(update.del_gen).or_insert_with(|| {
+                        DocValuesFieldUpdates::new(
+                            merged_info.info.max_doc().unwrap_or(0),
+                            update.del_gen,
+                            update.field.clone(),
+                            update.dv_type,
+                        )
+                    });
+                    debug_assert!(
+                        matches!(
+                            update.dv_type,
+                            crate::index::DocValuesType::NUMERIC
+                                | crate::index::DocValuesType::BINARY
+                        ),
+                        "unsupported doc-values update type: {:?}",
+                        update.dv_type
+                    );
+                    let mut it = update.iterator();
+                    loop {
+                        let doc = crate::search::DocIdSetIterator::next_doc(&mut it)?;
+                        if doc == crate::search::NO_MORE_DOCS {
+                            break;
+                        }
+                        let mapped_doc = seg_doc_map(doc);
+                        if mapped_doc != -1 {
+                            if it.has_value() {
+                                // Not deleted.
+                                match update.dv_type {
+                                    crate::index::DocValuesType::BINARY => {
+                                        mapped_updates.add_binary(mapped_doc, &it.binary_value());
+                                    }
+                                    _ => {
+                                        mapped_updates.add_long(mapped_doc, it.long_value());
+                                    }
+                                }
+                            } else {
+                                mapped_updates.reset(mapped_doc);
+                            }
+                            any_dv_updates = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if any_dv_updates {
+            // Persist the merged doc-values updates onto the merged segment's
+            // pooled entry.
+            for (_field, per_gen) in mapped_dv_updates {
+                for (_gen, mut updates) in per_gen {
+                    updates.finish()?;
+                    merged_deletes_and_updates.add_dv_update(updates)?;
+                }
+            }
+        }
+
+        if self.info_stream.is_enabled(IW) {
+            let mut msg = format!(
+                "{} new deletes",
+                merged_deletes_and_updates.get_del_count() - num_deletes_before
+            );
+            if any_dv_updates {
+                msg.push_str(&format!(
+                    " and {} new field updates ({} bytes)",
+                    merged_deletes_and_updates.get_num_dv_updates(),
+                    merged_deletes_and_updates.ram_bytes_used()
+                ));
+            }
+            msg.push_str(" since merge started");
+            self.info_stream.message(IW, &msg);
+        }
+
+        if let Some(info) = merge.info.as_mut() {
+            info.set_buffered_deletes_gen(min_gen)?;
+        }
+
+        Ok(Some(merged_deletes_and_updates))
     }
 }
 
@@ -1930,10 +2782,176 @@ impl MergeSource for IndexWriter {
             .unwrap_or(false)
     }
 
+    /// Merges the indicated segments, replacing them in the stack with a single
+    /// segment.
+    ///
+    /// Equivalent to the protected `IndexWriter.merge(MergePolicy.OneMerge)`,
+    /// which `MergeScheduler` reaches through `MergeSource`.
     fn merge(&self, merge: OneMerge) -> Result<()> {
-        let result = self.execute_merge(&merge);
+        let mut merge = merge;
+        let merge_policy = self.config.merge_policy();
+
+        let outcome = self.merge_init(&mut merge).and_then(|()| {
+            if self.info_stream.is_enabled(IW) {
+                self.info_stream.message(
+                    IW,
+                    &format!(
+                        "now merge\n  merge={}\n  index={}",
+                        self.seg_string_infos(&merge.segments)?,
+                        self.seg_string()?
+                    ),
+                );
+            }
+            self.merge_middle(&mut merge, merge_policy.as_ref())?;
+            self.merge_success(&merge);
+            Ok(())
+        });
+        let mut result = match outcome {
+            Ok(()) => Ok(()),
+            Err(error) => self.handle_merge_exception(&error, &mut merge),
+        };
+        let success = result.is_ok();
+
+        // Readers are already closed in `commit_merge` when no exception was
+        // hit, so they are only closed here on the failing path.
+        if !success {
+            let _ = self.close_merge_readers(&merge, true, false);
+        }
+        {
+            if let Ok(mut state) = self.state() {
+                self.merge_finish(&mut state, &mut merge);
+            }
+        }
         self.on_merge_finished(&merge);
+        if !success {
+            if self.info_stream.is_enabled(IW) {
+                self.info_stream.message(IW, "hit exception during merge");
+            }
+        } else if !merge.is_aborted()
+            && (merge.max_num_segments != UNBOUNDED_MAX_MERGE_SEGMENTS
+                || (!self.is_closed() && !self.closing.load(Ordering::Acquire)))
+        {
+            // This merge — and, generally, any change to the segments — may now
+            // enable new merges, so ask the policy again.
+            if let Err(error) =
+                self.update_pending_merges(MergeTrigger::MergeFinished, merge.max_num_segments)
+            {
+                if result.is_ok() {
+                    result = Err(error);
+                }
+            }
+        }
+        if let Err(error) = result.as_ref() {
+            // Important that this runs after `merge_finish`, or a waiter blocks
+            // on a merge that never leaves the running set.
+            self.tragic_event(error, "merge");
+        }
         result
+    }
+}
+
+/// An `Arc`-shared `Directory` handle that never closes what it wraps.
+///
+/// **This has no counterpart in Lucene 10.5.0.** Java passes `Directory`
+/// references around freely because the JVM owns their lifetime. In Rucene a
+/// `Directory` is shared through an `Arc` and [`Directory::close`] takes
+/// `&mut self`, so a shared handle cannot perform the close. Closing the
+/// directory is the responsibility of whoever created it — the `IndexWriter` —
+/// so this adapter reports `close` as a no-op and delegates everything else.
+/// `DocumentsWriterPerThread` carries the same adapter for the same reason.
+struct SharedDirectory(Arc<dyn Directory>);
+
+impl Directory for SharedDirectory {
+    fn list_all(&self) -> Result<Vec<String>> {
+        self.0.list_all()
+    }
+
+    fn delete_file(&self, name: &str) -> Result<()> {
+        self.0.delete_file(name)
+    }
+
+    fn file_length(&self, name: &str) -> Result<i64> {
+        self.0.file_length(name)
+    }
+
+    fn create_output(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
+        self.0.create_output(name, context)
+    }
+
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        context: &dyn IOContext,
+    ) -> Result<Box<dyn IndexOutput>> {
+        self.0.create_temp_output(prefix, suffix, context)
+    }
+
+    fn sync(&self, names: &[String]) -> Result<()> {
+        self.0.sync(names)
+    }
+
+    fn sync_metadata(&self) -> Result<()> {
+        self.0.sync_metadata()
+    }
+
+    fn rename(&self, source: &str, dest: &str) -> Result<()> {
+        self.0.rename(source, dest)
+    }
+
+    fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+        self.0.open_input(name, context)
+    }
+
+    fn open_checksum_input(&self, name: &str) -> Result<Box<BufferedChecksumIndexInput>> {
+        self.0.open_checksum_input(name)
+    }
+
+    fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+        self.0.obtain_lock(name)
+    }
+
+    /// No-op: a shared handle does not own the directory's lifetime.
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+        self.0.get_pending_deletions()
+    }
+
+    fn fs_directory_path(&self) -> Option<&Path> {
+        self.0.fs_directory_path()
+    }
+
+    fn directory_type_name(&self) -> &'static str {
+        self.0.directory_type_name()
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        self.0.ensure_open()
+    }
+}
+
+/// The intersection of a segment's hard live docs and the live docs a merge
+/// wrapper reports.
+///
+/// Equivalent to the anonymous `Bits` `IndexWriter.mergeMiddle` builds when a
+/// wrapped reader has excluded some hard-deleted documents: a document is live
+/// only when both views agree, and the length is the hard view's.
+#[derive(Debug)]
+struct HardAndWrappedLiveDocs {
+    hard_live_docs: Arc<dyn Bits>,
+    wrapped_live_docs: Arc<dyn Bits>,
+}
+
+impl Bits for HardAndWrappedLiveDocs {
+    fn get(&self, index: usize) -> bool {
+        self.hard_live_docs.get(index) && self.wrapped_live_docs.get(index)
+    }
+
+    fn length(&self) -> usize {
+        self.hard_live_docs.length()
     }
 }
 
@@ -3436,19 +4454,83 @@ impl IndexWriter {
     fn close_merge_readers(
         &self,
         merge: &OneMerge,
-        _suppress_exceptions: bool,
+        suppress_exceptions: bool,
         dropped_segment: bool,
     ) -> Result<()> {
         if merge.has_finished() {
+            debug_assert!(
+                merge.get_merge_reader().is_empty(),
+                "we are done but still have readers"
+            );
+            debug_assert!(
+                suppress_exceptions,
+                "can't be done and not suppressing exceptions"
+            );
             return Ok(());
         }
-        for info in &merge.segments {
-            if dropped_segment {
-                let _ = ReaderPool::drop(&self.reader_pool, info);
+
+        // `drop` is Java's: the pooled state of an input segment is thrown away
+        // only on the path where the merge succeeded, because the segment has
+        // just left the index; on the failing path the merging doc-values
+        // updates are dropped but the pooled entry survives.
+        let drop = !suppress_exceptions;
+        let mut first_error: Option<LuceneError> = None;
+        // Java's `OneMerge.close(success, segmentDropped, consumer)` completes
+        // the merge and calls `mergeFinished` *before* it applies the consumer
+        // to the readers, so a second caller sees a finished merge with no
+        // readers left; the order is kept here.
+        //
+        // **Divergence from Lucene 10.5.0.** `mergeFinished(boolean, boolean)`
+        // is an overridable hook this port's [`OneMerge`] does not carry (only
+        // the point-in-time merge wrapper overrides it in Lucene, and that
+        // wrapper is not ported), so `dropped_segment` has nothing to reach.
+        merge.set_finished();
+        let readers = merge.take_merge_readers();
+        for merge_reader in readers {
+            let Some(sr) = merge_reader.reader.as_ref() else {
+                continue;
+            };
+            let outcome = (|| -> Result<()> {
+                if merge.uses_pooled_readers {
+                    // We still hold a ref, so it should not have been removed.
+                    let rld = self
+                        .get_pooled_instance(sr.get_original_segment_info(), false)?
+                        .ok_or_else(|| {
+                            LuceneError::IllegalState(format!(
+                                "seg={} is no longer pooled",
+                                sr.get_segment_name()
+                            ))
+                        })?;
+                    if drop {
+                        rld.drop_changes();
+                    } else {
+                        rld.drop_merging_updates();
+                    }
+                    rld.release(sr)?;
+                    self.release(&rld, true)?;
+                    if drop {
+                        ReaderPool::drop(&self.reader_pool, &rld.info())?;
+                    }
+                }
+                let mut state = self.state()?;
+                state
+                    .deleter
+                    .dec_ref_files(sr.get_segment_info().files()?.iter())
+            })();
+            if let Err(err) = outcome {
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
             }
         }
-        merge.set_finished();
-        Ok(())
+        let _ = dropped_segment;
+        match first_error {
+            // Java's `IOUtils.applyToAll` runs the consumer for every reader and
+            // then rethrows the first failure; suppressing means swallowing it,
+            // which is what the failing path asks for.
+            Some(err) if !suppress_exceptions => Err(err),
+            _ => Ok(()),
+        }
     }
 
     /// Pushes a frozen packet of deletes onto the stream and returns its
@@ -3692,7 +4774,10 @@ impl IndexWriter {
         &self,
         updates: &crate::index::documents_writer::FrozenBufferedUpdates,
     ) -> Result<()> {
-        let del_gen = updates.delete_queue_generation();
+        // The generation `BufferedUpdatesStream.push` gave this packet, which is
+        // the same space `SegmentCommitInfo.buffered_deletes_gen` is stamped
+        // from — not the delete queue's own generation.
+        let del_gen = updates.del_gen();
         let Some(infos) = self.get_infos_to_apply(updates)? else {
             return Ok(());
         };
@@ -3719,6 +4804,24 @@ impl IndexWriter {
                 &format!("applyDeletes: {} segments", seg_states.len()),
             );
         }
-        self.finish_apply(&seg_states, true, &del_files)
+
+        // Resolve the packet against the segments we just opened. Java runs this
+        // outside the writer monitor, inside a try-with-resources whose closer is
+        // `finishApply(segStates, success, delFiles)`; the states must therefore
+        // be closed whether or not resolving succeeded.
+        let outcome = updates.apply(&seg_states);
+        self.finish_apply(&seg_states, outcome.is_ok(), &del_files)?;
+        let del_count = outcome?;
+
+        if self.info_stream.is_enabled("BD") {
+            self.info_stream.message(
+                "BD",
+                &format!(
+                    "done inner apply del packet to {} segments; {del_count} new deletes/updates",
+                    seg_states.len()
+                ),
+            );
+        }
+        Ok(())
     }
 }

@@ -6,7 +6,14 @@ use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::store::{Directory, RamDirectory};
 
+/// The integration crate does not share the library's test-time codec registry,
+/// so every entry point registers the default codec before writing an index.
+fn ensure_codec() {
+    let _ = rucene::codecs::register_codec("Lucene104", rucene::codecs::Lucene104Codec::new());
+}
+
 fn build(dir: Arc<dyn Directory>, segments: usize) {
+    ensure_codec();
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
     for s in 0..segments {
         for d in 0..5 {
@@ -91,8 +98,7 @@ fn do_main_reports_a_clean_index() {
 fn upgrader_parse_args_rejects_a_missing_directory() {
     let empty: [String; 0] = [];
     assert!(rucene::index::check_index::IndexUpgrader::parse_args(&empty).is_err());
-    assert!(rucene::index::check_index::IndexUpgrader::parse_args(&[
-        "-dir-impl".to_string()
-    ])
-    .is_err());
+    assert!(
+        rucene::index::check_index::IndexUpgrader::parse_args(&["-dir-impl".to_string()]).is_err()
+    );
 }

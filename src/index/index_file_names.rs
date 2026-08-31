@@ -293,6 +293,14 @@ pub fn parse_generation(filename: &str) -> Result<i64> {
     }
 }
 
+/// The regular expression every codec file name must match.
+///
+/// Equivalent to the pattern string of `IndexFileNames.CODEC_FILE_PATTERN`,
+/// `_[a-z0-9]+(_.*)?\..*`. The port matches it by hand in [`is_codec_file`]
+/// rather than by compiling a regex; the literal is kept so that the messages
+/// Lucene builds from `CODEC_FILE_PATTERN.pattern()` read identically.
+pub const CODEC_FILE_PATTERN: &str = r"_[a-z0-9]+(_.*)?\..*";
+
 /// Returns whether `filename` matches the codec file-name pattern.
 ///
 /// Equivalent to `IndexFileNames.CODEC_FILE_PATTERN`.

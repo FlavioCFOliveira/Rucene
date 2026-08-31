@@ -272,7 +272,38 @@ impl std::fmt::Debug for IndexFileDeleter {
     }
 }
 
+/// Forwards one [`FileDeleter`] message to the info stream, dropping the
+/// reference-count chatter.
+///
+/// Equivalent to the private `org.apache.lucene.index.IndexFileDeleter#logInfo`,
+/// which Java installs as the `BiConsumer<MsgType, String>` its `FileDeleter`
+/// reports through: [`MsgType::Ref`] messages are deliberately silent, and
+/// everything else reaches the `"IFD"` component when it is enabled.
+fn log_info(info_stream: &dyn InfoStream, msg_type: MsgType, msg: &str) {
+    if msg_type == MsgType::Ref {
+        // do not log anything
+    } else if info_stream.is_enabled(IFD) {
+        info_stream.message(IFD, msg);
+    }
+}
+
 impl IndexFileDeleter {
+    /// Returns whether the caller holds the lock that guards this deleter.
+    ///
+    /// Equivalent to the private `org.apache.lucene.index.IndexFileDeleter#locked`,
+    /// which reads `writer == null || Thread.holdsLock(writer)` and is called
+    /// only from assertions.
+    ///
+    /// This port carries no writer — see the module note on the `IndexWriter`
+    /// seam — so the first disjunct holds and the answer is always `true`,
+    /// which is exactly what Java answers for a null writer. The guarantee is
+    /// not weaker for it: `IndexWriter` reaches its deleter only through the
+    /// guard on its own state mutex, and every mutating method here takes
+    /// `&mut self`, so a caller that can call one provably holds the lock.
+    pub(crate) fn locked(&self) -> bool {
+        true
+    }
+
     /// Initialises the deleter: finds every previous commit in the directory,
     /// increments the files each references, and lets the policy delete commits.
     /// Any file not referenced by a surviving commit is removed.
@@ -314,13 +345,7 @@ impl IndexFileDeleter {
 
         let messenger: Messenger = {
             let info_stream = Arc::clone(&info_stream);
-            Arc::new(move |msg_type, msg| {
-                // Ref-count chatter is dropped; file events go to the stream.
-                // Equivalent to `IndexFileDeleter.logInfo`.
-                if msg_type != MsgType::Ref && info_stream.is_enabled(IFD) {
-                    info_stream.message(IFD, msg);
-                }
-            })
+            Arc::new(move |msg_type, msg| log_info(info_stream.as_ref(), msg_type, msg))
         };
         let mut file_deleter = FileDeleter::new(Arc::clone(&directory), Some(messenger));
 
@@ -551,6 +576,7 @@ impl IndexFileDeleter {
     ///
     /// Equivalent to `IndexFileDeleter.refresh`.
     pub fn refresh(&mut self) -> Result<()> {
+        debug_assert!(self.locked());
         let mut to_delete: HashSet<String> = HashSet::new();
 
         for file_name in self.directory.list_all()? {
@@ -587,6 +613,7 @@ impl IndexFileDeleter {
     /// fail and the failure must reach the caller rather than be swallowed by a
     /// `Drop`.
     pub fn close(&mut self) -> Result<()> {
+        debug_assert!(self.locked());
         if self.last_files.is_empty() {
             return Ok(());
         }
@@ -601,6 +628,7 @@ impl IndexFileDeleter {
     ///
     /// Equivalent to `IndexFileDeleter.revisitPolicy`.
     pub fn revisit_policy(&mut self) -> Result<()> {
+        debug_assert!(self.locked());
         if self.info_stream.is_enabled(IFD) {
             self.info_stream.message(IFD, "now revisitPolicy");
         }
@@ -629,6 +657,7 @@ impl IndexFileDeleter {
     ///
     /// Equivalent to `IndexFileDeleter.checkpoint`.
     pub fn checkpoint(&mut self, segment_infos: &SegmentInfos, is_commit: bool) -> Result<()> {
+        debug_assert!(self.locked());
         if self.info_stream.is_enabled(IFD) {
             // Java also logs `writer.segString(...)` here; that part needs
             // `IndexWriter`, which is not ported yet (see the module docs).
@@ -682,6 +711,7 @@ impl IndexFileDeleter {
         segment_infos: &SegmentInfos,
         is_commit: bool,
     ) -> Result<()> {
+        debug_assert!(self.locked());
         for file_name in segment_infos.files(is_commit)? {
             self.file_deleter.inc_ref(&file_name);
         }
@@ -701,6 +731,7 @@ impl IndexFileDeleter {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        debug_assert!(self.locked());
         self.file_deleter.inc_ref_files(files);
     }
 
@@ -714,6 +745,7 @@ impl IndexFileDeleter {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        debug_assert!(self.locked());
         self.file_deleter.dec_ref_files(files)
     }
 
@@ -722,6 +754,7 @@ impl IndexFileDeleter {
     ///
     /// Equivalent to `IndexFileDeleter.decRef(SegmentInfos)`.
     pub fn dec_ref_segment_infos(&mut self, segment_infos: &SegmentInfos) -> Result<()> {
+        debug_assert!(self.locked());
         let files = segment_infos.files(false)?;
         self.file_deleter.dec_ref_files(files)
     }
@@ -730,6 +763,7 @@ impl IndexFileDeleter {
     ///
     /// Equivalent to `IndexFileDeleter.exists`.
     pub fn exists(&self, file_name: &str) -> bool {
+        debug_assert!(self.locked());
         self.file_deleter.exists(file_name)
     }
 
@@ -753,6 +787,7 @@ impl IndexFileDeleter {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        debug_assert!(self.locked());
         self.file_deleter.delete_files_if_no_ref(files)
     }
 }

@@ -11,6 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Debug, Formatter};
 use std::io;
+use std::sync::{Arc, RwLock};
 
 use crate::codecs::codec_util;
 use crate::error::{LuceneError, Result};
@@ -18,7 +19,7 @@ use crate::index::index_file_names::{file_name_from_generation, PENDING_SEGMENTS
 use crate::index::SegmentCommitInfo;
 use crate::store::{Directory, IndexOutput};
 use crate::util::string_helper::{StringHelper, ID_LENGTH};
-use crate::util::Version;
+use crate::util::{InfoStream, Version};
 
 /// Maximum number of documents Lucene allows in a single index.
 ///
@@ -44,6 +45,28 @@ pub const VERSION_CURRENT: i32 = VERSION_86;
 ///
 /// Equivalent to `SegmentInfos.OLD_SEGMENTS_GEN`.
 pub const OLD_SEGMENTS_GEN: &str = "segments.gen";
+
+/// The info-stream component name Lucene logs `segments_N` retries under.
+///
+/// Java has no constant: `SegmentInfos.message` writes the literal `"SIS "`
+/// prefix itself.
+const SIS: &str = "SIS";
+
+/// The process-wide sink `SegmentInfos` reports commit-file retries to.
+///
+/// Equivalent to the private static `SegmentInfos.infoStream` field, which
+/// [`SegmentInfos::set_info_stream`] installs and
+/// [`SegmentInfos::get_info_stream`] reads back.
+///
+/// **Divergence from Lucene 10.5.0.** Java's field is a `PrintStream` and
+/// `SegmentInfos.message` writes `"SIS [" + threadName + "]: " + message` to it
+/// directly. This port holds an [`InfoStream`] instead, the sink every other
+/// class in the crate already logs through, and tags the messages with the
+/// `"SIS"` component; a [`PrintStreamInfoStream`](crate::util::info_stream::PrintStreamInfoStream)
+/// renders the component and the thread name, so the information reaching the
+/// sink is the same. Java's field is not synchronised; this one is, because
+/// Rust has no unsynchronised process-wide mutable state.
+static INFO_STREAM: RwLock<Option<Arc<dyn InfoStream>>> = RwLock::new(None);
 
 // -----------------------------------------------------------------------------
 // SegmentInfos
@@ -818,6 +841,37 @@ impl SegmentInfos {
         Self::read_latest_commit_with_min_version(directory, Version::MIN_SUPPORTED_MAJOR)
     }
 
+    /// Installs the sink that commit-file retries are reported to.
+    ///
+    /// Equivalent to `org.apache.lucene.index.SegmentInfos#setInfoStream`, whose
+    /// argument is a `PrintStream`; see the note on [`INFO_STREAM`] for why this
+    /// port takes an [`InfoStream`] instead. Pass `None` for Java's `null`.
+    pub fn set_info_stream(info_stream: Option<Arc<dyn InfoStream>>) {
+        if let Ok(mut guard) = INFO_STREAM.write() {
+            *guard = info_stream;
+        }
+    }
+
+    /// Returns the sink commit-file retries are reported to, if one is set.
+    ///
+    /// Equivalent to `org.apache.lucene.index.SegmentInfos#getInfoStream`.
+    pub fn get_info_stream() -> Option<Arc<dyn InfoStream>> {
+        INFO_STREAM.read().ok().and_then(|guard| guard.clone())
+    }
+
+    /// Prints `message` to the installed info stream.
+    ///
+    /// Equivalent to the private static `org.apache.lucene.index.SegmentInfos#message`.
+    /// Java does not check for a null stream — every caller guards the call
+    /// with `if (infoStream != null)` so that the message is not built when
+    /// nothing will read it — and this port keeps the same guard at the call
+    /// sites, so reaching here with no stream installed simply does nothing.
+    fn message(message: &str) {
+        if let Some(info_stream) = Self::get_info_stream() {
+            info_stream.message(SIS, message);
+        }
+    }
+
     /// Finds the latest commit, enforcing a minimum supported major version.
     ///
     /// Equivalent to `SegmentInfos.readLatestCommit(Directory, int)`.
@@ -836,6 +890,10 @@ impl SegmentInfos {
                 continue;
             }
             let gen = Self::get_last_commit_generation(&files);
+
+            if Self::get_info_stream().is_some() {
+                Self::message(&format!("directory listing gen={gen}"));
+            }
 
             if gen == -1 {
                 return Err(LuceneError::Io(io::Error::new(
@@ -861,8 +919,18 @@ impl SegmentInfos {
                     &segment_file_name,
                     min_supported_major_version,
                 ) {
-                    Ok(infos) => return Ok(infos),
+                    Ok(infos) => {
+                        if Self::get_info_stream().is_some() {
+                            Self::message(&format!("success on {segment_file_name}"));
+                        }
+                        return Ok(infos);
+                    }
                     Err(err) => {
+                        if Self::get_info_stream().is_some() {
+                            Self::message(&format!(
+                                "primary Exception on '{segment_file_name}': {err}'; will retry: gen = {gen}"
+                            ));
+                        }
                         if exc.is_none() {
                             exc = Some(err);
                         }

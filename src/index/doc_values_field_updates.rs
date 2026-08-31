@@ -180,11 +180,42 @@ impl DocValuesFieldUpdates {
             ));
         }
         self.finished = true;
-        // Trim to actual size.
-        self.docs.truncate(self.size);
-        self.values.truncate(self.size);
+        // shrink wrap
+        if self.size < self.docs.len() {
+            self.resize(self.size);
+        }
         if self.size > 1 {
             self.sort();
+        }
+        Ok(())
+    }
+
+    /// Resizes the packed doc entries and their values to hold exactly `size`
+    /// updates.
+    ///
+    /// Equivalent to `DocValuesFieldUpdates.resize(int)` together with the
+    /// `BinaryDocValuesFieldUpdates.resize(int)` and
+    /// `NumericDocValuesFieldUpdates.resize(int)` overrides: Java splits the
+    /// entries across a `PagedMutable docs` on the base class and the value
+    /// arrays on each subclass, and every override resizes its own arrays after
+    /// calling `super.resize(size)`. This port keeps one buffer per concern in a
+    /// single type, so the one method resizes both. Growing leaves the new
+    /// entries zeroed, as `PagedMutable.resize` does.
+    fn resize(&mut self, size: usize) {
+        self.docs.resize(size, 0);
+        self.values.resize(size, UpdateValue::Reset);
+    }
+
+    /// Checks that [`finish`](Self::finish) has already run.
+    ///
+    /// Equivalent to `DocValuesFieldUpdates.ensureFinished()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the buffer is not finished.
+    pub fn ensure_finished(&self) -> Result<()> {
+        if !self.finished {
+            return Err(LuceneError::IllegalState("call finish first".to_string()));
         }
         Ok(())
     }
@@ -214,7 +245,7 @@ impl DocValuesFieldUpdates {
     ///
     /// Equivalent to `DocValuesFieldUpdates.iterator()`.
     pub fn iterator(&self) -> DocValuesFieldUpdatesIterator<'_> {
-        assert!(self.finished, "call finish() first");
+        assert!(self.ensure_finished().is_ok(), "call finish() first");
         DocValuesFieldUpdatesIterator::new(self.size, &self.docs, &self.values, self.del_gen)
     }
 

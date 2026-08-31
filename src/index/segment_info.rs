@@ -11,10 +11,14 @@ use std::sync::{Arc, RwLock};
 
 use crate::codecs::Codec;
 use crate::error::{LuceneError, Result};
+use crate::index::index_file_names::{is_codec_file, CODEC_FILE_PATTERN};
+use crate::index::reader_context::IndexReaderContext;
 use crate::index::IndexReader;
+use crate::search::sort::{MissingValue, SortFieldKind, SortFieldType};
 use crate::search::Sort;
 use crate::store::Directory;
 use crate::util::string_helper::{StringHelper, ID_LENGTH};
+use crate::util::NumericUtils;
 use crate::util::Version;
 
 pub use crate::codecs::state::{SegmentReadState, SegmentWriteState};
@@ -310,12 +314,62 @@ impl SegmentInfo {
     }
 
     /// Replaces the set of files referenced by this segment.
+    ///
+    /// Equivalent to `SegmentInfo.setFiles(Collection<String>)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java clears the set and then routes
+    /// the names through `addFiles`, so they are validated by
+    /// [`check_file_names`](Self::check_file_names) and renamed with
+    /// [`named_for_this_segment`](Self::named_for_this_segment). This port
+    /// stores the names as given and cannot report a rejection, because its
+    /// signature is infallible and the flush path in
+    /// `DocumentsWriterPerThread` calls it without a `Result` to propagate.
+    /// Callers that accept names from outside the codec should validate them
+    /// with [`check_file_names`](Self::check_file_names) first.
     pub fn set_files(&self, files: HashSet<String>) {
         *self.files.write().unwrap() = Some(files);
     }
 
+    /// Rejects any file name that is not a well-formed codec file name.
+    ///
+    /// Equivalent to the private `org.apache.lucene.index.SegmentInfo#checkFileNames`,
+    /// which `addFiles` and `addFile` call before recording a name. A name has
+    /// to match `IndexFileNames.CODEC_FILE_PATTERN` — ported as
+    /// [`is_codec_file`] — and may not end in `.tmp`, whatever its case.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for the first offending name,
+    /// where Java throws `IllegalArgumentException`.
+    pub fn check_file_names<'a, I>(files: I) -> Result<()>
+    where
+        I: IntoIterator<Item = &'a String>,
+    {
+        for file in files {
+            if !is_codec_file(file) {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "invalid codec filename '{file}', must match: {CODEC_FILE_PATTERN}"
+                )));
+            }
+            if file.to_lowercase().ends_with(".tmp") {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "invalid codec filename '{file}', cannot end with .tmp extension"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Adds files to the set referenced by this segment.
-    pub fn add_files(&self, files: &[String]) {
+    ///
+    /// Equivalent to `SegmentInfo.addFiles(Collection<String>)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when a name fails
+    /// [`check_file_names`](Self::check_file_names), which is where Java throws.
+    pub fn add_files(&self, files: &[String]) -> Result<()> {
+        Self::check_file_names(files)?;
         let mut guard = self.files.write().unwrap();
         match guard.as_mut() {
             Some(set) => {
@@ -331,11 +385,19 @@ impl SegmentInfo {
                 *guard = Some(set);
             }
         }
+        Ok(())
     }
 
     /// Adds a single file to the set referenced by this segment.
-    pub fn add_file(&self, file: String) {
-        self.add_files(&[file]);
+    ///
+    /// Equivalent to `SegmentInfo.addFile(String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the name fails
+    /// [`check_file_names`](Self::check_file_names).
+    pub fn add_file(&self, file: String) -> Result<()> {
+        self.add_files(&[file])
     }
 
     /// Strips any segment name from `file` and renames it with this segment's name.
@@ -400,6 +462,20 @@ impl PartialEq for SegmentInfo {
 }
 
 impl Eq for SegmentInfo {}
+
+impl std::hash::Hash for SegmentInfo {
+    /// Equivalent to `org.apache.lucene.index.SegmentInfo#hashCode`, which is
+    /// `dir.hashCode() + name.hashCode()`.
+    ///
+    /// The hash has to agree with [`PartialEq`], which compares the directory
+    /// by pointer identity and the name by value, so the directory contributes
+    /// its address — Java's `Directory` does not override `hashCode` either,
+    /// so its contribution is identity there too.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_usize(Arc::as_ptr(&self.directory) as *const () as usize);
+        self.name.hash(state);
+    }
+}
 
 /// Strips the leading segment name from a file name, leaving the extension suffix.
 ///
@@ -856,43 +932,261 @@ impl Eq for SegmentCommitInfo {}
 /// termination.
 ///
 /// Equivalent to `org.apache.lucene.index.SegmentOrder`.
-///
-/// The full numeric sorter implementation depends on `LeafReader` point and
-/// doc-values skipper APIs that are still being ported. This struct provides
-/// the public API surface and an identity fallback.
-#[derive(Debug)]
 pub struct SegmentOrder {
     inner: Box<dyn SegmentOrderImpl>,
 }
 
+impl std::fmt::Debug for SegmentOrder {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SegmentOrder").finish_non_exhaustive()
+    }
+}
+
 impl SegmentOrder {
-    /// Builds a sorter from the primary numeric field of `sort`.
+    /// Builds a segment order from a numeric [`Sort`], so that higher-sorting
+    /// hits are more likely to be visited first and whole segments can be
+    /// skipped by early termination.
     ///
-    /// If the primary sort field is not numeric, this currently returns an
-    /// identity orderer (no reordering), matching the Java no-op behaviour for
-    /// non-numeric sorts.
-    pub fn from_sort(_sort: &Sort) -> Self {
+    /// Equivalent to `SegmentOrder.fromSort(Sort)`. When the primary sort field
+    /// is not numeric the returned order has no effect, exactly as Java's
+    /// `default` branch returns an anonymous `SegmentOrder` whose `reorder`
+    /// hands the reader straight back.
+    pub fn from_sort(sort: &Sort) -> Self {
+        let Some(primary_sort) = sort.fields().first() else {
+            return Self {
+                inner: Box::new(IdentitySegmentOrder),
+            };
+        };
+        let missing_value = primary_sort.missing_value();
+        let mut field_type = primary_sort.field_type();
+        if let SortFieldKind::SortedNumeric { numeric_type, .. } = primary_sort.kind() {
+            field_type = *numeric_type;
+        }
+        let field = primary_sort.field().unwrap_or_default().to_string();
+        let reverse = primary_sort.reverse();
+
+        match field_type {
+            SortFieldType::Int => Self::numeric_sorter(
+                field,
+                match missing_value {
+                    Some(MissingValue::Int(v)) => Some(i64::from(v)),
+                    _ => None,
+                },
+                reverse,
+                |b| i64::from(NumericUtils::sortable_bytes_to_int(b, 0)),
+            ),
+            SortFieldType::Long => Self::numeric_sorter(
+                field,
+                match missing_value {
+                    Some(MissingValue::Long(v)) => Some(v),
+                    _ => None,
+                },
+                reverse,
+                |b| NumericUtils::sortable_bytes_to_long(b, 0),
+            ),
+            SortFieldType::Float => Self::numeric_sorter(
+                field,
+                match missing_value {
+                    Some(MissingValue::Float(v)) => {
+                        Some(i64::from(NumericUtils::float_to_sortable_int(v)))
+                    }
+                    _ => None,
+                },
+                reverse,
+                |b| i64::from(NumericUtils::sortable_bytes_to_int(b, 0)),
+            ),
+            SortFieldType::Double => Self::numeric_sorter(
+                field,
+                match missing_value {
+                    Some(MissingValue::Double(v)) => Some(NumericUtils::double_to_sortable_long(v)),
+                    _ => None,
+                },
+                reverse,
+                |b| NumericUtils::sortable_bytes_to_long(b, 0),
+            ),
+            _ => Self {
+                inner: Box::new(IdentitySegmentOrder),
+            },
+        }
+    }
+
+    /// Builds the order that sorts leaves by the extreme value their skipper or
+    /// point tree reports for `field`.
+    ///
+    /// Equivalent to the private `org.apache.lucene.index.SegmentOrder#numericSorter`,
+    /// which wraps the reader's leaves in a `BaseCompositeReader` carrying a
+    /// `NumericFieldReaderContextComparator`.
+    fn numeric_sorter(
+        field: String,
+        missing_value: Option<i64>,
+        reverse: bool,
+        point_decoder: fn(&[u8]) -> i64,
+    ) -> Self {
         Self {
-            inner: Box::new(IdentitySegmentOrder),
+            inner: Box::new(NumericSegmentOrder {
+                comparator: NumericFieldReaderContextComparator {
+                    field,
+                    reverse,
+                    missing_value,
+                    point_decoder,
+                },
+            }),
         }
     }
 
     /// Produces a new view over `reader` by re-ordering the reader's segments.
+    ///
+    /// Equivalent to `SegmentOrder.reorder(IndexReader)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever assembling the reordered composite reader raises.
     pub fn reorder(&self, reader: Arc<dyn IndexReader>) -> Result<Arc<dyn IndexReader>> {
         self.inner.reorder(reader)
     }
 }
 
-trait SegmentOrderImpl: Send + Sync + Debug {
+trait SegmentOrderImpl: Send + Sync {
     fn reorder(&self, reader: Arc<dyn IndexReader>) -> Result<Arc<dyn IndexReader>>;
 }
 
-#[derive(Debug)]
+/// The order Java returns for a non-numeric primary sort: the reader unchanged.
 struct IdentitySegmentOrder;
 
 impl SegmentOrderImpl for IdentitySegmentOrder {
     fn reorder(&self, reader: Arc<dyn IndexReader>) -> Result<Arc<dyn IndexReader>> {
         Ok(reader)
+    }
+}
+
+/// Orders a reader's leaves by the extreme value of one numeric field.
+///
+/// **Divergence from Lucene 10.5.0.** Java returns an anonymous
+/// `BaseCompositeReader<LeafReader>` whose `doClose` is a no-op and whose
+/// `getReaderCacheHelper` delegates to the wrapped reader. This port assembles
+/// a [`MultiReader`](crate::index::MultiReader) over the same leaves with
+/// `close_sub_readers = false`, which is the crate's array-backed composite
+/// reader: it takes a reference on each leaf and drops it again when the view
+/// closes, so the leaves outlive the view exactly as in Java. The one
+/// observable difference is the reader cache helper, which the `MultiReader`
+/// answers for itself instead of forwarding.
+struct NumericSegmentOrder {
+    comparator: NumericFieldReaderContextComparator,
+}
+
+impl SegmentOrderImpl for NumericSegmentOrder {
+    fn reorder(&self, reader: Arc<dyn IndexReader>) -> Result<Arc<dyn IndexReader>> {
+        let leaves = Arc::clone(&reader).leaves();
+        let mut subs: Vec<Arc<dyn IndexReader>> = Vec::with_capacity(leaves.len());
+        let mut leaf_views: Vec<Arc<dyn crate::index::LeafReader>> =
+            Vec::with_capacity(leaves.len());
+        for context in &leaves {
+            subs.push(context.reader());
+            leaf_views.push(context.leaf_reader());
+        }
+
+        // Java sorts inside `BaseCompositeReader`'s constructor with a
+        // `Comparator` that memoises each leaf's sort value in a map keyed by
+        // the leaf's core cache key. Computing the key once per leaf and
+        // sorting on it is the same memoisation without the map.
+        let mut order: Vec<usize> = (0..subs.len()).collect();
+        order.sort_by_cached_key(|&i| self.comparator.sort_value(leaf_views[i].as_ref()));
+
+        let sorted: Vec<Arc<dyn IndexReader>> =
+            order.into_iter().map(|i| Arc::clone(&subs[i])).collect();
+        Ok(Arc::new(crate::index::MultiReader::new(sorted, false)?))
+    }
+}
+
+/// Orders leaves by the smallest (or, reversed, the largest) value of one
+/// numeric field.
+///
+/// Equivalent to the private
+/// `org.apache.lucene.index.SegmentOrder.NumericFieldReaderContextComparator`.
+struct NumericFieldReaderContextComparator {
+    field: String,
+    reverse: bool,
+    missing_value: Option<i64>,
+    point_decoder: fn(&[u8]) -> i64,
+}
+
+impl NumericFieldReaderContextComparator {
+    /// Returns the value the leaf sorts by, reversed so that a plain ascending
+    /// sort of the returned keys reproduces Java's comparator.
+    ///
+    /// Equivalent to `NumericFieldReaderContextComparator.getSortValue(LeafReader)`
+    /// combined with its `compare`, which negates the comparison when the sort
+    /// is reversed.
+    fn sort_value(&self, reader: &dyn crate::index::LeafReader) -> i64 {
+        let value = self.load_sort_value(reader);
+        if self.reverse {
+            // `Long.compare(v2, v1)` orders descending; negating the key
+            // reproduces that with an ascending sort. `i64::MIN` has no
+            // negation, and it is the value a reversed load never returns
+            // (that branch yields `i64::MAX`), so saturating is exact here.
+            value.saturating_neg()
+        } else {
+            value
+        }
+    }
+
+    /// Reads the extreme value of `field` in `reader` from the doc-values
+    /// skipper, or from the point tree when there is no skipper.
+    ///
+    /// Equivalent to `NumericFieldReaderContextComparator.loadSortValue(LeafReader)`.
+    /// Java cannot rethrow from inside a `Comparator`, so it answers as if the
+    /// index structures were absent when reading them fails; this port does the
+    /// same rather than failing the whole reorder.
+    fn load_sort_value(&self, reader: &dyn crate::index::LeafReader) -> i64 {
+        match self.load_sort_value_inner(reader) {
+            Ok(Some(value)) => value,
+            Ok(None) | Err(_) => {
+                if self.reverse {
+                    i64::MAX
+                } else {
+                    i64::MIN
+                }
+            }
+        }
+    }
+
+    fn load_sort_value_inner(&self, reader: &dyn crate::index::LeafReader) -> Result<Option<i64>> {
+        if let Some(skipper) = reader.get_doc_values_skipper(&self.field)? {
+            if skipper.global_doc_count() == reader.max_doc() || self.missing_value.is_none() {
+                return Ok(Some(if self.reverse {
+                    skipper.global_max_value()
+                } else {
+                    skipper.global_min_value()
+                }));
+            }
+            let missing = self.missing_value.unwrap_or_default();
+            return Ok(Some(if self.reverse {
+                skipper.global_max_value().max(missing)
+            } else {
+                skipper.global_min_value().min(missing)
+            }));
+        }
+        if let Some(point_values) = reader.get_point_values(&self.field)? {
+            let packed = if self.reverse {
+                point_values.max_packed_value()?
+            } else {
+                point_values.min_packed_value()?
+            };
+            let Some(packed) = packed else {
+                return Ok(None);
+            };
+            let decoded = (self.point_decoder)(&packed);
+            if point_values.doc_count() == reader.max_doc() || self.missing_value.is_none() {
+                return Ok(Some(decoded));
+            }
+            let missing = self.missing_value.unwrap_or_default();
+            return Ok(Some(if self.reverse {
+                decoded.max(missing)
+            } else {
+                decoded.min(missing)
+            }));
+        }
+        Ok(None)
     }
 }
 
@@ -992,7 +1286,7 @@ mod tests {
         info.set_files(files);
         assert_eq!(info.files().unwrap().len(), 2);
 
-        info.add_file("_0.doc".to_string());
+        info.add_file("_0.doc".to_string()).unwrap();
         let set = info.files().unwrap();
         assert!(set.contains("_0.doc"));
         assert!(set.contains("_0.fnm"));

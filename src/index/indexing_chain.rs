@@ -86,7 +86,7 @@ use crate::document::column::{
     create_column_field_adapter, BinaryColumn, ColumnBatch, ColumnFieldAdapter, ColumnValidation,
     Density, DictionaryColumn, LongColumn, NumericKind, TypedColumn, VectorColumn,
 };
-use crate::document::{Document, InvertableType, StoredValueType};
+use crate::document::{Document, InvertableType, NumericDocValuesField, StoredValueType};
 use crate::error::{LuceneError, Result};
 use crate::index::doc_values_writer::DocValuesWriter;
 use crate::index::documents_writer::{
@@ -171,18 +171,31 @@ fn field_hash_order(names: &[&str]) -> Vec<usize> {
         total_field_count += 1;
         // At most 50% load factor: grow *after* the insert, as Lucene does.
         if total_field_count >= table.len() / 2 {
-            let mut new_table: Vec<Vec<usize>> = vec![Vec::new(); table.len() * 2];
-            let new_mask = new_table.len() - 1;
-            for chain in &table {
-                for &index in chain {
-                    new_table[java_string_hashcode(names[index]) as u32 as usize & new_mask]
-                        .insert(0, index);
-                }
-            }
-            table = new_table;
+            table = rehash(&table, names);
         }
     }
     table.into_iter().flatten().collect()
+}
+
+/// Doubles the field-hash table and re-inserts every field into its new bucket.
+///
+/// Equivalent to `IndexingChain.rehash()` (`IndexingChain.java:546-566`): the
+/// old buckets are walked in order, head to tail, and each field is chained at
+/// the *head* of its new bucket, which reverses the within-bucket order. Java
+/// mutates `fieldHash` and `hashMask` in place; here the new table is returned
+/// and its mask is read back off its length, which is the same pair of values.
+fn rehash(table: &[Vec<usize>], names: &[&str]) -> Vec<Vec<usize>> {
+    let new_hash_size = table.len() * 2;
+    debug_assert!(new_hash_size > table.len());
+    let mut new_hash_array: Vec<Vec<usize>> = vec![Vec::new(); new_hash_size];
+    let new_hash_mask = new_hash_size - 1;
+    for chain in table {
+        for &index in chain {
+            new_hash_array[java_string_hashcode(names[index]) as u32 as usize & new_hash_mask]
+                .insert(0, index);
+        }
+    }
+    new_hash_array
 }
 
 /// How many bytes of an over-long term are shown in the error message.
@@ -638,6 +651,18 @@ pub struct DefaultIndexingChain {
     /// segment it writes. Equivalent to `IndexingChain.vectorValuesConsumer`,
     /// which Lucene builds in the constructor (`IndexingChain.java:134-135`).
     vector_values_consumer: Option<VectorValuesConsumer>,
+    /// The reserved field that marks the last document of a block, present when
+    /// `IndexWriterConfig.setParentField` names one.
+    ///
+    /// Equivalent to `IndexingChain.parentField`, which Lucene builds in the
+    /// constructor as `new NumericDocValuesField(parentFieldName, -1)`
+    /// (`IndexingChain.java:164`).
+    parent_field: Option<NumericDocValuesField>,
+    /// Index into [`per_fields`](Self::per_fields) of the parent field's
+    /// per-field state, created the first time a document actually needs it.
+    ///
+    /// Equivalent to `IndexingChain.parentPf`.
+    parent_pf: Option<usize>,
 }
 
 /// Presents a column's name and field type as an
@@ -707,6 +732,12 @@ impl DefaultIndexingChain {
     /// Creates a chain bound to the given live configuration.
     pub fn new(config: Arc<LiveIndexWriterConfig>) -> Self {
         let bytes_used = Arc::new(AtomicI64::new(0));
+        // `IndexingChain.java:163-167` also builds the parent field's `PerField`
+        // and seeds its schema here; this port defers that to the first document
+        // — see `get_or_add_parent_per_field`.
+        let parent_field = config
+            .parent_field()
+            .map(|name| NumericDocValuesField::new(name, -1));
         Self {
             scratch: SharedIndexingScratch::new(Arc::clone(&bytes_used)),
             terms_writer: FreqProxTermsWriter::new(Arc::clone(&bytes_used)),
@@ -719,6 +750,8 @@ impl DefaultIndexingChain {
             stored_fields_consumer: None,
             term_vectors_consumer: None,
             vector_values_consumer: None,
+            parent_field,
+            parent_pf: None,
         }
     }
 
@@ -1137,6 +1170,176 @@ impl DefaultIndexingChain {
         });
         self.per_field_index.insert(field_info.name.clone(), index);
         Ok(index)
+    }
+
+    /// Returns the per-field state of the reserved parent field, creating it
+    /// the first time the segment needs it.
+    ///
+    /// Equivalent to the tail of the `IndexingChain` constructor
+    /// (`IndexingChain.java:163-167`) together with
+    /// `IndexingChain.initializeFieldInfo(parentPf)`, which Java runs from
+    /// `initAndValidateFields` or `processParentFieldForColumnBatch` the first
+    /// time a document in this segment needs the field.
+    ///
+    /// Java can create the `PerField` in the constructor because its
+    /// `getOrAddPerField` only needs the field *name* there and leaves
+    /// `pf.fieldInfo` null until a document arrives. This port's
+    /// [`get_or_add_per_field`](Self::get_or_add_per_field) registers the
+    /// `FieldInfo` and builds every per-field writer in one step, so it needs
+    /// the segment's [`FieldInfosBuilder`], which the constructor does not
+    /// have. Deferring the whole step to the first document that needs the
+    /// field keeps the segment's field infos identical: Java also registers the
+    /// parent field only when `initializeFieldInfo(parentPf)` runs, so a
+    /// segment that never saw a document block never records it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever registering the field info raises.
+    fn get_or_add_parent_per_field(
+        &mut self,
+        field_infos: &mut FieldInfosBuilder,
+    ) -> Result<Option<usize>> {
+        if let Some(index) = self.parent_pf {
+            return Ok(Some(index));
+        }
+        let codec = self.config.codec();
+        let described = match self.parent_field.as_ref() {
+            Some(parent_field) => Self::describe_field(parent_field, field_infos, codec.as_ref())?,
+            None => return Ok(None),
+        };
+        let registered = field_infos.add(&described)?;
+        let index = self.get_or_add_per_field(registered)?;
+        self.parent_pf = Some(index);
+        Ok(Some(index))
+    }
+
+    /// Rejects a document field that carries the reserved parent field's name.
+    ///
+    /// Equivalent to the `pf == parentPf` check of
+    /// `IndexingChain.processDocument` (`IndexingChain.java:622-626`) and
+    /// `IndexingChain.processBatch` (`IndexingChain.java:750-753`). Java
+    /// compares the `PerField` returned for the name against `parentPf`, which
+    /// it created up front; this port compares the names, which selects exactly
+    /// the same fields and — unlike the identity test — does not force the
+    /// parent field's `FieldInfo` to be registered in a segment that has no
+    /// document block.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `field_name` is the
+    /// configured parent field.
+    fn reject_reserved_parent_field(&self, field_name: &str) -> Result<()> {
+        if let Some(parent_field) = self.parent_field.as_ref() {
+            if parent_field.name() == field_name {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "\"{field_name}\" is a reserved field and should not be added to any document"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Indexes one instance of one field, and reports whether it is the first
+    /// instance of an indexed field with postings in this document.
+    ///
+    /// Equivalent to `IndexingChain.processField(int, IndexableField,
+    /// PerField)`.
+    ///
+    /// The per-field loop of [`process_document`](IndexingChain::process_document)
+    /// keeps the same four steps written out rather than calling this method,
+    /// because it also has to decide, for each of them, whether a failure is a
+    /// document-level problem or one that leaves the segment's buffers corrupt;
+    /// Java makes that decision inside the chain, through the
+    /// `abortingExceptionConsumer` its collaborators call. This method is the
+    /// plain form, used where no such classification applies.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever inverting, storing or buffering the field raises.
+    fn process_field(
+        &mut self,
+        doc_id: i32,
+        field: &dyn IndexableField,
+        pf: usize,
+        analyzer: &dyn Analyzer,
+        info_stream: &dyn InfoStream,
+        field_infos: &mut FieldInfosBuilder,
+    ) -> Result<bool> {
+        let indexed_field =
+            self.invert_and_store(doc_id, field, pf, analyzer, info_stream, field_infos)?;
+        let field_type_dv = field.field_type().doc_values_type();
+        if field_type_dv != DocValuesType::NONE {
+            self.per_fields[pf]
+                .doc_values
+                .as_mut()
+                .expect(
+                    "INVARIANT: every field with a doc-values type gets a writer in get_or_add_per_field",
+                )
+                .add_value(doc_id, field)?;
+        }
+        if field.field_type().point_dimension_count() != 0 {
+            match field.binary_value() {
+                Some(value) => self.per_fields[pf]
+                    .point_values
+                    .as_mut()
+                    .expect(
+                        "INVARIANT: every field with point dimensions gets a writer in get_or_add_per_field",
+                    )
+                    .add_packed_value(doc_id, &value)?,
+                None => {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "field=\"{}\": point value must not be null",
+                        field.name()
+                    )))
+                }
+            }
+        }
+        if field.field_type().vector_dimension() != 0 {
+            Self::index_vector_value(doc_id, &mut self.per_fields[pf], field)?;
+        }
+        Ok(indexed_field)
+    }
+
+    /// Writes the parent-field value of every document of a column batch.
+    ///
+    /// Equivalent to `IndexingChain.processParentFieldForColumnBatch(int,
+    /// int)`. Each document of a batch is an individual document rather than
+    /// part of a block, so every one of them is its own parent.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever registering the field info or buffering the values
+    /// raises.
+    fn process_parent_field_for_column_batch(
+        &mut self,
+        base_doc_id: i32,
+        num_docs: i32,
+        field_infos: &mut FieldInfosBuilder,
+    ) -> Result<()> {
+        let Some(parent_pf) = self.get_or_add_parent_per_field(field_infos)? else {
+            return Ok(());
+        };
+        let value = match self
+            .parent_field
+            .as_ref()
+            .expect("INVARIANT: the per-field only exists when the parent field does")
+            .numeric_value()
+        {
+            Some(NumericValue::Long(value)) => value,
+            other => {
+                return Err(LuceneError::IllegalState(format!(
+                    "the parent field must carry a long value, but it carries {other:?}"
+                )))
+            }
+        };
+        match self.per_fields[parent_pf].doc_values.as_mut() {
+            Some(DocValuesWriter::Numeric(writer)) => {
+                writer.add_repeat_values(base_doc_id, value, num_docs)
+            }
+            _ => Err(LuceneError::IllegalState(
+                "the parent field must be a numeric doc-values field".to_string(),
+            )),
+        }
     }
 
     /// Builds the [`FieldInfo`] a document field implies.
@@ -2722,6 +2925,7 @@ impl IndexingChain for DefaultIndexingChain {
                 field_name,
                 field_type.as_ref(),
             )?;
+            self.reject_reserved_parent_field(field_name)?;
 
             match column {
                 TypedColumn::Binary(bc) => ColumnValidation::validate_binary_column(
@@ -2789,6 +2993,11 @@ impl IndexingChain for DefaultIndexingChain {
 
             doc_fields.push(index);
         }
+
+        // Every document of a batch is an individual document rather than part
+        // of a block, so each one is its own parent
+        // (`IndexingChain.java:790-792`).
+        self.process_parent_field_for_column_batch(base_doc_id, num_docs, field_infos)?;
 
         // Row-oriented pass: stored fields and term inversion only.
         if has_row_columns {
@@ -2869,7 +3078,7 @@ impl IndexingChain for DefaultIndexingChain {
         &mut self,
         doc_id: i32,
         doc: &Document,
-        _is_last_doc: bool,
+        is_last_doc: bool,
         field_infos: &mut FieldInfosBuilder,
     ) -> Result<()> {
         let analyzer = self.config.analyzer_arc();
@@ -2878,11 +3087,23 @@ impl IndexingChain for DefaultIndexingChain {
         let field_gen = self.next_field_gen;
         self.next_field_gen += 1;
 
+        // Handle the parent field first, before the document's own fields: only
+        // the last document of a block carries it
+        // (`IndexingChain.java:607-614`). Java only has to create its
+        // `FieldInfo` here, because the `PerField` already exists; this port
+        // creates both, which is the same step deferred to the same moment.
+        let parent_pf = if is_last_doc {
+            self.get_or_add_parent_per_field(field_infos)?
+        } else {
+            None
+        };
+
         // Two passes, as in Lucene: every instance of a multi-valued field must
         // be inverted together, because the analyzer may reuse one TokenStream
         // across fields.
         let mut doc_fields: Vec<usize> = Vec::with_capacity(doc.get_fields().len());
         for field in doc.get_fields() {
+            self.reject_reserved_parent_field(field.name())?;
             let described = Self::describe_field(field.as_ref(), field_infos, codec.as_ref())?;
             // The *live* entry of the builder, not a copy of it. Java's
             // `initializeFieldInfo` hands `pf.setFieldInfo` the very object
@@ -2917,7 +3138,39 @@ impl IndexingChain for DefaultIndexingChain {
 
         let mut indexed: Vec<usize> = Vec::new();
         let mut outcome: Result<()> = Ok(());
+
+        // 2nd pass — index the parent field first (`IndexingChain.java:650-657`).
+        // `parent_field` is currently a `NumericDocValuesField`, so
+        // `process_field` always returns `false` here, but the result is checked
+        // defensively in case the parent field's representation changes.
+        if let Some(parent_pf) = parent_pf {
+            let parent_field = self
+                .parent_field
+                .take()
+                .expect("INVARIANT: the per-field only exists when the parent field does");
+            let result = self.process_field(
+                doc_id,
+                &parent_field,
+                parent_pf,
+                analyzer.as_ref(),
+                info_stream.as_ref(),
+                field_infos,
+            );
+            self.parent_field = Some(parent_field);
+            match result {
+                Ok(true) => indexed.push(parent_pf),
+                Ok(false) => {}
+                // Java lets the exception leave the `try` block, so the
+                // `finally` tail below still closes the stored-fields frame this
+                // document opened; recording it as the outcome does the same.
+                Err(error) => outcome = Err(error),
+            }
+        }
+
         for (field, index) in doc.get_fields().iter().zip(doc_fields.iter().copied()) {
+            if outcome.is_err() {
+                break;
+            }
             // `IndexingChain.invertAndStore` inverts first and stores second,
             // for every field instance, in document order.
             if field.field_type().index_options() != IndexOptions::NONE {

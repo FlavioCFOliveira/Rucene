@@ -4,11 +4,13 @@
 //! `NoMergeScheduler`, `ConcurrentMergeScheduler` and `MergeRateLimiter`.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::error::{LuceneError, Result};
 use crate::index::merge_policy::{MergeTrigger, OneMerge};
+use crate::store::Directory;
+use crate::util::InfoStream;
 
 /// Where a scheduler gets its merges and how it runs them.
 ///
@@ -50,7 +52,74 @@ pub trait MergeScheduler: Send + Sync {
     fn close(&self) -> Result<()> {
         Ok(())
     }
+
+    /// Hands the scheduler the writer's info stream and directory.
+    ///
+    /// Equivalent to the package-private
+    /// `MergeScheduler.initialize(InfoStream, Directory)`, which `IndexWriter`
+    /// calls once at construction. The base implementation only records the
+    /// info stream; `ConcurrentMergeScheduler` overrides it to derive its
+    /// thread defaults from the directory's storage.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever inspecting `directory` raises.
+    fn initialize(
+        &self,
+        info_stream: Arc<dyn InfoStream>,
+        directory: &Arc<dyn Directory>,
+    ) -> Result<()> {
+        let _ = directory;
+        self.set_info_stream(info_stream);
+        Ok(())
+    }
+
+    /// Installs the info stream messages are logged to.
+    ///
+    /// Equivalent to assigning `MergeScheduler.infoStream`, a protected field
+    /// in Java. Rust traits carry no fields, so the assignment is a method a
+    /// scheduler that keeps an info stream overrides; the default drops it,
+    /// which is what a scheduler that never logs would do with the field.
+    fn set_info_stream(&self, info_stream: Arc<dyn InfoStream>) {
+        let _ = info_stream;
+    }
+
+    /// Returns the info stream messages are logged to, if one was installed.
+    ///
+    /// Equivalent to reading the protected `MergeScheduler.infoStream` field.
+    fn get_info_stream(&self) -> Option<Arc<dyn InfoStream>> {
+        None
+    }
+
+    /// Returns whether info-stream messages are enabled for the `"MS"`
+    /// component.
+    ///
+    /// Equivalent to the protected `org.apache.lucene.index.MergeScheduler#verbose`,
+    /// which callers pair with [`message`](Self::message) so that an expensive
+    /// message is not built when nothing will read it.
+    fn verbose(&self) -> bool {
+        self.get_info_stream()
+            .is_some_and(|stream| stream.is_enabled(MS))
+    }
+
+    /// Logs `message` under the `"MS"` component.
+    ///
+    /// Equivalent to the protected `org.apache.lucene.index.MergeScheduler#message`.
+    /// Java dereferences the field without a null check, assuming
+    /// [`verbose`](Self::verbose) was consulted first; this port simply does
+    /// nothing when no stream is installed.
+    fn message(&self, message: &str) {
+        if let Some(stream) = self.get_info_stream() {
+            stream.message(MS, message);
+        }
+    }
 }
+
+/// The info-stream component name Lucene logs merge scheduling under.
+///
+/// Equivalent to the `"MS"` literal `MergeScheduler.verbose()` and
+/// `MergeScheduler.message(String)` pass to the info stream.
+pub const MS: &str = "MS";
 
 /// A scheduler that runs every merge on the calling thread, one after another.
 ///
@@ -163,6 +232,11 @@ pub struct ConcurrentMergeScheduler {
     ///
     /// Equivalent to `ConcurrentMergeScheduler.suppressExceptions`.
     suppress_exceptions: AtomicBool,
+    /// The sink `verbose()`/`message()` report to.
+    ///
+    /// Equivalent to the protected `MergeScheduler.infoStream` field, which
+    /// `IndexWriter` fills in through `initialize`.
+    info_stream: Mutex<Option<Arc<dyn InfoStream>>>,
 }
 
 /// The state `ConcurrentMergeScheduler` keeps per running merge.
@@ -241,7 +315,25 @@ impl ConcurrentMergeScheduler {
             merge_threads: Mutex::new(Vec::new()),
             merge_thread_counter: AtomicU64::new(0),
             suppress_exceptions: AtomicBool::new(false),
+            info_stream: Mutex::new(None),
         }
+    }
+
+    /// Installs the info stream this scheduler logs to.
+    ///
+    /// Equivalent to `MultiIndexMergeScheduler.CombinedMergeScheduler#setInfoStream`,
+    /// which assigns the protected `MergeScheduler.infoStream` field directly
+    /// because a combined scheduler is never handed to an `IndexWriter` and so
+    /// never sees `initialize`.
+    pub fn set_info_stream(&self, info_stream: Arc<dyn InfoStream>) {
+        if let Ok(mut guard) = self.info_stream.lock() {
+            *guard = Some(info_stream);
+        }
+    }
+
+    /// Returns the info stream this scheduler logs to, if one was installed.
+    pub fn get_info_stream(&self) -> Option<Arc<dyn InfoStream>> {
+        self.info_stream.lock().ok().and_then(|guard| guard.clone())
     }
 
     /// Sets how many merges may run at once and how many may be queued.
@@ -793,6 +885,14 @@ impl std::fmt::Display for ConcurrentMergeScheduler {
 }
 
 impl MergeScheduler for ConcurrentMergeScheduler {
+    fn set_info_stream(&self, info_stream: Arc<dyn InfoStream>) {
+        ConcurrentMergeScheduler::set_info_stream(self, info_stream);
+    }
+
+    fn get_info_stream(&self) -> Option<Arc<dyn InfoStream>> {
+        ConcurrentMergeScheduler::get_info_stream(self)
+    }
+
     fn merge(&self, merge_source: &dyn MergeSource, _trigger: MergeTrigger) -> Result<()> {
         let mut first_error: Option<LuceneError> = None;
 
@@ -870,10 +970,31 @@ impl MergeScheduler for ConcurrentMergeScheduler {
     }
 }
 
+/// How often the limiter is consulted, in milliseconds, when a rate is set.
+///
+/// Equivalent to `MergeRateLimiter.MIN_PAUSE_CHECK_MSEC`.
+const MIN_PAUSE_CHECK_MSEC: i64 = 25;
 /// Shortest pause the rate limiter bothers with.
+///
+/// Equivalent to `MergeRateLimiter.MIN_PAUSE_NS`.
 const MIN_PAUSE: Duration = Duration::from_millis(2);
 /// Longest single pause, so an aborted merge is noticed promptly.
+///
+/// Equivalent to `MergeRateLimiter.MAX_PAUSE_NS`.
 const MAX_PAUSE: Duration = Duration::from_millis(250);
+
+/// Why a merge thread was paused.
+///
+/// Equivalent to `org.apache.lucene.index.MergePolicy.OneMergeProgress.PauseReason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseReason {
+    /// Stopped, because the throughput rate was set to zero.
+    Stopped,
+    /// Temporarily paused, because the throughput rate was exceeded.
+    Paused,
+    /// Any other reason.
+    Other,
+}
 
 /// Throttles the bytes one merge writes, and lets the writer abort it.
 ///
@@ -887,8 +1008,27 @@ pub struct MergeRateLimiter {
     total_bytes_written: AtomicI64,
     total_paused_ns: AtomicI64,
     total_stopped_ns: AtomicI64,
-    last_ns: Mutex<Option<Instant>>,
+    /// The instant, on [`now_ns`]'s clock, that the merge may next write at.
+    ///
+    /// Equivalent to `MergeRateLimiter.lastNS`, an `AtomicLong` seeded with
+    /// `0` and compared against `System.nanoTime()`.
+    last_ns: Mutex<i64>,
     aborted: AtomicBool,
+    /// Guards the pause condition variable.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's pausing lives in
+    /// `MergePolicy.OneMergeProgress`, which `MergeRateLimiter` holds a
+    /// reference to; `OneMerge` does not carry a progress object in this port
+    /// (see the note on [`OneMerge`]), so the lock, the condition variable and
+    /// the per-reason pause totals live on the limiter itself. The mechanism is
+    /// unchanged: a waiter sleeps on the condition until its time expires, the
+    /// merge is aborted, or the rate changes, and both `abort` and
+    /// `set_mb_per_sec` signal it.
+    pause_lock: Mutex<()>,
+    /// Signalled when a pause should be re-evaluated.
+    ///
+    /// Equivalent to `OneMergeProgress.pausing`.
+    pausing: Condvar,
 }
 
 impl Default for MergeRateLimiter {
@@ -906,8 +1046,10 @@ impl MergeRateLimiter {
             total_bytes_written: AtomicI64::new(0),
             total_paused_ns: AtomicI64::new(0),
             total_stopped_ns: AtomicI64::new(0),
-            last_ns: Mutex::new(None),
+            last_ns: Mutex::new(0),
             aborted: AtomicBool::new(false),
+            pause_lock: Mutex::new(()),
+            pausing: Condvar::new(),
         };
         limiter.set_mb_per_sec(f64::INFINITY);
         limiter
@@ -915,21 +1057,53 @@ impl MergeRateLimiter {
 
     /// Sets the target throughput.
     ///
-    /// Equivalent to `MergeRateLimiter.setMBPerSec(double)`.
+    /// Equivalent to `MergeRateLimiter.setMBPerSec(double)`. A rate of `0.0` is
+    /// allowed and means the merge is stopped; `f64::INFINITY` means it is not
+    /// throttled at all. Java synchronises so that the rate and the check
+    /// interval change together, and wakes any thread already pausing so that
+    /// it re-evaluates against the new rate; so does this.
+    ///
+    /// # Panics
+    ///
+    /// Does not panic. A negative rate is Java's `IllegalArgumentException`;
+    /// this port cannot raise one from an infallible setter, so it clamps to
+    /// `0.0`, which stops the merge — the nearest legal rate, and the one a
+    /// caller asking for "slower than nothing" means.
     pub fn set_mb_per_sec(&self, mb_per_sec: f64) {
-        let check_bytes = if mb_per_sec.is_infinite() {
-            i64::MAX
-        } else {
-            // Check often enough that a pause lands between MIN_PAUSE and
-            // MAX_PAUSE, as Java's constructor arithmetic does.
-            let bytes_per_ns = mb_per_sec * 1_000_000.0 / 1_000_000_000.0;
-            ((MIN_PAUSE + MAX_PAUSE).as_nanos() as f64 / 2.0 * bytes_per_ns) as i64
-        };
-        self.min_pause_check_bytes
-            .store(check_bytes.max(1), Ordering::Relaxed);
-        if let Ok(mut guard) = self.mb_per_sec.lock() {
+        let mb_per_sec = if mb_per_sec < 0.0 { 0.0 } else { mb_per_sec };
+        {
+            // Java holds `synchronized (this)` across both stores so that a
+            // reader never sees one without the other.
+            let mut guard = match self.mb_per_sec.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
             *guard = mb_per_sec;
+            // `Math.min(1024 * 1024, (long) ((MIN_PAUSE_CHECK_MSEC / 1000.0) *
+            // mbPerSec * 1024 * 1024))`; an infinite rate casts to
+            // `Long.MAX_VALUE` in Java, so the minimum picks 1 MB.
+            let scaled = (MIN_PAUSE_CHECK_MSEC as f64 / 1000.0) * mb_per_sec * 1024.0 * 1024.0;
+            let scaled = if scaled >= i64::MAX as f64 {
+                i64::MAX
+            } else {
+                scaled as i64
+            };
+            self.min_pause_check_bytes
+                .store(scaled.min(1024 * 1024), Ordering::Relaxed);
         }
+        // `mergeProgress.wakeup()`.
+        self.wakeup();
+    }
+
+    /// Wakes any thread pausing in [`maybe_pause`](Self::maybe_pause).
+    ///
+    /// Equivalent to `MergePolicy.OneMergeProgress.wakeup()`.
+    fn wakeup(&self) {
+        let _guard = match self.pause_lock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        self.pausing.notify_all();
     }
 
     /// Returns the target throughput.
@@ -961,8 +1135,12 @@ impl MergeRateLimiter {
     }
 
     /// Marks the merge aborted, so the next `pause` fails.
+    ///
+    /// Equivalent to `MergePolicy.OneMergeProgress.abort()`, which sets the flag
+    /// and then wakes any paused merge thread.
     pub fn set_aborted(&self) {
         self.aborted.store(true, Ordering::Release);
+        self.wakeup();
     }
 
     /// Returns whether the merge was aborted.
@@ -972,49 +1150,136 @@ impl MergeRateLimiter {
 
     /// Accounts `bytes` and sleeps if the merge is running ahead of its rate.
     ///
-    /// Equivalent to `MergeRateLimiter.pause(long)`. Returns the paused time in
-    /// nanoseconds, and fails once the merge has been aborted, which is how Java
-    /// raises `MergePolicy.MergeAbortedException`.
+    /// Equivalent to `MergeRateLimiter.pause(long)`. Returns the total time
+    /// paused, in nanoseconds. The loop re-checks because the rate may be
+    /// changed while the caller is pausing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::MergeAborted`] once the merge has been aborted,
+    /// which is Java's `MergePolicy.MergeAbortedException`.
     pub fn pause(&self, bytes: i64) -> Result<i64> {
-        if self.is_aborted() {
-            return Err(LuceneError::Cancelled);
-        }
         self.total_bytes_written.fetch_add(bytes, Ordering::Relaxed);
 
-        let mb_per_sec = self.get_mb_per_sec();
-        if mb_per_sec.is_infinite() || mb_per_sec <= 0.0 {
-            return Ok(0);
-        }
-
-        let seconds_to_pause = (bytes as f64 / 1_000_000.0) / mb_per_sec;
-        let mut target = Duration::from_secs_f64(seconds_to_pause.max(0.0));
-
-        let now = Instant::now();
-        if let Ok(mut last) = self.last_ns.lock() {
-            if let Some(previous) = *last {
-                // Credit the time already spent writing since the last check.
-                target = target.saturating_sub(now.duration_since(previous));
+        // While loop because we may wake up and check again when our rate limit
+        // is changed while we were pausing:
+        let mut paused = 0i64;
+        loop {
+            let delta = self.maybe_pause(bytes)?;
+            if delta < 0 {
+                break;
             }
-            *last = Some(now);
+            paused += delta;
+        }
+        Ok(paused)
+    }
+
+    /// Pauses the calling thread once, if the merge is running ahead of its
+    /// rate, and returns how long it paused — or `-1` when no pause applied.
+    ///
+    /// Equivalent to the private `org.apache.lucene.index.MergeRateLimiter#maybePause`.
+    /// Only the calling thread is paused: several intra-merge threads each
+    /// pause independently, exactly as in Java.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::MergeAborted`] when the merge has been aborted,
+    /// which is where Java throws `MergePolicy.MergeAbortedException`.
+    fn maybe_pause(&self, bytes: i64) -> Result<i64> {
+        // Now is a good time to abort the merge:
+        if self.is_aborted() {
+            return Err(LuceneError::MergeAborted("Merge aborted.".to_string()));
         }
 
-        if target < MIN_PAUSE {
-            return Ok(0);
-        }
+        // Read from the volatile rate once.
+        let rate = self.get_mb_per_sec();
+        let seconds_to_pause = (bytes as f64 / 1024. / 1024.) / rate;
 
-        let mut paused = Duration::ZERO;
-        while paused < target {
-            if self.is_aborted() {
-                return Err(LuceneError::Cancelled);
+        // Java folds this into `lastNS.updateAndGet`; the mutex plays the part
+        // of the compare-and-set, and the branch that keeps `last` unchanged is
+        // the one that reports a pause.
+        let cur_pause_ns = {
+            let mut last = match self.last_ns.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let cur_ns = now_ns();
+            // Time we should sleep until; this is purely the instantaneous
+            // rate, just adding seconds onto the last time we paused to.
+            let target_ns = last.saturating_add(if seconds_to_pause.is_finite() {
+                (1_000_000_000.0 * seconds_to_pause) as i64
+            } else {
+                i64::MAX
+            });
+            let cur_pause_ns = target_ns.saturating_sub(cur_ns);
+            if cur_pause_ns <= MIN_PAUSE.as_nanos() as i64 {
+                // Set to cur_ns, not target_ns, to enforce the instant rate,
+                // not the rate averaged over all history:
+                *last = cur_ns;
+                0
+            } else {
+                cur_pause_ns
             }
-            let slice = (target - paused).min(MAX_PAUSE);
-            std::thread::sleep(slice);
-            paused += slice;
-        }
+        };
 
-        let paused_ns = paused.as_nanos() as i64;
-        self.total_paused_ns.fetch_add(paused_ns, Ordering::Relaxed);
-        Ok(paused_ns)
+        if cur_pause_ns == 0 {
+            return Ok(-1);
+        }
+        // Defensive: don't sleep for too long; the loop above will call us
+        // again if we should keep sleeping and the rate may be adjusted in
+        // between.
+        let cur_pause_ns = cur_pause_ns.min(MAX_PAUSE.as_nanos() as i64);
+
+        let start = now_ns();
+        let reason = if rate == 0.0 {
+            PauseReason::Stopped
+        } else {
+            PauseReason::Paused
+        };
+        self.pause_nanos(cur_pause_ns, reason, rate);
+        Ok(now_ns() - start)
+    }
+
+    /// Pauses the calling thread for at least `pause_nanos` nanoseconds unless
+    /// the merge is aborted or the rate changes.
+    ///
+    /// Equivalent to `MergePolicy.OneMergeProgress.pauseNanos(long, PauseReason,
+    /// BooleanSupplier)`. The condition Java passes from `maybePause` is
+    /// `rate == mbPerSec`, so a rate change ends the pause immediately; that is
+    /// `expected_rate` here.
+    fn pause_nanos(&self, pause_nanos: i64, reason: PauseReason, expected_rate: f64) {
+        let start = now_ns();
+        let mut remaining = Duration::from_nanos(pause_nanos.max(0) as u64);
+        let mut guard = match self.pause_lock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        while !remaining.is_zero() && !self.is_aborted() && self.get_mb_per_sec() == expected_rate {
+            let waited = match self.pausing.wait_timeout(guard, remaining) {
+                Ok(result) => result,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard = waited.0;
+            // `Condition.awaitNanos` returns what is left of the deadline; a
+            // `WaitTimeoutResult` that timed out means nothing is left.
+            remaining = if waited.1.timed_out() {
+                Duration::ZERO
+            } else {
+                let elapsed = Duration::from_nanos((now_ns() - start).max(0) as u64);
+                Duration::from_nanos(pause_nanos.max(0) as u64).saturating_sub(elapsed)
+            };
+        }
+        drop(guard);
+        let elapsed = now_ns() - start;
+        match reason {
+            PauseReason::Stopped => {
+                self.total_stopped_ns.fetch_add(elapsed, Ordering::Relaxed);
+            }
+            PauseReason::Paused => {
+                self.total_paused_ns.fetch_add(elapsed, Ordering::Relaxed);
+            }
+            PauseReason::Other => {}
+        }
     }
 }
 
@@ -1053,9 +1318,27 @@ impl MultiIndexMergeScheduler {
     pub fn get_combined_merge_scheduler(&self) -> &Arc<ConcurrentMergeScheduler> {
         &self.shared
     }
+
+    /// Installs the info stream on the shared scheduler.
+    ///
+    /// Equivalent to `org.apache.lucene.index.MultiIndexMergeScheduler#setInfoStream`,
+    /// which forwards to the `CombinedMergeScheduler` because that is the one
+    /// running the merges: `MultiIndexMergeScheduler` never overrides
+    /// `initialize`, so this is the only way its scheduler learns where to log.
+    pub fn set_info_stream(&self, info_stream: Arc<dyn InfoStream>) {
+        self.shared.set_info_stream(info_stream);
+    }
 }
 
 impl MergeScheduler for MultiIndexMergeScheduler {
+    fn set_info_stream(&self, info_stream: Arc<dyn InfoStream>) {
+        MultiIndexMergeScheduler::set_info_stream(self, info_stream);
+    }
+
+    fn get_info_stream(&self) -> Option<Arc<dyn InfoStream>> {
+        self.shared.get_info_stream()
+    }
+
     fn merge(&self, merge_source: &dyn MergeSource, trigger: MergeTrigger) -> Result<()> {
         self.shared.merge(merge_source, trigger)
     }

@@ -10,9 +10,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::error::Result;
+use crate::index::codec_reader::CodecReader;
 use crate::index::segment_info::SegmentCommitInfo;
 use crate::index::segment_infos::SegmentInfos;
-use crate::util::InfoStream;
+use crate::index::segment_reader::SegmentReader;
+use crate::util::{Bits, InfoStream};
 
 /// Why a merge is being considered.
 ///
@@ -62,6 +64,99 @@ pub trait MergeContext {
     fn get_info_stream(&self) -> Arc<dyn InfoStream>;
 }
 
+/// One input segment of a merge, together with the hard deletions it carried
+/// when the merge reader was pulled.
+///
+/// Equivalent to `org.apache.lucene.index.MergePolicy.MergeReader`. Java keeps
+/// both a `CodecReader` view and, when the reader really is one, the
+/// `SegmentReader` itself; the two handles are the same object, and the port
+/// carries the same pair for the same reason — `commitMergedDeletesAndUpdates`
+/// needs the segment reader, while the merge itself only needs the codec view.
+#[derive(Clone)]
+pub struct MergeReader {
+    /// The reader as the merge sees it.
+    ///
+    /// Equivalent to `MergeReader.codecReader`.
+    pub codec_reader: Arc<dyn CodecReader>,
+    /// The same reader as a `SegmentReader`, when it is one.
+    ///
+    /// Equivalent to `MergeReader.reader`, which Java leaves null for a reader
+    /// handed to `addIndexes(CodecReader...)`.
+    pub reader: Option<Arc<SegmentReader>>,
+    /// The hard deletions in force when this reader was pulled.
+    ///
+    /// Equivalent to `MergeReader.hardLiveDocs`.
+    pub hard_live_docs: Option<Arc<dyn Bits>>,
+}
+
+impl std::fmt::Debug for MergeReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MergeReader")
+            .field("has_segment_reader", &self.reader.is_some())
+            .field("has_hard_live_docs", &self.hard_live_docs.is_some())
+            .finish()
+    }
+}
+
+impl MergeReader {
+    /// Wraps a pooled `SegmentReader`.
+    ///
+    /// Equivalent to `MergeReader(SegmentReader, Bits)`.
+    pub fn from_segment_reader(
+        reader: Arc<SegmentReader>,
+        hard_live_docs: Option<Arc<dyn Bits>>,
+    ) -> Self {
+        Self {
+            codec_reader: Arc::clone(&reader) as Arc<dyn CodecReader>,
+            reader: Some(reader),
+            hard_live_docs,
+        }
+    }
+
+    /// Wraps an arbitrary codec reader, as `addIndexes(CodecReader...)` does.
+    ///
+    /// Equivalent to `MergeReader(CodecReader, Bits)`, whose `reader` field
+    /// stays null when the argument is not a `SegmentReader`. Rust has no
+    /// downcast from `Arc<dyn CodecReader>`, so the segment-reader view is
+    /// simply absent; every caller that needs it (`commitMergedDeletesAndUpdates`)
+    /// builds its readers through
+    /// [`from_segment_reader`](Self::from_segment_reader).
+    pub fn from_codec_reader(
+        codec_reader: Arc<dyn CodecReader>,
+        hard_live_docs: Option<Arc<dyn Bits>>,
+    ) -> Self {
+        Self {
+            codec_reader,
+            reader: None,
+            hard_live_docs,
+        }
+    }
+}
+
+/// Wraps a reader just before it is merged, to add or remove fields or
+/// documents.
+///
+/// Equivalent to overriding `MergePolicy.OneMerge.wrapForMerge(CodecReader)`.
+/// It is illegal to reorder doc IDs here.
+pub type MergeReaderWrapper =
+    Arc<dyn Fn(Arc<dyn CodecReader>) -> Result<Arc<dyn CodecReader>> + Send + Sync>;
+
+/// Renumbers the documents of a merged view before they are written.
+///
+/// Equivalent to overriding
+/// `MergePolicy.OneMerge.reorder(CodecReader, Directory, Executor)`, whose base
+/// implementation returns `null`; only a policy such as Lucene's
+/// `BPReorderingMergePolicy` installs one. A `None` result means the doc IDs
+/// are left alone.
+pub type MergeReorderer = Arc<
+    dyn Fn(
+            Arc<dyn CodecReader>,
+            &Arc<dyn crate::store::Directory>,
+        ) -> Result<Option<Arc<crate::index::index_sorter::SorterDocMap>>>
+        + Send
+        + Sync,
+>;
+
 /// One merge the policy wants performed.
 ///
 /// Equivalent to `MergePolicy.OneMerge`.
@@ -72,7 +167,7 @@ pub trait MergeContext {
 /// belong to the scheduler and the writer, which are separate tasks, so this
 /// port carries only the segment selection and the accounting fields a policy
 /// itself sets and reads.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OneMerge {
     /// The segments to merge, in the order the policy chose.
     pub segments: Vec<SegmentCommitInfo>,
@@ -119,6 +214,43 @@ pub struct OneMerge {
     ///
     /// Equivalent to `OneMerge.mergeStartNS`.
     pub merge_start_ns: i64,
+    /// The readers the writer opened over [`segments`](Self::segments).
+    ///
+    /// Equivalent to `OneMerge.mergeReaders`. Java replaces the list wholesale
+    /// under the writer's monitor; the port shares it through an `Arc<Mutex<_>>`
+    /// so a cloned `OneMerge` still sees the readers the original opened.
+    merge_readers: Arc<Mutex<Vec<MergeReader>>>,
+    /// The hook that wraps each reader just before it is merged.
+    ///
+    /// Equivalent to overriding `OneMerge.wrapForMerge(CodecReader)`. Java
+    /// expresses it by subclassing; Rust has no subclassing here, so the
+    /// override is a closure a wrapping policy installs.
+    wrap_for_merge: Option<MergeReaderWrapper>,
+    /// The hook that renumbers the merged view's documents.
+    ///
+    /// Equivalent to overriding `OneMerge.reorder(CodecReader, Directory,
+    /// Executor)`; see [`MergeReorderer`].
+    reorder: Option<MergeReorderer>,
+}
+
+impl std::fmt::Debug for OneMerge {
+    /// Renders the fields Java's `OneMerge` carries; the reader-wrapping hook is
+    /// a closure and has no representation.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OneMerge")
+            .field("segments", &self.segments)
+            .field("total_max_doc", &self.total_max_doc)
+            .field("estimated_merge_bytes", &self.estimated_merge_bytes)
+            .field("total_merge_bytes", &self.total_merge_bytes)
+            .field("max_num_segments", &self.max_num_segments)
+            .field("uses_pooled_readers", &self.uses_pooled_readers)
+            .field("register_done", &self.register_done)
+            .field("merge_gen", &self.merge_gen)
+            .field("is_external", &self.is_external)
+            .field("info", &self.info)
+            .field("merge_start_ns", &self.merge_start_ns)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OneMerge {
@@ -151,8 +283,174 @@ impl OneMerge {
             error: Arc::new(Mutex::new(None)),
             info: None,
             merge_start_ns: -1,
+            merge_readers: Arc::new(Mutex::new(Vec::new())),
+            wrap_for_merge: None,
+            reorder: None,
         })
     }
+
+    /// Creates a merge directly over codec readers, as
+    /// `IndexWriter.addIndexes(CodecReader...)` does.
+    ///
+    /// Equivalent to `OneMerge(CodecReader...)`: the segment list stays empty,
+    /// `total_max_doc` counts the live documents of the readers, and the merge
+    /// does not use the writer's pooled readers.
+    pub fn from_codec_readers(codec_readers: Vec<Arc<dyn CodecReader>>) -> Self {
+        let mut readers = Vec::with_capacity(codec_readers.len());
+        let mut total_docs = 0i32;
+        for reader in codec_readers {
+            let live_docs = reader.get_live_docs();
+            total_docs += reader.num_docs();
+            readers.push(MergeReader::from_codec_reader(
+                reader,
+                live_docs.map(Arc::from),
+            ));
+        }
+        Self {
+            segments: Vec::new(),
+            total_max_doc: total_docs,
+            estimated_merge_bytes: 0,
+            total_merge_bytes: 0,
+            max_num_segments: -1,
+            uses_pooled_readers: false,
+            register_done: false,
+            merge_gen: 0,
+            is_external: false,
+            aborted: Arc::new(AtomicBool::new(false)),
+            merged: Arc::new(AtomicBool::new(false)),
+            error: Arc::new(Mutex::new(None)),
+            info: None,
+            merge_start_ns: -1,
+            merge_readers: Arc::new(Mutex::new(readers)),
+            wrap_for_merge: None,
+            reorder: None,
+        }
+    }
+
+    /// Opens one [`MergeReader`] per input segment, through `reader_factory`.
+    ///
+    /// Equivalent to `OneMerge.initMergeReaders(IOFunction<SegmentCommitInfo, MergeReader>)`.
+    /// Java assigns whatever readers were opened even when the factory fails
+    /// part way, so that the caller's cleanup can close them; so does this.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the first failure of `reader_factory`, after recording the
+    /// readers opened before it.
+    pub fn init_merge_readers<F>(&self, mut reader_factory: F) -> Result<()>
+    where
+        F: FnMut(&SegmentCommitInfo) -> Result<MergeReader>,
+    {
+        debug_assert!(
+            self.get_merge_reader().is_empty(),
+            "merge readers must be empty"
+        );
+        debug_assert!(!self.has_finished(), "merge is already done");
+        let mut readers = Vec::with_capacity(self.segments.len());
+        let mut outcome = Ok(());
+        for info in &self.segments {
+            // Hold onto the "live" reader; we will use this to commit merged
+            // deletes.
+            match reader_factory(info) {
+                Ok(reader) => readers.push(reader),
+                Err(err) => {
+                    outcome = Err(err);
+                    break;
+                }
+            }
+        }
+        // Assign whatever was opened, so an exception still leaves the readers
+        // reachable for closing.
+        if let Ok(mut guard) = self.merge_readers.lock() {
+            *guard = readers;
+        }
+        outcome
+    }
+
+    /// Returns the merge readers, or an empty list when they were not opened.
+    ///
+    /// Equivalent to `OneMerge.getMergeReader()`.
+    pub fn get_merge_reader(&self) -> Vec<MergeReader> {
+        self.merge_readers
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
+
+    /// Releases the merge readers and returns them, so the caller can close
+    /// them.
+    ///
+    /// Equivalent to the reader half of the final `OneMerge.close(boolean,
+    /// boolean, IOConsumer<MergeReader>)`, which clears `mergeReaders` and then
+    /// applies the consumer to every reader it held.
+    pub fn take_merge_readers(&self) -> Vec<MergeReader> {
+        self.merge_readers
+            .lock()
+            .map(|mut guard| std::mem::take(&mut *guard))
+            .unwrap_or_default()
+    }
+
+    /// Installs the hook that wraps each reader just before it is merged.
+    ///
+    /// Equivalent to overriding `OneMerge.wrapForMerge(CodecReader)`; see
+    /// [`MergeReaderWrapper`].
+    pub fn set_wrap_for_merge(&mut self, wrap: MergeReaderWrapper) {
+        self.wrap_for_merge = Some(wrap);
+    }
+
+    /// Wraps `reader` prior to merging.
+    ///
+    /// Equivalent to `OneMerge.wrapForMerge(CodecReader)`, whose base
+    /// implementation returns the reader unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the installed wrapper raises.
+    pub fn wrap_for_merge(&self, reader: Arc<dyn CodecReader>) -> Result<Arc<dyn CodecReader>> {
+        match &self.wrap_for_merge {
+            Some(wrap) => wrap(reader),
+            None => Ok(reader),
+        }
+    }
+
+    /// Installs the hook that renumbers the merged view's documents.
+    ///
+    /// Equivalent to overriding `OneMerge.reorder(CodecReader, Directory,
+    /// Executor)`; see [`MergeReorderer`].
+    pub fn set_reorder(&mut self, reorder: MergeReorderer) {
+        self.reorder = Some(reorder);
+    }
+
+    /// Renumbers the documents of `reader`, or leaves them alone.
+    ///
+    /// Equivalent to `OneMerge.reorder(CodecReader, Directory, Executor)`,
+    /// whose base implementation returns `null`. Java also takes an `Executor`
+    /// so the reordering can be parallelised; this port has no intra-merge
+    /// executor to hand on (see the divergence note on [`OneMerge`]), so the
+    /// hook receives only the reader and the directory.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the installed reorderer raises.
+    pub fn reorder(
+        &self,
+        reader: Arc<dyn CodecReader>,
+        dir: &Arc<dyn crate::store::Directory>,
+    ) -> Result<Option<Arc<crate::index::index_sorter::SorterDocMap>>> {
+        match &self.reorder {
+            Some(reorder) => reorder(reader, dir),
+            None => Ok(None),
+        }
+    }
+
+    /// Marks the merge as started on the calling thread.
+    ///
+    /// Equivalent to `OneMerge.mergeInit()`, which records the merge thread on
+    /// the merge's `OneMergeProgress` so that only that thread may pause. This
+    /// port has no progress object on `OneMerge` (see the type's divergence
+    /// note), so there is no owner to record and the call is a no-op kept for
+    /// the sequence `IndexWriter` performs.
+    pub fn merge_init(&self) {}
 
     /// Marks this merge aborted, so the running merge stops at its next check.
     ///
@@ -797,6 +1095,14 @@ impl FilterMergePolicy {
     pub fn get_delegate(&self) -> &Arc<dyn MergePolicy> {
         &self.inner
     }
+
+    /// Returns the wrapped policy.
+    ///
+    /// Equivalent to `org.apache.lucene.index.FilterMergePolicy#unwrap`, the
+    /// implementation of `org.apache.lucene.util.Unwrappable<MergePolicy>`.
+    pub fn unwrap(&self) -> Arc<dyn MergePolicy> {
+        Arc::clone(&self.inner)
+    }
 }
 
 impl MergePolicy for FilterMergePolicy {
@@ -872,6 +1178,22 @@ impl MergePolicy for FilterMergePolicy {
 
     fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
         self.inner.set_max_cfs_segment_size_mb(v)
+    }
+
+    fn size(&self, info: &SegmentCommitInfo, merge_context: &dyn MergeContext) -> Result<i64> {
+        self.inner.size(info, merge_context)
+    }
+
+    fn keep_fully_deleted_segment(&self) -> Result<bool> {
+        self.inner.keep_fully_deleted_segment()
+    }
+
+    fn num_deletes_to_merge_default(&self, info: &SegmentCommitInfo, del_count: i32) -> i32 {
+        self.inner.num_deletes_to_merge_default(info, del_count)
+    }
+
+    fn max_full_flush_merge_size(&self) -> i64 {
+        self.inner.max_full_flush_merge_size()
     }
 }
 
@@ -2932,26 +3254,47 @@ impl MergePolicy for TemporalMergePolicy {
     }
 }
 
+/// Supplies the retention query afresh on each use.
+///
+/// Equivalent to the `Supplier<Query>` a
+/// [`SoftDeletesRetentionMergePolicy`] is constructed with, which Lucene calls
+/// again for every reader so that a time-based retention window moves.
+pub type RetentionQuerySupplier = Arc<dyn Fn() -> Arc<dyn crate::search::Query> + Send + Sync>;
+
 /// A policy that keeps soft-deleted documents a retention query still matches.
 ///
 /// Equivalent to `org.apache.lucene.index.SoftDeletesRetentionMergePolicy`.
-///
-/// **Divergence from Lucene 10.5.0.** Java wraps each `OneMerge` so that
-/// `wrapForMerge` applies the retention query to the reader being merged, which
-/// is how the retained documents survive. `OneMerge` does not carry a
-/// `wrap_for_merge` hook in this port, so the policy carries the field and the
-/// query and adjusts the delete accounting; applying the query at merge time is
-/// the remaining half.
+/// It wraps every merge so that, as each input reader is merged, the documents
+/// that carry a value in the soft-deletes field **and** match the retention
+/// query are marked live again; that is how a retention window keeps modified
+/// documents visible until it moves past them.
 pub struct SoftDeletesRetentionMergePolicy {
     field: String,
+    retention_query_supplier: RetentionQuerySupplier,
     inner: Arc<dyn MergePolicy>,
+}
+
+impl std::fmt::Debug for SoftDeletesRetentionMergePolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SoftDeletesRetentionMergePolicy")
+            .field("field", &self.field)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SoftDeletesRetentionMergePolicy {
     /// Creates the policy over `field`, delegating selection to `inner`.
-    pub fn new(field: impl Into<String>, inner: Arc<dyn MergePolicy>) -> Self {
+    ///
+    /// Equivalent to
+    /// `SoftDeletesRetentionMergePolicy(String, Supplier<Query>, MergePolicy)`.
+    pub fn new(
+        field: impl Into<String>,
+        retention_query_supplier: RetentionQuerySupplier,
+        inner: Arc<dyn MergePolicy>,
+    ) -> Self {
         Self {
             field: field.into(),
+            retention_query_supplier,
             inner,
         }
     }
@@ -2959,6 +3302,186 @@ impl SoftDeletesRetentionMergePolicy {
     /// Returns the soft-deletes field.
     pub fn field(&self) -> &str {
         &self.field
+    }
+
+    /// Wraps `merge` so that every reader it merges passes through
+    /// [`apply_retention_query`](Self::apply_retention_query).
+    ///
+    /// Equivalent to the `OneMerge` subclass Java's constructor installs
+    /// through `OneMergeWrappingMergePolicy`: `wrapForMerge` first applies the
+    /// wrapped merge's own wrapper, and then, if the reader has any deletions
+    /// at all, the retention query.
+    fn wrap_merge(&self, mut merge: OneMerge) -> OneMerge {
+        let field = self.field.clone();
+        let supplier = Arc::clone(&self.retention_query_supplier);
+        let inner_wrap = merge.wrap_for_merge.clone();
+        merge.set_wrap_for_merge(Arc::new(move |reader: Arc<dyn CodecReader>| {
+            let wrapped = match &inner_wrap {
+                Some(wrap) => wrap(reader)?,
+                None => reader,
+            };
+            // No deletes - just keep going.
+            if wrapped.get_live_docs().is_none() {
+                return Ok(wrapped);
+            }
+            SoftDeletesRetentionMergePolicy::apply_retention_query(&field, supplier(), wrapped)
+        }));
+        merge
+    }
+
+    fn wrap_spec(&self, spec: Option<MergeSpecification>) -> Option<MergeSpecification> {
+        spec.map(|spec| MergeSpecification {
+            merges: spec
+                .merges
+                .into_iter()
+                .map(|merge| self.wrap_merge(merge))
+                .collect(),
+        })
+    }
+
+    /// Marks live again every soft-deleted document of `reader` that has a value
+    /// in `soft_delete_field` and matches `retention_query`.
+    ///
+    /// Equivalent to the package-private
+    /// `org.apache.lucene.index.SoftDeletesRetentionMergePolicy#applyRetentionQuery`,
+    /// which Lucene leaves package-private so its tests can drive it directly.
+    /// The search runs over a view of the segment whose live documents are
+    /// exactly the *deleted* ones, so only documents that are currently deleted
+    /// can be brought back.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building or running the retention scorer raises.
+    pub fn apply_retention_query(
+        soft_delete_field: &str,
+        retention_query: Arc<dyn crate::search::Query>,
+        reader: Arc<dyn CodecReader>,
+    ) -> Result<Arc<dyn CodecReader>> {
+        // No deletes - just keep going.
+        let Some(live_docs) = reader.get_live_docs() else {
+            return Ok(reader);
+        };
+        let live_docs: Arc<dyn Bits> = Arc::from(live_docs);
+        let max_doc = reader.max_doc();
+        let num_docs = reader.num_docs();
+
+        let deleted_only: Arc<dyn Bits> = Arc::new(InvertedBits {
+            inner: Arc::clone(&live_docs),
+        });
+        let wrapped_reader = Arc::new(
+            crate::index::filter_reader::FilterCodecReader::wrap_live_docs(
+                Arc::clone(&reader),
+                Some(deleted_only),
+                max_doc - num_docs,
+            ),
+        );
+
+        let mut builder = crate::search::boolean_query::Builder::new();
+        builder.add(
+            Arc::new(crate::search::field_exists_query::FieldExistsQuery::new(
+                soft_delete_field,
+            )),
+            crate::search::boolean_clause::Occur::FILTER,
+        )?;
+        builder.add(
+            retention_query,
+            crate::search::boolean_clause::Occur::FILTER,
+        )?;
+        let query: Arc<dyn crate::search::Query> = Arc::new(builder.build());
+
+        let Some(mut scorer) = Self::get_scorer(query, wrapped_reader)? else {
+            return Ok(reader);
+        };
+
+        let mut clone_live_docs = crate::util::FixedBitSet::copy_of(live_docs.as_ref());
+        let mut num_extra_live_docs = 0i32;
+        let iterator = scorer.iterator();
+        loop {
+            let doc = iterator.next_doc()?;
+            if doc == crate::search::NO_MORE_DOCS {
+                break;
+            }
+            if !clone_live_docs.get_and_set(doc as usize) {
+                // If we bring one back to live we need to account for it.
+                num_extra_live_docs += 1;
+            }
+        }
+        debug_assert!(
+            num_docs + num_extra_live_docs <= max_doc,
+            "numDocs: {num_docs} numExtraLiveDocs: {num_extra_live_docs} maxDoc: {max_doc}"
+        );
+        Ok(Arc::new(
+            crate::index::filter_reader::FilterCodecReader::wrap_live_docs(
+                reader,
+                Some(Arc::new(clone_live_docs) as Arc<dyn Bits>),
+                num_docs + num_extra_live_docs,
+            ),
+        ))
+    }
+
+    /// Builds an unscored, uncached scorer for `query` over the single leaf
+    /// `reader`.
+    ///
+    /// Equivalent to the private static
+    /// `org.apache.lucene.index.SoftDeletesRetentionMergePolicy#getScorer`.
+    /// The searcher's query cache is disabled, because the reader is a
+    /// throwaway view whose live documents were altered.
+    ///
+    /// Java takes a `CodecReader`; this port takes the concrete reader type,
+    /// because Rust cannot widen an `Arc<dyn CodecReader>` into the
+    /// `Arc<dyn IndexReader>` an `IndexSearcher` needs — the two traits are
+    /// related by a blanket impl, not by inheritance. Every Lucene call site
+    /// passes a `FilterCodecReader.wrapLiveDocs` result, which is concrete.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever rewriting the query or building the weight raises.
+    fn get_scorer<R: CodecReader>(
+        query: Arc<dyn crate::search::Query>,
+        reader: Arc<R>,
+    ) -> Result<Option<Box<dyn crate::search::Scorer>>> {
+        let index_reader: Arc<dyn crate::index::IndexReader> = Arc::clone(&reader) as _;
+        let leaf_reader: Arc<dyn crate::index::LeafReader> = reader as _;
+        let mut searcher = crate::search::IndexSearcher::new(Arc::clone(&index_reader))?;
+        searcher.set_query_cache(None);
+        let rewritten = searcher.rewrite(query)?;
+        let weight = searcher.create_weight(
+            rewritten,
+            crate::search::score_mode::ScoreMode::COMPLETE_NO_SCORES,
+            1.0,
+        )?;
+        // `reader.getContext()` for a leaf is a top-level `LeafReaderContext`
+        // with ordinal and doc base zero.
+        let context = crate::index::reader_context::LeafReaderContext::new(
+            index_reader,
+            leaf_reader,
+            None,
+            0,
+            0,
+            0,
+            0,
+        );
+        weight.scorer(&context)
+    }
+}
+
+/// The complement of another [`Bits`].
+///
+/// Equivalent to the anonymous `Bits` that
+/// `SoftDeletesRetentionMergePolicy.applyRetentionQuery` builds so that the
+/// retention search only visits the segment's *deleted* documents.
+#[derive(Debug)]
+struct InvertedBits {
+    inner: Arc<dyn Bits>,
+}
+
+impl Bits for InvertedBits {
+    fn get(&self, index: usize) -> bool {
+        !self.inner.get(index)
+    }
+
+    fn length(&self) -> usize {
+        self.inner.length()
     }
 }
 
@@ -2969,8 +3492,10 @@ impl MergePolicy for SoftDeletesRetentionMergePolicy {
         segment_infos: &SegmentInfos,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
-        self.inner
-            .find_merges(merge_trigger, segment_infos, merge_context)
+        Ok(self.wrap_spec(
+            self.inner
+                .find_merges(merge_trigger, segment_infos, merge_context)?,
+        ))
     }
 
     fn find_forced_merges(
@@ -2980,12 +3505,12 @@ impl MergePolicy for SoftDeletesRetentionMergePolicy {
         segments_to_merge: &HashMap<String, bool>,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
-        self.inner.find_forced_merges(
+        Ok(self.wrap_spec(self.inner.find_forced_merges(
             segment_infos,
             max_num_segments,
             segments_to_merge,
             merge_context,
-        )
+        )?))
     }
 
     fn find_forced_deletes_merges(
@@ -2993,8 +3518,23 @@ impl MergePolicy for SoftDeletesRetentionMergePolicy {
         segment_infos: &SegmentInfos,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
-        self.inner
-            .find_forced_deletes_merges(segment_infos, merge_context)
+        Ok(self.wrap_spec(
+            self.inner
+                .find_forced_deletes_merges(segment_infos, merge_context)?,
+        ))
+    }
+
+    fn find_full_flush_merges(
+        &self,
+        merge_trigger: MergeTrigger,
+        segment_infos: &SegmentInfos,
+        merge_context: &dyn MergeContext,
+    ) -> Result<Option<MergeSpecification>> {
+        Ok(self.wrap_spec(self.inner.find_full_flush_merges(
+            merge_trigger,
+            segment_infos,
+            merge_context,
+        )?))
     }
 
     fn get_no_cfs_ratio(&self) -> f64 {
@@ -3015,6 +3555,110 @@ impl MergePolicy for SoftDeletesRetentionMergePolicy {
 
     fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
         self.inner.set_max_cfs_segment_size_mb(v)
+    }
+
+    /// Equivalent to `SoftDeletesRetentionMergePolicy.keepFullyDeletedSegment(IOSupplier<CodecReader>)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java is handed the reader and keeps
+    /// the segment when the retention query still matches one of its documents.
+    /// This port's [`MergePolicy::keep_fully_deleted_segment`] takes no reader —
+    /// see the note on that method — so the answer here can only fall back to
+    /// the wrapped policy. Callers that hold a reader should ask
+    /// [`keep_fully_deleted_segment_for`](Self::keep_fully_deleted_segment_for)
+    /// instead, which is the full port.
+    fn keep_fully_deleted_segment(&self) -> Result<bool> {
+        self.inner.keep_fully_deleted_segment()
+    }
+
+    fn num_deletes_to_merge_default(&self, info: &SegmentCommitInfo, del_count: i32) -> i32 {
+        self.inner.num_deletes_to_merge_default(info, del_count)
+    }
+}
+
+impl SoftDeletesRetentionMergePolicy {
+    /// Returns whether a fully deleted segment must be kept because the
+    /// retention query still matches one of its documents.
+    ///
+    /// Equivalent to `SoftDeletesRetentionMergePolicy.keepFullyDeletedSegment(IOSupplier<CodecReader>)`,
+    /// with the reader passed directly rather than through an `IOSupplier`.
+    /// A single hit is enough, so the soft-deletes field itself is not
+    /// consulted: the search runs over a view with no deletions at all.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building or running the retention scorer raises.
+    pub fn keep_fully_deleted_segment_for(&self, reader: Arc<dyn CodecReader>) -> Result<bool> {
+        let max_doc = reader.max_doc();
+        // We only need a single hit to keep it; no need for soft deletes to be
+        // checked.
+        let unfiltered = Arc::new(
+            crate::index::filter_reader::FilterCodecReader::wrap_live_docs(reader, None, max_doc),
+        );
+        if let Some(mut scorer) = Self::get_scorer((self.retention_query_supplier)(), unfiltered)? {
+            let at_least_one_hit = scorer.iterator().next_doc()? != crate::search::NO_MORE_DOCS;
+            return Ok(at_least_one_hit);
+        }
+        self.inner.keep_fully_deleted_segment()
+    }
+
+    /// Returns how many deletions a merge of `info` would actually reclaim,
+    /// excluding the soft-deleted documents the retention query still matches.
+    ///
+    /// Equivalent to `SoftDeletesRetentionMergePolicy.numDeletesToMerge(SegmentCommitInfo,
+    /// int, IOSupplier<CodecReader>)`, with the reader passed directly.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building or running the retention scorer raises.
+    pub fn num_deletes_to_merge_for(
+        &self,
+        info: &SegmentCommitInfo,
+        del_count: i32,
+        reader: Arc<dyn CodecReader>,
+    ) -> Result<i32> {
+        let num_deletes_to_merge = self.inner.num_deletes_to_merge_default(info, del_count);
+        if num_deletes_to_merge != 0 && info.get_soft_del_count() > 0 {
+            if let Some(live_docs) = reader.get_live_docs() {
+                let mut builder = crate::search::boolean_query::Builder::new();
+                builder.add(
+                    Arc::new(crate::search::field_exists_query::FieldExistsQuery::new(
+                        &self.field,
+                    )),
+                    crate::search::boolean_clause::Occur::FILTER,
+                )?;
+                builder.add(
+                    (self.retention_query_supplier)(),
+                    crate::search::boolean_clause::Occur::FILTER,
+                )?;
+                let query: Arc<dyn crate::search::Query> = Arc::new(builder.build());
+                let max_doc = reader.max_doc();
+                let num_deleted = max_doc - reader.num_docs();
+                let unfiltered = Arc::new(
+                    crate::index::filter_reader::FilterCodecReader::wrap_live_docs(
+                        Arc::clone(&reader),
+                        None,
+                        max_doc,
+                    ),
+                );
+                if let Some(mut scorer) = Self::get_scorer(query, unfiltered)? {
+                    let mut num_deleted_docs = num_deleted;
+                    let iterator = scorer.iterator();
+                    loop {
+                        let doc = iterator.next_doc()?;
+                        if doc == crate::search::NO_MORE_DOCS {
+                            break;
+                        }
+                        if !live_docs.get(doc as usize) {
+                            num_deleted_docs -= 1;
+                        }
+                    }
+                    return Ok(num_deleted_docs);
+                }
+            }
+        }
+        debug_assert!(num_deletes_to_merge >= 0);
+        debug_assert!(num_deletes_to_merge <= info.info.max_doc()?);
+        Ok(num_deletes_to_merge)
     }
 }
 
