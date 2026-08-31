@@ -46,6 +46,18 @@ for qn, f, n, kind in edges["rows"]:
 # 3. Every Rust fn name declared by a file, cached per file.
 FN = re.compile(r'\bfn\s+([a-z_][a-z_0-9]*)', re.M)
 CONST = re.compile(r'\b(?:const|static)\s+([A-Z_][A-Z_0-9]*)')
+DERIVE = re.compile(r'#\[derive\(([^)]*)\)\]')
+# Java contracts that Rust satisfies with a derive, which emits no `fn` text.
+DERIVED_AS = {
+    "Clone": "clone",
+    "PartialEq": "eq",
+    "Eq": "eq",
+    "Hash": "hash",
+    "Debug": "fmt",
+    "Default": "default",
+    "PartialOrd": "partial_cmp",
+    "Ord": "cmp",
+}
 cache = {}
 def fns_of(path):
     if path in cache:
@@ -57,6 +69,10 @@ def fns_of(path):
         cache[path] = set()
         return cache[path]
     got = set(FN.findall(text)) | {c.lower() for c in CONST.findall(text)}
+    for group in DERIVE.findall(text):
+        for name in (t.strip() for t in group.split(",")):
+            if name in DERIVED_AS:
+                got.add(DERIVED_AS[name])
     cache[path] = got
     return got
 
@@ -136,7 +152,19 @@ for qn, jmethods in java.items():
             cands |= {"hash"}
         if snake == "compare_to":
             cands |= {"cmp", "partial_cmp"}
-        if any(c in have for c in cands):
+        # Java's Iterable becomes Rust's IntoIterator/Iterator, whose methods
+        # are `iter`, `into_iter` and `next`.
+        if snake == "iterator":
+            cands |= {"iter", "into_iter", "next", "iter_mut"}
+        if snake == "clone":
+            cands |= {"clone", "clone_input", "clone_reader", "clone_tree"}
+        # camelCase-to-snake_case is not one-to-one: `getPolyLat` becomes
+        # `get_polylat` in the crate and `toComponent2D` becomes
+        # `to_component2d`. Compare with the separators removed as well, so a
+        # differently-grouped but identical name is not reported as absent.
+        flat = {c.replace("_", "") for c in cands}
+        have_flat = {h.replace("_", "") for h in have}
+        if any(c in have for c in cands) or (flat & have_flat):
             continue
         if any(h.startswith(c + "_") or h.endswith("_" + c)
                for c in cands for h in have):
