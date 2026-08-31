@@ -196,15 +196,28 @@ impl SortedSetSortField {
     ///
     /// Returns [`LuceneError::IllegalArgument`] for an unknown selector, and
     /// propagates any I/O error.
-    pub fn read_sort_field(input: &mut dyn DataInput) -> Result<Self> {
-        let field = input.read_string()?;
-        let reverse = input.read_int()? == 1;
+    /// Reads the selector type of a serialised sort field.
+    ///
+    /// Equivalent to the private
+    /// `SortedSetSortField.readSelectorType(DataInput)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for an unknown selector, and
+    /// propagates any I/O error.
+    fn read_selector_type(input: &mut dyn DataInput) -> Result<SortedSetSelectorType> {
         let selector_ordinal = input.read_int()?;
-        let selector = SortedSetSelectorType::from_ordinal(selector_ordinal).ok_or_else(|| {
+        SortedSetSelectorType::from_ordinal(selector_ordinal).ok_or_else(|| {
             LuceneError::IllegalArgument(format!(
                 "Cannot deserialize SortedSetSortField: unknown selector type {selector_ordinal}"
             ))
-        })?;
+        })
+    }
+
+    pub fn read_sort_field(input: &mut dyn DataInput) -> Result<Self> {
+        let field = input.read_string()?;
+        let reverse = input.read_int()? == 1;
+        let selector = Self::read_selector_type(input)?;
         let missing_value = match input.read_int()? {
             1 => Some(MissingValue::StringFirst),
             2 => Some(MissingValue::StringLast),

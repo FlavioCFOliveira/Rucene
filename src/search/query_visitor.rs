@@ -154,6 +154,13 @@ impl<'a> TermCollectorVisitor<'a> {
     }
 }
 
+/// Returns a visitor that adds every collected term to `term_set`.
+///
+/// Equivalent to the static `QueryVisitor.termCollector(Set<Term>)`.
+pub fn term_collector(term_set: &mut BTreeSet<Term>) -> TermCollectorVisitor<'_> {
+    TermCollectorVisitor::new(term_set)
+}
+
 impl QueryVisitor for TermCollectorVisitor<'_> {
     fn consume_terms(&mut self, _query: &dyn Query, terms: &[Term]) {
         self.term_set.extend(terms.iter().cloned());

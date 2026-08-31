@@ -244,11 +244,19 @@ impl Explanation {
     /// Renders this node and its sub-nodes at the given depth, two spaces per
     /// level, as `Explanation.toString(int)` does
     /// (`Explanation.java:106-119`).
+    /// Returns the one-line summary of this node: its value and description.
+    ///
+    /// Equivalent to the private `Explanation.getSummary()`.
+    fn get_summary(&self) -> String {
+        format!("{} = {}", self.value, self.description)
+    }
+
     fn write(&self, f: &mut fmt::Formatter<'_>, depth: usize) -> fmt::Result {
         for _ in 0..depth {
             f.write_str("  ")?;
         }
-        writeln!(f, "{} = {}", self.value, self.description)?;
+        f.write_str(&self.get_summary())?;
+        f.write_str("\n")?;
         for detail in &self.details {
             detail.write(f, depth + 1)?;
         }

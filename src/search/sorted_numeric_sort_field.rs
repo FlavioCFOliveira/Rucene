@@ -274,16 +274,29 @@ impl SortedNumericSortField {
     /// Returns [`LuceneError::IllegalArgument`] for an unknown selector or a
     /// numeric type that cannot carry a missing value, and propagates any I/O
     /// error.
+    /// Reads the selector type of a serialised sort field.
+    ///
+    /// Equivalent to the private
+    /// `SortedNumericSortField.readSelectorType(DataInput)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for an unknown selector, and
+    /// propagates any I/O error.
+    fn read_selector_type(input: &mut dyn DataInput) -> Result<SortedNumericSelectorType> {
+        let selector_ordinal = input.read_int()?;
+        SortedNumericSelectorType::from_ordinal(selector_ordinal).ok_or_else(|| {
+            LuceneError::IllegalArgument(format!(
+                "Can't deserialize SortedNumericSortField - unknown selector type {selector_ordinal}"
+            ))
+        })
+    }
+
     pub fn read_sort_field(input: &mut dyn DataInput) -> Result<Self> {
         let field = input.read_string()?;
         let numeric_type = SortFieldType::parse(&input.read_string()?)?;
         let reverse = input.read_int()? == 1;
-        let selector_ordinal = input.read_int()?;
-        let selector = SortedNumericSelectorType::from_ordinal(selector_ordinal).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
-                "Can't deserialize SortedNumericSortField - unknown selector type {selector_ordinal}"
-            ))
-        })?;
+        let selector = Self::read_selector_type(input)?;
         let missing_value = if input.read_int()? == 1 {
             Some(match numeric_type {
                 SortFieldType::Int => MissingValue::Int(input.read_int()?),

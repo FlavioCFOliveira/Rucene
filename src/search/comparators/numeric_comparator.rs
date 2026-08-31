@@ -268,6 +268,16 @@ impl NumericComparator {
     /// The name of the sort field.
     ///
     /// Equivalent to reading the `protected final String field` field.
+    /// Returns the missing value in the comparable long encoding.
+    ///
+    /// Equivalent to the abstract
+    /// `NumericComparator.missingValueAsComparableLong()`, which each numeric
+    /// subclass implements; this port takes the encoded value at construction,
+    /// so the shared state can answer it directly.
+    pub fn missing_value_as_comparable_long(&self) -> i64 {
+        self.missing_value_as_long
+    }
+
     pub fn field(&self) -> &str {
         &self.field
     }
