@@ -361,6 +361,40 @@ pub trait DocValuesSkipper: Send + Sync {
     /// Return the number of levels.
     fn num_levels(&self) -> i32;
 
+    /// Advances this skipper to the next interval whose values intersect
+    /// `[min_value, max_value]`.
+    ///
+    /// Equivalent to the `final DocValuesSkipper.advance(long, long)`, which
+    /// climbs the levels to skip as many documents at once as it can.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever advancing the skipper raises.
+    fn advance_values(&mut self, min_value: i64, max_value: i64) -> Result<()> {
+        if self.min_doc_id(0) == -1 {
+            // `advance` has not been called yet.
+            self.advance(0)?;
+        }
+        // Check whether the current interval intersects the given range.
+        while self.min_doc_id(0) != crate::search::NO_MORE_DOCS
+            && (self.min_value(0) > max_value || self.max_value(0) < min_value)
+        {
+            let mut max_doc_id = self.max_doc_id(0);
+            let mut next_level = 1;
+            // Check whether the next levels intersect, to skip as many
+            // documents as possible.
+            while next_level < self.num_levels()
+                && (self.min_value(next_level) > max_value
+                    || self.max_value(next_level) < min_value)
+            {
+                max_doc_id = self.max_doc_id(next_level);
+                next_level += 1;
+            }
+            self.advance(max_doc_id + 1)?;
+        }
+        Ok(())
+    }
+
     /// Return the minimum doc ID of the interval on the given level, inclusive.
     fn min_doc_id(&self, level: i32) -> i32;
 

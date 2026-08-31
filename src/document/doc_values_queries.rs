@@ -8,14 +8,20 @@ use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use crate::document::range_bulk_scorer::RangeBulkScorer;
 use crate::error::Result;
 use crate::index::doc_values::DocValues;
+use crate::index::doc_values::DocValuesSkipper;
 use crate::index::doc_values::{SortedNumericDocValues, SortedSetDocValues};
 use crate::index::leaf_reader::LeafReader;
 use crate::index::reader_context::LeafReaderContext;
+use crate::search::bulk_scorer::BulkScorer;
+use crate::search::collector::LeafCollector;
+use crate::search::constant_score_scorer::ConstantScoreScorer;
 use crate::search::constant_score_scorer_supplier::ConstantScoreScorerSupplier;
 use crate::search::constant_score_weight::{ConstantScoreWeight, ConstantScoreWeightImpl};
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
+use crate::search::doc_id_set_iterator::{DocIdSetIterator as _, NO_MORE_DOCS};
 use crate::search::doc_values_range_iterator::DocValuesRangeIterator;
 use crate::search::field_exists_query::FieldExistsQuery;
 use crate::search::index_searcher::IndexSearcher;
@@ -25,9 +31,11 @@ use crate::search::numeric_field_stats::NumericFieldStats;
 use crate::search::query::Query;
 use crate::search::query_visitor::QueryVisitor;
 use crate::search::score_mode::ScoreMode;
+use crate::search::scorer::Scorer;
 use crate::search::scorer_supplier::ScorerSupplier;
 use crate::search::two_phase_iterator::{ScorerIterator, TwoPhaseIterator};
 use crate::search::weight::Weight;
+use crate::util::Bits;
 use crate::util::BytesRef;
 
 /// Sentinel standing for a value the table cannot hold, which is also the
@@ -512,6 +520,29 @@ impl DocValuesScorerSource for SortedNumericRangeSource {
     }
 }
 
+/// Returns the leaf's primary sort field when it orders by `field` and the
+/// skipper covers every document.
+///
+/// Equivalent to the private `densePrimarySort(LeafReader, DocValuesSkipper)`
+/// that both doc-values range queries declare: the skipper-driven interval is
+/// only valid when the documents are already ordered by this very field.
+fn dense_primary_sort(
+    reader: &dyn LeafReader,
+    skipper: &dyn DocValuesSkipper,
+    field: &str,
+) -> Option<crate::search::SortField> {
+    if skipper.global_doc_count() != reader.max_doc() {
+        return None;
+    }
+    let meta_data = reader.get_meta_data();
+    let index_sort = meta_data.sort()?;
+    let first = index_sort.fields().first()?;
+    if first.field() != Some(field) {
+        return None;
+    }
+    Some(first.clone())
+}
+
 impl SortedNumericDocValuesRangeQuery {
     /// The scorer source this query hands to its weight.
     fn source(&self) -> SortedNumericRangeSource {
@@ -968,5 +999,281 @@ impl Query for SortedSetDocValuesRangeQuery {
                 score_mode,
             },
         )))
+    }
+}
+
+/// The document range a [`SortedSkipperScorerSupplier`] narrows the query to.
+///
+/// Equivalent to the private record
+/// `SortedSkipperScorerSupplier.DocIdRange`.
+#[derive(Clone, Copy, Debug)]
+struct DocIdRange {
+    min_doc_id: i32,
+    max_doc_id: i32,
+}
+
+/// What a [`SortedSkipperScorerSupplier`] needs from the query it serves: the
+/// range's bounds, and how to scan forward for the first document satisfying a
+/// predicate.
+///
+/// Equivalent to the three abstract methods of
+/// `SortedSkipperScorerSupplier` — `getLowerValue`, `getUpperValue` and
+/// `nextDoc` — which each query overrides in an anonymous subclass.
+trait SkipperRangeSource: Debug + Send + Sync {
+    /// The lower bound of the query range, in the skipper's coordinate space.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the values raises.
+    fn lower_value(&self) -> Result<i64>;
+
+    /// The upper bound of the query range, in the skipper's coordinate space.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the values raises.
+    fn upper_value(&self) -> Result<i64>;
+
+    /// Advances from `start_doc_id` to the first document whose value makes
+    /// `predicate` true, or [`NO_MORE_DOCS`] when there is none.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the values raises.
+    fn next_doc(&self, start_doc_id: i32, predicate: &dyn Fn(i64) -> bool) -> Result<i32>;
+}
+
+/// A constant-score supplier that narrows a range query to one document
+/// interval, using the field's skip index when the leaf's primary sort is on
+/// that same field.
+///
+/// Equivalent to `org.apache.lucene.document.SortedSkipperScorerSupplier`.
+/// The skipper yields coarse bounds containing every matching document; where
+/// a boundary interval is not exact for the range, the supplier scans forward
+/// from it to the first document that really satisfies the comparison, so the
+/// interval it hands out is tight.
+struct SortedSkipperScorerSupplier {
+    skipper: Box<dyn DocValuesSkipper>,
+    reverse: bool,
+    score_mode: ScoreMode,
+    score: f32,
+    source: Box<dyn SkipperRangeSource>,
+    skipper_min_doc_id: i32,
+    skipper_max_doc_id: i32,
+    skipper_min_doc_id_exact: bool,
+    skipper_max_doc_id_exact: bool,
+}
+
+impl Debug for SortedSkipperScorerSupplier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SortedSkipperScorerSupplier")
+            .field("reverse", &self.reverse)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SortedSkipperScorerSupplier {
+    /// Creates the supplier over `skipper`, whose field is the one the leaf's
+    /// primary sort orders by.
+    ///
+    /// Equivalent to `SortedSkipperScorerSupplier(DocValuesSkipper, SortField,
+    /// float, ScoreMode)`; `reverse` is the sort field's own, which decides how
+    /// the range endpoints map onto the skipper's values.
+    fn new(
+        skipper: Box<dyn DocValuesSkipper>,
+        reverse: bool,
+        score: f32,
+        score_mode: ScoreMode,
+        source: Box<dyn SkipperRangeSource>,
+    ) -> Self {
+        Self {
+            skipper,
+            reverse,
+            score_mode,
+            score,
+            source,
+            skipper_min_doc_id: -1,
+            skipper_max_doc_id: -1,
+            skipper_min_doc_id_exact: false,
+            skipper_max_doc_id_exact: false,
+        }
+    }
+
+    /// Equivalent to the private `SortedSkipperScorerSupplier.range()`.
+    fn range(&mut self) -> Result<DocIdRange> {
+        if self.skipper_min_doc_id == -1 {
+            self.compute_skipper_doc_ids()?;
+        }
+        let min_ord = self.source.lower_value()?;
+        let max_ord = self.source.upper_value()?;
+        let (min_doc_id, max_doc_id) = if self.reverse {
+            (
+                if self.skipper_min_doc_id_exact {
+                    self.skipper_min_doc_id
+                } else {
+                    self.source
+                        .next_doc(self.skipper_min_doc_id, &|l| l <= max_ord)?
+                },
+                if self.skipper_max_doc_id_exact {
+                    self.skipper_max_doc_id
+                } else {
+                    self.source
+                        .next_doc(self.skipper_max_doc_id, &|l| l < min_ord)?
+                },
+            )
+        } else {
+            (
+                if self.skipper_min_doc_id_exact {
+                    self.skipper_min_doc_id
+                } else {
+                    self.source
+                        .next_doc(self.skipper_min_doc_id, &|l| l >= min_ord)?
+                },
+                if self.skipper_max_doc_id_exact {
+                    self.skipper_max_doc_id
+                } else {
+                    self.source
+                        .next_doc(self.skipper_max_doc_id, &|l| l > max_ord)?
+                },
+            )
+        };
+        Ok(DocIdRange {
+            min_doc_id,
+            max_doc_id,
+        })
+    }
+
+    /// Equivalent to the private
+    /// `SortedSkipperScorerSupplier.computeSkipperDocIds()`.
+    fn compute_skipper_doc_ids(&mut self) -> Result<()> {
+        let min_ord = self.source.lower_value()?;
+        let max_ord = self.source.upper_value()?;
+        if min_ord > max_ord
+            || min_ord > self.skipper.global_max_value()
+            || max_ord < self.skipper.global_min_value()
+        {
+            self.skipper_min_doc_id = NO_MORE_DOCS;
+            self.skipper_max_doc_id = NO_MORE_DOCS;
+            self.skipper_min_doc_id_exact = true;
+            self.skipper_max_doc_id_exact = true;
+            return Ok(());
+        }
+        if self.skipper.global_min_value() >= min_ord && self.skipper.global_max_value() <= max_ord
+        {
+            self.skipper_min_doc_id = 0;
+            self.skipper_max_doc_id = self.skipper.global_doc_count();
+            self.skipper_min_doc_id_exact = true;
+            self.skipper_max_doc_id_exact = true;
+            return Ok(());
+        }
+        if self.reverse {
+            if self.skipper.global_max_value() <= max_ord {
+                self.skipper_min_doc_id = 0;
+                self.skipper_min_doc_id_exact = true;
+            } else {
+                self.skipper.advance_values(i64::MIN, max_ord)?;
+                self.skipper_min_doc_id = self.skipper.min_doc_id(0);
+                self.skipper_min_doc_id_exact = self.skipper.max_value(0) == max_ord;
+            }
+            if self.skipper.global_min_value() >= min_ord {
+                self.skipper_max_doc_id = self.skipper.global_doc_count();
+                self.skipper_max_doc_id_exact = true;
+            } else {
+                self.skipper.advance_values(i64::MIN, min_ord - 1)?;
+                self.skipper_max_doc_id = self.skipper.min_doc_id(0);
+                self.skipper_max_doc_id_exact = self.skipper.max_value(0) < min_ord;
+            }
+        } else {
+            if self.skipper.global_min_value() >= min_ord {
+                self.skipper_min_doc_id = 0;
+                self.skipper_min_doc_id_exact = true;
+            } else {
+                self.skipper.advance_values(min_ord, i64::MAX)?;
+                self.skipper_min_doc_id = self.skipper.min_doc_id(0);
+                self.skipper_min_doc_id_exact = self.skipper.min_value(0) == min_ord;
+            }
+            if self.skipper.global_max_value() <= max_ord {
+                self.skipper_max_doc_id = self.skipper.global_doc_count();
+                self.skipper_max_doc_id_exact = true;
+            } else {
+                self.skipper.advance_values(max_ord + 1, i64::MAX)?;
+                self.skipper_max_doc_id = self.skipper.min_doc_id(0);
+                self.skipper_max_doc_id_exact = self.skipper.min_value(0) > max_ord;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The bulk scorer a supplier hands out for an empty range.
+///
+/// Equivalent to the private static
+/// `SortedSkipperScorerSupplier.emptyBulkScorer()`.
+#[derive(Debug)]
+struct EmptyBulkScorer;
+
+impl BulkScorer for EmptyBulkScorer {
+    fn score(
+        &mut self,
+        _collector: &mut dyn LeafCollector,
+        _accept_docs: Option<&dyn Bits>,
+        _min: i32,
+        _max: i32,
+    ) -> crate::search::collection_terminated_exception::CollectionResult<i32> {
+        Ok(NO_MORE_DOCS)
+    }
+
+    fn cost(&self) -> i64 {
+        0
+    }
+}
+
+impl ScorerSupplier for SortedSkipperScorerSupplier {
+    fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
+        let range = self.range()?;
+        let iterator: Box<dyn DocIdSetIterator> = if range.min_doc_id == range.max_doc_id {
+            Box::new(crate::search::doc_id_set_iterator::empty())
+        } else {
+            Box::new(crate::search::doc_id_set_iterator::range(
+                range.min_doc_id,
+                range.max_doc_id,
+            )?)
+        };
+        Ok(Box::new(ConstantScoreScorer::from_iterator(
+            self.score,
+            self.score_mode,
+            iterator,
+        )))
+    }
+
+    fn bulk_scorer(&mut self) -> Result<Box<dyn BulkScorer>> {
+        let range = self.range()?;
+        if range.min_doc_id == range.max_doc_id {
+            return Ok(Box::new(EmptyBulkScorer));
+        }
+        let iterator = Box::new(crate::search::doc_id_set_iterator::range(
+            range.min_doc_id,
+            range.max_doc_id,
+        )?);
+        Ok(Box::new(RangeBulkScorer::new(
+            iterator,
+            self.score,
+            range.min_doc_id,
+            range.max_doc_id,
+        )?))
+    }
+
+    fn cost(&self) -> i64 {
+        // Java computes the skipper bounds lazily here; this port cannot,
+        // because `cost` takes `&self` while `computeSkipperDocIds` mutates.
+        // The supplier's users — `get` and `bulk_scorer` — compute them first,
+        // and until they have, the whole field is the honest upper bound.
+        if self.skipper_min_doc_id == -1 {
+            return i64::from(self.skipper.global_doc_count());
+        }
+        if self.skipper_max_doc_id_exact {
+            return i64::from(self.skipper_max_doc_id - self.skipper_min_doc_id);
+        }
+        i64::from(self.skipper_max_doc_id - self.skipper_min_doc_id + self.skipper.doc_count(0))
     }
 }
