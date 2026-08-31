@@ -4,7 +4,7 @@
 #![deny(unsafe_code)]
 
 use crate::error::Result;
-use crate::index::ImpactsEnum;
+use crate::index::ImpactsSource;
 use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::search::max_score_cache::MaxScoreCache;
 
@@ -18,12 +18,19 @@ use crate::search::max_score_cache::MaxScoreCache;
 ///
 /// **Divergence from Lucene 10.5.0.** Java takes the iterator and a
 /// [`MaxScoreCache`] built from the *same* `ImpactsEnum`, holding it twice.
-/// Rust forbids that aliasing, so this type owns the enum once and hands it to
-/// the cache on every call. It is generic over the concrete enum type because,
+/// Rust forbids that aliasing, so this type owns the source once and hands it to
+/// the cache on every call. It is generic over the concrete type because,
 /// below this crate's minimum supported Rust version of 1.86, a
 /// `dyn ImpactsEnum` cannot be coerced to the `dyn ImpactsSource` the cache
 /// takes.
-pub struct ImpactsDISI<I: ImpactsEnum> {
+///
+/// The bound is `DocIdSetIterator + ImpactsSource` rather than `ImpactsEnum`,
+/// because Java's constructor takes the iterator and the cache separately and
+/// the two are not always the same object: `TermScorer` passes one
+/// `ImpactsEnum` for both, while `ExactPhraseMatcher` passes a conjunction of
+/// postings as the iterator and a *merged* impacts source to the cache. A type
+/// that is both is what this port needs in either case.
+pub struct ImpactsDISI<I: DocIdSetIterator + ImpactsSource> {
     inner: I,
     max_score_cache: MaxScoreCache,
     min_competitive_score: f32,
@@ -31,7 +38,7 @@ pub struct ImpactsDISI<I: ImpactsEnum> {
     max_score: f32,
 }
 
-impl<I: ImpactsEnum> std::fmt::Debug for ImpactsDISI<I> {
+impl<I: DocIdSetIterator + ImpactsSource> std::fmt::Debug for ImpactsDISI<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ImpactsDISI")
             .field("min_competitive_score", &self.min_competitive_score)
@@ -41,7 +48,7 @@ impl<I: ImpactsEnum> std::fmt::Debug for ImpactsDISI<I> {
     }
 }
 
-impl<I: ImpactsEnum> ImpactsDISI<I> {
+impl<I: DocIdSetIterator + ImpactsSource> ImpactsDISI<I> {
     /// Wraps an impacts enum and the cache of maximum scores computed from it.
     ///
     /// Equivalent to `new ImpactsDISI(DocIdSetIterator, MaxScoreCache)`.
@@ -68,6 +75,28 @@ impl<I: ImpactsEnum> ImpactsDISI<I> {
     /// `FilterDocIdSetIterator`.
     pub fn inner(&mut self) -> &mut I {
         &mut self.inner
+    }
+
+    /// Returns the wrapped impacts source for inspection.
+    ///
+    /// The shared-borrow sibling of [`inner`](Self::inner), needed wherever the
+    /// port declares an accessor on `&self` — such as
+    /// [`TwoPhaseIterator::approximation_ref`](crate::search::TwoPhaseIterator::approximation_ref).
+    pub fn inner_ref(&self) -> &I {
+        &self.inner
+    }
+
+    /// Returns the wrapped impacts enum and the cache of maximum scores at the
+    /// same time.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `TermScorer` holds its own
+    /// reference to the very `MaxScoreCache` it handed to `ImpactsDISI`, and
+    /// answers `advanceShallow` and `getMaxScore` through it. This port had to
+    /// move the cache inside `ImpactsDISI`, because the cache and the iterator
+    /// need the same `ImpactsEnum`; a scorer therefore reaches both halves
+    /// through this accessor, which borrows the two disjoint fields at once.
+    pub fn split_mut(&mut self) -> (&mut I, &mut MaxScoreCache) {
+        (&mut self.inner, &mut self.max_score_cache)
     }
 
     /// Sets the minimum competitive score.
@@ -148,7 +177,7 @@ impl<I: ImpactsEnum> ImpactsDISI<I> {
     }
 }
 
-impl<I: ImpactsEnum> DocIdSetIterator for ImpactsDISI<I> {
+impl<I: DocIdSetIterator + ImpactsSource> DocIdSetIterator for ImpactsDISI<I> {
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }

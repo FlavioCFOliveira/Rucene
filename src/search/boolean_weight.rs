@@ -19,14 +19,7 @@ use crate::search::segment_cacheable::SegmentCacheable;
 use crate::search::similarities::{Explanation, Similarity};
 use crate::search::weight::Weight;
 
-/// The number of clauses above which a boolean query is not cached.
-///
-/// Equivalent to
-/// `AbstractMultiTermQueryConstantScoreWrapper.BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD`,
-/// which is 16. That class is not ported yet, so the constant is spelled out
-/// here; it is the same number, cited from
-/// `AbstractMultiTermQueryConstantScoreWrapper.java:43`.
-const BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD: usize = 16;
+use crate::search::abstract_multi_term_query_constant_score_wrapper::BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD;
 
 /// A clause of a boolean query paired with the weight built for it.
 ///

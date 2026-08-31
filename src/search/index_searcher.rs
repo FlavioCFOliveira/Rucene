@@ -12,6 +12,7 @@ use crate::index::{
     StoredFields, Term,
 };
 use crate::search::boolean_clause::Occur;
+use crate::search::boolean_query::BooleanQuery;
 use crate::search::collection_terminated_exception::CollectionError;
 use crate::search::collector::{Collector, CollectorManager};
 use crate::search::constant_score_query::ConstantScoreQuery;
@@ -473,6 +474,38 @@ pub struct IndexSearcher {
     query_timeout: Option<Arc<dyn QueryTimeout>>,
     /// Set on whichever thread ran past the timeout.
     partial_result: Arc<AtomicBool>,
+}
+
+impl Clone for IndexSearcher {
+    /// Copies the searcher's configuration and shared state.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0**, where a `Weight` simply
+    /// holds a reference to the `IndexSearcher` that created it —
+    /// `AbstractMultiTermQueryConstantScoreWrapper.RewritingWeight` does, so
+    /// that it can rewrite a sub-query per leaf. This port's
+    /// [`Weight`](crate::search::Weight) trait objects are `'static` and
+    /// [`Query::create_weight`](crate::search::Query::create_weight) only
+    /// receives a borrow, so such a weight keeps a clone instead.
+    ///
+    /// Every field is either an [`Arc`] or a vector of them, so the clone is
+    /// cheap and shares all mutable state — the timeout, the partial-result
+    /// flag and the query cache included. Nothing observes the identity of an
+    /// `IndexSearcher`: the reader context, whose identity
+    /// [`TermStates`](crate::search::TermStates) compares, is shared.
+    fn clone(&self) -> Self {
+        Self {
+            reader: Arc::clone(&self.reader),
+            reader_context: Arc::clone(&self.reader_context),
+            leaf_contexts: self.leaf_contexts.clone(),
+            leaf_slices: self.leaf_slices.clone(),
+            task_executor: Arc::clone(&self.task_executor),
+            similarity: Arc::clone(&self.similarity),
+            query_cache: self.query_cache.clone(),
+            query_caching_policy: self.query_caching_policy.clone(),
+            query_timeout: self.query_timeout.clone(),
+            partial_result: Arc::clone(&self.partial_result),
+        }
+    }
 }
 
 impl fmt::Debug for IndexSearcher {
@@ -937,21 +970,42 @@ impl IndexSearcher {
     /// counting the number of hits by collecting all matches, because the count
     /// is retrieved from the index statistics whenever possible.
     ///
-    /// **Scope note.** Java also applies a two-clause pure-disjunction
-    /// optimisation, which answers `a OR b` from `count(a) + count(b) -
-    /// count(a AND b)` when both clauses are term queries and the intersection
-    /// is small. It rests on
-    /// `BooleanQuery.isTwoClausePureDisjunctionWithTerms()` and
-    /// `rewriteTwoClauseDisjunctionWithTermsForCount(IndexSearcher)`, both of
-    /// which are defined in terms of `TermQuery`; that query is not ported yet,
-    /// so the optimisation is absent. The count returned is the same.
-    ///
     /// # Errors
     ///
     /// Propagates any I/O error raised while rewriting, weighting or counting.
     pub fn count(&self, query: Arc<dyn Query>) -> Result<i32> {
         // CSQ.rewrite may simplify the query -- don't need scores
         let query = self.rewrite(Arc::new(ConstantScoreQuery::new(query)))?;
+
+        {
+            // Unwrap CSQ to check for optimizations on the inner query
+            let inner_query = match query.as_any().downcast_ref::<ConstantScoreQuery>() {
+                Some(csq) => csq.get_query(),
+                None => Arc::clone(&query),
+            };
+
+            // Check if two clause disjunction optimization applies
+            if let Some(boolean_query) = inner_query.as_any().downcast_ref::<BooleanQuery>() {
+                if self.reader.max_doc() == self.reader.num_docs()
+                    && boolean_query.is_two_clause_pure_disjunction_with_terms()
+                {
+                    let queries =
+                        boolean_query.rewrite_two_clause_disjunction_with_terms_for_count(self)?;
+                    let count_term1 = self.count(Arc::clone(&queries[0]))?;
+                    let count_term2 = self.count(Arc::clone(&queries[1]))?;
+                    if count_term1 == 0 || count_term2 == 0 {
+                        return Ok(count_term1.max(count_term2));
+                        // Only apply optimization if the intersection is
+                        // significantly smaller than the union
+                    } else if f64::from(count_term1.min(count_term2))
+                        / f64::from(count_term1.max(count_term2))
+                        < 0.1
+                    {
+                        return Ok(count_term1 + count_term2 - self.count(Arc::clone(&queries[2]))?);
+                    }
+                }
+            }
+        }
 
         // Use the already-rewritten query directly, avoiding a redundant
         // rewrite in `search_with_collector`.

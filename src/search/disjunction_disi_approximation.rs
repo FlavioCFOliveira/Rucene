@@ -188,6 +188,18 @@ impl DisjunctionDISIApproximation {
         &mut self.wrappers[position]
     }
 
+    /// Returns, for each clause in the order the caller supplied it, the
+    /// position it occupies in this approximation's own, cost-descending order
+    /// — the positions [`top_list`](Self::top_list) returns.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0**, where the caller keeps
+    /// references to the `DisiWrapper`s it built and recognises them by
+    /// identity. A caller that must pair a `top_list` position with the state
+    /// it kept beside the wrapper needs the permutation.
+    pub fn original_order(&self) -> &[usize] {
+        &self.original_order
+    }
+
     /// Returns every clause, in this approximation's own order.
     pub fn wrappers(&self) -> &[DisiWrapper] {
         &self.wrappers

@@ -28,13 +28,7 @@ use crate::search::similarities::Explanation;
 use crate::search::weight::Weight;
 use crate::search::Multiset;
 
-/// The number of clauses above which a disjunction-max query is not cached.
-///
-/// Equivalent to
-/// `AbstractMultiTermQueryConstantScoreWrapper.BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD`,
-/// which is 16; that class is not ported yet, so the constant is spelled out
-/// here, cited from `AbstractMultiTermQueryConstantScoreWrapper.java:43`.
-const BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD: usize = 16;
+use crate::search::abstract_multi_term_query_constant_score_wrapper::BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD;
 
 /// A query that generates the union of the documents produced by its
 /// subqueries, and that scores each document with the maximum score any

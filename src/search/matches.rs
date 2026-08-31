@@ -2,19 +2,24 @@
 //! `MatchesIterator` and the part of `MatchesUtils` that the query-execution
 //! spine needs.
 //!
-//! The two interfaces, the `MATCH_WITH_NO_TERMS` singleton and
-//! `MatchesUtils.fromSubMatches` are ported here: the first two are what
-//! [`Weight::matches`](crate::search::Weight::matches) is defined in terms of,
-//! and the third is what the boolean and disjunction-max weights amalgamate
-//! their clauses with. The rest of `MatchesUtils` belongs with the queries that
-//! build composite matches.
+//! The two interfaces and the whole of `MatchesUtils` are ported here:
+//! [`Weight::matches`](crate::search::Weight::matches) is defined in terms of
+//! the interfaces, the boolean and disjunction-max weights amalgamate their
+//! clauses with `fromSubMatches`, and the term, phrase and multi-term queries
+//! build their own matches with `forField` and `disjunction`.
 
 #![deny(unsafe_code)]
 
+use std::any::Any;
 use std::sync::{Arc, LazyLock};
 
-use crate::error::{LuceneError, Result};
+use crate::error::Result;
+use crate::index::{IndexReaderContext, LeafReaderContext};
+use crate::search::disjunction_matches_iterator::{
+    from_sub_iterators, from_terms_enum as disjunction_from_terms_enum,
+};
 use crate::search::query::Query;
+use crate::util::BytesRefIterator;
 
 /// Reports the positions, and optionally the offsets, of all the matching terms
 /// of a query for a single document.
@@ -49,6 +54,17 @@ pub trait Matches: Send + Sync {
     /// Equivalent to iterating the Java `Matches`, which is an
     /// `Iterable<String>` over exactly those field names.
     fn fields(&self) -> Vec<String>;
+
+    /// Returns this instance as [`Any`], so that a caller can recover the
+    /// concrete type.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java reaches the concrete type with
+    /// `instanceof` and a cast, which
+    /// [`NamedMatches::find_named_matches`](crate::search::NamedMatches::find_named_matches)
+    /// needs in order to pick the named nodes out of a `Matches` tree. Rust
+    /// needs the escape hatch to be declared; every implementation writes
+    /// `self`. It mirrors [`Query::as_any`], which exists for the same reason.
+    fn as_any(&self) -> &dyn Any;
 }
 
 /// An iterator over match positions, and optionally offsets, for a single
@@ -140,13 +156,25 @@ impl Matches for MatchWithNoTerms {
     fn fields(&self) -> Vec<String> {
         Vec::new()
     }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
+
+/// Builds a [`MatchesIterator`] on demand.
+///
+/// Equivalent to the `IOSupplier<MatchesIterator>` parameter of
+/// `MatchesUtils.forField(String, IOSupplier<MatchesIterator>)`. It is `Send`
+/// and `Sync` because [`Matches`] is, and it is an [`Arc`] rather than a
+/// [`Box`] so that the produced [`Matches`] can be shared.
+pub type MatchesIteratorSupplier =
+    Arc<dyn Fn() -> Result<Option<Box<dyn MatchesIterator>>> + Send + Sync>;
 
 /// Static helpers that aid the implementation of [`Matches`] and
 /// [`MatchesIterator`].
 ///
-/// Equivalent to `org.apache.lucene.search.MatchesUtils`, restricted to the
-/// singleton that the execution spine needs; see the module documentation.
+/// Equivalent to `org.apache.lucene.search.MatchesUtils`.
 #[derive(Debug, Clone, Copy)]
 pub struct MatchesUtils;
 
@@ -189,6 +217,126 @@ impl MatchesUtils {
         }
         Some(Arc::new(CompositeMatches { sm, sub_matches }))
     }
+
+    /// Creates a [`Matches`] for a single field, or `None` when the supplier
+    /// reports no match.
+    ///
+    /// Equivalent to
+    /// `MatchesUtils.forField(String, IOSupplier<MatchesIterator>)`. The
+    /// indirection through a supplier, rather than a [`MatchesIterator`]
+    /// directly, is what lets several
+    /// [`Matches::get_matches`] calls return new iterators; the supplier is
+    /// still called eagerly, to work out whether there is a hit at all.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java hands the eagerly built iterator
+    /// to the *first* `getMatches` call and only calls the supplier again
+    /// afterwards. Caching it here would mean storing a `dyn MatchesIterator`
+    /// inside a `Send + Sync` [`Matches`], which the [`MatchesIterator`] trait
+    /// is not, so the eager iterator is dropped and every call builds a fresh
+    /// one. Callers see the same matches — a freshly positioned iterator is
+    /// exactly what the contract promises — at the cost of building one extra
+    /// iterator.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error the supplier raises.
+    pub fn for_field(
+        field: impl Into<String>,
+        mis: MatchesIteratorSupplier,
+    ) -> Result<Option<Arc<dyn Matches>>> {
+        if mis()?.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(Arc::new(FieldMatches {
+            field: field.into(),
+            mis,
+        })))
+    }
+
+    /// Creates a [`MatchesIterator`] that iterates in order over all matches in
+    /// a set of sub-iterators.
+    ///
+    /// Equivalent to `MatchesUtils.disjunction(List<MatchesIterator>)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while priming the sub-iterators.
+    pub fn disjunction(
+        sub_matches: Vec<Box<dyn MatchesIterator>>,
+    ) -> Result<Option<Box<dyn MatchesIterator>>> {
+        from_sub_iterators(sub_matches)
+    }
+
+    /// Creates a [`MatchesIterator`] that is a disjunction over a list of terms
+    /// extracted from a [`BytesRefIterator`].
+    ///
+    /// Equivalent to
+    /// `MatchesUtils.disjunction(LeafReaderContext, int, Query, String, BytesRefIterator)`.
+    /// Only terms that have at least one match in the given document are
+    /// included.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while seeking terms or reading postings.
+    pub fn disjunction_from_terms(
+        context: &LeafReaderContext,
+        doc: i32,
+        query: Arc<dyn Query>,
+        field: &str,
+        terms: Box<dyn BytesRefIterator>,
+    ) -> Result<Option<Box<dyn MatchesIterator>>> {
+        disjunction_from_terms_enum(context, doc, query, field, terms)
+    }
+}
+
+/// Rebuilds an owning handle on a leaf context.
+///
+/// **This has no counterpart in Lucene 10.5.0.** Java's
+/// [`Weight::matches`](crate::search::Weight::matches) captures the
+/// `LeafReaderContext` it is handed, and the `Matches` it returns keeps it
+/// alive. This port receives only a borrow and the returned [`Matches`] is
+/// `'static`, so a handle is rebuilt from the same leaf reader, ordinal and doc
+/// base. The rebuilt context has a fresh identity, which nothing that reads a
+/// `Matches` looks at — only the reader, the ordinal and the doc base are used.
+pub fn owned_leaf_context(context: &LeafReaderContext) -> Arc<LeafReaderContext> {
+    Arc::new(LeafReaderContext::new(
+        IndexReaderContext::reader(context),
+        context.leaf_reader(),
+        None,
+        IndexReaderContext::ord_in_parent(context),
+        IndexReaderContext::doc_base_in_parent(context),
+        context.ord(),
+        context.doc_base(),
+    ))
+}
+
+/// The [`Matches`] of a single field.
+///
+/// Equivalent to the anonymous class `MatchesUtils.forField` returns.
+struct FieldMatches {
+    field: String,
+    mis: MatchesIteratorSupplier,
+}
+
+impl Matches for FieldMatches {
+    fn get_matches(&self, field: &str) -> Result<Option<Box<dyn MatchesIterator>>> {
+        if self.field != field {
+            return Ok(None);
+        }
+        (self.mis)()
+    }
+
+    fn get_sub_matches(&self) -> Vec<Arc<dyn Matches>> {
+        Vec::new()
+    }
+
+    fn fields(&self) -> Vec<String> {
+        vec![self.field.clone()]
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 /// The amalgamation of several [`Matches`].
@@ -211,21 +359,15 @@ impl Matches for CompositeMatches {
                 sub_iterators.push(iterator);
             }
         }
-        // Equivalent to `DisjunctionMatchesIterator.fromSubIterators`, whose
-        // empty and single-iterator cases are these two.
-        match sub_iterators.len() {
-            0 => Ok(None),
-            1 => Ok(sub_iterators.pop()),
-            _ => Err(LuceneError::UnsupportedOperation(
-                "combining the match positions of several clauses needs \
-                 org.apache.lucene.search.DisjunctionMatchesIterator, which is not ported yet"
-                    .to_string(),
-            )),
-        }
+        from_sub_iterators(sub_iterators)
     }
 
     fn get_sub_matches(&self) -> Vec<Arc<dyn Matches>> {
         self.sub_matches.clone()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 
     fn fields(&self) -> Vec<String> {

@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use crate::error::Result;
+use crate::error::{LuceneError, Result};
 use crate::search::boolean_clause::{BooleanClause, Occur};
 use crate::search::boolean_weight::BooleanWeight;
 use crate::search::boost_query::BoostQuery;
@@ -21,6 +21,8 @@ use crate::search::multiset::Multiset;
 use crate::search::query::{Query, QueryKey};
 use crate::search::query_visitor::QueryVisitor;
 use crate::search::score_mode::ScoreMode;
+use crate::search::term_query::TermQuery;
+use crate::search::term_states::TermStates;
 use crate::search::weight::Weight;
 
 /// The four operators, in the order `java.util.EnumMap` iterates them: the
@@ -210,13 +212,6 @@ impl Builder {
 /// `Iterable<BooleanClause>`; [`clauses`](Self::clauses) is the Rust way to
 /// iterate them.
 ///
-/// **Scope note.** Lucene's package-private
-/// `isTwoClausePureDisjunctionWithTerms()` and
-/// `rewriteTwoClauseDisjunctionWithTermsForCount(IndexSearcher)` are not ported
-/// here: both are defined in terms of `TermQuery`, which this crate does not
-/// have yet. They exist only to let `IndexSearcher.count` answer a two-term
-/// disjunction from term statistics, so their absence costs that one
-/// optimisation and never changes a count.
 #[derive(Debug, Clone)]
 pub struct BooleanQuery {
     minimum_number_should_match: i32,
@@ -291,6 +286,82 @@ impl BooleanQuery {
     pub fn is_pure_disjunction(&self) -> bool {
         self.clauses.len() == self.clause_count(Occur::SHOULD)
             && self.minimum_number_should_match <= 1
+    }
+
+    /// Returns whether this query is a two-clause disjunction whose clauses are
+    /// both [`TermQuery`]s.
+    ///
+    /// Equivalent to the package-private
+    /// `BooleanQuery.isTwoClausePureDisjunctionWithTerms()`.
+    pub fn is_two_clause_pure_disjunction_with_terms(&self) -> bool {
+        self.clauses.len() == 2
+            && self.is_pure_disjunction()
+            && self.clauses[0].query().as_any().is::<TermQuery>()
+            && self.clauses[1].query().as_any().is::<TermQuery>()
+    }
+
+    /// Rewrites a two-clause disjunction of term queries into the two term
+    /// queries and their conjunction, so that
+    /// [`IndexSearcher::count`](crate::search::IndexSearcher::count) can apply
+    /// the inclusion–exclusion principle.
+    ///
+    /// Equivalent to the package-private
+    /// `BooleanQuery.rewriteTwoClauseDisjunctionWithTermsForCount(IndexSearcher)`,
+    /// which returns a `Query[3]`: the two term queries followed by their
+    /// conjunction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when a clause is not a
+    /// [`TermQuery`] — the caller must check
+    /// [`is_two_clause_pure_disjunction_with_terms`](Self::is_two_clause_pure_disjunction_with_terms)
+    /// first, which is what Java's cast asserts — and propagates any I/O error
+    /// raised while building the term states.
+    pub fn rewrite_two_clause_disjunction_with_terms_for_count(
+        &self,
+        index_searcher: &IndexSearcher,
+    ) -> Result<[Arc<dyn Query>; 3]> {
+        let mut new_query = Builder::new();
+        let mut queries: Vec<Arc<dyn Query>> = Vec::with_capacity(2);
+        for clause in &self.clauses {
+            let term_query = clause
+                .query()
+                .as_any()
+                .downcast_ref::<TermQuery>()
+                .ok_or_else(|| {
+                    LuceneError::IllegalState(
+                        "rewriteTwoClauseDisjunctionWithTermsForCount requires TermQuery clauses"
+                            .to_string(),
+                    )
+                })?;
+            // The optimisation counts each term query several times, so a
+            // cached `TermStates` avoids repeating the terms-dictionary lookup.
+            let term_query: Arc<dyn Query> = if term_query.get_term_states().is_none() {
+                Arc::new(TermQuery::with_states(
+                    term_query.get_term().clone(),
+                    Arc::new(TermStates::build(
+                        index_searcher,
+                        term_query.get_term(),
+                        false,
+                    )?),
+                ))
+            } else {
+                Arc::clone(clause.query())
+            };
+            new_query.add(Arc::clone(&term_query), Occur::MUST)?;
+            queries.push(term_query);
+        }
+        let conjunction: Arc<dyn Query> = Arc::new(new_query.build());
+        let mut queries = queries.into_iter();
+        Ok([
+            queries
+                .next()
+                .expect("INVARIANT: a two-clause query has two clauses"),
+            queries
+                .next()
+                .expect("INVARIANT: a two-clause query has two clauses"),
+            conjunction,
+        ])
     }
 
     /// Rewrites this query for the case where scores are not needed, or returns
