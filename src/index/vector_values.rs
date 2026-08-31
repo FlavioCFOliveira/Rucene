@@ -316,6 +316,90 @@ pub trait KnnVectorValues: Send + Sync {
             "KnnVectorValues::iterator".to_string(),
         ))
     }
+
+    /// Returns an iterator for a field every document has a vector for, where
+    /// the ordinal is the document id.
+    ///
+    /// Equivalent to the protected `KnnVectorValues.createDenseIterator()`,
+    /// which a dense implementation returns from `iterator()`.
+    fn create_dense_iterator(&self) -> Box<dyn DocIndexIterator> {
+        Box::new(DenseDocIndexIterator::new(self.size()))
+    }
+
+    /// Returns an iterator for a field only some documents have a vector for,
+    /// which walks the ordinals and maps each to its document.
+    ///
+    /// Equivalent to the protected `KnnVectorValues.createSparseIterator()`.
+    fn create_sparse_iterator(&self) -> Box<dyn DocIndexIterator> {
+        Box::new(OrdinalDocIndexIterator::new(
+            self.size(),
+            (0..self.size()).map(|ord| self.ord_to_doc(ord)).collect(),
+        ))
+    }
+}
+
+/// Walks a field's ordinals in order, answering the document each maps to.
+///
+/// Equivalent to the anonymous iterator of
+/// `KnnVectorValues.createSparseIterator()`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's iterator calls `ordToDoc(ord)` on
+/// the enclosing values object each time it is asked for a document. Rust
+/// cannot hand the iterator a borrow of the values that outlives the call that
+/// created it, so the mapping is materialised once when the iterator is built.
+/// It is the same mapping: `ordToDoc` is a pure lookup into data the values
+/// already hold.
+#[derive(Debug, Clone)]
+pub struct OrdinalDocIndexIterator {
+    size: i32,
+    ord_to_doc: Vec<i32>,
+    ord: i32,
+}
+
+impl OrdinalDocIndexIterator {
+    /// Creates an iterator over `size` ordinals with the given mapping.
+    pub fn new(size: i32, ord_to_doc: Vec<i32>) -> Self {
+        Self {
+            size,
+            ord_to_doc,
+            ord: -1,
+        }
+    }
+}
+
+impl DocIdSetIterator for OrdinalDocIndexIterator {
+    fn doc_id(&self) -> i32 {
+        if self.ord == -1 {
+            return -1;
+        }
+        if self.ord == NO_MORE_DOCS {
+            return NO_MORE_DOCS;
+        }
+        self.ord_to_doc[self.ord as usize]
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        if self.ord >= self.size - 1 {
+            self.ord = NO_MORE_DOCS;
+        } else {
+            self.ord += 1;
+        }
+        Ok(self.doc_id())
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.slow_advance(target)
+    }
+
+    fn cost(&self) -> i64 {
+        i64::from(self.size)
+    }
+}
+
+impl DocIndexIterator for OrdinalDocIndexIterator {
+    fn index(&self) -> i32 {
+        self.ord
+    }
 }
 
 /// [`Bits`] view mapping a vector ordinal onto the acceptance of its document.

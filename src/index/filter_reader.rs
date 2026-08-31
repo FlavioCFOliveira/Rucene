@@ -219,6 +219,27 @@ impl FilterCodecReader {
         &self.inner
     }
 
+    /// Wraps `reader` so that it reports `live_docs` and `num_docs` instead of
+    /// its own.
+    ///
+    /// Equivalent to the package-private
+    /// `FilterCodecReader.wrapLiveDocs(CodecReader, Bits, int)`, which
+    /// `SoftDeletesRetentionMergePolicy` uses to search a segment's deleted
+    /// documents. The reader cache helper is dropped, because the live docs
+    /// are being altered; the core one is kept, because the segment's own data
+    /// is not.
+    pub fn wrap_live_docs(
+        reader: Arc<dyn CodecReader>,
+        live_docs: Option<Arc<dyn Bits>>,
+        num_docs: i32,
+    ) -> LiveDocsCodecReader {
+        LiveDocsCodecReader {
+            inner: reader,
+            live_docs,
+            num_docs,
+        }
+    }
+
     /// Unwraps nested filters and returns the innermost codec reader.
     ///
     /// Equivalent to `FilterCodecReader.unwrap(CodecReader)`.
@@ -350,6 +371,197 @@ impl LeafReader for FilterCodecReader {
 }
 
 impl CodecReader for FilterCodecReader {
+    fn get_fields_reader(&self) -> Result<Option<Box<dyn StoredFieldsReader>>> {
+        self.inner.get_fields_reader()
+    }
+
+    fn get_term_vectors_reader(&self) -> Result<Option<Box<dyn TermVectorsReader>>> {
+        self.inner.get_term_vectors_reader()
+    }
+
+    fn get_norms_reader(&self) -> Result<Option<Arc<dyn NormsProducer>>> {
+        self.inner.get_norms_reader()
+    }
+
+    fn get_doc_values_reader(&self) -> Result<Option<Arc<dyn DocValuesProducer>>> {
+        self.inner.get_doc_values_reader()
+    }
+
+    fn get_postings_reader(&self) -> Result<Option<Arc<dyn FieldsProducer>>> {
+        self.inner.get_postings_reader()
+    }
+
+    fn get_points_reader(&self) -> Result<Option<Arc<dyn PointsReader>>> {
+        self.inner.get_points_reader()
+    }
+
+    fn get_vector_reader(&self) -> Result<Option<Arc<dyn KnnVectorsReader>>> {
+        self.inner.get_vector_reader()
+    }
+}
+
+/// A [`CodecReader`] that reports a caller-supplied live-docs set and document
+/// count in place of the wrapped reader's own.
+///
+/// Equivalent to the anonymous `FilterCodecReader`
+/// `FilterCodecReader.wrapLiveDocs` returns.
+pub struct LiveDocsCodecReader {
+    inner: Arc<dyn CodecReader>,
+    live_docs: Option<Arc<dyn Bits>>,
+    num_docs: i32,
+}
+
+impl std::fmt::Debug for LiveDocsCodecReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiveDocsCodecReader")
+            .field("num_docs", &self.num_docs)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Serves an `Arc<dyn Bits>` where a `Box<dyn Bits>` is expected.
+///
+/// Java hands out the `Bits` object itself; the crate's `getLiveDocs` returns
+/// an owned box, so a shared set is wrapped rather than cloned.
+#[derive(Debug)]
+struct ArcBits(Arc<dyn Bits>);
+
+impl Bits for ArcBits {
+    fn get(&self, index: usize) -> bool {
+        self.0.get(index)
+    }
+
+    fn length(&self) -> usize {
+        self.0.length()
+    }
+}
+
+impl LeafReader for LiveDocsCodecReader {
+    fn core(&self) -> &IndexReaderCore {
+        self.inner.core()
+    }
+
+    fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+        self.inner.term_vectors()
+    }
+
+    fn num_docs(&self) -> i32 {
+        self.num_docs
+    }
+
+    fn max_doc(&self) -> i32 {
+        self.inner.max_doc()
+    }
+
+    fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+        self.inner.stored_fields()
+    }
+
+    fn do_close(&self) -> Result<()> {
+        self.inner.do_close()
+    }
+
+    fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+        // The live docs are being altered, so the reader is no longer cacheable.
+        None
+    }
+
+    fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+        self.inner.get_core_cache_helper()
+    }
+
+    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        self.inner.terms(field)
+    }
+
+    fn get_numeric_doc_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+        self.inner.get_numeric_doc_values(field)
+    }
+
+    fn get_binary_doc_values(&self, field: &str) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        self.inner.get_binary_doc_values(field)
+    }
+
+    fn get_sorted_doc_values(&self, field: &str) -> Result<Option<Box<dyn SortedDocValues>>> {
+        self.inner.get_sorted_doc_values(field)
+    }
+
+    fn get_sorted_numeric_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        self.inner.get_sorted_numeric_doc_values(field)
+    }
+
+    fn get_sorted_set_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        self.inner.get_sorted_set_doc_values(field)
+    }
+
+    fn get_norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+        self.inner.get_norm_values(field)
+    }
+
+    fn get_doc_values_skipper(&self, field: &str) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        self.inner.get_doc_values_skipper(field)
+    }
+
+    fn get_float_vector_values(&self, field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
+        self.inner.get_float_vector_values(field)
+    }
+
+    fn get_byte_vector_values(&self, field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
+        self.inner.get_byte_vector_values(field)
+    }
+
+    fn get_field_infos(&self) -> FieldInfos {
+        self.inner.get_field_infos()
+    }
+
+    fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
+        self.live_docs
+            .as_ref()
+            .map(|b| Box::new(ArcBits(Arc::clone(b))) as Box<dyn Bits>)
+    }
+
+    fn get_point_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
+        self.inner.get_point_values(field)
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        self.inner.check_integrity()
+    }
+
+    fn get_meta_data(&self) -> LeafMetaData {
+        self.inner.get_meta_data()
+    }
+
+    fn search_nearest_vectors(
+        &self,
+        field: &str,
+        target: &[f32],
+        collector: &mut dyn KnnCollector,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<()> {
+        self.inner
+            .search_nearest_vectors(field, target, collector, accept_docs)
+    }
+
+    fn search_nearest_vectors_byte(
+        &self,
+        field: &str,
+        target: &[u8],
+        collector: &mut dyn KnnCollector,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<()> {
+        self.inner
+            .search_nearest_vectors_byte(field, target, collector, accept_docs)
+    }
+}
+
+impl CodecReader for LiveDocsCodecReader {
     fn get_fields_reader(&self) -> Result<Option<Box<dyn StoredFieldsReader>>> {
         self.inner.get_fields_reader()
     }
