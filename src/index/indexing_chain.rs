@@ -681,7 +681,7 @@ impl DefaultIndexingChain {
             return Ok(());
         };
         consumer.start_document(doc_id).inspect_err(|error| {
-            self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+            self.on_aborting_exception(LuceneError::CorruptIndex(format!(
                 "the stored fields of segment may be corrupt after doc {doc_id}: {error}"
             )));
         })
@@ -695,7 +695,7 @@ impl DefaultIndexingChain {
             return Ok(());
         };
         consumer.finish_document().inspect_err(|error| {
-            self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+            self.on_aborting_exception(LuceneError::CorruptIndex(format!(
                 "the stored fields of segment may be corrupt: {error}"
             )));
         })
@@ -720,7 +720,7 @@ impl DefaultIndexingChain {
         // read failure surfaces one call earlier and must be routed to the same
         // place: a half-read stored value leaves the segment untrustworthy.
         let value = field.stored_value().inspect_err(|error| {
-            self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+            self.on_aborting_exception(LuceneError::CorruptIndex(format!(
                 "the stored value of field \"{}\" could not be read: {error}",
                 field.name()
             )));
@@ -758,7 +758,7 @@ impl DefaultIndexingChain {
             )));
         };
         consumer.write_field(&info, value).inspect_err(|error| {
-            self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+            self.on_aborting_exception(LuceneError::CorruptIndex(format!(
                 "the stored fields of segment may be corrupt after field \"{}\": {error}",
                 field.name()
             )));
@@ -803,6 +803,65 @@ impl DefaultIndexingChain {
     /// (`IndexingChain.java:1375-1381`): it is the only part of
     /// `initializeFieldInfo` that can leave a half-written file behind, because
     /// it is the only part that opens one.
+    /// Records the failure that makes the whole segment untrustworthy.
+    ///
+    /// Equivalent to `IndexingChain.onAbortingException(Throwable)`, which sets
+    /// `hasHitAbortingException` and hands the cause to the consumer the
+    /// `DocumentsWriterPerThread` installed. This port keeps the first such
+    /// failure and reports it at the end of the document, which is where the
+    /// caller can act on it.
+    fn on_aborting_exception(&mut self, error: LuceneError) {
+        if self.aborting_error.is_none() {
+            self.aborting_error = Some(error);
+        }
+    }
+
+    /// Fails when a field the index sort names is indexed with the wrong
+    /// doc-values type.
+    ///
+    /// Equivalent to `IndexingChain.validateIndexSortDVType(Sort, String, DocValuesType)`.
+    /// Java asks each sorter for a comparator over a reader that answers only
+    /// for the field being validated and throws from the accessor of the wrong
+    /// kind; the check that reaches is exactly the one made directly here — the
+    /// sort field's type must agree with the doc-values type the field carries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when a sort field cannot sort an
+    /// index at all, and [`LuceneError::IllegalArgument`] when it names this
+    /// field with the wrong doc-values type.
+    fn validate_index_sort_dv_type(
+        index_sort: &crate::search::Sort,
+        field_to_validate: &str,
+        dv_type: DocValuesType,
+    ) -> Result<()> {
+        for sort_field in index_sort.fields() {
+            if sort_field.get_index_sorter().is_none() {
+                return Err(LuceneError::IllegalState(format!(
+                    "Cannot sort index with sort order {sort_field:?}"
+                )));
+            }
+            if sort_field.field() != Some(field_to_validate) {
+                continue;
+            }
+            let expected = match sort_field.field_type() {
+                crate::search::SortFieldType::String => DocValuesType::SORTED,
+                crate::search::SortFieldType::Int
+                | crate::search::SortFieldType::Long
+                | crate::search::SortFieldType::Float
+                | crate::search::SortFieldType::Double => DocValuesType::NUMERIC,
+                _ => continue,
+            };
+            if dv_type != expected {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "SortField {sort_field:?} expected field [{field_to_validate}] to be \
+                     {expected:?} but it is [{dv_type:?}]"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Returns a leaf reader over the doc values buffered so far, which is all
     /// the index sorter has to compare at flush time.
     ///
@@ -922,6 +981,20 @@ impl DefaultIndexingChain {
         // writer of every field that declares one, indexed or not
         // (`IndexingChain.java:1351-1369`); the `NONE` arm creates nothing and
         // the `default` arm is unreachable for a valid [`DocValuesType`].
+        // Java validates the field against the index sort here, the first time
+        // it is seen with a doc-values type: a sort that names a field indexed
+        // with the wrong kind cannot order the segment, and finding that out at
+        // flush would waste the whole segment
+        // (`IndexingChain.java:1345-1350`).
+        if field_info.doc_values_type != DocValuesType::NONE {
+            if let Some(index_sort) = self.config.index_sort() {
+                Self::validate_index_sort_dv_type(
+                    index_sort,
+                    &field_info.name,
+                    field_info.doc_values_type,
+                )?;
+            }
+        }
         let doc_values = match field_info.doc_values_type {
             DocValuesType::NONE => None,
             _ => Some(DocValuesWriter::new(
@@ -959,7 +1032,7 @@ impl DefaultIndexingChain {
             match consumer.add_field(field_info) {
                 Ok(writer) => Some(writer),
                 Err(error) => {
-                    self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+                    self.on_aborting_exception(LuceneError::CorruptIndex(format!(
                         "the vectors of segment may be corrupt after field \"{}\": {error}",
                         field_info.name
                     )));
@@ -1892,7 +1965,7 @@ impl IndexingChain for DefaultIndexingChain {
                         error,
                         LuceneError::IllegalArgument(_) | LuceneError::IllegalState(_)
                     ) {
-                        self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+                        self.on_aborting_exception(LuceneError::CorruptIndex(format!(
                             "indexing chain buffers may be corrupt after field \"{}\": {error}",
                             field.name()
                         )));
@@ -1922,7 +1995,7 @@ impl IndexingChain for DefaultIndexingChain {
                         error,
                         LuceneError::IllegalArgument(_) | LuceneError::IllegalState(_)
                     ) {
-                        self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+                        self.on_aborting_exception(LuceneError::CorruptIndex(format!(
                             "indexing chain buffers may be corrupt after field \"{}\": {error}",
                             field.name()
                         )));
@@ -1957,7 +2030,7 @@ impl IndexingChain for DefaultIndexingChain {
                         error,
                         LuceneError::IllegalArgument(_) | LuceneError::IllegalState(_)
                     ) {
-                        self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+                        self.on_aborting_exception(LuceneError::CorruptIndex(format!(
                             "indexing chain buffers may be corrupt after field \"{}\": {error}",
                             field.name()
                         )));
@@ -1984,7 +2057,7 @@ impl IndexingChain for DefaultIndexingChain {
                         error,
                         LuceneError::IllegalArgument(_) | LuceneError::IllegalState(_)
                     ) {
-                        self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+                        self.on_aborting_exception(LuceneError::CorruptIndex(format!(
                             "the vectors of segment may be corrupt after field \"{}\": {error}",
                             field.name()
                         )));
@@ -2046,7 +2119,7 @@ impl IndexingChain for DefaultIndexingChain {
             // the aborting-exception consumer.
             if let Some(consumer) = self.term_vectors_consumer.as_mut() {
                 if let Err(error) = consumer.finish_document(doc_id, self.terms_writer.pool()) {
-                    self.aborting_error = Some(LuceneError::CorruptIndex(format!(
+                    self.on_aborting_exception(LuceneError::CorruptIndex(format!(
                         "the term vectors of segment may be corrupt after doc {doc_id}: {error}"
                     )));
                     return Err(error);
@@ -4877,5 +4950,27 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
         _accept_docs: &mut dyn crate::search::AcceptDocs,
     ) -> Result<()> {
         Ok(())
+    }
+}
+
+/// Writes one numeric value into `scratch` in the sortable byte encoding its
+/// kind uses.
+///
+/// Equivalent to `IndexingChain.encodeSortablePointBytes(long, LongColumn.NumericKind, byte[])`:
+/// the four- and eight-byte kinds encode differently, and a point field's bytes
+/// must match the width its field type declares.
+pub fn encode_sortable_point_bytes(
+    raw: i64,
+    kind: crate::document::column::NumericKind,
+    scratch: &mut [u8],
+) {
+    use crate::document::column::NumericKind;
+    match kind {
+        NumericKind::Int | NumericKind::Float => {
+            crate::util::NumericUtils::int_to_sortable_bytes(raw as i32, scratch, 0)
+        }
+        NumericKind::Long | NumericKind::Double => {
+            crate::util::NumericUtils::long_to_sortable_bytes(raw, scratch, 0)
+        }
     }
 }
