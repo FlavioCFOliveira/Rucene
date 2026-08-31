@@ -8,6 +8,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use crate::error::Result;
+use crate::index::TermStates;
 use crate::index::{IndexReaderContext, Term};
 use crate::search::boolean_clause::Occur;
 use crate::search::boolean_query::Builder as BooleanQueryBuilder;
@@ -17,7 +18,6 @@ use crate::search::index_searcher::{IndexSearcher, TooManyClauses};
 use crate::search::query::Query;
 use crate::search::query_visitor::QueryVisitor;
 use crate::search::term_query::TermQuery;
-use crate::search::term_states::TermStates;
 
 /// Defines how the queries for the individual terms of a
 /// [`BlendedTermQuery`] are merged.

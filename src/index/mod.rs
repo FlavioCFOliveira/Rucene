@@ -203,7 +203,8 @@ pub use stored_fields_consumer::StoredFieldsConsumer;
 pub use terms::{
     AcceptStatus, EmptyFields, EmptyTerms, EmptyTermsEnum, Fields, FilteredTermsEnum,
     FilteredTermsEnumFilter, OrdTermState, PrefixCodedTerms, PrefixCodedTermsBuilder,
-    PrefixCodedTermsIterator, SeekStatus, SingleTermsEnum, Term, TermState, Terms, TermsEnum,
+    PrefixCodedTermsIterator, SeekStatus, SingleTermsEnum, Term, TermState, TermStates, Terms,
+    TermsEnum,
 };
 pub use terms_enum_index::{
     prefix8_to_comparable_unsigned_long, TermsEnumIndex, TermsEnumIndexState,

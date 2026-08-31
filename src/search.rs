@@ -10,6 +10,7 @@ pub mod abstract_doc_id_set_iterator;
 pub mod abstract_multi_term_query_constant_score_wrapper;
 pub mod automaton_query;
 pub mod batch_score_bulk_scorer;
+pub mod binary_sort_field;
 pub mod bit_set_doc_id_stream;
 pub mod bit_set_util;
 pub mod blended_term_query;
@@ -27,6 +28,7 @@ pub mod caching_collector;
 pub mod collection_terminated_exception;
 pub mod collector;
 pub mod combined_field_query;
+pub mod comparators;
 pub mod conjunction_bulk_scorer;
 pub mod conjunction_disi;
 pub mod conjunction_scorer;
@@ -51,17 +53,32 @@ pub mod doc_id_set;
 pub mod doc_id_set_bulk_iterator;
 pub mod doc_id_set_iterator;
 pub mod doc_id_stream;
+mod doc_values_access;
+mod doc_values_iteration;
+pub mod doc_values_range_iterator;
 pub mod doc_values_rewrite_method;
+pub mod double_values;
+pub mod double_values_source;
 pub mod exact_phrase_matcher;
+pub mod field_comparator;
+pub mod field_comparator_source;
+pub mod field_doc;
+pub mod field_exists_query;
+pub mod field_value_hit_queue;
 pub mod filter_matches_iterator;
 pub mod fuzzy_automaton_builder;
 pub mod fuzzy_query;
 pub mod fuzzy_terms_enum;
 pub mod hit_queue;
 pub mod impacts_disi;
+pub mod index_or_doc_values_query;
 pub mod index_priority_queue;
 pub mod index_searcher;
+pub mod index_sort_sorted_numeric_doc_values_range_query;
 pub mod knn;
+pub mod leaf_field_comparator;
+pub mod long_values;
+pub mod long_values_source;
 pub mod match_all_docs_query;
 pub mod match_no_docs_query;
 pub mod matches;
@@ -71,6 +88,7 @@ pub mod max_score_bulk_scorer;
 pub mod max_score_cache;
 pub mod multi_collector;
 pub mod multi_collector_manager;
+pub mod multi_leaf_field_comparator;
 pub mod multi_norms_leaf_sim_scorer;
 pub mod multi_phrase_query;
 pub mod multi_term_query;
@@ -79,12 +97,16 @@ pub mod multi_term_query_constant_score_wrapper;
 pub mod multiset;
 pub mod named_matches;
 pub mod ngram_phrase_query;
+pub mod numeric_doc_values_range_query;
+pub mod numeric_field_stats;
 pub mod phrase_matcher;
 pub mod phrase_positions;
 pub mod phrase_query;
 pub mod phrase_queue;
 pub mod phrase_scorer;
 pub mod phrase_weight;
+pub mod point_in_set_query;
+pub mod point_range_query;
 pub mod positive_scores_only_collector;
 pub mod prefix_query;
 pub mod pruning;
@@ -107,9 +129,14 @@ pub mod scoring_rewrite;
 pub mod segment_cacheable;
 pub mod sim_scorer_source;
 pub mod similarities;
+pub mod simple_field_comparator;
 pub mod skip_block_range_iterator;
 pub mod sloppy_phrase_matcher;
 pub mod sort;
+pub mod sorted_numeric_selector;
+pub mod sorted_numeric_sort_field;
+pub mod sorted_set_selector;
+pub mod sorted_set_sort_field;
 pub mod synonym_query;
 pub mod task_executor;
 pub mod term_collecting_rewrite;
@@ -118,10 +145,12 @@ pub mod term_matches_iterator;
 pub mod term_query;
 pub mod term_range_query;
 pub mod term_scorer;
-pub mod term_states;
 pub mod time_limiting_bulk_scorer;
 pub mod top_docs;
 pub mod top_docs_collector;
+pub mod top_field_collector;
+pub mod top_field_collector_manager;
+pub mod top_field_docs;
 pub mod top_score_doc_collector;
 pub mod top_score_doc_collector_manager;
 pub mod top_terms_rewrite;
@@ -159,7 +188,13 @@ pub use similarities::{
     Similarity, SimilarityBase, TFIDFSimilarity, TermStatistics,
 };
 pub use sloppy_phrase_matcher::SloppyPhraseMatcher;
-pub use sort::{read_sort, write_sort, MissingValue, Sort, SortField, SortFieldType};
+pub use sort::{
+    read_sort, write_sort, MissingValue, Sort, SortField, SortFieldKind, SortFieldType,
+};
+pub use sorted_numeric_selector::{SortedNumericSelector, SortedNumericSelectorType};
+pub use sorted_numeric_sort_field::SortedNumericSortField;
+pub use sorted_set_selector::{SortedSetSelector, SortedSetSelectorType};
+pub use sorted_set_sort_field::SortedSetSortField;
 
 pub use abstract_doc_id_set_iterator::{AbstractDocIdSetIterator, FilterDocIdSetIterator};
 pub use abstract_multi_term_query_constant_score_wrapper::{
@@ -173,6 +208,7 @@ pub use automaton_query::{
     term_hash, AutomatonQuery,
 };
 pub use batch_score_bulk_scorer::BatchScoreBulkScorer;
+pub use binary_sort_field::BinarySortField;
 pub use bit_set_doc_id_stream::BitSetDocIdStream;
 pub use blended_term_query::{
     boolean_rewrite, disjunction_max_rewrite, BlendedRewriteMethod, BlendedTermQuery,
@@ -231,8 +267,20 @@ pub use disjunction_scorer::{ByMatchCost, DisjunctionScorer};
 pub use disjunction_sum_scorer::DisjunctionSumScorer;
 pub use doc_id_set_bulk_iterator::DocIdSetBulkIterator;
 pub use doc_id_stream::{CheckedIntConsumer, DocIdStream, RangeDocIdStream};
+pub use doc_values_range_iterator::DocValuesRangeIterator;
 pub use doc_values_rewrite_method::{DocValuesRewriteMethod, MultiTermQueryDocValuesWrapper};
+pub use double_values::{
+    with_default, DoubleValues, EmptyDoubleValues, ScorerDoubleValues, WithDefaultDoubleValues,
+};
+pub use double_values_source::{
+    DoubleValueDecoder, DoubleValuesComparatorSource, DoubleValuesSource,
+};
 pub use exact_phrase_matcher::{merge_impacts, ExactPhraseMatcher, MergedImpactsSource};
+pub use field_comparator::{FieldComparator, RelevanceComparator, SortValue, TermValComparator};
+pub use field_comparator_source::FieldComparatorSource;
+pub use field_doc::FieldDoc;
+pub use field_exists_query::FieldExistsQuery;
+pub use field_value_hit_queue::{Entry as FieldValueHitQueueEntry, FieldValueHitQueue};
 pub use filter_matches_iterator::FilterMatchesIterator;
 pub use fuzzy_automaton_builder::FuzzyAutomatonBuilder;
 pub use fuzzy_query::{
@@ -244,9 +292,16 @@ pub use fuzzy_terms_enum::{
 };
 pub use hit_queue::{HitQueue, HitQueueComparator};
 pub use impacts_disi::ImpactsDISI;
+pub use index_or_doc_values_query::IndexOrDocValuesQuery;
 pub use index_priority_queue::{IndexOrder, IndexPriorityQueue};
 pub use index_searcher::{
     IndexSearcher, LeafReaderContextPartition, LeafSlice, TooManyClauses, TooManyNestedClauses,
+};
+pub use index_sort_sorted_numeric_doc_values_range_query::IndexSortSortedNumericDocValuesRangeQuery;
+pub use leaf_field_comparator::LeafFieldComparator;
+pub use long_values::LongValues;
+pub use long_values_source::{
+    ConstantLongValuesSource, LongValuesComparatorSource, LongValuesSource,
 };
 pub use match_all_docs_query::MatchAllDocsQuery;
 pub use match_no_docs_query::MatchNoDocsQuery;
@@ -260,6 +315,9 @@ pub use max_score_cache::MaxScoreCache;
 pub use multi_collector::{MinCompetitiveScoreAwareScorable, MultiCollector, MultiLeafCollector};
 pub use multi_collector_manager::{
     AnyCollector, ErasedCollectorManager, MultiCollectorHandle, MultiCollectorManager,
+};
+pub use multi_leaf_field_comparator::{
+    compare_bottom_weighted, compare_top_weighted, MultiLeafFieldComparator,
 };
 pub use multi_norms_leaf_sim_scorer::MultiNormsLeafSimScorer;
 pub use multi_phrase_query::{
@@ -278,6 +336,8 @@ pub use multi_term_query_constant_score_wrapper::MultiTermQueryConstantScoreWrap
 pub use multiset::Multiset;
 pub use named_matches::{wrap_query, NamedMatches, NamedQuery};
 pub use ngram_phrase_query::NGramPhraseQuery;
+pub use numeric_doc_values_range_query::NumericDocValuesRangeQuery;
+pub use numeric_field_stats::{NumericFieldStats, Stats as NumericFieldStatsValues};
 pub use phrase_matcher::{
     DummyImpactsSource, IteratorWithImpacts, PhraseImpactsDISI, PhraseMatcher, SharedPostings,
 };
@@ -288,6 +348,8 @@ pub use phrase_query::{
 pub use phrase_queue::PhraseQueue;
 pub use phrase_scorer::PhraseScorer;
 pub use phrase_weight::{PhraseWeight, PhraseWeightImpl};
+pub use point_in_set_query::{PointFormatter, PointInSetQuery};
+pub use point_range_query::{DimensionFormatter, PointRangeQuery};
 pub use positive_scores_only_collector::PositiveScoresOnlyCollector;
 pub use prefix_query::PrefixQuery;
 pub use pruning::Pruning;
@@ -314,6 +376,7 @@ pub use scoring_rewrite::{
     ScoringBooleanRewrite, ScoringRewrite,
 };
 pub use segment_cacheable::SegmentCacheable;
+pub use simple_field_comparator::{SimpleFieldComparator, SimpleFieldComparatorImpl};
 pub use skip_block_range_iterator::{Match, SkipBlockRangeIterator};
 pub use synonym_query::{
     merge_impacts as merge_synonym_impacts, Builder as SynonymQueryBuilder, FreqBoostTermScorer,
@@ -329,10 +392,12 @@ pub use term_matches_iterator::TermMatchesIterator;
 pub use term_query::{empty_term_scorer, TermQuery, TermScorerSupplier, TermWeight};
 pub use term_range_query::{term_bytes_to_string, TermRangeQuery};
 pub use term_scorer::{BoxedImpactsEnum, TermScorer};
-pub use term_states::TermStates;
 pub use time_limiting_bulk_scorer::TimeLimitingBulkScorer;
 pub use top_docs::{default_tie_breaker, TieBreaker, TopDocs};
 pub use top_docs_collector::{empty_top_docs, TopDocsCollector};
+pub use top_field_collector::{can_early_terminate, TopFieldCollector};
+pub use top_field_collector_manager::TopFieldCollectorManager;
+pub use top_field_docs::TopFieldDocs;
 pub use top_score_doc_collector::{DocScoreEncoder, TopScoreDocCollector};
 pub use top_score_doc_collector_manager::TopScoreDocCollectorManager;
 pub use top_terms_rewrite::{

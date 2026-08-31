@@ -4,7 +4,6 @@
 
 use crate::error::{LuceneError, Result};
 use crate::search::collector::Collector;
-use crate::search::score_doc::ScoreDoc;
 use crate::search::top_docs::TopDocs;
 use crate::search::total_hits::{TotalHits, TotalHitsRelation};
 
@@ -47,7 +46,26 @@ pub fn empty_top_docs() -> TopDocs {
 /// Java overloads `topDocs()` on arity; Rust has no overloading, so the three
 /// forms are [`top_docs`](Self::top_docs), [`top_docs_from`](Self::top_docs_from)
 /// and [`top_docs_range`](Self::top_docs_range).
+///
+/// Java's `T extends ScoreDoc` type parameter becomes the associated type
+/// [`Hit`](Self::Hit). The result type is the associated
+/// [`Docs`](Self::Docs), because a `TopFieldCollector` returns a
+/// [`TopFieldDocs`](crate::search::TopFieldDocs) that this port cannot express
+/// as a subtype of [`TopDocs`].
 pub trait TopDocsCollector: Collector {
+    /// The hit type this collector accumulates.
+    ///
+    /// Equivalent to the `T extends ScoreDoc` type parameter of
+    /// `TopDocsCollector<T>`.
+    type Hit;
+
+    /// The result type this collector returns.
+    ///
+    /// Equivalent to the return type of the covariantly-overridden
+    /// `topDocs()`: [`TopDocs`] for `TopScoreDocCollector`, and
+    /// [`TopFieldDocs`](crate::search::TopFieldDocs) for `TopFieldCollector`.
+    type Docs;
+
     /// The total number of documents that matched this query.
     ///
     /// Equivalent to `TopDocsCollector.getTotalHits()`, reading the
@@ -68,7 +86,7 @@ pub trait TopDocsCollector: Collector {
     /// Removes and returns the least competitive entry of the priority queue.
     ///
     /// Equivalent to `pq.pop()`.
-    fn pop(&mut self) -> Option<ScoreDoc>;
+    fn pop(&mut self) -> Option<Self::Hit>;
 
     /// The number of valid priority-queue entries.
     ///
@@ -90,13 +108,17 @@ pub trait TopDocsCollector: Collector {
     /// Panics when the priority queue holds fewer than `how_many` entries;
     /// [`top_docs_range`](Self::top_docs_range) guarantees it does not, as
     /// Java's `NullPointerException` on the same misuse implies.
-    fn populate_results(&mut self, how_many: usize) -> Vec<ScoreDoc> {
-        let mut results = vec![ScoreDoc::new(0, 0.0); how_many];
-        for slot in results.iter_mut().rev() {
-            *slot = self
-                .pop()
-                .expect("INVARIANT: prune_least_competitive_hits_to left how_many entries");
+    fn populate_results(&mut self, how_many: usize) -> Vec<Self::Hit> {
+        let mut results = Vec::with_capacity(how_many);
+        for _ in 0..how_many {
+            results.push(
+                self.pop()
+                    .expect("INVARIANT: prune_least_competitive_hits_to left how_many entries"),
+            );
         }
+        // Java writes the pops into `results` from the last index down to the
+        // first, so the most competitive hit ends up first.
+        results.reverse();
         results
     }
 
@@ -107,19 +129,17 @@ pub trait TopDocsCollector: Collector {
     /// there were no calls to collect or because the arguments to
     /// [`top_docs_range`](Self::top_docs_range) selected nothing.
     ///
+    /// **Divergence from Lucene 10.5.0.** Java implements this concretely,
+    /// returning the shared `EMPTY_TOPDOCS` or a new `TopDocs`. The result type
+    /// is an associated type here, so the base implementation cannot construct
+    /// it and every collector supplies its own; the two in this crate reproduce
+    /// Java's body for their result type.
+    ///
     /// # Errors
     ///
     /// Propagates the [`TotalHits`] validation error, which cannot trigger for
     /// a non-negative hit count.
-    fn new_top_docs(&self, results: Option<Vec<ScoreDoc>>, _start: i32) -> Result<TopDocs> {
-        match results {
-            None => Ok(empty_top_docs()),
-            Some(results) => Ok(TopDocs::new(
-                TotalHits::new(i64::from(self.total_hits()), self.total_hits_relation())?,
-                results,
-            )),
-        }
-    }
+    fn new_top_docs(&self, results: Option<Vec<Self::Hit>>, start: i32) -> Result<Self::Docs>;
 
     /// Prunes the least competitive hits until at most `keep` candidates
     /// remain.
@@ -142,7 +162,7 @@ pub trait TopDocsCollector: Collector {
     /// # Errors
     ///
     /// As [`top_docs_range`](Self::top_docs_range).
-    fn top_docs(&mut self) -> Result<TopDocs> {
+    fn top_docs(&mut self) -> Result<Self::Docs> {
         // In case the queue was populated with sentinel values there may be
         // fewer results than pq.size(), so return all results up to either
         // pq.size() or totalHits.
@@ -163,7 +183,7 @@ pub trait TopDocsCollector: Collector {
     /// # Errors
     ///
     /// As [`top_docs_range`](Self::top_docs_range).
-    fn top_docs_from(&mut self, start: i32) -> Result<TopDocs> {
+    fn top_docs_from(&mut self, start: i32) -> Result<Self::Docs> {
         let size = self.top_docs_size();
         self.top_docs_range(start, size as i32)
     }
@@ -184,7 +204,7 @@ pub trait TopDocsCollector: Collector {
     ///
     /// Returns [`LuceneError::IllegalArgument`] — with the message text Java
     /// produces — when `how_many` or `start` is negative.
-    fn top_docs_range(&mut self, start: i32, how_many: i32) -> Result<TopDocs> {
+    fn top_docs_range(&mut self, start: i32, how_many: i32) -> Result<Self::Docs> {
         // In case the queue was populated with sentinel values there may be
         // fewer results than pq.size(), so return all results up to either
         // pq.size() or totalHits.

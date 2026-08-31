@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::Result;
+use crate::index::TermStates;
 use crate::index::{Term, Terms, TermsEnum};
 use crate::search::blended_term_query::{boolean_rewrite, Builder as BlendedTermQueryBuilder};
 use crate::search::boolean_clause::Occur;
@@ -26,7 +27,6 @@ use crate::search::scoring_rewrite::{
 };
 use crate::search::term_collecting_rewrite::{TermCollectingRewrite, TopLevelBuilder};
 use crate::search::term_query::TermQuery;
-use crate::search::term_states::TermStates;
 use crate::search::top_terms_rewrite::{
     top_terms_rewrite, top_terms_rewrite_eq, top_terms_rewrite_hash, TopTermsRewrite,
 };

@@ -16,19 +16,17 @@
 //! self-referential struct, which cannot be written without `unsafe`, and this
 //! crate forbids `unsafe`.
 //!
-//! [`SimScorerSource`] therefore owns the [`Similarity`] and the statistics and
-//! rebuilds the borrowed scorer around every use. Every scoring weight in this
-//! package holds one, so the fix is confined to this file: once
-//! `crate::search::similarities` gains an entry point that produces an owned
-//! scorer from an `Arc`-held similarity — for example
-//! `fn scorer_owned(self: Arc<Self>, boost, collection_stats, term_stats) ->
-//! Box<dyn SimScorer + 'static>` on an extension trait, or a `Similarity`
-//! method taking `Arc<dyn Similarity>` — [`SimScorerSource`] should build the
-//! scorer once, in [`SimScorerSource::new`], and simply delegate to it.
+//! [`Similarity::scorer_owned`] is the entry point that resolves it: it takes
+//! `self: Arc<Self>` and returns a `Box<dyn SimScorer + 'static>`, so the
+//! similarity is shared *into* the scorer rather than borrowed by it — the same
+//! object graph Java builds. [`SimScorerSource`] builds that scorer once, in
+//! [`SimScorerSource::new`], and delegates every call to it; it remains as the
+//! single place where a weight stores what Lucene stores as a
+//! `Similarity.SimScorer` field, and as the home of the helper scorers below.
 //!
-//! The scores produced are identical either way; only the amount of work spent
-//! producing them differs, so nothing about which documents match or how they
-//! rank depends on this module.
+//! The scores produced are identical to a rebuild-on-every-use design; only the
+//! amount of work spent producing them differs, so nothing about which
+//! documents match or how they rank depends on this module.
 
 #![deny(unsafe_code)]
 
@@ -48,6 +46,7 @@ pub struct SimScorerSource {
     boost: f32,
     collection_stats: CollectionStatistics,
     term_stats: Vec<TermStatistics>,
+    scorer: Box<dyn SimScorer + Send + Sync + 'static>,
 }
 
 impl std::fmt::Debug for SimScorerSource {
@@ -57,7 +56,7 @@ impl std::fmt::Debug for SimScorerSource {
             .field("boost", &self.boost)
             .field("collection_stats", &self.collection_stats)
             .field("term_stats", &self.term_stats)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -72,11 +71,13 @@ impl SimScorerSource {
         collection_stats: CollectionStatistics,
         term_stats: Vec<TermStatistics>,
     ) -> Self {
+        let scorer = Arc::clone(&similarity).scorer_owned(boost, &collection_stats, &term_stats);
         Self {
             similarity,
             boost,
             collection_stats,
             term_stats,
+            scorer,
         }
     }
 
@@ -85,16 +86,27 @@ impl SimScorerSource {
         &self.similarity
     }
 
+    /// Returns the boost this source scores with.
+    pub fn boost(&self) -> f32 {
+        self.boost
+    }
+
+    /// Returns the collection statistics this source scores with.
+    pub fn collection_stats(&self) -> &CollectionStatistics {
+        &self.collection_stats
+    }
+
+    /// Returns the term statistics this source scores with.
+    pub fn term_stats(&self) -> &[TermStatistics] {
+        &self.term_stats
+    }
+
     /// Runs `f` with the [`SimScorer`] this source describes.
     ///
-    /// Prefer this over repeated [`SimScorer::score`] calls whenever several
-    /// scores are computed in a row: the borrowed scorer is built once for the
-    /// whole closure.
+    /// The scorer is the one [`Similarity::scorer_owned`] produced when this
+    /// source was created, so this is a plain borrow.
     pub fn with<R>(&self, f: impl FnOnce(&dyn SimScorer) -> R) -> R {
-        let scorer = self
-            .similarity
-            .scorer(self.boost, &self.collection_stats, &self.term_stats);
-        f(&*scorer)
+        f(&*self.scorer)
     }
 
     /// Runs `f` with a [`BulkSimScorer`] over the [`SimScorer`] this source

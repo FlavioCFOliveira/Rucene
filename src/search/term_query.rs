@@ -9,6 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
+use crate::index::TermStates;
 use crate::index::{
     ImpactsEnum, LeafReader, LeafReaderContext, NumericDocValues, PostingsEnum, Term, TermState,
     TermsEnum, POSTINGS_ENUM_FREQS, POSTINGS_ENUM_NONE, POSTINGS_ENUM_OFFSETS,
@@ -32,7 +33,6 @@ use crate::search::sim_scorer_source::{
 use crate::search::similarities::{CollectionStatistics, Explanation, Similarity, TermStatistics};
 use crate::search::term_matches_iterator::TermMatchesIterator;
 use crate::search::term_scorer::TermScorer;
-use crate::search::term_states::TermStates;
 use crate::search::two_phase_iterator::ScorerIterator;
 
 /// A [`Query`] that matches documents containing a term.

@@ -9,6 +9,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use crate::error::Result;
+use crate::index::TermStates;
 use crate::index::{IndexReaderContext, LeafReaderContext, Term, TermsEnum};
 use crate::search::boolean_clause::Occur;
 use crate::search::boolean_query::Builder as BooleanQueryBuilder;
@@ -22,7 +23,6 @@ use crate::search::term_collecting_rewrite::{
     collect_terms, TermCollectingRewrite, TermCollector, TopLevelBuilder,
 };
 use crate::search::term_query::TermQuery;
-use crate::search::term_states::TermStates;
 use crate::util::attribute::AttributeSource;
 use crate::util::BytesRef;
 

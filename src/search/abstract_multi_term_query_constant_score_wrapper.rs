@@ -7,6 +7,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
+use crate::index::TermStates;
 use crate::index::{IndexReaderContext, LeafReaderContext, Term, TermState, Terms, TermsEnum};
 use crate::search::boolean_clause::Occur;
 use crate::search::boolean_query::Builder as BooleanQueryBuilder;
@@ -24,7 +25,6 @@ use crate::search::score_mode::ScoreMode;
 use crate::search::scorer::Scorer;
 use crate::search::scorer_supplier::ScorerSupplier;
 use crate::search::term_query::TermQuery;
-use crate::search::term_states::TermStates;
 use crate::search::two_phase_iterator::ScorerIterator;
 use crate::util::{BytesRef, RamUsageEstimator};
 

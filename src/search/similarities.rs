@@ -62,6 +62,7 @@
 #![deny(unsafe_code)]
 
 use std::fmt::{self, Debug};
+use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
 use crate::index::indexing_chain::FieldInvertState;
@@ -209,6 +210,77 @@ pub trait Similarity: Send + Sync + Debug {
         collection_stats: &CollectionStatistics,
         term_stats: &[TermStatistics],
     ) -> Box<dyn SimScorer + 'a>;
+
+    /// The owned counterpart of [`scorer`](Self::scorer): returns a
+    /// [`SimScorer`] that does not borrow the similarity.
+    ///
+    /// **This method has no counterpart in Lucene 10.5.0.** Java's `TermWeight`
+    /// simply stores the `Similarity.SimScorer` its constructor produced, and
+    /// the garbage collector keeps the similarity alive for as long as the
+    /// scorer needs it. In Rust the same shape is a self-referential struct,
+    /// which cannot be written without `unsafe`, so a weight can only hold a
+    /// scorer that owns whatever it reads. This entry point provides one: the
+    /// similarity is shared into the scorer through an [`Arc`], which is
+    /// exactly the object graph Java builds.
+    ///
+    /// The default implementation keeps the shared similarity and the
+    /// statistics and rebuilds the borrowed scorer around every call, which is
+    /// always correct. An implementation whose scorer already owns everything
+    /// it reads — [`BM25Similarity`], for instance — overrides this method and
+    /// returns that scorer directly, so that nothing is rebuilt. **The scores
+    /// are the same either way**: an override must return a scorer that agrees
+    /// with [`scorer`](Self::scorer) on every input.
+    ///
+    /// The returned scorer is `Send + Sync`, because a weight is shared across
+    /// the threads of a concurrent search and hands the same scorer to every
+    /// scorer it creates — which is what Java does with a plain reference.
+    ///
+    /// * `boost` — a multiplicative factor to apply to the produced scores;
+    /// * `collection_stats` — collection-level statistics for the field;
+    /// * `term_stats` — term-level statistics, one entry per query term.
+    fn scorer_owned(
+        self: Arc<Self>,
+        boost: f32,
+        collection_stats: &CollectionStatistics,
+        term_stats: &[TermStatistics],
+    ) -> Box<dyn SimScorer + Send + Sync + 'static>
+    where
+        Self: 'static,
+    {
+        Box::new(RebuildingSimScorer {
+            similarity: self,
+            boost,
+            collection_stats: collection_stats.clone(),
+            term_stats: term_stats.to_vec(),
+        })
+    }
+}
+
+/// The [`SimScorer`] the default [`Similarity::scorer_owned`] returns: it owns
+/// the similarity and the statistics, and rebuilds the borrowed scorer around
+/// every use.
+///
+/// See [`Similarity::scorer_owned`] for why it exists. The scores it produces
+/// are exactly [`Similarity::scorer`]'s.
+struct RebuildingSimScorer<S: Similarity + ?Sized> {
+    similarity: Arc<S>,
+    boost: f32,
+    collection_stats: CollectionStatistics,
+    term_stats: Vec<TermStatistics>,
+}
+
+impl<S: Similarity + ?Sized> SimScorer for RebuildingSimScorer<S> {
+    fn score(&self, freq: f32, norm: i64) -> f32 {
+        self.similarity
+            .scorer(self.boost, &self.collection_stats, &self.term_stats)
+            .score(freq, norm)
+    }
+
+    fn explain(&self, freq: &Explanation, norm: i64) -> Explanation {
+        self.similarity
+            .scorer(self.boost, &self.collection_stats, &self.term_stats)
+            .explain(freq, norm)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +614,33 @@ impl Similarity for BM25Similarity {
         for (i, entry) in cache.iter_mut().enumerate() {
             // Java: 1f / (k1 * ((1 - b) + b * LENGTH_TABLE[i] / avgdl)), all in
             // `float`; `1 - b` is an `int` minus a `float`, hence a `float`.
+            *entry = 1.0
+                / (self.k1
+                    * ((1.0 - self.b) + self.b * similarity_base::norm_length(i as i64) / avgdl));
+        }
+        Box::new(BM25Scorer::new(boost, self.k1, self.b, idf, avgdl, cache))
+    }
+
+    /// Equivalent to [`Self::scorer`]: `BM25Scorer` precomputes everything it
+    /// needs and borrows nothing from the similarity, so the very same scorer
+    /// is returned without a rebuild. See [`Similarity::scorer_owned`].
+    fn scorer_owned(
+        self: Arc<Self>,
+        boost: f32,
+        collection_stats: &CollectionStatistics,
+        term_stats: &[TermStatistics],
+    ) -> Box<dyn SimScorer + Send + Sync + 'static>
+    where
+        Self: 'static,
+    {
+        let idf = match term_stats {
+            [single] => self.idf_explain(collection_stats, single),
+            many => self.idf_explain_phrase(collection_stats, many),
+        };
+        let avgdl = self.avg_field_length(collection_stats);
+
+        let mut cache = [0.0f32; 256];
+        for (i, entry) in cache.iter_mut().enumerate() {
             *entry = 1.0
                 / (self.k1
                     * ((1.0 - self.b) + self.b * similarity_base::norm_length(i as i64) / avgdl));

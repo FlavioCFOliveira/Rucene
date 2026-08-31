@@ -13,9 +13,11 @@ use crate::index::{
     AcceptStatus, FilteredTermsEnum, FilteredTermsEnumFilter, PrefixCodedTerms,
     PrefixCodedTermsBuilder, PrefixCodedTermsIterator, Term, Terms, TermsEnum,
 };
+use crate::search::index_or_doc_values_query::IndexOrDocValuesQuery;
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::multi_term_query::{
-    constant_score_blended_rewrite, multi_term_rewrite, MultiTermQuery, RewriteMethod,
+    constant_score_blended_rewrite, doc_values_rewrite, multi_term_rewrite, MultiTermQuery,
+    RewriteMethod,
 };
 use crate::search::query::Query;
 use crate::search::query_visitor::QueryVisitor;
@@ -124,6 +126,38 @@ impl TermInSetQuery {
             term_data_hash_code,
             term_data_bytes,
         })
+    }
+
+    /// Creates an [`IndexOrDocValuesQuery`] combining two
+    /// [`TermInSetQuery`]s over the same terms, which are packed only once —
+    /// which is faster.
+    ///
+    /// Equivalent to the static
+    /// `TermInSetQuery.newIndexOrDocValuesQuery(RewriteMethod, String, Collection<BytesRef>)`.
+    /// The doc-values query always uses
+    /// [`doc_values_rewrite`](crate::search::doc_values_rewrite).
+    ///
+    /// * `index_rewrite_method` — the rewrite method the indexed query uses;
+    /// * `field` — the field name of both the indexed and the doc-values query;
+    /// * `terms` — the query terms.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error the term encoder raises.
+    pub fn new_index_or_doc_values_query(
+        index_rewrite_method: Arc<dyn RewriteMethod>,
+        field: &str,
+        terms: Vec<BytesRef>,
+    ) -> Result<IndexOrDocValuesQuery> {
+        let packed = Arc::new(Self::pack_terms(field, terms)?);
+        let index_query: Arc<dyn Query> = Arc::new(Self::from_packed(
+            index_rewrite_method,
+            field,
+            Arc::clone(&packed),
+        )?);
+        let dv_query: Arc<dyn Query> =
+            Arc::new(Self::from_packed(doc_values_rewrite(), field, packed)?);
+        Ok(IndexOrDocValuesQuery::new(index_query, dv_query))
     }
 
     /// Sorts, deduplicates and prefix-encodes the query terms.

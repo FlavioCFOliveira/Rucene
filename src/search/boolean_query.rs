@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
+use crate::index::TermStates;
 use crate::search::boolean_clause::{BooleanClause, Occur};
 use crate::search::boolean_weight::BooleanWeight;
 use crate::search::boost_query::BoostQuery;
@@ -22,7 +23,6 @@ use crate::search::query::{Query, QueryKey};
 use crate::search::query_visitor::QueryVisitor;
 use crate::search::score_mode::ScoreMode;
 use crate::search::term_query::TermQuery;
-use crate::search::term_states::TermStates;
 use crate::search::weight::Weight;
 
 /// The four operators, in the order `java.util.EnumMap` iterates them: the

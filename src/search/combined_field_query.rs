@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
+use crate::index::TermStates;
 use crate::index::{DocAndFloatFeatureBuffer, LeafReaderContext, Term, POSTINGS_ENUM_FREQS};
 use crate::search::batch_score_bulk_scorer::BatchScoreBulkScorer;
 use crate::search::boolean_clause::Occur;
@@ -35,7 +36,6 @@ use crate::search::similarities::{CollectionStatistics, Explanation, TermStatist
 use crate::search::term_query::TermQuery;
 use crate::search::term_range_query::term_bytes_to_string;
 use crate::search::term_scorer::TermScorer;
-use crate::search::term_states::TermStates;
 use crate::search::weight::Weight;
 use crate::util::{Accountable, Bits, BytesRef, RamUsageEstimator};
 

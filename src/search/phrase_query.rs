@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
+use crate::index::TermStates;
 use crate::index::{
     ImpactsEnum, LeafReaderContext, SlowImpactsEnum, Term, TermsEnum, POSTINGS_ENUM_OFFSETS,
     POSTINGS_ENUM_POSITIONS,
@@ -27,7 +28,6 @@ use crate::search::sim_scorer_source::{SharedSimScorer, SimScorerSource};
 use crate::search::similarities::{Similarity, TermStatistics};
 use crate::search::sloppy_phrase_matcher::SloppyPhraseMatcher;
 use crate::search::term_query::TermQuery;
-use crate::search::term_states::TermStates;
 use crate::search::weight::Weight;
 use crate::util::BytesRef;
 

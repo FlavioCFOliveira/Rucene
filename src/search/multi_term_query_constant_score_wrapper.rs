@@ -7,6 +7,7 @@ use std::any::Any;
 use std::sync::Arc;
 
 use crate::error::Result;
+use crate::index::TermStates;
 use crate::index::{LeafReaderContext, PostingsEnum, Term, Terms, TermsEnum, POSTINGS_ENUM_NONE};
 use crate::search::abstract_multi_term_query_constant_score_wrapper::{
     rewriting_matches, rewriting_scorer_supplier, AbstractMultiTermQueryConstantScoreWrapper,
@@ -22,7 +23,6 @@ use crate::search::query_visitor::QueryVisitor;
 use crate::search::score_mode::ScoreMode;
 use crate::search::scorer_supplier::ScorerSupplier;
 use crate::search::term_query::TermQuery;
-use crate::search::term_states::TermStates;
 use crate::search::weight::Weight;
 use crate::util::{Accountable, DocIdSetBuilder};
 

@@ -8,6 +8,7 @@ use std::collections::{BinaryHeap, HashMap};
 use std::sync::Arc;
 
 use crate::error::Result;
+use crate::index::TermStates;
 use crate::index::{IndexReaderContext, LeafReaderContext, Term, TermsEnum};
 use crate::search::boost_attribute::{add_boost_attribute, boost_of};
 use crate::search::index_searcher::IndexSearcher;
@@ -17,7 +18,6 @@ use crate::search::max_non_competitive_boost_attribute::{
 use crate::search::multi_term_query::{MultiTermQuery, RewriteMethod};
 use crate::search::query::Query;
 use crate::search::term_collecting_rewrite::{collect_terms, TermCollectingRewrite, TermCollector};
-use crate::search::term_states::TermStates;
 use crate::util::attribute::AttributeSource;
 use crate::util::BytesRef;
 

@@ -15,7 +15,7 @@ use crate::search::boolean_clause::Occur;
 use crate::search::constant_score_query::ConstantScoreQuery;
 use crate::search::constant_score_scorer::ConstantScoreScorer;
 use crate::search::constant_score_weight::{ConstantScoreWeight, ConstantScoreWeightImpl};
-use crate::search::doc_id_set_iterator::DocIdSetIterator;
+use crate::search::doc_values_range_iterator::DocValuesRangeIterator;
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::matches::{owned_leaf_context, Matches, MatchesUtils};
 use crate::search::multi_term_query::{
@@ -28,7 +28,6 @@ use crate::search::scorer::Scorer;
 use crate::search::scorer_supplier::ScorerSupplier;
 use crate::search::two_phase_iterator::TwoPhaseIterator;
 use crate::search::weight::Weight;
-use crate::util::{FixedBitSet, LongBitSet};
 
 /// Rewrites a [`MultiTermQuery`] into a filter, using doc values for term
 /// enumeration.
@@ -354,20 +353,19 @@ impl std::fmt::Debug for DocValuesScorerSupplier {
 
 impl ScorerSupplier for DocValuesScorerSupplier {
     fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
+        // Create a terms enum that provides the intersection of the terms the
+        // query specifies with the values present in the doc values.
         let mut terms_enum = self.terms_enum.take().ok_or_else(|| {
             LuceneError::IllegalState(
                 "ScorerSupplier.get(long) must be called at most once".to_string(),
             )
         })?;
         let values = get_sorted_set(&self.reader, &self.field)?;
-        let ordinal_set = build_ordinal_set(&mut *terms_enum, values.get_value_count()?)?;
-        let iterator: Box<dyn TwoPhaseIterator> = match ordinal_set {
-            None => Box::new(EmptyOrdinalSetIterator),
-            Some(ordinal_set) => Box::new(OrdinalSetIterator {
-                values,
-                ordinal_set,
-            }),
-        };
+        // Leverage a doc-values skipper when one was indexed for the field.
+        let skipper = self.reader.get_doc_values_skipper(&self.field)?;
+        let iterator: Box<dyn TwoPhaseIterator> = Box::new(
+            DocValuesRangeIterator::for_sorted_set_ordinal_set(values, skipper, &mut *terms_enum)?,
+        );
         Ok(Box::new(ConstantScoreScorer::from_two_phase(
             self.score,
             self.score_mode,
@@ -379,163 +377,5 @@ impl ScorerSupplier for DocValuesScorerSupplier {
         // There is no prior knowledge of how many docs might match any given
         // query term, so every doc with a value is assumed to be a match.
         self.cost
-    }
-}
-
-/// The set of doc-values ordinals a query's terms map to.
-///
-/// Equivalent to the private record
-/// `DocValuesRangeIterator.OrdinalSet`, restricted to what the
-/// `forOrdinalSet(SortedSetDocValues, DocValuesSkipper, TermsEnum)` factory
-/// needs.
-struct OrdinalSet {
-    min: i64,
-    max: i64,
-    ords: LongBitSet,
-}
-
-/// Reads every ordinal the terms enum yields into a bit set.
-///
-/// Equivalent to the private static
-/// `DocValuesRangeIterator.buildOrdinalSet(TermsEnum, long)`, minus the
-/// contiguity bookkeeping, which only selects a cheaper equivalent range check.
-///
-/// # Errors
-///
-/// Propagates any I/O error raised while enumerating the ordinals.
-fn build_ordinal_set(terms_enum: &mut dyn TermsEnum, ord_count: i64) -> Result<Option<OrdinalSet>> {
-    if terms_enum.next()?.is_none() {
-        return Ok(None);
-    }
-    let mut ords = LongBitSet::new(ord_count.max(1))?;
-    let min = terms_enum.ord()?;
-    ords.set(min);
-    let mut max = min;
-    while terms_enum.next()?.is_some() {
-        max = terms_enum.ord()?;
-        ords.set(max);
-    }
-    Ok(Some(OrdinalSet { min, max, ords }))
-}
-
-/// A [`TwoPhaseIterator`] over the documents whose doc-values ordinals are in
-/// an [`OrdinalSet`].
-///
-/// Equivalent to the `DocValuesValueRangeIterator`
-/// `DocValuesRangeIterator.forOrdinalSet(SortedSetDocValues, DocValuesSkipper,
-/// TermsEnum)` builds when there is no skipper.
-///
-/// **Divergence from Lucene 10.5.0.** Java picks one of four shapes: an empty
-/// iterator, a cheaper contiguous range check when every ordinal in
-/// `[min, max]` is set, a block-skipping iterator when the field has a
-/// `DocValuesSkipper`, and this per-document check otherwise. It also unwraps a
-/// single-valued `SortedSetDocValues` into a `SortedDocValues` for a cheaper
-/// check. All four shapes accept exactly the same documents; the three others
-/// are `DocValuesRangeIterator`, which belongs to
-/// `org.apache.lucene.search` but is outside the set of types this port has,
-/// so only the general shape is built here. The documents matched and the
-/// scores produced are identical; block skipping and the cheaper checks are
-/// not applied.
-struct OrdinalSetIterator {
-    values: Box<dyn SortedSetDocValues>,
-    ordinal_set: OrdinalSet,
-}
-
-impl DocIdSetIterator for OrdinalSetIterator {
-    fn doc_id(&self) -> i32 {
-        self.values.doc_id()
-    }
-
-    fn next_doc(&mut self) -> Result<i32> {
-        self.values.next_doc()
-    }
-
-    fn advance(&mut self, target: i32) -> Result<i32> {
-        self.values.advance(target)
-    }
-
-    fn cost(&self) -> i64 {
-        self.values.cost()
-    }
-}
-
-impl TwoPhaseIterator for OrdinalSetIterator {
-    fn approximation(&mut self) -> &mut dyn DocIdSetIterator {
-        self
-    }
-
-    fn approximation_ref(&self) -> &dyn DocIdSetIterator {
-        self
-    }
-
-    fn matches(&mut self) -> Result<bool> {
-        let count = self.values.doc_value_count()?;
-        for _ in 0..count {
-            let v = self.values.next_ord()?;
-            if v > self.ordinal_set.max {
-                return Ok(false);
-            }
-            if v >= self.ordinal_set.min && self.ordinal_set.ords.get(v) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    fn match_cost(&self) -> f32 {
-        // The match cost `DocValuesRangeIterator` uses for a sorted-set check.
-        5.0
-    }
-}
-
-/// The iterator `forOrdinalSet` answers when no term of the query exists in the
-/// doc values.
-///
-/// Equivalent to the private `DocValuesRangeIterator.EmptyRangeIterator`.
-#[derive(Debug, Default, Clone, Copy)]
-struct EmptyOrdinalSetIterator;
-
-impl DocIdSetIterator for EmptyOrdinalSetIterator {
-    fn doc_id(&self) -> i32 {
-        crate::search::doc_id_set_iterator::NO_MORE_DOCS
-    }
-
-    fn next_doc(&mut self) -> Result<i32> {
-        Ok(crate::search::doc_id_set_iterator::NO_MORE_DOCS)
-    }
-
-    fn advance(&mut self, _target: i32) -> Result<i32> {
-        Ok(crate::search::doc_id_set_iterator::NO_MORE_DOCS)
-    }
-
-    fn cost(&self) -> i64 {
-        0
-    }
-
-    fn into_bit_set(
-        &mut self,
-        _up_to: i32,
-        _bit_set: &mut FixedBitSet,
-        _offset: i32,
-    ) -> Result<()> {
-        Ok(())
-    }
-}
-
-impl TwoPhaseIterator for EmptyOrdinalSetIterator {
-    fn approximation(&mut self) -> &mut dyn DocIdSetIterator {
-        self
-    }
-
-    fn approximation_ref(&self) -> &dyn DocIdSetIterator {
-        self
-    }
-
-    fn matches(&mut self) -> Result<bool> {
-        Ok(false)
-    }
-
-    fn match_cost(&self) -> f32 {
-        0.0
     }
 }

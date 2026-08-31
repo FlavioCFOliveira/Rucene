@@ -196,6 +196,9 @@ impl Collector for TopScoreDocCollector {
 }
 
 impl TopDocsCollector for TopScoreDocCollector {
+    type Hit = ScoreDoc;
+    type Docs = TopDocs;
+
     fn total_hits(&self) -> i32 {
         self.total_hits
     }

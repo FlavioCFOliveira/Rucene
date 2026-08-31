@@ -11,14 +11,15 @@
 //! should eventually be replaced by this type; doing so touches the kNN
 //! readers and the HNSW collectors and is left for the task that owns them.
 //!
-//! # Scope
+//! # Overloads
 //!
-//! The `Sort`-based merge overloads — `merge(Sort, int, TopFieldDocs[])` and
-//! friends — are not ported here: they require `TopFieldDocs`, `FieldDoc` and
-//! `FieldComparator`, which belong to the field-sorting surface rather than to
-//! the query-execution spine. The score-based merges, which are what
-//! [`TopScoreDocCollectorManager`](crate::search::TopScoreDocCollectorManager)
-//! reduces with, are complete.
+//! Java overloads `merge` on whether a `Sort` is supplied. Rust has no
+//! overloading, so the score-based forms keep the `merge*` names and the
+//! sort-based ones — which return a
+//! [`TopFieldDocs`](crate::search::TopFieldDocs) — are
+//! [`merge_sorted`](TopDocs::merge_sorted),
+//! [`merge_sorted_from`](TopDocs::merge_sorted_from) and
+//! [`merge_sorted_with_tie_breaker`](TopDocs::merge_sorted_with_tie_breaker).
 
 #![deny(unsafe_code)]
 
@@ -26,7 +27,11 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use crate::error::{LuceneError, Result};
+use crate::search::field_doc::FieldDoc;
+use crate::search::pruning::Pruning;
 use crate::search::score_doc::ScoreDoc;
+use crate::search::sort::Sort;
+use crate::search::top_field_docs::TopFieldDocs;
 use crate::search::total_hits::{TotalHits, TotalHitsRelation};
 use crate::util::{PriorityQueue, PriorityQueueComparator};
 
@@ -143,6 +148,50 @@ impl<'a> PriorityQueueComparator<ShardRef> for ScoreMergeSortQueue<'a> {
                 self.tie_breaker,
             )
         }
+    }
+}
+
+/// Merge queue that merges by the values of a [`Sort`].
+///
+/// Equivalent to the private `TopDocs.MergeSortQueue`.
+struct MergeSortQueue<'a> {
+    shard_hits: Vec<&'a [FieldDoc]>,
+    comparators: Vec<Box<dyn crate::search::field_comparator::FieldComparator>>,
+    reverse_mul: Vec<i32>,
+    tie_breaker: TieBreaker<'a>,
+}
+
+impl PriorityQueueComparator<ShardRef> for MergeSortQueue<'_> {
+    /// Returns `true` if `first` is less than `second`.
+    fn less_than(&self, first: &ShardRef, second: &ShardRef) -> bool {
+        let first_fd = &self.shard_hits[first.shard_index][first.hit_index];
+        let second_fd = &self.shard_hits[second.shard_index][second.hit_index];
+
+        for (comp_idx, comparator) in self.comparators.iter().enumerate() {
+            let first_value = first_fd
+                .fields
+                .as_ref()
+                .and_then(|fields| fields.get(comp_idx));
+            let second_value = second_fd
+                .fields
+                .as_ref()
+                .and_then(|fields| fields.get(comp_idx));
+            let (Some(first_value), Some(second_value)) = (first_value, second_value) else {
+                continue;
+            };
+            let cmp =
+                self.reverse_mul[comp_idx] * comparator.compare_values(first_value, second_value);
+            if cmp != 0 {
+                return cmp < 0;
+            }
+        }
+        tie_break_less_than(
+            first,
+            &first_fd.score_doc,
+            second,
+            &second_fd.score_doc,
+            self.tie_breaker,
+        )
     }
 }
 
@@ -291,6 +340,152 @@ impl TopDocs {
 
         let total_hits = TotalHits::new(total_hit_count, total_hits_relation)?;
         Ok(TopDocs::new(total_hits, hits))
+    }
+
+    /// Returns a new result set containing the top `top_n` results across the
+    /// provided result sets, sorted by `sort`. Each input must already be
+    /// sorted the same way.
+    ///
+    /// Equivalent to `TopDocs.merge(Sort, int, TopFieldDocs[])`.
+    ///
+    /// # Errors
+    ///
+    /// As [`merge_sorted_with_tie_breaker`](Self::merge_sorted_with_tie_breaker).
+    pub fn merge_sorted(
+        sort: &Sort,
+        top_n: usize,
+        shard_hits: &[TopFieldDocs],
+    ) -> Result<TopFieldDocs> {
+        Self::merge_sorted_from(sort, 0, top_n, shard_hits)
+    }
+
+    /// As [`merge_sorted`](Self::merge_sorted), but also ignores the top
+    /// `start` results, which is typically useful for pagination.
+    ///
+    /// Equivalent to `TopDocs.merge(Sort, int, int, TopFieldDocs[])`.
+    ///
+    /// # Errors
+    ///
+    /// As [`merge_sorted_with_tie_breaker`](Self::merge_sorted_with_tie_breaker).
+    pub fn merge_sorted_from(
+        sort: &Sort,
+        start: usize,
+        top_n: usize,
+        shard_hits: &[TopFieldDocs],
+    ) -> Result<TopFieldDocs> {
+        Self::merge_sorted_with_tie_breaker(sort, start, top_n, shard_hits, &default_tie_breaker)
+    }
+
+    /// As [`merge_sorted_from`](Self::merge_sorted_from), but with a
+    /// caller-supplied tie breaker.
+    ///
+    /// Equivalent to
+    /// `TopDocs.merge(Sort, int, int, TopFieldDocs[], Comparator<ScoreDoc>)`.
+    ///
+    /// Doc IDs are expected to follow a consistent pattern: either every hit
+    /// has its shard index set, or every hit has it unset (`-1`), signifying
+    /// that all hits belong to the same searcher.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when a hit did not set its sort
+    /// field values — Java's "shard N did not set sort field values" check —
+    /// or when the shard indices are inconsistently set across the merged hits;
+    /// propagates any error a [`SortField`](crate::search::SortField) raises
+    /// while building its comparator.
+    pub fn merge_sorted_with_tie_breaker(
+        sort: &Sort,
+        start: usize,
+        top_n: usize,
+        shard_hits: &[TopFieldDocs],
+        tie_breaker: TieBreaker<'_>,
+    ) -> Result<TopFieldDocs> {
+        // Fail gracefully if the API is misused.
+        for (shard_idx, shard) in shard_hits.iter().enumerate() {
+            for hit in &shard.score_docs {
+                if hit.fields.is_none() {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "shard {shard_idx} did not set sort field values (FieldDoc.fields is null)"
+                    )));
+                }
+            }
+        }
+
+        let sort_fields = sort.fields();
+        let mut comparators = Vec::with_capacity(sort_fields.len());
+        let mut reverse_mul = Vec::with_capacity(sort_fields.len());
+        for sort_field in sort_fields {
+            comparators.push(sort_field.get_comparator(1, Pruning::NONE)?);
+            reverse_mul.push(if sort_field.reverse() { -1 } else { 1 });
+        }
+
+        let comparator = MergeSortQueue {
+            shard_hits: shard_hits
+                .iter()
+                .map(|docs| docs.score_docs.as_slice())
+                .collect(),
+            comparators,
+            reverse_mul,
+            tie_breaker,
+        };
+        let mut queue: PriorityQueue<ShardRef, MergeSortQueue<'_>> =
+            PriorityQueue::new(shard_hits.len().max(1), comparator)?;
+
+        let mut total_hit_count: i64 = 0;
+        let mut total_hits_relation = TotalHitsRelation::EQUAL_TO;
+        let mut avail_hit_count: usize = 0;
+        for (shard_idx, shard) in shard_hits.iter().enumerate() {
+            total_hit_count += shard.total_hits.value();
+            if shard.total_hits.relation() == TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO {
+                total_hits_relation = TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO;
+            }
+            if !shard.score_docs.is_empty() {
+                avail_hit_count += shard.score_docs.len();
+                queue.add(ShardRef::new(shard_idx));
+            }
+        }
+
+        let mut hits: Vec<FieldDoc>;
+        let mut unset_shard_index = false;
+        if avail_hit_count <= start {
+            hits = Vec::new();
+        } else {
+            hits = Vec::with_capacity(top_n.min(avail_hit_count - start));
+            let requested_result_window = start + top_n;
+            let num_iter_on_hits = avail_hit_count.min(requested_result_window);
+            let mut hit_upto = 0usize;
+            while hit_upto < num_iter_on_hits {
+                let mut shard_ref = *queue
+                    .top()
+                    .ok_or_else(|| LuceneError::IllegalState("merge queue is empty".to_string()))?;
+                let hit = shard_hits[shard_ref.shard_index].score_docs[shard_ref.hit_index].clone();
+                shard_ref.hit_index += 1;
+
+                if hit_upto > 0 && unset_shard_index != (hit.score_doc.shard_index == -1) {
+                    return Err(LuceneError::IllegalArgument(
+                        "Inconsistent order of shard indices".to_string(),
+                    ));
+                }
+
+                unset_shard_index |= hit.score_doc.shard_index == -1;
+
+                if hit_upto >= start {
+                    hits.push(hit);
+                }
+
+                hit_upto += 1;
+
+                if shard_ref.hit_index < shard_hits[shard_ref.shard_index].score_docs.len() {
+                    // Not done with these TopFieldDocs yet.
+                    queue.update_top_with(shard_ref);
+                } else {
+                    queue.pop();
+                }
+            }
+        }
+
+        let total_hits = TotalHits::new(total_hit_count, total_hits_relation)?;
+        Ok(TopFieldDocs::new(total_hits, hits, sort_fields.to_vec()))
     }
 
     /// Reciprocal Rank Fusion.

@@ -7,11 +7,11 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use crate::error::Result;
+use crate::index::TermStates;
 use crate::index::{IndexReaderContext, LeafReaderContext, Term, Terms, TermsEnum};
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::multi_term_query::{MultiTermQuery, RewriteMethod};
 use crate::search::query::Query;
-use crate::search::term_states::TermStates;
 use crate::util::attribute::AttributeSource;
 use crate::util::BytesRef;
 

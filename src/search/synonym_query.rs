@@ -9,6 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
+use crate::index::TermStates;
 use crate::index::{
     FreqAndNormBuffer, Impacts, ImpactsEnum, ImpactsSource, LeafReaderContext, NumericDocValues,
     SlowImpactsEnum, Term, POSTINGS_ENUM_FREQS,
@@ -39,7 +40,6 @@ use crate::search::sim_scorer_source::{
 use crate::search::similarities::{Explanation, Similarity, TermStatistics};
 use crate::search::term_query::TermQuery;
 use crate::search::term_scorer::TermScorer;
-use crate::search::term_states::TermStates;
 use crate::search::two_phase_iterator::TwoPhaseIterator;
 use crate::search::weight::Weight;
 use crate::util::BytesRef;
