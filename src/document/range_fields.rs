@@ -11,6 +11,7 @@ use crate::document::{
     binary_doc_values_field_type, FieldData, FieldType, InvertableType, NumericValue, StoredValue,
 };
 use crate::error::{LuceneError, Result};
+use crate::index::point_values::Relation as PointRelation;
 use crate::index::{IndexableField, IndexableFieldType};
 use crate::util::{BytesRef, NumericUtils};
 
@@ -240,6 +241,103 @@ macro_rules! range_field {
                     FieldData::Bytes(bytes) => Some(bytes.slice()),
                     _ => None,
                 }
+            }
+
+            /// Decodes the minimum of `dimension` from an encoded range.
+            ///
+            #[doc = concat!("Equivalent to `", $doc_equiv, ".decodeMin(byte[], int)`.")]
+            pub fn decode_min(b: &[u8], dimension: usize) -> $prim {
+                $decode(b, dimension * $bytes)
+            }
+
+            /// Decodes the maximum of `dimension` from an encoded range.
+            ///
+            #[doc = concat!("Equivalent to `", $doc_equiv, ".decodeMax(byte[], int)`.")]
+            pub fn decode_max(b: &[u8], dimension: usize) -> $prim {
+                $decode(b, b.len() / 2 + dimension * $bytes)
+            }
+
+            /// Checks the intervals and packs them into `bytes`.
+            ///
+            #[doc = concat!("Equivalent to `", $doc_equiv, ".verifyAndEncode(", stringify!($prim), "[], ", stringify!($prim), "[], byte[])`.")]
+            ///
+            /// # Errors
+            ///
+            /// Returns [`LuceneError::IllegalArgument`] when a minimum exceeds
+            /// its maximum, or when `bytes` is not `2 * n * BYTES` long.
+            pub fn verify_and_encode(min: &[$prim], max: &[$prim], bytes: &mut [u8]) -> Result<()> {
+                check_args(min, max, $kind)?;
+                let n = min.len();
+                if bytes.len() != $bytes * 2 * n {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "encoded range must be {} bytes long, got {}",
+                        $bytes * 2 * n,
+                        bytes.len()
+                    )));
+                }
+                for d in 0..n {
+                    $encode(min[d], bytes, d * $bytes);
+                    $encode(max[d], bytes, (n + d) * $bytes);
+                }
+                Ok(())
+            }
+
+            /// Matches indexed ranges that overlap the given range.
+            ///
+            #[doc = concat!("Equivalent to `", $doc_equiv, ".newIntersectsQuery(String, ", stringify!($prim), "[], ", stringify!($prim), "[])`.")]
+            pub fn new_intersects_query(
+                field: &str,
+                min: &[$prim],
+                max: &[$prim],
+            ) -> Result<RangeFieldQuery> {
+                Self::new_relation_query(field, min, max, RangeQueryType::Intersects)
+            }
+
+            /// Matches indexed ranges that contain the given range.
+            ///
+            #[doc = concat!("Equivalent to `", $doc_equiv, ".newContainsQuery(String, ", stringify!($prim), "[], ", stringify!($prim), "[])`.")]
+            pub fn new_contains_query(
+                field: &str,
+                min: &[$prim],
+                max: &[$prim],
+            ) -> Result<RangeFieldQuery> {
+                Self::new_relation_query(field, min, max, RangeQueryType::Contains)
+            }
+
+            /// Matches indexed ranges that lie within the given range.
+            ///
+            #[doc = concat!("Equivalent to `", $doc_equiv, ".newWithinQuery(String, ", stringify!($prim), "[], ", stringify!($prim), "[])`.")]
+            pub fn new_within_query(
+                field: &str,
+                min: &[$prim],
+                max: &[$prim],
+            ) -> Result<RangeFieldQuery> {
+                Self::new_relation_query(field, min, max, RangeQueryType::Within)
+            }
+
+            /// Matches indexed ranges that cross the given range: they overlap
+            /// it but neither contains the other.
+            ///
+            #[doc = concat!("Equivalent to `", $doc_equiv, ".newCrossesQuery(String, ", stringify!($prim), "[], ", stringify!($prim), "[])`.")]
+            pub fn new_crosses_query(
+                field: &str,
+                min: &[$prim],
+                max: &[$prim],
+            ) -> Result<RangeFieldQuery> {
+                Self::new_relation_query(field, min, max, RangeQueryType::Crosses)
+            }
+
+            /// Builds the query for one relation.
+            ///
+            #[doc = concat!("Equivalent to the private `", $doc_equiv, ".newRelationQuery`.")]
+            pub fn new_relation_query(
+                field: &str,
+                min: &[$prim],
+                max: &[$prim],
+                relation: RangeQueryType,
+            ) -> Result<RangeFieldQuery> {
+                check_args(min, max, $kind)?;
+                RangeFieldQuery::new(field, Self::encode(min, max)?, min.len(), relation)
             }
         }
 
@@ -622,6 +720,234 @@ impl BinaryRangeFieldRangeQuery {
             values.packed_value(),
             self.num_dims,
             self.num_bytes_per_dimension,
+        )
+    }
+}
+
+// -----------------------------------------------------------------------------
+// RangeFieldQuery
+// -----------------------------------------------------------------------------
+
+impl RangeQueryType {
+    /// Compares the query range against one BKD cell in dimension `dim`.
+    ///
+    /// Equivalent to the per-relation `RangeFieldQuery.QueryType.compare(byte[],
+    /// byte[], byte[], int, int, int, ByteArrayComparator)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::UnsupportedOperation`] for
+    /// [`Crosses`](Self::Crosses), which Lucene also refuses: a crossing
+    /// relation cannot be decided from a cell's bounds alone, so its query
+    /// always visits every point.
+    pub fn compare_dim(
+        self,
+        query_packed_value: &[u8],
+        min_packed_value: &[u8],
+        max_packed_value: &[u8],
+        num_dims: usize,
+        bytes_per_dim: usize,
+        dim: usize,
+    ) -> Result<PointRelation> {
+        let min_offset = dim * bytes_per_dim;
+        let max_offset = min_offset + bytes_per_dim * num_dims;
+        let q = |offset: usize| &query_packed_value[offset..offset + bytes_per_dim];
+        let lo = |offset: usize| &min_packed_value[offset..offset + bytes_per_dim];
+        let hi = |offset: usize| &max_packed_value[offset..offset + bytes_per_dim];
+
+        match self {
+            Self::Intersects => {
+                if q(max_offset) < lo(min_offset) || q(min_offset) > hi(max_offset) {
+                    // Disjoint.
+                    return Ok(PointRelation::CellOutsideQuery);
+                }
+                if q(max_offset) >= hi(min_offset) && q(min_offset) <= lo(max_offset) {
+                    return Ok(PointRelation::CellInsideQuery);
+                }
+                Ok(PointRelation::CellCrossesQuery)
+            }
+            Self::Within => {
+                if q(max_offset) < lo(max_offset) || q(min_offset) > hi(min_offset) {
+                    // Every range has at least one point outside the query.
+                    return Ok(PointRelation::CellOutsideQuery);
+                }
+                if q(max_offset) >= hi(max_offset) && q(min_offset) <= lo(min_offset) {
+                    return Ok(PointRelation::CellInsideQuery);
+                }
+                Ok(PointRelation::CellCrossesQuery)
+            }
+            Self::Contains => {
+                if q(max_offset) > hi(max_offset) || q(min_offset) < lo(min_offset) {
+                    // Every range is either below the query's maximum or above
+                    // its minimum.
+                    return Ok(PointRelation::CellOutsideQuery);
+                }
+                if q(max_offset) <= lo(max_offset) && q(min_offset) >= hi(min_offset) {
+                    return Ok(PointRelation::CellInsideQuery);
+                }
+                Ok(PointRelation::CellCrossesQuery)
+            }
+            Self::Crosses => Err(LuceneError::UnsupportedOperation(
+                "CROSSES cannot be decided from a cell's bounds".to_string(),
+            )),
+        }
+    }
+
+    /// Compares the query range against one BKD cell across every dimension.
+    ///
+    /// Equivalent to `RangeFieldQuery.QueryType.compare(byte[], byte[], byte[],
+    /// int, int, ByteArrayComparator)`. One dimension outside the query puts the
+    /// whole cell outside; the cell is inside only when every dimension is.
+    pub fn compare(
+        self,
+        query_packed_value: &[u8],
+        min_packed_value: &[u8],
+        max_packed_value: &[u8],
+        num_dims: usize,
+        bytes_per_dim: usize,
+    ) -> Result<PointRelation> {
+        if self == Self::Crosses {
+            // A crossing query cannot prune, so every cell must be visited.
+            return Ok(PointRelation::CellCrossesQuery);
+        }
+        let mut inside = true;
+        for dim in 0..num_dims {
+            match self.compare_dim(
+                query_packed_value,
+                min_packed_value,
+                max_packed_value,
+                num_dims,
+                bytes_per_dim,
+                dim,
+            )? {
+                PointRelation::CellOutsideQuery => return Ok(PointRelation::CellOutsideQuery),
+                PointRelation::CellInsideQuery => {}
+                PointRelation::CellCrossesQuery => inside = false,
+            }
+        }
+        Ok(if inside {
+            PointRelation::CellInsideQuery
+        } else {
+            PointRelation::CellCrossesQuery
+        })
+    }
+}
+
+/// Finds the documents whose indexed range stands in a given relation to the
+/// query's range.
+///
+/// Equivalent to `org.apache.lucene.document.RangeFieldQuery`. It is what
+/// `IntRange.newIntersectsQuery` and its fifteen siblings return.
+#[derive(Debug, Clone)]
+pub struct RangeFieldQuery {
+    field: String,
+    ranges: Vec<u8>,
+    num_dims: usize,
+    bytes_per_dim: usize,
+    query_type: RangeQueryType,
+}
+
+impl RangeFieldQuery {
+    /// Creates the query over an already encoded range.
+    ///
+    /// Equivalent to `RangeFieldQuery(String, byte[], int, QueryType)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field name is empty,
+    /// the dimension count exceeds four, or the encoded range is empty.
+    pub fn new(
+        field: impl Into<String>,
+        ranges: Vec<u8>,
+        num_dims: usize,
+        query_type: RangeQueryType,
+    ) -> Result<Self> {
+        let field = field.into();
+        Self::check_args(&field, &ranges, num_dims)?;
+        let bytes_per_dim = ranges.len() / (2 * num_dims);
+        Ok(Self {
+            field,
+            ranges,
+            num_dims,
+            bytes_per_dim,
+            query_type,
+        })
+    }
+
+    /// Checks the constructor's arguments.
+    ///
+    /// Equivalent to `RangeFieldQuery.checkArgs(String, byte[], int)`.
+    fn check_args(field: &str, ranges: &[u8], num_dims: usize) -> Result<()> {
+        if field.is_empty() {
+            return Err(LuceneError::IllegalArgument(
+                "field must not be null".to_string(),
+            ));
+        }
+        if num_dims > MAX_RANGE_DIMENSIONS {
+            return Err(LuceneError::IllegalArgument(format!(
+                "dimension size cannot be greater than {MAX_RANGE_DIMENSIONS}"
+            )));
+        }
+        if ranges.is_empty() {
+            return Err(LuceneError::IllegalArgument(
+                "encoded ranges cannot be null or empty".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Checks the indexed field's dimension count against the query's.
+    ///
+    /// Equivalent to `RangeFieldQuery.checkFieldInfo(FieldInfo)`.
+    pub fn check_field_info(&self, field_info: &crate::index::FieldInfo) -> Result<()> {
+        let indexed_dims = (field_info.point_dimension_count / 2) as usize;
+        if indexed_dims != self.num_dims {
+            return Err(LuceneError::IllegalArgument(format!(
+                "field=\"{}\" was indexed with numDims={indexed_dims} but this query has \
+                 numDims={}",
+                self.field, self.num_dims
+            )));
+        }
+        Ok(())
+    }
+
+    /// Returns the field the query reads.
+    pub fn get_field(&self) -> &str {
+        &self.field
+    }
+
+    /// Returns the relation the query applies.
+    pub fn get_query_type(&self) -> RangeQueryType {
+        self.query_type
+    }
+
+    /// Returns the encoded query range.
+    pub fn get_ranges(&self) -> &[u8] {
+        &self.ranges
+    }
+
+    /// Compares the query range against a BKD cell.
+    pub fn relate(
+        &self,
+        min_packed_value: &[u8],
+        max_packed_value: &[u8],
+    ) -> Result<PointRelation> {
+        self.query_type.compare(
+            &self.ranges,
+            min_packed_value,
+            max_packed_value,
+            self.num_dims,
+            self.bytes_per_dim,
+        )
+    }
+
+    /// Returns whether a document's encoded range matches.
+    pub fn matches(&self, packed_value: &[u8]) -> bool {
+        self.query_type.matches(
+            &self.ranges,
+            packed_value,
+            self.num_dims,
+            self.bytes_per_dim,
         )
     }
 }
