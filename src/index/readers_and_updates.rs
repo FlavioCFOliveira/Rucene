@@ -998,6 +998,55 @@ impl ReadersAndUpdates {
     /// written.
     ///
     /// Equivalent to `ReadersAndUpdates.writeFieldUpdates(Directory, FieldNumbers, long, InfoStream)`.
+    /// Writes the field infos of the next generation, and returns the files it
+    /// created.
+    ///
+    /// Equivalent to the private
+    /// `ReadersAndUpdates.writeFieldInfosGen(FieldInfos, Directory,
+    /// FieldInfosFormat)`. The size estimate is Java's: 40 bytes of header and
+    /// footer, plus about 90 per field, over-estimating a long name and an
+    /// attribute map.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java tracks the created files with a
+    /// `TrackingDirectoryWrapper` around the directory. This port has the
+    /// wrapper but not a borrow of the directory it could wrap here, so the
+    /// files are the ones that appeared since `before` — the same set, observed
+    /// rather than recorded.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever writing the field infos raises.
+    fn write_field_infos_gen(
+        state: &mut RauState,
+        field_infos: &FieldInfos,
+        dir: &dyn Directory,
+        infos_format: &dyn crate::codecs::field_infos::FieldInfosFormat,
+        before: &HashSet<String>,
+    ) -> Result<HashSet<String>> {
+        let next_field_infos_gen = state.info.get_next_field_infos_gen();
+        let segment_suffix = radix36(next_field_infos_gen as u64);
+        // We write approximately that many bytes (based on Lucene46DVF):
+        // HEADER + FOOTER: 40
+        // 90 bytes per field (over-estimating a long name and an attribute map)
+        let est_infos_size = 40 + 90 * field_infos.len() as i64;
+        let infos_context =
+            flush_io_context(FlushInfo::new(state.info.info.max_doc()?, est_infos_size));
+        infos_format.write(
+            dir,
+            &state.info.info,
+            &segment_suffix,
+            field_infos,
+            &*infos_context,
+        )?;
+        state.info.advance_field_infos_gen();
+        Ok(dir
+            .list_all()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|f| !before.contains(f))
+            .collect())
+    }
+
     pub fn write_field_updates(
         &self,
         dir: &dyn Directory,
@@ -1254,26 +1303,13 @@ impl ReadersAndUpdates {
         }
 
         // Write the FieldInfos generation file.
-        let next_fi_gen = state.info.get_next_field_infos_gen();
-        let fi_suffix = radix36(next_fi_gen as u64);
-        let est_infos_size = 40 + 90 * field_infos.len() as i64;
-        let fi_context =
-            flush_io_context(FlushInfo::new(state.info.info.max_doc()?, est_infos_size));
-        codec.field_infos_format().write(
-            dir,
-            &state.info.info,
-            &fi_suffix,
+        let fi_files = Self::write_field_infos_gen(
+            &mut *state,
             &field_infos,
-            &*fi_context,
+            dir,
+            codec.field_infos_format(),
+            &before,
         )?;
-        state.info.advance_field_infos_gen();
-
-        // Track field infos files.
-        let after_all = dir.list_all().unwrap_or_default();
-        let fi_files: HashSet<String> = after_all
-            .into_iter()
-            .filter(|f| !before.contains(f))
-            .collect();
         state.info.set_field_infos_files(fi_files);
 
         // Merge with existing DV updates files.
