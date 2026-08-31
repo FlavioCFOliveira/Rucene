@@ -39,6 +39,7 @@ pub mod offline_sorter;
 pub mod packed;
 pub mod paged_bytes;
 pub mod quantization;
+pub mod query_builder;
 pub mod refs;
 pub mod resource_loader;
 pub mod ring_buffer;
@@ -151,6 +152,7 @@ pub use extra::{
     IdentityLongValues, IntoIter as PriorityQueueIntoIter, LongBitSet, LongValues, MergedIterator,
     PriorityQueue, PriorityQueueComparator, Version, ZeroesLongValues,
 };
+pub use query_builder::{QueryBuilder, QueryBuilderOps, TermAndBoost as QueryBuilderTermAndBoost};
 pub use small_float::SmallFloat;
 pub use string_helper::{
     compare_utf16, read_string, write_string, IntsRef, StringHelper, ID_LENGTH,
