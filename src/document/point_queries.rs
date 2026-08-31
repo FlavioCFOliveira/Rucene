@@ -27,7 +27,9 @@ use crate::document::spatial_query::{
 };
 use crate::error::{LuceneError, Result};
 use crate::geo::component2d::WithinRelation;
-use crate::geo::encoding::{GeoEncodingUtils, GeoUtils, XYEncodingUtils};
+use crate::geo::encoding::{
+    Component2DPredicate, DistancePredicate, GeoEncodingUtils, GeoUtils, XYEncodingUtils,
+};
 use crate::geo::Component2D;
 use crate::index::point_values::{IntersectVisitor, Relation};
 use crate::index::{LeafReader, SortedNumericDocValues};
@@ -48,18 +50,15 @@ const COORDINATE_BYTES: usize = 4;
 /// Equivalent to the anonymous `SpatialVisitor` that
 /// `LatLonPointQuery.getSpatialVisitor()` returns.
 ///
-/// **Divergence from Lucene 10.5.0.** Java precomputes a
-/// `GeoEncodingUtils.Component2DPredicate`, a grid of per-sub-box relations
-/// that answers `contains` for most encoded points without touching the
-/// geometry. That accelerator lives in `org.apache.lucene.geo` and is not
-/// ported yet, so the predicate calls
-/// [`Component2D::contains`] directly. The grid is exact — a sub-box marked
-/// inside or outside decides every quantised point it holds, and a crossing one
-/// falls through to the very same `contains` call — so the answer is
-/// unchanged; only the speed is.
 #[derive(Clone)]
 pub struct LatLonPointSpatialVisitor {
     component2d: Arc<dyn Component2D>,
+    /// The grid of per-sub-box relations, which answers `contains` for most
+    /// encoded points without touching the geometry.
+    ///
+    /// Equivalent to the `GeoEncodingUtils.Component2DPredicate` Java
+    /// precomputes in `LatLonPointQuery.getSpatialVisitor()`.
+    predicate: Component2DPredicate,
     /// The bounding box over all geometries, which cheaply prunes a cell before
     /// the geometry is consulted.
     min_lat: i32,
@@ -91,17 +90,15 @@ impl LatLonPointSpatialVisitor {
             max_lat: GeoEncodingUtils::encode_latitude(component2d.get_max_y())?,
             min_lon: GeoEncodingUtils::encode_longitude(component2d.get_min_x())?,
             max_lon: GeoEncodingUtils::encode_longitude(component2d.get_max_x())?,
+            predicate: GeoEncodingUtils::create_component_predicate(Arc::clone(&component2d))?,
             component2d,
         })
     }
 
-    /// The body of the `Component2DPredicate.test(int, int)` Java precomputes;
-    /// see the divergence note on the type.
+    /// Equivalent to `Component2DPredicate.test(int, int)`, the grid lookup
+    /// Java precomputes for this visitor.
     fn test(&self, lat: i32, lon: i32) -> bool {
-        self.component2d.contains(
-            GeoEncodingUtils::decode_longitude(lon),
-            GeoEncodingUtils::decode_latitude(lat),
-        )
+        self.predicate.test(lat, lon)
     }
 }
 
@@ -1066,19 +1063,16 @@ impl PartialEq for XYPointInGeometryQuery {
 ///
 /// Equivalent to the state the anonymous `ConstantScoreWeight` of
 /// `LatLonPointDistanceQuery.createWeight` captures.
-///
-/// **Divergence from Lucene 10.5.0.** Java precomputes a
-/// `GeoEncodingUtils.DistancePredicate`, a grid of per-sub-box relations that
-/// answers most encoded points without a haversine call. That accelerator lives
-/// in `org.apache.lucene.geo` and is not ported yet, so the predicate computes
-/// [`SloppyMath::haversin_sort_key`] directly and compares it against the same
-/// sort key — which is exactly what the grid falls through to for a crossing
-/// sub-box, and what an inside/outside sub-box decides in advance. The answer
-/// is unchanged; only the speed is.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct LatLonDistanceBounds {
     latitude: f64,
     longitude: f64,
+    /// The grid of per-sub-box relations, which answers most encoded points
+    /// without a haversine call.
+    ///
+    /// Equivalent to the `GeoEncodingUtils.DistancePredicate` Java precomputes
+    /// in `LatLonPointDistanceQuery.createWeight`.
+    predicate: DistancePredicate,
     min_lat: i32,
     max_lat: i32,
     min_lon: i32,
@@ -1126,18 +1120,18 @@ impl LatLonDistanceBounds {
             min_lon2,
             sort_key: GeoUtils::distance_query_sort_key(radius_meters),
             axis_lat: crate::geo::geometry::Rectangle::axis_lat(latitude, radius_meters),
+            predicate: GeoEncodingUtils::create_distance_predicate(
+                latitude,
+                longitude,
+                radius_meters,
+            )?,
         })
     }
 
-    /// The `DistancePredicate.test(int, int)` Java precomputes; see the
-    /// divergence note on the type.
+    /// Equivalent to `DistancePredicate.test(int, int)`, the grid lookup Java
+    /// precomputes for this weight.
     fn test(&self, lat: i32, lon: i32) -> bool {
-        crate::util::sloppy_math::SloppyMath::haversin_sort_key(
-            GeoEncodingUtils::decode_latitude(lat),
-            GeoEncodingUtils::decode_longitude(lon),
-            self.latitude,
-            self.longitude,
-        ) <= self.sort_key
+        self.predicate.test(lat, lon)
     }
 
     /// Equivalent to the private `matches(byte[])` of the weight.
@@ -1441,7 +1435,7 @@ impl LatLonPointDistanceQuery {
             result.set_range(0, max_doc as usize);
             let mut cost = i64::from(max_doc);
             let mut inverse = InverseDistanceIntersectVisitor {
-                bounds: self.bounds,
+                bounds: self.bounds.clone(),
                 result: &mut result,
                 cost: &mut cost,
             };
@@ -1455,7 +1449,7 @@ impl LatLonPointDistanceQuery {
         let mut result = DocIdSetBuilder::from_point_values(max_doc, values.as_ref());
         {
             let mut visitor = DistanceIntersectVisitor {
-                bounds: self.bounds,
+                bounds: self.bounds.clone(),
                 result: &mut result,
             };
             values.intersect(&mut visitor)?;
@@ -1477,7 +1471,7 @@ impl LatLonPointDistanceQuery {
         };
         let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref());
         let mut visitor = DistanceIntersectVisitor {
-            bounds: self.bounds,
+            bounds: self.bounds.clone(),
             result: &mut result,
         };
         values.estimate_doc_count(&mut visitor)
