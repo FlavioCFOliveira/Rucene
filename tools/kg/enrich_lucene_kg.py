@@ -21,13 +21,30 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import extract_lucene_kg as e
 
-BASE_ROOT = Path('/tmp/lucene-10.5.0')
+# The reference clone and the provenance stamp are settable from the command
+# line (see `main`). The defaults are the path `CLAUDE.md` 16.1 names and the
+# commit of the original survey; hard-coding `/tmp/lucene-10.5.0` left this
+# script unable to run at all once the clone lived at the documented path.
+BASE_ROOT = Path('/tmp/lucene1050')
 CORE_ROOT_JAVA = BASE_ROOT / 'lucene/core/src/java'
 CORE_ROOT_JAVA21 = BASE_ROOT / 'lucene/core/src/java21'
 MODULE_INFO = CORE_ROOT_JAVA / 'module-info.java'
 
 COMMIT = 'be7ac4c97f0481b9435bf76869b2fc117de271c5'
 GDATE = '2026-07-30'
+
+
+def configure(lucene_root: str, commit: str, date: str):
+    """Point the module at a clone and a provenance stamp."""
+    global BASE_ROOT, CORE_ROOT_JAVA, CORE_ROOT_JAVA21, MODULE_INFO, COMMIT, GDATE
+    BASE_ROOT = Path(lucene_root)
+    CORE_ROOT_JAVA = BASE_ROOT / 'lucene/core/src/java'
+    CORE_ROOT_JAVA21 = BASE_ROOT / 'lucene/core/src/java21'
+    MODULE_INFO = CORE_ROOT_JAVA / 'module-info.java'
+    COMMIT = commit
+    GDATE = date
+    # The imported extractor makes its file paths relative to this root.
+    e.LUCENE_ROOT = BASE_ROOT
 
 
 def escape(s):
@@ -316,8 +333,14 @@ def scan_external_supertypes():
         r'^\s*(?:(?:public|protected|private|abstract|final|static|strictfp|sealed|non-sealed)\s+)*'
         r'(class|interface|enum|record|@interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
         r'(?:\s*<[^;{}]*>)?'
+        # A record carries a component list between its name and its body, and a
+        # sealed type carries a `permits` clause: without these two, 51 of
+        # Lucene 10.5.0's 54 nested records and `DocIdSetBuilder.BulkAdder`
+        # were invisible to this extractor.
+        r'(?:\s*\([^;{}]*\))?'
         r'(?:\s+extends\s+([^{<]+))?'
         r'(?:\s+implements\s+([^{<]+))?'
+        r'(?:\s+permits\s+[^{]+)?'
         r'\s*[{<]',
         re.MULTILINE,
     )
@@ -391,8 +414,14 @@ def extract_inner_classes():
         r'^\s*(?:(?:public|protected|private|abstract|final|static|strictfp|sealed|non-sealed)\s+)*'
         r'(class|interface|enum|record|@interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
         r'(?:\s*<[^;{}]*>)?'
+        # A record carries a component list between its name and its body, and a
+        # sealed type carries a `permits` clause: without these two, 51 of
+        # Lucene 10.5.0's 54 nested records and `DocIdSetBuilder.BulkAdder`
+        # were invisible to this extractor.
+        r'(?:\s*\([^;{}]*\))?'
         r'(?:\s+extends\s+[^{<]+)?'
         r'(?:\s+implements\s+[^{<]+)?'
+        r'(?:\s+permits\s+[^{]+)?'
         r'\s*[{<]',
         re.MULTILINE,
     )
@@ -497,8 +526,14 @@ def extract_members():
         r'^\s*(?:(?:public|protected|private|abstract|final|static|strictfp|sealed|non-sealed)\s+)*'
         r'(class|interface|enum|record|@interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)'
         r'(?:\s*<[^;{}]*>)?'
+        # A record carries a component list between its name and its body, and a
+        # sealed type carries a `permits` clause: without these two, 51 of
+        # Lucene 10.5.0's 54 nested records and `DocIdSetBuilder.BulkAdder`
+        # were invisible to this extractor.
+        r'(?:\s*\([^;{}]*\))?'
         r'(?:\s+extends\s+[^{<]+)?'
         r'(?:\s+implements\s+[^{<]+)?'
+        r'(?:\s+permits\s+[^{]+)?'
         r'\s*[{<]',
         re.MULTILINE,
     )
@@ -811,7 +846,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output-dir', default='/tmp/lucene_kg_enrich')
     parser.add_argument('--run', action='store_true', help='Execute Cypher against rmp')
+    parser.add_argument('--lucene-root', default=str(BASE_ROOT),
+                        help='Apache Lucene 10.5.0 clone (default: %(default)s)')
+    parser.add_argument('--commit', default=COMMIT,
+                        help='Rucene commit to stamp the provenance with')
+    parser.add_argument('--date', default=GDATE, help='ISO date of --commit')
     args = parser.parse_args()
+
+    configure(args.lucene_root, args.commit, args.date)
+    if not CORE_ROOT_JAVA.is_dir():
+        raise SystemExit(f'no Lucene core sources under {CORE_ROOT_JAVA}')
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(exist_ok=True)

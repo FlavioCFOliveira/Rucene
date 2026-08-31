@@ -165,11 +165,20 @@ def phase_scope(roadmap, top_level, commit, date, batch_size):
     rows_in, rows_nested, rows_out = [], [], []
     for n in nodes:
         qn = n["qn"]
+        file = n["file"] or ""
         if qn and qn in top_level:
             rows_in.append({"qn": qn, "file": top_level[qn]})
-        elif qn and qn.startswith(CORE_PREFIX):
+        elif file.startswith("lucene/core/"):
             rows_nested.append({"qn": qn})
-        elif (n["file"] or "").startswith("lucene/core/"):
+        elif qn and file:
+            # The declaring file decides, not the package name. Rucene's own
+            # Java test fixtures are declared in `org.apache.lucene.rucene.codec`
+            # under `tests/fixtures/`, so a name-prefix rule counted all five of
+            # them as Lucene inner types and inflated the `nested` bucket.
+            rows_out.append({"qn": qn})
+        elif qn and qn.startswith(CORE_PREFIX):
+            # No file recorded: a stub some edge referenced by name. Keep it in
+            # the nested bucket only while it is plausibly a Lucene inner type.
             rows_nested.append({"qn": qn})
         else:
             rows_out.append({"qn": qn})

@@ -15,23 +15,31 @@ the `rmp` binary on `PATH`.
 | `extract_lucene_kg.py` | Regex extractor for the Lucene side: packages, source files, top-level types, imports, `extends` and `implements`. Emits Cypher files. |
 | `enrich_lucene_kg.py` | Second Lucene pass: inner types and members (methods, constructors, fields). Emits Cypher files. |
 | `run_kg_batches.py` | Feeds a generated Cypher file into `rmp graph create` / `rmp graph update`, one statement per invocation. |
-| `load_members_unwind.py` | Loads the member files with far fewer `rmp` invocations, batching rows into `UNWIND` statements. |
+| `load_members_unwind.py` | Superseded by `lucene_structure_kg.py`, which loads the same facts from the extractor's data instead of re-parsing its generated Cypher. Kept for replaying an old run. |
 | `extract_rucene_kg.py` | Regex extractor for the Rucene side: every `.rs` file under `src/` and `tests/`, its structs, traits, enums, type aliases, functions and tests, its `impl` blocks, and the dependencies implied by its `use` declarations. Emits one JSON survey. |
 | `load_rucene_kg.py` | Loads that survey into the graph in `UNWIND` batches, and keeps the Rucene side of the graph honest: collapses legacy labels, merges duplicate nodes, stamps provenance, and audits the result against the survey. |
 | `port_coverage_kg.py` | The coverage layer: marks the in-scope Lucene surface, derives Lucene type→type dependencies, links open `rmp` tasks to the types they need, records `Component.status`, and writes the scope `Decision`. |
+| `port_evidence_kg.py` | Reads the `Equivalent to `org.apache.lucene…`` claims the crate's own doc comments make (`CLAUDE.md` §14.1) and turns them into `PORTS` edges with `evidence: "doc-comment"`, then measures how much of each ported type is actually present. |
+| `lucene_modules_kg.py` | Registers all 35 modules of the Lucene distribution with their size and an explicit `inScope` flag, so port coverage is quoted against a stated denominator (`CLAUDE.md` §6.1). |
+| `lucene_tests_kg.py` | Loads the Lucene test surface (`TestClass`, `TestMethod`) and its correspondence with the crate. |
+| `lucene_structure_kg.py` | Loads the Lucene nested types and members in `UNWIND` batches, calling `enrich_lucene_kg.py`'s extractors directly. Replaces feeding its generated Cypher through `run_kg_batches.py`, which cost one process launch per statement — about 19,000 for the member surface. `--prune` removes nested types the reference tree no longer declares. |
+| `commits_kg.py` | Mirrors the full commit history and derives `CLOSES_TASK` from the message conventions the history actually uses. |
+| `audit_kg.py` | The adversarial fidelity audit. Re-derives both sides from primary sources — the Lucene clone, parsed by a scanner written independently of the loaders, and the crate as the compiler expands it — and reports every divergence. `problems: 0` is the pass condition. |
+| `kgio.py` | Shared `rmp graph` I/O: Cypher map-literal serialisation (the engine rejects JSON's quoted keys), `UNWIND` batching, and retry-with-backoff when the store is busy. |
 
 ## Rebuilding the graph from scratch
 
-Get the reference sources first (`CLAUDE.md` §16.1). The two Lucene extractors were
-written for a clone at `/tmp/lucene-10.5.0` and hard-code that path (and, in
-`enrich_lucene_kg.py`, the commit stamp of the original survey), so clone there — or
-symlink — when replaying steps 1 and 2:
+Get the reference sources first (`CLAUDE.md` §16.1). Clone the reference sources first:
 
 ```bash
 git clone --branch releases/lucene/10.5.0 --single-branch \
-    https://github.com/apache/lucene.git /tmp/lucene-10.5.0
-ln -sfn /tmp/lucene-10.5.0 /tmp/lucene1050   # the path CLAUDE.md names
+    https://github.com/apache/lucene.git /tmp/lucene1050
 ```
+
+Every script now takes `--lucene-root` and defaults to `/tmp/lucene1050`, the
+path `CLAUDE.md` §16.1 names. They used to hard-code `/tmp/lucene-10.5.0`, which
+left the Lucene half of the pipeline unable to run at all against a clone at the
+documented path.
 
 Then, with `COMMIT` and `DATE` set to the Rucene commit being surveyed
 (`git rev-parse HEAD` and `git show -s --format=%cs HEAD`):
@@ -40,9 +48,13 @@ Then, with `COMMIT` and `DATE` set to the Rucene commit being surveyed
 COMMIT=$(git rev-parse HEAD)
 DATE=$(git show -s --format=%cs HEAD)
 
+# 0. Lucene: the module inventory that states the port's denominator
+python3 tools/kg/lucene_modules_kg.py rucene --lucene-root /tmp/lucene1050 \
+    --commit "$COMMIT" --date "$DATE"
+
 # 1. Lucene: packages, files, top-level types, dependencies
 python3 tools/kg/extract_lucene_kg.py \
-    --source-root /tmp/lucene-10.5.0/lucene/core/src/java/org/apache/lucene \
+    --source-root /tmp/lucene1050/lucene/core/src/java/org/apache/lucene \
     --output-dir /tmp/lucene_kg --commit "$COMMIT" --date "$DATE"
 for f in /tmp/lucene_kg/nodes_*.cypher /tmp/lucene_kg/edges_*.cypher; do
     python3 tools/kg/run_kg_batches.py create rucene "$f"
@@ -50,18 +62,47 @@ done
 python3 tools/kg/run_kg_batches.py update rucene /tmp/lucene_kg/update.cypher
 
 # 2. Lucene: inner types, members and the JPMS descriptor
-python3 tools/kg/enrich_lucene_kg.py --output-dir /tmp/lucene_kg_enrich --run
-python3 tools/kg/load_members_unwind.py rucene
+python3 tools/kg/lucene_structure_kg.py rucene --lucene-root /tmp/lucene1050 \
+    --commit "$COMMIT" --date "$DATE" --phase all --prune
 
 # 3. Rucene: the crate survey
-python3 tools/kg/extract_rucene_kg.py --source-root . \
+python3 tools/kg/extract_rucene_kg.py --source-root . --expand \
     --commit "$COMMIT" --date "$DATE" --output /tmp/rucene_kg/survey.json
 python3 tools/kg/load_rucene_kg.py rucene --survey /tmp/rucene_kg/survey.json
 
 # 4. Port coverage, tasks and the scope decision
 python3 tools/kg/port_coverage_kg.py rucene --survey /tmp/rucene_kg/survey.json \
-    --lucene-root /tmp/lucene-10.5.0 --commit "$COMMIT" --date "$DATE"
+    --lucene-root /tmp/lucene1050 --commit "$COMMIT" --date "$DATE"
+
+# 5. The port evidence the crate states about itself, and the depth of each port
+python3 tools/kg/port_evidence_kg.py rucene --source-root . --phase all \
+    --commit "$COMMIT" --date "$DATE"
+
+# 6. The commit history
+python3 tools/kg/commits_kg.py rucene
+
+# 7. The Lucene test surface
+python3 tools/kg/lucene_tests_kg.py rucene --lucene-root /tmp/lucene1050 \
+    --survey /tmp/rucene_kg/survey.json --commit "$COMMIT" --date "$DATE"
+
+# 8. Prove it: the audit must end in `problems: 0`
+python3 tools/kg/audit_kg.py rucene --survey /tmp/rucene_kg/survey.json
 ```
+
+Step 5 must run after step 4: it supersedes `PORTS_CANDIDATE` edges with the
+declared `PORTS` edges, and the depth measurement reads the `portScope` the
+coverage phase assigns. Re-run `port_coverage_kg.py --phase scope,candidates`
+afterwards so `portState` reflects the edges step 5 wrote.
+
+### `--expand`: the macro-generated types
+
+`extract_rucene_kg.py --expand` runs `cargo +nightly rustc --lib --
+-Zunpretty=expanded` and records the types and inherent methods that only exist
+after macro expansion. Without it the survey misses 67 real types — the 24
+`BulkOperationPackedN`, the `internal::hppc` containers, the range fields and the
+doc-values iterators — and `load_rucene_kg.py --phase audit` reports them as
+stale nodes to delete, which would silently drop their `PORTS` edges. The flag
+needs the nightly toolchain; `--expanded-file` reuses a captured dump instead.
 
 Step 4 must run after step 3: the candidate detection reads the crate survey, and
 `portState` is derived from the `PORTS` edges the Rucene load has repaired.
@@ -73,7 +114,7 @@ the graph as fact. Use a detached worktree:
 
 ```bash
 git worktree add --detach /tmp/rucene-survey <commit>
-python3 tools/kg/extract_rucene_kg.py --source-root /tmp/rucene-survey \
+python3 tools/kg/extract_rucene_kg.py --source-root /tmp/rucene-survey --expand \
     --commit <full-sha> --date <YYYY-MM-DD> --output /tmp/rucene_kg/survey.json
 git worktree remove /tmp/rucene-survey
 ```
@@ -89,6 +130,7 @@ git worktree remove /tmp/rucene-survey
 | `edges` | `CONTAINS`, `DECLARES`, `IMPLEMENTS`, `DEPENDS_ON`. |
 | `reconcile` | Merges pre-existing nodes that the survey shows to be the same type as a canonical one (missing or wrong `file`, wrong label, or an outright duplicate), moving their edges first so nothing is lost. |
 | `stamp` | Stamps `gitCommit`/`gitDate` on every edge shape this loader owns. It runs after `reconcile` because moving an edge creates a new one. It never touches the Lucene side. |
+| `prune` | Deletes nodes the survey no longer confirms. Two safeguards: a node carrying a `PORTS` edge is never pruned, and an empty survey is refused, so a failed extraction can never be read as "the crate has no types". |
 | `audit` | Compares the graph against the survey: every `.rs` file has exactly one node, every type node matches the survey's `(name, file)` and label, no stale node, no duplicate. Exits with a report; `audit problems: 0` is the pass condition. |
 
 ## `port_coverage_kg.py` phases

@@ -21,7 +21,9 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 CRATE = "rucene"
@@ -146,6 +148,38 @@ RE_ATTR_TEST = re.compile(r"#\[\s*(?:test|tokio::test|bench)\b")
 RE_CFG_TEST = re.compile(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 
 
+RE_MACRO_RULES = re.compile(r"\bmacro_rules!\s*[A-Za-z_]\w*\s*\{")
+
+
+def blank_macro_bodies(masked: str) -> str:
+    """Blank out every `macro_rules!` body, preserving length and line breaks.
+
+    A `struct $name { ... }` inside a macro body is a template, not a
+    declaration: no type of that name exists until the macro is invoked, and the
+    invocation may produce several under different names. Reading them literally
+    invented 12 types in `src/internal/hppc/macros.rs` alone, a file that
+    declares nothing at all outside its macros. The real instances come from the
+    macro-expansion pass below.
+    """
+    out = list(masked)
+    for m in RE_MACRO_RULES.finditer(masked):
+        i = masked.index("{", m.start())
+        depth, j, n = 0, i, len(masked)
+        while j < n:
+            if masked[j] == "{":
+                depth += 1
+            elif masked[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    j += 1
+                    break
+            j += 1
+        for k in range(m.start(), j):
+            if out[k] != "\n":
+                out[k] = " "
+    return "".join(out)
+
+
 def strip_generics(s: str) -> str:
     """Remove parametros genericos equilibrando <>."""
     out = []
@@ -188,7 +222,7 @@ def module_path_for(rel: str):
 
 def parse_file(rel: str, text: str):
     """Devolve (types, fns, impls, uses) de um ficheiro Rust."""
-    masked = mask(text)
+    masked = blank_macro_bodies(mask(text))
     n = len(masked)
 
     # 1. Recolher todos os itens com a sua posicao no texto mascarado.
@@ -253,7 +287,7 @@ def parse_file(rel: str, text: str):
                 if entry["kind"] in ("struct", "enum", "union", "trait") and not in_fn:
                     # tipos declarados dentro do corpo de uma funcao sao locais
                     # a essa funcao e nao fazem parte da estrutura do modulo
-                    _record_type(types, entry, ms, tst)
+                    _record_type(types, entry, ms, tst, masked)
                 elif entry["kind"] == "fn":
                     _record_fn(fns, entry, scope, ms, tst, text)
                 elif entry["kind"] == "mod" and not entry["test"] and not tst:
@@ -284,12 +318,12 @@ def parse_file(rel: str, text: str):
                 tst = any(s.get("test") for s in scope)
                 in_fn = any(x["kind"] == "fn" for x in scope)
                 if pending["kind"] in ("struct", "union") and not in_fn:
-                    _record_type(types, pending, ms, tst)
+                    _record_type(types, pending, ms, tst, masked)
                 elif pending["kind"] == "alias" and not in_fn:
                     # so os aliases de nivel de modulo: os que estao dentro de
                     # um `impl`/`trait` sao tipos associados, nao itens.
                     if not any(x["kind"] in ("impl", "trait") for x in scope):
-                        _record_type(types, pending, ms, tst)
+                        _record_type(types, pending, ms, tst, masked)
                 elif pending["kind"] == "fn":
                     _record_fn(fns, pending, scope, ms, tst, text)
                 pending = None
@@ -313,7 +347,15 @@ def parse_file(rel: str, text: str):
     return types, fns, impls, mods, extract_uses(masked)
 
 
-def _record_type(acc, entry, mod_suffix, in_test):
+RE_CFG_TEST = re.compile(r"#\[cfg\(test\)\]")
+
+
+def _record_type(acc, entry, mod_suffix, in_test, text=None):
+    # `#[cfg(test)]` on the item itself makes it test-only just as surely as a
+    # `#[cfg(test)] mod` around it. Reading only the enclosing module recorded
+    # `DummyScorer` (src/util/hnsw/neighbor.rs) as production code.
+    if not in_test and text is not None:
+        in_test = bool(RE_CFG_TEST.search(_attr_lines_before(text, entry["start"])))
     acc.append(
         {
             "name": entry["name"],
@@ -487,6 +529,17 @@ def main():
     ap.add_argument("--commit", required=True)
     ap.add_argument("--date", required=True)
     ap.add_argument("--output", required=True)
+    ap.add_argument(
+        "--expand",
+        action="store_true",
+        help="also record macro-generated types, by asking the compiler to "
+        "expand the crate (needs the nightly toolchain)",
+    )
+    ap.add_argument(
+        "--expanded-file",
+        help="reuse a previously captured `-Zunpretty=expanded` dump instead "
+        "of running the compiler again",
+    )
     args = ap.parse_args()
 
     root = Path(args.source_root).resolve()
@@ -563,6 +616,27 @@ def main():
                 seen.add(target)
                 deps.append({"from": rel, "to": target})
 
+    macro_types, macro_fns = [], []
+    if args.expand or args.expanded_file:
+        expanded = (
+            Path(args.expanded_file).read_text(encoding="utf-8")
+            if args.expanded_file
+            else run_macro_expansion(root)
+        )
+        known = {(t["name"], t["file"]) for t in types}
+        macro_types = macro_generated_types(root, mod_to_file, known, expanded)
+        types.extend(macro_types)
+        known_fns = {(f["name"], f["file"], f.get("owner")) for f in fns}
+        macro_fns = macro_generated_fns(mod_to_file, known_fns, expanded)
+        fns.extend(macro_fns)
+        # A file's type count must stay consistent with the types recorded.
+        per_file = {}
+        for t in macro_types:
+            per_file[t["file"]] = per_file.get(t["file"], 0) + 1
+        for f in files:
+            if f["path"] in per_file:
+                f["types"] += per_file[f["path"]]
+
     out = {
         "commit": args.commit,
         "date": args.date,
@@ -578,7 +652,8 @@ def main():
     Path(args.output).write_text(json.dumps(out, indent=1), encoding="utf-8")
     print(
         f"files={len(files)} types={len(types)} fns={len(fns)} "
-        f"impls={len(impls)} mods={len(mods)} deps={len(deps)}",
+        f"impls={len(impls)} mods={len(mods)} deps={len(deps)} "
+        f"macro-generated={len(macro_types)} types, {len(macro_fns)} fns",
         file=sys.stderr,
     )
 
@@ -610,6 +685,234 @@ def resolve_use(path: str, base_path: str, mod_to_file: dict, is_test: bool):
             return mod_to_file[cand]
     return None
 
+
+
+# ---------------------------------------------------------------------------
+# Macro-expansion pass
+# ---------------------------------------------------------------------------
+#
+# The regex parser above reads literal source lines, so it cannot see a type
+# that no source line declares. Rucene generates such types with `macro_rules!`
+# in five places -- `internal::hppc` (the primitive containers Lucene's own code
+# generator emits), `util::packed` (`BulkOperationPackedN`), `document`'s range
+# fields and range doc-values fields, and `search::doc_values_iteration` -- so
+# 67 real, `PORTS`-carrying types were invisible to the survey and the loader's
+# audit reported them as stale nodes to delete.
+#
+# Rather than re-implement macro expansion (a guess, `CLAUDE.md` 7), this pass
+# asks the compiler: `cargo +nightly rustc --lib -- -Zunpretty=expanded` prints
+# the crate with every macro expanded. The types found only there are added with
+# `origin: "macro"`, which keeps the graph honest about why a node exists that
+# no literal declaration backs.
+#
+# The pass never overrides the literal survey: it only adds names the literal
+# parser did not already record for the same file. Expansion is compiled with
+# `cfg(test)` off, so it contributes production types only.
+
+RE_EXP_MOD = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*\{")
+RE_EXP_TYPE = re.compile(
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?(struct|enum|trait|union)\s+([A-Za-z_]\w*)"
+)
+RE_EXP_IMPL = re.compile(r"^\s*(?:unsafe\s+)?impl\b")
+RE_EXP_TRAIT = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:unsafe\s+)?trait\s")
+RE_EXP_FN = re.compile(
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?"
+    r"(?:const\s+|async\s+|unsafe\s+|extern\s+\"[^\"]*\"\s+)*fn\s"
+)
+
+
+def run_macro_expansion(root: Path) -> str:
+    """Expanded crate source, straight from the compiler."""
+    target = Path(tempfile.gettempdir()) / "rucene-kg-expand-target"
+    proc = subprocess.run(
+        ["cargo", "+nightly", "rustc", "--lib", "--", "-Zunpretty=expanded"],
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, CARGO_TARGET_DIR=str(target)),
+    )
+    if proc.returncode != 0:
+        raise SystemExit(
+            "macro expansion failed (needs the nightly toolchain):\n"
+            + proc.stderr[-2000:]
+        )
+    return proc.stdout
+
+
+def parse_expanded(text: str):
+    """Module-level types and functions of the expanded crate.
+
+    Scans the masked text brace by brace and classifies each block from the
+    *header* that precedes its `{` -- the text since the last `;`, `{` or `}`.
+    Reading the header rather than the opening line is what makes this correct
+    for the multi-line `impl<V> Clone for CharArrayMap<V> where ... {` headers
+    the expander emits: matching only the opening line mistook 348 derive- and
+    trait-impl methods for free functions.
+
+    Returns `(types, fns)` where `types` is `(module_path, name, kind)` and
+    `fns` is `(module_path, name, owner, signature)`. Anything inside a `fn`, a
+    `trait` or an `impl Trait for Type` body is skipped, matching what the
+    literal parser models; inherent `impl Type` blocks yield their methods with
+    `owner` set.
+    """
+    # `macro_rules!` definitions survive `-Zunpretty=expanded` verbatim, so the
+    # templates inside them have to be blanked here too, exactly as for a source
+    # file. Otherwise the scan reads `$name` as a type and as a method owner.
+    masked = blank_macro_bodies(mask(text))
+    n = len(masked)
+    stack = []  # (kind, name)
+    types, fns = [], []
+    header_start = 0
+    i = 0
+
+    def mods():
+        return "::".join([CRATE] + [nm for k, nm in stack if k == "mod"])
+
+    def opaque():
+        return any(k in ("fn", "trait", "impl") for k, _ in stack)
+
+    def owner():
+        return next((nm for k, nm in reversed(stack) if k == "inherent"), None)
+
+    def classify(header):
+        h = " ".join(header.split())
+        m = re.search(r"\bmod\s+([A-Za-z_]\w*)\s*$", h)
+        if m:
+            return ("mod", m.group(1))
+        m = re.search(r"\b(struct|enum|union)\s+([A-Za-z_]\w*)", h)
+        if m and " fn " not in h:
+            return ("type", m.group(2))
+        if re.search(r"\btrait\s+[A-Za-z_]", h) and " fn " not in h:
+            return ("trait", "")
+        if re.search(r"\bfn\s+[A-Za-z_]", h):
+            return ("fn", "")
+        m = re.match(r"^(?:.*\s)?impl(?:<.*?>)?\s+(.*)$", h)
+        if m and re.search(r"\bimpl\b", h):
+            rest = m.group(1)
+            if re.search(r"\bfor\b", rest):
+                return ("impl", "")
+            base = re.split(r"[<\s{]", rest.strip(), 1)[0]
+            return ("inherent", base.split("::")[-1].strip())
+        return ("block", "")
+
+    while i < n:
+        c = masked[i]
+        if c in ";}":
+            if c == ";" and not opaque() and not owner():
+                # `pub struct BulkOperationPacked1;` -- a unit struct opens no
+                # brace, so it has to be caught here, where the module context
+                # the surrounding scan maintains is still available.
+                h = " ".join(masked[header_start:i].split())
+                # The header still carries the item's attributes -- masking
+                # blanks a `#[doc = "..."]` string but not its brackets -- so
+                # anchor on the end of the header, not on its start.
+                mu = re.search(
+                    r"\b(struct)\s+([A-Za-z_]\w*)\s*(?:<[^>]*>)?"
+                    r"\s*(?:\([^;]*\))?\s*$",
+                    h,
+                )
+                if mu:
+                    types.append((mods(), mu.group(2), "struct"))
+            if c == "}" and stack:
+                stack.pop()
+            header_start = i + 1
+        elif c == "{":
+            header = masked[header_start:i]
+            kind, name = classify(header)
+            if kind == "type" and not opaque() and not owner():
+                m = re.search(r"\b(struct|enum|union)\s+([A-Za-z_]\w*)", " ".join(header.split()))
+                types.append((mods(), name, m.group(1)))
+            elif kind == "trait" and not opaque() and not owner():
+                m = re.search(r"\btrait\s+([A-Za-z_]\w*)", " ".join(header.split()))
+                if m:
+                    types.append((mods(), m.group(1), "trait"))
+            elif kind == "fn" and not opaque():
+                m = re.search(r"\bfn\s+([A-Za-z_]\w*)", " ".join(header.split()))
+                if m:
+                    fns.append((mods(), m.group(1), owner(), " ".join(header.split())))
+            stack.append((kind, name))
+            header_start = i + 1
+        i += 1
+
+    return types, fns
+
+
+def macro_generated_types(root: Path, mod_to_file: dict, known: set, expanded: str):
+    """Types the compiler sees that the literal parser did not record.
+
+    `known` holds the (name, file) pairs the literal survey already produced.
+    A module path is resolved to the file that declares it, walking up so that a
+    type generated into an inline `mod` lands on the right file with the leftover
+    segments kept as `modSuffix`.
+    """
+    added = []
+    types_seen, _fns = parse_expanded(expanded)
+    for mod_path, name, kind in types_seen:
+        segs = mod_path.split("::")
+        suffix = []
+        rel = None
+        while segs:
+            cand = "::".join(segs)
+            if cand in mod_to_file:
+                rel = mod_to_file[cand]
+                break
+            suffix.insert(0, segs.pop())
+        if rel is None or (name, rel) in known:
+            continue
+        known.add((name, rel))
+        added.append(
+            {
+                "name": name,
+                "kind": kind,
+                "modSuffix": suffix,
+                "visibility": "pub",
+                "scope": "crate",
+                "origin": "macro",
+                "file": rel,
+                "qualifiedName": "::".join([mod_path, name]),
+            }
+        )
+    return added
+
+
+def macro_generated_fns(mod_to_file: dict, known: set, expanded: str):
+    """Free functions and inherent methods the compiler sees but no source line
+    declares. Same rule and same `origin: "macro"` marker as the types above;
+    `impl Trait for Type` bodies stay out, as everywhere else in this model."""
+    added = []
+    _types, fns = parse_expanded(expanded)
+    for mod_path, name, owner, signature in fns:
+        segs = mod_path.split("::")
+        suffix = []
+        rel = None
+        while segs:
+            cand = "::".join(segs)
+            if cand in mod_to_file:
+                rel = mod_to_file[cand]
+                break
+            suffix.insert(0, segs.pop())
+        if rel is None:
+            continue
+        key = (name, rel, owner)
+        if key in known:
+            continue
+        known.add(key)
+        segments = [mod_path] + ([owner] if owner else []) + [name]
+        added.append(
+            {
+                "name": name,
+                "kind": "method" if owner else "function",
+                "owner": owner,
+                "modSuffix": suffix,
+                "visibility": "pub" if signature.lstrip().startswith("pub") else "private",
+                "scope": "crate",
+                "origin": "macro",
+                "signature": signature,
+                "file": rel,
+                "qualifiedName": "::".join(segments),
+            }
+        )
+    return added
 
 if __name__ == "__main__":
     main()

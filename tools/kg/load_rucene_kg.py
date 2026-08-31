@@ -26,6 +26,7 @@ Uso:
 import argparse
 import json
 import subprocess
+import time
 import sys
 from collections import defaultdict
 
@@ -50,13 +51,26 @@ def esc(v) -> str:
     return "'" + str(v).replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def rmp(mode: str, roadmap: str, query: str, label: str = ""):
-    result = subprocess.run(
-        ["rmp", "graph", mode, "-r", roadmap],
-        input=query,
-        text=True,
-        capture_output=True,
-    )
+def rmp(mode: str, roadmap: str, query: str, label: str = "", attempts: int = 6):
+    # The graph store rejects a write while another one is in progress -- an
+    # `rmp web` session is enough to cause it -- and a half-applied load leaves
+    # the graph in a state no audit can distinguish from real drift. Retry the
+    # transient case with backoff instead of dying mid-phase.
+    delay = 1.0
+    for attempt in range(1, attempts + 1):
+        result = subprocess.run(
+            ["rmp", "graph", mode, "-r", roadmap],
+            input=query,
+            text=True,
+            capture_output=True,
+        )
+        if result.returncode == 0 or "store is busy" not in result.stderr:
+            break
+        if attempt < attempts:
+            print(f"  store busy, retrying in {delay:.0f}s "
+                  f"({attempt}/{attempts - 1})", file=sys.stderr)
+            time.sleep(delay)
+            delay = min(delay * 2, 20)
     if result.returncode != 0:
         print(f"\n{label} FAILED (exit {result.returncode})", file=sys.stderr)
         print(result.stderr, file=sys.stderr)
@@ -497,6 +511,7 @@ def phase_nodes(roadmap, s: Survey, batch_size):
                     "kind": t["kind"],
                     "visibility": t["visibility"],
                     "scope": t["scope"],
+                    "origin": t.get("origin", "source"),
                     **stamp,
                 }
                 for t in sel
@@ -504,6 +519,7 @@ def phase_nodes(roadmap, s: Survey, batch_size):
             f"MATCH (t:{label} {{name:row.name, file:row.file}}) "
             "SET t.qualifiedName = row.qualifiedName, t.kind = row.kind, "
             "t.visibility = row.visibility, t.scope = row.scope, "
+            "t.origin = row.origin, "
             "t.language = 'Rust', t.gitCommit = row.gitCommit, "
             "t.gitDate = row.gitDate",
             batch_size,
@@ -531,6 +547,7 @@ def phase_nodes(roadmap, s: Survey, batch_size):
                 "visibility": f["visibility"],
                 "scope": f["scope"],
                 "signature": f["signature"][:200],
+                "origin": f.get("origin", "source"),
                 **stamp,
             }
             for f in s.fns
@@ -538,7 +555,7 @@ def phase_nodes(roadmap, s: Survey, batch_size):
         "MATCH (f:RustFn {qualifiedName:row.qualifiedName}) SET f.name = row.name, "
         "f.file = row.file, f.kind = row.kind, f.owner = row.owner, "
         "f.visibility = row.visibility, f.scope = row.scope, "
-        "f.signature = row.signature, f.language = 'Rust', "
+        "f.signature = row.signature, f.origin = row.origin, f.language = 'Rust', "
         "f.gitCommit = row.gitCommit, f.gitDate = row.gitDate",
         batch_size,
         "RustFn update",
@@ -859,6 +876,79 @@ def phase_audit(roadmap, s: Survey):
     return problems
 
 
+def phase_prune(roadmap, s: Survey, batch_size):
+    """Delete nodes the survey no longer confirms.
+
+    `phase_audit` reports them; without this phase they accumulate, and a node
+    for a type the crate deleted is a false statement about the code. Two
+    safeguards: a node carrying a `PORTS` edge is never pruned -- that edge is a
+    curated or declared claim, and its disappearance would silently reduce
+    reported coverage -- and the survey must be non-empty, so a failed extraction
+    can never be read as "the crate has no types".
+    """
+    print("phase: prune", file=sys.stderr)
+    if not s.types or not s.fns:
+        print("  survey is empty; refusing to prune", file=sys.stderr)
+        return
+
+    survey_types = {(t["name"], t["file"]) for t in s.types}
+    survey_fns = {f["qualifiedName"] for f in s.fns}
+
+    graph_types = read(
+        roadmap,
+        "MATCH (t) WHERE t:RustStruct OR t:RustTrait OR t:RustEnum OR t:RustAlias "
+        "RETURN t.name AS name, t.file AS file",
+    )
+    graph_fns = read(roadmap, "MATCH (f:RustFn) RETURN f.qualifiedName AS qn")
+
+    stale_types = [
+        {"name": r["name"], "file": r["file"]}
+        for r in graph_types
+        if (r["name"], r["file"]) not in survey_types
+    ]
+    stale_fns = [
+        {"qn": r["qn"]} for r in graph_fns if r["qn"] not in survey_fns
+    ]
+
+    protected = {
+        (r["name"], r["file"])
+        for r in read(
+            roadmap,
+            "MATCH (t)-[:PORTS]->(:Class) RETURN t.name AS name, t.file AS file",
+        )
+    }
+    kept = [t for t in stale_types if (t["name"], t["file"]) in protected]
+    stale_types = [t for t in stale_types if (t["name"], t["file"]) not in protected]
+    protected_fns = {
+        r["qn"]
+        for r in read(
+            roadmap, "MATCH (f:RustFn)-[:PORTS]->(:Class) RETURN f.qualifiedName AS qn"
+        )
+    }
+    kept += [f for f in stale_fns if f["qn"] in protected_fns]
+    stale_fns = [f for f in stale_fns if f["qn"] not in protected_fns]
+
+    for t in kept:
+        print(f"  KEPT (carries PORTS): {t}", file=sys.stderr)
+
+    if stale_fns:
+        run_unwind(
+            "delete", roadmap, stale_fns,
+            "MATCH (f:RustFn {qualifiedName:row.qn}) DETACH DELETE f",
+            batch_size, "stale RustFn deleted",
+        )
+    if stale_types:
+        run_unwind(
+            "delete", roadmap, stale_types,
+            "MATCH (t {name:row.name, file:row.file}) "
+            "WHERE t:RustStruct OR t:RustTrait OR t:RustEnum OR t:RustAlias "
+            "DETACH DELETE t",
+            batch_size, "stale type nodes deleted",
+        )
+    if not stale_types and not stale_fns:
+        print("  nothing to prune", file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("roadmap")
@@ -873,6 +963,7 @@ def main():
             "nodes",
             "edges",
             "reconcile",
+            "prune",
             "stamp",
             "audit",
         ],
@@ -887,6 +978,8 @@ def main():
         phase_edges(args.roadmap, s, args.batch_size)
     if args.phase in ("all", "reconcile"):
         phase_reconcile(args.roadmap, s, args.batch_size)
+    if args.phase in ("all", "prune"):
+        phase_prune(args.roadmap, s, args.batch_size)
     if args.phase in ("all", "stamp"):
         phase_stamp(args.roadmap, s)
     if args.phase in ("all", "audit"):

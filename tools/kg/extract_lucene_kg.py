@@ -12,12 +12,18 @@ from collections import defaultdict
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--source-root', default='/tmp/lucene-10.5.0/lucene/core/src/java/org/apache/lucene')
+parser.add_argument('--source-root',
+                    default='/tmp/lucene1050/lucene/core/src/java/org/apache/lucene')
+parser.add_argument('--lucene-root', default='/tmp/lucene1050',
+                    help='clone root the file paths are made relative to')
 parser.add_argument('--output-dir', default='/tmp/lucene_kg')
 parser.add_argument('--commit', default='UNKNOWN')
 parser.add_argument('--date', default='UNKNOWN')
 
-ROOT = Path('/tmp/lucene-10.5.0/lucene/core/src/java/org/apache/lucene')
+# Defaults are the path CLAUDE.md 16.1 names; both are overridable so the
+# survey can be replayed against any checkout of the reference clone.
+ROOT = Path('/tmp/lucene1050/lucene/core/src/java/org/apache/lucene')
+LUCENE_ROOT = Path('/tmp/lucene1050')
 CORE_PREFIX = 'org.apache.lucene'
 
 args = None
@@ -117,7 +123,7 @@ def discover():
     type_implements = []
 
     for dirpath, dirnames, filenames in os.walk(ROOT):
-        rel_dir = Path(dirpath).relative_to('/tmp/lucene-10.5.0')
+        rel_dir = Path(dirpath).relative_to(LUCENE_ROOT)
         rel_dir_str = str(rel_dir).replace('/', '.')
         # packages are directories under lucene/core/src/java/org/apache/lucene
         if rel_dir_str.startswith('lucene.core.src.java.org.apache.lucene'):
