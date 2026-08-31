@@ -57,5 +57,17 @@
     "methods": [
       "getPattern"
     ]
+  },
+  "org.apache.lucene.document.LatLonPoint": {
+    "reason": "The five query factories (newBoxQuery, newBoxInternal, newDistanceQuery, newPolygonQuery, newGeometryQuery, makeContainsGeometryQuery, newDistanceFeatureQuery) each return a Query. None of the geo query types they build \u2014 LatLonPointQuery, LatLonPointDistanceQuery, LatLonPointDistanceFeatureQuery \u2014 implements the search::Query trait yet: they exist as standalone types carrying their own visitors and bounds. Wiring them into the search API (create_weight, to_query_string, visit, query_eq, query_hash, and SpatialQuery::getScorerSupplier) is the work these factories depend on, and is tracked as its own gap rather than hidden inside this one.",
+    "methods": [
+      "makeContainsGeometryQuery",
+      "newBoxInternal",
+      "newBoxQuery",
+      "newDistanceFeatureQuery",
+      "newDistanceQuery",
+      "newGeometryQuery",
+      "newPolygonQuery"
+    ]
   }
 }
