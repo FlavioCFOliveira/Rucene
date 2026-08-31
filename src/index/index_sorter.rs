@@ -602,7 +602,7 @@ impl MultiSorter {
         for (index, reader) in readers.iter().enumerate() {
             let mapping = std::mem::take(&mut remapped[index]);
             let live_docs = reader.get_live_docs();
-            doc_maps.push(Box::new(move |doc_id: i32| {
+            doc_maps.push(Arc::new(move |doc_id: i32| {
                 let alive = match &live_docs {
                     Some(bits) => bits.get(doc_id as usize),
                     None => true,

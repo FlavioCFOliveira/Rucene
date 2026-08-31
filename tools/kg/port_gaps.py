@@ -59,6 +59,16 @@ def fns_of(path):
     cache[path] = got
     return got
 
+# 2a. Supertypes: Java re-declares an inherited method as a `final` override
+# (CodecReader does it for all seventeen of LeafReader's read methods), while
+# the port declares it once, on the supertrait. Without the supertype's file in
+# the search set every such override reads as missing.
+sup = q("MATCH (a:Class)-[:EXTENDS|IMPLEMENTS]->(b:Class) WHERE a.portScope='in' "
+        "RETURN a.qualifiedName, b.qualifiedName")
+supers = defaultdict(set)
+for a, b in sup["rows"]:
+    supers[a].add(b)
+
 # 2b. Fall back to the filename convention for types the graph did not map:
 # Lucene `IntIntHashMap` is ported by `.../int_int_hash_map.rs`. The macro-built
 # containers carry no PORTS edge, so without this they read as wholly unported.
@@ -77,7 +87,16 @@ for qn, jmethods in java.items():
     # A file that only invokes a macro declares nothing itself: the port lives
     # in the sibling `macros.rs` that stands in for Lucene's code generator.
     expanded = set(paths)
-    for p in paths:
+    seen_types = {qn}
+    frontier = list(supers.get(qn, ()))
+    while frontier:
+        parent = frontier.pop()
+        if parent in seen_types:
+            continue
+        seen_types.add(parent)
+        expanded |= files.get(parent) or set()
+        frontier.extend(supers.get(parent, ()))
+    for p in list(expanded):
         sib = os.path.join(os.path.dirname(p), "macros.rs")
         if os.path.exists(os.path.join(ROOT, sib)):
             expanded.add(sib)

@@ -222,6 +222,29 @@ pub trait SortedNumericDocValues: DocValuesIterator {
     /// Returns the number of values for the current document.
     fn doc_value_count(&self) -> Result<i32>;
 
+    /// Returns the single-valued iterator this one wraps, when it is a
+    /// singleton view.
+    ///
+    /// Equivalent to the `instanceof SingletonSortedNumericDocValues` test in
+    /// `DocValues.unwrapSingleton(SortedNumericDocValues)`. Rust cannot
+    /// downcast a trait object without a concrete type, so the question is
+    /// asked of the implementation instead: only
+    /// [`SingletonSortedNumericDocValues`] answers with its inner iterator.
+    fn into_singleton<'s>(self: Box<Self>) -> Option<Box<dyn NumericDocValues + 's>>
+    where
+        Self: 's,
+    {
+        None
+    }
+
+    /// Returns whether this iterator is a singleton view.
+    ///
+    /// The non-consuming counterpart of [`into_singleton`](Self::into_singleton),
+    /// for deciding before committing the box.
+    fn is_singleton(&self) -> bool {
+        false
+    }
+
     /// Fills a [`FixedBitSet`] with the doc IDs in `[from_doc, to_doc)` whose
     /// sorted numeric values contain at least one value in `[min_value, max_value]`.
     ///
@@ -276,6 +299,23 @@ pub trait SortedSetDocValues: DocValuesIterator {
 
     /// Returns the number of unique values.
     fn get_value_count(&self) -> Result<i64>;
+
+    /// Returns the single-valued iterator this one wraps, when it is a
+    /// singleton view.
+    ///
+    /// Equivalent to the `instanceof SingletonSortedSetDocValues` test in
+    /// `DocValues.unwrapSingleton(SortedSetDocValues)`.
+    fn into_singleton<'s>(self: Box<Self>) -> Option<Box<dyn SortedDocValues + 's>>
+    where
+        Self: 's,
+    {
+        None
+    }
+
+    /// Returns whether this iterator is a singleton view.
+    fn is_singleton(&self) -> bool {
+        false
+    }
 
     /// If `key` exists, returns its ordinal, else returns `-insertion_point - 1`,
     /// like a binary search.
@@ -424,33 +464,33 @@ impl DocValues {
     }
 
     /// Returns a multi-valued view over the provided [`NumericDocValues`].
-    pub fn singleton_numeric(dv: Box<dyn NumericDocValues>) -> SingletonSortedNumericDocValues {
+    pub fn singleton_numeric<'a>(
+        dv: Box<dyn NumericDocValues + 'a>,
+    ) -> SingletonSortedNumericDocValues<'a> {
         SingletonSortedNumericDocValues::new(dv)
     }
 
     /// Returns a multi-valued view over the provided [`SortedDocValues`].
-    pub fn singleton_sorted(dv: Box<dyn SortedDocValues>) -> SingletonSortedSetDocValues {
+    pub fn singleton_sorted<'a>(
+        dv: Box<dyn SortedDocValues + 'a>,
+    ) -> SingletonSortedSetDocValues<'a> {
         SingletonSortedSetDocValues::new(dv)
     }
 
     /// Returns the single-valued [`NumericDocValues`] wrapped by
     /// [`SingletonSortedNumericDocValues`], if any.
-    pub fn unwrap_singleton_numeric(
-        dv: &dyn SortedNumericDocValues,
-    ) -> Option<&dyn NumericDocValues> {
-        // Since `SingletonSortedNumericDocValues` stores the inner iterator as
-        // `Box<dyn NumericDocValues>`, we cannot recover it through a trait-object
-        // downcast without a concrete type. This helper therefore only works
-        // on the concrete wrapper.
-        let _ = dv;
-        None
+    pub fn unwrap_singleton_numeric<'a>(
+        dv: Box<dyn SortedNumericDocValues + 'a>,
+    ) -> Option<Box<dyn NumericDocValues + 'a>> {
+        dv.into_singleton()
     }
 
     /// Returns the single-valued [`SortedDocValues`] wrapped by
     /// [`SingletonSortedSetDocValues`], if any.
-    pub fn unwrap_singleton_sorted(dv: &dyn SortedSetDocValues) -> Option<&dyn SortedDocValues> {
-        let _ = dv;
-        None
+    pub fn unwrap_singleton_sorted<'a>(
+        dv: Box<dyn SortedSetDocValues + 'a>,
+    ) -> Option<Box<dyn SortedDocValues + 'a>> {
+        dv.into_singleton()
     }
 }
 
@@ -799,13 +839,13 @@ impl DocValuesSkipper for EmptyDocValuesSkipper {
 /// Multi-valued view over a single-valued [`NumericDocValues`].
 ///
 /// Equivalent to `org.apache.lucene.index.SingletonSortedNumericDocValues`.
-pub struct SingletonSortedNumericDocValues {
-    inner: Box<dyn NumericDocValues>,
+pub struct SingletonSortedNumericDocValues<'a> {
+    inner: Box<dyn NumericDocValues + 'a>,
 }
 
-impl SingletonSortedNumericDocValues {
+impl<'a> SingletonSortedNumericDocValues<'a> {
     /// Creates a multi-valued view over the provided numeric doc values.
-    pub fn new(inner: Box<dyn NumericDocValues>) -> Self {
+    pub fn new(inner: Box<dyn NumericDocValues + 'a>) -> Self {
         Self { inner }
     }
 
@@ -815,7 +855,7 @@ impl SingletonSortedNumericDocValues {
     }
 }
 
-impl DocIdSetIterator for SingletonSortedNumericDocValues {
+impl DocIdSetIterator for SingletonSortedNumericDocValues<'_> {
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -837,13 +877,24 @@ impl DocIdSetIterator for SingletonSortedNumericDocValues {
     }
 }
 
-impl DocValuesIterator for SingletonSortedNumericDocValues {
+impl DocValuesIterator for SingletonSortedNumericDocValues<'_> {
     fn advance_exact(&mut self, target: i32) -> Result<bool> {
         self.inner.advance_exact(target)
     }
 }
 
-impl SortedNumericDocValues for SingletonSortedNumericDocValues {
+impl SortedNumericDocValues for SingletonSortedNumericDocValues<'_> {
+    fn into_singleton<'s>(self: Box<Self>) -> Option<Box<dyn NumericDocValues + 's>>
+    where
+        Self: 's,
+    {
+        Some(self.inner)
+    }
+
+    fn is_singleton(&self) -> bool {
+        true
+    }
+
     fn next_value(&mut self) -> Result<i64> {
         self.inner.long_value()
     }
@@ -856,14 +907,14 @@ impl SortedNumericDocValues for SingletonSortedNumericDocValues {
 /// Multi-valued view over a single-valued [`SortedDocValues`].
 ///
 /// Equivalent to `org.apache.lucene.index.SingletonSortedSetDocValues`.
-pub struct SingletonSortedSetDocValues {
-    inner: Box<dyn SortedDocValues>,
+pub struct SingletonSortedSetDocValues<'a> {
+    inner: Box<dyn SortedDocValues + 'a>,
     ord: i64,
 }
 
-impl SingletonSortedSetDocValues {
+impl<'a> SingletonSortedSetDocValues<'a> {
     /// Creates a multi-valued view over the provided sorted doc values.
-    pub fn new(inner: Box<dyn SortedDocValues>) -> Self {
+    pub fn new(inner: Box<dyn SortedDocValues + 'a>) -> Self {
         Self { inner, ord: -1 }
     }
 
@@ -873,7 +924,7 @@ impl SingletonSortedSetDocValues {
     }
 }
 
-impl DocIdSetIterator for SingletonSortedSetDocValues {
+impl DocIdSetIterator for SingletonSortedSetDocValues<'_> {
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -903,7 +954,7 @@ impl DocIdSetIterator for SingletonSortedSetDocValues {
     }
 }
 
-impl DocValuesIterator for SingletonSortedSetDocValues {
+impl DocValuesIterator for SingletonSortedSetDocValues<'_> {
     fn advance_exact(&mut self, target: i32) -> Result<bool> {
         if self.inner.advance_exact(target)? {
             self.ord = self.inner.ord_value()? as i64;
@@ -914,7 +965,18 @@ impl DocValuesIterator for SingletonSortedSetDocValues {
     }
 }
 
-impl SortedSetDocValues for SingletonSortedSetDocValues {
+impl SortedSetDocValues for SingletonSortedSetDocValues<'_> {
+    fn into_singleton<'s>(self: Box<Self>) -> Option<Box<dyn SortedDocValues + 's>>
+    where
+        Self: 's,
+    {
+        Some(self.inner)
+    }
+
+    fn is_singleton(&self) -> bool {
+        true
+    }
+
     fn next_ord(&mut self) -> Result<i64> {
         Ok(self.ord)
     }
@@ -1338,9 +1400,9 @@ impl DocValuesProducer for EmptyDocValuesProducer {
 /// in segment-private ordinal space when possible.
 pub struct OrdinalMap {
     value_count: i64,
-    global_ord_deltas: Box<dyn LongValues>,
-    first_segments: Box<dyn LongValues>,
-    segment_to_global_ords: Vec<Box<dyn LongValues>>,
+    global_ord_deltas: Box<dyn LongValues + Send + Sync>,
+    first_segments: Box<dyn LongValues + Send + Sync>,
+    segment_to_global_ords: Vec<Box<dyn LongValues + Send + Sync>>,
     segment_map: SegmentMap,
 }
 
@@ -1473,17 +1535,19 @@ impl OrdinalMap {
         let (global_ord_deltas, first_segments) =
             if num_subs > 0 && ord_delta_bits[0] == 0 && first_segments.iter().all(|&x| x == 0) {
                 (
-                    Box::new(ZeroesLongValues) as Box<dyn LongValues>,
-                    Box::new(ZeroesLongValues) as Box<dyn LongValues>,
+                    Box::new(ZeroesLongValues) as Box<dyn LongValues + Send + Sync>,
+                    Box::new(ZeroesLongValues) as Box<dyn LongValues + Send + Sync>,
                 )
             } else {
                 (
-                    Box::new(ArrayLongValues(global_ord_deltas)) as Box<dyn LongValues>,
-                    Box::new(ArrayLongValues(first_segments)) as Box<dyn LongValues>,
+                    Box::new(ArrayLongValues(global_ord_deltas))
+                        as Box<dyn LongValues + Send + Sync>,
+                    Box::new(ArrayLongValues(first_segments)) as Box<dyn LongValues + Send + Sync>,
                 )
             };
 
-        let mut segment_to_global_ords: Vec<Box<dyn LongValues>> = Vec::with_capacity(num_subs);
+        let mut segment_to_global_ords: Vec<Box<dyn LongValues + Send + Sync>> =
+            Vec::with_capacity(num_subs);
         for i in 0..num_subs {
             if ord_delta_bits[i] == 0 {
                 segment_to_global_ords.push(Box::new(IdentityLongValues));

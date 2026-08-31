@@ -562,8 +562,8 @@ mod tests {
         // even merged doc IDs, segment 1 the odd ones.
         let state = merge_state(
             vec![
-                Box::new(|doc: i32| doc * 2) as DocMap,
-                Box::new(|doc: i32| doc * 2 + 1) as DocMap,
+                Arc::new(|doc: i32| doc * 2) as DocMap,
+                Arc::new(|doc: i32| doc * 2 + 1) as DocMap,
             ],
             vec![3, 3],
             true,

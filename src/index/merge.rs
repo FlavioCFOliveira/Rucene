@@ -23,12 +23,12 @@ use crate::util::Bits;
 /// Returns the mapped doc ID or `-1` if the document is not mapped (deleted).
 ///
 /// Equivalent to `MergeState.DocMap`.
-pub type DocMap = Box<dyn Fn(i32) -> i32 + Send + Sync>;
+pub type DocMap = Arc<dyn Fn(i32) -> i32 + Send + Sync>;
 
 /// Helper that builds an identity doc map (no deletions) for a segment of
 /// `max_doc` documents, rebasing by `doc_base`.
 pub fn identity_doc_map(max_doc: i32, doc_base: i32) -> DocMap {
-    Box::new(move |doc_id: i32| {
+    Arc::new(move |doc_id: i32| {
         if doc_id < 0 || doc_id >= max_doc {
             -1
         } else {
@@ -47,7 +47,7 @@ pub fn deletion_doc_map(max_doc: i32, live_docs: Box<dyn Bits>, doc_base: i32) -
             new_doc += 1;
         }
     }
-    Box::new(move |doc_id: i32| {
+    Arc::new(move |doc_id: i32| {
         if doc_id < 0 || doc_id >= max_doc {
             -1
         } else {
@@ -597,8 +597,8 @@ mod tests {
         // Sub 0 maps docs 0,1,2 -> 0,2,4 (even)
         // Sub 1 maps docs 0,1,2 -> 1,3,5 (odd)
         let subs = vec![
-            VecSub::new(vec![0, 1, 2], Box::new(|doc: i32| doc * 2)),
-            VecSub::new(vec![0, 1, 2], Box::new(|doc: i32| doc * 2 + 1)),
+            VecSub::new(vec![0, 1, 2], Arc::new(|doc: i32| doc * 2)),
+            VecSub::new(vec![0, 1, 2], Arc::new(|doc: i32| doc * 2 + 1)),
         ];
         let mut merger = DocIDMerger::new(subs, true).unwrap();
         let mut order = Vec::new();

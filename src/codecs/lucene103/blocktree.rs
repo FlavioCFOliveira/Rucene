@@ -1271,11 +1271,11 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
             ),
         )?;
 
+        meta_out.write_v_int(self.fields.len() as i32)?;
         for field_meta in &self.fields {
             meta_out.write_bytes(field_meta, 0, field_meta.len())?;
         }
 
-        meta_out.write_v_int(self.fields.len() as i32)?;
         write_footer(index_out.as_mut())?;
         // `DataOutput.writeLong` is little-endian since Lucene 9; the reader
         // uses these two lengths to retrieve the checksums of `.tip`/`.tim`.
@@ -1467,7 +1467,23 @@ impl Lucene103BlockTreeTermsReader {
             }
         }
 
+        // The writer records the final length of `.tip` and `.tim` here, after
+        // the field metadata. Both must be read before the footer check, and
+        // they are what lets the checksums of those two files be retrieved
+        // without scanning them.
+        let index_length = meta_in.read_long()?;
+        let terms_length = meta_in.read_long()?;
+
         codec_util::check_footer(meta_in.as_mut())?;
+
+        // The metadata checksum has been verified, so the two lengths are
+        // trustworthy. Java retrieves the checksums through the same two
+        // handles it read the headers with; those have already been shared
+        // here, so the check runs on clones of them, which read the same bytes.
+        let mut index_check = shared.index_in.clone_input()?;
+        codec_util::retrieve_checksum_expected_length(index_check.as_mut(), index_length)?;
+        let mut terms_check = shared.terms_in.clone_input()?;
+        codec_util::retrieve_checksum_expected_length(terms_check.as_mut(), terms_length)?;
 
         Ok(Self {
             postings_reader,

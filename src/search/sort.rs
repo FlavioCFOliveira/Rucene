@@ -409,15 +409,24 @@ impl SortField {
         missing_value: Option<MissingValue>,
     ) -> Result<Self> {
         validate_field(&field, field_type, missing_value)?;
-        Ok(Self {
+        let mut sort_field = Self {
             field,
             field_type,
             reverse,
-            missing_value,
+            missing_value: None,
             comparator_source: None,
             optimize_sort_with_indexed_data: true,
             kind: SortFieldKind::Plain,
-        })
+        };
+        // Route the missing value through `set_missing_value`, which carries
+        // the per-type checks `SortField.setMissingValue(Object)` performs.
+        // Validating it here as well would duplicate them, and duplicating them
+        // is how they came to disagree: a `Long` missing value on an `INT`
+        // field was accepted by this constructor and rejected by the setter.
+        if missing_value.is_some() {
+            sort_field.set_missing_value(missing_value)?;
+        }
+        Ok(sort_field)
     }
 
     /// Returns the field name, if any.

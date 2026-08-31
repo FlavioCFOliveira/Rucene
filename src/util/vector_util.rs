@@ -29,6 +29,8 @@
 #![deny(unsafe_code)]
 
 use crate::error::{LuceneError, Result};
+use crate::internal::vectorization::default_vector_util_support::DefaultVectorUtilSupport;
+use crate::internal::vectorization::vector_util_support::VectorUtilSupport;
 
 /// Tolerance used by [`l2normalize`] and [`is_unit_vector`].
 ///
@@ -497,6 +499,391 @@ pub fn add(u: &mut [f32], v: &[f32]) -> Result<()> {
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// uint4, uint8 and binary vectors
+// ---------------------------------------------------------------------------
+
+/// Returns the scalar reference implementation every wrapper below delegates
+/// to.
+///
+/// Lucene's `VectorUtil` validates its arguments and then forwards to the
+/// `VectorUtilSupport` the runtime selected (`IMPL`). This module pins the
+/// scalar, non-FMA path as its parity target — see the module documentation —
+/// so it forwards to that implementation directly rather than to whichever one
+/// the host CPU would pick.
+fn support() -> &'static DefaultVectorUtilSupport {
+    static SUPPORT: DefaultVectorUtilSupport = DefaultVectorUtilSupport::new();
+    &SUPPORT
+}
+
+/// Dot product over uint4 vectors, whose values lie in `[0, 15]`.
+///
+/// Equivalent to `VectorUtil.int4DotProduct(byte[], byte[])`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+pub fn int4_dot_product(a: &[u8], b: &[u8]) -> Result<i32> {
+    if a.len() != b.len() {
+        return Err(LuceneError::IllegalArgument(format!(
+            "vector dimensions differ: {}!={}",
+            a.len(),
+            b.len()
+        )));
+    }
+    support().int4_dot_product(a, b)
+}
+
+/// Dot product over uint4 vectors where the second one is packed two values to
+/// the byte.
+///
+/// Equivalent to `VectorUtil.int4DotProductSinglePacked(byte[], byte[])`. The
+/// packing Lucene assumes is
+/// `packed[i] = (raw[i] << 4) | raw[packed.len() + i]`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when `packed` is not
+/// `(unpacked.len() + 1) / 2` bytes long.
+pub fn int4_dot_product_single_packed(unpacked: &[u8], packed: &[u8]) -> Result<i32> {
+    if packed.len() != (unpacked.len() + 1) >> 1 {
+        return Err(LuceneError::IllegalArgument(format!(
+            "vector dimensions differ: {} != 2 * {}",
+            unpacked.len(),
+            packed.len()
+        )));
+    }
+    support().int4_dot_product_single_packed(unpacked, packed)
+}
+
+/// Dot product over two uint4 vectors that are both packed two values to the
+/// byte.
+///
+/// Equivalent to `VectorUtil.int4DotProductBothPacked(byte[], byte[])`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+pub fn int4_dot_product_both_packed(a: &[u8], b: &[u8]) -> Result<i32> {
+    if a.len() != b.len() {
+        return Err(LuceneError::IllegalArgument(format!(
+            "vector dimensions differ: {} != {}",
+            a.len(),
+            b.len()
+        )));
+    }
+    support().int4_dot_product_both_packed(a, b)
+}
+
+/// Dot product between an int4 query vector and a binary document vector.
+///
+/// Equivalent to `VectorUtil.int4BitDotProduct(byte[], byte[])`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when `q` is not four times the
+/// length of `d`.
+pub fn int4_bit_dot_product(q: &[u8], d: &[u8]) -> Result<i64> {
+    if q.len() != d.len() * 4 {
+        return Err(LuceneError::IllegalArgument(format!(
+            "vector dimensions incompatible: {}!= 4 x {}",
+            q.len(),
+            d.len()
+        )));
+    }
+    support().int4_bit_dot_product(q, d)
+}
+
+/// Dot product between an int4 query vector and a dibit (two-bit) document
+/// vector.
+///
+/// Equivalent to `VectorUtil.int4DibitDotProduct(byte[], byte[])`. Both
+/// vectors are transposed: the query into four bit planes, the document into
+/// two.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when `q` is not twice the length
+/// of `d`.
+pub fn int4_dibit_dot_product(q: &[u8], d: &[u8]) -> Result<i64> {
+    if q.len() != d.len() * 2 {
+        return Err(LuceneError::IllegalArgument(format!(
+            "vector dimensions incompatible: {}!= 2 x {}",
+            q.len(),
+            d.len()
+        )));
+    }
+    support().int4_dibit_dot_product(q, d)
+}
+
+/// Sum of squared differences between two uint4 vectors.
+///
+/// Equivalent to `VectorUtil.int4SquareDistance(byte[], byte[])`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+pub fn int4_square_distance(a: &[u8], b: &[u8]) -> Result<i32> {
+    if a.len() != b.len() {
+        return Err(LuceneError::IllegalArgument(format!(
+            "vector dimensions differ: {}!={}",
+            a.len(),
+            b.len()
+        )));
+    }
+    support().int4_square_distance(a, b)
+}
+
+/// Sum of squared differences between two uint4 vectors where the second one is
+/// packed two values to the byte.
+///
+/// Equivalent to `VectorUtil.int4SquareDistanceSinglePacked(byte[], byte[])`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when `packed` is not
+/// `(unpacked.len() + 1) / 2` bytes long.
+pub fn int4_square_distance_single_packed(unpacked: &[u8], packed: &[u8]) -> Result<i32> {
+    if packed.len() != (unpacked.len() + 1) >> 1 {
+        return Err(LuceneError::IllegalArgument(format!(
+            "vector dimensions differ: {}!= 2 * {}",
+            unpacked.len(),
+            packed.len()
+        )));
+    }
+    support().int4_square_distance_single_packed(unpacked, packed)
+}
+
+/// Sum of squared differences between two uint4 vectors that are both packed
+/// two values to the byte.
+///
+/// Equivalent to `VectorUtil.int4SquareDistanceBothPacked(byte[], byte[])`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+pub fn int4_square_distance_both_packed(a: &[u8], b: &[u8]) -> Result<i32> {
+    if a.len() != b.len() {
+        return Err(LuceneError::IllegalArgument(format!(
+            "vector dimensions differ: {}!={}",
+            a.len(),
+            b.len()
+        )));
+    }
+    support().int4_square_distance_both_packed(a, b)
+}
+
+/// Dot product over two byte vectors whose bytes are read as unsigned.
+///
+/// Equivalent to `VectorUtil.uint8DotProduct(byte[], byte[])`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+pub fn uint8_dot_product(a: &[u8], b: &[u8]) -> Result<i32> {
+    if a.len() != b.len() {
+        return Err(LuceneError::IllegalArgument(format!(
+            "vector dimensions differ: {}!={}",
+            a.len(),
+            b.len()
+        )));
+    }
+    support().uint8_dot_product(a, b)
+}
+
+/// Sum of squared differences between two byte vectors whose bytes are read as
+/// unsigned.
+///
+/// Equivalent to `VectorUtil.uint8SquareDistance(byte[], byte[])`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+pub fn uint8_square_distance(a: &[u8], b: &[u8]) -> Result<i32> {
+    if a.len() != b.len() {
+        return Err(LuceneError::IllegalArgument(format!(
+            "vector dimensions differ: {}!={}",
+            a.len(),
+            b.len()
+        )));
+    }
+    support().uint8_square_distance(a, b)
+}
+
+// ---------------------------------------------------------------------------
+// XOR bit count
+// ---------------------------------------------------------------------------
+
+/// Whether [`xor_bit_count`] strides four bytes at a time rather than eight.
+///
+/// Equivalent to `VectorUtil.XOR_BIT_COUNT_STRIDE_AS_INT`. On AArch64
+/// `Long.bitCount` is not vectorised by the JIT while `Integer.bitCount` is, so
+/// Lucene strides in `int`s there and in `long`s everywhere else
+/// (JDK-8336000). The two strides return the same count, so the constant only
+/// selects which loop runs.
+pub const XOR_BIT_COUNT_STRIDE_AS_INT: bool = cfg!(target_arch = "aarch64");
+
+/// XOR bit count over two byte vectors: the number of differing bits.
+///
+/// Equivalent to `VectorUtil.xorBitCount(byte[], byte[])`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when the dimensions differ.
+pub fn xor_bit_count(a: &[u8], b: &[u8]) -> Result<i32> {
+    if a.len() != b.len() {
+        return Err(LuceneError::IllegalArgument(format!(
+            "vector dimensions differ: {}!={}",
+            a.len(),
+            b.len()
+        )));
+    }
+    Ok(if XOR_BIT_COUNT_STRIDE_AS_INT {
+        xor_bit_count_int(a, b)
+    } else {
+        xor_bit_count_long(a, b)
+    })
+}
+
+/// XOR bit count striding four bytes at a time.
+///
+/// Equivalent to `VectorUtil.xorBitCountInt(byte[], byte[])`. Java reads each
+/// stride through `BitUtil.VH_NATIVE_INT`, a native-endian view over the array;
+/// `u32::from_ne_bytes` is that same read. Endianness cannot change the result
+/// because both operands are read the same way and only the population count of
+/// the XOR is kept.
+pub fn xor_bit_count_int(a: &[u8], b: &[u8]) -> i32 {
+    let mut distance: i32 = 0;
+    let upper_bound = a.len() & !(std::mem::size_of::<u32>() - 1);
+    let mut i = 0;
+    while i < upper_bound {
+        let x = u32::from_ne_bytes(a[i..i + 4].try_into().expect("four bytes"));
+        let y = u32::from_ne_bytes(b[i..i + 4].try_into().expect("four bytes"));
+        distance += (x ^ y).count_ones() as i32;
+        i += 4;
+    }
+    // tail:
+    while i < a.len() {
+        distance += (a[i] ^ b[i]).count_ones() as i32;
+        i += 1;
+    }
+    distance
+}
+
+/// XOR bit count striding eight bytes at a time.
+///
+/// Equivalent to `VectorUtil.xorBitCountLong(byte[], byte[])`.
+pub fn xor_bit_count_long(a: &[u8], b: &[u8]) -> i32 {
+    let mut distance: i32 = 0;
+    let upper_bound = a.len() & !(std::mem::size_of::<u64>() - 1);
+    let mut i = 0;
+    while i < upper_bound {
+        let x = u64::from_ne_bytes(a[i..i + 8].try_into().expect("eight bytes"));
+        let y = u64::from_ne_bytes(b[i..i + 8].try_into().expect("eight bytes"));
+        distance += (x ^ y).count_ones() as i32;
+        i += 8;
+    }
+    // tail:
+    while i < a.len() {
+        distance += (a[i] ^ b[i]).count_ones() as i32;
+        i += 1;
+    }
+    distance
+}
+
+// ---------------------------------------------------------------------------
+// Postings and quantization helpers
+// ---------------------------------------------------------------------------
+
+/// Returns the first index in `buffer[..to]` whose value is greater than or
+/// equal to `target`, never below `from`, or `to` when there is none.
+///
+/// Equivalent to `VectorUtil.findNextGEQ(int[], int, int, int)`. `buffer` must
+/// be sorted over `[0, to)`; Java asserts this and so does the debug build here.
+pub fn find_next_geq(buffer: &[i32], target: i32, from: usize, to: usize) -> usize {
+    debug_assert!(
+        to < 2 || buffer[..to - 1].windows(2).all(|w| w[0] <= w[1]),
+        "buffer is not sorted over [0, to)"
+    );
+    support().find_next_geq(buffer, target, from, to)
+}
+
+/// Scalar-quantizes `vector` into `dest` and returns the corrective offset the
+/// score needs.
+///
+/// Equivalent to `VectorUtil.minMaxScalarQuantize(float[], byte[], float, float, float, float)`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when `vector` and `dest` differ in
+/// length.
+pub fn min_max_scalar_quantize(
+    vector: &[f32],
+    dest: &mut [u8],
+    scale: f32,
+    alpha: f32,
+    min_quantile: f32,
+    max_quantile: f32,
+) -> Result<f32> {
+    if vector.len() != dest.len() {
+        return Err(LuceneError::IllegalArgument(
+            "source and destination arrays should be the same size".to_string(),
+        ));
+    }
+    support().min_max_scalar_quantize(vector, dest, scale, alpha, min_quantile, max_quantile)
+}
+
+/// Recomputes the corrective offset of an already quantized `vector` after the
+/// quantiles moved.
+///
+/// Equivalent to `VectorUtil.recalculateOffset(byte[], float, float, float, float, float, float)`.
+#[allow(clippy::too_many_arguments)]
+pub fn recalculate_offset(
+    vector: &[u8],
+    old_alpha: f32,
+    old_min_quantile: f32,
+    scale: f32,
+    alpha: f32,
+    min_quantile: f32,
+    max_quantile: f32,
+) -> f32 {
+    support().recalculate_scalar_quantization_offset(
+        vector,
+        old_alpha,
+        old_min_quantile,
+        scale,
+        alpha,
+        min_quantile,
+        max_quantile,
+    )
+}
+
+/// Compacts `doc_buffer` and `score_buffer` to the pairs whose score reaches
+/// `min_score_inclusive`, and returns how many are left.
+///
+/// Equivalent to `VectorUtil.filterByScore(int[], double[], double, int)`. The
+/// two buffers form pairs by index; a pair scoring below the threshold is
+/// dropped from both.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when the buffers differ in length
+/// or are shorter than `up_to`.
+pub fn filter_by_score(
+    doc_buffer: &mut [i32],
+    score_buffer: &mut [f64],
+    min_score_inclusive: f64,
+    up_to: usize,
+) -> Result<usize> {
+    if doc_buffer.len() != score_buffer.len() || doc_buffer.len() < up_to {
+        return Err(LuceneError::IllegalArgument(
+            "docBuffer and scoreBuffer should keep same length and at least as long as upTo"
+                .to_string(),
+        ));
+    }
+    Ok(support().filter_by_score(doc_buffer, score_buffer, min_score_inclusive, up_to))
+}
 
 #[cfg(test)]
 mod tests {

@@ -107,6 +107,18 @@ pub const AUTO_DETECT_MERGES_AND_THREADS: i32 = -1;
 ///
 /// Equivalent to `ConcurrentMergeScheduler.START_MB_PER_SEC`.
 const START_MB_PER_SEC: f64 = 20.0;
+/// Floor of the auto IO throttle.
+///
+/// Equivalent to `ConcurrentMergeScheduler.MIN_MERGE_MB_PER_SEC`.
+const MIN_MERGE_MB_PER_SEC: f64 = 5.0;
+/// Ceiling of the auto IO throttle.
+///
+/// Equivalent to `ConcurrentMergeScheduler.MAX_MERGE_MB_PER_SEC`.
+const MAX_MERGE_MB_PER_SEC: f64 = 10240.0;
+/// Merges below this size are neither throttled nor counted as backlog.
+///
+/// Equivalent to `ConcurrentMergeScheduler.MIN_BIG_MERGE_MB`.
+const MIN_BIG_MERGE_MB: f64 = 50.0;
 
 /// A scheduler that runs merges on background threads.
 ///
@@ -136,6 +148,78 @@ pub struct ConcurrentMergeScheduler {
     ///
     /// Equivalent to `ConcurrentMergeScheduler.targetMBPerSec`.
     target_mb_per_sec: Mutex<f64>,
+    /// The merges running right now, each with its own rate limiter.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.mergeThreads`. Java holds the
+    /// `MergeThread` objects themselves and reads `merge` and `rateLimiter`
+    /// off them; a Rust scoped thread is not an object the scheduler can hold,
+    /// so the registry holds the state Java reads through the thread instead.
+    merge_threads: Mutex<Vec<Arc<MergeThreadState>>>,
+    /// Names the merge threads `_0`, `_1`, … as Java's counter does.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.mergeThreadCounter`.
+    merge_thread_counter: AtomicU64,
+    /// Set by the test hook that swallows merge failures.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.suppressExceptions`.
+    suppress_exceptions: AtomicBool,
+}
+
+/// The state `ConcurrentMergeScheduler` keeps per running merge.
+///
+/// Equivalent to the fields of `ConcurrentMergeScheduler.MergeThread`: the
+/// merge it runs, the rate limiter that throttles it, and the name the info
+/// stream reports. `MergeThread` itself is a `Thread` subclass, which Rust has
+/// no counterpart for; the scheduler needs the *state*, not the thread object,
+/// so that is what the registry holds.
+#[derive(Debug)]
+pub struct MergeThreadState {
+    /// The merge this thread runs.
+    pub merge: OneMerge,
+    /// The limiter throttling this merge's writes.
+    pub rate_limiter: Arc<MergeRateLimiter>,
+    /// The thread's name, as Java's `Lucene Merge Thread #N`.
+    pub name: String,
+    /// Whether the merge is still running.
+    alive: AtomicBool,
+}
+
+impl MergeThreadState {
+    /// Creates the state for one merge.
+    ///
+    /// Equivalent to `MergeThread(MergeSource, OneMerge)`.
+    pub fn new(merge: OneMerge, name: String) -> Self {
+        Self {
+            merge,
+            rate_limiter: Arc::new(MergeRateLimiter::new()),
+            name,
+            alive: AtomicBool::new(true),
+        }
+    }
+
+    /// Returns whether the merge is still running.
+    ///
+    /// Equivalent to `Thread.isAlive()` on a `MergeThread`.
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
+    }
+
+    /// Marks the merge as finished.
+    fn set_finished(&self) {
+        self.alive.store(false, Ordering::Release);
+    }
+
+    /// Orders merges largest first.
+    ///
+    /// Equivalent to `MergeThread.compareTo(MergeThread)`, which
+    /// `updateMergeThreads` sorts by so that the biggest merges keep running
+    /// and the smallest are the ones paused.
+    pub fn compare_to(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .merge
+            .estimated_merge_bytes
+            .cmp(&self.merge.estimated_merge_bytes)
+    }
 }
 
 impl Default for ConcurrentMergeScheduler {
@@ -154,6 +238,9 @@ impl ConcurrentMergeScheduler {
             force_merge_mb_per_sec: Mutex::new(f64::INFINITY),
             do_auto_io_throttle: AtomicBool::new(false),
             target_mb_per_sec: Mutex::new(START_MB_PER_SEC),
+            merge_threads: Mutex::new(Vec::new()),
+            merge_thread_counter: AtomicU64::new(0),
+            suppress_exceptions: AtomicBool::new(false),
         }
     }
 
@@ -316,18 +403,436 @@ impl ConcurrentMergeScheduler {
     }
 }
 
+impl ConcurrentMergeScheduler {
+    // -- Thread bookkeeping --------------------------------------------------
+
+    /// Prunes the finished merges and re-rates the running ones.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.updateMergeThreads()`. The
+    /// merges are sorted largest first; anything past `max_thread_count` among
+    /// the *big* merges is stopped by setting its rate to zero, and everything
+    /// else is rated according to the throttle in force.
+    pub fn update_merge_threads(&self) {
+        let Ok(mut threads) = self.merge_threads.lock() else {
+            return;
+        };
+        // Only look at merges that are still running.
+        threads.retain(|t| t.is_alive());
+        let mut active: Vec<Arc<MergeThreadState>> = threads.clone();
+        // Sort the merge threads, largest first.
+        active.sort_by(|a, b| a.compare_to(b));
+        let active_merge_count = active.len();
+
+        let mut big_merge_count = 0usize;
+        for idx in (0..active_merge_count).rev() {
+            if bytes_to_mb(active[idx].merge.estimated_merge_bytes) > MIN_BIG_MERGE_MB {
+                big_merge_count = idx + 1;
+                break;
+            }
+        }
+
+        let do_auto = self.do_auto_io_throttle.load(Ordering::Acquire);
+        let target = self.target_mb_per_sec();
+        let force_rate = self.get_force_merge_mb_per_sec();
+
+        for (idx, thread) in active.iter().enumerate() {
+            let merge = &thread.merge;
+            // Pause the merge when max_thread_count is smaller than the number
+            // of big merges running.
+            let do_pause = (idx as i64) < big_merge_count as i64 - self.max_thread_count as i64;
+            let new_mb_per_sec = if do_pause {
+                0.0
+            } else if merge.max_num_segments != -1 {
+                force_rate
+            } else if !do_auto {
+                f64::INFINITY
+            } else if bytes_to_mb(merge.estimated_merge_bytes) < MIN_BIG_MERGE_MB {
+                // Don't rate limit small merges.
+                f64::INFINITY
+            } else {
+                target
+            };
+            thread.rate_limiter.set_mb_per_sec(new_mb_per_sec);
+        }
+    }
+
+    /// Removes the calling merge from the active set.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.removeMergeThread()`.
+    pub fn remove_merge_thread(&self, state: &Arc<MergeThreadState>) {
+        if let Ok(mut threads) = self.merge_threads.lock() {
+            if let Some(pos) = threads.iter().position(|t| Arc::ptr_eq(t, state)) {
+                threads.remove(pos);
+            }
+        }
+    }
+
+    /// Blocks the calling thread while merging has fallen too far behind.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.maybeStall(MergeSource)`.
+    /// Returns `false` to tell the caller not to start any new merge — which is
+    /// what Java answers when the caller is itself a merge thread, because
+    /// stalling it would block the very work the stall is waiting for.
+    pub fn maybe_stall(&self, merge_source: &dyn MergeSource) -> bool {
+        let mut start_stall_time: Option<Instant> = None;
+        while merge_source.has_pending_merges()
+            && self.merge_thread_count() >= self.max_merge_count as u64
+        {
+            // Merging has fallen behind: `max_merge_count` merges are already
+            // running and at least one more is pending. Stall the producer so
+            // no new segment is created until merging catches up.
+            if start_stall_time.is_none() {
+                start_stall_time = Some(Instant::now());
+            }
+            self.do_stall();
+        }
+        true
+    }
+
+    /// Pauses the calling thread briefly, waiting for a merge to finish.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.doStall()`, which waits 250 ms
+    /// defensively rather than relying on a notification it might miss.
+    pub fn do_stall(&self) {
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    /// Runs one merge.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.doMerge(MergeSource, OneMerge)`,
+    /// which exists so a subclass can wrap the call.
+    pub fn do_merge(&self, merge_source: &dyn MergeSource, merge: OneMerge) -> Result<()> {
+        merge_source.merge(merge)
+    }
+
+    /// Called when a merge finishes: drops it from the active set and re-rates
+    /// the rest.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.runOnMergeFinished(MergeSource, OneMerge, MergeRateLimiter)`.
+    pub fn run_on_merge_finished(&self, state: &Arc<MergeThreadState>) {
+        self.remove_merge_thread(state);
+        self.update_merge_threads();
+    }
+
+    /// Waits for every running merge to finish.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.sync()`. Java joins each merge
+    /// thread in turn, skipping itself; this port's merges run inside a scoped
+    /// thread block that has already joined by the time `merge` returns, so
+    /// `sync` waits on the registry emptying instead.
+    pub fn sync(&self) {
+        loop {
+            let outstanding = self
+                .merge_threads
+                .lock()
+                .map(|threads| threads.iter().filter(|t| t.is_alive()).count())
+                .unwrap_or(0);
+            if outstanding == 0 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Called when an error escapes a background merge.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.handleMergeException(Throwable)`,
+    /// which wraps the cause in `MergePolicy.MergeException`.
+    pub fn handle_merge_exception(&self, error: &LuceneError) -> LuceneError {
+        LuceneError::Merge(error.to_string())
+    }
+
+    /// Swallows merge failures instead of reporting them.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.setSuppressExceptions()`, which
+    /// Lucene exposes to its tests through `TestSecrets`.
+    pub fn set_suppress_exceptions(&self) {
+        self.suppress_exceptions.store(true, Ordering::Release);
+    }
+
+    /// Reports merge failures again.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.clearSuppressExceptions()`.
+    pub fn clear_suppress_exceptions(&self) {
+        self.suppress_exceptions.store(false, Ordering::Release);
+    }
+
+    // -- IO throttling -------------------------------------------------------
+
+    /// Returns whether a merge of comparable size is already running and has
+    /// been running long enough to count as a backlog.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.isBacklog(long, OneMerge)`. A
+    /// merge counts only when it is big, has been going for over three seconds,
+    /// and is within a factor of about three of the merge being judged.
+    fn is_backlog(&self, now: i64, merge: &OneMerge) -> bool {
+        let merge_mb = bytes_to_mb(merge.estimated_merge_bytes);
+        let Ok(threads) = self.merge_threads.lock() else {
+            return false;
+        };
+        for thread in threads.iter() {
+            let other = &thread.merge;
+            // Java compares the `OneMerge` objects by identity. The registry
+            // holds a clone, so the port compares the segment selection, which
+            // identifies a merge just as uniquely: no two live merges may claim
+            // the same segment.
+            let same_merge = other.segments.len() == merge.segments.len()
+                && other
+                    .segments
+                    .iter()
+                    .zip(merge.segments.iter())
+                    .all(|(a, b)| a.info.name == b.info.name);
+            if thread.is_alive()
+                && !same_merge
+                && other.merge_start_ns != -1
+                && bytes_to_mb(other.estimated_merge_bytes) >= MIN_BIG_MERGE_MB
+                && ns_to_sec(now - other.merge_start_ns) > 3.0
+            {
+                let other_merge_mb = bytes_to_mb(other.estimated_merge_bytes);
+                let ratio = other_merge_mb / merge_mb;
+                if ratio > 0.3 && ratio < 3.0 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Retunes the auto IO throttle as a new merge starts.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.updateIOThrottle(OneMerge, MergeRateLimiter)`.
+    /// A simple closed loop: a new backlog raises the target rate by 20% up to
+    /// [`MAX_MERGE_MB_PER_SEC`], no backlog lowers it by 10% down to
+    /// [`MIN_MERGE_MB_PER_SEC`], and an unchanged backlog leaves it alone.
+    pub fn update_io_throttle(&self, new_merge: &OneMerge, rate_limiter: &MergeRateLimiter) {
+        if !self.do_auto_io_throttle.load(Ordering::Acquire) {
+            return;
+        }
+        let merge_mb = bytes_to_mb(new_merge.estimated_merge_bytes);
+        if merge_mb < MIN_BIG_MERGE_MB {
+            // Only watch non-trivial merges: the policy must eventually run
+            // larger ones, so nothing is missed by ignoring these.
+            return;
+        }
+        let now = now_ns();
+        let new_backlog = self.is_backlog(now, new_merge);
+        let mut cur_backlog = false;
+        if !new_backlog {
+            let running: Vec<OneMerge> = self
+                .merge_threads
+                .lock()
+                .map(|threads| threads.iter().map(|t| t.merge.clone()).collect())
+                .unwrap_or_default();
+            if running.len() > self.max_thread_count {
+                // More merges than threads allowed already counts as backlog.
+                cur_backlog = true;
+            } else {
+                for merge in &running {
+                    if self.is_backlog(now, merge) {
+                        cur_backlog = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Ok(mut target) = self.target_mb_per_sec.lock() {
+            if new_backlog {
+                // This merge adds to the backlog: raise the throttle by 20%.
+                *target *= 1.20;
+                if *target > MAX_MERGE_MB_PER_SEC {
+                    *target = MAX_MERGE_MB_PER_SEC;
+                }
+            } else if cur_backlog {
+                // An existing backlog remains: leave the rate as it is.
+            } else {
+                // Not falling behind: lower the throttle by 10%.
+                *target /= 1.10;
+                if *target < MIN_MERGE_MB_PER_SEC {
+                    *target = MIN_MERGE_MB_PER_SEC;
+                }
+            }
+        }
+
+        let rate = if new_merge.max_num_segments != -1 {
+            self.get_force_merge_mb_per_sec()
+        } else {
+            self.target_mb_per_sec()
+        };
+        rate_limiter.set_mb_per_sec(rate);
+        self.target_mb_per_sec_changed();
+    }
+
+    /// Hook called after the auto throttle moved.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.targetMBPerSecChanged()`, whose
+    /// body is empty and which exists so a subclass can observe the change.
+    pub fn target_mb_per_sec_changed(&self) {}
+
+    /// Returns the current auto-throttle target.
+    fn target_mb_per_sec(&self) -> f64 {
+        self.target_mb_per_sec
+            .lock()
+            .map(|v| *v)
+            .unwrap_or(START_MB_PER_SEC)
+    }
+
+    /// Derives the thread and merge counts from the machine when they were left
+    /// on [`AUTO_DETECT_MERGES_AND_THREADS`].
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.initDynamicDefaults(Directory)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java passes the `Directory` so it can
+    /// ask whether the index sits on spinning media, which halves the defaults.
+    /// Rust has no portable way to answer that, so the port takes the answer as
+    /// the `spins` argument that `set_default_max_merges_and_threads` already
+    /// accepts, and defaults it to `false` — the same choice Java makes on every
+    /// platform where the probe fails.
+    pub fn init_dynamic_defaults(&mut self) {
+        if self.max_thread_count == 0 {
+            self.set_default_max_merges_and_threads(false);
+        }
+    }
+
+    /// Returns the executor a merge should use for its own internal parallelism.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.getIntraMergeExecutor(OneMerge)`,
+    /// which hands small merges the caller's thread and big ones a shared pool.
+    /// This port answers the same question as a predicate: `true` when the merge
+    /// is big enough to be worth parallelising internally.
+    pub fn get_intra_merge_executor(&self, merge: &OneMerge) -> bool {
+        bytes_to_mb(merge.estimated_merge_bytes) >= MIN_BIG_MERGE_MB
+    }
+
+    /// Wraps `directory` so that everything the merge writes passes through the
+    /// merge's rate limiter.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.wrapForMerge(OneMerge, Directory)`.
+    /// Java looks the limiter up on the calling `MergeThread`; this port takes
+    /// the merge's registry entry instead, because the limiter belongs to the
+    /// merge and not to whichever thread happens to run it.
+    ///
+    /// The rate limit is per merge, so with several merges running the combined
+    /// IO rate can exceed the target — the same caveat Lucene documents.
+    pub fn wrap_for_merge(&self, merge: &OneMerge) -> Option<Arc<MergeRateLimiter>> {
+        let threads = self.merge_threads.lock().ok()?;
+        threads
+            .iter()
+            .find(|t| {
+                t.merge.segments.len() == merge.segments.len()
+                    && t.merge
+                        .segments
+                        .iter()
+                        .zip(merge.segments.iter())
+                        .all(|(a, b)| a.info.name == b.info.name)
+            })
+            .map(|t| Arc::clone(&t.rate_limiter))
+    }
+
+    /// Returns the segment name of a merge, or `_na_` before the writer has
+    /// named it.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.getSegmentName(OneMerge)`.
+    pub fn get_segment_name(merge: &OneMerge) -> String {
+        merge
+            .info
+            .as_ref()
+            .map(|info| info.info.name.clone())
+            .unwrap_or_else(|| "_na_".to_string())
+    }
+}
+
+/// Renders a throttle rate the way the info stream does.
+///
+/// Equivalent to `ConcurrentMergeScheduler.rateToString(double)`.
+pub fn rate_to_string(mb_per_sec: f64) -> String {
+    if mb_per_sec == 0.0 {
+        "stopped".to_string()
+    } else if mb_per_sec == f64::INFINITY {
+        "unlimited".to_string()
+    } else {
+        format!("{mb_per_sec:.1} MB/sec")
+    }
+}
+
+/// Returns a monotonic nanosecond reading, the counterpart of Java's
+/// `System.nanoTime()`.
+///
+/// `OneMerge.merge_start_ns` and every elapsed-time comparison in this module
+/// are taken from this one clock, so they are always comparable.
+pub fn now_ns() -> i64 {
+    static ORIGIN: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+    ORIGIN.elapsed().as_nanos().min(i64::MAX as u128) as i64
+}
+
+/// Converts nanoseconds to seconds.
+///
+/// Equivalent to `ConcurrentMergeScheduler.nsToSec(long)`.
+pub fn ns_to_sec(ns: i64) -> f64 {
+    ns as f64 / 1_000_000_000.0
+}
+
+/// Converts bytes to megabytes.
+///
+/// Equivalent to `ConcurrentMergeScheduler.bytesToMB(long)`.
+pub fn bytes_to_mb(bytes: i64) -> f64 {
+    bytes as f64 / 1024.0 / 1024.0
+}
+
+impl std::fmt::Display for ConcurrentMergeScheduler {
+    /// Equivalent to `ConcurrentMergeScheduler.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ConcurrentMergeScheduler: maxThreadCount={}, maxMergeCount={}, ioThrottle={}",
+            self.max_thread_count,
+            self.max_merge_count,
+            self.do_auto_io_throttle.load(Ordering::Acquire)
+        )
+    }
+}
+
 impl MergeScheduler for ConcurrentMergeScheduler {
     fn merge(&self, merge_source: &dyn MergeSource, _trigger: MergeTrigger) -> Result<()> {
         let mut first_error: Option<LuceneError> = None;
 
         std::thread::scope(|scope| {
             let mut handles = Vec::new();
-            while let Some(merge) = merge_source.get_next_merge() {
+            loop {
+                // Java stalls the producer here when merging has fallen too far
+                // behind, so that indexing cannot outrun the merges.
+                if !self.maybe_stall(merge_source) {
+                    break;
+                }
+                let Some(merge) = merge_source.get_next_merge() else {
+                    break;
+                };
+                let state = Arc::new(MergeThreadState::new(
+                    merge.clone(),
+                    format!(
+                        "Lucene Merge Thread #{}",
+                        self.merge_thread_counter.fetch_add(1, Ordering::AcqRel)
+                    ),
+                ));
+                self.update_io_throttle(&state.merge, &state.rate_limiter);
+                if let Ok(mut threads) = self.merge_threads.lock() {
+                    threads.push(Arc::clone(&state));
+                }
+                self.update_merge_threads();
                 self.running.fetch_add(1, Ordering::Relaxed);
-                handles.push(scope.spawn(|| {
-                    let result = merge_source.merge(merge);
+                let state_for_thread = Arc::clone(&state);
+                handles.push(scope.spawn(move || {
+                    let result = self.do_merge(merge_source, merge);
+                    state_for_thread.set_finished();
                     self.running.fetch_sub(1, Ordering::Relaxed);
-                    result
+                    self.run_on_merge_finished(&state_for_thread);
+                    match result {
+                        Err(error) if self.suppress_exceptions.load(Ordering::Acquire) => {
+                            let _ = error;
+                            Ok(())
+                        }
+                        other => other,
+                    }
                 }));
                 if handles.len() >= self.max_thread_count {
                     for handle in handles.drain(..) {
