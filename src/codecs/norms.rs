@@ -10,8 +10,10 @@
 #![deny(unsafe_code)]
 
 use std::fmt;
+use std::sync::Arc;
 
-use crate::error::Result;
+use crate::codecs::doc_values::{merge_numeric_values, NumericDocValuesSub};
+use crate::error::{LuceneError, Result};
 
 use super::postings::MergeState;
 use super::state::{SegmentReadState, SegmentWriteState};
@@ -52,10 +54,45 @@ pub trait NormsConsumer: fmt::Debug {
 
     /// Merges the norm fields from the readers in `merge_state`.
     ///
-    /// The default implementation is a no-op; concrete formats override it with
-    /// format-specific merge logic.
-    fn merge(&mut self, _merge_state: &MergeState) -> Result<()> {
+    /// Equivalent to `NormsConsumer.merge(MergeState)`: every producer is
+    /// integrity-checked first, and then each field that has norms is merged
+    /// through [`merge_norms_field`](Self::merge_norms_field). A format that
+    /// can do better — bulk-copying bytes, say — overrides this.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the integrity check or the per-field merge raises.
+    fn merge(&mut self, merge_state: &MergeState) -> Result<()> {
+        for norms_producer in merge_state.norms_producers.iter().flatten() {
+            norms_producer.check_integrity()?;
+        }
+        for merge_field_info in merge_state.merge_field_infos.iter() {
+            if merge_field_info.has_norms() {
+                self.merge_norms_field(&merge_field_info.clone(), merge_state)?;
+            }
+        }
         Ok(())
+    }
+
+    /// Merges one field's norms from every reader in `merge_state`.
+    ///
+    /// Equivalent to `NormsConsumer.mergeNormsField(FieldInfo, MergeState)`,
+    /// which calls [`add_norms_field`](Self::add_norms_field) with a producer
+    /// that merges the sub-readers and filters deleted documents on the fly.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the sub-readers or writing the field raises.
+    fn merge_norms_field(
+        &mut self,
+        merge_field_info: &FieldInfo,
+        merge_state: &MergeState,
+    ) -> Result<()> {
+        let producer = MergedNormsProducer {
+            merge_field_info: merge_field_info.clone(),
+            merge_state,
+        };
+        self.add_norms_field(merge_field_info, &producer)
     }
 
     /// Closes this consumer, releasing all resources.
@@ -220,5 +257,71 @@ mod tests {
 
         let read_state = SegmentReadState::new(dir_ref, &segment_info, &field_infos, context);
         let _producer = format.norms_producer(&read_state).unwrap();
+    }
+}
+
+/// The producer `mergeNormsField` hands to `addNormsField`.
+///
+/// Equivalent to the anonymous `NormsProducer` of
+/// `NormsConsumer.mergeNormsField`, which merges every sub-reader's norms for
+/// one field and filters deleted documents on the fly.
+struct MergedNormsProducer<'a> {
+    merge_field_info: FieldInfo,
+    merge_state: &'a MergeState,
+}
+
+impl fmt::Debug for MergedNormsProducer<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MergedNormsProducer")
+            .field("field", &self.merge_field_info.name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl NormsProducer for MergedNormsProducer<'_> {
+    fn get_norms(&self, field_info: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+        if field_info.name != self.merge_field_info.name {
+            return Err(LuceneError::IllegalArgument("wrong fieldInfo".to_string()));
+        }
+
+        let mut subs = Vec::new();
+        debug_assert_eq!(
+            self.merge_state.doc_maps.len(),
+            self.merge_state.doc_values_producers.len()
+        );
+        for i in 0..self.merge_state.doc_values_producers.len() {
+            let Some(norms_producer) = self.merge_state.norms_producers[i].as_ref() else {
+                continue;
+            };
+            let Some(reader_field_info) =
+                self.merge_state.field_infos[i].field_info(&self.merge_field_info.name)
+            else {
+                continue;
+            };
+            if !reader_field_info.has_norms() {
+                continue;
+            }
+            subs.push(NumericDocValuesSub {
+                doc_map: Arc::clone(&self.merge_state.doc_maps[i]),
+                values: norms_producer.get_norms(reader_field_info)?,
+                mapped_doc_id: -1,
+            });
+        }
+        merge_numeric_values(subs, self.merge_state.needs_index_sort)
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        // The sub-producers were checked before the merge began.
+        Ok(())
+    }
+
+    fn get_merge_instance(&self) -> Result<Box<dyn NormsProducer>> {
+        Err(LuceneError::UnsupportedOperation(
+            "the merged norms producer has no merge instance".to_string(),
+        ))
+    }
+
+    fn close(&mut self) -> Result<()> {
+        Ok(())
     }
 }

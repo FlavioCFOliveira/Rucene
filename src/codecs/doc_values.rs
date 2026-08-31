@@ -275,6 +275,27 @@ impl DocValuesFormatRegistry {
     /// Looks up a doc-values format by name.
     ///
     /// Returns `None` if no format has been registered under the given name.
+    /// Registers an already-shared format under its own name.
+    ///
+    /// The counterpart of [`register`](Self::register) for a format the caller
+    /// already holds behind an `Arc`. As in Lucene's `reload`, a name that is
+    /// already taken is left alone rather than replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the format's name is not
+    /// a valid service name.
+    pub fn register_arc(&self, format: Arc<dyn DocValuesFormat>) -> Result<()> {
+        let name = format.name().to_string();
+        crate::codecs::validate_service_name(&name)?;
+        let mut formats = self.formats.write().map_err(|_| {
+            LuceneError::IllegalState("doc-values format registry lock was poisoned".to_string())
+        })?;
+        // Only new formats are added; an existing one is never replaced.
+        formats.entry(name).or_insert(format);
+        Ok(())
+    }
+
     pub fn for_name(&self, name: &str) -> Option<Arc<dyn DocValuesFormat>> {
         self.formats
             .read()
@@ -298,6 +319,20 @@ impl DocValuesFormatRegistry {
         names.sort();
         names
     }
+}
+
+/// Adds `format` to the global registry under its own name.
+///
+/// Equivalent to `DocValuesFormat.reloadDocValuesFormats(ClassLoader)`, which rescans a classloader
+/// for formats it has not seen. Rust has no run-time service discovery, so the
+/// caller supplies the format.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when the format's name is not a
+/// valid service name.
+pub fn reload_doc_values_formats(format: Arc<dyn DocValuesFormat>) -> Result<()> {
+    GLOBAL_DOC_VALUES_REGISTRY.register_arc(format)
 }
 
 static GLOBAL_DOC_VALUES_REGISTRY: LazyLock<DocValuesFormatRegistry> =
@@ -573,10 +608,10 @@ const COMPACT: f32 = 0.0;
 /// One sub-reader's numeric values, as the merger walks them.
 ///
 /// Equivalent to `DocValuesConsumer.NumericDocValuesSub`.
-struct NumericDocValuesSub {
-    doc_map: DocMap,
-    values: Box<dyn NumericDocValues>,
-    mapped_doc_id: i32,
+pub(crate) struct NumericDocValuesSub {
+    pub(crate) doc_map: DocMap,
+    pub(crate) values: Box<dyn NumericDocValues>,
+    pub(crate) mapped_doc_id: i32,
 }
 
 impl DocIDMergerSub for NumericDocValuesSub {
@@ -798,7 +833,7 @@ impl NumericDocValues for MergedNumericDocValues {
 /// Merges the numeric values of `subs` into one forward-only iterator.
 ///
 /// Equivalent to `DocValuesConsumer.mergeNumericValues(List, boolean)`.
-fn merge_numeric_values(
+pub(crate) fn merge_numeric_values(
     subs: Vec<NumericDocValuesSub>,
     index_is_sorted: bool,
 ) -> Result<Box<dyn NumericDocValues>> {

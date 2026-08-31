@@ -269,6 +269,22 @@ pub trait KnnVectorsReader: Send + Sync + fmt::Debug {
     fn close(&mut self) -> Result<()>;
 }
 
+/// Merges two off-heap byte-size reports, summing the entries they share.
+///
+/// Equivalent to the static
+/// `KnnVectorsReader.mergeOffHeapByteSizeMaps(Map, Map)`, which a reader that
+/// wraps two others uses to report their combined footprint.
+pub fn merge_off_heap_byte_size_maps(
+    map1: HashMap<String, i64>,
+    map2: HashMap<String, i64>,
+) -> HashMap<String, i64> {
+    let mut merged = map1;
+    for (key, value) in map2 {
+        *merged.entry(key).or_insert(0) += value;
+    }
+    merged
+}
+
 // -----------------------------------------------------------------------------
 // Format
 // -----------------------------------------------------------------------------
@@ -356,6 +372,27 @@ impl KnnVectorsFormatRegistry {
     /// Looks up a KNN-vectors format by name.
     ///
     /// Returns `None` if no format has been registered under the given name.
+    /// Registers an already-shared format under its own name.
+    ///
+    /// The counterpart of [`register`](Self::register) for a format the caller
+    /// already holds behind an `Arc`. As in Lucene's `reload`, a name that is
+    /// already taken is left alone rather than replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the format's name is not
+    /// a valid service name.
+    pub fn register_arc(&self, format: Arc<dyn KnnVectorsFormat>) -> Result<()> {
+        let name = format.name().to_string();
+        crate::codecs::validate_service_name(&name)?;
+        let mut formats = self.formats.write().map_err(|_| {
+            LuceneError::IllegalState("KNN vectors format registry lock was poisoned".to_string())
+        })?;
+        // Only new formats are added; an existing one is never replaced.
+        formats.entry(name).or_insert(format);
+        Ok(())
+    }
+
     pub fn for_name(&self, name: &str) -> Option<Arc<dyn KnnVectorsFormat>> {
         self.formats
             .read()
@@ -379,6 +416,20 @@ impl KnnVectorsFormatRegistry {
         names.sort();
         names
     }
+}
+
+/// Adds `format` to the global registry under its own name.
+///
+/// Equivalent to `KnnVectorsFormat.reloadKnnVectorsFormat(ClassLoader)`, which rescans a classloader
+/// for formats it has not seen. Rust has no run-time service discovery, so the
+/// caller supplies the format.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when the format's name is not a
+/// valid service name.
+pub fn reload_knn_vectors_format(format: Arc<dyn KnnVectorsFormat>) -> Result<()> {
+    GLOBAL_KNN_VECTORS_REGISTRY.register_arc(format)
 }
 
 static GLOBAL_KNN_VECTORS_REGISTRY: LazyLock<KnnVectorsFormatRegistry> =

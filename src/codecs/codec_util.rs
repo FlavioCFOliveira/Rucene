@@ -356,6 +356,60 @@ pub fn check_footer_with_prior(
     }
 }
 
+/// Returns the bytes of the index header at the start of `input`.
+///
+/// Equivalent to `CodecUtil.readIndexHeader(IndexInput)`, which an
+/// `IndexOutput` copies verbatim when it re-emits a header it did not write.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::CorruptIndex`] when the magic does not match, and
+/// propagates any I/O error.
+pub fn read_index_header(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
+    input.seek(0)?;
+    let actual_header = read_be_int(input)?;
+    if actual_header != CODEC_MAGIC {
+        return Err(LuceneError::CorruptIndex(format!(
+            "codec header mismatch: actual header={actual_header} vs expected header={CODEC_MAGIC}"
+        )));
+    }
+    let codec = input.read_string()?;
+    read_be_int(input)?;
+    let pos = input.file_pointer() + ID_LENGTH as i64;
+    input.seek(pos)?;
+    let suffix_length = input.read_byte()? as usize;
+    let len = header_length(&codec) as usize + ID_LENGTH + 1 + suffix_length;
+    let mut bytes = vec![0u8; len];
+    input.seek(0)?;
+    input.read_bytes(&mut bytes, 0, len)?;
+    Ok(bytes)
+}
+
+/// Returns the bytes of the footer at the end of `input`, having validated it.
+///
+/// Equivalent to `CodecUtil.readFooter(IndexInput)`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::CorruptIndex`] when the file is too short to hold a
+/// footer or the footer is not valid, and propagates any I/O error.
+pub fn read_footer(input: &mut dyn IndexInput) -> Result<Vec<u8>> {
+    if input.length() < footer_length() as i64 {
+        return Err(LuceneError::CorruptIndex(format!(
+            "misplaced codec footer (file truncated?): length={} but footerLength={}",
+            input.length(),
+            footer_length()
+        )));
+    }
+    input.seek(input.length() - footer_length() as i64)?;
+    validate_footer(input)?;
+    input.seek(input.length() - footer_length() as i64)?;
+    let len = footer_length() as usize;
+    let mut bytes = vec![0u8; len];
+    input.read_bytes(&mut bytes, 0, len)?;
+    Ok(bytes)
+}
+
 /// Returns the checksum stored in the footer without validating it.
 ///
 /// Equivalent to `CodecUtil.retrieveChecksum(IndexInput)`.

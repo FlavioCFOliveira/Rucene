@@ -10,6 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use crate::error::{LuceneError, Result};
+use crate::index::index_reader::IndexReader;
+use crate::index::reader_context::LeafReaderContext;
 use crate::index::{
     DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding, VectorSimilarityFunction,
     MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
@@ -1257,6 +1259,91 @@ impl FieldInfos {
     }
 
     /// Returns the soft-deletes field name if any.
+    /// Returns the field infos of every leaf of `reader`, merged.
+    ///
+    /// Equivalent to `FieldInfos.getMergedFieldInfos(IndexReader)`. A reader
+    /// with no leaf answers the empty infos, and one with a single leaf answers
+    /// that leaf's own.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the leaves disagree about
+    /// the parent field, and propagates whatever adding a field raises.
+    pub fn get_merged_field_infos(reader: Arc<dyn IndexReader>) -> Result<FieldInfos> {
+        let leaves = reader.leaves();
+        if leaves.is_empty() {
+            return Ok(FieldInfos::empty());
+        }
+        if leaves.len() == 1 {
+            return Ok(leaves[0].leaf_reader().get_field_infos());
+        }
+        let soft_deletes_field = leaves.iter().find_map(|l| {
+            l.leaf_reader()
+                .get_field_infos()
+                .get_soft_deletes_field()
+                .map(str::to_string)
+        });
+        let parent_field = Self::get_and_validate_parent_field(&leaves)?;
+        let numbers = Arc::new(FieldNumbers::new(soft_deletes_field, parent_field)?);
+        let mut builder = FieldInfosBuilder::new(numbers);
+        for ctx in &leaves {
+            for field_info in ctx.leaf_reader().get_field_infos().iter() {
+                builder.add(field_info)?;
+            }
+        }
+        builder.finish()
+    }
+
+    /// Returns the parent field every leaf agrees on.
+    ///
+    /// Equivalent to the private
+    /// `FieldInfos.getAndValidateParentField(List<LeafReaderContext>)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when two leaves name different
+    /// parent fields.
+    pub fn get_and_validate_parent_field(
+        leaves: &[Arc<LeafReaderContext>],
+    ) -> Result<Option<String>> {
+        let mut set = false;
+        let mut the_field: Option<String> = None;
+        for ctx in leaves {
+            let field = ctx
+                .leaf_reader()
+                .get_field_infos()
+                .get_parent_field()
+                .map(str::to_string);
+            if set && field != the_field {
+                return Err(LuceneError::IllegalState(format!(
+                    "expected parent doc field to be \"{} \" across all segments but found a \
+                     segment with different field \"{}\"",
+                    the_field.as_deref().unwrap_or("null"),
+                    field.as_deref().unwrap_or("null")
+                )));
+            }
+            the_field = field;
+            set = true;
+        }
+        Ok(the_field)
+    }
+
+    /// Returns the names of the fields that have a terms index, in no
+    /// particular order.
+    ///
+    /// Equivalent to `FieldInfos.getIndexedFields(IndexReader)`.
+    pub fn get_indexed_fields(reader: Arc<dyn IndexReader>) -> HashSet<String> {
+        let mut fields = HashSet::new();
+        for ctx in reader.leaves() {
+            for fi in ctx.leaf_reader().get_field_infos().iter() {
+                if fi.get_index_options() != IndexOptions::NONE {
+                    fields.insert(fi.name.clone());
+                }
+            }
+        }
+        fields
+    }
+
     pub fn get_soft_deletes_field(&self) -> Option<&str> {
         self.soft_deletes_field.as_deref()
     }

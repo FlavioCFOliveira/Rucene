@@ -251,6 +251,31 @@ impl CodecRegistry {
         Ok(())
     }
 
+    /// Registers an already-shared codec under its own name.
+    ///
+    /// The counterpart of [`register`](Self::register) for a codec the caller
+    /// already holds behind an `Arc`, which is what
+    /// [`reload_codecs`](crate::codecs::reload_codecs) hands over. As in
+    /// Lucene's `reload`, a name that is already taken is left alone rather
+    /// than replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the codec's name is not a
+    /// valid service name.
+    pub fn register_arc(&self, codec: Arc<dyn Codec>) -> Result<()> {
+        let name = codec.name().to_string();
+        validate_service_name(&name)?;
+
+        let mut codecs = self.codecs.write().map_err(|_| {
+            LuceneError::IllegalState("codec registry lock was poisoned".to_string())
+        })?;
+
+        // Only new codecs are added; an existing one is never replaced.
+        codecs.entry(name).or_insert(codec);
+        Ok(())
+    }
+
     /// Looks up a codec by name.
     ///
     /// Returns `None` if no codec has been registered under the given name.
@@ -319,6 +344,52 @@ pub fn available_codecs() -> Vec<String> {
 /// registry, if any.
 pub fn default_codec() -> Option<Arc<dyn Codec>> {
     GLOBAL_REGISTRY.default_codec()
+}
+
+/// The codec newly created `IndexWriterConfig`s use.
+///
+/// Equivalent to `Codec.getDefault()` and `Codec.setDefault(Codec)`, which
+/// Java holds in a mutable static beside its SPI loader. A `RwLock` around an
+/// `Option` is the same thing here; the `None` state is the one Java reports
+/// with "You tried to lookup the default Codec before all Codecs could be
+/// initialized."
+static DEFAULT_CODEC: RwLock<Option<Arc<dyn Codec>>> = RwLock::new(None);
+
+/// Sets the codec newly created `IndexWriterConfig`s will use.
+///
+/// Equivalent to `Codec.setDefault(Codec)`.
+pub fn set_default(codec: Arc<dyn Codec>) {
+    if let Ok(mut slot) = DEFAULT_CODEC.write() {
+        *slot = Some(codec);
+    }
+}
+
+/// Returns the codec newly created `IndexWriterConfig`s use.
+///
+/// Equivalent to `Codec.getDefault()`. When [`set_default`] has never been
+/// called this falls back to the codec registered under
+/// [`DEFAULT_CODEC_NAME`], which is the codec Java's SPI loader would have
+/// found for the same name.
+pub fn get_default() -> Option<Arc<dyn Codec>> {
+    if let Ok(slot) = DEFAULT_CODEC.read() {
+        if let Some(codec) = slot.as_ref() {
+            return Some(Arc::clone(codec));
+        }
+    }
+    default_codec()
+}
+
+/// Adds `codec` to the global registry under its own name.
+///
+/// Equivalent to `Codec.reloadCodecs(ClassLoader)`, which rescans a
+/// classloader for codecs it has not seen. Rust has no run-time service
+/// discovery, so the caller supplies the codec.
+///
+/// # Errors
+///
+/// Returns whatever [`register_codec`] returns.
+pub fn reload_codecs(codec: Arc<dyn Codec>) -> Result<()> {
+    GLOBAL_REGISTRY.register_arc(codec)
 }
 
 /// Registers a codec in the global registry.
