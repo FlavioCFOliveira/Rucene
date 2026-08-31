@@ -137,6 +137,16 @@ declaration that no literal source line contains is invisible to it:
   which the regex does not match.
 * **No type at all.** `CollectionUtil` is a module of free functions; `MergedIterator`
   pre-existed under a different module than the one the name search reached.
+* **Ambiguous by simple name.** `LongValues` is declared twice by Lucene — in
+  `org.apache.lucene.search` and in `org.apache.lucene.util` — and twice by the port, one
+  for one; `PostingDecodingUtil` and `Stats` each have a second Rust type of the same name
+  in another module. The "exactly one" rule declines all of them, correctly: it will not
+  guess which node a name refers to. This is the same failure the `MergeState` and
+  `BufferedUpdates` corrections above record.
+
+At the completion of the type port (`1400be6`, 2026-08-31) the 1,196 in-scope types read
+**381 `ported`, 815 `candidate`, 0 `unported`**. The `candidate` share is large and must
+still be quoted as unverified: it is the graph's own to-do list, not a coverage claim.
 
 `candidate` exists because `CLAUDE.md` §14.1 requires Rucene to keep Lucene's names,
 which makes an exact name match strong evidence — but still evidence, not a fact.
