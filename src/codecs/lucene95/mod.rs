@@ -3,18 +3,21 @@
 //! Holds the doc-id encoding shared by every vector format since Lucene 9.5,
 //! and the slice accessor a reader exposes so a caller can prefetch its data.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::codecs::hnsw::flat_vectors::DocsWithFieldSet;
-use crate::codecs::lucene90::indexed_disi::{write_bit_set, DEFAULT_DENSE_RANK_POWER};
+use crate::codecs::lucene90::indexed_disi::{write_bit_set, IndexedDISI, DEFAULT_DENSE_RANK_POWER};
 use crate::error::Result;
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::DocIdSetIterator;
-use crate::store::{DataInput, DataOutput, IndexInput, IndexOutput};
+use crate::store::{DataInput, DataOutput, IndexInput, IndexOutput, RandomAccessInput};
 
 /// Block shift the vector formats use for their monotonic ord-to-doc mapping.
 ///
 /// Equivalent to `Lucene99FlatVectorsFormat.DIRECT_MONOTONIC_BLOCK_SHIFT`.
 pub const DIRECT_MONOTONIC_BLOCK_SHIFT: i32 = 16;
-use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicWriter};
+use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter};
 
 /// A reader that can hand out the input slice holding its data.
 ///
@@ -31,6 +34,15 @@ pub trait HasIndexSlice {
 // OrdToDoc configuration
 // -----------------------------------------------------------------------------
 
+/// How a vector field's ordinals map back to document ids, and how the
+/// documents that have a vector are encoded.
+///
+/// A field is *empty* (no vectors at all), *dense* (every document has one, so
+/// the ordinal is the document id) or *sparse* (an `IndexedDISI` lists the
+/// documents and a `DirectMonotonicReader` maps ordinal to document id).
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene95.OrdToDocDISIReaderConfiguration`.
 pub struct OrdToDocDISIReaderConfiguration {
     /// See `OrdToDocDISIReaderConfiguration`.
     pub size: i32,
@@ -148,7 +160,13 @@ impl OrdToDocDISIReaderConfiguration {
 
     /// Reads back what [`write_stored_meta`](Self::write_stored_meta) wrote.
     ///
-    /// Equivalent to `OrdToDocDISIReaderConfiguration.fromStoredMeta`.
+    /// # Errors
+    ///
+    /// Returns the I/O error raised when the metadata stream ends early, and
+    /// whatever decoding the ord-to-doc metadata raises.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene95.OrdToDocDISIReaderConfiguration#fromStoredMeta`.
     pub fn read_stored_meta(input: &mut dyn DataInput, size: i32) -> Result<Self> {
         let docs_with_field_offset = input.read_long()?;
         let docs_with_field_length = input.read_long()?;
@@ -183,5 +201,70 @@ impl OrdToDocDISIReaderConfiguration {
             dense_rank_power,
             meta,
         })
+    }
+
+    /// Returns the iterator over the documents that have a vector, for a field
+    /// whose documents are sparse.
+    ///
+    /// The caller must have checked that the field is neither empty nor dense,
+    /// which is Java's `assert docsWithFieldOffset > -1`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the field is empty or dense,
+    /// and an I/O error when the doc-id encoding cannot be read.
+    ///
+    /// [`LuceneError::IllegalState`]: crate::error::LuceneError::IllegalState
+    ///
+    /// Equivalent to
+    /// `OrdToDocDISIReaderConfiguration.getIndexedDISI(IndexInput)`.
+    pub fn get_indexed_disi(&self, data_in: &dyn IndexInput) -> Result<IndexedDISI> {
+        if self.docs_with_field_offset <= -1 {
+            return Err(crate::error::LuceneError::IllegalState(format!(
+                "docsWithFieldOffset must be > -1 to read an IndexedDISI, but was {}",
+                self.docs_with_field_offset
+            )));
+        }
+        IndexedDISI::new(
+            data_in,
+            self.docs_with_field_offset,
+            self.docs_with_field_length,
+            self.jump_table_entry_count as i32,
+            self.dense_rank_power,
+            self.size as i64,
+        )
+    }
+
+    /// Returns the reader that maps a vector ordinal back to its document id,
+    /// for a field whose documents are sparse.
+    ///
+    /// The caller must have checked that the field is neither empty nor dense,
+    /// which is Java's `assert docsWithFieldOffset > -1`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the field is empty or dense,
+    /// and an I/O error when the addresses cannot be sliced or decoded.
+    ///
+    /// [`LuceneError::IllegalState`]: crate::error::LuceneError::IllegalState
+    ///
+    /// Equivalent to
+    /// `OrdToDocDISIReaderConfiguration.getDirectMonotonicReader(IndexInput)`.
+    pub fn get_direct_monotonic_reader(
+        &self,
+        data_in: &dyn IndexInput,
+    ) -> Result<DirectMonotonicReader> {
+        if self.docs_with_field_offset <= -1 {
+            return Err(crate::error::LuceneError::IllegalState(format!(
+                "docsWithFieldOffset must be > -1 to read an ord-to-doc mapping, but was {}",
+                self.docs_with_field_offset
+            )));
+        }
+        let addresses_data: Box<dyn RandomAccessInput> =
+            data_in.random_access_slice(self.addresses_offset, self.addresses_length)?;
+        DirectMonotonicReader::with_random_access(
+            self.meta.clone(),
+            Rc::new(RefCell::new(addresses_data)),
+        )
     }
 }

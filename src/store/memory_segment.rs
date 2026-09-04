@@ -23,10 +23,10 @@
 //!   when the last clone holding it is dropped. The observable contract of
 //!   `close()` is preserved; only the instant of unmapping differs, and it
 //!   differs in the safe direction.
-//! * **`Arena.allocate` has no counterpart.** Lucene never allocates from these
-//!   arenas — `RefCountedSharedArena.allocate` throws
-//!   `UnsupportedOperationException` — so the [`Arena`] trait models lifetime
-//!   only.
+//! * **`Arena.allocate` is not on the [`Arena`] trait.** Lucene never allocates
+//!   from these arenas — `RefCountedSharedArena.allocate` throws
+//!   `UnsupportedOperationException` — so the trait models lifetime only, and
+//!   the refusal lives on [`RefCountedSharedArena::allocate`] alone.
 //! * **`MemorySegment.isLoaded()` cannot be answered.** It is backed by
 //!   `mincore`, which has no safe wrapper here; [`MemorySegment::is_loaded`]
 //!   returns `None`, the "no guarantee" answer the `IndexInput` contract
@@ -316,6 +316,24 @@ impl RefCountedSharedArena {
                 return;
             }
         }
+    }
+}
+
+impl RefCountedSharedArena {
+    /// Refuses to allocate: this arena hands out mappings of index files, never
+    /// fresh memory.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`], which is Java's
+    /// `UnsupportedOperationException`.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.store.RefCountedSharedArena#allocate`.
+    pub fn allocate(&self, _byte_size: i64, _byte_alignment: i64) -> Result<MemorySegment> {
+        Err(LuceneError::UnsupportedOperation(
+            "RefCountedSharedArena::allocate".to_string(),
+        ))
     }
 }
 

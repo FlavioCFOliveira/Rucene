@@ -153,33 +153,184 @@ impl PosixNativeAccess {
         }
     }
 
+    /// Looks up the `posix_madvise` entry point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::UnsupportedOperation`] on a platform that has no
+    /// such symbol, which is Java's `UnsupportedOperationException`.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.store.PosixNativeAccess#lookupMadvise`.
+    pub fn lookup_madvise() -> Result<PosixFunction> {
+        Self::find_function("posix_madvise")
+    }
+
+    /// Looks up the `getpagesize` entry point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::UnsupportedOperation`] on a platform that has no
+    /// such symbol, which is Java's `UnsupportedOperationException`.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.store.PosixNativeAccess#lookupGetPageSize`.
+    pub fn lookup_get_page_size() -> Result<PosixFunction> {
+        Self::find_function("getpagesize")
+    }
+
+    /// Resolves one libc entry point by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::UnsupportedOperation`] with Lucene's own message
+    /// when the running platform provides no such symbol.
+    ///
+    /// # Divergence from Lucene 10.5.0
+    ///
+    /// Java resolves the symbol dynamically:
+    /// `SymbolLookup.find(name)` against `Linker.nativeLinker().defaultLookup()`,
+    /// then `linker.downcallHandle(symbol, descriptor)`, so any libc function
+    /// can be named. Rust has no safe dynamic symbol lookup — `libloading` and
+    /// a raw `extern` block both need `unsafe`, which this crate forbids — so
+    /// the resolvable names are the two Lucene actually binds, and each
+    /// resolves to the safe facility this port calls it through:
+    /// `posix_madvise` to `memmap2`'s `advise_range`, and `getpagesize` to the
+    /// kernel-supplied auxiliary vector. The failure mode is the one Java
+    /// reports for a platform that lacks the symbol, and the set of platforms
+    /// that resolve them is the same set `get_instance` accepts.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.store.PosixNativeAccess#findFunction`.
+    pub fn find_function(name: &str) -> Result<PosixFunction> {
+        let symbol = if Self::get_instance().is_some() {
+            match name {
+                "posix_madvise" => Some(PosixFunction::PosixMadvise),
+                "getpagesize" => Some(PosixFunction::GetPageSize),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        symbol.ok_or_else(|| {
+            LuceneError::UnsupportedOperation(format!(
+                "Platform has no symbol for '{name}' in libc."
+            ))
+        })
+    }
+
     /// Issues the advice, translating a failure the way Lucene does.
-    fn advise(&self, segment: &MemorySegment, advice: OsReadAdvice) -> Result<()> {
+    ///
+    /// Equivalent to the private
+    /// `PosixNativeAccess.madvise(MemorySegment, int)`.
+    fn advise(&self, segment: &MemorySegment, advice: i32) -> Result<()> {
         // Empty segments are excluded, because they may have no address at all.
         if segment.byte_size() == 0 {
             return Ok(());
         }
-        segment.advise_os(advice).map_err(|error| {
-            LuceneError::Io(std::io::Error::other(format!(
-                "Call to madvise with address=0x{:08X} and byteSize={} failed: {error}",
-                segment.address(),
-                segment.byte_size()
-            )))
-        })
+        Self::lookup_madvise()?
+            .invoke_madvise(segment, advice)
+            .map_err(|error| {
+                LuceneError::Io(std::io::Error::other(format!(
+                    "Call to madvise with address=0x{:08X} and byteSize={} failed: {error}",
+                    segment.address(),
+                    segment.byte_size()
+                )))
+            })
+    }
+}
+
+/// A libc entry point [`PosixNativeAccess`] binds, resolved by
+/// [`PosixNativeAccess::find_function`].
+///
+/// Equivalent to the `MethodHandle` Java's `findFunction` returns: a handle
+/// that can be invoked, not the result of invoking it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PosixFunction {
+    /// `int posix_madvise(void *addr, size_t length, int advice)`.
+    PosixMadvise,
+    /// `int getpagesize(void)`.
+    GetPageSize,
+}
+
+impl PosixFunction {
+    /// Returns the libc name this handle was resolved under.
+    pub fn symbol_name(self) -> &'static str {
+        match self {
+            Self::PosixMadvise => "posix_madvise",
+            Self::GetPageSize => "getpagesize",
+        }
+    }
+
+    /// Invokes `posix_madvise` over the whole of `segment` with one of the
+    /// `POSIX_MADV_*` constants.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when this handle is not
+    /// `posix_madvise` or `advice` is not an advice Lucene issues, and
+    /// [`LuceneError::Io`] when the call fails.
+    pub fn invoke_madvise(self, segment: &MemorySegment, advice: i32) -> Result<()> {
+        if self != Self::PosixMadvise {
+            return Err(LuceneError::IllegalArgument(format!(
+                "'{}' is not posix_madvise",
+                self.symbol_name()
+            )));
+        }
+        let os_advice = match advice {
+            PosixNativeAccess::POSIX_MADV_NORMAL => {
+                OsReadAdvice::from_read_advice(ReadAdvice::Normal)
+            }
+            PosixNativeAccess::POSIX_MADV_RANDOM => {
+                OsReadAdvice::from_read_advice(ReadAdvice::Random)
+            }
+            PosixNativeAccess::POSIX_MADV_SEQUENTIAL => {
+                OsReadAdvice::from_read_advice(ReadAdvice::Sequential)
+            }
+            PosixNativeAccess::POSIX_MADV_WILLNEED => OsReadAdvice::WillNeed,
+            other => {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "unsupported posix_madvise advice: {other}"
+                )))
+            }
+        };
+        segment.advise_os(os_advice)
+    }
+
+    /// Invokes `getpagesize`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when this handle is not
+    /// `getpagesize`.
+    pub fn invoke_get_page_size(self) -> Result<usize> {
+        if self != Self::GetPageSize {
+            return Err(LuceneError::IllegalArgument(format!(
+                "'{}' is not getpagesize",
+                self.symbol_name()
+            )));
+        }
+        Ok(detect_page_size())
     }
 }
 
 impl NativeAccess for PosixNativeAccess {
     fn madvise(&self, segment: &MemorySegment, read_advice: ReadAdvice) -> Result<()> {
-        self.advise(segment, OsReadAdvice::from_read_advice(read_advice))
+        self.advise(segment, Self::map_read_advice(read_advice))
     }
 
     fn madvise_will_need(&self, segment: &MemorySegment) -> Result<()> {
-        self.advise(segment, OsReadAdvice::WillNeed)
+        self.advise(segment, Self::POSIX_MADV_WILLNEED)
     }
 
     fn get_page_size(&self) -> usize {
-        static PAGE_SIZE: LazyLock<usize> = LazyLock::new(detect_page_size);
+        // Java resolves `getpagesize` once, in the class initialiser, and
+        // caches what it returned; so does this.
+        static PAGE_SIZE: LazyLock<usize> = LazyLock::new(|| {
+            PosixNativeAccess::lookup_get_page_size()
+                .and_then(PosixFunction::invoke_get_page_size)
+                .unwrap_or(FALLBACK_PAGE_SIZE)
+        });
         *PAGE_SIZE
     }
 }
