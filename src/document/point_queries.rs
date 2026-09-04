@@ -372,6 +372,25 @@ impl LatLonDocValuesMatcher {
             GeoEncodingUtils::decode_latitude(lat),
         )
     }
+
+    /// Whether no value of the document falls inside the query geometry.
+    ///
+    /// Equivalent to the `matches()` of the two-phase iterator the private
+    /// `LatLonDocValuesQuery.disjoint(SortedNumericDocValues, Component2DPredicate)`
+    /// returns.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the doc values raises.
+    fn disjoint(&self, values: &mut dyn SortedNumericDocValues, count: i32) -> Result<bool> {
+        for _ in 0..count {
+            let (lat, lon) = split_packed(values.next_value()?);
+            if self.test(lat, lon) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 }
 
 impl SortedNumericMatcher for LatLonDocValuesMatcher {
@@ -399,15 +418,7 @@ impl SortedNumericMatcher for LatLonDocValuesMatcher {
                 Ok(true)
             }
             // `LatLonDocValuesQuery.disjoint(...)`.
-            QueryRelation::Disjoint => {
-                for _ in 0..count {
-                    let (lat, lon) = split_packed(values.next_value()?);
-                    if self.test(lat, lon) {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            }
+            QueryRelation::Disjoint => self.disjoint(values, count),
             // `LatLonDocValuesQuery.contains(...)`.
             QueryRelation::Contains => {
                 let mut answer = WithinRelation::Disjoint;
@@ -1003,13 +1014,21 @@ impl XYPointInGeometryQuery {
 
         let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref());
         {
-            let mut visitor = XYPointIntersectVisitor {
-                result: &mut result,
-                tree: self.tree.as_ref(),
-            };
+            let mut visitor = Self::get_intersect_visitor(&mut result, self.tree.as_ref());
             values.intersect(&mut visitor)?;
         }
         Ok(Some(result.build()?.iterator()?))
+    }
+
+    /// Builds the visitor that collects the points falling inside `tree`.
+    ///
+    /// Equivalent to the private
+    /// `XYPointInGeometryQuery.getIntersectVisitor(DocIdSetBuilder, Component2D)`.
+    fn get_intersect_visitor<'a>(
+        result: &'a mut DocIdSetBuilder,
+        tree: &'a dyn Component2D,
+    ) -> XYPointIntersectVisitor<'a> {
+        XYPointIntersectVisitor { result, tree }
     }
 
     /// Returns the estimated number of documents this query matches in
@@ -1025,10 +1044,7 @@ impl XYPointInGeometryQuery {
             return Ok(0);
         };
         let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref());
-        let mut visitor = XYPointIntersectVisitor {
-            result: &mut result,
-            tree: self.tree.as_ref(),
-        };
+        let mut visitor = Self::get_intersect_visitor(&mut result, self.tree.as_ref());
         values.estimate_doc_count(&mut visitor)
     }
 

@@ -7,24 +7,34 @@ use std::io::Read;
 use std::sync::Arc;
 
 use crate::analysis::{Analyzer, TokenStream};
+use crate::document::distance_feature_queries::LatLonPointDistanceFeatureQuery;
 use crate::document::distance_sort::{LatLonPointSortField, XYPointSortField};
+use crate::document::nearest_neighbor;
 use crate::document::point_queries::{
     LatLonDocValuesBoxQuery, LatLonDocValuesQuery, LatLonPointDistanceQuery, LatLonPointQuery,
     XYDocValuesPointInGeometryQuery,
 };
+use crate::document::range_fields::{RangeFieldQuery, RangeQueryType};
 use crate::document::shape_field::QueryRelation;
 use crate::document::spatial_query::{LatLonGeometryValue, XYGeometryValue};
 use crate::document::{FieldData, FieldType, InvertableType, NumericValue, StoredValue};
 use crate::error::{LuceneError, Result};
-use crate::geo::encoding::{GeoEncodingUtils, XYEncodingUtils};
+use crate::geo::encoding::{GeoEncodingUtils, GeoUtils, XYEncodingUtils};
 use crate::geo::geometry::{Circle, Polygon, Rectangle, XYCircle, XYRectangle};
-use crate::index::{DocValuesType, IndexableField, IndexableFieldType};
+use crate::index::{DocValuesType, IndexableField, IndexableFieldType, PointValues};
 use crate::search::boolean_query::Builder as BooleanQueryBuilder;
+use crate::search::boost_query::BoostQuery;
 use crate::search::constant_score_query::ConstantScoreQuery;
+use crate::search::field_comparator::SortValue;
+use crate::search::field_doc::FieldDoc;
+use crate::search::index_searcher::IndexSearcher;
 use crate::search::match_no_docs_query::MatchNoDocsQuery;
 use crate::search::point_range_query::{DimensionFormatter, PointRangeQuery};
+use crate::search::top_field_docs::TopFieldDocs;
+use crate::search::total_hits::{TotalHits, TotalHitsRelation};
 use crate::search::{Occur, Query};
-use crate::util::{BytesRef, NumericUtils};
+use crate::util::sloppy_math::SloppyMath;
+use crate::util::{Bits, BytesRef, NumericUtils};
 
 /// Body shared by every packed-point field's `IndexableField::token_stream`.
 fn point_token_stream(packed_value: Option<&[u8]>) -> Box<dyn TokenStream> {
@@ -355,6 +365,124 @@ impl LatLonPoint {
             COORDINATE_BYTES,
         );
         Ok((lower, upper))
+    }
+
+    /// Creates a query that scores documents by their distance to
+    /// `(origin_lat, origin_lon)`:
+    /// `score = weight * pivot_distance_meters / (pivot_distance_meters + distance)`.
+    ///
+    /// The score therefore lies in the `[0, weight]` range, equals `weight`
+    /// when the document's location equals the origin, and equals `weight / 2`
+    /// when the document's location is `pivot_distance_meters` away from it.
+    /// For a multi-valued field only the closest point to the origin is
+    /// considered. This query is typically useful to boost results by
+    /// proximity, by adding it to a [`Occur::SHOULD`] clause of a
+    /// [`BooleanQuery`](crate::search::BooleanQuery).
+    ///
+    /// Equivalent to
+    /// `LatLonPoint.newDistanceFeatureQuery(String, float, double, double, double)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for an invalid latitude or
+    /// longitude, when `pivot_distance_meters` is not positive, and when
+    /// `weight` is not a finite, non-negative float.
+    pub fn new_distance_feature_query(
+        field: &str,
+        weight: f32,
+        origin_lat: f64,
+        origin_lon: f64,
+        pivot_distance_meters: f64,
+    ) -> Result<Arc<dyn Query>> {
+        let query: Arc<dyn Query> = Arc::new(LatLonPointDistanceFeatureQuery::new(
+            field,
+            origin_lat,
+            origin_lon,
+            pivot_distance_meters,
+        )?);
+        if weight != 1.0 {
+            return Ok(Arc::new(BoostQuery::new(query, weight)?));
+        }
+        Ok(query)
+    }
+
+    /// Finds the `n` nearest indexed points to the provided point, according to
+    /// Haversine distance.
+    ///
+    /// This is functionally equivalent to running a
+    /// [`MatchAllDocsQuery`](crate::search::MatchAllDocsQuery) with a
+    /// [`LatLonDocValuesField::new_distance_sort`], but far more efficient,
+    /// since it takes advantage of the properties of the indexed BKD tree.
+    /// Multi-valued fields are currently not de-duplicated, so a document with
+    /// several instances of the field that make it into the top `n` appears
+    /// more than once.
+    ///
+    /// Documents are ordered by ascending distance from the location. The value
+    /// carried by each returned [`FieldDoc`] is the distance in metres.
+    ///
+    /// Equivalent to `LatLonPoint.nearest(IndexSearcher, String, double, double, int)`.
+    /// Java also rejects a null field or searcher with an
+    /// `IllegalArgumentException`; neither can be null here, so those two
+    /// checks have no Rust counterpart.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java passes `null` for the
+    /// `TopFieldDocs` sort fields (`LatLonPoint.java:444`); this port passes an
+    /// empty vector, because [`TopFieldDocs::fields`] is a `Vec<SortField>`
+    /// that cannot be null. Both stand for "these hits were not sorted by a
+    /// `SortField`".
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for an out-of-bounds latitude
+    /// or longitude and for `n < 1`, and propagates whatever reading the point
+    /// trees raises.
+    pub fn nearest(
+        searcher: &IndexSearcher,
+        field: &str,
+        latitude: f64,
+        longitude: f64,
+        n: i32,
+    ) -> Result<TopFieldDocs> {
+        GeoUtils::check_latitude(latitude)?;
+        GeoUtils::check_longitude(longitude)?;
+        if n < 1 {
+            return Err(LuceneError::IllegalArgument(format!(
+                "n must be at least 1; got {n}"
+            )));
+        }
+        let mut readers: Vec<Box<dyn PointValues>> = Vec::new();
+        let mut doc_bases: Vec<i32> = Vec::new();
+        let mut live_docs: Vec<Option<Box<dyn Bits>>> = Vec::new();
+        let mut total_hits: i32 = 0;
+        for leaf in Arc::clone(searcher.get_index_reader()).leaves() {
+            let reader = leaf.leaf_reader();
+            if let Some(points) = reader.get_point_values(field)? {
+                total_hits += points.doc_count();
+                readers.push(points);
+                doc_bases.push(leaf.doc_base());
+                live_docs.push(reader.get_live_docs());
+            }
+        }
+
+        let hits = nearest_neighbor::nearest(
+            latitude, longitude, &readers, &live_docs, &doc_bases, n as usize,
+        )?;
+
+        // Convert to TopFieldDocs:
+        let mut score_docs = Vec::with_capacity(hits.len());
+        for hit in &hits {
+            let hit_distance = SloppyMath::haversin_meters_from_sort_key(hit.distance_sort_key);
+            score_docs.push(FieldDoc::with_fields(
+                hit.doc_id,
+                0.0,
+                vec![SortValue::Double(hit_distance)],
+            ));
+        }
+        Ok(TopFieldDocs::new(
+            TotalHits::new(i64::from(total_hits), TotalHitsRelation::EQUAL_TO)?,
+            score_docs,
+            Vec::new(),
+        ))
     }
 }
 
@@ -1069,6 +1197,21 @@ impl InetAddressPoint {
         }
     }
 
+    /// Replaces this field's address.
+    ///
+    /// Equivalent to `InetAddressPoint.setInetAddressValue(InetAddress)`. Java
+    /// also rejects a null value with an `IllegalArgumentException`; the
+    /// address cannot be null here, so that check has no Rust counterpart.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`encode`](Self::encode) raises for an address that
+    /// is neither 4 nor 16 bytes long.
+    pub fn set_inet_address_value(&mut self, value: &[u8]) -> Result<()> {
+        self.fields_data = FieldData::Bytes(BytesRef::new(Self::encode(value)?));
+        Ok(())
+    }
+
     /// Returns the address one greater than `address`, or `None` when it is
     /// already the largest.
     ///
@@ -1105,6 +1248,128 @@ impl InetAddressPoint {
         }
         None
     }
+
+    /// Creates a prefix query matching a CIDR network range.
+    ///
+    /// `value` is any host address in its 4- or 16-byte form and
+    /// `prefix_length` is the network prefix length for it — also known as the
+    /// subnet mask in the context of IPv4 addresses. The lower bound of the
+    /// range is built by zeroing out the host portion of `value` and the upper
+    /// bound by filling it with all ones.
+    ///
+    /// Equivalent to `InetAddressPoint.newPrefixQuery(String, InetAddress, int)`.
+    /// Java also rejects a null address with an `IllegalArgumentException`; an
+    /// address cannot be null here, so that check has no Rust counterpart.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `prefix_length` is outside
+    /// `0..=8 * value.len()`, and propagates whatever
+    /// [`new_range_query`](Self::new_range_query) raises.
+    pub fn new_prefix_query(
+        field: &str,
+        value: &[u8],
+        prefix_length: i32,
+    ) -> Result<Arc<dyn Query>> {
+        if prefix_length < 0 || prefix_length as usize > 8 * value.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "illegal prefixLength '{prefix_length}'. Must be 0-32 for IPv4 ranges, 0-128 for \
+                 IPv6 ranges"
+            )));
+        }
+        // Create the lower value by zeroing out the host portion, the upper
+        // value by filling it with all ones.
+        let mut lower = value.to_vec();
+        let mut upper = value.to_vec();
+        for i in (prefix_length as usize)..(8 * lower.len()) {
+            let m = 1u8 << (7 - (i & 7));
+            lower[i >> 3] &= !m;
+            upper[i >> 3] |= m;
+        }
+        Self::new_range_query(field, &lower, &upper)
+    }
+
+    /// Creates a range query for network addresses, both bounds inclusive.
+    ///
+    /// A half-open range — in fact a `<`/`<=` or `>`/`>=` query — is expressed
+    /// by passing the all-zero or the all-ones address on the open side; an
+    /// exclusive bound by stepping the value with [`next_up`](Self::next_up) or
+    /// [`next_down`](Self::next_down).
+    ///
+    /// Equivalent to `InetAddressPoint.newRangeQuery(String, InetAddress, InetAddress)`,
+    /// whose anonymous `PointRangeQuery` subclass exists only to print a
+    /// dimension as a host address.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`encode`](Self::encode) and
+    /// [`PointRangeQuery::new`](crate::search::PointRangeQuery) raise.
+    pub fn new_range_query(
+        field: &str,
+        lower_value: &[u8],
+        upper_value: &[u8],
+    ) -> Result<Arc<dyn Query>> {
+        Ok(Arc::new(PointRangeQuery::new(
+            field,
+            Self::encode(lower_value)?,
+            Self::encode(upper_value)?,
+            1,
+            Arc::new(InetAddressPointFormatter),
+        )?))
+    }
+}
+
+/// Renders an encoded address as a host address for a range query's string
+/// form.
+///
+/// Equivalent to the anonymous `PointRangeQuery` subclass in
+/// `InetAddressPoint.newRangeQuery`, whose only job is to override
+/// `toString(int, byte[])` with `decode(value).getHostAddress()` — for a range,
+/// the range itself is already bracketed.
+#[derive(Debug)]
+struct InetAddressPointFormatter;
+
+impl DimensionFormatter for InetAddressPointFormatter {
+    fn format(&self, _dimension: i32, value: &[u8]) -> String {
+        inet_address_host_address(value)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Renders the 16-byte encoded form of an address the way Java prints it.
+///
+/// Equivalent to `InetAddressPoint.decode(byte[]).getHostAddress()`. Java's
+/// `InetAddress.getByAddress` hands back an `Inet4Address` when the sixteen
+/// bytes are an IPv4-mapped address — ten zero bytes followed by two `0xFF`
+/// bytes — and an `Inet6Address` otherwise; `Inet4Address.getHostAddress()`
+/// prints four decimal octets, and `Inet6Address.getHostAddress()` prints eight
+/// hexadecimal groups *without* the `::` compression Rust's `Ipv6Addr` applies.
+fn inet_address_host_address(value: &[u8]) -> String {
+    if value.len() == 4 {
+        return format!("{}.{}.{}.{}", value[0], value[1], value[2], value[3]);
+    }
+    if value.len() != InetAddressPoint::BYTES {
+        // Java's `decode` throws IllegalArgumentException("encoded bytes are of
+        // incorrect length") here; `toString` cannot fail, so the bytes are
+        // printed in hexadecimal instead, which is what the caller can act on.
+        return value.iter().map(|b| format!("{b:02x}")).collect();
+    }
+    if value[..10].iter().all(|&b| b == 0) && value[10] == 0xFF && value[11] == 0xFF {
+        return format!("{}.{}.{}.{}", value[12], value[13], value[14], value[15]);
+    }
+    let mut out = String::new();
+    for group in 0..8 {
+        if group > 0 {
+            out.push(':');
+        }
+        let hi = u32::from(value[group * 2]);
+        let lo = u32::from(value[group * 2 + 1]);
+        out.push_str(&format!("{:x}", (hi << 8) | lo));
+    }
+    out
 }
 
 impl IndexableField for InetAddressPoint {
@@ -1183,19 +1448,38 @@ impl InetAddressRange {
     /// Replaces the range.
     ///
     /// Equivalent to `InetAddressRange.setRangeValues`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`encode`](Self::encode) raises.
     pub fn set_range_values(&mut self, min: &[u8], max: &[u8]) -> Result<()> {
+        self.fields_data = FieldData::Bytes(BytesRef::new(Self::encode(min, max)?));
+        Ok(())
+    }
+
+    /// Encodes the minimum and maximum addresses into one packed range.
+    ///
+    /// Equivalent to the private static `InetAddressRange.encode(InetAddress, InetAddress)`,
+    /// which delegates to `encode(InetAddress, InetAddress, byte[])`: both
+    /// bounds are encoded consistently with `InetAddressPoint`, and the minimum
+    /// must not compare greater than the maximum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when either address is neither
+    /// 4 nor 16 bytes long, and when `min` is greater than `max`.
+    fn encode(min: &[u8], max: &[u8]) -> Result<Vec<u8>> {
         let min = InetAddressPoint::encode(min)?;
         let max = InetAddressPoint::encode(max)?;
         if min > max {
             return Err(LuceneError::IllegalArgument(
-                "min address cannot be greater than max address".to_string(),
+                "min value cannot be greater than max value for InetAddressRange field".to_string(),
             ));
         }
         let mut bytes = vec![0u8; 2 * Self::BYTES];
         bytes[..Self::BYTES].copy_from_slice(&min);
         bytes[Self::BYTES..].copy_from_slice(&max);
-        self.fields_data = FieldData::Bytes(BytesRef::new(bytes));
-        Ok(())
+        Ok(bytes)
     }
 
     /// Returns the field's name.
@@ -1214,6 +1498,79 @@ impl InetAddressRange {
             FieldData::Bytes(bytes) => Some(bytes.slice()),
             _ => None,
         }
+    }
+
+    /// Creates a query matching indexed ip ranges that *intersect* the given
+    /// range — that is, ranges that overlap, are within, cross, or contain it.
+    ///
+    /// Equivalent to `InetAddressRange.newIntersectsQuery(String, InetAddress, InetAddress)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`new_relation_query`](Self::new_relation_query)
+    /// raises.
+    pub fn new_intersects_query(field: &str, min: &[u8], max: &[u8]) -> Result<RangeFieldQuery> {
+        Self::new_relation_query(field, min, max, RangeQueryType::Intersects)
+    }
+
+    /// Creates a query matching indexed ip ranges that *contain* the given
+    /// range.
+    ///
+    /// Equivalent to `InetAddressRange.newContainsQuery(String, InetAddress, InetAddress)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`new_relation_query`](Self::new_relation_query)
+    /// raises.
+    pub fn new_contains_query(field: &str, min: &[u8], max: &[u8]) -> Result<RangeFieldQuery> {
+        Self::new_relation_query(field, min, max, RangeQueryType::Contains)
+    }
+
+    /// Creates a query matching indexed ip ranges that are *within* the given
+    /// range.
+    ///
+    /// Equivalent to `InetAddressRange.newWithinQuery(String, InetAddress, InetAddress)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`new_relation_query`](Self::new_relation_query)
+    /// raises.
+    pub fn new_within_query(field: &str, min: &[u8], max: &[u8]) -> Result<RangeFieldQuery> {
+        Self::new_relation_query(field, min, max, RangeQueryType::Within)
+    }
+
+    /// Creates a query matching indexed ip ranges that *cross* the given range.
+    ///
+    /// Equivalent to `InetAddressRange.newCrossesQuery(String, InetAddress, InetAddress)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`new_relation_query`](Self::new_relation_query)
+    /// raises.
+    pub fn new_crosses_query(field: &str, min: &[u8], max: &[u8]) -> Result<RangeFieldQuery> {
+        Self::new_relation_query(field, min, max, RangeQueryType::Crosses)
+    }
+
+    /// Builds the query for the desired relation.
+    ///
+    /// Equivalent to the private static
+    /// `InetAddressRange.newRelationQuery(String, InetAddress, InetAddress, QueryType)`.
+    /// Java's anonymous `RangeFieldQuery` subclass exists only to override
+    /// `toString(byte[], int)` with `InetAddressRange.toString`, which prints
+    /// `[min : max]`; [`RangeFieldQuery`] has no such rendering hook in this
+    /// port, so there is nothing to override.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`encode`](Self::encode) and
+    /// [`RangeFieldQuery::new`] raise.
+    pub fn new_relation_query(
+        field: &str,
+        min: &[u8],
+        max: &[u8],
+        relation: RangeQueryType,
+    ) -> Result<RangeFieldQuery> {
+        RangeFieldQuery::new(field, Self::encode(min, max)?, 1, relation)
     }
 }
 

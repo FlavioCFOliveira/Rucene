@@ -41,9 +41,9 @@ use crate::index::{
     VectorSimilarityFunction, MAX_DIMENSIONS, MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
 };
 use crate::search::{
-    ConstantScoreQuery, IndexOrDocValuesQuery, IndexSortSortedNumericDocValuesRangeQuery,
-    PointInSetQuery, PointRangeQuery, Query, SortedSetSelectorType, SortedSetSortField,
-    TermInSetQuery, TermQuery,
+    BoostQuery, ConstantScoreQuery, IndexOrDocValuesQuery,
+    IndexSortSortedNumericDocValuesRangeQuery, PointInSetQuery, PointRangeQuery, Query,
+    SortedSetSelectorType, SortedSetSortField, TermInSetQuery, TermQuery,
 };
 use crate::store::DataInput;
 use crate::util::BytesRef;
@@ -2511,6 +2511,25 @@ impl LongPoint {
         crate::util::NumericUtils::sortable_bytes_to_long(value, offset)
     }
 
+    /// Unpacks a [`BytesRef`] into a long point, filling one dimension per
+    /// element of `buf`.
+    ///
+    /// This can be used to unpack values that were packed with
+    /// [`pack_long_point`].
+    ///
+    /// Equivalent to `LongPoint.unpack(BytesRef, int, long[])`. Java also
+    /// rejects a null `bytesRef` or `buf` with an `IllegalArgumentException`;
+    /// neither reference can be null here, so those two checks have no Rust
+    /// counterpart. Like Java, the values are read from the *backing array* of
+    /// `bytes_ref` starting at `start`, not from its active slice.
+    pub fn unpack(bytes_ref: &BytesRef, start: usize, buf: &mut [i64]) {
+        let mut offset = start;
+        for slot in buf.iter_mut() {
+            *slot = LongPoint::decode_dimension(&bytes_ref.bytes, offset);
+            offset += 8;
+        }
+    }
+
     /// Changes the values of this field, keeping the same dimension count.
     ///
     /// Equivalent to `LongPoint.setLongValues(long...)`.
@@ -2654,6 +2673,78 @@ impl IndexableField for LongPoint {
     }
 }
 
+/// Returns the `f32` adjacent to `value` in the direction of positive infinity.
+///
+/// Reproduces `java.lang.Math.nextUp(float)`, which
+/// [`FloatPoint::next_up`] delegates to. Rust's `f32::next_up` was stabilised
+/// in 1.86, above this crate's minimum supported version of 1.80, so the
+/// bit-level walk Java performs is written out here.
+fn java_math_next_up_f32(value: f32) -> f32 {
+    if value.is_nan() || value == f32::INFINITY {
+        return value;
+    }
+    // Adding `0.0` turns `-0.0` into `+0.0`, which is what makes the branch
+    // below step away from zero rather than towards it.
+    let value = value + 0.0;
+    if value >= 0.0 {
+        f32::from_bits(value.to_bits().wrapping_add(1))
+    } else {
+        f32::from_bits(value.to_bits().wrapping_sub(1))
+    }
+}
+
+/// Returns the `f32` adjacent to `value` in the direction of negative infinity.
+///
+/// Reproduces `java.lang.Math.nextDown(float)`, which
+/// [`FloatPoint::next_down`] delegates to.
+fn java_math_next_down_f32(value: f32) -> f32 {
+    if value.is_nan() || value == f32::NEG_INFINITY {
+        return value;
+    }
+    if value == 0.0 {
+        return -f32::from_bits(1);
+    }
+    if value > 0.0 {
+        f32::from_bits(value.to_bits().wrapping_sub(1))
+    } else {
+        f32::from_bits(value.to_bits().wrapping_add(1))
+    }
+}
+
+/// Returns the `f64` adjacent to `value` in the direction of positive infinity.
+///
+/// Reproduces `java.lang.Math.nextUp(double)`, which
+/// [`DoublePoint::next_up`] delegates to.
+fn java_math_next_up_f64(value: f64) -> f64 {
+    if value.is_nan() || value == f64::INFINITY {
+        return value;
+    }
+    let value = value + 0.0;
+    if value >= 0.0 {
+        f64::from_bits(value.to_bits().wrapping_add(1))
+    } else {
+        f64::from_bits(value.to_bits().wrapping_sub(1))
+    }
+}
+
+/// Returns the `f64` adjacent to `value` in the direction of negative infinity.
+///
+/// Reproduces `java.lang.Math.nextDown(double)`, which
+/// [`DoublePoint::next_down`] delegates to.
+fn java_math_next_down_f64(value: f64) -> f64 {
+    if value.is_nan() || value == f64::NEG_INFINITY {
+        return value;
+    }
+    if value == 0.0 {
+        return -f64::from_bits(1);
+    }
+    if value > 0.0 {
+        f64::from_bits(value.to_bits().wrapping_sub(1))
+    } else {
+        f64::from_bits(value.to_bits().wrapping_add(1))
+    }
+}
+
 /// An indexed `f32` point field.
 ///
 /// Equivalent to `org.apache.lucene.document.FloatPoint`.
@@ -2665,6 +2756,36 @@ pub struct FloatPoint {
 }
 
 impl FloatPoint {
+    /// Returns the least float that compares greater than `f` consistently
+    /// with `Float.compare`.
+    ///
+    /// The only difference with `Math.nextUp(float)` is that this method
+    /// returns `+0f` when the argument is `-0f`.
+    ///
+    /// Equivalent to `FloatPoint.nextUp(float)`.
+    pub fn next_up(f: f32) -> f32 {
+        if f.to_bits() == 0x8000_0000 {
+            // -0f
+            return 0.0;
+        }
+        java_math_next_up_f32(f)
+    }
+
+    /// Returns the greatest float that compares less than `f` consistently with
+    /// `Float.compare`.
+    ///
+    /// The only difference with `Math.nextDown(float)` is that this method
+    /// returns `-0f` when the argument is `+0f`.
+    ///
+    /// Equivalent to `FloatPoint.nextDown(float)`.
+    pub fn next_down(f: f32) -> f32 {
+        if f.to_bits() == 0 {
+            // +0f
+            return -0.0;
+        }
+        java_math_next_down_f32(f)
+    }
+
     /// Creates a new FloatPoint.
     pub fn new(name: &str, point: &[f32]) -> Result<Self> {
         let field_type = float_point_field_type(point.len()).clone();
@@ -2851,6 +2972,36 @@ pub struct DoublePoint {
 }
 
 impl DoublePoint {
+    /// Returns the least double that compares greater than `d` consistently
+    /// with `Double.compare`.
+    ///
+    /// The only difference with `Math.nextUp(double)` is that this method
+    /// returns `+0d` when the argument is `-0d`.
+    ///
+    /// Equivalent to `DoublePoint.nextUp(double)`.
+    pub fn next_up(d: f64) -> f64 {
+        if d.to_bits() == 0x8000_0000_0000_0000 {
+            // -0d
+            return 0.0;
+        }
+        java_math_next_up_f64(d)
+    }
+
+    /// Returns the greatest double that compares less than `d` consistently
+    /// with `Double.compare`.
+    ///
+    /// The only difference with `Math.nextDown(double)` is that this method
+    /// returns `-0d` when the argument is `+0d`.
+    ///
+    /// Equivalent to `DoublePoint.nextDown(double)`.
+    pub fn next_down(d: f64) -> f64 {
+        if d.to_bits() == 0 {
+            // +0d
+            return -0.0;
+        }
+        java_math_next_down_f64(d)
+    }
+
     /// Creates a new DoublePoint.
     pub fn new(name: &str, point: &[f64]) -> Result<Self> {
         let field_type = double_point_field_type(point.len()).clone();
@@ -4270,6 +4421,42 @@ impl LongField {
             SortedNumericDocValuesField::new_slow_set_query(field, &points),
         )))
     }
+
+    /// Creates a query that scores documents by their distance to `origin`:
+    /// `score = weight * pivot_distance / (pivot_distance + distance)`.
+    ///
+    /// The score therefore lies in the `[0, weight]` range, equals `weight`
+    /// when the document's value equals `origin`, and equals `weight / 2` when
+    /// the document's value is `pivot_distance` away from `origin`. For a
+    /// multi-valued field only the closest point to `origin` is considered.
+    /// This query is typically useful to boost results by recency, by adding it
+    /// to a [`Occur::SHOULD`](crate::search::Occur) clause of a
+    /// [`BooleanQuery`](crate::search::BooleanQuery).
+    ///
+    /// Equivalent to `LongField.newDistanceFeatureQuery(String, float, long, long)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `pivot_distance` is not
+    /// positive, and when `weight` is not a finite, non-negative float.
+    pub fn new_distance_feature_query(
+        field: &str,
+        weight: f32,
+        origin: i64,
+        pivot_distance: i64,
+    ) -> Result<Arc<dyn Query>> {
+        let query: Arc<dyn Query> = Arc::new(
+            crate::document::distance_feature_queries::LongDistanceFeatureQuery::new(
+                field,
+                origin,
+                pivot_distance,
+            )?,
+        );
+        if weight != 1.0 {
+            return Ok(Arc::new(BoostQuery::new(query, weight)?));
+        }
+        Ok(query)
+    }
 }
 
 impl IndexableField for LongField {
@@ -4884,12 +5071,7 @@ impl KnnFloatVectorField {
     /// vector under [`VectorSimilarityFunction::COSINE`], and for a vector with
     /// a non-finite component.
     pub fn new(name: &str, vector: &[f32], similarity: VectorSimilarityFunction) -> Result<Self> {
-        let field_type = knn_vector_field_type(
-            vector.len(),
-            VectorEncoding::FLOAT32,
-            similarity,
-            crate::util::vector_util::is_zero_vector_f32(vector),
-        )?;
+        let field_type = Self::create_type(vector, similarity)?;
         crate::util::vector_util::check_finite(vector)?;
         Ok(Self {
             name: name.to_string(),
@@ -4906,6 +5088,27 @@ impl KnnFloatVectorField {
     /// As [`KnnFloatVectorField::new`].
     pub fn with_euclidean(name: &str, vector: &[f32]) -> Result<Self> {
         Self::new(name, vector, VectorSimilarityFunction::EUCLIDEAN)
+    }
+
+    /// Builds the frozen field type this field's constructor derives from its
+    /// vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for an empty vector, and for a
+    /// zero vector under [`VectorSimilarityFunction::COSINE`]. The null checks
+    /// Java performs on the vector and on the similarity function have no Rust
+    /// counterpart: neither can be null here.
+    ///
+    /// Equivalent to the private static
+    /// `KnnFloatVectorField.createType(float[], VectorSimilarityFunction)`.
+    fn create_type(v: &[f32], similarity_function: VectorSimilarityFunction) -> Result<FieldType> {
+        knn_vector_field_type(
+            v.len(),
+            VectorEncoding::FLOAT32,
+            similarity_function,
+            crate::util::vector_util::is_zero_vector_f32(v),
+        )
     }
 
     /// Creates a query that finds the `k` nearest documents to `query_vector`.
@@ -5079,12 +5282,7 @@ impl KnnByteVectorField {
     /// Returns [`LuceneError::IllegalArgument`] for an empty vector and for a
     /// zero vector under [`VectorSimilarityFunction::COSINE`].
     pub fn new(name: &str, vector: &[u8], similarity: VectorSimilarityFunction) -> Result<Self> {
-        let field_type = knn_vector_field_type(
-            vector.len(),
-            VectorEncoding::BYTE,
-            similarity,
-            crate::util::vector_util::is_zero_vector_bytes(vector),
-        )?;
+        let field_type = Self::create_type(vector, similarity)?;
         Ok(Self {
             name: name.to_string(),
             field_type,
@@ -5100,6 +5298,27 @@ impl KnnByteVectorField {
     /// As [`KnnByteVectorField::new`].
     pub fn with_euclidean(name: &str, vector: &[u8]) -> Result<Self> {
         Self::new(name, vector, VectorSimilarityFunction::EUCLIDEAN)
+    }
+
+    /// Builds the frozen field type this field's constructor derives from its
+    /// vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for an empty vector, and for a
+    /// zero vector under [`VectorSimilarityFunction::COSINE`]. The null checks
+    /// Java performs on the vector and on the similarity function have no Rust
+    /// counterpart: neither can be null here.
+    ///
+    /// Equivalent to the private static
+    /// `KnnByteVectorField.createType(byte[], VectorSimilarityFunction)`.
+    fn create_type(v: &[u8], similarity_function: VectorSimilarityFunction) -> Result<FieldType> {
+        knn_vector_field_type(
+            v.len(),
+            VectorEncoding::BYTE,
+            similarity_function,
+            crate::util::vector_util::is_zero_vector_bytes(v),
+        )
     }
 
     /// Creates a query that finds the `k` nearest documents to `query_vector`.

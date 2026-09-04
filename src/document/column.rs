@@ -877,10 +877,7 @@ pub fn create_column_field_adapter<'a>(
             } else {
                 None
             };
-            let cursor = DictionaryTupleCursor {
-                ordinals: dc.tuples()?,
-                dictionary: dc.dictionary(),
-            };
+            let cursor = dictionary_cursor(dc.tuples()?, dc.dictionary());
             Ok(Box::new(BinaryColumnAdapter::new(
                 dc.column().name(),
                 Arc::clone(dc.column().field_type()),
@@ -909,11 +906,25 @@ pub fn create_column_field_adapter<'a>(
     }
 }
 
+/// Presents a dictionary column's ordinals as a cursor over the values they
+/// index into.
+///
+/// Equivalent to the private static
+/// `ColumnFieldAdapter.dictionaryCursor(OrdinalsTupleCursor, List<BytesRef>)`.
+fn dictionary_cursor<'a>(
+    ordinals: Box<dyn OrdinalsTupleCursor + 'a>,
+    dictionary: &'a [BytesRef],
+) -> DictionaryTupleCursor<'a> {
+    DictionaryTupleCursor {
+        ordinals,
+        dictionary,
+    }
+}
+
 /// How a [`DictionaryColumn`] is presented as a cursor over values.
 ///
 /// Equivalent to the anonymous `ObjectTupleCursor<BytesRef>` that
-/// `ColumnFieldAdapter.dictionaryCursor(OrdinalsTupleCursor, List<BytesRef>)`
-/// returns.
+/// [`dictionary_cursor`] returns.
 struct DictionaryTupleCursor<'a> {
     ordinals: Box<dyn OrdinalsTupleCursor + 'a>,
     dictionary: &'a [BytesRef],
@@ -1007,7 +1018,10 @@ impl<'a> LongColumnAdapter<'a> {
         let name = column.column().name().to_string();
         let field_type = Arc::clone(column.column().field_type());
         let stored_type = if field_type.stored() {
-            Some(LongStoredType::new(&name, column.stored_type())?)
+            Some(Self::new_reusable_long_stored_value(
+                &name,
+                column.stored_type(),
+            )?)
         } else {
             None
         };
@@ -1017,6 +1031,29 @@ impl<'a> LongColumnAdapter<'a> {
             cursor: column.tuples()?,
             stored_type,
         })
+    }
+
+    /// Validates the stored type this adapter will materialise values under.
+    ///
+    /// Java keeps one reusable `StoredValue` per adapter and mutates it per
+    /// document, so it builds a prototype here — `new StoredValue(0L)` and its
+    /// three siblings. [`IndexableField::stored_value`] hands back an owned
+    /// [`StoredValue`] in this port, so only the *type* has to be remembered;
+    /// see [`LongStoredType`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for the same three types Java
+    /// rejects with an `AssertionError`, because
+    /// `ColumnValidation.validateLongColumn` has already excluded them.
+    ///
+    /// Equivalent to the private static
+    /// `LongColumnAdapter.newReusableLongStoredValue(StoredValue.Type)`.
+    fn new_reusable_long_stored_value(
+        name: &str,
+        stored_type: StoredValueType,
+    ) -> Result<LongStoredType> {
+        LongStoredType::new(name, stored_type)
     }
 }
 
@@ -1141,15 +1178,7 @@ impl<'a> BinaryColumnAdapter<'a> {
     ) -> Result<Self> {
         let name = name.into();
         if let Some(stored_type) = stored_type {
-            match stored_type {
-                StoredValueType::STRING | StoredValueType::BINARY => {}
-                other => {
-                    return Err(LuceneError::IllegalArgument(format!(
-                        "column \"{name}\" declares storedType={other}, which ColumnValidation \
-                         rejects"
-                    )))
-                }
-            }
+            Self::new_reusable_stored_value(&name, stored_type)?;
         }
         let tokenized = field_type.tokenized();
         let indexed = field_type.index_options() != IndexOptions::NONE;
@@ -1162,6 +1191,34 @@ impl<'a> BinaryColumnAdapter<'a> {
             indexed,
             cached_string: RefCell::new(None),
         })
+    }
+
+    /// Validates the stored type this adapter will materialise values under.
+    ///
+    /// Java keeps one reusable `StoredValue` per adapter and mutates it per
+    /// document, so it builds a prototype here — `new StoredValue("")` or
+    /// `new StoredValue(new BytesRef())`. [`IndexableField::stored_value`]
+    /// hands back an owned [`StoredValue`] in this port, so only the *type* has
+    /// to be remembered, and it is returned unchanged once validated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for the five types Java rejects
+    /// with the same exception, because `ColumnValidation` has already excluded
+    /// them.
+    ///
+    /// Equivalent to the private static
+    /// `BinaryColumnAdapter.newReusableStoredValue(StoredValue.Type)`.
+    fn new_reusable_stored_value(
+        name: &str,
+        stored_type: StoredValueType,
+    ) -> Result<StoredValueType> {
+        match stored_type {
+            StoredValueType::STRING | StoredValueType::BINARY => Ok(stored_type),
+            other => Err(LuceneError::IllegalArgument(format!(
+                "column \"{name}\" declares storedType={other}, which ColumnValidation rejects"
+            ))),
+        }
     }
 
     /// Creates a token-stream adapter, whose column yields one

@@ -1203,6 +1203,15 @@ impl SortedSkipperScorerSupplier {
         }
         Ok(())
     }
+
+    /// Returns the bulk scorer used when the document range is empty.
+    ///
+    /// Equivalent to the private static
+    /// `SortedSkipperScorerSupplier.emptyBulkScorer()`, whose anonymous
+    /// `BulkScorer` scores nothing and costs nothing.
+    fn empty_bulk_scorer() -> Box<dyn BulkScorer> {
+        Box::new(EmptyBulkScorer)
+    }
 }
 
 /// The bulk scorer a supplier hands out for an empty range.
@@ -1249,7 +1258,7 @@ impl ScorerSupplier for SortedSkipperScorerSupplier {
     fn bulk_scorer(&mut self) -> Result<Box<dyn BulkScorer>> {
         let range = self.range()?;
         if range.min_doc_id == range.max_doc_id {
-            return Ok(Box::new(EmptyBulkScorer));
+            return Ok(Self::empty_bulk_scorer());
         }
         let iterator = Box::new(crate::search::doc_id_set_iterator::range(
             range.min_doc_id,

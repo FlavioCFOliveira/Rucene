@@ -11,6 +11,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::document::geo_fields::LatLonPoint;
 use crate::error::{LuceneError, Result};
@@ -19,11 +20,19 @@ use crate::geo::geometry::Rectangle;
 use crate::index::point_values::{
     is_estimated_point_count_greater_than_or_equal_to, IntersectVisitor, Relation,
 };
+use crate::index::reader_context::LeafReaderContext;
 use crate::index::{DocValues, LeafReader, PointValues, SortedNumericDocValues};
 use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
+use crate::search::index_searcher::IndexSearcher;
+use crate::search::query::Query;
+use crate::search::query_visitor::QueryVisitor;
 use crate::search::scorable::Scorable;
+use crate::search::score_mode::ScoreMode;
 use crate::search::scorer::Scorer;
+use crate::search::scorer_supplier::ScorerSupplier;
+use crate::search::segment_cacheable::SegmentCacheable;
 use crate::search::similarities::Explanation;
+use crate::search::weight::Weight;
 use crate::util::doc_id_set::DocIdSetBuilder;
 use crate::util::sloppy_math::SloppyMath;
 use crate::util::{IntsRef, NumericUtils};
@@ -1141,5 +1150,272 @@ impl IntersectVisitor for LatLonRangeVisitor<'_> {
         } else {
             Relation::CellInsideQuery
         }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Weights
+// -----------------------------------------------------------------------------
+
+/// The weight a [`LongDistanceFeatureQuery`] builds.
+///
+/// Equivalent to the anonymous `Weight` of
+/// `LongDistanceFeatureQuery.createWeight(IndexSearcher, ScoreMode, float)`.
+#[derive(Debug)]
+struct LongDistanceFeatureWeight {
+    query: Arc<LongDistanceFeatureQuery>,
+    boost: f32,
+}
+
+impl SegmentCacheable for LongDistanceFeatureWeight {
+    /// Equivalent to the `isCacheable(LeafReaderContext)` of the same weight,
+    /// which always answers `false`.
+    fn is_cacheable(&self, _ctx: &LeafReaderContext) -> bool {
+        false
+    }
+}
+
+impl Weight for LongDistanceFeatureWeight {
+    fn get_query(&self) -> Arc<dyn Query> {
+        Arc::clone(&self.query) as Arc<dyn Query>
+    }
+
+    fn explain(&self, context: &LeafReaderContext, doc: i32) -> Result<Explanation> {
+        self.query
+            .explain(context.leaf_reader().as_ref(), doc, self.boost)
+    }
+
+    fn scorer_supplier(
+        &self,
+        context: &LeafReaderContext,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
+        let reader = context.leaf_reader();
+        if reader.get_point_values(self.query.field())?.is_none() {
+            // No data on this segment.
+            return Ok(None);
+        }
+        let cost = self.query.cost(reader.as_ref())?;
+        Ok(Some(Box::new(LongDistanceScorerSupplier {
+            query: Arc::clone(&self.query),
+            reader,
+            boost: self.boost,
+            cost,
+        })))
+    }
+}
+
+/// The supplier [`LongDistanceFeatureWeight`] hands out.
+///
+/// Equivalent to the anonymous `ScorerSupplier` of
+/// `LongDistanceFeatureQuery.createWeight`, whose `cost()` is the doc values'
+/// cost and whose `get(long)` builds the distance scorer.
+struct LongDistanceScorerSupplier {
+    query: Arc<LongDistanceFeatureQuery>,
+    reader: Arc<dyn LeafReader>,
+    boost: f32,
+    cost: i64,
+}
+
+impl std::fmt::Debug for LongDistanceScorerSupplier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LongDistanceScorerSupplier")
+            .field("query", &self.query)
+            .field("cost", &self.cost)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ScorerSupplier for LongDistanceScorerSupplier {
+    fn get(&mut self, lead_cost: i64) -> Result<Box<dyn Scorer>> {
+        let scorer = self
+            .query
+            .scorer(self.reader.as_ref(), lead_cost, self.boost)?
+            .expect(
+                "INVARIANT: scorer_supplier answered None unless the leaf has point values for \
+                 the field, which is the only case scorer() declines",
+            );
+        Ok(Box::new(scorer))
+    }
+
+    fn cost(&self) -> i64 {
+        self.cost
+    }
+}
+
+impl Query for LongDistanceFeatureQuery {
+    fn to_query_string(&self, field: &str) -> String {
+        LongDistanceFeatureQuery::to_query_string(self, field)
+    }
+
+    fn visit(&self, visitor: &mut dyn QueryVisitor) {
+        if visitor.accept_field(&self.field) {
+            visitor.visit_leaf(self);
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn query_eq(&self, other: &dyn Query) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|other| self == other)
+    }
+
+    fn query_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.class_hash().hash(&mut hasher);
+        self.field.hash(&mut hasher);
+        self.origin.hash(&mut hasher);
+        self.pivot_distance.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        _score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        Ok(Arc::new(LongDistanceFeatureWeight {
+            query: Arc::new(self.clone()),
+            boost,
+        }))
+    }
+}
+
+/// The weight a [`LatLonPointDistanceFeatureQuery`] builds.
+///
+/// Equivalent to the anonymous `Weight` of
+/// `LatLonPointDistanceFeatureQuery.createWeight(IndexSearcher, ScoreMode, float)`.
+#[derive(Debug)]
+struct LatLonPointDistanceFeatureWeight {
+    query: Arc<LatLonPointDistanceFeatureQuery>,
+    boost: f32,
+}
+
+impl SegmentCacheable for LatLonPointDistanceFeatureWeight {
+    /// Equivalent to the `isCacheable(LeafReaderContext)` of the same weight,
+    /// which always answers `false`.
+    fn is_cacheable(&self, _ctx: &LeafReaderContext) -> bool {
+        false
+    }
+}
+
+impl Weight for LatLonPointDistanceFeatureWeight {
+    fn get_query(&self) -> Arc<dyn Query> {
+        Arc::clone(&self.query) as Arc<dyn Query>
+    }
+
+    fn explain(&self, context: &LeafReaderContext, doc: i32) -> Result<Explanation> {
+        self.query
+            .explain(context.leaf_reader().as_ref(), doc, self.boost)
+    }
+
+    fn scorer_supplier(
+        &self,
+        context: &LeafReaderContext,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
+        let reader = context.leaf_reader();
+        if reader.get_point_values(self.query.field())?.is_none() {
+            // No data on this segment.
+            return Ok(None);
+        }
+        let cost = self.query.cost(reader.as_ref())?;
+        Ok(Some(Box::new(LatLonPointDistanceScorerSupplier {
+            query: Arc::clone(&self.query),
+            reader,
+            boost: self.boost,
+            cost,
+        })))
+    }
+}
+
+/// The supplier [`LatLonPointDistanceFeatureWeight`] hands out.
+///
+/// Equivalent to the anonymous `ScorerSupplier` of
+/// `LatLonPointDistanceFeatureQuery.createWeight`.
+struct LatLonPointDistanceScorerSupplier {
+    query: Arc<LatLonPointDistanceFeatureQuery>,
+    reader: Arc<dyn LeafReader>,
+    boost: f32,
+    cost: i64,
+}
+
+impl std::fmt::Debug for LatLonPointDistanceScorerSupplier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LatLonPointDistanceScorerSupplier")
+            .field("query", &self.query)
+            .field("cost", &self.cost)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ScorerSupplier for LatLonPointDistanceScorerSupplier {
+    fn get(&mut self, lead_cost: i64) -> Result<Box<dyn Scorer>> {
+        let scorer = self
+            .query
+            .scorer(self.reader.as_ref(), lead_cost, self.boost)?
+            .expect(
+                "INVARIANT: scorer_supplier answered None unless the leaf has point values for \
+                 the field, which is the only case scorer() declines",
+            );
+        Ok(Box::new(scorer))
+    }
+
+    fn cost(&self) -> i64 {
+        self.cost
+    }
+}
+
+impl Query for LatLonPointDistanceFeatureQuery {
+    fn to_query_string(&self, field: &str) -> String {
+        LatLonPointDistanceFeatureQuery::to_query_string(self, field)
+    }
+
+    fn visit(&self, visitor: &mut dyn QueryVisitor) {
+        if visitor.accept_field(&self.field) {
+            visitor.visit_leaf(self);
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn query_eq(&self, other: &dyn Query) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|other| self == other)
+    }
+
+    fn query_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.class_hash().hash(&mut hasher);
+        self.field.hash(&mut hasher);
+        // Java hashes the three doubles with `Double.hashCode`, which is
+        // derived from their bit pattern; `f64` is not `Hash` in Rust, so the
+        // bits are hashed directly.
+        self.origin_lat.to_bits().hash(&mut hasher);
+        self.origin_lon.to_bits().hash(&mut hasher);
+        self.pivot_distance.to_bits().hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        _score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        Ok(Arc::new(LatLonPointDistanceFeatureWeight {
+            query: Arc::new(self.clone()),
+            boost,
+        }))
     }
 }
