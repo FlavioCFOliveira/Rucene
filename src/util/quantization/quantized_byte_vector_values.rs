@@ -1,9 +1,12 @@
 //! `QuantizedByteVectorValues` and friends, ported from
 //! `org.apache.lucene.util.quantization`.
 
+use crate::codecs::state::SegmentWriteState;
 use crate::error::{LuceneError, Result};
+use crate::index::field_infos::FieldInfo;
 use crate::index::vector_values::DocIndexIterator;
 use crate::store::IndexInput;
+use crate::util::hnsw::CloseableRandomVectorScorerSupplier;
 use crate::util::quantization::optimized_scalar_quantizer::QuantizationResult;
 use crate::util::quantization::scalar_quantizer::ScalarQuantizer;
 
@@ -257,6 +260,24 @@ pub trait QuantizedVectorsReader {
     ///
     /// Equivalent to `QuantizedVectorsReader.getQuantizationState(String)`.
     fn get_quantization_state(&self, field: &str) -> Result<Option<ScalarQuantizer>>;
+
+    /// Returns a scorer supplier over the merged quantized vectors of
+    /// `field_info`, so a merge can score them however it needs to.
+    ///
+    /// The supplier may hold temporary file handles over auxiliary structures,
+    /// so it should be closed once the merge is done.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever building the supplier raises.
+    ///
+    /// Equivalent to
+    /// `QuantizedVectorsReader.getRandomVectorScorerSupplierForMerge(FieldInfo, SegmentWriteState)`.
+    fn get_random_vector_scorer_supplier_for_merge(
+        &self,
+        field_info: &FieldInfo,
+        segment_write_state: &SegmentWriteState<'_>,
+    ) -> Result<Option<Box<dyn CloseableRandomVectorScorerSupplier>>>;
 }
 
 /// Quantized vectors written by the Lucene 9.9 format, which stores one

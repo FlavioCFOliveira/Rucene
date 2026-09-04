@@ -39,11 +39,13 @@ use crate::search::knn::{KnnCollector, TopKnnCollector};
 use crate::search::{AcceptDocs, DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{DataInput, IndexInput, IndexOutput};
 use crate::util::hnsw::{
-    ArrayNodesIterator, DenseNodesIterator, HnswBuilder, HnswGraph, HnswGraphBuilder,
-    HnswGraphSearcher, NeighborArray, NeighborQueue, NodesIterator, OnHeapHnswGraph,
-    RandomVectorScorer,
+    ArrayNodesIterator, CloseableRandomVectorScorerSupplier, ConcurrentHnswMerger,
+    DenseNodesIterator, HnswBuilder, HnswGraph, HnswGraphBuilder, HnswGraphMerger,
+    HnswGraphSearcher, IncrementalHnswGraphMerger, NeighborArray, NeighborQueue, NodesIterator,
+    OnHeapHnswGraph, RandomVectorScorer,
 };
 use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter};
+use crate::util::quantization::{QuantizedByteVectorValues, ScalarQuantizer};
 use crate::util::FixedBitSet;
 
 // -----------------------------------------------------------------------------
@@ -200,9 +202,17 @@ pub struct Lucene99HnswVectorsWriter {
     meta: Option<Box<dyn IndexOutput>>,
     vector_index: Option<Box<dyn IndexOutput>>,
     flat_vector_writer: Box<dyn FlatVectorsWriter>,
+    /// The format the flat vectors were written with, reopened for reading by
+    /// [`Lucene99HnswVectorsWriter::ensure_flat_reader_open`] once the merge
+    /// needs to score them.
+    flat_vectors_format: Lucene99FlatVectorsFormat,
+    /// The reader over the flat vectors this writer just wrote, opened lazily.
+    flat_vectors_reader: Option<Box<dyn FlatVectorsReader>>,
+    /// Whether [`Lucene99HnswVectorsWriter::ensure_flat_reader_open`] already
+    /// closed [`Self::flat_vector_writer`], so `close` does not close it twice.
+    flat_writer_closed: bool,
     m: i32,
     beam_width: i32,
-    #[allow(dead_code)]
     num_merge_workers: i32,
     tiny_segments_threshold: i32,
     version: i32,
@@ -325,6 +335,11 @@ impl Lucene99HnswVectorsWriter {
                 meta: meta_opt.take(),
                 vector_index: vector_index_opt.take(),
                 flat_vector_writer,
+                flat_vectors_format: Lucene99FlatVectorsFormat::new(
+                    DefaultFlatVectorScorer::INSTANCE,
+                ),
+                flat_vectors_reader: None,
+                flat_writer_closed: false,
                 m,
                 beam_width,
                 num_merge_workers,
@@ -622,6 +637,170 @@ impl Lucene99HnswVectorsWriter {
         Ok((vector_index.file_pointer() - start) as i32)
     }
 
+    /// Merges the source segments' graphs into one and writes it, together
+    /// with the field's metadata entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when this writer is already
+    /// closed, and whatever merging or writing the graph raises.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsWriter#buildAndWriteGraph`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java hands each source reader to the
+    /// merger as a `KnnVectorsReader` and the merger narrows it to an
+    /// `HnswGraphProvider` with `instanceof`, reusing the source graph when it
+    /// is one. Rust cannot narrow a `dyn KnnVectorsReader`, so
+    /// [`HnswGraphMerger::add_reader`] takes the provider as a separate
+    /// argument and `None` is passed here — the merger then treats the reader
+    /// exactly as Java treats one that is not a provider, and rebuilds. The
+    /// divergence is the merger's, already recorded on that trait; this method
+    /// only inherits it.
+    ///
+    /// Nothing calls this yet: Java reaches it from the `IORunnable` that
+    /// `mergeOneField` returns, and that closure captures the writer itself,
+    /// which a `Box<dyn IORunnable>` cannot own while
+    /// [`KnnVectorsWriter::finish`] still needs the same outputs.
+    #[allow(dead_code)]
+    fn build_and_write_graph(
+        &mut self,
+        field_info: &FieldInfo,
+        merge_state: &MergeState,
+        vector_values: &dyn KnnVectorValues,
+        scorer_supplier: Arc<dyn crate::util::hnsw::RandomVectorScorerSupplier>,
+        total_vector_count: i32,
+    ) -> Result<()> {
+        let vector_index_offset = self
+            .vector_index
+            .as_ref()
+            .ok_or_else(|| {
+                LuceneError::IllegalState("Lucene99HnswVectorsWriter is already closed".to_string())
+            })?
+            .file_pointer();
+        let mut merger =
+            self.create_graph_merger(field_info, scorer_supplier, self.num_merge_workers);
+        for i in 0..merge_state.live_docs.len() {
+            // `KnnVectorsWriter.MergedVectorValues.hasVectorValues(FieldInfos,
+            // String)`, inlined: that helper belongs to a type this port has
+            // not brought over, and its body is these three tests.
+            let field_infos = &merge_state.field_infos[i];
+            let has_vector_values = field_infos.has_vector_values()
+                && field_infos
+                    .field_info(&field_info.name)
+                    .is_some_and(|info| info.has_vector_values());
+            if !has_vector_values {
+                continue;
+            }
+            let Some(reader) = merge_state
+                .knn_vectors_readers
+                .get(i)
+                .and_then(Clone::clone)
+            else {
+                continue;
+            };
+            let doc_map = Arc::new(merge_state.doc_maps[i].clone());
+            merger.add_reader(reader, None, doc_map, merge_state.live_docs[i].as_deref())?;
+        }
+        let graph = merger.merge(vector_values, total_vector_count)?;
+        let vector_index_node_offsets = self.write_graph(&graph)?;
+        let vector_index_length = self
+            .vector_index
+            .as_ref()
+            .ok_or_else(|| {
+                LuceneError::IllegalState("Lucene99HnswVectorsWriter is already closed".to_string())
+            })?
+            .file_pointer()
+            - vector_index_offset;
+        self.write_meta(
+            field_info,
+            vector_index_offset,
+            vector_index_length,
+            total_vector_count,
+            Some(&graph),
+            &vector_index_node_offsets,
+        )
+    }
+
+    /// Returns the merger that will build the merged segment's graph.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsWriter#createGraphMerger`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java chooses between three cases: a
+    /// `ConcurrentHnswMerger` on the writer's own `mergeExec`, a
+    /// `ConcurrentHnswMerger` on the merge's `TaskExecutor` when more than one
+    /// worker was asked for, and an `IncrementalHnswGraphMerger` otherwise
+    /// (`Lucene99HnswVectorsWriter.java:628-646`). This port has no
+    /// `TaskExecutor`: [`ConcurrentHnswMerger`] runs its own workers, so the
+    /// first two cases are the same one, selected by the worker count exactly
+    /// as Java selects the second.
+    fn create_graph_merger(
+        &self,
+        field_info: &FieldInfo,
+        scorer_supplier: Arc<dyn crate::util::hnsw::RandomVectorScorerSupplier>,
+        num_parallel_merge_workers: i32,
+    ) -> Box<dyn HnswGraphMerger> {
+        if num_parallel_merge_workers > 1 {
+            Box::new(ConcurrentHnswMerger::new(
+                field_info.clone(),
+                scorer_supplier,
+                self.m,
+                self.beam_width,
+                num_parallel_merge_workers,
+            ))
+        } else {
+            Box::new(IncrementalHnswGraphMerger::new(
+                field_info.clone(),
+                scorer_supplier,
+                self.m,
+                self.beam_width,
+            ))
+        }
+    }
+
+    /// Finishes and closes the flat writer, then opens a reader over the flat
+    /// vectors it wrote, so the graph can be built by scoring them.
+    ///
+    /// Does nothing once the reader is open.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever finishing the flat writer or opening the reader
+    /// raises.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsWriter#ensureFlatReaderOpen`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java builds the `SegmentReadState`
+    /// out of the `segmentWriteState` field it kept from its constructor
+    /// (`Lucene99HnswVectorsWriter.java:499-511`). This port's writer outlives
+    /// the borrowed [`SegmentWriteState`] it was built from — the indexing
+    /// chain creates it on the first vector of the first document and keeps it
+    /// until the segment flushes — so it cannot hold one, and the state is
+    /// passed in instead. It is the same state Java stored.
+    ///
+    /// Nothing calls this yet, for the reason recorded on
+    /// [`build_and_write_graph`](Self::build_and_write_graph).
+    #[allow(dead_code)]
+    fn ensure_flat_reader_open(&mut self, state: &SegmentWriteState<'_>) -> Result<()> {
+        if self.flat_vectors_reader.is_none() {
+            self.flat_vector_writer.finish()?;
+            self.flat_vector_writer.close()?;
+            self.flat_writer_closed = true;
+            let read_state = SegmentReadState::with_suffix(
+                state.directory,
+                state.segment_info,
+                state.field_infos,
+                state.context,
+                state.segment_suffix.clone(),
+            );
+            self.flat_vectors_reader =
+                Some(self.flat_vectors_format.fields_reader_flat(&read_state)?);
+        }
+        Ok(())
+    }
+
     fn write_graph(&mut self, graph: &OnHeapHnswGraph) -> Result<Vec<Vec<i32>>> {
         let scratch_capacity = (graph.max_conn() * 2).max(4) as usize;
         let mut offsets = Vec::with_capacity(graph.num_levels()? as usize);
@@ -860,8 +1039,17 @@ impl KnnVectorsWriter for Lucene99HnswVectorsWriter {
 
     fn close(&mut self) -> Result<()> {
         let mut last_err: Option<LuceneError> = None;
-        if let Err(e) = self.flat_vector_writer.close() {
-            last_err = Some(e);
+        // Java closes the flat writer only when `ensureFlatReaderOpen` has not
+        // already closed it (`Lucene99HnswVectorsWriter.java:648-654`).
+        if !self.flat_writer_closed {
+            if let Err(e) = self.flat_vector_writer.close() {
+                last_err = Some(e);
+            }
+        }
+        if let Some(reader) = self.flat_vectors_reader.as_mut() {
+            if let Err(e) = reader.close() {
+                last_err = Some(e);
+            }
         }
         if let Some(meta) = self.meta.as_mut() {
             if let Err(e) = meta.close() {
@@ -1038,6 +1226,25 @@ fn read_vector_encoding(ordinal: i32) -> Result<VectorEncoding> {
             "invalid VectorEncoding ordinal: {ordinal}"
         ))),
     }
+}
+
+/// Reads a similarity function from the metadata stream.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader#readSimilarityFunction`,
+/// which reads the ordinal and looks it up in `SIMILARITY_FUNCTIONS`. Java
+/// keeps that list so the file format does not depend on the declaration order
+/// of `VectorSimilarityFunction`; here [`read_vector_similarity`] is that
+/// table.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when the ordinal names no
+/// similarity function, which is the `IllegalArgumentException` Java raises.
+fn read_similarity_function(input: &mut dyn DataInput) -> Result<VectorSimilarityFunction> {
+    let i = input.read_int()?;
+    read_vector_similarity(i)
+        .map_err(|_| LuceneError::IllegalArgument(format!("invalid distance function: {i}")))
 }
 
 fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
@@ -1321,28 +1528,14 @@ impl Lucene99HnswVectorsReader {
         let fields = read_fields(meta_checksum.as_mut(), state.field_infos)?;
         check_footer(meta_checksum.as_mut())?;
 
-        let vector_index_file_name = segment_file_name(
-            &state.segment_info.name,
-            &state.segment_suffix,
+        let data_context = state.context.with_hints(state.context.hints());
+        let vector_index = Self::open_data_input(
+            state,
+            version_meta,
             VECTOR_INDEX_EXTENSION,
-        );
-        let mut vector_index = state
-            .directory
-            .open_input(&vector_index_file_name, state.context)?;
-        let version_vector_index = check_index_header(
-            vector_index.as_mut(),
             VECTOR_INDEX_CODEC_NAME,
-            VERSION_START,
-            VERSION_CURRENT,
-            &state.segment_info.id(),
-            &state.segment_suffix,
+            data_context.as_ref(),
         )?;
-        if version_meta != version_vector_index {
-            return Err(LuceneError::CorruptIndex(format!(
-                "format versions mismatch: meta={version_meta}, vectorIndex={version_vector_index}"
-            )));
-        }
-        retrieve_checksum(vector_index.as_mut())?;
 
         Ok(Self {
             flat_vectors_reader,
@@ -1350,8 +1543,114 @@ impl Lucene99HnswVectorsReader {
             fields,
             vector_index,
             version: version_meta,
-            data_context: state.context.with_hints(state.context.hints()),
+            data_context,
         })
+    }
+
+    /// Opens one of the format's data files, checks its header against
+    /// `version_meta` and primes its checksum.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader#openDataInput`.
+    fn open_data_input(
+        state: &SegmentReadState<'_>,
+        version_meta: i32,
+        file_extension: &str,
+        codec_name: &str,
+        context: &dyn crate::store::IOContext,
+    ) -> Result<Box<dyn IndexInput>> {
+        let file_name = segment_file_name(
+            &state.segment_info.name,
+            &state.segment_suffix,
+            file_extension,
+        );
+        let mut input = state.directory.open_input(&file_name, context)?;
+        let version_vector_data = check_index_header(
+            input.as_mut(),
+            codec_name,
+            VERSION_START,
+            VERSION_CURRENT,
+            &state.segment_info.id(),
+            &state.segment_suffix,
+        )?;
+        if version_meta != version_vector_data {
+            return Err(LuceneError::CorruptIndex(format!(
+                "format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
+            )));
+        }
+        retrieve_checksum(input.as_mut())?;
+        Ok(input)
+    }
+
+    /// Returns the quantizer the vectors of `field` were compressed with, or
+    /// `None` when the flat vectors this reader wraps are not quantized.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever the quantized reader raises while reading its state.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader#getQuantizationState`.
+    /// Java tests `flatVectorsReader instanceof QuantizedVectorsReader`; this
+    /// port asks the flat reader through
+    /// [`FlatVectorsReader::as_quantized_vectors_reader`], which answers the
+    /// same question — see the divergence recorded there.
+    pub fn get_quantization_state(&self, field: &str) -> Result<Option<ScalarQuantizer>> {
+        match self.flat_vectors_reader.as_quantized_vectors_reader() {
+            Some(reader) => reader.get_quantization_state(field),
+            None => Ok(None),
+        }
+    }
+
+    /// Returns the quantized vectors stored for `field`, or `None` when the
+    /// flat vectors this reader wraps are not quantized.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever the quantized reader raises while opening the values.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader#getQuantizedVectorValues`.
+    /// The `instanceof` test is answered by
+    /// [`FlatVectorsReader::as_quantized_vectors_reader`], as for
+    /// [`get_quantization_state`](Self::get_quantization_state).
+    pub fn get_quantized_vector_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn QuantizedByteVectorValues>>> {
+        match self.flat_vectors_reader.as_quantized_vectors_reader() {
+            Some(reader) => reader.get_quantized_vector_values(field),
+            None => Ok(None),
+        }
+    }
+
+    /// Returns a scorer supplier over the merged flat vectors of `field`, or
+    /// `None` when the flat vectors this reader wraps are not quantized.
+    ///
+    /// The supplier may hold temporary file handles, so it should be closed
+    /// once the merge that asked for it is done.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever the quantized reader raises while building the
+    /// supplier.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader#getRandomVectorScorerSupplierForMerge`.
+    /// The `instanceof` test is answered by
+    /// [`FlatVectorsReader::as_quantized_vectors_reader`], as for
+    /// [`get_quantization_state`](Self::get_quantization_state).
+    pub fn get_random_vector_scorer_supplier_for_merge(
+        &self,
+        field_info: &FieldInfo,
+        segment_write_state: &SegmentWriteState<'_>,
+    ) -> Result<Option<Box<dyn CloseableRandomVectorScorerSupplier>>> {
+        match self.flat_vectors_reader.as_quantized_vectors_reader() {
+            Some(reader) => {
+                reader.get_random_vector_scorer_supplier_for_merge(field_info, segment_write_state)
+            }
+            None => Ok(None),
+        }
     }
 
     fn clone_reader(&self) -> Result<Self> {
@@ -1538,17 +1837,62 @@ fn read_fields(
             .ok_or_else(|| {
                 LuceneError::CorruptIndex(format!("invalid field number: {field_number}"))
             })?;
-        let entry = FieldEntry::create(input, info)?;
+        let entry = read_field(input, info)?;
+        validate_field_entry(info, &entry)?;
         fields.insert(info.number, entry);
         field_number = input.read_int()?;
     }
     Ok(fields)
 }
 
+/// Reads one field's entry from the `.vem` metadata.
+///
+/// The encoding and the similarity function come first, and the similarity is
+/// checked against the field's own before the rest of the entry is read, so a
+/// metadata file written for a different similarity is rejected at the byte it
+/// disagrees on rather than at the end of the record.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader#readField`.
+fn read_field(input: &mut dyn DataInput, info: &FieldInfo) -> Result<FieldEntry> {
+    let vector_encoding = read_vector_encoding(input.read_int()?)?;
+    let similarity_function = read_similarity_function(input)?;
+    if similarity_function != info.vector_similarity_function {
+        return Err(LuceneError::CorruptIndex(format!(
+            "inconsistent vector similarity function for field=\"{}\"",
+            info.name
+        )));
+    }
+    FieldEntry::create(input, vector_encoding, similarity_function, info)
+}
+
+/// Checks that a field entry agrees with the field's own metadata.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader#validateFieldEntry`.
+fn validate_field_entry(info: &FieldInfo, field_entry: &FieldEntry) -> Result<()> {
+    if info.vector_dimension != field_entry.dimension {
+        return Err(LuceneError::CorruptIndex(format!(
+            "inconsistent vector dimension for field=\"{}\"",
+            info.name
+        )));
+    }
+    Ok(())
+}
+
 impl FieldEntry {
-    fn create(input: &mut dyn DataInput, field_info: &FieldInfo) -> Result<Self> {
-        let vector_encoding = read_vector_encoding(input.read_int()?)?;
-        let similarity_function = read_vector_similarity(input.read_int()?)?;
+    /// Reads the rest of a field's entry, after `read_field` has taken the
+    /// encoding and the similarity function off the input.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsReader.FieldEntry.create(IndexInput,
+    /// VectorEncoding, VectorSimilarityFunction)`, which this port also hands
+    /// the `FieldInfo`, because the corruption messages below name the field.
+    fn create(
+        input: &mut dyn DataInput,
+        vector_encoding: VectorEncoding,
+        similarity_function: VectorSimilarityFunction,
+        field_info: &FieldInfo,
+    ) -> Result<Self> {
         let vector_index_offset = input.read_v_long()?;
         let vector_index_length = input.read_v_long()?;
         let dimension = input.read_v_int()?;
@@ -1616,19 +1960,6 @@ impl FieldEntry {
             } else {
                 (0, 0, None, 0)
             };
-
-        if similarity_function != field_info.vector_similarity_function {
-            return Err(LuceneError::CorruptIndex(format!(
-                "inconsistent vector similarity function for field=\"{}\"",
-                field_info.name
-            )));
-        }
-        if dimension != field_info.vector_dimension {
-            return Err(LuceneError::CorruptIndex(format!(
-                "inconsistent vector dimension for field=\"{}\"",
-                field_info.name
-            )));
-        }
 
         Ok(Self {
             field_info: field_info.clone(),

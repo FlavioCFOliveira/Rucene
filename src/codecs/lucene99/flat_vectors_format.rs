@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use crate::codecs::codec_util::{
     check_footer, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
@@ -300,9 +300,7 @@ impl Lucene99FlatVectorsWriter {
             LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
         })?;
         let vector_data_offset = align_output(vector_data.as_mut(), VectorEncoding::FLOAT32)?;
-        for vector in field_writer.vectors() {
-            vector_data.write_floats(vector, 0, vector.len())?;
-        }
+        Self::write_float32_vectors(vector_data.as_mut(), field_writer, field_info)?;
         let vector_data_length = vector_data.file_pointer() - vector_data_offset;
         let docs_with_field = field_writer.docs_with_field_set().clone();
 
@@ -396,6 +394,103 @@ impl Lucene99FlatVectorsWriter {
         )
     }
 
+    /// Writes every buffered float vector to the vector-data file, in the
+    /// order they were added.
+    ///
+    /// `field_info` is unused: Java needs it only to size the little-endian
+    /// `ByteBuffer` it funnels each vector through
+    /// (`Lucene99FlatVectorsWriter.java:205-215`), and
+    /// [`IndexOutput::write_floats`] writes the same little-endian bytes with
+    /// no buffer of its own. The parameter is kept so the two signatures line
+    /// up.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsWriter#writeFloat32Vectors`.
+    fn write_float32_vectors(
+        vector_data: &mut dyn IndexOutput,
+        field_writer: &DefaultFlatFieldVectorsWriter<Vec<f32>>,
+        field_info: &FieldInfo,
+    ) -> Result<()> {
+        let _ = field_info;
+        for vector in field_writer.vectors() {
+            vector_data.write_floats(vector, 0, vector.len())?;
+        }
+        Ok(())
+    }
+
+    /// Writes every buffered byte vector to the vector-data file, in the order
+    /// they were added.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsWriter#writeByteVectors`.
+    fn write_byte_vectors(
+        vector_data: &mut dyn IndexOutput,
+        field_writer: &DefaultFlatFieldVectorsWriter<Vec<u8>>,
+    ) -> Result<()> {
+        for vector in field_writer.vectors() {
+            vector_data.write_bytes(vector, 0, vector.len())?;
+        }
+        Ok(())
+    }
+
+    /// Writes `byte_vector_values` to `output` and returns the documents that
+    /// carried a vector.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsWriter#writeByteVectorData`.
+    /// Java calls it from `mergeOneFlatVectorField` with the merged view
+    /// `KnnVectorsWriter.MergedVectorValues.mergeByteVectorValues` builds
+    /// (`Lucene99FlatVectorsWriter.java:495-499`); that view is not ported, so
+    /// [`FlatVectorsWriter::merge_one_flat_vector_field`] still walks the
+    /// segments itself and nothing calls this yet.
+    #[allow(dead_code)]
+    fn write_byte_vector_data(
+        output: &mut dyn IndexOutput,
+        byte_vector_values: &dyn ByteVectorValues,
+    ) -> Result<DocsWithFieldSet> {
+        let mut docs_with_field = DocsWithFieldSet::new();
+        let mut iter = byte_vector_values.iterator()?;
+        loop {
+            let doc_v = iter.next_doc()?;
+            if doc_v == NO_MORE_DOCS {
+                break;
+            }
+            let binary_value = byte_vector_values.vector_value(iter.index())?;
+            output.write_bytes(&binary_value, 0, binary_value.len())?;
+            docs_with_field.add(doc_v)?;
+        }
+        Ok(docs_with_field)
+    }
+
+    /// Writes `float_vector_values` to `output` and returns the documents that
+    /// carried a vector.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsWriter#writeVectorData`.
+    /// Java calls it from `mergeOneFlatVectorField` with the merged view
+    /// `KnnVectorsWriter.MergedVectorValues.mergeFloatVectorValues` builds
+    /// (`Lucene99FlatVectorsWriter.java:500-505`); that view is not ported, so
+    /// [`FlatVectorsWriter::merge_one_flat_vector_field`] still walks the
+    /// segments itself and nothing calls this yet.
+    #[allow(dead_code)]
+    fn write_vector_data(
+        output: &mut dyn IndexOutput,
+        float_vector_values: &dyn FloatVectorValues,
+    ) -> Result<DocsWithFieldSet> {
+        let mut docs_with_field = DocsWithFieldSet::new();
+        let mut iter = float_vector_values.iterator()?;
+        loop {
+            let doc_v = iter.next_doc()?;
+            if doc_v == NO_MORE_DOCS {
+                break;
+            }
+            let value = float_vector_values.vector_value(iter.index())?;
+            output.write_floats(&value, 0, value.len())?;
+            docs_with_field.add(doc_v)?;
+        }
+        Ok(docs_with_field)
+    }
+
     /// Writes the float vectors in the order `ord_map` gives.
     ///
     /// Equivalent to `Lucene99FlatVectorsWriter.writeSortedFloat32Vectors(FlatFieldVectorsWriter, FieldInfo, int[])`.
@@ -436,9 +531,7 @@ impl Lucene99FlatVectorsWriter {
             LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
         })?;
         let vector_data_offset = align_output(vector_data.as_mut(), VectorEncoding::BYTE)?;
-        for vector in field_writer.vectors() {
-            vector_data.write_bytes(vector, 0, vector.len())?;
-        }
+        Self::write_byte_vectors(vector_data.as_mut(), field_writer)?;
         let vector_data_length = vector_data.file_pointer() - vector_data_offset;
         let docs_with_field = field_writer.docs_with_field_set().clone();
 
@@ -829,6 +922,37 @@ impl Lucene99FlatVectorsReader {
         state: &SegmentReadState<'_>,
         vectors_scorer: DefaultFlatVectorScorer,
     ) -> Result<Self> {
+        let (version_meta, fields) = Self::read_metadata(state)?;
+        let data_context = state.context.with_hints(state.context.hints());
+        let vector_data = Self::open_data_input(
+            state,
+            version_meta,
+            VECTOR_DATA_EXTENSION,
+            VECTOR_DATA_CODEC_NAME,
+            data_context.as_ref(),
+        )?;
+
+        Ok(Self {
+            fields,
+            vector_scorer: vectors_scorer,
+            vector_data,
+            field_infos: state.field_infos.clone(),
+            data_context,
+        })
+    }
+
+    /// Reads the `.vemf` metadata file and returns its format version together
+    /// with the field entries it declares.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's method returns only the
+    /// version and stores the entries straight into the reader's `fields` map
+    /// (`Lucene99FlatVectorsReader.java:110-134`), because it runs from a
+    /// constructor that already has `this`. A Rust constructor has no `self`
+    /// before it returns, so the entries come back with the version.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsReader#readMetadata`.
+    fn read_metadata(state: &SegmentReadState<'_>) -> Result<(i32, HashMap<i32, FieldEntry>)> {
         let meta_file_name = segment_file_name(
             &state.segment_info.name,
             &state.segment_suffix,
@@ -845,18 +969,30 @@ impl Lucene99FlatVectorsReader {
         )?;
         let fields = read_fields(meta_checksum.as_mut(), state.field_infos)?;
         check_footer(meta_checksum.as_mut())?;
+        Ok((version_meta, fields))
+    }
 
-        let vector_data_file_name = segment_file_name(
+    /// Opens one of the format's data files, checks its header against
+    /// `version_meta` and primes its checksum.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsReader#openDataInput`.
+    fn open_data_input(
+        state: &SegmentReadState<'_>,
+        version_meta: i32,
+        file_extension: &str,
+        codec_name: &str,
+        context: &dyn crate::store::IOContext,
+    ) -> Result<Box<dyn IndexInput>> {
+        let file_name = segment_file_name(
             &state.segment_info.name,
             &state.segment_suffix,
-            VECTOR_DATA_EXTENSION,
+            file_extension,
         );
-        let mut vector_data = state
-            .directory
-            .open_input(&vector_data_file_name, state.context)?;
+        let mut input = state.directory.open_input(&file_name, context)?;
         let version_vector_data = check_index_header(
-            vector_data.as_mut(),
-            VECTOR_DATA_CODEC_NAME,
+            input.as_mut(),
+            codec_name,
             VERSION_START,
             VERSION_CURRENT,
             &state.segment_info.id(),
@@ -864,18 +1000,11 @@ impl Lucene99FlatVectorsReader {
         )?;
         if version_meta != version_vector_data {
             return Err(LuceneError::CorruptIndex(format!(
-                "format versions mismatch: meta={version_meta}, vectorData={version_vector_data}"
+                "format versions mismatch: meta={version_meta}, {codec_name}={version_vector_data}"
             )));
         }
-        retrieve_checksum(vector_data.as_mut())?;
-
-        Ok(Self {
-            fields,
-            vector_scorer: vectors_scorer,
-            vector_data,
-            field_infos: state.field_infos.clone(),
-            data_context: state.context.with_hints(state.context.hints()),
-        })
+        retrieve_checksum(input.as_mut())?;
+        Ok(input)
     }
 
     fn clone_reader(&self) -> Result<Self> {
@@ -1239,6 +1368,29 @@ impl KnnVectorValues for OffHeapFloatVectorValues {
     }
 }
 
+impl OffHeapFloatVectorValues {
+    /// Returns the input slice the vectors are read from.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java returns the `IndexInput` field
+    /// itself (`OffHeapFloatVectorValues.java:426-429`), which its callers then seek in.
+    /// Reading a vector mutates that input, and
+    /// [`FloatVectorValues::vector_value`] takes `&self`, so this port keeps
+    /// the slice behind a `Mutex`; the accessor therefore hands back the lock
+    /// guard, which derefs to the very same `IndexInput` Java returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the mutex was poisoned.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene95.OffHeapFloatVectorValues#getSlice`.
+    fn get_slice(&self) -> Result<MutexGuard<'_, Box<dyn IndexInput>>> {
+        self.slice.lock().map_err(|_| {
+            LuceneError::IllegalState("off-heap vector slice mutex was poisoned".to_string())
+        })
+    }
+}
+
 impl FloatVectorValues for OffHeapFloatVectorValues {
     fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
         Ok(Box::new(self.clone_values()?))
@@ -1246,9 +1398,7 @@ impl FloatVectorValues for OffHeapFloatVectorValues {
 
     fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
         let mut value = vec![0.0f32; self.dimension as usize];
-        let mut slice = self.slice.lock().map_err(|_| {
-            LuceneError::IllegalState("off-heap vector slice mutex was poisoned".to_string())
-        })?;
+        let mut slice = self.get_slice()?;
         slice.seek((ord as i64) * self.byte_size as i64)?;
         slice.read_floats(&mut value, 0, self.dimension as usize)?;
         Ok(value)
@@ -1394,6 +1544,48 @@ impl KnnVectorValues for OffHeapByteVectorValues {
     }
 }
 
+impl OffHeapByteVectorValues {
+    /// Returns the input slice the vectors are read from.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java returns the `IndexInput` field
+    /// itself (`OffHeapByteVectorValues.java:101-104`), which its callers then seek in.
+    /// Reading a vector mutates that input, and
+    /// [`ByteVectorValues::vector_value`] takes `&self`, so this port keeps
+    /// the slice behind a `Mutex`; the accessor therefore hands back the lock
+    /// guard, which derefs to the very same `IndexInput` Java returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the mutex was poisoned.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene95.OffHeapByteVectorValues#getSlice`.
+    fn get_slice(&self) -> Result<MutexGuard<'_, Box<dyn IndexInput>>> {
+        self.slice.lock().map_err(|_| {
+            LuceneError::IllegalState("off-heap vector slice mutex was poisoned".to_string())
+        })
+    }
+
+    /// Reads the vector at `target_ord` into `value`.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene95.OffHeapByteVectorValues#readValue`.
+    /// Java reads into the instance's own `byteBuffer` and its `vectorValue`
+    /// hands that buffer back, re-reading only when the ordinal changed; this
+    /// port's `vector_value` returns an owned vector, so the destination is a
+    /// parameter and there is no `lastOrd` to compare against.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever seeking or reading the slice raises, and
+    /// [`LuceneError::IllegalState`] when the slice mutex was poisoned.
+    fn read_value(&self, target_ord: i32, value: &mut [u8]) -> Result<()> {
+        let mut slice = self.get_slice()?;
+        slice.seek((target_ord as i64) * self.byte_size as i64)?;
+        slice.read_bytes(value, 0, self.byte_size as usize)
+    }
+}
+
 impl ByteVectorValues for OffHeapByteVectorValues {
     fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
         Ok(Box::new(self.clone_values()?))
@@ -1401,11 +1593,7 @@ impl ByteVectorValues for OffHeapByteVectorValues {
 
     fn vector_value(&self, ord: i32) -> Result<Vec<u8>> {
         let mut value = vec![0u8; self.dimension as usize];
-        let mut slice = self.slice.lock().map_err(|_| {
-            LuceneError::IllegalState("off-heap vector slice mutex was poisoned".to_string())
-        })?;
-        slice.seek((ord as i64) * self.byte_size as i64)?;
-        slice.read_bytes(&mut value, 0, self.dimension as usize)?;
+        self.read_value(ord, &mut value)?;
         Ok(value)
     }
 }

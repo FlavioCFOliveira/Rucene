@@ -1214,6 +1214,23 @@ impl QuantizedVectorsReader for Lucene104ScalarQuantizedVectorsReader {
     fn get_quantization_state(&self, _field_name: &str) -> Result<Option<ScalarQuantizer>> {
         Ok(None)
     }
+
+    /// Returns the merge-time scorer supplier for `field_info`.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorsReader#getRandomVectorScorerSupplierForMerge`,
+    /// forwarding to the inherent method of the same name.
+    fn get_random_vector_scorer_supplier_for_merge(
+        &self,
+        field_info: &FieldInfo,
+        segment_write_state: &SegmentWriteState<'_>,
+    ) -> Result<Option<Box<dyn CloseableRandomVectorScorerSupplier>>> {
+        Lucene104ScalarQuantizedVectorsReader::get_random_vector_scorer_supplier_for_merge(
+            self,
+            field_info,
+            segment_write_state,
+        )
+    }
 }
 
 /// The scalar-quantized vectors format.

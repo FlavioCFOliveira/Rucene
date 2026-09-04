@@ -17,14 +17,17 @@ use crate::codecs::knn_vectors::{
     BufferingKnnVectorsWriter, ByteVectorValues, FloatVectorValues, KnnFieldVectorsWriter,
     KnnVectorsFormat, KnnVectorsReader,
 };
+use crate::codecs::lucene99::scalar_quantized_scorer::Lucene99ScalarQuantizedVectorScorer;
 use crate::codecs::postings::MergeState;
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, Result};
-use crate::index::VectorSimilarityFunction;
+use crate::index::vector_values::{from_bytes, from_floats, KnnVectorValues};
+use crate::index::{VectorEncoding, VectorSimilarityFunction};
 use crate::util::hnsw::{
     RandomVectorScorer, RandomVectorScorerSupplier, UpdateableRandomVectorScorer,
 };
+use crate::util::quantization::QuantizedVectorsReader;
 use crate::util::{FixedBitSet, RamUsageEstimator};
 
 // -----------------------------------------------------------------------------
@@ -240,6 +243,72 @@ pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
     /// Returns the buffered vectors to be written.
     fn vectors(&self) -> &[T];
 
+    /// Returns a [`KnnVectorValues`] view over the vectors to be written.
+    ///
+    /// Wraps [`vectors`](Self::vectors) through
+    /// [`from_floats`](crate::index::vector_values::from_floats) /
+    /// [`from_bytes`](crate::index::vector_values::from_bytes), the way Java
+    /// wraps `getVectors()` through `FloatVectorValues.fromFloats` /
+    /// `ByteVectorValues.fromBytes`. An implementation backed by other storage
+    /// may override it to return a richer view.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the buffered element type
+    /// does not match `encoding`, which is the state Java's unchecked cast
+    /// would turn into a `ClassCastException`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java casts the whole list —
+    /// `(List<float[]>) getVectors()` — and hands the very same list to the
+    /// view (`FlatFieldVectorsWriter.java:52-56`). Rust cannot cast `&[T]` to
+    /// `&[Vec<f32>]`, so the element type is recovered one vector at a time
+    /// with [`Any`](std::any::Any) — the checked form of Java's unchecked cast
+    /// — and the vectors are cloned into the list the view owns. The values
+    /// are identical; only the sharing is not.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.hnsw.FlatFieldVectorsWriter#asKnnVectorValues`.
+    fn as_knn_vector_values(
+        &self,
+        encoding: VectorEncoding,
+        dim: i32,
+    ) -> Result<Box<dyn KnnVectorValues>>
+    where
+        T: std::any::Any + Clone,
+    {
+        let vectors = self.vectors();
+        match encoding {
+            VectorEncoding::FLOAT32 => {
+                let mut floats = Vec::with_capacity(vectors.len());
+                for vector in vectors {
+                    let vector = (vector as &dyn std::any::Any)
+                        .downcast_ref::<Vec<f32>>()
+                        .ok_or_else(|| {
+                            LuceneError::IllegalArgument(
+                                "buffered vectors are not float32 vectors".to_string(),
+                            )
+                        })?;
+                    floats.push(vector.clone());
+                }
+                Ok(Box::new(from_floats(floats, dim)))
+            }
+            VectorEncoding::BYTE => {
+                let mut bytes = Vec::with_capacity(vectors.len());
+                for vector in vectors {
+                    let vector = (vector as &dyn std::any::Any)
+                        .downcast_ref::<Vec<u8>>()
+                        .ok_or_else(|| {
+                            LuceneError::IllegalArgument(
+                                "buffered vectors are not byte vectors".to_string(),
+                            )
+                        })?;
+                    bytes.push(vector.clone());
+                }
+                Ok(Box::new(from_bytes(bytes, dim)))
+            }
+        }
+    }
+
     /// Returns the set of documents that have a value for this field.
     fn docs_with_field_set(&self) -> &DocsWithFieldSet;
 
@@ -445,6 +514,30 @@ pub trait FlatVectorsScorer: Send + Sync + fmt::Debug {
         vector_values: Box<dyn ByteVectorValues>,
         target: &[u8],
     ) -> Result<Box<dyn RandomVectorScorer>>;
+}
+
+/// Checks that a query vector and a field's vectors have the same dimension.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when the two lengths differ, with
+/// the message Java's `IllegalArgumentException` carries.
+///
+/// **Divergence from Lucene 10.5.0.** Java declares this as a `static` method
+/// on the `FlatVectorsScorer` interface (`FlatVectorsScorer.java:69-74`). A
+/// Rust trait method that takes no receiver would make [`FlatVectorsScorer`]
+/// unusable as a trait object, which this port needs it to be, so the helper
+/// sits beside the trait as a free function instead. Its body is Java's.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.hnsw.FlatVectorsScorer#checkDimensions`.
+pub fn check_dimensions(query_len: i32, field_len: i32) -> Result<()> {
+    if query_len != field_len {
+        return Err(LuceneError::IllegalArgument(format!(
+            "vector query dimension: {query_len} differs from field dimension: {field_len}"
+        )));
+    }
+    Ok(())
 }
 
 // -----------------------------------------------------------------------------
@@ -784,6 +877,21 @@ pub trait FlatVectorsReader: KnnVectorsReader {
 
     /// Returns an instance optimized for merging.
     fn get_merge_instance_flat(&self) -> Result<Box<dyn FlatVectorsReader>>;
+
+    /// Returns this reader as a [`QuantizedVectorsReader`] when it stores
+    /// quantized vectors, and `None` when it does not.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java has no such method: the readers
+    /// that wrap a flat reader ask `flatVectorsReader instanceof
+    /// QuantizedVectorsReader` (`Lucene99HnswVectorsReader.java:427-448`,
+    /// `Lucene99HnswVectorsWriter.java:435`). Rust cannot narrow a
+    /// `dyn FlatVectorsReader` to a `dyn QuantizedVectorsReader`, so the
+    /// question is asked of the reader itself. The default answers `None`,
+    /// which is what Java's `instanceof` answers for every flat reader that
+    /// does not implement the interface.
+    fn as_quantized_vectors_reader(&self) -> Option<&dyn QuantizedVectorsReader> {
+        None
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -821,6 +929,23 @@ impl FlatVectorScorerUtil {
     /// Returns a scorer suitable for the Lucene99 flat-vectors format.
     pub fn get_lucene99_flat_vectors_scorer() -> DefaultFlatVectorScorer {
         DefaultFlatVectorScorer::INSTANCE
+    }
+
+    /// Returns a scorer suitable for the Lucene99 scalar-quantized vectors
+    /// format.
+    ///
+    /// Like `DefaultVectorizationProvider.getLucene99ScalarQuantizedVectorsScorer()`
+    /// (`DefaultVectorizationProvider.java:44-47`), this wraps the portable
+    /// [`DefaultFlatVectorScorer`] in a
+    /// [`Lucene99ScalarQuantizedVectorScorer`], which scores quantized fields
+    /// itself and forwards the rest to that delegate.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.hnsw.FlatVectorScorerUtil#getLucene99ScalarQuantizedVectorsScorer`.
+    pub fn get_lucene99_scalar_quantized_vectors_scorer() -> Lucene99ScalarQuantizedVectorScorer {
+        Lucene99ScalarQuantizedVectorScorer::new(
+            Arc::new(DefaultFlatVectorScorer::INSTANCE) as Arc<dyn FlatVectorsScorer>
+        )
     }
 }
 
