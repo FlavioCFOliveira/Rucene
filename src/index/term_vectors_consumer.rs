@@ -286,6 +286,27 @@ impl TermVectorsConsumerPerField {
         self.wrote_vectors
     }
 
+    /// Re-reads the per-term postings the shared term table has just handed
+    /// this field.
+    ///
+    /// Equivalent to `org.apache.lucene.index.TermVectorsConsumerPerField#newPostingsArray`,
+    /// which `TermsHashPerField` calls every time it replaces the postings
+    /// array, so that the field's own typed view of it stays current.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's whole body is
+    /// `termVectorsPostingsArray = (TermVectorsPostingsArray) postingsArray;` —
+    /// a downcast cached in a field, because `TermsHashPerField` declares the
+    /// array as the abstract `ParallelPostingsArray` and a per-field writer must
+    /// see its own subclass. This port has no such cast to refresh: the columns
+    /// of `TermVectorsPostingsArray` are fields of the single
+    /// [`FreqProxPosting`](crate::index::freq_prox_terms_writer::FreqProxPosting)
+    /// struct that [`TermsHashPerField`] stores in a `Vec`, and this field
+    /// reaches them through its base table by term id. There is therefore no
+    /// typed view to re-take, and the method has nothing left to do; see the
+    /// module notes of `freq_prox_terms_writer` for why the parallel arrays
+    /// became an array of structs.
+    pub fn new_postings_array(&mut self) {}
+
     /// Hands every accounted byte back to the shared counter.
     pub fn release_accounting(&mut self) {
         self.base.release_accounting();

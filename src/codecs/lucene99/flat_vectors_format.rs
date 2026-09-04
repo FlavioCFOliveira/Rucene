@@ -1107,6 +1107,14 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
         }
         map
     }
+
+    /// This reader is a [`FlatVectorsReader`], so it answers with itself.
+    ///
+    /// This is the `true` arm of the `instanceof FlatVectorsReader` test Java
+    /// writes; see [`KnnVectorsReader::as_flat_vectors_reader`].
+    fn as_flat_vectors_reader(&self) -> Option<&dyn FlatVectorsReader> {
+        Some(self)
+    }
 }
 
 impl FlatVectorsReader for Lucene99FlatVectorsReader {

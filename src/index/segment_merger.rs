@@ -108,6 +108,11 @@ pub struct SegmentMerger {
     write_state: OwnedSegmentWriteState,
     /// The state every consumer merges from.
     pub merge_state: MergeState,
+    /// The thread that built [`Self::merge_state`], which is the only thread
+    /// allowed to reach it through [`Self::merge_state`](Self::merge_state).
+    ///
+    /// Equivalent to `SegmentMerger.mergeStateCreationThread`.
+    merge_state_creation_thread: std::thread::ThreadId,
 }
 
 impl SegmentMerger {
@@ -148,7 +153,25 @@ impl SegmentMerger {
             codec,
             write_state,
             merge_state,
+            merge_state_creation_thread: std::thread::current().id(),
         })
+    }
+
+    /// Returns the state every consumer merges from, checking that the caller
+    /// is the thread that created it.
+    ///
+    /// Equivalent to the private `SegmentMerger.mergeState()`, which guards the
+    /// field with `assert Thread.currentThread() == mergeStateCreationThread`:
+    /// the merge state is not safe to reach from an intra-merge worker, which
+    /// must be handed the pieces it needs instead. The check is a
+    /// `debug_assert!` here, as Java's is an `assert`.
+    fn merge_state(&self) -> &MergeState {
+        debug_assert_eq!(
+            std::thread::current().id(),
+            self.merge_state_creation_thread,
+            "the merge state may only be read from the thread that created it"
+        );
+        &self.merge_state
     }
 
     /// Returns whether the merge is worth running: Java skips a merge whose
@@ -233,7 +256,7 @@ impl SegmentMerger {
             &self.write_state.segment_info,
             &*self.write_state.context,
         )?;
-        let merged = writer.merge(&self.merge_state)?;
+        let merged = writer.merge(self.merge_state())?;
         writer.close()?;
         Ok(merged)
     }
@@ -247,7 +270,7 @@ impl SegmentMerger {
             &self.write_state.segment_info,
             &*self.write_state.context,
         )?;
-        let merged = writer.merge(&self.merge_state)?;
+        let merged = writer.merge(self.merge_state())?;
         debug_assert_eq!(merged, self.write_state.segment_info.max_doc()?);
         writer.close()?;
         Ok(merged)
@@ -259,7 +282,7 @@ impl SegmentMerger {
     fn merge_norms(&mut self) -> Result<()> {
         let state = self.write_state.borrow();
         let mut consumer = self.codec.norms_format().norms_consumer(&state)?;
-        consumer.merge(&self.merge_state)?;
+        consumer.merge(self.merge_state())?;
         consumer.close()
     }
 
@@ -269,7 +292,7 @@ impl SegmentMerger {
     fn merge_doc_values(&mut self) -> Result<()> {
         let state = self.write_state.borrow();
         let mut consumer = self.codec.doc_values_format().fields_consumer(&state)?;
-        consumer.merge(&self.merge_state)?;
+        consumer.merge(self.merge_state())?;
         consumer.close()
     }
 
@@ -279,7 +302,7 @@ impl SegmentMerger {
     fn merge_points(&mut self) -> Result<()> {
         let state = self.write_state.borrow();
         let mut writer = self.codec.points_format().fields_writer(&state)?;
-        writer.merge(&self.merge_state)?;
+        writer.merge(self.merge_state())?;
         writer.close()
     }
 
@@ -291,7 +314,7 @@ impl SegmentMerger {
             .codec
             .knn_vectors_format()
             .fields_writer(&self.write_state)?;
-        writer.merge(&self.merge_state)?;
+        writer.merge(self.merge_state())?;
         writer.close()
     }
 
@@ -356,7 +379,7 @@ impl SegmentMerger {
         };
 
         let mut consumer = self.codec.postings_format().fields_consumer(&state)?;
-        consumer.merge(&self.merge_state, norms.as_ref())?;
+        consumer.merge(self.merge_state(), norms.as_ref())?;
         consumer.close()?;
         Ok(())
     }

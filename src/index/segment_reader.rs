@@ -419,12 +419,48 @@ impl SegmentDocValues {
             return Ok(Arc::clone(holder) as Arc<dyn DocValuesProducer>);
         }
 
+        let holder = Self::new_doc_values_producer(si, dir, gen, infos)?;
+        let cloned = Arc::clone(&holder) as Arc<dyn DocValuesProducer>;
+        map.insert(gen, holder);
+        Ok(cloned)
+    }
+
+    /// Opens the doc-values producer of generation `gen`, wrapped in the
+    /// reference-counting holder this manager caches.
+    ///
+    /// Generation `-1` is the segment's own doc values, read from `dir` with no
+    /// segment suffix; any other generation was written by a doc-values update,
+    /// which always lands outside the compound file, so it is read from the
+    /// segment's own directory under the base-36 generation suffix.
+    ///
+    /// Equivalent to the private
+    /// `SegmentDocValues.newDocValuesProducer(SegmentCommitInfo, Directory, long, FieldInfos)`.
+    /// Java's holder is an anonymous `RefCount<DocValuesProducer>` whose
+    /// `release()` closes the producer and drops the generation from the map;
+    /// [`DocValuesProducerHolder`] does both, driven from
+    /// [`SegmentDocValues::dec_ref`], because a Rust closure cannot reach back
+    /// into the map the caller is holding locked.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the segment carries no codec,
+    /// and propagates whatever the doc-values format raises while opening the
+    /// generation's files.
+    fn new_doc_values_producer(
+        si: &SegmentCommitInfo,
+        dir: &dyn Directory,
+        gen: i64,
+        infos: &FieldInfos,
+    ) -> Result<Arc<DocValuesProducerHolder>> {
         let (dv_dir, segment_suffix): (&dyn Directory, String) = if gen == -1 {
             (dir, String::new())
         } else {
+            // Gen'd files are written outside the compound file, so use the
+            // segment info's own directory.
             (&*si.info.directory, radix36(gen))
         };
 
+        // The read state lists only the fields relevant to this generation.
         let state = crate::codecs::state::SegmentReadState::with_suffix(
             dv_dir,
             &si.info,
@@ -438,10 +474,7 @@ impl SegmentDocValues {
             .codec()
             .ok_or_else(|| LuceneError::IllegalState("segment has no codec".to_string()))?;
         let producer = codec.doc_values_format().fields_producer(&state)?;
-        let holder = Arc::new(DocValuesProducerHolder::new(producer)?);
-        let cloned = Arc::clone(&holder) as Arc<dyn DocValuesProducer>;
-        map.insert(gen, holder);
-        Ok(cloned)
+        Ok(Arc::new(DocValuesProducerHolder::new(producer)?))
     }
 
     /// Decrements the reference counts for the given doc-values producer
@@ -1115,6 +1148,14 @@ impl SegmentReader {
                 let hard_live_docs = live_docs.clone();
 
                 let num_docs = max_doc - original_si_for_closure.get_del_count();
+
+                // Java: `assert assertLiveDocs(isNRT, hardLiveDocs, liveDocs)`
+                // (`SegmentReader.java:113`), with `isNRT` false here.
+                debug_assert!(Self::assert_live_docs(
+                    false,
+                    hard_live_docs.as_ref(),
+                    live_docs.as_ref()
+                ));
 
                 let cfs_dir_guard = core_readers.cfs_reader.read().map_err(|_| {
                     LuceneError::IllegalState("compound file reader lock poisoned".to_string())
@@ -1801,6 +1842,52 @@ impl LeafReader for SegmentReader {
 }
 
 impl SegmentReader {
+    /// Checks the relationship the two live-docs views must have, and always
+    /// returns `true`.
+    ///
+    /// A near-real-time reader may hold in-memory live docs on top of the
+    /// on-disk ones, so `live_docs` must be present whenever `hard_live_docs`
+    /// is; a reader that is not near-real-time has nothing on top, so the two
+    /// are the very same bits.
+    ///
+    /// Equivalent to the private static
+    /// `SegmentReader.assertLiveDocs(boolean, Bits, Bits)`, which Java only ever
+    /// calls from inside an `assert`; this port calls it from inside a
+    /// `debug_assert!` for the same reason.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's non-NRT branch asserts
+    /// `hardLiveDocs == liveDocs`, a *reference* comparison — its constructors
+    /// are handed the same `Bits` object twice. This port's [`SharedBits`]
+    /// names that sharing with an `Arc`, so the identity test is
+    /// [`Arc::ptr_eq`] over the two handles. Only
+    /// [`SegmentReader::new`] can satisfy it: the reopen constructor
+    /// [`SegmentReader::new_shared`] receives its two views as separate owned
+    /// `Box<dyn Bits>`, which it must wrap in two distinct handles, so the
+    /// identity Java's assert tests is not expressible there and the check is
+    /// not run from it.
+    fn assert_live_docs(
+        is_nrt: bool,
+        hard_live_docs: Option<&SharedBits>,
+        live_docs: Option<&SharedBits>,
+    ) -> bool {
+        if is_nrt {
+            debug_assert!(
+                hard_live_docs.is_none() || live_docs.is_some(),
+                "liveDocs must be non null if hardLiveDocs are non null"
+            );
+        } else {
+            debug_assert!(
+                match (hard_live_docs, live_docs) {
+                    (None, None) => true,
+                    (Some(hard), Some(live)) => Arc::ptr_eq(&hard.0, &live.0),
+                    _ => false,
+                },
+                "non-nrt case must have identical liveDocs"
+            );
+        }
+        true
+    }
+
     /// Returns the field info for `field` only if it has the requested doc-values
     /// type, mirroring `CodecReader.getDVField`.
     fn get_dv_field(&self, field: &str, doc_values_type: DocValuesType) -> Option<&FieldInfo> {

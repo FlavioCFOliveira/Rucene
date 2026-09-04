@@ -121,6 +121,7 @@ impl ReaderSlice {
 /// functions rather than a class, following Rust idiom.
 pub mod reader_util {
     use super::{LeafReaderContext, ReaderSlice};
+    use crate::search::ScoreDoc;
     use std::sync::Arc;
 
     /// Returns the index of the sub-reader that owns the global document ID
@@ -246,6 +247,85 @@ pub mod reader_util {
         hi.max(0) as usize
     }
 
+    /// Java's `Arrays.binarySearch(int[] a, int fromIndex, int toIndex, int key)`,
+    /// transcribed so that [`partition_by_leaf`] splits a run of equal doc IDs
+    /// exactly where Lucene splits it.
+    ///
+    /// Returns `Ok(index)` of *a* matching element, or `Err(insertion_point)`
+    /// when there is none. Rust's own `slice::binary_search` may pick a
+    /// different member of a run of equal elements, which would move a
+    /// duplicated doc ID from one leaf to the next.
+    fn binary_search_range(
+        a: &[i32],
+        from_index: usize,
+        to_index: usize,
+        key: i32,
+    ) -> Result<usize, usize> {
+        let mut low = from_index as isize;
+        let mut high = to_index as isize - 1;
+        while low <= high {
+            let mid = ((low + high) >> 1) as usize;
+            let mid_val = a[mid];
+            if mid_val < key {
+                low = mid as isize + 1;
+            } else if mid_val > key {
+                high = mid as isize - 1;
+            } else {
+                return Ok(mid);
+            }
+        }
+        Err(low as usize)
+    }
+
+    /// Partitions the global document IDs of `hits` by leaf: entry `i` of the
+    /// result holds, in ascending order, the global doc IDs of `hits` that
+    /// belong to `leaves[i]`, and is empty when none do.
+    ///
+    /// `hits` is typically a `TopDocs`' score-doc array. The doc IDs are
+    /// extracted, sorted, and then split at each leaf's end
+    /// (`doc_base + max_doc`).
+    ///
+    /// Equivalent to `ReaderUtil.partitionByLeaf(ScoreDoc[], List<LeafReaderContext>)`.
+    pub fn partition_by_leaf(
+        hits: &[ScoreDoc],
+        leaves: &[Arc<LeafReaderContext>],
+    ) -> Vec<Vec<i32>> {
+        let num_leaves = leaves.len();
+        let mut result: Vec<Vec<i32>> = vec![Vec::new(); num_leaves];
+        if hits.is_empty() {
+            return result;
+        }
+        let mut sorted_doc_ids: Vec<i32> = hits.iter().map(|hit| hit.doc).collect();
+        sorted_doc_ids.sort_unstable();
+
+        let mut from = 0usize;
+        let mut leaf_idx = 0usize;
+        while leaf_idx < num_leaves && from < sorted_doc_ids.len() {
+            let leaf = &leaves[leaf_idx];
+            let leaf_end = leaf.doc_base() + leaf.leaf_reader().max_doc();
+            if sorted_doc_ids[from] >= leaf_end {
+                // Java assigns EMPTY_INT_ARRAY here; the entry is already empty.
+                leaf_idx += 1;
+                continue;
+            }
+            let to =
+                match binary_search_range(&sorted_doc_ids, from, sorted_doc_ids.len(), leaf_end) {
+                    Ok(index) => index,
+                    Err(insertion) => insertion,
+                };
+            debug_assert!(
+                to > from,
+                "a leaf that owns the first doc must own at least one"
+            );
+            result[leaf_idx] = sorted_doc_ids[from..to].to_vec();
+            from = to;
+            leaf_idx += 1;
+        }
+        // Java fills the tail with EMPTY_INT_ARRAY; those entries are already
+        // empty.
+        result
+    }
+
     /// Walks up the reader-context tree and returns the top-level (root)
     /// context.
     ///
@@ -267,7 +347,9 @@ pub mod reader_util {
 // Re-export the helper functions at the module level for convenience, while
 // also keeping them grouped under `reader_util` to mirror Lucene's
 // `ReaderUtil.*` static-method call sites.
-pub use reader_util::{get_top_level_context, index_of, sub_index, sub_index_from_leaves};
+pub use reader_util::{
+    get_top_level_context, index_of, partition_by_leaf, sub_index, sub_index_from_leaves,
+};
 
 // ---------------------------------------------------------------------------
 // MultiReader

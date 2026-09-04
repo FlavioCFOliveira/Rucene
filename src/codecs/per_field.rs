@@ -1053,12 +1053,18 @@ impl KnnVectorsWriter for KnnFieldsWriter {
 struct KnnFieldsReader {
     formats: HashMap<String, Box<dyn KnnVectorsReader>>,
     fields: HashMap<i32, String>,
+    /// Field *name* to segment suffix, so that a field can be resolved without
+    /// its `FieldInfo`. Java's `FieldsReader` keeps the whole `FieldInfos` and
+    /// looks the number up through it (`PerFieldKnnVectorsFormat.java:269-274`);
+    /// this map holds exactly the pairs that lookup would produce.
+    field_names: HashMap<String, String>,
 }
 
 impl KnnFieldsReader {
     fn new(read_state: &SegmentReadState) -> Result<Self> {
         let mut formats: HashMap<String, Box<dyn KnnVectorsReader>> = HashMap::new();
         let mut fields: HashMap<i32, String> = HashMap::new();
+        let mut field_names: HashMap<String, String> = HashMap::new();
 
         let result = (|| -> Result<()> {
             for fi in read_state.field_infos.iter() {
@@ -1098,6 +1104,7 @@ impl KnnFieldsReader {
                         let state = read_state.with_new_suffix(segment_suffix.clone());
                         formats.insert(segment_suffix.clone(), format.fields_reader(&state)?);
                     }
+                    field_names.insert(fi.name.clone(), segment_suffix.clone());
                     fields.insert(fi.number, segment_suffix);
                 }
             }
@@ -1111,7 +1118,11 @@ impl KnnFieldsReader {
             return Err(e);
         }
 
-        Ok(Self { formats, fields })
+        Ok(Self {
+            formats,
+            fields,
+            field_names,
+        })
     }
 
     fn reader_for(&self, field: &FieldInfo) -> Result<&(dyn KnnVectorsReader + '_)> {
@@ -1126,10 +1137,27 @@ impl KnnFieldsReader {
         })
     }
 
-    fn reader_for_name(&self, field: &str) -> Result<(&(dyn KnnVectorsReader + '_), FieldInfo)> {
-        let info = FieldInfo::new(field, 0);
-        let reader = self.reader_for(&info)?;
-        Ok((reader, info))
+    /// Resolves the delegate reader that holds `field`, by name.
+    ///
+    /// Equivalent to the field lookup
+    /// `PerFieldKnnVectorsFormat.FieldsReader` performs before delegating:
+    /// Java resolves the name through `fieldInfos` and then indexes its
+    /// number-keyed map, which is the same association this reader records
+    /// directly by name when it opens the segment.
+    fn suffix_for_name(&self, field: &str) -> Result<&str> {
+        self.field_names
+            .get(field)
+            .map(String::as_str)
+            .ok_or_else(|| {
+                LuceneError::IllegalArgument(format!("field \"{field}\" has no KNN-vectors reader"))
+            })
+    }
+
+    fn reader_for_name(&self, field: &str) -> Result<&(dyn KnnVectorsReader + '_)> {
+        let suffix = self.suffix_for_name(field)?;
+        self.formats.get(suffix).map(|b| b.as_ref()).ok_or_else(|| {
+            LuceneError::IllegalState(format!("missing KNN-vectors reader for suffix {suffix}"))
+        })
     }
 }
 
@@ -1142,6 +1170,18 @@ impl std::fmt::Debug for KnnFieldsReader {
 }
 
 impl KnnVectorsReader for KnnFieldsReader {
+    /// Returns the underlying vectors reader `field` is dispatched to, or
+    /// `None` when this reader does not know the field.
+    ///
+    /// Equivalent to `PerFieldKnnVectorsFormat.FieldsReader#getFieldReader(String)`,
+    /// which looks the field's `FieldInfo` up and answers `null` when there is
+    /// none. Java resolves the delegate through the field *number*; this reader
+    /// keeps the same pairs keyed by name, so no `FieldInfos` lookup is needed.
+    fn get_field_reader(&self, field: &str) -> Option<&dyn KnnVectorsReader> {
+        let suffix = self.field_names.get(field)?;
+        self.formats.get(suffix).map(|reader| reader.as_ref())
+    }
+
     fn check_integrity(&self) -> Result<()> {
         for reader in self.formats.values() {
             reader.check_integrity()?;
@@ -1150,12 +1190,12 @@ impl KnnVectorsReader for KnnFieldsReader {
     }
 
     fn get_float_vector_values(&self, field: &str) -> Result<Box<dyn FloatVectorValues>> {
-        let (reader, _info) = self.reader_for_name(field)?;
+        let reader = self.reader_for_name(field)?;
         reader.get_float_vector_values(field)
     }
 
     fn get_byte_vector_values(&self, field: &str) -> Result<Box<dyn ByteVectorValues>> {
-        let (reader, _info) = self.reader_for_name(field)?;
+        let reader = self.reader_for_name(field)?;
         reader.get_byte_vector_values(field)
     }
 
@@ -1166,20 +1206,7 @@ impl KnnVectorsReader for KnnFieldsReader {
         knn_collector: &mut dyn KnnCollector,
         accept_docs: &mut dyn crate::search::AcceptDocs,
     ) -> Result<()> {
-        let suffix = {
-            let info = FieldInfo::new(field, 0);
-            self.fields
-                .get(&info.number)
-                .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
-                        "field \"{field}\" has no KNN-vectors reader"
-                    ))
-                })?
-                .clone()
-        };
-        let reader = self.formats.get(&suffix).ok_or_else(|| {
-            LuceneError::IllegalState(format!("missing KNN-vectors reader for suffix {suffix}"))
-        })?;
+        let reader = self.reader_for_name(field)?;
         reader.search(field, target, knn_collector, accept_docs)
     }
 
@@ -1190,20 +1217,7 @@ impl KnnVectorsReader for KnnFieldsReader {
         knn_collector: &mut dyn KnnCollector,
         accept_docs: &mut dyn crate::search::AcceptDocs,
     ) -> Result<()> {
-        let suffix = {
-            let info = FieldInfo::new(field, 0);
-            self.fields
-                .get(&info.number)
-                .ok_or_else(|| {
-                    LuceneError::IllegalArgument(format!(
-                        "field \"{field}\" has no KNN-vectors reader"
-                    ))
-                })?
-                .clone()
-        };
-        let reader = self.formats.get(&suffix).ok_or_else(|| {
-            LuceneError::IllegalState(format!("missing KNN-vectors reader for suffix {suffix}"))
-        })?;
+        let reader = self.reader_for_name(field)?;
         reader.search_byte(field, target, knn_collector, accept_docs)
     }
 

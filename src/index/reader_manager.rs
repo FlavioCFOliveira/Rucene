@@ -29,16 +29,28 @@ use crate::store::Directory;
 /// The method names differ from `IndexReader` to avoid ambiguity inside the
 /// `impl` block; the semantics are identical.
 impl ManagedReference for dyn DirectoryReader {
+    /// Releases one reference to `self`.
+    ///
+    /// Equivalent to `org.apache.lucene.index.ReaderManager#decRef`, which is
+    /// the `ReferenceManager` hook and forwards to `reference.decRef()`.
     #[inline]
     fn release_ref(&self) -> Result<()> {
         self.dec_ref()
     }
 
+    /// Takes one reference to `self`, unless it is already closed.
+    ///
+    /// Equivalent to `org.apache.lucene.index.ReaderManager#tryIncRef`, which
+    /// forwards to `reference.tryIncRef()`.
     #[inline]
     fn try_acquire_ref(&self) -> bool {
         self.try_inc_ref()
     }
 
+    /// Returns how many references are held on `self`.
+    ///
+    /// Equivalent to `org.apache.lucene.index.ReaderManager#getRefCount`, which
+    /// forwards to `reference.getRefCount()`.
     #[inline]
     fn ref_count(&self) -> i32 {
         self.get_ref_count()

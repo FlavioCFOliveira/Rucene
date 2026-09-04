@@ -48,6 +48,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, BinaryHeap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, RwLock};
 
 use crate::error::{LuceneError, Result};
@@ -716,8 +717,25 @@ impl Terms for Arc<MultiTerms> {
 // MultiTermsEnum
 // ---------------------------------------------------------------------------
 
+/// Source of the per-instance identity [`MultiTermsEnum`] stamps onto every
+/// [`MultiPostingsEnum`] it builds.
+///
+/// Java compares the two enums by object reference in
+/// `MultiPostingsEnum.canReuse`. A Rust value has no address it keeps across
+/// moves, so each `MultiTermsEnum` takes a number that no other instance of
+/// the process ever takes, and the two are compared on that instead. The
+/// comparison answers exactly what the reference comparison answers.
+static NEXT_MULTI_TERMS_ENUM_ID: AtomicU64 = AtomicU64::new(0);
+
 /// One sub-enum entry inside [`MultiTermsEnum`].
-struct TermsEnumEntry {
+///
+/// Equivalent to `MultiTermsEnum.TermsEnumWithSlice`, the sub-enum paired with
+/// the [`ReaderSlice`] that says where its sub-reader sits in the global
+/// doc-ID space. Java declares the class package-private and hands arrays of it
+/// out through `getMatchArray()`; this port keeps the fields module-private for
+/// the same reason and exposes the type itself so
+/// [`MultiTermsEnum::get_match_array`] can name it.
+pub struct TermsEnumEntry {
     tenum: Box<dyn TermsEnum>,
     /// Slice identifying this sub-reader's place in the global doc-ID space.
     slice: ReaderSlice,
@@ -783,6 +801,10 @@ pub struct MultiTermsEnum {
     top: Vec<usize>,
     /// The current term, or `None` once exhausted.
     current: Option<BytesRef>,
+    /// Identity of this enum, so that a [`MultiPostingsEnum`] it built can be
+    /// told apart from one another enum built. Stands in for the object
+    /// reference Java compares in `MultiPostingsEnum.canReuse`.
+    id: u64,
     /// Last seek term, for the LUCENE-2130 seek-optimisation.
     last_seek: Option<BytesRef>,
     /// Set by `seek_exact` so the next `next()` re-seeds non-matching subs via
@@ -803,10 +825,33 @@ impl MultiTermsEnum {
             heap: BinaryHeap::with_capacity(n),
             top: Vec::with_capacity(n),
             current: None,
+            id: NEXT_MULTI_TERMS_ENUM_ID.fetch_add(1, AtomicOrdering::Relaxed),
             last_seek: None,
             last_seek_exact: false,
             atts: AttributeSource::new(),
         }
+    }
+
+    /// Returns how many sub-reader slices contain the current term.
+    ///
+    /// Equivalent to `org.apache.lucene.index.MultiTermsEnum#getMatchCount`,
+    /// which returns the `numTop` counter that says how much of the `top`
+    /// array is live. This port's `top` is a right-sized `Vec`, so its length
+    /// *is* that counter.
+    ///
+    /// See also [`get_match_array`](Self::get_match_array).
+    pub fn get_match_count(&self) -> usize {
+        self.top.len()
+    }
+
+    /// Returns the sub-reader slices positioned at the current term.
+    ///
+    /// Equivalent to `org.apache.lucene.index.MultiTermsEnum#getMatchArray`.
+    /// Java hands back the whole `top` array, of which only the first
+    /// [`get_match_count`](Self::get_match_count) entries are live; this port
+    /// returns exactly the live ones.
+    pub fn get_match_array(&self) -> Vec<&TermsEnumEntry> {
+        self.top.iter().map(|&idx| &self.subs[idx]).collect()
     }
 
     /// Adds a sub-enum with its slice, seeding the heap with the sub's first
@@ -859,7 +904,12 @@ impl MultiTermsEnum {
             let pe = self.subs[idx].tenum.postings(None, flags)?;
             sub_docs.push(EnumWithSlice::new(pe, self.subs[idx].slice));
         }
-        Ok(MultiPostingsEnum::new(sub_docs))
+        let mut postings = MultiPostingsEnum::new(sub_docs);
+        // Java passes `this` to the `MultiPostingsEnum` constructor
+        // (`MultiTermsEnum.java:324,327`); the identity stamped here is what
+        // `MultiPostingsEnum::can_reuse` later compares against.
+        postings.parent = Some(self.id);
+        Ok(postings)
     }
 
     /// Advances every sub in `top` and pushes the survivors back into the
@@ -1209,6 +1259,10 @@ impl std::fmt::Debug for EnumWithSlice {
 /// buys nothing here because [`MultiTermsEnum`] does not thread `reuse` through
 /// to its sub-enums either.
 pub struct MultiPostingsEnum {
+    /// Identity of the [`MultiTermsEnum`] that created this instance, or `None`
+    /// when it was built outside one. Equivalent to Java's `parent` field,
+    /// which holds the creating `MultiTermsEnum` itself.
+    parent: Option<u64>,
     /// Live sub-enums with their slices, in ascending slice order.
     subs: Vec<EnumWithSlice>,
     /// Index into `subs` of the current sub, or `-1` before the first
@@ -1223,10 +1277,39 @@ impl MultiPostingsEnum {
     /// ascending [`ReaderSlice::start`].
     pub fn new(subs: Vec<EnumWithSlice>) -> Self {
         Self {
+            parent: None,
             subs,
             upto: -1,
             doc: -1,
         }
+    }
+
+    /// Returns `true` if this instance can be reused by `parent`.
+    ///
+    /// Equivalent to `org.apache.lucene.index.MultiPostingsEnum#canReuse`,
+    /// which answers `this.parent == parent`: an instance may only be reused by
+    /// the very enum that built it, because its sub-enum array is sized and
+    /// indexed for that enum's sub-readers. The identity here is the number
+    /// [`MultiTermsEnum`] carries in place of the object reference Java
+    /// compares; an instance built outside a [`MultiTermsEnum`] has no parent
+    /// and can therefore be reused by none.
+    pub fn can_reuse(&self, parent: &MultiTermsEnum) -> bool {
+        self.parent == Some(parent.id)
+    }
+
+    /// Re-uses and resets this instance on `subs`, returning it positioned
+    /// before the first document.
+    ///
+    /// Equivalent to `org.apache.lucene.index.MultiPostingsEnum#reset`. Java
+    /// copies the incoming slices into its pre-allocated array and records how
+    /// many are live in `numSubs`; this port's `subs` is a right-sized `Vec`,
+    /// so the copy is the assignment and the count is its length. Java returns
+    /// `this`, which is `&mut Self` here.
+    pub fn reset(&mut self, subs: Vec<EnumWithSlice>) -> &mut Self {
+        self.subs = subs;
+        self.upto = -1;
+        self.doc = -1;
+        self
     }
 
     /// Returns how many sub-readers are being merged.

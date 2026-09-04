@@ -205,17 +205,22 @@ impl BaseCompositeReader {
 }
 
 /// Marker for a [`TermsEnum`] that relies on the default `seek_exact`,
-/// `term_state` and `attributes` behaviour.
+/// `prepare_seek_exact`, `term_state` and `attributes` behaviour.
 ///
 /// Equivalent to `org.apache.lucene.index.BaseTermsEnum`.
 ///
 /// **Divergence from Lucene 10.5.0.** Java needs an intermediate abstract class
-/// because `TermsEnum` declares those three methods abstract, so every
+/// because `TermsEnum` declares those four methods abstract, so every
 /// implementation would otherwise have to write them. Rust puts default bodies
-/// on the trait itself — [`TermsEnum::seek_exact`], [`TermsEnum::term_state`]
-/// and [`TermsEnum::attributes`] already carry exactly the bodies
-/// `BaseTermsEnum` supplies — so the class has no work left to do and this is a
-/// blanket marker rather than a type with behaviour of its own.
+/// on the trait itself — [`TermsEnum::seek_exact`],
+/// [`TermsEnum::prepare_seek_exact`], [`TermsEnum::term_state`] and
+/// [`TermsEnum::attributes`] already carry exactly the bodies `BaseTermsEnum`
+/// supplies — so the class has no work left to do and this is a blanket marker
+/// rather than a type with behaviour of its own.
+///
+/// [`TermsEnum::prepare_seek_exact`] in particular carries the body of
+/// `org.apache.lucene.index.BaseTermsEnum#prepareSeekExact`: a supplier that
+/// defers to `seek_exact`, with no prefetch of its own.
 pub trait BaseTermsEnum: TermsEnum {}
 
 impl<T: TermsEnum + ?Sized> BaseTermsEnum for T {}

@@ -252,6 +252,46 @@ pub trait KnnVectorsReader: Send + Sync + fmt::Debug {
         accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()>;
 
+    /// Returns the reader this one dispatches `field` to, when it dispatches
+    /// per field at all.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java narrows the reader with
+    /// `vectorsReader instanceof PerFieldKnnVectorsFormat.FieldsReader` before
+    /// calling `getFieldReader(field)` on it (`CheckIndex.java:2863-2869`).
+    /// Rust cannot narrow a `dyn KnnVectorsReader`, so the question is asked of
+    /// the reader itself: only the per-field reader answers, and the default
+    /// answers `None` — which a caller reads the same way it reads Java's
+    /// failed `instanceof`, by keeping the reader it already has.
+    ///
+    /// Equivalent to `PerFieldKnnVectorsFormat.FieldsReader#getFieldReader(String)`,
+    /// which likewise answers `null` for a field it does not know.
+    fn get_field_reader(&self, _field: &str) -> Option<&dyn KnnVectorsReader> {
+        None
+    }
+
+    /// Returns this reader as a [`FlatVectorsReader`] when it is one, and
+    /// `None` when it is not.
+    ///
+    /// A flat reader stores the raw vectors and nothing else — no graph — so it
+    /// cannot answer a nearest-neighbour search; this is how a caller finds
+    /// that out.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java writes
+    /// `vectorsReader instanceof FlatVectorsReader` (`CheckIndex.java:2869`).
+    /// Rust cannot narrow a `dyn KnnVectorsReader` to a `dyn FlatVectorsReader`,
+    /// so the test is a method the flat readers override, in the same shape as
+    /// [`FlatVectorsReader::as_quantized_vectors_reader`]. The default answers
+    /// `None`, which is what the `instanceof` answers for every reader that is
+    /// not flat.
+    ///
+    /// [`FlatVectorsReader`]: crate::codecs::hnsw::flat_vectors::FlatVectorsReader
+    /// [`FlatVectorsReader::as_quantized_vectors_reader`]: crate::codecs::hnsw::flat_vectors::FlatVectorsReader::as_quantized_vectors_reader
+    fn as_flat_vectors_reader(
+        &self,
+    ) -> Option<&dyn crate::codecs::hnsw::flat_vectors::FlatVectorsReader> {
+        None
+    }
+
     /// Returns an instance optimized for merging.
     fn get_merge_instance(&self) -> Result<Box<dyn KnnVectorsReader>>;
 

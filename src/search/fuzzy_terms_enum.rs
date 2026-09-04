@@ -344,16 +344,8 @@ impl FuzzyTermsEnum {
     /// that. `None` means the enum could tell without any I/O that the term
     /// may not exist.
     ///
-    /// Equivalent to `org.apache.lucene.search.FuzzyTermsEnum#prepareSeekExact`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java forwards to
-    /// `actualEnum.prepareSeekExact(text)` (`FuzzyTermsEnum.java:330-332`).
-    /// This port's [`TermsEnum`] carries no `prepare_seek_exact`, so the
-    /// supplier calls `actual_enum.seek_exact(text)` — which is exactly what
-    /// `BaseTermsEnum.prepareSeekExact` returns (`BaseTermsEnum.java:63-65`),
-    /// and therefore what every enum that does not implement the two-phase
-    /// seek does. The seek performed is the same one; only the prefetch is
-    /// not split out.
+    /// Equivalent to `org.apache.lucene.search.FuzzyTermsEnum#prepareSeekExact`,
+    /// which forwards to the wrapped enum (`FuzzyTermsEnum.java:330-332`).
     ///
     /// # Errors
     ///
@@ -362,8 +354,7 @@ impl FuzzyTermsEnum {
         &mut self,
         text: &BytesRef,
     ) -> Result<Option<Box<dyn IOBooleanSupplier + '_>>> {
-        let text = text.clone();
-        Ok(Some(Box::new(move || self.actual_enum.seek_exact(&text))))
+        self.actual_enum.prepare_seek_exact(text)
     }
 
     /// Returns an automaton-based enum matching up to `edit_distance` edits

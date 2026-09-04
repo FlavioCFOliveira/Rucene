@@ -478,6 +478,39 @@ struct LeafAndDocId {
 pub struct MultiSorter;
 
 impl MultiSorter {
+    /// Caches, for every sort field, the value of document `doc_id` of segment
+    /// `reader_index`, so that the priority queue can compare it. When the
+    /// segment uses document blocks, the value of the parent (last) document of
+    /// `doc_id`'s block is used instead.
+    ///
+    /// Equivalent to the private static
+    /// `MultiSorter.setComparableValues(IndexSorter.ComparableValues[], BitSet, int, int)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** `parents` is always `None` at this
+    /// port's two call sites, because the ported `LeafMetaData` does not yet
+    /// expose the parent field a block-sorted segment needs; see the note on
+    /// [`MultiSorter::sort`]. The block branch is written out all the same, so
+    /// that supplying the bitset is all that is left to do.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading a document's sort value raised.
+    fn set_comparable_values(
+        comparables: &mut [ComparableValues],
+        parents: Option<&dyn crate::util::bit_set::BitSet>,
+        reader_index: usize,
+        doc_id: i32,
+    ) -> Result<()> {
+        let effective_doc_id = match parents {
+            None => doc_id,
+            Some(parents) => parents.next_set_bit(doc_id),
+        };
+        for comparable in comparables.iter_mut() {
+            comparable.set_top_value(reader_index, effective_doc_id)?;
+        }
+        Ok(())
+    }
+
     /// Returns one doc map per reader, or `None` when concatenating the readers
     /// already produces the sorted order.
     ///
@@ -513,9 +546,9 @@ impl MultiSorter {
             if max_doc == 0 {
                 continue;
             }
-            for comparable in comparables.iter_mut() {
-                comparable.set_top_value(reader_index, 0)?;
-            }
+            // Java: `setComparableValues(comparables, parents[i], i, leaf.docID)`
+            // (`MultiSorter.java:112`), with `leaf.docID` still 0.
+            Self::set_comparable_values(&mut comparables, None, reader_index, 0)?;
             cursors.push(LeafAndDocId {
                 reader_index,
                 doc_id: 0,
@@ -586,9 +619,9 @@ impl MultiSorter {
             cursors[top].doc_id += 1;
             if cursors[top].doc_id < cursors[top].max_doc {
                 let next = cursors[top].doc_id;
-                for comparable in comparables.iter_mut() {
-                    comparable.set_top_value(reader_index, next)?;
-                }
+                // Java: `setComparableValues(comparables, parents[top.readerIndex],
+                // top.readerIndex, top.docID)` (`MultiSorter.java:134`).
+                Self::set_comparable_values(&mut comparables, None, reader_index, next)?;
             } else {
                 cursors.remove(top);
             }

@@ -12,11 +12,13 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{Scope, ScopedJoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::codecs::doc_values::DocValuesProducer;
+use crate::codecs::knn_vectors::KnnVectorsReader;
 use crate::codecs::norms::NormsProducer;
 use crate::codecs::Codec;
 use crate::error::{LuceneError, Result};
@@ -707,10 +709,36 @@ fn run_async_segment_check<'scope, 'env, F>(
 where
     F: FnOnce() -> Result<SegmentInfoStatus> + Send + 'scope,
 {
+    let supplier = callable_to_supplier(async_callable);
     scope.spawn(move || {
         let _permit = permits.acquire();
-        async_callable()
+        supplier()
     })
+}
+
+/// Adapts a fallible segment check into the form the thread that runs it
+/// expects.
+///
+/// Equivalent to the private `CheckIndex.callableToSupplier(Callable<T>)`,
+/// which exists only so that a `Callable`, whose `call()` may throw a *checked*
+/// exception, can stand in for the `Supplier` that
+/// `CompletableFuture.supplyAsync` demands: it rethrows `RuntimeException` and
+/// `Error` unchanged and wraps every other `Throwable` in a
+/// `CompletionException`, so the future can carry it to whoever joins.
+///
+/// **Divergence from Lucene 10.5.0.** Rust draws no checked/unchecked line: a
+/// failure is a [`Result`] on the ordinary return path, and the handle
+/// [`run_async_segment_check`] returns already carries it, so there is nothing
+/// to convert and the task is passed through as it is. The one failure that
+/// does not travel as a value — a panic — surfaces at
+/// [`ScopedJoinHandle::join`] as `Err`, which the caller turns into a
+/// `CheckIndexException` just as Java's future surfaces a
+/// `CompletionException`.
+fn callable_to_supplier<T, F>(callable: F) -> impl FnOnce() -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
+    callable
 }
 
 impl CheckIndex {
@@ -4391,13 +4419,34 @@ pub fn ns_to_sec(ns: i64) -> f64 {
     ns as f64 / 1_000_000_000.0
 }
 
+/// Whether assertions were found to be enabled.
+///
+/// Equivalent to the private static field `CheckIndex.assertsOn`, which starts
+/// `false` and is only ever set by [`test_asserts`].
+static ASSERTS_ON: AtomicBool = AtomicBool::new(false);
+
+/// Records that assertions run, and returns `true`.
+///
+/// Equivalent to the private static `CheckIndex.testAsserts()`, which Java
+/// calls only from inside an `assert` so that the flag is set exactly when
+/// assertions are enabled. This port calls it from inside a `debug_assert!`,
+/// which is compiled out of a release build for the same reason, so the flag
+/// ends up carrying the same answer.
+fn test_asserts() -> bool {
+    ASSERTS_ON.store(true, Ordering::Relaxed);
+    true
+}
+
 /// Returns whether debug assertions are compiled in.
 ///
-/// Equivalent to `CheckIndex.assertsOn()`, which Java answers by trying to
-/// trip an assertion. Rust decides it at compile time, so the answer is exact
-/// rather than probed.
+/// Equivalent to `CheckIndex.assertsOn()`, which probes for assertions by
+/// running [`test_asserts`] inside an `assert` and then reporting the flag it
+/// set. This port probes the same way, through a `debug_assert!`; the answer is
+/// therefore `true` exactly in a build with debug assertions on, which is where
+/// this crate's own `debug_assert!`s run.
 pub fn asserts_on() -> bool {
-    cfg!(debug_assertions)
+    debug_assert!(test_asserts());
+    ASSERTS_ON.load(Ordering::Relaxed)
 }
 
 /// Checks every document's stored fields, deleted ones included.
@@ -4919,6 +4968,42 @@ pub fn test_vectors(
     Ok(status)
 }
 
+/// Returns whether the reader serving `field_name`'s vectors can answer a
+/// nearest-neighbour search.
+///
+/// A reader that stores nothing but the raw vectors — a
+/// [`FlatVectorsReader`](crate::codecs::hnsw::flat_vectors::FlatVectorsReader) —
+/// has no graph to walk and therefore cannot search; every other reader can.
+/// The reader consulted is the one the field is actually dispatched to, which
+/// for a per-field reader is its delegate for that field.
+///
+/// Equivalent to the private static
+/// `CheckIndex.vectorsReaderSupportsSearch(CodecReader, String)`. Java narrows
+/// the reader with two `instanceof` tests; both are asked of the reader itself
+/// here, through [`KnnVectorsReader::get_field_reader`] and
+/// [`KnnVectorsReader::as_flat_vectors_reader`], which record why.
+///
+/// # Errors
+///
+/// Propagates the already-closed check the codec reader performs when its
+/// vectors reader is asked for.
+fn vectors_reader_supports_search(
+    codec_reader: &dyn CodecReader,
+    field_name: &str,
+) -> Result<bool> {
+    let Some(vectors_reader) = codec_reader.get_vector_reader()? else {
+        // Java would test `null instanceof FlatVectorsReader`, which is false.
+        return Ok(true);
+    };
+    // A per-field reader hands over the delegate that actually serves the
+    // field; every other reader answers for itself, as Java's failed
+    // `instanceof` leaves it doing.
+    let reader: &dyn KnnVectorsReader = vectors_reader
+        .get_field_reader(field_name)
+        .unwrap_or(vectors_reader.as_ref());
+    Ok(reader.as_flat_vectors_reader().is_none())
+}
+
 /// Checks every float vector of one field.
 ///
 /// Equivalent to `CheckIndex.checkFloatVectorValues(FloatVectorValues, FieldInfo, Status.VectorValuesStatus, CodecReader)`.
@@ -5268,17 +5353,29 @@ fn cross_check_vector_field_against_postings(
     let vectors_has_payload = terms.has_payloads();
     let has_prox = terms.has_offsets() || terms.has_positions();
 
+    let mut seek_exact_counter = 0i32;
+
     while let Some(term) = terms_enum.next()? {
         // This is the term vector's own postings.
         let mut postings = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
 
-        // **Divergence from Lucene 10.5.0.** Java alternates every other term
-        // between `seekExact(BytesRef)` and `prepareSeekExact(BytesRef)`, so
-        // that a codec's deferred-seek path is exercised as well as its direct
-        // one. `TermsEnum.prepareSeekExact` is not ported yet, so only the
-        // direct seek runs here; the check itself — that the term exists in the
-        // postings — is the same either way.
-        let term_exists = postings_terms_enum.seek_exact(&term)?;
+        // Java alternates every other term between `seekExact(BytesRef)` and
+        // `prepareSeekExact(BytesRef)`, so that a codec's deferred-seek path is
+        // exercised as well as its direct one; a `null` supplier means the enum
+        // could tell without I/O that the term may not exist
+        // (`CheckIndex.java:4056-4061`).
+        let term_exists = {
+            let counter = seek_exact_counter;
+            seek_exact_counter += 1;
+            if counter & 0x01 == 0 {
+                postings_terms_enum.seek_exact(&term)?
+            } else {
+                match postings_terms_enum.prepare_seek_exact(&term)? {
+                    Some(mut term_exists_supplier) => term_exists_supplier.get()?,
+                    None => false,
+                }
+            }
+        };
         if !term_exists {
             return Err(check_index_error(format!(
                 "vector term={term:?} field={field} does not exist in postings; doc={doc}"

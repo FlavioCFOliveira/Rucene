@@ -2917,6 +2917,20 @@ pub trait Bits: Send + Sync + Debug {
 
     /// Returns the number of bits in this set.
     fn length(&self) -> usize;
+
+    /// Consumes these bits and returns them as
+    /// [`LiveDocs`](crate::util::bit_set::LiveDocs) when they are one, or
+    /// `None` when they are not.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java asks `bits instanceof LiveDocs`
+    /// and casts (`LeafReader.java:409-411`). Rust cannot narrow an owned
+    /// `Box<dyn Bits>` to a `Box<dyn LiveDocs>`, so the narrowing is a method
+    /// the implementations that *are* live docs override. The default answers
+    /// `None`, which is what the `instanceof` answers for every other
+    /// implementation.
+    fn into_live_docs(self: Box<Self>) -> Option<Box<dyn crate::util::bit_set::LiveDocs>> {
+        None
+    }
 }
 
 /// Bits implementation with all bits set.

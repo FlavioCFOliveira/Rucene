@@ -20,6 +20,7 @@ use crate::search::empty_top_docs;
 use crate::search::knn::{KnnCollector, TopDocs, TopKnnCollector};
 use crate::search::AcceptDocs;
 use crate::search::Sort;
+use crate::util::bit_set::LiveDocs;
 use crate::util::extra::Version;
 use crate::util::Bits;
 
@@ -246,6 +247,27 @@ pub trait LeafReader: Send + Sync + Debug + 'static {
 
     /// Returns the live-docs bits, or `None` if there are no deletions.
     fn get_live_docs(&self) -> Option<Box<dyn Bits>>;
+
+    /// Returns a [`LiveDocs`] view with efficient iteration support, or `None`
+    /// when none is available.
+    ///
+    /// When non-`None` it provides `O(deletedDocs)` iteration through
+    /// [`LiveDocs::deleted_docs_iterator`] instead of the `O(maxDoc)` scan a
+    /// plain [`Bits`] forces; callers fall back to
+    /// [`get_live_docs`](Self::get_live_docs) when it is `None`. It lets a
+    /// consumer opt into efficient deleted-document iteration when the
+    /// underlying implementation supports it — `SparseLiveDocs` and
+    /// `DenseLiveDocs` do.
+    ///
+    /// The default implementation returns the live-docs bits when they are a
+    /// [`LiveDocs`], which is what [`Bits::into_live_docs`] answers; see the
+    /// divergence recorded there for how the `instanceof` Java writes is
+    /// expressed.
+    ///
+    /// Equivalent to `org.apache.lucene.index.LeafReader#getLiveDocsWithDeletedIterator`.
+    fn get_live_docs_with_deleted_iterator(&self) -> Option<Box<dyn LiveDocs>> {
+        self.get_live_docs()?.into_live_docs()
+    }
 
     /// Returns the [`PointValues`] for `field`, if any.
     fn get_point_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>>;

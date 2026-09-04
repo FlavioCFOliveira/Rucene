@@ -340,6 +340,20 @@ impl IndexReaderCore {
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
     }
+
+    /// Returns a value that identifies the reader owning this core, and only
+    /// that reader, for as long as it lives.
+    ///
+    /// The core's internal link is heap-allocated once, when the core is
+    /// created, and never moves afterwards, so its address is the reader's
+    /// identity. This is what stands in for Java's
+    /// `System.identityHashCode(this)`, which
+    /// [`IndexReader`]'s `hashCode` returns; Rust has no address that a value
+    /// keeps across moves, so the identity is taken from the one part of the
+    /// reader that is behind an `Arc`.
+    pub fn identity_hash_code(&self) -> usize {
+        Arc::as_ptr(&self.link) as *const () as usize
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -489,6 +503,32 @@ pub trait IndexReader: Send + Sync + Debug + 'static {
     /// Convenience method returning the top-level leaves of this reader.
     fn leaves(self: Arc<Self>) -> Vec<Arc<LeafReaderContext>> {
         self.get_context().leaves()
+    }
+}
+
+impl PartialEq for dyn IndexReader {
+    /// Two readers are equal only when they are the same reader.
+    ///
+    /// Equivalent to `org.apache.lucene.index.IndexReader#equals`, which Java
+    /// declares `final` — subclasses are not allowed to define reader equality
+    /// — and implements as `this == obj`. The identity here is
+    /// [`IndexReaderCore::identity_hash_code`], which stands in for the object
+    /// reference Java compares.
+    fn eq(&self, other: &Self) -> bool {
+        self.core().identity_hash_code() == other.core().identity_hash_code()
+    }
+}
+
+impl Eq for dyn IndexReader {}
+
+impl std::hash::Hash for dyn IndexReader {
+    /// Hashes the reader's identity, so that a reader is only ever found by
+    /// itself in a hash-based collection.
+    ///
+    /// Equivalent to `org.apache.lucene.index.IndexReader#hashCode`, also
+    /// `final` in Java, which returns `System.identityHashCode(this)`.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.core().identity_hash_code().hash(state);
     }
 }
 

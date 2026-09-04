@@ -202,6 +202,23 @@ impl MultiBits {
     pub fn num_subs(&self) -> usize {
         self.subs.len()
     }
+
+    /// Checks that the global doc ID `doc` really falls inside sub-reader
+    /// `reader`'s window, and always returns `true`.
+    ///
+    /// Equivalent to the private `MultiBits.checkLength(int, int)`, which Java
+    /// only ever calls from inside an `assert`; this port calls it from inside
+    /// a `debug_assert!` for the same reason, so the window check costs nothing
+    /// in a release build.
+    fn check_length(&self, reader: usize, doc: usize) -> bool {
+        let length = self.starts[1 + reader] - self.starts[reader];
+        debug_assert!(
+            (doc as i64 - i64::from(self.starts[reader])) < i64::from(length),
+            "doc={doc} reader={reader} starts[reader]={} length={length}",
+            self.starts[reader]
+        );
+        true
+    }
 }
 
 impl Bits for MultiBits {
@@ -231,11 +248,8 @@ impl Bits for MultiBits {
         match sub {
             None => self.default_value,
             Some(bits) => {
+                debug_assert!(self.check_length(reader, doc));
                 let start = self.starts[reader] as usize;
-                debug_assert!(
-                    doc - start < (self.starts[reader + 1] - self.starts[reader]) as usize,
-                    "doc {doc} escapes sub-reader {reader}"
-                );
                 bits.get(doc - start)
             }
         }

@@ -20,7 +20,7 @@ use crate::store::{ByteArrayDataInput, ByteArrayDataOutput, DataInput, DataOutpu
 use crate::util::attribute::AttributeSource;
 use crate::util::automaton::CompiledAutomaton;
 use crate::util::string_helper::StringHelper;
-use crate::util::BytesRef;
+use crate::util::{BytesRef, IOBooleanSupplier, RamUsageEstimator};
 
 // -----------------------------------------------------------------------------
 // Term
@@ -87,6 +87,59 @@ impl PartialEq for Term {
 }
 
 impl Eq for Term {}
+
+impl std::hash::Hash for Term {
+    /// Hashes the field and the term bytes, the two members
+    /// [`PartialEq`] compares.
+    ///
+    /// Equivalent to `org.apache.lucene.index.Term#hashCode`, which folds
+    /// `field.hashCode()` and `bytes.hashCode()` together with the usual
+    /// `31 * result + …` accumulator. Rust hands the members to a [`Hasher`]
+    /// instead of computing an `int` itself, so the combining function belongs
+    /// to the hasher rather than to this type; the members combined are the
+    /// same ones, and hashing stays consistent with equality.
+    ///
+    /// [`Hasher`]: std::hash::Hasher
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.field.hash(state);
+        self.bytes.slice().hash(state);
+    }
+}
+
+/// The shallow size of a [`Term`] plus that of the [`BytesRef`] it owns.
+///
+/// Equivalent to `Term.BASE_RAM_BYTES`, which is
+/// `RamUsageEstimator.shallowSizeOfInstance(Term.class)` — an object header and
+/// the `field` and `bytes` references — plus
+/// `RamUsageEstimator.shallowSizeOfInstance(BytesRef.class)` — an object
+/// header, the `bytes` reference and the `offset` and `length` ints.
+fn term_base_ram_bytes() -> i64 {
+    RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + 2 * RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+    ) + RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + RamUsageEstimator::NUM_BYTES_OBJECT_REF + 8,
+    )
+}
+
+impl crate::util::Accountable for Term {
+    /// Returns the heap this term holds: its own shallow size, the field name
+    /// and the term's byte array.
+    ///
+    /// Equivalent to `org.apache.lucene.index.Term#ramBytesUsed`. Java guards
+    /// both `field` and `bytes` against `null`, which its constructor allows
+    /// and documents as undefined behaviour for most APIs; neither can be
+    /// absent here, so the two guards have no counterpart and the two sizes are
+    /// always added.
+    fn ram_bytes_used(&self) -> i64 {
+        term_base_ram_bytes()
+            + RamUsageEstimator::size_of_string(&self.field)
+            + RamUsageEstimator::align_object_size(
+                // `bytes.bytes.length` in Java: the whole backing array, not
+                // just the active slice.
+                self.bytes.bytes.len() as i64 + RamUsageEstimator::NUM_BYTES_ARRAY_HEADER,
+            )
+    }
+}
 
 impl PartialOrd for Term {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -176,6 +229,7 @@ pub enum SeekStatus {
 ///
 /// Equivalent to `org.apache.lucene.index.TermsEnum`. The default
 /// implementations of [`seek_exact`](Self::seek_exact),
+/// [`prepare_seek_exact`](Self::prepare_seek_exact),
 /// [`seek_term_state`](Self::seek_term_state) and
 /// [`term_state`](Self::term_state) mirror `BaseTermsEnum`.
 pub trait TermsEnum {
@@ -187,6 +241,34 @@ pub trait TermsEnum {
     /// Default implementation uses `seek_ceil`.
     fn seek_exact(&mut self, text: &BytesRef) -> Result<bool> {
         Ok(self.seek_ceil(text)? == SeekStatus::FOUND)
+    }
+
+    /// Two-phase [`seek_exact`](Self::seek_exact): the first phase typically
+    /// prefetches the right range of bytes, while the second — calling
+    /// [`IOBooleanSupplier::get`] on the returned supplier — actually seeks the
+    /// term within them. Several terms enums can therefore be prepared before
+    /// any of them is consumed, parallelising the I/O.
+    ///
+    /// **NOTE**: it is illegal to call other methods on this enum after this
+    /// one until the supplier has been consumed; the borrow the supplier holds
+    /// enforces that. `None` means the enum could tell, without any I/O, that
+    /// the term may not exist.
+    ///
+    /// The default implementation returns a supplier that simply calls
+    /// [`seek_exact`](Self::seek_exact), which is the body of
+    /// `org.apache.lucene.index.BaseTermsEnum#prepareSeekExact`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error raised while preparing the seek.
+    ///
+    /// Equivalent to `org.apache.lucene.index.TermsEnum#prepareSeekExact`.
+    fn prepare_seek_exact<'a>(
+        &'a mut self,
+        text: &BytesRef,
+    ) -> Result<Option<Box<dyn IOBooleanSupplier + 'a>>> {
+        let text = text.clone();
+        Ok(Some(Box::new(move || self.seek_exact(&text))))
     }
 
     /// Seeks to the ceiling term and reports the result.
@@ -360,6 +442,20 @@ impl TermsEnum for FilteredTermsEnum {
 
     fn seek_exact(&mut self, _text: &BytesRef) -> Result<bool> {
         Err(LuceneError::IllegalState(
+            "FilteredTermsEnum does not support seeking".to_string(),
+        ))
+    }
+
+    /// This enum does not support seeking.
+    ///
+    /// Equivalent to `org.apache.lucene.index.FilteredTermsEnum#prepareSeekExact`,
+    /// which throws `UnsupportedOperationException` rather than preparing
+    /// anything, because in general its subclasses cannot seek.
+    fn prepare_seek_exact<'a>(
+        &'a mut self,
+        _text: &BytesRef,
+    ) -> Result<Option<Box<dyn IOBooleanSupplier + 'a>>> {
+        Err(LuceneError::UnsupportedOperation(
             "FilteredTermsEnum does not support seeking".to_string(),
         ))
     }
@@ -868,10 +964,9 @@ impl TermStates {
     /// **Divergence from Lucene 10.5.0.** Java visits every leaf up front only
     /// when `needsStats` is `true`; otherwise it defers the term-dictionary
     /// seek to the first [`get`](Self::get) for that leaf, and it schedules the
-    /// seeks in the background through `TermsEnum.prepareSeekExact`, which
-    /// returns an `IOBooleanSupplier`. This port visits every leaf up front in
-    /// both cases, because `prepareSeekExact` and `IOBooleanSupplier` are not
-    /// ported, and because the deferred path mutates the state array from
+    /// seeks in the background through
+    /// [`TermsEnum::prepare_seek_exact`]. This port visits every leaf up front
+    /// in both cases, because the deferred path mutates the state array from
     /// `&self` — which Rust would need interior mutability for, since a
     /// [`Weight`](crate::search::Weight) is `Sync`. The states registered, the
     /// statistics accumulated and every value [`get`](Self::get) answers are

@@ -70,7 +70,7 @@ use crate::codecs::Codec;
 use crate::error::Result;
 use crate::index::{FieldInfo, FieldInfos, SegmentInfo};
 use crate::store::{DefaultIOContext, Directory};
-use crate::util::InfoStream;
+use crate::util::{Accountable, InfoStream, NullAccountable};
 
 /// Streams vector values for indexing to the codec's vectors writer.
 ///
@@ -228,10 +228,48 @@ impl VectorValuesConsumer {
             .map_or(0, |writer| writer.ram_bytes_used())
     }
 
+    /// Returns the [`Accountable`] standing for the RAM the buffered vectors
+    /// hold: the codec writer once it exists, and a zero-sized accountable
+    /// before that.
+    ///
+    /// Equivalent to `org.apache.lucene.index.VectorValuesConsumer#getAccountable`
+    /// (`VectorValuesConsumer.java:87-89`), which returns the `accountable`
+    /// field — `Accountable.NULL_ACCOUNTABLE` until
+    /// [`init_knn_vectors_writer`](Self::init_knn_vectors_writer) sets it to the
+    /// writer.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `KnnVectorsWriter` implements
+    /// `Accountable`, so the writer *is* the value returned. In this crate
+    /// [`KnnVectorsWriter`] declares `ram_bytes_used` itself rather than
+    /// inheriting it, and Rust cannot view a `dyn KnnVectorsWriter` as a
+    /// `dyn Accountable`, so the writer is handed back through the thin
+    /// [`WriterAccountable`] adapter. The number reported is the writer's own.
+    pub fn get_accountable(&self) -> Box<dyn Accountable + '_> {
+        match self.writer.as_deref() {
+            Some(writer) => Box::new(WriterAccountable(writer)),
+            None => Box::new(NullAccountable),
+        }
+    }
+
     /// Returns whether a codec writer was created, and therefore whether this
     /// segment has vector files.
     pub fn has_writer(&self) -> bool {
         self.writer.is_some()
+    }
+}
+
+/// Presents a [`KnnVectorsWriter`] as an [`Accountable`].
+///
+/// Java needs no such type: `KnnVectorsWriter` extends `Accountable`, so a
+/// writer is one. This crate's [`KnnVectorsWriter`] declares `ram_bytes_used`
+/// on its own, and a `dyn KnnVectorsWriter` cannot be viewed as a
+/// `dyn Accountable`, so [`VectorValuesConsumer::get_accountable`] wraps the
+/// writer in this instead. It forwards the one method and adds nothing.
+struct WriterAccountable<'a>(&'a dyn KnnVectorsWriter);
+
+impl Accountable for WriterAccountable<'_> {
+    fn ram_bytes_used(&self) -> i64 {
+        self.0.ram_bytes_used()
     }
 }
 
