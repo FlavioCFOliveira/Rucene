@@ -262,6 +262,8 @@ impl BytesRefArray {
 
     /// The body of Java's private `setBytesRef`, with the bounds check already
     /// performed by the caller.
+    ///
+    /// Equivalent to `org.apache.lucene.util.BytesRefArray#setBytesRef`.
     fn value_at(&self, index: usize) -> BytesRef {
         let offset = self.offsets[index] as usize;
         let length = if index == self.last_element - 1 {

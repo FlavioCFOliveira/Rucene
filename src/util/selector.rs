@@ -464,6 +464,8 @@ fn heap_child(from: isize, i: isize) -> isize {
 }
 
 /// Index of the smallest of the three elements. `IntroSelector.min`.
+///
+/// Equivalent to `org.apache.lucene.util.IntroSelector#min`.
 fn min3(ops: &mut dyn PivotOps, i: isize, j: isize, k: isize) -> isize {
     if ops.compare(i as usize, j as usize) <= 0 {
         if ops.compare(i as usize, k as usize) <= 0 {
@@ -582,6 +584,8 @@ pub trait RadixSelectorOps {
     /// Java builds a fresh `IntroSelector` per call and lets the caller
     /// override which one; this port asks the caller to run it, which is the
     /// same seam without the object.
+    ///
+    /// Equivalent to `org.apache.lucene.util.RadixSelector#getFallbackSelector`.
     fn fallback_select(&mut self, from: usize, to: usize, k: usize, d: usize);
 }
 

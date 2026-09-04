@@ -19,7 +19,7 @@
 
 #![deny(unsafe_code)]
 
-use crate::error::Result;
+use crate::error::{LuceneError, Result};
 
 /// A result supplier that is allowed to fail.
 ///
@@ -128,10 +128,11 @@ where
 /// Port of `org.apache.lucene.util.FilterIterator`.
 ///
 /// **Divergence from Lucene 10.5.0.** Java's class is abstract, with
-/// `predicateFunction` supplied by the subclass, and its `remove()` throws
-/// `UnsupportedOperationException`. Rust iterators have no `remove`, and a
-/// closure is the natural way to supply the predicate, so this is a concrete
-/// type parameterised by one.
+/// `predicateFunction` supplied by the subclass, and a closure is the natural
+/// way to supply the predicate, so this is a concrete type parameterised by
+/// one. Java's `remove()` throws `UnsupportedOperationException`; Rust's
+/// [`Iterator`] has no `remove`, so it is an inherent method returning
+/// [`LuceneError::UnsupportedOperation`].
 pub struct FilterIterator<I, P>
 where
     I: Iterator,
@@ -164,6 +165,20 @@ where
     /// Equivalent to `FilterIterator.hasNext`.
     pub fn has_next(&mut self) -> bool {
         self.next_is_set || self.set_next()
+    }
+
+    /// Removing elements through this iterator is not supported.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`], standing in for
+    /// Java's `UnsupportedOperationException`.
+    ///
+    /// Equivalent to `org.apache.lucene.util.FilterIterator#remove`.
+    pub fn remove(&mut self) -> Result<()> {
+        Err(LuceneError::UnsupportedOperation(
+            "FilterIterator does not support remove()".to_string(),
+        ))
     }
 
     /// Returns whether `object` passes the filter.

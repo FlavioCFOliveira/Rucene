@@ -1211,6 +1211,8 @@ pub trait MSBRadixSorterOps {
     ///
     /// Equivalent to `MSBRadixSorter.getFallbackSorter(k).sort(from, to)`; the
     /// default is Lucene's intro sort over [`MSBRadixSorterOps::byte_at`].
+    ///
+    /// Equivalent to `org.apache.lucene.util.MSBRadixSorter#getFallbackSorter`.
     fn fallback_sort(&mut self, from: usize, to: usize, k: usize, max_length: usize) {
         let mut fallback = MsbFallbackSorter {
             ops: self,
@@ -1601,6 +1603,8 @@ pub fn stable_reorder<O: StableMSBRadixSorterOps + ?Sized>(
 ///
 /// Implementors of [`StableMSBRadixSorterOps`] override
 /// [`MSBRadixSorterOps::fallback_sort`] to call this.
+///
+/// Equivalent to `org.apache.lucene.util.StableMSBRadixSorter#getFallbackSorter`.
 pub fn stable_fallback_sort<O: StableMSBRadixSorterOps + ?Sized>(
     ops: &mut O,
     from: usize,
@@ -1962,7 +1966,10 @@ impl<'a> StringSorter<'a> {
     }
 }
 
-/// Lucene's nested `StringSorter.MSBStringRadixSorter`.
+/// Lucene's nested `StringSorter.MSBStringRadixSorter`, the sorter that
+/// Lucene's factory method hands back for a [`BytesRefComparator`].
+///
+/// Equivalent to `org.apache.lucene.util.StringSorter#radixSorter`.
 struct StringRadixOps<'a, O: StringSorterOps + ?Sized> {
     ops: &'a mut O,
     cmp: &'a dyn BytesRefComparator,
@@ -1986,6 +1993,8 @@ impl<O: StringSorterOps + ?Sized> MSBRadixSorterOps for StringRadixOps<'_, O> {
 
 /// Lucene's `StringSorter.fallbackSorter(Comparator)`: an intro sorter that
 /// reads values through [`StringSorterOps::get`].
+///
+/// Equivalent to `org.apache.lucene.util.StringSorter#fallbackSorter`.
 pub fn string_fallback_sort<O: StringSorterOps + ?Sized>(
     ops: &mut O,
     cmp: &dyn Fn(&BytesRef, &BytesRef) -> i32,
@@ -2075,6 +2084,8 @@ impl<'a> StableStringSorter<'a> {
 
 /// The anonymous `StableMSBRadixSorter` returned by
 /// `StableStringSorter.radixSorter`.
+///
+/// Equivalent to `org.apache.lucene.util.StableStringSorter#radixSorter`.
 struct StableStringRadixOps<'a, O: StableStringSorterOps + ?Sized> {
     ops: &'a mut O,
     cmp: &'a dyn BytesRefComparator,
@@ -2119,6 +2130,8 @@ impl<O: StableStringSorterOps + ?Sized> StableMSBRadixSorterOps for StableString
 
 /// Lucene's `StableStringSorter.fallbackSorter(Comparator)`: a [`MergeSorter`]
 /// reading values through [`StringSorterOps::get`].
+///
+/// Equivalent to `org.apache.lucene.util.StableStringSorter#fallbackSorter`.
 pub fn stable_string_fallback_sort<O: StableStringSorterOps + ?Sized>(
     ops: &mut O,
     cmp: &dyn Fn(&BytesRef, &BytesRef) -> i32,

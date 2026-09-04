@@ -547,6 +547,15 @@ impl<T, C: PriorityQueueComparator<T>> PriorityQueue<T, C> {
         self.heap[1].as_ref()
     }
 
+    /// Returns the least element without removing it, for mutation in place.
+    ///
+    /// Java's `top()` hands back the element itself, which the caller is free
+    /// to mutate before calling `updateTop()`; Rust splits that into a shared
+    /// and a mutable borrow, so the mutating half lives here.
+    pub fn top_mut(&mut self) -> Option<&mut T> {
+        self.heap[1].as_mut()
+    }
+
     /// Removes and returns the least element in `O(log size)` time.
     pub fn pop(&mut self) -> Option<T> {
         if self.size == 0 {
@@ -655,6 +664,21 @@ impl<T, C: PriorityQueueComparator<T>> PriorityQueue<T, C> {
             }
         }
         self.heap[i] = Some(node);
+    }
+
+    /// Returns the internal heap array.
+    ///
+    /// The heap is one-based: slot `0` is unused and slots `1..=size` hold the
+    /// live elements, so the empty slots come back as `None` exactly as Java's
+    /// `Object[]` holds `null` there.
+    ///
+    /// Java declares this `protected final` so that only extensions reach it;
+    /// Rust has no `protected`, so it is `pub` like every other accessor of
+    /// this port.
+    ///
+    /// Equivalent to `org.apache.lucene.util.PriorityQueue#getHeapArray`.
+    pub fn heap_array(&self) -> &[Option<T>] {
+        &self.heap
     }
 }
 

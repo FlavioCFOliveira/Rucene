@@ -263,7 +263,12 @@ static THREAD_POOL_NUMBER: AtomicUsize = AtomicUsize::new(1);
 /// **Divergence from Lucene 10.5.0.** Java also places the thread in a
 /// `ThreadGroup`, clears the daemon flag and sets `Thread.NORM_PRIORITY`.
 /// Rust's `std::thread` has no thread groups, no daemon flag and no portable
-/// priority, so only the naming carries over.
+/// priority, so only the naming carries over. In particular the private
+/// `NamedThreadFactory.getThreadGroup()` (`NamedThreadFactory.java:51-59`) has
+/// no port: it reads `System.getSecurityManager()` and
+/// `Thread.currentThread().getThreadGroup()`, and its result is only ever
+/// passed to the `Thread(ThreadGroup, Runnable, String, long)` constructor,
+/// none of which exists in Rust.
 #[derive(Debug)]
 pub struct NamedThreadFactory {
     thread_name_prefix: String,

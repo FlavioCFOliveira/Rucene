@@ -66,6 +66,16 @@ where
         }
     }
 
+    /// Builds a fresh instance to place in the buffer.
+    ///
+    /// Java declares this `protected abstract` and lets the subclass supply
+    /// it; here it calls the closure the constructor was given.
+    ///
+    /// Equivalent to `org.apache.lucene.util.RollingBuffer#newInstance`.
+    fn new_instance(&mut self) -> T {
+        (self.new_instance)()
+    }
+
     /// Resets every live instance and rewinds the buffer.
     pub fn reset(&mut self) {
         // Java decrements first and wraps inside the loop.
@@ -116,7 +126,7 @@ where
                 // `next_write` has exactly that effect.
                 self.buffer.rotate_left(self.next_write);
                 for _ in old_len..new_len {
-                    let instance = (self.new_instance)();
+                    let instance = self.new_instance();
                     self.buffer.push(instance);
                 }
                 self.next_write = old_len;

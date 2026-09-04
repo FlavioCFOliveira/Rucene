@@ -9,6 +9,7 @@
 #![deny(unsafe_code)]
 
 use std::{
+    cmp::Ordering,
     io,
     sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
@@ -54,6 +55,92 @@ impl IntsRef {
     /// Equivalent to `IntsRef.intsEquals(IntsRef)`.
     pub fn ints_equals(&self, other: &Self) -> bool {
         self.slice() == other.slice()
+    }
+
+    /// Returns an `IntsRef` whose content is a copy of `other`'s active slice,
+    /// with offset zero and length `other.length`.
+    ///
+    /// Equivalent to `org.apache.lucene.util.IntsRef#deepCopyOf`.
+    pub fn deep_copy_of(other: &IntsRef) -> Self {
+        Self {
+            ints: other.slice().to_vec(),
+            offset: 0,
+            length: other.length,
+        }
+    }
+
+    /// Java's `hashCode()`, reproduced exactly so that values hash the same way
+    /// on both sides of the port.
+    ///
+    /// Equivalent to `org.apache.lucene.util.IntsRef#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        const PRIME: i32 = 31;
+        let mut result: i32 = 0;
+        for &v in self.slice() {
+            result = PRIME.wrapping_mul(result).wrapping_add(v);
+        }
+        result
+    }
+
+    /// Performs internal consistency checks.
+    ///
+    /// Java's `ints` can be `null` and its `offset`/`length` can be negative;
+    /// neither is representable here, so the corresponding checks are dropped
+    /// and the remaining messages are reproduced verbatim.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when an invariant is violated,
+    /// mirroring Java's `IllegalStateException` messages.
+    ///
+    /// Equivalent to `org.apache.lucene.util.IntsRef#isValid`.
+    pub fn is_valid(&self) -> Result<(), LuceneError> {
+        if self.length > self.ints.len() {
+            return Err(LuceneError::IllegalState(format!(
+                "length is out of bounds: {},ints.length={}",
+                self.length,
+                self.ints.len()
+            )));
+        }
+        if self.offset > self.ints.len() {
+            return Err(LuceneError::IllegalState(format!(
+                "offset out of bounds: {},ints.length={}",
+                self.offset,
+                self.ints.len()
+            )));
+        }
+        if self.offset + self.length > self.ints.len() {
+            return Err(LuceneError::IllegalState(format!(
+                "offset+length out of bounds: offset={},length={},ints.length={}",
+                self.offset,
+                self.length,
+                self.ints.len()
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl PartialEq for IntsRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.ints_equals(other)
+    }
+}
+
+impl Eq for IntsRef {}
+
+impl PartialOrd for IntsRef {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for IntsRef {
+    /// Signed `i32` order comparison.
+    ///
+    /// Equivalent to `org.apache.lucene.util.IntsRef#compareTo`.
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.slice().cmp(other.slice())
     }
 }
 

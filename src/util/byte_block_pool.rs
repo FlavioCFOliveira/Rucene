@@ -352,6 +352,38 @@ impl ByteBlockPool {
         }
     }
 
+    /// Reads `bytes_length` bytes out of the pool starting at the global
+    /// `offset` into `bytes` at `bytes_offset`.
+    ///
+    /// Note: this method allows to copy across block boundaries.
+    ///
+    /// Equivalent to `org.apache.lucene.util.ByteBlockPool#readBytes`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the range addresses a block that was never allocated, or if
+    /// `bytes` is too short to receive `bytes_length` bytes at `bytes_offset`.
+    pub fn read_bytes(
+        &self,
+        offset: i64,
+        bytes: &mut [u8],
+        mut bytes_offset: usize,
+        bytes_length: usize,
+    ) {
+        let mut bytes_left = bytes_length;
+        let mut buffer_index = (offset >> BYTE_BLOCK_SHIFT) as usize;
+        let mut pos = (offset as usize) & BYTE_BLOCK_MASK;
+        while bytes_left > 0 {
+            let buffer = &self.buffers[buffer_index];
+            buffer_index += 1;
+            let chunk = bytes_left.min(BYTE_BLOCK_SIZE - pos);
+            bytes[bytes_offset..bytes_offset + chunk].copy_from_slice(&buffer[pos..pos + chunk]);
+            bytes_offset += chunk;
+            bytes_left -= chunk;
+            pos = 0;
+        }
+    }
+
     /// Returns the bytes previously stored at `start` by [`Self::add_bytes_ref`].
     ///
     /// Equivalent to `BytesRefBlockPool.fillBytesRef(BytesRef, int)`.
@@ -382,6 +414,13 @@ impl ByteBlockPool {
     /// Panics if `start` was not produced by [`Self::add_bytes_ref`].
     pub fn hash_at(&self, start: i32) -> i32 {
         hash_bytes(self.term_bytes(start))
+    }
+
+    /// Returns the current position (in absolute value) of this byte pool.
+    ///
+    /// Equivalent to `org.apache.lucene.util.ByteBlockPool#getPosition`.
+    pub fn position(&self) -> i64 {
+        self.buffer_upto as i64 * BYTE_BLOCK_SIZE as i64 + self.byte_upto as i64
     }
 }
 

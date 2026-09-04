@@ -42,6 +42,8 @@ fn lz4_hash_hc(i: u32) -> usize {
 /// The Java original uses `BitUtil.VH_NATIVE_INT`, which is little-endian on the
 /// hardware that produces the reference index files. Using little-endian here
 /// ensures byte-for-byte compatibility with those files.
+///
+/// Equivalent to `org.apache.lucene.util.compress.LZ4#readInt`.
 fn read_native_int(buf: &[u8], i: usize) -> u32 {
     u32::from_le_bytes([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]])
 }

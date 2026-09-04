@@ -942,6 +942,8 @@ impl GroupVIntUtil {
     /// # Errors
     ///
     /// Returns `LuceneError::Io` if the input is truncated or otherwise invalid.
+    ///
+    /// Equivalent to `org.apache.lucene.util.GroupVIntUtil#readGroupVInts$Baseline`.
     pub fn read_group_vints_baseline(
         src: &[u8],
         pos: &mut usize,
@@ -963,6 +965,8 @@ impl GroupVIntUtil {
 
     /// Equivalent to the private `GroupVIntUtil.readGroupVInt$Baseline(DataInput,
     /// int[], int)`.
+    ///
+    /// Equivalent to `org.apache.lucene.util.GroupVIntUtil#readGroupVInt$Baseline`.
     fn read_group_vint_baseline(
         src: &[u8],
         pos: &mut usize,
@@ -3798,6 +3802,8 @@ impl FixedBitSet {
     }
 
     /// Equivalent to the private `FixedBitSet.word2Array(long, int, int[], int)`.
+    ///
+    /// Equivalent to `org.apache.lucene.util.FixedBitSet#word2Array`.
     fn word_to_array(mut word: u64, base: i32, docs: &mut [i32], offset: usize) -> usize {
         let bit_count = word.count_ones() as usize;
 
@@ -3819,6 +3825,8 @@ impl FixedBitSet {
     /// Equivalent to the private `FixedBitSet.denseWord2Array(long, int, int[], int)`,
     /// the branch-free path Lucene takes for a word with at least 32 bits set: it
     /// writes speculatively at both halves and advances only on a set bit.
+    ///
+    /// Equivalent to `org.apache.lucene.util.FixedBitSet#denseWord2Array`.
     fn dense_word_to_array(word: u64, base: i32, docs: &mut [i32], mut offset: usize) -> usize {
         debug_assert!(docs.len() - offset >= word.count_ones() as usize + 1);
 
@@ -3895,6 +3903,141 @@ impl Eq for FixedBitSet {}
 impl Hash for FixedBitSet {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.write_i32(self.hash_code());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RefCount
+// ---------------------------------------------------------------------------
+
+/// The hook a [`RefCount`] runs when its count reaches zero.
+///
+/// Equivalent to what a Java subclass installs by overriding
+/// `RefCount.release()`.
+pub type RefCountRelease<T> = Box<dyn Fn(&T) -> Result<(), LuceneError> + Send + Sync>;
+
+/// Manages reference counting for a given object.
+///
+/// Equivalent to `org.apache.lucene.util.RefCount`.
+///
+/// **Divergence from Lucene 10.5.0.** Java makes [`Self::release`] a
+/// `protected` method that extensions override to free resources attached to
+/// the managed object (`RefCount.java:40`); Rust has no subclassing, so the
+/// override is a closure handed to [`Self::with_release`] and
+/// [`Self::new`] keeps Java's default no-op. This mirrors how
+/// [`crate::util::io_function::FilterIterator`] ports Lucene's other
+/// single-overridable-method class.
+pub struct RefCount<T> {
+    ref_count: std::sync::atomic::AtomicI32,
+    object: T,
+    release: Option<RefCountRelease<T>>,
+}
+
+impl<T: Debug> Debug for RefCount<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RefCount")
+            .field("refCount", &self.ref_count)
+            .field("object", &self.object)
+            .finish()
+    }
+}
+
+impl<T> RefCount<T> {
+    /// Wraps `object` with a reference count of one and Lucene's default
+    /// no-op release.
+    ///
+    /// Equivalent to `org.apache.lucene.util.RefCount#RefCount`.
+    pub fn new(object: T) -> Self {
+        Self {
+            ref_count: std::sync::atomic::AtomicI32::new(1),
+            object,
+            release: None,
+        }
+    }
+
+    /// Wraps `object` with a reference count of one, running `release` when
+    /// the count reaches zero.
+    ///
+    /// Equivalent to instantiating a Java subclass that overrides
+    /// `RefCount.release()`.
+    pub fn with_release(object: T, release: RefCountRelease<T>) -> Self {
+        Self {
+            ref_count: std::sync::atomic::AtomicI32::new(1),
+            object,
+            release: Some(release),
+        }
+    }
+
+    /// Called when reference counting hits 0. By default this does nothing,
+    /// but the closure given to [`Self::with_release`] can e.g. release
+    /// resources attached to the object managed by this instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever the release closure raised, standing in for Java's
+    /// `IOException`.
+    ///
+    /// Equivalent to `org.apache.lucene.util.RefCount#release`.
+    pub fn release(&self) -> Result<(), LuceneError> {
+        match &self.release {
+            Some(release) => release(&self.object),
+            None => Ok(()),
+        }
+    }
+
+    /// Decrements the reference count of this object. When it hits 0, calls
+    /// [`Self::release`].
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever [`Self::release`] raised, having put the reference
+    /// back exactly as Java's `finally` block does, or
+    /// [`LuceneError::IllegalState`] when the count went negative, which is
+    /// Java's `IllegalStateException`.
+    ///
+    /// Equivalent to `org.apache.lucene.util.RefCount#decRef`.
+    pub fn dec_ref(&self) -> Result<(), LuceneError> {
+        let rc = self
+            .ref_count
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+            - 1;
+        if rc == 0 {
+            if let Err(e) = self.release() {
+                // Put the reference back on failure.
+                self.ref_count
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Err(e);
+            }
+        } else if rc < 0 {
+            return Err(LuceneError::IllegalState(format!(
+                "too many decRef calls: refCount is {rc} after decrement"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Returns the managed object.
+    ///
+    /// Equivalent to `org.apache.lucene.util.RefCount#get`; Java hands back the
+    /// reference itself, which in this owning port is a borrow.
+    pub fn get(&self) -> &T {
+        &self.object
+    }
+
+    /// Returns the current reference count.
+    ///
+    /// Equivalent to `org.apache.lucene.util.RefCount#getRefCount`.
+    pub fn ref_count(&self) -> i32 {
+        self.ref_count.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Increments the reference count. Calls to this method must be matched
+    /// with calls to [`Self::dec_ref`].
+    ///
+    /// Equivalent to `org.apache.lucene.util.RefCount#incRef`.
+    pub fn inc_ref(&self) {
+        self.ref_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
