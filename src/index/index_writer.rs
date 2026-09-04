@@ -8,31 +8,40 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+use std::time::Instant;
 
 use crate::analysis::Analyzer;
 use crate::document::{Document, Field, NumericValue};
 use crate::error::{LuceneError, Result};
 use crate::index::buffered_updates_stream::BufferedUpdatesStream;
 use crate::index::codec_reader::CodecReader;
+use crate::index::directory_reader::{
+    DirectoryReader, IndexWriter as IndexWriterTrait, StandardDirectoryReader,
+};
 use crate::index::doc_values_field_updates::DocValuesFieldUpdates;
 use crate::index::doc_values_update::{DocValuesUpdate, DocValuesUpdateValue};
 use crate::index::documents_writer::Query;
 use crate::index::documents_writer::{DeleteNode, DocumentsWriter, FlushNotifications, MAX_DOCS};
 use crate::index::field_infos::FieldNumbers;
 use crate::index::index_file_deleter::{IndexFileDeleter, WRITE_LOCK_NAME};
+use crate::index::index_reader::IndexReader;
 use crate::index::index_writer_config::{IndexWriterConfig, LiveIndexWriterConfig, OpenMode};
-use crate::index::merge_policy::{MergeContext, MergePolicy, MergeTrigger, OneMerge};
+use crate::index::merge_policy::{
+    MergeContext, MergePolicy, MergeSpecification, MergeTrigger, OneMerge,
+    OneMergeWrappingMergePolicy,
+};
 use crate::index::merge_scheduler::MergeSource;
 use crate::index::readers_and_updates::ReaderPool;
 use crate::index::segment_info::{SegmentCommitInfo, SegmentInfo};
 use crate::index::segment_infos::SegmentInfos;
 use crate::index::segment_merger::SegmentMerger;
+use crate::index::segment_reader::SegmentReader;
 use crate::index::{DocValuesType, IndexableFieldType, Term};
 use crate::search::Sort;
 use crate::store::{
     BufferedChecksumIndexInput, DefaultIOContext, Directory, IOContext, IndexInput, IndexOutput,
-    Lock,
+    Lock, DEFAULT_IO_CONTEXT,
 };
 use crate::util::extra::Version;
 use crate::util::string_helper::StringHelper;
@@ -143,6 +152,27 @@ pub struct IndexWriter {
     /// between, the merged segment may have missed some of the packet's
     /// updates, so the pass is repeated against the new segment.
     merge_finished_gen: AtomicI64,
+    /// Serialises the two-stage full flushes, so that only one runs at a time.
+    ///
+    /// Equivalent to `IndexWriter.fullFlushLock`. A full flush swaps the
+    /// documents writer's delete queue and stops the per-thread writers from
+    /// flushing until it is finished, which only holds if a single full flush is
+    /// in progress at a time.
+    full_flush_lock: Mutex<()>,
+    /// A weak handle on this writer, once it has been shared with
+    /// [`shared`](Self::shared).
+    ///
+    /// **Divergence from Lucene 10.5.0.** `IndexWriter.getReader` hands `this`
+    /// to `StandardDirectoryReader.open` (`IndexWriter.java:610`) so the
+    /// near-real-time reader can call back into the writer, and
+    /// `preparePointInTimeMerge` captures `IndexWriter.this` in the merge hooks
+    /// it installs (`IndexWriter.java:3941-4053`). A Rust `&self` cannot be
+    /// turned into the shared handle those two need, so the writer records a
+    /// weak self-reference when it is moved into an `Arc` by
+    /// [`shared`](Self::shared). The reference is weak rather than strong
+    /// because the merge hooks live inside the writer's own pending merges, and
+    /// a strong handle there would keep the writer alive for ever.
+    self_ref: OnceLock<Weak<IndexWriter>>,
 }
 
 impl std::fmt::Debug for IndexWriter {
@@ -330,6 +360,42 @@ impl IndexWriter {
             buffered_updates_stream: BufferedUpdatesStream::with_info_stream(info_stream),
             closing: AtomicBool::new(false),
             merge_finished_gen: AtomicI64::new(0),
+            full_flush_lock: Mutex::new(()),
+            self_ref: OnceLock::new(),
+        })
+    }
+
+    /// Moves this writer into an `Arc` and records the weak self-reference the
+    /// near-real-time reader path needs.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java has no counterpart: an
+    /// `IndexWriter` there can always hand `this` to the readers and merge
+    /// hooks it creates. Rust cannot produce a shared handle from `&self`, so a
+    /// writer that is going to serve `get_reader` must be shared through this
+    /// method; see [`self_ref`](Self::self_ref) and
+    /// [`IndexWriter::get_reader`](crate::index::directory_reader::IndexWriter::get_reader).
+    pub fn shared(self) -> Arc<Self> {
+        let writer = Arc::new(self);
+        // `OnceLock::set` fails only when the cell is already filled, which
+        // cannot happen for a writer that has just been moved into this `Arc`.
+        let _ = writer.self_ref.set(Arc::downgrade(&writer));
+        writer
+    }
+
+    /// Returns the shared handle on this writer recorded by
+    /// [`shared`](Self::shared).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when this writer was never shared,
+    /// because there is then no handle a reader or a merge hook could hold.
+    fn shared_self(&self) -> Result<Arc<IndexWriter>> {
+        self.self_ref.get().and_then(Weak::upgrade).ok_or_else(|| {
+            LuceneError::IllegalState(
+                "this IndexWriter was not shared; a near-real-time reader needs a writer \
+                     moved into an Arc by IndexWriter::shared"
+                    .to_string(),
+            )
         })
     }
 
@@ -1032,6 +1098,9 @@ impl IndexWriter {
     }
 
     fn do_flush(&self) -> Result<()> {
+        // Equivalent to the `synchronized (fullFlushLock)` Java's `doFlush`
+        // wraps the two-stage flush in (`IndexWriter.java:4383`).
+        let _full_flush = self.lock_full_flush()?;
         let flush_result = self.documents_writer.flush_all_threads();
         let published = self.publish_flushed_segments();
         // Finish the full flush whichever way the two steps went, as Java's
@@ -1423,14 +1492,75 @@ impl IndexWriter {
         scheduler.merge(self, trigger)
     }
 
-    /// Asks the policy for merges and queues them.
+    /// Asks the writer's own policy for merges and queues them.
     ///
-    /// Equivalent to `IndexWriter.updatePendingMerges`.
+    /// Equivalent to `IndexWriter.updatePendingMerges(MergeTrigger, int)` in
+    /// the shape every caller but `preparePointInTimeMerge` uses it, which
+    /// always passes `config.getMergePolicy()`.
     fn update_pending_merges(&self, trigger: MergeTrigger, max_num_segments: i32) -> Result<()> {
-        let mut state = self.state()?;
         let policy = self.config.merge_policy();
-        let infos = clone_infos(&state.segment_infos)?;
-        let spec = if max_num_segments > 0 {
+        self.update_pending_merges_with_policy(policy.as_ref(), trigger, max_num_segments)?;
+        Ok(())
+    }
+
+    /// Asks `merge_policy` for merges, queues them, and returns the
+    /// specification it produced.
+    ///
+    /// Equivalent to `IndexWriter.updatePendingMerges(MergePolicy, MergeTrigger,
+    /// int)`. The specification is returned because
+    /// [`prepare_point_in_time_merge`](Self::prepare_point_in_time_merge) has to
+    /// hold on to the merges it queued so it can pull their readers and wait
+    /// for them.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's specification holds the very
+    /// `OneMerge` objects that `registerMerge` mutated and `getNextMerge` hands
+    /// to the scheduler. This port's [`OneMerge`] is a value that
+    /// `register_merge` moves into the pending list, so the returned
+    /// specification holds clones taken *after* registration; every piece of
+    /// state a caller observes afterwards — the readers, the aborted and
+    /// finished flags, the error and the hooks — is shared through `Arc`s, so
+    /// a clone sees exactly what Java's single object would have seen.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever asking the policy raises. As in
+    /// [`register_merges`](Self::register_merges), a merge the writer refuses
+    /// to register is skipped rather than reported.
+    fn update_pending_merges_with_policy(
+        &self,
+        merge_policy: &dyn MergePolicy,
+        trigger: MergeTrigger,
+        max_num_segments: i32,
+    ) -> Result<Option<MergeSpecification>> {
+        // In case infoStream was disabled on init, but then enabled at some
+        // point, try again to log the config here:
+        self.message_state()?;
+
+        debug_assert!(
+            max_num_segments == UNBOUNDED_MAX_MERGE_SEGMENTS || max_num_segments > 0,
+            "maxNumSegments must be unbounded or positive"
+        );
+
+        // **Divergence from Lucene 10.5.0.** Java runs the policy and registers
+        // its merges under one hold of the writer's monitor, which is
+        // reentrant, so the policy may call back into `getMergingSegments()`.
+        // This port's state lock is a plain `Mutex`, so the state is released
+        // while the policy runs and taken again to register what it returned;
+        // holding it across the call would deadlock the moment a policy asked
+        // the writer which segments are already merging.
+        let infos = {
+            let state = self.state()?;
+            if state.stop_merges {
+                return Ok(None);
+            }
+            clone_infos(&state.segment_infos)?
+        };
+        // Do not start new merges if disaster struck.
+        if self.get_tragic_exception().is_some() {
+            return Ok(None);
+        }
+
+        let spec = if max_num_segments != UNBOUNDED_MAX_MERGE_SEGMENTS {
             // `IndexWriter.forceMerge` maps every segment present when the
             // force-merge was requested to `Boolean.TRUE` — "original" — and
             // later maps each merge product to `Boolean.FALSE`
@@ -1441,12 +1571,43 @@ impl IndexWriter {
                 .iter()
                 .map(|info| (info.info.name.clone(), true))
                 .collect();
-            policy.find_forced_merges(&infos, max_num_segments, &to_merge, self)?
+            let mut spec =
+                merge_policy.find_forced_merges(&infos, max_num_segments, &to_merge, self)?;
+            if let Some(spec) = spec.as_mut() {
+                for merge in &mut spec.merges {
+                    merge.max_num_segments = max_num_segments;
+                }
+            }
+            spec
         } else {
-            policy.find_merges(trigger, &infos, self)?
+            match trigger {
+                MergeTrigger::GetReader | MergeTrigger::Commit => {
+                    merge_policy.find_full_flush_merges(trigger, &infos, self)?
+                }
+                MergeTrigger::AddIndexes => {
+                    return Err(LuceneError::IllegalState(
+                        "Merges with ADD_INDEXES trigger should be called from within the \
+                         addIndexes() API flow"
+                            .to_string(),
+                    ))
+                }
+                _ => merge_policy.find_merges(trigger, &infos, self)?,
+            }
         };
-        self.register_merges(&mut state, spec);
-        Ok(())
+
+        let Some(spec) = spec else { return Ok(None) };
+        let mut state = self.state()?;
+        let mut registered = MergeSpecification::new();
+        for merge in spec.merges {
+            let before = state.pending_merges.len();
+            // `register_merge` reports whether the merge was taken; a rejected
+            // one is simply skipped, as Java's loop does.
+            let taken = self.register_merge(&mut state, merge).unwrap_or(false);
+            if taken && state.pending_merges.len() == before + 1 {
+                registered.add(state.pending_merges[before].clone());
+            }
+        }
+        Ok(Some(registered))
     }
 
     /// Records the merges of `spec` as pending.
@@ -1682,6 +1843,7 @@ impl IndexWriter {
         merge: &mut OneMerge,
         doc_maps: &[crate::index::merge::DocMap],
     ) -> Result<bool> {
+        merge.on_merge_complete()?;
         self.test_point("startCommitMerge");
         if let Some(tragedy) = self.get_tragic_exception() {
             return Err(LuceneError::IllegalState(format!(
@@ -4487,13 +4649,13 @@ impl IndexWriter {
         // Java's `OneMerge.close(success, segmentDropped, consumer)` completes
         // the merge and calls `mergeFinished` *before* it applies the consumer
         // to the readers, so a second caller sees a finished merge with no
-        // readers left; the order is kept here.
-        //
-        // **Divergence from Lucene 10.5.0.** `mergeFinished(boolean, boolean)`
-        // is an overridable hook this port's [`OneMerge`] does not carry (only
-        // the point-in-time merge wrapper overrides it in Lucene, and that
-        // wrapper is not ported), so `dropped_segment` has nothing to reach.
+        // readers left; the order is kept here. A failure of the hook is
+        // remembered rather than raised at once, because Java runs the reader
+        // consumer from the `finally` of the same `try`.
         merge.set_finished();
+        if let Err(error) = merge.merge_finished(!suppress_exceptions, dropped_segment) {
+            first_error = Some(error);
+        }
         let readers = merge.take_merge_readers();
         for merge_reader in readers {
             let Some(sr) = merge_reader.reader.as_ref() else {
@@ -4532,7 +4694,6 @@ impl IndexWriter {
                 }
             }
         }
-        let _ = dropped_segment;
         match first_error {
             // Java's `IOUtils.applyToAll` runs the consumer for every reader and
             // then rethrows the first failure; suppressing means swallowing it,
@@ -4832,5 +4993,919 @@ impl IndexWriter {
             );
         }
         Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Near-real-time readers
+// -----------------------------------------------------------------------------
+
+/// The state `IndexWriter.getReader` carries across its two-stage full flush.
+///
+/// Equivalent to the locals `getReader` declares before its `try`
+/// (`IndexWriter.java:537-556`). Java's lambdas capture them directly; Rust
+/// needs them named and shared, because the reader factory, the point-in-time
+/// merge hooks and the cleanup path all reach the same values from different
+/// closures.
+struct GetReaderState {
+    /// Set once no further merged reader may be collected.
+    ///
+    /// Equivalent to `getReader`'s `stopCollectingMergedReaders`.
+    stop_collecting_merged_readers: Arc<AtomicBool>,
+    /// The readers the point-in-time merges produced, by segment name.
+    ///
+    /// Equivalent to `getReader`'s `mergedReaders`.
+    merged_readers: Arc<Mutex<HashMap<String, Arc<SegmentReader>>>>,
+    /// The read-only clones the reader factory opened, by segment name.
+    ///
+    /// Equivalent to `getReader`'s `openedReadOnlyClones`.
+    opened_read_only_clones: Arc<Mutex<HashMap<String, Arc<SegmentReader>>>>,
+    /// How long a merge on getReader may hold the caller up.
+    ///
+    /// Equivalent to `getReader`'s `maxFullFlushMergeWaitMillis`.
+    max_full_flush_merge_wait_millis: i64,
+    /// The merges prepared against the reader's segments.
+    ///
+    /// Equivalent to `getReader`'s `onGetReaderMerges`.
+    on_get_reader_merges: Option<MergeSpecification>,
+    /// Whether the merged-reader resources still have to be released.
+    ///
+    /// Equivalent to `getReader`'s `onGetReaderMergeResources`, a `Closeable`
+    /// Java builds and closes once; a closure that borrows the writer cannot be
+    /// stored here, so the flag says whether
+    /// [`IndexWriter::close_get_reader_merge_resources`] still has to run.
+    on_get_reader_merge_resources: bool,
+    /// The segments the reader opened on, which the merges rewrite in place.
+    ///
+    /// Equivalent to `getReader`'s `openingSegmentInfos`.
+    opening_segment_infos: Option<Arc<Mutex<SegmentInfos>>>,
+    /// The reader being built.
+    ///
+    /// Equivalent to `getReader`'s `r`.
+    reader: Option<Arc<StandardDirectoryReader>>,
+    /// Whether the full flush wrote anything.
+    ///
+    /// Equivalent to `getReader`'s `anyChanges`.
+    any_changes: bool,
+}
+
+impl GetReaderState {
+    /// Creates the empty state a `get_reader` call starts from.
+    fn new(max_full_flush_merge_wait_millis: i64) -> Self {
+        Self {
+            stop_collecting_merged_readers: Arc::new(AtomicBool::new(false)),
+            merged_readers: Arc::new(Mutex::new(HashMap::new())),
+            opened_read_only_clones: Arc::new(Mutex::new(HashMap::new())),
+            max_full_flush_merge_wait_millis,
+            on_get_reader_merges: None,
+            on_get_reader_merge_resources: false,
+            opening_segment_infos: None,
+            reader: None,
+            any_changes: false,
+        }
+    }
+}
+
+/// Locks one of the maps `get_reader` shares between its closures.
+///
+/// Equivalent to reading a `HashMap` Java's `getReader` captures in a lambda;
+/// Rust needs the sharing spelled out, and a poisoned lock reported.
+fn lock_reader_map<'a>(
+    map: &'a Mutex<HashMap<String, Arc<SegmentReader>>>,
+    name: &str,
+) -> Result<MutexGuard<'a, HashMap<String, Arc<SegmentReader>>>> {
+    map.lock()
+        .map_err(|_| LuceneError::IllegalState(format!("{name} mutex poisoned")))
+}
+
+impl IndexWriter {
+    /// Takes the lock that lets a single full flush run at a time.
+    ///
+    /// Equivalent to entering `synchronized (fullFlushLock)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the lock is poisoned.
+    fn lock_full_flush(&self) -> Result<MutexGuard<'_, ()>> {
+        self.full_flush_lock
+            .lock()
+            .map_err(|_| LuceneError::IllegalState("full flush lock poisoned".to_string()))
+    }
+
+    /// Opens the read-only clone of `sci` a near-real-time reader is built from.
+    ///
+    /// Equivalent to the `IOFunction<SegmentCommitInfo, SegmentReader>
+    /// readerFactory` `IndexWriter.getReader` declares
+    /// (`IndexWriter.java:545-559`): the clone is pulled through the reader
+    /// pool so the reader is pooled and can be reused, and it is recorded when
+    /// a merge on getReader may later want it back.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever pooling the segment, cloning the reader, or
+    /// releasing the pooled entry raises.
+    fn nrt_reader_factory(
+        &self,
+        sci: &SegmentCommitInfo,
+        max_full_flush_merge_wait_millis: i64,
+        opened_read_only_clones: &Mutex<HashMap<String, Arc<SegmentReader>>>,
+    ) -> Result<Arc<SegmentReader>> {
+        let rld = self.get_pooled_instance(sci, true)?.ok_or_else(|| {
+            LuceneError::IllegalState(format!("segment {} has no pooled reader", sci.info.name))
+        })?;
+        // Java releases the pooled entry from a `finally`, whatever the clone
+        // did, so both outcomes are collected before either is reported.
+        let cloned = rld.get_read_only_clone(&*DEFAULT_IO_CONTEXT);
+        let released = self.release(&rld, true);
+        let segment_reader = cloned?;
+        released?;
+        // Only track this if we actually do fullFlush merges.
+        if max_full_flush_merge_wait_millis > 0 {
+            lock_reader_map(opened_read_only_clones, "openedReadOnlyClones")?
+                .insert(sci.info.name.clone(), Arc::clone(&segment_reader));
+        }
+        Ok(segment_reader)
+    }
+
+    /// Flushes everything in memory and opens the reader over the result.
+    ///
+    /// Equivalent to the body of the `synchronized (fullFlushLock)` block of
+    /// `IndexWriter.getReader` (`IndexWriter.java:578-672`), up to and
+    /// including the point-in-time merge preparation.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java runs the second half of this
+    /// method under `synchronized (this)` as well, so that a merge cannot land
+    /// between `writeReaderPool` and `StandardDirectoryReader.open`. This
+    /// port's writer state lives behind a non-reentrant `Mutex` and every step
+    /// below takes it for itself, so the hold cannot be extended across them
+    /// without deadlocking; the steps keep Lucene's order, but a merge
+    /// completing between two of them is not excluded.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever flushing, publishing, applying the deletes, writing
+    /// the reader pool, opening the reader or preparing the merges raises.
+    fn get_reader_full_flush(
+        &self,
+        apply_all_deletes: bool,
+        write_all_deletes: bool,
+        nrt: &mut GetReaderState,
+    ) -> Result<()> {
+        // TODO: should we somehow make the seqNo available in the returned NRT
+        // reader?
+        nrt.any_changes = self.documents_writer.flush_all_threads()? < 0;
+        if !nrt.any_changes {
+            // Prevent double increment since docWriter#doFlush increments the
+            // flushcount if we flushed anything.
+            self.flush_count.fetch_add(1, Ordering::AcqRel);
+        }
+        self.publish_flushed_segments()?;
+        self.process_events(false)?;
+
+        if apply_all_deletes {
+            self.apply_all_deletes_and_updates()?;
+        }
+
+        // NOTE: we cannot carry doc values updates in memory yet, so we always
+        // must write them through to disk and re-open each SegmentReader.
+        self.write_reader_pool(write_all_deletes)?;
+
+        let writer_handle = self.shared_self()?;
+        let infos = {
+            let state = self.state()?;
+            state.segment_infos.clone()
+        };
+        let max_wait = nrt.max_full_flush_merge_wait_millis;
+        let opened_read_only_clones = Arc::clone(&nrt.opened_read_only_clones);
+        let reader = StandardDirectoryReader::open_from_writer(
+            Arc::clone(&writer_handle) as Arc<dyn IndexWriterTrait>,
+            &mut |sci| self.nrt_reader_factory(sci, max_wait, &opened_read_only_clones),
+            &infos,
+            apply_all_deletes,
+            write_all_deletes,
+        )?;
+        if self.info_stream.is_enabled(IW) {
+            self.info_stream.message(
+                IW,
+                &format!(
+                    "return reader version={} reader={reader:?}",
+                    DirectoryReader::version(reader.as_ref())?
+                ),
+            );
+        }
+        nrt.reader = Some(Arc::clone(&reader));
+
+        if max_wait > 0 {
+            // We take the SIS from the reader which has already pruned away
+            // fully deleted readers; this makes pulling the readers below after
+            // the merge simpler since we can be safe that they are not closed.
+            let opening_segment_infos = Arc::new(Mutex::new(reader.segment_infos().clone()));
+            nrt.opening_segment_infos = Some(Arc::clone(&opening_segment_infos));
+
+            let stop = Arc::clone(&nrt.stop_collecting_merged_readers);
+            let merged_readers = Arc::clone(&nrt.merged_readers);
+            let opened_read_only_clones = Arc::clone(&nrt.opened_read_only_clones);
+            // The consumer outlives this call — it is stored on the merges the
+            // writer keeps — so it holds a weak handle on the writer rather
+            // than borrowing it.
+            let writer = Arc::downgrade(&writer_handle);
+            let merge_finished: Arc<dyn Fn(&SegmentCommitInfo) -> Result<()> + Send + Sync> =
+                Arc::new(move |sci: &SegmentCommitInfo| {
+                    debug_assert!(
+                        !stop.load(Ordering::Acquire),
+                        "illegal state  merge reader must be not pulled since we already stopped \
+                         waiting for merges"
+                    );
+                    // A dropped writer has no reader left to hand out; there is
+                    // nothing to collect and nothing to protect.
+                    let Some(writer) = writer.upgrade() else {
+                        return Ok(());
+                    };
+                    let apply =
+                        writer.nrt_reader_factory(sci, max_wait, &opened_read_only_clones)?;
+                    lock_reader_map(&merged_readers, "mergedReaders")?
+                        .insert(sci.info.name.clone(), apply);
+                    // We need to incRef the files of the opened SR otherwise
+                    // it's possible that another merge removes the segment
+                    // before we pass it on to the SDR.
+                    let mut state = writer.state()?;
+                    state.deleter.inc_ref_files(sci.files()?.iter());
+                    Ok(())
+                });
+
+            nrt.on_get_reader_merges = self.prepare_point_in_time_merge(
+                opening_segment_infos,
+                Arc::clone(&nrt.stop_collecting_merged_readers),
+                MergeTrigger::GetReader,
+                merge_finished,
+            )?;
+            nrt.on_get_reader_merge_resources = true;
+        }
+        Ok(())
+    }
+
+    /// Waits for the merges prepared on getReader and reopens the reader over
+    /// their result.
+    ///
+    /// Equivalent to the private `IndexWriter.finishGetReaderMerge`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever running the merges, reopening the reader or closing
+    /// the leftover merged readers raises.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_get_reader_merge(
+        &self,
+        stop_collecting_merged_readers: &AtomicBool,
+        merged_readers: &Mutex<HashMap<String, Arc<SegmentReader>>>,
+        opened_read_only_clones: &Mutex<HashMap<String, Arc<SegmentReader>>>,
+        opening_segment_infos: &Mutex<SegmentInfos>,
+        apply_all_deletes: bool,
+        write_all_deletes: bool,
+        point_in_time_merges: &MergeSpecification,
+        max_commit_merge_wait_millis: i64,
+    ) -> Result<Option<Arc<StandardDirectoryReader>>> {
+        self.execute_merge(MergeTrigger::GetReader)?;
+        point_in_time_merges.r#await(max_commit_merge_wait_millis);
+
+        stop_collecting_merged_readers.store(true, Ordering::Release);
+        let infos = opening_segment_infos
+            .lock()
+            .map_err(|_| {
+                LuceneError::IllegalState("openingSegmentInfos mutex poisoned".to_string())
+            })?
+            .clone();
+        let reader = self.maybe_reopen_merged_nrt_reader(
+            merged_readers,
+            opened_read_only_clones,
+            &infos,
+            apply_all_deletes,
+            write_all_deletes,
+        )?;
+        // Java closes the readers still in the map and then clears it; draining
+        // does both at once and cannot close the same reader twice.
+        let leftover: Vec<Arc<SegmentReader>> = lock_reader_map(merged_readers, "mergedReaders")?
+            .drain()
+            .map(|(_, reader)| reader)
+            .collect();
+        let mut first_error: Option<LuceneError> = None;
+        for merged in leftover {
+            if let Err(error) = IndexReader::close(merged.as_ref()) {
+                first_error.get_or_insert(error);
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(reader),
+        }
+    }
+
+    /// Reopens the near-real-time reader over the segments the point-in-time
+    /// merges produced, when they produced any.
+    ///
+    /// Equivalent to the private `IndexWriter.maybeReopenMergedNRTReader`. The
+    /// reader factory hands each merged reader straight to the new reader,
+    /// which takes over closing it, and re-uses — with a fresh reference — the
+    /// read-only clones the first reader already opened for the segments the
+    /// merges left alone.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the reader or releasing the merged segments'
+    /// file references raises.
+    fn maybe_reopen_merged_nrt_reader(
+        &self,
+        merged_readers: &Mutex<HashMap<String, Arc<SegmentReader>>>,
+        opened_read_only_clones: &Mutex<HashMap<String, Arc<SegmentReader>>>,
+        opening_segment_infos: &SegmentInfos,
+        apply_all_deletes: bool,
+        write_all_deletes: bool,
+    ) -> Result<Option<Arc<StandardDirectoryReader>>> {
+        if lock_reader_map(merged_readers, "mergedReaders")?.is_empty() {
+            return Ok(None);
+        }
+        let files: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        let writer = self.shared_self()?;
+        let opened = StandardDirectoryReader::open_from_writer(
+            writer as Arc<dyn IndexWriterTrait>,
+            &mut |sci| {
+                // As soon as we remove the reader and return it the
+                // StandardDirectoryReader#open will take care of closing it. We
+                // only need to handle the readers that remain in the
+                // mergedReaders map and close them.
+                let removed =
+                    lock_reader_map(merged_readers, "mergedReaders")?.remove(&sci.info.name);
+                match removed {
+                    Some(reader) => {
+                        files
+                            .lock()
+                            .map_err(|_| {
+                                LuceneError::IllegalState("merged files mutex poisoned".to_string())
+                            })?
+                            .extend(reader.get_segment_info().files()?);
+                        Ok(reader)
+                    }
+                    None => {
+                        let reader =
+                            lock_reader_map(opened_read_only_clones, "openedReadOnlyClones")?
+                                .remove(&sci.info.name)
+                                .ok_or_else(|| {
+                                    LuceneError::IllegalState(format!(
+                                        "segment {} has neither a merged reader nor an opened \
+                                         read-only clone",
+                                        sci.info.name
+                                    ))
+                                })?;
+                        // Each of the readers we reuse from the previous reader
+                        // needs to be incRef'd since we reuse them but don't
+                        // have an implicit incRef in the SDR:open call.
+                        IndexReader::inc_ref(reader.as_ref())?;
+                        Ok(reader)
+                    }
+                }
+            },
+            opening_segment_infos,
+            apply_all_deletes,
+            write_all_deletes,
+        );
+        // Now the SDR#open call has incRef'd the files so we can let them go.
+        let files = files
+            .into_inner()
+            .map_err(|_| LuceneError::IllegalState("merged files mutex poisoned".to_string()))?;
+        let released = {
+            let mut state = self.state()?;
+            state.deleter.dec_ref_files(files.iter())
+        };
+        let opened = opened?;
+        released?;
+        Ok(Some(opened))
+    }
+
+    /// Releases everything the merges on getReader opened, whatever the outcome.
+    ///
+    /// Equivalent to the `Closeable onGetReaderMergeResources`
+    /// `IndexWriter.getReader` builds (`IndexWriter.java:645-668`): it stops any
+    /// further merged reader from being collected, drops the file references
+    /// the collected ones hold, and closes them.
+    ///
+    /// # Errors
+    ///
+    /// Reports the first failure releasing a reader, after every reader has
+    /// been dealt with.
+    fn close_get_reader_merge_resources(
+        &self,
+        stop_collecting_merged_readers: &AtomicBool,
+        merged_readers: &Mutex<HashMap<String, Arc<SegmentReader>>>,
+    ) -> Result<()> {
+        stop_collecting_merged_readers.store(true, Ordering::Release);
+        // This only happens for readers that haven't been removed from the
+        // mergedReaders and released elsewhere; draining the map is how a
+        // second call is made harmless.
+        let readers: Vec<Arc<SegmentReader>> = lock_reader_map(merged_readers, "mergedReaders")?
+            .drain()
+            .map(|(_, reader)| reader)
+            .collect();
+        let mut first_error: Option<LuceneError> = None;
+        for reader in readers {
+            let released = (|| -> Result<()> {
+                let mut state = self.state()?;
+                state
+                    .deleter
+                    .dec_ref_files(reader.get_segment_info().files()?.iter())
+            })();
+            let closed = IndexReader::close(reader.as_ref());
+            if let Err(error) = released {
+                first_error.get_or_insert(error);
+            }
+            if let Err(error) = closed {
+                first_error.get_or_insert(error);
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// Prepares merges over the segments a commit or a near-real-time reader is
+    /// about to be opened on.
+    ///
+    /// This optimization allows a commit/getReader to wait for merges on
+    /// smallish segments to reduce the eventual number of tiny segments in the
+    /// commit point / NRT Reader. The merges the policy returns are wrapped so
+    /// that, once one has finished, `merging_segment_infos` is rewritten to
+    /// replace the source segments with the freshly merged one, ignoring all
+    /// deletions and updates that were made to documents in the merged segment
+    /// while it was merging: those updates do not belong to the point-in-time
+    /// commit point / NRT reader. The readers are pulled here, while the merges
+    /// are being registered, so that no concurrent deletion or update that does
+    /// not belong to the segment can be seen.
+    ///
+    /// Equivalent to the private `IndexWriter.preparePointInTimeMerge`.
+    ///
+    /// **Divergences from Lucene 10.5.0**, both forced by the shape of this
+    /// port's [`OneMerge`]:
+    ///
+    /// * Java wraps each merge in an anonymous `OneMerge` subclass that
+    ///   overrides `mergeFinished`, `onMergeComplete`, `initMergeReaders`,
+    ///   `wrapForMerge`, `reorder` and `setMergeInfo`, and delegates the last
+    ///   four to the merge it wraps. `OneMerge` is a value here, not a class to
+    ///   subclass, so the wrapping policy installs the two real overrides as
+    ///   hooks on the merge itself and arms its once-only reader
+    ///   initialisation; the three delegating overrides have nothing to
+    ///   delegate to, because there is only ever one merge object.
+    /// * Java's `mergeFinished` builds a `OneMerge` over the segments being
+    ///   merged away and hands it to `SegmentInfos.applyMergeChanges`. This
+    ///   port's [`SegmentInfos::apply_merge_changes`] takes the merged segment
+    ///   and the segments it replaces directly, so no throw-away merge is
+    ///   built.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever asking the policy or pulling the merge readers
+    /// raises. A failure to pull the readers unregisters and aborts every merge
+    /// this call queued before it is reported.
+    fn prepare_point_in_time_merge(
+        &self,
+        merging_segment_infos: Arc<Mutex<SegmentInfos>>,
+        stop_collecting_merge_results: Arc<AtomicBool>,
+        trigger: MergeTrigger,
+        merge_finished: Arc<dyn Fn(&SegmentCommitInfo) -> Result<()> + Send + Sync>,
+    ) -> Result<Option<MergeSpecification>> {
+        debug_assert!(
+            matches!(trigger, MergeTrigger::GetReader | MergeTrigger::Commit),
+            "illegal trigger: {trigger:?}"
+        );
+
+        // The hooks are stored on merges the writer itself owns, so they hold a
+        // weak handle; see `IndexWriter::self_ref`.
+        let writer = Arc::downgrade(&self.shared_self()?);
+        let info_stream = Arc::clone(&self.info_stream);
+        // Equivalent to the anonymous subclass's `origInfo` field, written by
+        // `onMergeComplete` and read by `mergeFinished`.
+        let orig_info: Arc<Mutex<Option<SegmentCommitInfo>>> = Arc::new(Mutex::new(None));
+
+        let wrap: Arc<dyn Fn(OneMerge) -> OneMerge + Send + Sync> = Arc::new(move |mut to_wrap| {
+            // We do this only once below to pull readers as point in time
+            // readers with respect to the commit point we try to update.
+            to_wrap.set_init_merge_readers_once();
+
+            {
+                let stop = Arc::clone(&stop_collecting_merge_results);
+                let consumer = Arc::clone(&merge_finished);
+                let orig_info = Arc::clone(&orig_info);
+                to_wrap.set_on_merge_complete(Arc::new(move |merge: &OneMerge| {
+                    let Some(info) = merge.get_merge_info() else {
+                        return Ok(());
+                    };
+                    // Never do this if the segment is dropped / empty.
+                    if !stop.load(Ordering::Acquire)
+                        && !merge.is_aborted()
+                        && info.info.max_doc()? > 0
+                    {
+                        consumer(info)?;
+                        // Clone the target info to make sure we have the
+                        // original info without the updated del and update gens.
+                        *orig_info.lock().map_err(|_| {
+                            LuceneError::IllegalState("origInfo mutex poisoned".to_string())
+                        })? = Some(info.clone());
+                    }
+                    Ok(())
+                }));
+            }
+
+            {
+                let stop = Arc::clone(&stop_collecting_merge_results);
+                let orig_info = Arc::clone(&orig_info);
+                let merging_segment_infos = Arc::clone(&merging_segment_infos);
+                let writer = writer.clone();
+                let info_stream = Arc::clone(&info_stream);
+                to_wrap.set_merge_finished(Arc::new(
+                    move |merge: &OneMerge, committed: bool, segment_dropped: bool| {
+                        // `committed` is set to false by our caller if the
+                        // allowed max wall clock time
+                        // (IWC.getMaxCommitMergeWaitMillis()) has elapsed, which
+                        // means we did not make the timeout and will not commit
+                        // our merge to the to-be-committed SegmentInfos.
+                        if segment_dropped || !committed || stop.load(Ordering::Acquire) {
+                            if info_stream.is_enabled(IW) {
+                                info_stream.message(
+                                    IW,
+                                    &format!(
+                                        "skip apply merge during commit: {}",
+                                        merge.seg_string()
+                                    ),
+                                );
+                            }
+                            return Ok(());
+                        }
+
+                        // Make sure onMergeComplete really was called.
+                        let orig_info = orig_info
+                            .lock()
+                            .map_err(|_| {
+                                LuceneError::IllegalState("origInfo mutex poisoned".to_string())
+                            })?
+                            .clone()
+                            .ok_or_else(|| {
+                                LuceneError::IllegalState(
+                                    "onMergeComplete was not called before mergeFinished"
+                                        .to_string(),
+                                )
+                            })?;
+
+                        if info_stream.is_enabled(IW) {
+                            info_stream.message(
+                                IW,
+                                &format!("now apply merge during commit: {}", merge.seg_string()),
+                            );
+                        }
+
+                        let mut infos = merging_segment_infos.lock().map_err(|_| {
+                            LuceneError::IllegalState(
+                                "mergingSegmentInfos mutex poisoned".to_string(),
+                            )
+                        })?;
+
+                        let merged_segment_names: HashSet<&str> = merge
+                            .segments
+                            .iter()
+                            .map(|sci| sci.info.name.as_str())
+                            .collect();
+                        let to_commit_merged_away_segments: Vec<SegmentCommitInfo> = infos
+                            .iter()
+                            .filter(|sci| merged_segment_names.contains(sci.info.name.as_str()))
+                            .cloned()
+                            .collect();
+
+                        // If we do this in a getReader call the file references
+                        // are obsolete, since we already hold a reader that has
+                        // incRef'd these files and will decRef them when it is
+                        // closed.
+                        if matches!(trigger, MergeTrigger::Commit) {
+                            if let Some(writer) = writer.upgrade() {
+                                let mut state = writer.state()?;
+                                state.deleter.inc_ref_files(orig_info.files()?.iter());
+                                for sci in &to_commit_merged_away_segments {
+                                    state.deleter.dec_ref_files(sci.files()?.iter())?;
+                                }
+                            }
+                        }
+
+                        let segment_counter = i64::from_str_radix(&orig_info.info.name[1..], 36)
+                            .map_err(|_| {
+                                LuceneError::IllegalState(format!(
+                                    "segment name {} is not a base-36 counter",
+                                    orig_info.info.name
+                                ))
+                            })?;
+                        infos.counter = infos.counter.max(segment_counter + 1);
+                        infos.apply_merge_changes(
+                            &orig_info,
+                            &to_commit_merged_away_segments,
+                            false,
+                        )?;
+                        Ok(())
+                    },
+                ));
+            }
+
+            to_wrap
+        });
+
+        let wrapping_policy: Arc<dyn MergePolicy> = Arc::new(OneMergeWrappingMergePolicy::new(
+            self.config.merge_policy(),
+            wrap,
+        ));
+        let point_in_time_merges = self.update_pending_merges_with_policy(
+            wrapping_policy.as_ref(),
+            trigger,
+            UNBOUNDED_MAX_MERGE_SEGMENTS,
+        )?;
+
+        let Some(point_in_time_merges) = point_in_time_merges else {
+            return Ok(None);
+        };
+
+        let opened = (|| -> Result<()> {
+            for merge in &point_in_time_merges.merges {
+                let context = crate::store::merge_io_context(merge.get_store_merge_info());
+                merge.init_merge_readers(|sci| {
+                    let rld = self.get_pooled_instance(sci, true)?.ok_or_else(|| {
+                        LuceneError::IllegalState(format!(
+                            "segment {} has no pooled reader",
+                            sci.info.name
+                        ))
+                    })?;
+                    // Calling set_is_merging is important since it causes the
+                    // RaU to record all DV updates in a separate map in order to
+                    // be applied to the merged segment after it's done.
+                    rld.set_is_merging();
+                    let mut state = self.state()?;
+                    rld.get_reader_for_merge(context.as_ref(), |mr| {
+                        if let Some(reader) = mr.reader.as_ref() {
+                            state
+                                .deleter
+                                .inc_ref_files(reader.get_segment_info().files()?.iter());
+                        }
+                        Ok(())
+                    })
+                })?;
+            }
+            Ok(())
+        })();
+
+        if let Err(error) = opened {
+            // That merge is broken; we need to clean up after it — it is fine,
+            // we can still reach the writer's state to do this.
+            let mut state = self.state()?;
+            for merge in &point_in_time_merges.merges {
+                let position = state
+                    .pending_merges
+                    .iter()
+                    .position(|pending| pending.segments == merge.segments);
+                let Some(position) = position else { continue };
+                let mut pending = state.pending_merges.remove(position);
+                let aborted = self.abort_one_merge(&pending);
+                self.merge_finish(&mut state, &mut pending);
+                aborted?;
+            }
+            return Err(error);
+        }
+
+        Ok(Some(point_in_time_merges))
+    }
+}
+
+impl IndexWriterTrait for IndexWriter {
+    /// Returns whether a reader opened on `infos` is still current.
+    ///
+    /// Equivalent to `IndexWriter.nrtIsCurrent(SegmentInfos)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `nrtIsCurrent` first calls
+    /// `ensureOpen()` and lets the `AlreadyClosedException` escape. The trait
+    /// this implements answers with a plain `bool`, so a closed or tragically
+    /// failed writer answers "not current"; the caller then asks for a new
+    /// reader, and it is `get_reader` that reports the closure.
+    fn nrt_is_current(&self, infos: &SegmentInfos) -> bool {
+        IndexWriter::nrt_is_current(self, infos).unwrap_or(false)
+    }
+
+    /// Returns a near-real-time reader covering everything this writer has done
+    /// so far, including changes that have not been committed.
+    ///
+    /// The reader is opened over a full flush: every in-memory per-thread
+    /// buffer is written to disk, the buffered deletes and doc-values updates
+    /// are applied and written through, and only then are the segment readers
+    /// opened — all of it under the full-flush lock, so no concurrently
+    /// indexing thread can slip a segment or a delete in between. When
+    /// `IndexWriterConfig.setMaxFullFlushMergeWaitMillis` is positive, merges
+    /// over the freshly flushed segments are prepared and waited for, and the
+    /// reader is reopened over their result.
+    ///
+    /// Equivalent to the package-private
+    /// `IndexWriter.getReader(boolean applyAllDeletes, boolean writeAllDeletes)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java also folds its `maybeMerge`
+    /// flag into `anyChanges` before deciding whether to merge
+    /// (`IndexWriter.java:705`). That flag is set by `prepareCommitInternal`
+    /// and by the deletes application (`IndexWriter.java:3892, 6522`), neither
+    /// of which reports "anything changed" in this port, so there is no flag to
+    /// fold in and `any_changes` carries only what this full flush reported.
+    ///
+    /// Java additionally catches `Error` — a JVM-level failure, as opposed to
+    /// an `IOException` — to record it as a tragedy before rethrowing.
+    /// [`LuceneError`] draws no such line, so the tragedy is only acted on
+    /// through [`maybe_close_on_tragic_event`](IndexWriter::maybe_close_on_tragic_event),
+    /// which is what Java's `finally` does on every failing path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `write_all_deletes` is set
+    /// without `apply_all_deletes`, [`LuceneError::IllegalState`] when the
+    /// writer is closed or was never shared with [`IndexWriter::shared`], and
+    /// otherwise propagates whatever the flush, the reader or the merges raise.
+    fn get_reader(
+        &self,
+        apply_all_deletes: bool,
+        write_all_deletes: bool,
+    ) -> Result<Arc<dyn DirectoryReader>> {
+        self.ensure_open()?;
+
+        if write_all_deletes && !apply_all_deletes {
+            return Err(LuceneError::IllegalArgument(
+                "applyAllDeletes must be true when writeAllDeletes=true".to_string(),
+            ));
+        }
+
+        // The reader this call returns keeps a handle on the writer, and so do
+        // the merges it may prepare. Fail before anything is flushed when there
+        // is no handle to give them.
+        self.shared_self()?;
+
+        let t_start = Instant::now();
+
+        if self.info_stream.is_enabled(IW) {
+            self.info_stream.message(IW, "flush at getReader");
+        }
+        // Do this up front before flushing so that the readers obtained during
+        // this flush are pooled, the first time this method is called:
+        self.reader_pool.enable_reader_pooling(true);
+        self.do_before_flush()?;
+
+        let mut nrt = GetReaderState::new(self.config.max_full_flush_merge_wait_millis());
+
+        // Equivalent to the body of Java's outer `try`; the cleanup below is its
+        // `finally`, which Rust has to spell out.
+        let outcome = (|| -> Result<()> {
+            {
+                /*
+                 * For releasing a NRT reader we must ensure that DW doesn't add
+                 * any segments or deletes until we are done with creating the
+                 * NRT DirectoryReader. We release the two stage full flush after
+                 * we are done opening the directory reader.
+                 */
+                let _full_flush = self.lock_full_flush()?;
+                let flushed =
+                    self.get_reader_full_flush(apply_all_deletes, write_all_deletes, &mut nrt);
+                let success = flushed.is_ok();
+                // Done: finish the full flush!
+                let finished = self.documents_writer.finish_full_flush(success);
+                if success {
+                    self.process_events(false)?;
+                    self.do_after_flush()?;
+                } else if self.info_stream.is_enabled(IW) {
+                    self.info_stream
+                        .message(IW, "hit exception during NRT reader");
+                }
+                flushed?;
+                finished?;
+            }
+
+            // Only relevant if we do merge on getReader.
+            if let Some(point_in_time_merges) = nrt.on_get_reader_merges.take() {
+                let opening_segment_infos =
+                    Arc::clone(nrt.opening_segment_infos.as_ref().ok_or_else(|| {
+                        LuceneError::IllegalState(
+                            "point-in-time merges were prepared without opening segment infos"
+                                .to_string(),
+                        )
+                    })?);
+                let merged_reader = self.finish_get_reader_merge(
+                    &nrt.stop_collecting_merged_readers,
+                    &nrt.merged_readers,
+                    &nrt.opened_read_only_clones,
+                    &opening_segment_infos,
+                    apply_all_deletes,
+                    write_all_deletes,
+                    &point_in_time_merges,
+                    nrt.max_full_flush_merge_wait_millis,
+                )?;
+                if let Some(merged_reader) = merged_reader {
+                    // Java replaces `r` from a `finally`, so the swap happens
+                    // whether or not closing the reader it replaces succeeds.
+                    let replaced = nrt.reader.replace(merged_reader);
+                    if let Some(replaced) = replaced {
+                        IndexReader::close(replaced.as_ref())?;
+                    }
+                }
+            }
+
+            if nrt.any_changes {
+                self.maybe_merge_with(
+                    &self.config.merge_policy(),
+                    MergeTrigger::FullFlush,
+                    UNBOUNDED_MAX_MERGE_SEGMENTS,
+                )?;
+            }
+            if self.info_stream.is_enabled(IW) {
+                self.info_stream.message(
+                    IW,
+                    &format!("getReader took {} ms", t_start.elapsed().as_millis()),
+                );
+            }
+            Ok(())
+        })();
+
+        match outcome {
+            Ok(()) => {
+                if nrt.on_get_reader_merge_resources {
+                    self.close_get_reader_merge_resources(
+                        &nrt.stop_collecting_merged_readers,
+                        &nrt.merged_readers,
+                    )?;
+                }
+                let reader = nrt.reader.take().ok_or_else(|| {
+                    LuceneError::IllegalState("getReader produced no reader".to_string())
+                })?;
+                Ok(reader as Arc<dyn DirectoryReader>)
+            }
+            Err(error) => {
+                // Java's `IOUtils.closeWhileHandlingException(r,
+                // onGetReaderMergeResources)`: release both, keep the original
+                // failure.
+                if let Some(reader) = nrt.reader.take() {
+                    let _ = IndexReader::close(reader.as_ref());
+                }
+                if nrt.on_get_reader_merge_resources {
+                    let _ = self.close_get_reader_merge_resources(
+                        &nrt.stop_collecting_merged_readers,
+                        &nrt.merged_readers,
+                    );
+                }
+                self.maybe_close_on_tragic_event();
+                Err(error)
+            }
+        }
+    }
+
+    /// Returns whether this writer has been closed.
+    ///
+    /// Equivalent to `IndexWriter.isClosed()`.
+    fn is_closed(&self) -> bool {
+        IndexWriter::is_closed(self)
+    }
+
+    /// Returns the directory this writer writes to.
+    ///
+    /// Equivalent to `IndexWriter.getDirectory()`.
+    fn get_directory(&self) -> Arc<dyn Directory> {
+        Arc::clone(&self.directory)
+    }
+
+    /// Records that a reader is holding on to every file `segment_infos`
+    /// references.
+    ///
+    /// Equivalent to `IndexWriter.incRefDeleter(SegmentInfos)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the deleter raises.
+    fn inc_ref_deleter(&self, segment_infos: &SegmentInfos) -> Result<()> {
+        IndexWriter::inc_ref_deleter(self, segment_infos)
+    }
+
+    /// Releases the files a reader was holding on to.
+    ///
+    /// Equivalent to `IndexWriter.decRefDeleter(SegmentInfos)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the deleter raises.
+    fn dec_ref_deleter(&self, segment_infos: &SegmentInfos) -> Result<()> {
+        IndexWriter::dec_ref_deleter(self, segment_infos)
+    }
+
+    /// Returns whether this writer's merge policy keeps a segment whose
+    /// documents have all been deleted.
+    ///
+    /// Equivalent to `writer.getConfig().mergePolicy.keepFullyDeletedSegment(...)`
+    /// as `StandardDirectoryReader.open` calls it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the merge policy raises.
+    fn keep_fully_deleted_segment(&self) -> Result<bool> {
+        self.config.merge_policy().keep_fully_deleted_segment()
     }
 }

@@ -176,8 +176,9 @@ pub use documents_writer::{
 // Directory/segment reader exports.
 pub use directory_reader::{
     index_exists, list_commits, open as open_directory_reader, open_if_changed,
-    open_if_changed_with_commit, open_if_changed_with_writer, open_with_commit, DirectoryReader,
-    IndexWriter as DirectoryReaderIndexWriter, StandardDirectoryReader,
+    open_if_changed_with_commit, open_if_changed_with_writer, open_with_commit, open_with_writer,
+    open_with_writer_flags, DirectoryReader, IndexWriter as DirectoryReaderIndexWriter,
+    StandardDirectoryReader,
 };
 pub use doc_values_writer::{
     BinaryDocValuesWriter, DocValuesWriter, NumericDocValuesWriter, SortedDocValuesWriter,

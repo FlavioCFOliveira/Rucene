@@ -157,6 +157,25 @@ pub type MergeReorderer = Arc<
         + Sync,
 >;
 
+/// Runs after a merge is done and every reader it held has been closed.
+///
+/// Equivalent to overriding
+/// `MergePolicy.OneMerge.mergeFinished(boolean success, boolean segmentDropped)`,
+/// whose base implementation does nothing; only the point-in-time merge
+/// `IndexWriter.preparePointInTimeMerge` prepares installs one. The merge is
+/// handed to the hook because Java's override reads the fields of the very
+/// `OneMerge` it is attached to.
+pub type MergeFinishedHook = Arc<dyn Fn(&OneMerge, bool, bool) -> Result<()> + Send + Sync>;
+
+/// Runs just before a merge is applied to the writer's `SegmentInfos`.
+///
+/// Equivalent to overriding `MergePolicy.OneMerge.onMergeComplete()`, whose base
+/// implementation does nothing; only the point-in-time merge
+/// `IndexWriter.preparePointInTimeMerge` prepares installs one. As with
+/// [`MergeFinishedHook`], the merge is handed to the hook so it can read the
+/// merged segment the writer has just built.
+pub type MergeCompleteHook = Arc<dyn Fn(&OneMerge) -> Result<()> + Send + Sync>;
+
 /// One merge the policy wants performed.
 ///
 /// Equivalent to `MergePolicy.OneMerge`.
@@ -231,6 +250,27 @@ pub struct OneMerge {
     /// Equivalent to overriding `OneMerge.reorder(CodecReader, Directory,
     /// Executor)`; see [`MergeReorderer`].
     reorder: Option<MergeReorderer>,
+    /// The hook that runs once the merge is done and its readers are closed.
+    ///
+    /// Equivalent to overriding `OneMerge.mergeFinished(boolean, boolean)`; see
+    /// [`MergeFinishedHook`]. Shared through an `Arc` so a cloned `OneMerge`
+    /// still carries the override Java's single object would have carried.
+    merge_finished: Option<MergeFinishedHook>,
+    /// The hook that runs just before the merge is applied to the writer's
+    /// `SegmentInfos`.
+    ///
+    /// Equivalent to overriding `OneMerge.onMergeComplete()`; see
+    /// [`MergeCompleteHook`].
+    on_merge_complete: Option<MergeCompleteHook>,
+    /// When set, [`init_merge_readers`](Self::init_merge_readers) opens the
+    /// readers only the first time it is called.
+    ///
+    /// Equivalent to the `onlyOnce` `AtomicBoolean` of the anonymous `OneMerge`
+    /// subclass `IndexWriter.preparePointInTimeMerge` installs
+    /// (`IndexWriter.java:4025-4036`): that merge pulls its readers as
+    /// point-in-time readers while the writer's lock is held, so the later
+    /// `initMergeReaders` call `mergeMiddle` makes must not open a second set.
+    init_merge_readers_once: Option<Arc<AtomicBool>>,
 }
 
 impl std::fmt::Debug for OneMerge {
@@ -286,6 +326,9 @@ impl OneMerge {
             merge_readers: Arc::new(Mutex::new(Vec::new())),
             wrap_for_merge: None,
             reorder: None,
+            merge_finished: None,
+            on_merge_complete: None,
+            init_merge_readers_once: None,
         })
     }
 
@@ -324,6 +367,9 @@ impl OneMerge {
             merge_readers: Arc::new(Mutex::new(readers)),
             wrap_for_merge: None,
             reorder: None,
+            merge_finished: None,
+            on_merge_complete: None,
+            init_merge_readers_once: None,
         }
     }
 
@@ -341,6 +387,16 @@ impl OneMerge {
     where
         F: FnMut(&SegmentCommitInfo) -> Result<MergeReader>,
     {
+        // Equivalent to the `onlyOnce.compareAndSet(false, true)` guard the
+        // point-in-time merge wrapper puts in front of `super.initMergeReaders`.
+        if let Some(once) = self.init_merge_readers_once.as_ref() {
+            if once
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return Ok(());
+            }
+        }
         debug_assert!(
             self.get_merge_reader().is_empty(),
             "merge readers must be empty"
@@ -441,6 +497,77 @@ impl OneMerge {
             Some(reorder) => reorder(reader, dir),
             None => Ok(None),
         }
+    }
+
+    /// Installs the guard that lets the readers be opened only once.
+    ///
+    /// Equivalent to the `onlyOnce` flag of the anonymous `OneMerge` subclass
+    /// `IndexWriter.preparePointInTimeMerge` installs; see
+    /// [`init_merge_readers`](Self::init_merge_readers).
+    pub fn set_init_merge_readers_once(&mut self) {
+        self.init_merge_readers_once = Some(Arc::new(AtomicBool::new(false)));
+    }
+
+    /// Installs the hook that runs once the merge is done and its readers are
+    /// closed.
+    ///
+    /// Equivalent to overriding `OneMerge.mergeFinished(boolean, boolean)`; see
+    /// [`MergeFinishedHook`].
+    pub fn set_merge_finished(&mut self, hook: MergeFinishedHook) {
+        self.merge_finished = Some(hook);
+    }
+
+    /// Reports that the merge is done and every reader it held is closed.
+    ///
+    /// Equivalent to `OneMerge.mergeFinished(boolean success, boolean
+    /// segmentDropped)`, whose base implementation does nothing.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the installed hook raises.
+    pub fn merge_finished(&self, success: bool, segment_dropped: bool) -> Result<()> {
+        match &self.merge_finished {
+            Some(hook) => hook(self, success, segment_dropped),
+            None => Ok(()),
+        }
+    }
+
+    /// Installs the hook that runs just before the merge is applied to the
+    /// writer's `SegmentInfos`.
+    ///
+    /// Equivalent to overriding `OneMerge.onMergeComplete()`; see
+    /// [`MergeCompleteHook`].
+    pub fn set_on_merge_complete(&mut self, hook: MergeCompleteHook) {
+        self.on_merge_complete = Some(hook);
+    }
+
+    /// Reports that the merged segment is about to be applied to the writer's
+    /// `SegmentInfos`.
+    ///
+    /// Equivalent to `OneMerge.onMergeComplete()`, whose base implementation
+    /// does nothing.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the installed hook raises.
+    pub fn on_merge_complete(&self) -> Result<()> {
+        match &self.on_merge_complete {
+            Some(hook) => hook(self),
+            None => Ok(()),
+        }
+    }
+
+    /// Returns what the store needs to know about this merge when opening
+    /// files for it.
+    ///
+    /// Equivalent to `OneMerge.getStoreMergeInfo()`.
+    pub fn get_store_merge_info(&self) -> crate::store::MergeInfo {
+        crate::store::MergeInfo::new(
+            self.total_max_doc,
+            self.estimated_merge_bytes,
+            self.is_external,
+            self.max_num_segments,
+        )
     }
 
     /// Marks the merge as started on the calling thread.
@@ -589,6 +716,42 @@ impl MergeSpecification {
     /// Returns whether the specification holds no merges.
     pub fn is_empty(&self) -> bool {
         self.merges.is_empty()
+    }
+
+    /// Waits at most `timeout_millis` for every merge of this specification to
+    /// finish, and returns whether they all did.
+    ///
+    /// Equivalent to the package-private
+    /// `MergePolicy.MergeSpecification.await(long timeout, TimeUnit unit)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java composes the `mergeCompleted`
+    /// `CompletableFuture` of every merge and blocks on the composite
+    /// (`MergePolicy.java:520-549`). This port's [`OneMerge`] records
+    /// completion in an `AtomicBool` rather than a future — the divergence the
+    /// type's own note records — so there is nothing to block on and the wait
+    /// polls [`OneMerge::has_finished`] until the deadline. The contract is
+    /// unchanged: it returns `true` only when every merge has finished, and
+    /// `false` when the deadline passed first.
+    pub fn r#await(&self, timeout_millis: i64) -> bool {
+        /// How long the poll sleeps between two checks, as Java's future-based
+        /// wait has no equivalent knob.
+        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
+
+        if timeout_millis <= 0 {
+            return self.merges.iter().all(OneMerge::has_finished);
+        }
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_millis(timeout_millis.unsigned_abs());
+        loop {
+            if self.merges.iter().all(OneMerge::has_finished) {
+                return true;
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            std::thread::sleep(POLL_INTERVAL.min(deadline - now));
+        }
     }
 }
 

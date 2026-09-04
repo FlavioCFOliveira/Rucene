@@ -63,6 +63,23 @@ pub trait IndexWriter: Send + Sync + Debug {
 
     /// Decrements the deleter ref count for the given `SegmentInfos`.
     fn dec_ref_deleter(&self, infos: &SegmentInfos) -> Result<()>;
+
+    /// Returns whether this writer's merge policy keeps a segment whose
+    /// documents have all been deleted.
+    ///
+    /// Equivalent to the `writer.getConfig().mergePolicy.keepFullyDeletedSegment(...)`
+    /// call inside `StandardDirectoryReader.open(IndexWriter, IOFunction,
+    /// SegmentInfos, boolean, boolean)` (`StandardDirectoryReader.java:137`).
+    /// The trait carries it because a `DirectoryReader` cannot reach the
+    /// writer's configuration otherwise; the default answer is
+    /// `MergePolicy.keepFullyDeletedSegment`'s own, which is `false`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever asking the merge policy raises.
+    fn keep_fully_deleted_segment(&self) -> Result<bool> {
+        Ok(false)
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -192,6 +209,93 @@ impl StandardDirectoryReader {
             false,
             false,
         )?))
+    }
+
+    /// Opens a near-real-time reader over the segments a writer has just
+    /// flushed.
+    ///
+    /// `reader_function` decides how each segment's reader is obtained, which
+    /// is how `IndexWriter.getReader` keeps track of the readers it pooled and
+    /// reuses the ones a point-in-time merge already opened. Segments that hold
+    /// no live document are dropped from the returned reader's `SegmentInfos`,
+    /// unless the writer's merge policy asks for them to be kept.
+    ///
+    /// Equivalent to the package-private
+    /// `StandardDirectoryReader.open(IndexWriter, IOFunction<SegmentCommitInfo,
+    /// SegmentReader>, SegmentInfos, boolean, boolean)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java also hands the reader the
+    /// comparator from `writer.getConfig().getLeafSorter()`
+    /// (`StandardDirectoryReader.java:155`). This port's
+    /// `StandardDirectoryReader` carries no leaf sorter at all, so there is
+    /// nothing to pass on.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever `reader_function`, releasing a dropped reader, or
+    /// incrementing the writer's deleter references raises. Every reader
+    /// already opened is released before the error escapes, as Java's `catch`
+    /// does.
+    pub(crate) fn open_from_writer(
+        writer: Arc<dyn IndexWriter>,
+        reader_function: &mut dyn FnMut(
+            &crate::index::segment_info::SegmentCommitInfo,
+        ) -> Result<Arc<SegmentReader>>,
+        infos: &SegmentInfos,
+        apply_all_deletes: bool,
+        write_all_deletes: bool,
+    ) -> Result<Arc<StandardDirectoryReader>> {
+        // IndexWriter synchronizes externally before calling us, which ensures
+        // infos will not change; so there's no need to process segments in
+        // reverse order.
+        let num_segments = infos.size();
+
+        let mut readers: Vec<Arc<SegmentReader>> = Vec::with_capacity(num_segments);
+        let dir = writer.get_directory();
+
+        let mut segment_infos = infos.clone();
+        let mut infos_upto = 0usize;
+        // Equivalent to the `try` of Java's method: on any failure every reader
+        // already opened must still be released before the error escapes.
+        let collected: Result<()> = (|| {
+            for i in 0..num_segments {
+                // NOTE: important that we use infos not segment_infos here, so
+                // that we are passing the actual instance of
+                // SegmentCommitInfo in IndexWriter's segmentInfos.
+                let info = infos.info(i);
+                let reader = reader_function(info)?;
+                if LeafReader::num_docs(reader.as_ref()) > 0
+                    || writer.keep_fully_deleted_segment()?
+                {
+                    // Steal the ref:
+                    readers.push(reader);
+                    infos_upto += 1;
+                } else {
+                    reader.dec_ref()?;
+                    segment_infos.remove_at(infos_upto);
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = collected {
+            return Err(Self::dec_ref_while_suppressing_exception(error, &readers));
+        }
+
+        if let Err(error) = writer.inc_ref_deleter(&segment_infos) {
+            return Err(Self::dec_ref_while_suppressing_exception(error, &readers));
+        }
+
+        match StandardDirectoryReader::new(
+            dir,
+            readers.clone(),
+            segment_infos,
+            Some(writer),
+            apply_all_deletes,
+            write_all_deletes,
+        ) {
+            Ok(reader) => Ok(Arc::new(reader)),
+            Err(error) => Err(Self::dec_ref_while_suppressing_exception(error, &readers)),
+        }
     }
 
     /// Builds one reader per segment, reusing an old reader wherever the
@@ -907,6 +1011,43 @@ pub fn open_with_commit(commit: &dyn IndexCommit) -> Result<Arc<dyn DirectoryRea
     let directory = commit.get_directory();
     let infos = SegmentInfos::read_commit(directory.as_ref(), &commit.get_segments_file_name())?;
     StandardDirectoryReader::open_from_infos(directory, infos, None, None)
+}
+
+/// Returns a near-real-time reader covering every change `writer` has made so
+/// far, including changes that have not been committed.
+///
+/// Equivalent to `DirectoryReader.open(IndexWriter)`, which applies all deletes
+/// but does not write them.
+///
+/// # Errors
+///
+/// Propagates whatever the writer's `get_reader` raises.
+pub fn open_with_writer(writer: &dyn IndexWriter) -> Result<Arc<dyn DirectoryReader>> {
+    open_with_writer_flags(writer, true, false)
+}
+
+/// Returns a near-real-time reader covering every change `writer` has made so
+/// far, controlling whether buffered deletes are applied and written.
+///
+/// Setting `apply_all_deletes` to `false` makes the reopen cheaper at the cost
+/// of returning documents that have already been deleted;
+/// `write_all_deletes` additionally forces the applied deletes and doc-values
+/// updates through to disk, which is what a replica reading the same directory
+/// needs.
+///
+/// Equivalent to `DirectoryReader.open(IndexWriter, boolean, boolean)`.
+///
+/// # Errors
+///
+/// Propagates whatever the writer's `get_reader` raises, including the
+/// `IllegalArgument` it reports when `write_all_deletes` is set without
+/// `apply_all_deletes`.
+pub fn open_with_writer_flags(
+    writer: &dyn IndexWriter,
+    apply_all_deletes: bool,
+    write_all_deletes: bool,
+) -> Result<Arc<dyn DirectoryReader>> {
+    writer.get_reader(apply_all_deletes, write_all_deletes)
 }
 
 /// If the index has changed since `old_reader` was opened, returns a new reader;
