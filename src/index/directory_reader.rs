@@ -73,6 +73,15 @@ pub trait IndexWriter: Send + Sync + Debug {
 ///
 /// Equivalent to `org.apache.lucene.index.DirectoryReader`.
 pub trait DirectoryReader: CompositeReader {
+    /// Returns this reader as `&dyn Any`, for the one downcast Java expresses
+    /// with `instanceof FilterDirectoryReader`.
+    ///
+    /// Equivalent to the `instanceof` check inside
+    /// `FilterDirectoryReader.unwrap(DirectoryReader)`. Rust has no
+    /// `instanceof` over a trait object, so every implementation provides this
+    /// escape hatch instead.
+    fn as_any(&self) -> &dyn std::any::Any;
+
     /// Returns the directory this index resides in.
     fn directory(&self) -> Arc<dyn Directory>;
 
@@ -202,23 +211,65 @@ impl StandardDirectoryReader {
         // The old readers go into a map so one can be looked up by segment name.
         let previous_segment_readers = Self::map_previous_readers(old_readers);
         let index_created_version = infos.index_created_version_major();
-        let mut readers = Vec::with_capacity(infos.size());
-        for i in 0..infos.size() {
-            let commit_info = infos.info(i);
-            let old_reader = Self::get_old_segment_reader(
-                old_readers,
-                previous_segment_readers
-                    .get(&commit_info.info.name)
-                    .copied(),
-                commit_info,
-            )?;
-            readers.push(Arc::new(Self::create_or_reuse_segment_reader(
-                commit_info,
-                old_reader,
-                index_created_version,
-            )?));
+        let mut readers: Vec<Arc<SegmentReader>> = Vec::with_capacity(infos.size());
+        // Equivalent to the `try`/`catch (Throwable t)` of the sequential branch
+        // of `StandardDirectoryReader.createSegmentReaders`: on any failure,
+        // every reader already opened must still be released before the error
+        // escapes.
+        let outcome: Result<()> = (|| {
+            for i in 0..infos.size() {
+                let commit_info = infos.info(i);
+                let old_reader = Self::get_old_segment_reader(
+                    old_readers,
+                    previous_segment_readers
+                        .get(&commit_info.info.name)
+                        .copied(),
+                    commit_info,
+                )?;
+                readers.push(Arc::new(Self::create_or_reuse_segment_reader(
+                    commit_info,
+                    old_reader,
+                    index_created_version,
+                )?));
+            }
+            Ok(())
+        })();
+        match outcome {
+            Ok(()) => Ok(readers),
+            Err(error) => Err(Self::dec_ref_while_suppressing_exception(error, &readers)),
         }
-        Ok(readers)
+    }
+
+    /// Releases every reader already opened in `readers`, folding any error
+    /// releasing them into `error` instead of letting it replace it.
+    ///
+    /// Equivalent to the private
+    /// `StandardDirectoryReader.decRefWhileSuppressingException(Throwable,
+    /// SegmentReader[])`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java attaches every release failure
+    /// to `error` through `Throwable.addSuppressed`, which `LuceneError` has no
+    /// counterpart for; this folds their messages into `error`'s instead, so
+    /// the original error is still the one returned, with the same
+    /// information appended rather than attached.
+    fn dec_ref_while_suppressing_exception(
+        error: LuceneError,
+        readers: &[Arc<SegmentReader>],
+    ) -> LuceneError {
+        let mut suppressed = Vec::new();
+        for reader in readers {
+            if let Err(release_error) = reader.dec_ref() {
+                suppressed.push(release_error.to_string());
+            }
+        }
+        if suppressed.is_empty() {
+            error
+        } else {
+            LuceneError::Other(format!(
+                "{error} (suppressed while releasing readers: {})",
+                suppressed.join("; ")
+            ))
+        }
     }
 
     /// Indexes the old readers by segment name.
@@ -473,6 +524,10 @@ impl CompositeReader for StandardDirectoryReader {
 }
 
 impl DirectoryReader for StandardDirectoryReader {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn directory(&self) -> Arc<dyn Directory> {
         Arc::clone(&self.directory)
     }
@@ -506,14 +561,11 @@ impl DirectoryReader for StandardDirectoryReader {
 
     fn do_open_if_changed(&self) -> Result<Option<Arc<dyn DirectoryReader>>> {
         self.ensure_open()?;
-        if let Some(ref writer) = self.writer {
-            return self.do_open_if_changed_from_writer(writer.as_ref(), self.apply_all_deletes);
+        if self.writer.is_some() {
+            self.do_open_from_writer(None)
+        } else {
+            self.do_open_no_writer(None)
         }
-        if self.is_current()? {
-            return Ok(None);
-        }
-        let latest = SegmentInfos::read_latest_commit(self.directory.as_ref())?;
-        Self::open_from_infos(Arc::clone(&self.directory), latest, None, None).map(Some)
     }
 
     fn do_open_if_changed_from_commit(
@@ -521,20 +573,13 @@ impl DirectoryReader for StandardDirectoryReader {
         commit: &dyn IndexCommit,
     ) -> Result<Option<Arc<dyn DirectoryReader>>> {
         self.ensure_open()?;
-        if !Arc::ptr_eq(&commit.get_directory(), &self.directory) {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "the specified commit does not match the specified Directory",
-            )));
+        // If we were obtained by writer.getReader(), re-ask the writer to get a
+        // new reader.
+        if self.writer.is_some() {
+            self.do_open_from_writer(Some(commit))
+        } else {
+            self.do_open_no_writer(Some(commit))
         }
-        if let Some(ref segments_file) = self.segment_infos.segments_file_name() {
-            if segments_file == &commit.get_segments_file_name() {
-                return Ok(None);
-            }
-        }
-        let infos =
-            SegmentInfos::read_commit(self.directory.as_ref(), &commit.get_segments_file_name())?;
-        Self::open_from_infos(Arc::clone(&self.directory), infos, None, None).map(Some)
     }
 
     fn do_open_if_changed_from_writer(
@@ -547,19 +592,119 @@ impl DirectoryReader for StandardDirectoryReader {
             if std::ptr::eq(my_writer.as_ref(), writer)
                 && apply_all_deletes == self.apply_all_deletes
             {
-                if writer.nrt_is_current(&self.segment_infos) {
-                    return Ok(None);
-                }
-                let new_reader =
-                    writer.get_reader(self.apply_all_deletes, self.write_all_deletes)?;
-                if new_reader.version()? == self.segment_infos.version() {
-                    return Ok(None);
-                }
-                return Ok(Some(new_reader));
+                return self.do_open_from_writer(None);
             }
         }
         // Different writer or different applyAllDeletes setting: ask the writer.
         Ok(Some(writer.get_reader(apply_all_deletes, false)?))
+    }
+}
+
+impl StandardDirectoryReader {
+    /// Reopens over the writer that produced this reader, when one did.
+    ///
+    /// Equivalent to the private
+    /// `StandardDirectoryReader.doOpenFromWriter(IndexCommit, ExecutorService)`
+    /// without the executor (see [`Self::create_segment_readers`]'s divergence
+    /// note).
+    ///
+    /// # Panics
+    ///
+    /// Panics if this reader was not opened from a writer; every caller in
+    /// this crate checks `self.writer.is_some()` first, as Java's callers rely
+    /// on the same invariant through `writer != null`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`Self::do_open_from_commit`] or the writer's
+    /// `get_reader` raises.
+    fn do_open_from_writer(
+        &self,
+        commit: Option<&dyn IndexCommit>,
+    ) -> Result<Option<Arc<dyn DirectoryReader>>> {
+        if commit.is_some() {
+            return self.do_open_from_commit(commit);
+        }
+        let writer = self
+            .writer
+            .as_ref()
+            .expect("INVARIANT: do_open_from_writer is only called when this reader has a writer");
+        if writer.nrt_is_current(&self.segment_infos) {
+            return Ok(None);
+        }
+        let reader = writer.get_reader(self.apply_all_deletes, self.write_all_deletes)?;
+        // If in fact no changes took place, return null.
+        if reader.version()? == self.segment_infos.version() {
+            reader.dec_ref()?;
+            return Ok(None);
+        }
+        Ok(Some(reader))
+    }
+
+    /// Reopens without a writer, from `commit` or from the directory's latest
+    /// commit.
+    ///
+    /// Equivalent to the private
+    /// `StandardDirectoryReader.doOpenNoWriter(IndexCommit, ExecutorService)`
+    /// without the executor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] when `commit` names a different directory,
+    /// and otherwise propagates whatever [`Self::do_open_from_commit`] raises.
+    fn do_open_no_writer(
+        &self,
+        commit: Option<&dyn IndexCommit>,
+    ) -> Result<Option<Arc<dyn DirectoryReader>>> {
+        match commit {
+            None => {
+                if self.is_current()? {
+                    return Ok(None);
+                }
+            }
+            Some(commit) => {
+                if !Arc::ptr_eq(&commit.get_directory(), &self.directory) {
+                    return Err(LuceneError::Io(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "the specified commit does not match the specified Directory",
+                    )));
+                }
+                if let Some(ref segments_file) = self.segment_infos.segments_file_name() {
+                    if segments_file == &commit.get_segments_file_name() {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        self.do_open_from_commit(commit)
+    }
+
+    /// Reopens from `commit`'s segments file, or the directory's latest one
+    /// when `commit` is `None`.
+    ///
+    /// Equivalent to the private
+    /// `StandardDirectoryReader.doOpenFromCommit(IndexCommit, ExecutorService)`
+    /// without the executor: Java's anonymous `SegmentInfos.FindSegmentsFile`
+    /// plays the same "specific commit, or whatever is latest" role that
+    /// [`SegmentInfos::read_commit`]/[`SegmentInfos::read_latest_commit`]
+    /// already give this port directly.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the segment infos or
+    /// [`Self::open_from_infos`] raises.
+    fn do_open_from_commit(
+        &self,
+        commit: Option<&dyn IndexCommit>,
+    ) -> Result<Option<Arc<dyn DirectoryReader>>> {
+        let infos = match commit {
+            Some(commit) => SegmentInfos::read_commit(
+                self.directory.as_ref(),
+                &commit.get_segments_file_name(),
+            )?,
+            None => SegmentInfos::read_latest_commit(self.directory.as_ref())?,
+        };
+        Self::open_from_infos(Arc::clone(&self.directory), infos, None, None).map(Some)
     }
 }
 

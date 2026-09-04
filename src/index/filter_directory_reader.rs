@@ -55,6 +55,25 @@ pub trait SubReaderWrapper: Send + Sync {
     }
 }
 
+/// Rewraps a [`DirectoryReader`] a reopen returned, so that a
+/// [`FilterDirectoryReader`]'s `doOpenIfChanged*` family hands back another
+/// instance of the same wrapping instead of the bare, unwrapped reader.
+///
+/// Equivalent to the protected abstract
+/// `FilterDirectoryReader.doWrapDirectoryReader(DirectoryReader)`. Java
+/// subclasses override that method to return `new SubclassReader(in, ...)`;
+/// Rust has no subclassing for the concrete [`FilterDirectoryReader`] to
+/// override, so the override becomes this injected callback instead — the
+/// same shape [`SubReaderWrapper`] already gives the leaves.
+pub trait DirectoryReaderWrapper: Send + Sync {
+    /// Wraps `inner`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the wrapped reader raises.
+    fn wrap(&self, inner: Arc<dyn DirectoryReader>) -> Result<Arc<dyn DirectoryReader>>;
+}
+
 /// A [`DirectoryReader`] that forwards every call to a wrapped reader, with its
 /// leaves passed through a [`SubReaderWrapper`].
 ///
@@ -62,6 +81,7 @@ pub trait SubReaderWrapper: Send + Sync {
 pub struct FilterDirectoryReader {
     inner: Arc<dyn DirectoryReader>,
     wrapper: Arc<dyn SubReaderWrapper>,
+    directory_wrapper: Arc<dyn DirectoryReaderWrapper>,
     wrapped_leaves: Vec<Arc<dyn LeafReader>>,
 }
 
@@ -74,21 +94,29 @@ impl std::fmt::Debug for FilterDirectoryReader {
 }
 
 impl FilterDirectoryReader {
-    /// Wraps `inner`, passing each of `leaves` through `wrapper`.
+    /// Wraps `inner`, passing each of `leaves` through `wrapper`, and
+    /// remembering `directory_wrapper` for `doOpenIfChanged*` to reproduce the
+    /// same wrapping on the reopened reader.
     ///
     /// **Divergence from Lucene 10.5.0.** Java's constructor reaches the leaves
     /// through `in.getSequentialSubReaders()` and downcasts each to
     /// `LeafReader`. Rust has no downcast from `dyn IndexReader`, so the caller
     /// supplies the leaves it already holds; every caller of this type has them.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever `wrapper` raises while wrapping `leaves`.
     pub fn new(
         inner: Arc<dyn DirectoryReader>,
         leaves: Vec<Arc<dyn LeafReader>>,
         wrapper: Arc<dyn SubReaderWrapper>,
+        directory_wrapper: Arc<dyn DirectoryReaderWrapper>,
     ) -> Result<Self> {
         let wrapped_leaves = wrapper.wrap_all(leaves)?;
         Ok(Self {
             inner,
             wrapper,
+            directory_wrapper,
             wrapped_leaves,
         })
     }
@@ -108,6 +136,60 @@ impl FilterDirectoryReader {
     /// Returns the wrapped leaves.
     pub fn wrapped_leaves(&self) -> &[Arc<dyn LeafReader>] {
         &self.wrapped_leaves
+    }
+
+    /// Returns a new wrapped instance of `inner`, produced by the injected
+    /// [`DirectoryReaderWrapper`].
+    ///
+    /// Equivalent to the protected abstract
+    /// `FilterDirectoryReader.doWrapDirectoryReader(DirectoryReader)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the [`DirectoryReaderWrapper`] raises.
+    fn do_wrap_directory_reader(
+        &self,
+        inner: Arc<dyn DirectoryReader>,
+    ) -> Result<Arc<dyn DirectoryReader>> {
+        self.directory_wrapper.wrap(inner)
+    }
+
+    /// Wraps `inner` unless it is `None`.
+    ///
+    /// Equivalent to the private final
+    /// `FilterDirectoryReader.wrapDirectoryReader(DirectoryReader)`, which
+    /// every `doOpenIfChanged*` override calls on the result of reopening the
+    /// delegate.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`Self::do_wrap_directory_reader`] raises.
+    fn wrap_directory_reader(
+        &self,
+        inner: Option<Arc<dyn DirectoryReader>>,
+    ) -> Result<Option<Arc<dyn DirectoryReader>>> {
+        match inner {
+            None => Ok(None),
+            Some(inner) => Ok(Some(self.do_wrap_directory_reader(inner)?)),
+        }
+    }
+
+    /// Unwraps nested `FilterDirectoryReader`s and returns the innermost
+    /// reader.
+    ///
+    /// Equivalent to `FilterDirectoryReader.unwrap(DirectoryReader)`.
+    pub fn unwrap(mut reader: Arc<dyn DirectoryReader>) -> Arc<dyn DirectoryReader> {
+        loop {
+            let next = reader
+                .as_any()
+                .downcast_ref::<FilterDirectoryReader>()
+                .map(|filter| Arc::clone(&filter.inner));
+            match next {
+                Some(next) => reader = next,
+                None => break,
+            }
+        }
+        reader
     }
 }
 
@@ -186,6 +268,10 @@ impl CompositeReader for FilterDirectoryReader {
 }
 
 impl DirectoryReader for FilterDirectoryReader {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn directory(&self) -> Arc<dyn Directory> {
         self.inner.directory()
     }
@@ -203,14 +289,14 @@ impl DirectoryReader for FilterDirectoryReader {
     }
 
     fn do_open_if_changed(&self) -> Result<Option<Arc<dyn DirectoryReader>>> {
-        self.inner.do_open_if_changed()
+        self.wrap_directory_reader(self.inner.do_open_if_changed()?)
     }
 
     fn do_open_if_changed_from_commit(
         &self,
         commit: &dyn IndexCommit,
     ) -> Result<Option<Arc<dyn DirectoryReader>>> {
-        self.inner.do_open_if_changed_from_commit(commit)
+        self.wrap_directory_reader(self.inner.do_open_if_changed_from_commit(commit)?)
     }
 
     fn do_open_if_changed_from_writer(
@@ -218,8 +304,10 @@ impl DirectoryReader for FilterDirectoryReader {
         writer: &dyn crate::index::directory_reader::IndexWriter,
         apply_all_deletes: bool,
     ) -> Result<Option<Arc<dyn DirectoryReader>>> {
-        self.inner
-            .do_open_if_changed_from_writer(writer, apply_all_deletes)
+        self.wrap_directory_reader(
+            self.inner
+                .do_open_if_changed_from_writer(writer, apply_all_deletes)?,
+        )
     }
 }
 
@@ -230,6 +318,60 @@ impl DirectoryReader for FilterDirectoryReader {
 /// no checked exception. Rust returns it as an error like any other.
 pub fn exiting_reader_error(what: &str) -> LuceneError {
     LuceneError::Other(format!("The request took too long to iterate over {what}"))
+}
+
+/// How many documents an [`ExitableFilterLeafReader`]-family iterator lets
+/// pass before it checks the [`QueryTimeout`] again.
+///
+/// Equivalent to `ExitableDirectoryReader.ExitableFilterAtomicReader.DOCS_BETWEEN_TIMEOUT_CHECK`.
+const DOCS_BETWEEN_TIMEOUT_CHECK: i32 = 1000;
+
+/// Reproduces the same `ExitableDirectoryReader` wrapping on a reopened
+/// [`DirectoryReader`].
+///
+/// Equivalent to `ExitableDirectoryReader.doWrapDirectoryReader(DirectoryReader)`,
+/// which Java implements by constructing another `ExitableDirectoryReader`
+/// (itself `super(in, new ExitableSubReaderWrapper(queryTimeout))`). Rust has
+/// no `ExitableDirectoryReader` subclass to reconstruct; this
+/// [`DirectoryReaderWrapper`] plays that role by handing
+/// [`FilterDirectoryReader::new`] the same [`ExitableSubReaderWrapper`] and
+/// itself again, so a chain of reopens keeps checking the same timeout.
+pub struct ExitableDirectoryReaderWrapper {
+    query_timeout: Arc<dyn QueryTimeout>,
+}
+
+impl ExitableDirectoryReaderWrapper {
+    /// Creates the wrapper.
+    pub fn new(query_timeout: Arc<dyn QueryTimeout>) -> Self {
+        Self { query_timeout }
+    }
+}
+
+impl DirectoryReaderWrapper for ExitableDirectoryReaderWrapper {
+    fn wrap(&self, inner: Arc<dyn DirectoryReader>) -> Result<Arc<dyn DirectoryReader>> {
+        // Equivalent to `FilterDirectoryReader(DirectoryReader, SubReaderWrapper)`
+        // reaching `in.getSequentialSubReaders()`: Rust has no downcast from
+        // `dyn IndexReader` to `dyn LeafReader` (see `FilterDirectoryReader::new`'s
+        // doc comment), so the leaves are read back off `inner`'s own
+        // `LeafReaderContext`s instead, which carry the `Arc<dyn LeafReader>`
+        // handle directly.
+        let leaves: Vec<Arc<dyn LeafReader>> = Arc::clone(&inner)
+            .leaves()
+            .into_iter()
+            .map(|context| context.leaf_reader())
+            .collect();
+        let sub_wrapper: Arc<dyn SubReaderWrapper> = Arc::new(ExitableSubReaderWrapper::new(
+            Arc::clone(&self.query_timeout),
+        ));
+        let directory_wrapper: Arc<dyn DirectoryReaderWrapper> =
+            Arc::new(Self::new(Arc::clone(&self.query_timeout)));
+        Ok(Arc::new(FilterDirectoryReader::new(
+            inner,
+            leaves,
+            sub_wrapper,
+            directory_wrapper,
+        )?))
+    }
 }
 
 /// Wraps each leaf so that iterating it checks a [`QueryTimeout`].
@@ -448,6 +590,86 @@ impl LeafReader for ExitableFilterLeafReader {
 
     fn get_meta_data(&self) -> crate::index::leaf_reader::LeafMetaData {
         self.inner.get_meta_data()
+    }
+}
+
+/// Wraps `delegate`, checking `query_timeout` every
+/// [`DOCS_BETWEEN_TIMEOUT_CHECK`] documents it iterates.
+///
+/// Equivalent to `ExitableDirectoryReader.createExitableIterator(DocIndexIterator, QueryTimeout)`.
+fn create_exitable_iterator(
+    delegate: Box<dyn crate::index::vector_values::DocIndexIterator>,
+    query_timeout: Arc<dyn QueryTimeout>,
+) -> Box<dyn crate::index::vector_values::DocIndexIterator> {
+    Box::new(ExitableDocIndexIterator {
+        delegate,
+        query_timeout,
+        next_check: 0,
+    })
+}
+
+/// The iterator [`create_exitable_iterator`] returns.
+///
+/// Equivalent to the anonymous `KnnVectorValues.DocIndexIterator` of
+/// `ExitableDirectoryReader.createExitableIterator`.
+struct ExitableDocIndexIterator {
+    delegate: Box<dyn crate::index::vector_values::DocIndexIterator>,
+    query_timeout: Arc<dyn QueryTimeout>,
+    /// The next doc ID at or past which the timeout is checked again. Java's
+    /// `int` field wraps on overflow, matched here with `wrapping_add`.
+    next_check: i32,
+}
+
+impl std::fmt::Debug for ExitableDocIndexIterator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExitableDocIndexIterator")
+            .field("next_check", &self.next_check)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ExitableDocIndexIterator {
+    /// Equivalent to the private `checkAndThrow` of
+    /// `ExitableDirectoryReader.createExitableIterator`.
+    fn check_and_throw(&self) -> Result<()> {
+        if self.query_timeout.should_exit() {
+            return Err(exiting_reader_error("knn vector values"));
+        }
+        Ok(())
+    }
+}
+
+impl crate::search::DocIdSetIterator for ExitableDocIndexIterator {
+    fn doc_id(&self) -> i32 {
+        self.delegate.doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        let doc = self.delegate.next_doc()?;
+        if doc >= self.next_check {
+            self.check_and_throw()?;
+            self.next_check = doc.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
+        }
+        Ok(doc)
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        let doc = self.delegate.advance(target)?;
+        if doc >= self.next_check {
+            self.check_and_throw()?;
+            self.next_check = doc.wrapping_add(DOCS_BETWEEN_TIMEOUT_CHECK);
+        }
+        Ok(doc)
+    }
+
+    fn cost(&self) -> i64 {
+        self.delegate.cost()
+    }
+}
+
+impl crate::index::vector_values::DocIndexIterator for ExitableDocIndexIterator {
+    fn index(&self) -> i32 {
+        self.delegate.index()
     }
 }
 
@@ -1116,5 +1338,332 @@ impl SoftDeletesSubReaderWrapper {
             }
         }
         Ok((bits, num_soft_deletes))
+    }
+
+    /// Wraps `reader`, hiding the documents `field` marks as soft-deleted.
+    ///
+    /// Equivalent to `SoftDeletesDirectoryReaderWrapper.wrap(LeafReader, String)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java branches to a
+    /// `SoftDeletesFilterCodecReader` when `reader instanceof CodecReader`, to
+    /// keep the wrapped reader's codec-level accessors available to merges.
+    /// Rust cannot downcast a `dyn LeafReader` to a `dyn CodecReader` — the
+    /// same constraint `SlowCodecReaderWrapper::wrap`/`wrap_codec_reader`
+    /// already document in this file — so this always returns a
+    /// [`SoftDeletesFilterLeafReader`]; reads are identical either way.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever computing the live-docs bits, or
+    /// [`assert_doc_counts`], raises.
+    pub fn wrap_leaf_reader(
+        reader: Arc<dyn LeafReader>,
+        field: &str,
+    ) -> Result<Arc<dyn LeafReader>> {
+        let (bits, num_soft_deletes) = Self::soft_deletes_live_docs(reader.as_ref(), field)?;
+        if num_soft_deletes == 0 {
+            return Ok(reader);
+        }
+        let num_deletes = (reader.max_doc() - reader.num_docs()) + num_soft_deletes;
+        let num_docs = reader.max_doc() - num_deletes;
+        debug_assert!(assert_doc_counts(
+            num_docs,
+            num_soft_deletes,
+            reader.as_ref()
+        )?);
+        Ok(Arc::new(SoftDeletesFilterLeafReader::new(
+            reader, bits, num_docs,
+        )))
+    }
+}
+
+impl SubReaderWrapper for SoftDeletesSubReaderWrapper {
+    fn wrap(&self, reader: Arc<dyn LeafReader>) -> Result<Arc<dyn LeafReader>> {
+        Self::wrap_leaf_reader(reader, &self.field)
+    }
+
+    /// Equivalent to
+    /// `SoftDeletesDirectoryReaderWrapper.SoftDeletesSubReaderWrapper.wrap(List)`:
+    /// drops any leaf that ends up with zero live documents after the wrap,
+    /// instead of the default that keeps every wrapped leaf.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`Self::wrap`] raises.
+    fn wrap_all(&self, readers: Vec<Arc<dyn LeafReader>>) -> Result<Vec<Arc<dyn LeafReader>>> {
+        let mut wrapped = Vec::with_capacity(readers.len());
+        for reader in readers {
+            let wrap = self.wrap(reader)?;
+            if wrap.num_docs() != 0 {
+                wrapped.push(wrap);
+            }
+        }
+        Ok(wrapped)
+    }
+}
+
+/// Debug-only invariant check: the doc count
+/// [`SoftDeletesSubReaderWrapper::wrap_leaf_reader`] computed must agree with
+/// the segment's own committed counts.
+///
+/// Equivalent to the private
+/// `SoftDeletesDirectoryReaderWrapper.assertDocCounts(int, int, LeafReader)`,
+/// which Java only ever evaluates from inside an `assert` and which always
+/// returns `true` — the real check is the inner `assert` that throws first.
+/// This is ported the same way: a `debug_assert!` inside always returning
+/// `Ok(true)`, meant to be called from inside a `debug_assert!` at the call
+/// site so the whole check compiles away in release builds.
+///
+/// # Errors
+///
+/// Propagates whatever reading the segment's committed info raises.
+fn assert_doc_counts(
+    expected_num_docs: i32,
+    num_soft_deletes: i32,
+    reader: &dyn LeafReader,
+) -> Result<bool> {
+    if let Some(segment_reader) = reader.as_segment_reader() {
+        if !segment_reader.is_nrt() {
+            let segment_info = segment_reader.get_segment_info();
+            let max_doc = segment_info.info.max_doc()?;
+            let num_docs =
+                max_doc - segment_info.get_soft_del_count() - segment_info.get_del_count();
+            debug_assert_eq!(
+                num_docs,
+                expected_num_docs,
+                "numDocs: {num_docs} expected: {expected_num_docs} maxDoc: {max_doc} \
+                 getDelCount: {} getSoftDelCount: {} numSoftDeletes: {num_soft_deletes} \
+                 reader.numDeletedDocs(): {}",
+                segment_info.get_del_count(),
+                segment_info.get_soft_del_count(),
+                reader.max_doc() - reader.num_docs(),
+            );
+        }
+    }
+    Ok(true)
+}
+
+/// Serves a shared soft-deletes live-docs bitset where an owned `Box<dyn
+/// Bits>` is expected.
+///
+/// Java hands out the `Bits` object itself; the crate's `get_live_docs`
+/// returns an owned box, so a shared set is wrapped rather than cloned (the
+/// same reasoning as `filter_reader::ArcBits`, which is private to that
+/// module).
+#[derive(Debug)]
+struct SoftDeletesBits(Arc<crate::util::FixedBitSet>);
+
+impl Bits for SoftDeletesBits {
+    fn get(&self, index: usize) -> bool {
+        self.0.get(index)
+    }
+
+    fn length(&self) -> usize {
+        self.0.length()
+    }
+}
+
+/// Hides the documents a soft-deletes field marks as deleted, reporting
+/// `bits`/`num_docs` in place of the wrapped reader's own.
+///
+/// Equivalent to
+/// `SoftDeletesDirectoryReaderWrapper.SoftDeletesFilterLeafReader`.
+///
+/// **Divergence from Lucene 10.5.0.** Java also keeps the wrapped reader's
+/// cache identity alive through a `DelegatingCacheHelper`, which is not
+/// ported; this reader forwards `get_reader_cache_helper` to the wrapped
+/// reader directly instead of minting a new cache key for the wrap. See
+/// [`SoftDeletesSubReaderWrapper::wrap_leaf_reader`] for the codec-reader
+/// divergence.
+struct SoftDeletesFilterLeafReader {
+    inner: FilterLeafReader,
+    bits: Arc<crate::util::FixedBitSet>,
+    num_docs: i32,
+}
+
+impl SoftDeletesFilterLeafReader {
+    fn new(reader: Arc<dyn LeafReader>, bits: crate::util::FixedBitSet, num_docs: i32) -> Self {
+        Self {
+            inner: FilterLeafReader::new(reader),
+            bits: Arc::new(bits),
+            num_docs,
+        }
+    }
+}
+
+impl std::fmt::Debug for SoftDeletesFilterLeafReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SoftDeletesFilterLeafReader")
+            .field("num_docs", &self.num_docs)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LeafReader for SoftDeletesFilterLeafReader {
+    fn core(&self) -> &IndexReaderCore {
+        LeafReader::core(&self.inner)
+    }
+
+    fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+        LeafReader::term_vectors(&self.inner)
+    }
+
+    fn num_docs(&self) -> i32 {
+        self.num_docs
+    }
+
+    fn max_doc(&self) -> i32 {
+        LeafReader::max_doc(&self.inner)
+    }
+
+    fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+        LeafReader::stored_fields(&self.inner)
+    }
+
+    fn do_close(&self) -> Result<()> {
+        LeafReader::do_close(&self.inner)
+    }
+
+    fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+        LeafReader::get_reader_cache_helper(&self.inner)
+    }
+
+    fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+        self.inner.get_core_cache_helper()
+    }
+
+    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        self.inner.terms(field)
+    }
+
+    fn get_numeric_doc_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+        self.inner.get_numeric_doc_values(field)
+    }
+
+    fn get_binary_doc_values(&self, field: &str) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        self.inner.get_binary_doc_values(field)
+    }
+
+    fn get_sorted_doc_values(&self, field: &str) -> Result<Option<Box<dyn SortedDocValues>>> {
+        self.inner.get_sorted_doc_values(field)
+    }
+
+    fn get_sorted_numeric_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        self.inner.get_sorted_numeric_doc_values(field)
+    }
+
+    fn get_sorted_set_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        self.inner.get_sorted_set_doc_values(field)
+    }
+
+    fn get_norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+        self.inner.get_norm_values(field)
+    }
+
+    fn get_doc_values_skipper(&self, field: &str) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        self.inner.get_doc_values_skipper(field)
+    }
+
+    fn get_float_vector_values(&self, field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
+        self.inner.get_float_vector_values(field)
+    }
+
+    fn get_byte_vector_values(&self, field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
+        self.inner.get_byte_vector_values(field)
+    }
+
+    fn search_nearest_vectors(
+        &self,
+        field: &str,
+        target: &[f32],
+        collector: &mut dyn KnnCollector,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<()> {
+        self.inner
+            .search_nearest_vectors(field, target, collector, accept_docs)
+    }
+
+    fn search_nearest_vectors_byte(
+        &self,
+        field: &str,
+        target: &[u8],
+        collector: &mut dyn KnnCollector,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<()> {
+        self.inner
+            .search_nearest_vectors_byte(field, target, collector, accept_docs)
+    }
+
+    fn get_field_infos(&self) -> FieldInfos {
+        self.inner.get_field_infos()
+    }
+
+    fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
+        Some(Box::new(SoftDeletesBits(Arc::clone(&self.bits))))
+    }
+
+    fn get_point_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
+        self.inner.get_point_values(field)
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        self.inner.check_integrity()
+    }
+
+    fn get_meta_data(&self) -> LeafMetaData {
+        self.inner.get_meta_data()
+    }
+}
+
+/// Reproduces the same soft-deletes wrapping on a reopened [`DirectoryReader`].
+///
+/// Equivalent to
+/// `SoftDeletesDirectoryReaderWrapper.doWrapDirectoryReader(DirectoryReader)`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's override first walks
+/// `getSequentialSubReaders()` to reuse an unchanged leaf's live-docs
+/// instance, keyed by its `CacheHelper`, instead of recomputing it. That
+/// reuse is not ported — `SoftDeletesFilterLeafReader::get_reader_cache_helper`
+/// forwards to the wrapped reader rather than minting its own key, so there is
+/// no independent key to reuse by — so every leaf is recomputed on each
+/// reopen. The wrapped result is identical either way, only slower to build.
+pub struct SoftDeletesDirectoryReaderWrapper {
+    field: String,
+}
+
+impl SoftDeletesDirectoryReaderWrapper {
+    /// Creates the wrapper for the given soft-deletes field.
+    pub fn new(field: impl Into<String>) -> Self {
+        Self {
+            field: field.into(),
+        }
+    }
+}
+
+impl DirectoryReaderWrapper for SoftDeletesDirectoryReaderWrapper {
+    fn wrap(&self, inner: Arc<dyn DirectoryReader>) -> Result<Arc<dyn DirectoryReader>> {
+        // See `ExitableDirectoryReaderWrapper::wrap` for why the leaves are
+        // read back off `inner`'s own `LeafReaderContext`s.
+        let leaves: Vec<Arc<dyn LeafReader>> = Arc::clone(&inner)
+            .leaves()
+            .into_iter()
+            .map(|context| context.leaf_reader())
+            .collect();
+        let sub_wrapper: Arc<dyn SubReaderWrapper> =
+            Arc::new(SoftDeletesSubReaderWrapper::new(self.field.clone()));
+        let directory_wrapper: Arc<dyn DirectoryReaderWrapper> =
+            Arc::new(Self::new(self.field.clone()));
+        Ok(Arc::new(FilterDirectoryReader::new(
+            inner,
+            leaves,
+            sub_wrapper,
+            directory_wrapper,
+        )?))
     }
 }

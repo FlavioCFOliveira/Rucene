@@ -1374,8 +1374,7 @@ impl IndexWriter {
     pub fn maybe_merge(&self) -> Result<()> {
         self.ensure_open()?;
         self.update_pending_merges(MergeTrigger::Explicit, -1)?;
-        let scheduler = self.config.merge_scheduler();
-        scheduler.merge(self, MergeTrigger::Explicit)
+        self.execute_merge(MergeTrigger::Explicit)
     }
 
     /// Merges the index down to at most `max_num_segments` segments.
@@ -1390,8 +1389,7 @@ impl IndexWriter {
         self.ensure_open()?;
         self.do_flush()?;
         self.update_pending_merges(MergeTrigger::Explicit, max_num_segments)?;
-        let scheduler = self.config.merge_scheduler();
-        scheduler.merge(self, MergeTrigger::Explicit)
+        self.execute_merge(MergeTrigger::Explicit)
     }
 
     /// Merges away segments carrying deleted documents.
@@ -1407,8 +1405,22 @@ impl IndexWriter {
             let spec = policy.find_forced_deletes_merges(&infos, self)?;
             self.register_merges(&mut state, spec);
         }
+        self.execute_merge(MergeTrigger::Explicit)
+    }
+
+    /// Hands whatever merges are currently queued off to the configured merge
+    /// scheduler.
+    ///
+    /// Equivalent to `IndexWriter.executeMerge(MergeTrigger)`, which Java
+    /// keeps apart from `updatePendingMerges` so that finding the merges and
+    /// running them are two separate, separately-callable steps.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the merge scheduler raises.
+    fn execute_merge(&self, trigger: MergeTrigger) -> Result<()> {
         let scheduler = self.config.merge_scheduler();
-        scheduler.merge(self, MergeTrigger::Explicit)
+        scheduler.merge(self, trigger)
     }
 
     /// Asks the policy for merges and queues them.
@@ -4261,8 +4273,7 @@ impl IndexWriter {
         }
         self.update_pending_merges(MergeTrigger::Explicit, max_num_segments)?;
         if do_wait {
-            let scheduler = self.config.merge_scheduler();
-            scheduler.merge(self, MergeTrigger::Explicit)?;
+            self.execute_merge(MergeTrigger::Explicit)?;
         }
         Ok(())
     }
@@ -4284,8 +4295,7 @@ impl IndexWriter {
             self.register_merges(&mut state, spec);
         }
         if do_wait {
-            let scheduler = self.config.merge_scheduler();
-            scheduler.merge(self, MergeTrigger::Explicit)?;
+            self.execute_merge(MergeTrigger::Explicit)?;
         }
         Ok(())
     }
@@ -4314,8 +4324,7 @@ impl IndexWriter {
             };
             self.register_merges(&mut state, spec);
         }
-        let scheduler = self.config.merge_scheduler();
-        scheduler.merge(self, trigger)
+        self.execute_merge(trigger)
     }
 }
 

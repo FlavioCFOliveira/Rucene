@@ -73,10 +73,17 @@
 //!   pools keep ownership simple (the dictionary is materialised out of the
 //!   writer's own pool at flush) at the cost of one block per sorted field.
 //! * Java's `flush` takes a `Sorter.DocMap` and re-orders values for a segment
-//!   with an index sort; index sorting is not ported, so the flush takes no
-//!   map, and neither `getDocValues()` nor the `DocOrds`/`LongValues`
-//!   index-sorting helpers are ported. The `maxCount` of the sorted-set
-//!   writer is only consumed by `DocOrds`, so it is not tracked either.
+//!   with an index sort. `NumericDocValuesWriter` and `SortedDocValuesWriter`
+//!   port `sortDocValues`/`getDocValuesProducer` faithfully, taking an
+//!   explicit `Option<&SorterDocMap>`; but `flush` and `get_doc_values()`
+//!   still call them with `None`, because wiring the segment's real
+//!   [`crate::index::index_sorter::SorterDocMap`] through requires changes to
+//!   `IndexingChain.writeDocValues`/`maybeSortSegment` that are out of scope
+//!   here. The `DocOrds`/`LongValues` index-sorting helpers of the
+//!   sorted-numeric and sorted-set writers, and `BinaryDocValuesWriter`'s
+//!   `BinaryDVs`/`SortingBinaryDocValues`, remain unported for the same
+//!   reason. The `maxCount` of the sorted-set writer is only consumed by
+//!   `DocOrds`, so it is not tracked either.
 //! * The batch paths (`addDenseValues`, `addOrdinalTuples`,
 //!   `addDenseOrdinalValues`) belong to the column-batch indexing row path,
 //!   which this crate does not have; the per-instance path is the only one.
@@ -93,6 +100,7 @@
 
 #![deny(unsafe_code)]
 
+use std::cell::Cell;
 use std::fmt;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
@@ -109,10 +117,12 @@ use crate::index::doc_values::{
 use crate::index::doc_values::{
     DocValuesIterator, DocValuesSkipper, EmptyDocValuesSkipper, NumericDocValues,
 };
+use crate::index::index_sorter::SorterDocMap;
 use crate::index::{DocValuesType, FieldInfo, IndexableField};
+use crate::search::bit_set_util;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::util::MAX_TERM_LENGTH;
-use crate::util::{ArrayUtil, ByteBlockPool, BytesRef, BytesRefHash};
+use crate::util::{ArrayUtil, ByteBlockPool, BytesRef, BytesRefHash, FixedBitSet};
 
 /// The doc-values writer of one field, dispatched on its [`DocValuesType`].
 ///
@@ -1181,10 +1191,11 @@ impl NumericDocValuesWriter {
         self.flushed = true;
         let values = std::mem::take(&mut self.pending);
         let docs_with_field = std::mem::take(&mut self.docs_with_field);
-        let producer = BufferedNumericProducer::new(&self.field_info, &docs_with_field, values)?;
+        let producer =
+            Self::get_doc_values_producer(&self.field_info, values, &docs_with_field, None)?;
         drop(docs_with_field);
         self.update_bytes_used();
-        consumer.add_numeric_field(&self.field_info, &producer)
+        consumer.add_numeric_field(&self.field_info, &*producer)
     }
 }
 
@@ -1205,11 +1216,83 @@ impl NumericDocValuesWriter {
     ///
     /// Propagates whatever materialising the document set raises.
     pub fn get_doc_values(&self) -> Result<Arc<dyn DocValuesProducer>> {
-        Ok(Arc::new(BufferedNumericProducer::new(
+        Self::get_doc_values_producer(
             &self.field_info,
-            &self.docs_with_field,
             self.pending.clone(),
-        )?))
+            &self.docs_with_field,
+            None,
+        )
+    }
+
+    /// Builds the ordered, per-new-document view of `old_doc_values` that an
+    /// index sort produces.
+    ///
+    /// Equivalent to `NumericDocValuesWriter.sortDocValues(int, Sorter.DocMap,
+    /// NumericDocValues, boolean)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever iterating `old_doc_values` raises.
+    pub(crate) fn sort_doc_values(
+        max_doc: i32,
+        sort_map: &SorterDocMap,
+        old_doc_values: &mut dyn NumericDocValues,
+        dense: bool,
+    ) -> Result<NumericDVs> {
+        let mut docs_with_field = if dense {
+            None
+        } else {
+            Some(FixedBitSet::new(max_doc as usize))
+        };
+
+        let mut values = vec![0i64; max_doc as usize];
+        loop {
+            let doc_id = old_doc_values.next_doc()?;
+            if doc_id == NO_MORE_DOCS {
+                break;
+            }
+            let new_doc_id = sort_map.old_to_new(doc_id);
+            if let Some(docs_with_field) = docs_with_field.as_mut() {
+                docs_with_field.set(new_doc_id as usize);
+            }
+            values[new_doc_id as usize] = old_doc_values.long_value()?;
+        }
+        Ok(NumericDVs {
+            values,
+            docs_with_field,
+            max_doc,
+        })
+    }
+
+    /// Builds the [`DocValuesProducer`] `flush` and `get_doc_values` hand to
+    /// the codec: the plain buffered view when `sort_map` is `None`, or a view
+    /// reordered by the index sort otherwise.
+    ///
+    /// Equivalent to `NumericDocValuesWriter.getDocValuesProducer(FieldInfo,
+    /// PackedLongValues, DocsWithFieldSet, Sorter.DocMap)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`Self::sort_doc_values`] raises.
+    pub(crate) fn get_doc_values_producer(
+        field_info: &FieldInfo,
+        values: Vec<i64>,
+        docs_with_field: &DocsWithFieldSet,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<Arc<dyn DocValuesProducer>> {
+        let mut producer = BufferedNumericProducer::new(field_info, docs_with_field, values)?;
+        if let Some(sort_map) = sort_map {
+            let mut old_doc_values =
+                BufferedNumeric::new(Arc::clone(&producer.docs), Arc::clone(&producer.values));
+            let dense = sort_map.size() == docs_with_field.cardinality();
+            producer.sorted = Some(Arc::new(Self::sort_doc_values(
+                sort_map.size(),
+                sort_map,
+                &mut old_doc_values,
+                dense,
+            )?));
+        }
+        Ok(Arc::new(producer))
     }
 }
 
@@ -1236,6 +1319,8 @@ struct BufferedNumericProducer {
     field_name: String,
     docs: Arc<Vec<i32>>,
     values: Arc<Vec<i64>>,
+    /// The field reordered by an index sort, when one applies.
+    sorted: Option<Arc<NumericDVs>>,
 }
 
 impl BufferedNumericProducer {
@@ -1250,6 +1335,7 @@ impl BufferedNumericProducer {
             field_name: field_info.name.clone(),
             docs: Arc::new(materialize_docs(docs_with_field)?),
             values: Arc::new(values),
+            sorted: None,
         })
     }
 }
@@ -1257,10 +1343,13 @@ impl BufferedNumericProducer {
 impl DocValuesProducer for BufferedNumericProducer {
     fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
         self.check_field(field)?;
-        Ok(Box::new(BufferedNumeric::new(
-            Arc::clone(&self.docs),
-            Arc::clone(&self.values),
-        )))
+        match &self.sorted {
+            None => Ok(Box::new(BufferedNumeric::new(
+                Arc::clone(&self.docs),
+                Arc::clone(&self.values),
+            ))),
+            Some(sorted) => Ok(Box::new(SortingNumeric::new(Arc::clone(sorted)))),
+        }
     }
 
     fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
@@ -1293,11 +1382,156 @@ impl DocValuesProducer for BufferedNumericProducer {
             field_name: self.field_name.clone(),
             docs: Arc::clone(&self.docs),
             values: Arc::clone(&self.values),
+            sorted: self.sorted.clone(),
         }))
     }
 
     fn close(&mut self) -> Result<()> {
         Ok(())
+    }
+}
+
+/// The numeric values of a field once an index sort has reordered the
+/// segment: one value per new document ID, plus which new document IDs
+/// actually carry the field.
+///
+/// Equivalent to `NumericDocValuesWriter.NumericDVs`.
+#[derive(Debug)]
+pub(crate) struct NumericDVs {
+    values: Vec<i64>,
+    /// `None` when every new document carries the field (the dense case),
+    /// exactly like Java's `docsWithField == null`.
+    docs_with_field: Option<FixedBitSet>,
+    max_doc: i32,
+}
+
+impl NumericDVs {
+    fn max_doc(&self) -> i32 {
+        self.max_doc
+    }
+
+    /// Equivalent to `NumericDVs.advanceExact(int)`.
+    fn advance_exact(&self, target: i32) -> bool {
+        match &self.docs_with_field {
+            Some(docs_with_field) => docs_with_field.get(target as usize),
+            None => true,
+        }
+    }
+
+    /// Equivalent to `NumericDVs.advance(int)`. Only called when `target` is
+    /// less than [`Self::max_doc`].
+    fn advance(&self, target: i32) -> i32 {
+        match &self.docs_with_field {
+            Some(docs_with_field) => bit_set_util::next_set_bit(docs_with_field, target as usize),
+            None => target,
+        }
+    }
+
+    /// Equivalent to `NumericDVs.cost()`.
+    fn cost(&self) -> i64 {
+        match &self.docs_with_field {
+            Some(docs_with_field) => docs_with_field.cardinality() as i64,
+            None => self.max_doc as i64,
+        }
+    }
+}
+
+/// Iterates the numeric doc values of a field after an index sort has
+/// reordered the segment.
+///
+/// Equivalent to `NumericDocValuesWriter.SortingNumericDocValues`.
+struct SortingNumeric {
+    dvs: Arc<NumericDVs>,
+    doc_id: i32,
+    /// Lazily computed and cached, like Java's `cost` field (sentinel `-1`).
+    cost: Cell<Option<i64>>,
+}
+
+impl SortingNumeric {
+    fn new(dvs: Arc<NumericDVs>) -> Self {
+        Self {
+            dvs,
+            doc_id: -1,
+            cost: Cell::new(None),
+        }
+    }
+}
+
+impl fmt::Debug for SortingNumeric {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SortingNumeric")
+            .field("doc_id", &self.doc_id)
+            .finish()
+    }
+}
+
+impl DocIdSetIterator for SortingNumeric {
+    fn doc_id(&self) -> i32 {
+        self.doc_id
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.doc_id = if self.doc_id + 1 == self.dvs.max_doc() {
+            NO_MORE_DOCS
+        } else {
+            self.dvs.advance(self.doc_id + 1)
+        };
+        Ok(self.doc_id)
+    }
+
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(
+            "use next_doc() instead".to_string(),
+        ))
+    }
+
+    fn cost(&self) -> i64 {
+        if let Some(cost) = self.cost.get() {
+            return cost;
+        }
+        let cost = self.dvs.cost();
+        self.cost.set(Some(cost));
+        cost
+    }
+
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        let up_to = up_to.min(self.dvs.max_doc());
+        if up_to > self.doc_id {
+            match &self.dvs.docs_with_field {
+                None => {
+                    bit_set.set_range((self.doc_id - offset) as usize, (up_to - offset) as usize);
+                    self.doc_id = up_to;
+                }
+                Some(docs_with_field) => {
+                    FixedBitSet::or_range(
+                        docs_with_field,
+                        self.doc_id as usize,
+                        bit_set,
+                        (self.doc_id - offset) as usize,
+                        (up_to - self.doc_id) as usize,
+                    );
+                    self.doc_id = if up_to < self.dvs.max_doc() {
+                        self.dvs.advance(up_to)
+                    } else {
+                        NO_MORE_DOCS
+                    };
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl DocValuesIterator for SortingNumeric {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        self.doc_id = target;
+        Ok(self.dvs.advance_exact(target))
+    }
+}
+
+impl NumericDocValues for SortingNumeric {
+    fn long_value(&self) -> Result<i64> {
+        Ok(self.dvs.values[self.doc_id as usize])
     }
 }
 
@@ -1564,6 +1798,9 @@ struct BufferedSortedProducer {
     ords: Arc<Vec<i32>>,
     /// Distinct values in unsigned byte order; ordinal 0 first.
     dictionary: Arc<Vec<Vec<u8>>>,
+    /// The field reordered by an index sort, when one applies: one ordinal
+    /// per new document ID, `-1` where the sorted document has none.
+    sorted: Option<Arc<Vec<i32>>>,
 }
 
 impl BufferedSortedProducer {
@@ -1580,6 +1817,7 @@ impl BufferedSortedProducer {
             docs: Arc::new(materialize_docs(docs_with_field)?),
             ords: Arc::new(ords),
             dictionary: Arc::new(dictionary),
+            sorted: None,
         })
     }
 }
@@ -1595,11 +1833,18 @@ impl DocValuesProducer for BufferedSortedProducer {
 
     fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
         self.check_field(field)?;
-        Ok(Box::new(BufferedSorted::new(
-            Arc::clone(&self.docs),
-            Arc::clone(&self.ords),
-            Arc::clone(&self.dictionary),
-        )))
+        match &self.sorted {
+            None => Ok(Box::new(BufferedSorted::new(
+                Arc::clone(&self.docs),
+                Arc::clone(&self.ords),
+                Arc::clone(&self.dictionary),
+            ))),
+            Some(sorted) => Ok(Box::new(SortingSorted::new(
+                Arc::clone(&self.dictionary),
+                self.docs.len() as i64,
+                Arc::clone(sorted),
+            ))),
+        }
     }
 
     fn get_sorted_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
@@ -1625,11 +1870,103 @@ impl DocValuesProducer for BufferedSortedProducer {
             docs: Arc::clone(&self.docs),
             ords: Arc::clone(&self.ords),
             dictionary: Arc::clone(&self.dictionary),
+            sorted: self.sorted.clone(),
         }))
     }
 
     fn close(&mut self) -> Result<()> {
         Ok(())
+    }
+}
+
+/// Iterates the sorted doc values of a field after an index sort has
+/// reordered the segment.
+///
+/// Equivalent to `SortedDocValuesWriter.SortingSortedDocValues`. Java keeps a
+/// reference to the unsorted `SortedDocValues` only to forward `cost()`,
+/// `lookupOrd()` and `getValueCount()`; this port keeps the dictionary and the
+/// unsorted cost directly instead of the whole buffered iterator.
+struct SortingSorted {
+    dictionary: Arc<Vec<Vec<u8>>>,
+    cost: i64,
+    /// One ordinal per new document ID, `-1` where that document has none.
+    ords: Arc<Vec<i32>>,
+    doc_id: i32,
+}
+
+impl SortingSorted {
+    fn new(dictionary: Arc<Vec<Vec<u8>>>, cost: i64, ords: Arc<Vec<i32>>) -> Self {
+        Self {
+            dictionary,
+            cost,
+            ords,
+            doc_id: -1,
+        }
+    }
+}
+
+impl fmt::Debug for SortingSorted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SortingSorted")
+            .field("doc_id", &self.doc_id)
+            .finish()
+    }
+}
+
+impl DocIdSetIterator for SortingSorted {
+    fn doc_id(&self) -> i32 {
+        self.doc_id
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        loop {
+            self.doc_id += 1;
+            if self.doc_id as usize == self.ords.len() {
+                self.doc_id = NO_MORE_DOCS;
+                break;
+            }
+            if self.ords[self.doc_id as usize] != -1 {
+                break;
+            }
+        }
+        Ok(self.doc_id)
+    }
+
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(
+            "use next_doc instead".to_string(),
+        ))
+    }
+
+    fn cost(&self) -> i64 {
+        self.cost
+    }
+}
+
+impl DocValuesIterator for SortingSorted {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        self.doc_id = target;
+        Ok(self.ords[target as usize] != -1)
+    }
+}
+
+impl SortedDocValues for SortingSorted {
+    fn ord_value(&self) -> Result<i32> {
+        Ok(self.ords[self.doc_id as usize])
+    }
+
+    fn get_value_count(&self) -> Result<i32> {
+        Ok(self.dictionary.len() as i32)
+    }
+
+    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+        let value = self.dictionary.get(ord as usize).ok_or_else(|| {
+            LuceneError::IllegalArgument(format!(
+                "ord={ord} is out of bounds 0 .. {}",
+                self.dictionary.len()
+            ))
+        })?;
+        Ok(BytesRef::new(value.clone()))
     }
 }
 
@@ -2147,15 +2484,16 @@ impl SortedDocValuesWriter {
             .collect();
         let pending = std::mem::take(&mut self.pending);
         let docs_with_field = std::mem::take(&mut self.docs_with_field);
-        let producer = BufferedSortedProducer::new(
+        let producer = Self::get_doc_values_producer(
             &self.field_info,
             &docs_with_field,
             ords,
             dictionary.values,
+            None,
         )?;
         drop((docs_with_field, pending, dictionary.ord_map));
         self.update_bytes_used();
-        consumer.add_sorted_field(&self.field_info, &producer)
+        consumer.add_sorted_field(&self.field_info, &*producer)
     }
 
     /// Sorts the distinct values by unsigned byte order and builds the
@@ -2197,12 +2535,75 @@ impl SortedDocValuesWriter {
             .iter()
             .map(|&term_id| dictionary.ord_map[term_id as usize])
             .collect();
-        Ok(Arc::new(BufferedSortedProducer::new(
+        Self::get_doc_values_producer(
             &self.field_info,
             &self.docs_with_field,
             ords,
             dictionary.values,
-        )?))
+            None,
+        )
+    }
+
+    /// Builds the ordered, per-new-document ordinal view that an index sort
+    /// produces: `-1` where the sorted document carries no value.
+    ///
+    /// Equivalent to the private `SortedDocValuesWriter.sortDocValues(int,
+    /// Sorter.DocMap, SortedDocValues)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever iterating `old_values` raises.
+    pub(crate) fn sort_doc_values(
+        max_doc: i32,
+        sort_map: &SorterDocMap,
+        old_values: &mut dyn SortedDocValues,
+    ) -> Result<Vec<i32>> {
+        let mut ords = vec![-1i32; max_doc as usize];
+        loop {
+            let doc_id = old_values.next_doc()?;
+            if doc_id == NO_MORE_DOCS {
+                break;
+            }
+            let new_doc_id = sort_map.old_to_new(doc_id);
+            ords[new_doc_id as usize] = old_values.ord_value()?;
+        }
+        Ok(ords)
+    }
+
+    /// Builds the [`DocValuesProducer`] `flush` and `get_doc_values` hand to
+    /// the codec: the plain buffered view when `sort_map` is `None`, or a view
+    /// reordered by the index sort otherwise.
+    ///
+    /// Equivalent to `SortedDocValuesWriter.getDocValuesProducer(FieldInfo,
+    /// BytesRefHash, PackedLongValues, int[], int[], DocsWithFieldSet,
+    /// Sorter.DocMap)`, with `hash`/`ords`/`sortedValues`/`ordMap` already
+    /// resolved to the final dictionary and per-document ordinals.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`Self::sort_doc_values`] raises.
+    pub(crate) fn get_doc_values_producer(
+        field_info: &FieldInfo,
+        docs_with_field: &DocsWithFieldSet,
+        ords: Vec<i32>,
+        dictionary: Vec<Vec<u8>>,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<Arc<dyn DocValuesProducer>> {
+        let mut producer =
+            BufferedSortedProducer::new(field_info, docs_with_field, ords, dictionary)?;
+        if let Some(sort_map) = sort_map {
+            let mut old_values = BufferedSorted::new(
+                Arc::clone(&producer.docs),
+                Arc::clone(&producer.ords),
+                Arc::clone(&producer.dictionary),
+            );
+            producer.sorted = Some(Arc::new(Self::sort_doc_values(
+                sort_map.size(),
+                sort_map,
+                &mut old_values,
+            )?));
+        }
+        Ok(Arc::new(producer))
     }
 }
 
