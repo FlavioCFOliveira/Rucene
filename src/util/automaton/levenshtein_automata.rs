@@ -122,8 +122,25 @@ impl LevenshteinAutomata {
     /// Returns [`LuceneError::IllegalArgument`] if the word contains a symbol above
     /// `Character.MAX_CODE_POINT`.
     pub fn from_str(input: &str, with_transpositions: bool) -> Result<Self> {
-        let word: Vec<i32> = input.chars().map(|c| c as i32).collect();
-        Self::new(word, MAX_CODE_POINT, with_transpositions)
+        Self::new(
+            Self::code_points(input),
+            MAX_CODE_POINT,
+            with_transpositions,
+        )
+    }
+
+    /// Expands `input` into its Unicode code points.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.util.automaton.LevenshteinAutomata#codePoints`. Java
+    /// walks a UTF-16 `String` with `codePointAt`/`charCount`; a Rust `&str` is
+    /// UTF-8, so iterating its `char`s yields exactly the same code points.
+    fn code_points(input: &str) -> Vec<i32> {
+        let mut word = Vec::with_capacity(input.chars().count());
+        for cp in input.chars() {
+            word.push(cp as i32);
+        }
+        word
     }
 
     /// Expert: specify a custom maximum possible symbol (`alpha_max`); the default

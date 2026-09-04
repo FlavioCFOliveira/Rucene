@@ -6,10 +6,11 @@ use crate::search::NO_MORE_DOCS;
 use crate::util::bit_set::BitSet;
 use crate::util::{Bits, FixedBitSet, SparseFixedBitSet};
 
+use super::abstract_searcher::score_entry_points;
 use super::abstract_searcher::AbstractHnswGraphSearcher;
 use super::neighbor::NeighborQueue;
 use super::scorer::RandomVectorScorer;
-use super::searcher::{next_up_f32, score_entry_points, HnswGraphSearcher};
+use super::searcher::{next_up_f32, HnswGraphSearcher};
 use super::HnswGraph;
 
 /// How many filtered candidates must be found to consider N-hop neighbours.

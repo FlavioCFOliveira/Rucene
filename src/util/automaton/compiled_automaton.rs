@@ -2,6 +2,8 @@
 
 use crate::codecs::postings::{empty_terms_enum, SingleTermsEnum, Terms, TermsEnum};
 use crate::error::Result;
+use crate::index::Term;
+use crate::search::{Query, QueryVisitor};
 use crate::util::{BytesRef, BytesRefBuilder, IntsRef, StringHelper, UnicodeUtil};
 
 use super::automata::Automata;
@@ -466,6 +468,56 @@ impl CompiledAutomaton {
     /// Returns an error if the "any string" automaton cannot be compiled.
     pub fn any_string_run_automaton() -> Result<ByteRunAutomaton> {
         ByteRunAutomaton::from_utf32(Automata::make_any_string())
+    }
+
+    /// Reports back to a [`QueryVisitor`] how this automaton matches terms.
+    ///
+    /// Equivalent to `org.apache.lucene.util.automaton.CompiledAutomaton#visit`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's supplier hands the visitor the
+    /// very `runAutomaton` instance this object holds; the port's
+    /// `QueryVisitor::consume_terms_matching` takes a closure returning an owned
+    /// [`ByteRunAutomaton`], so the [`AutomatonType::Normal`] branch clones it.
+    /// The visitor observes the same automaton either way. The two suppliers
+    /// also cannot fail in Java, while this port's [`ByteRunAutomaton`]
+    /// constructors return a [`Result`]; neither call can actually fail — a
+    /// `Normal` automaton always has a run automaton, and the "any string"
+    /// automaton is a constant — so the impossible case yields an automaton that
+    /// accepts nothing rather than a panic.
+    pub fn visit(&self, visitor: &mut dyn QueryVisitor, parent: &dyn Query, field: &str) {
+        if visitor.accept_field(field) {
+            match self.automaton_type {
+                AutomatonType::Normal => {
+                    visitor.consume_terms_matching(parent, field, &|| {
+                        self.run_automaton
+                            .clone()
+                            .unwrap_or_else(Self::empty_run_automaton)
+                    });
+                }
+                AutomatonType::None => {}
+                AutomatonType::All => {
+                    visitor.consume_terms_matching(parent, field, &|| {
+                        Self::any_string_run_automaton()
+                            .unwrap_or_else(|_| Self::empty_run_automaton())
+                    });
+                }
+                AutomatonType::Single => {
+                    let term = match self.term.as_ref() {
+                        Some(term) => Term::new(field.to_string(), term.clone()),
+                        None => Term::empty(field.to_string()),
+                    };
+                    visitor.consume_terms(parent, std::slice::from_ref(&term));
+                }
+            }
+        }
+    }
+
+    /// The run automaton that accepts nothing, used where Java cannot fail.
+    ///
+    /// See the divergence documented on [`CompiledAutomaton::visit`].
+    fn empty_run_automaton() -> ByteRunAutomaton {
+        ByteRunAutomaton::new(Automata::make_empty(), true)
+            .expect("INVARIANT: the empty automaton is deterministic and binary")
     }
 }
 

@@ -79,8 +79,8 @@ pub use neighbor::{NeighborArray, NeighborQueue};
 pub use on_heap::{EmptyHnswGraph, OnHeapHnswGraph};
 pub use ordinal_translated_knn_collector::OrdinalTranslatedKnnCollector;
 pub use scorer::{
-    CloseableRandomVectorScorerSupplier, RandomVectorScorer, RandomVectorScorerSupplier,
-    UpdateableRandomVectorScorer,
+    BorrowedBits, CloseableRandomVectorScorerSupplier, DelegatingCloseableSupplier,
+    RandomVectorScorer, RandomVectorScorerSupplier, UpdateableRandomVectorScorer,
 };
 pub use searcher::HnswGraphSearcher;
 pub use seeded_searcher::SeededHnswGraphSearcher;

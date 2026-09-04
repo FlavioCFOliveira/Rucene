@@ -5,6 +5,10 @@
 
 #![deny(unsafe_code)]
 
+use std::fmt::{self, Debug, Formatter};
+
+use crate::util::Bits;
+
 use super::Result;
 
 /// `Math.max(float, float)` as specified by the JLS.
@@ -63,6 +67,51 @@ pub trait RandomVectorScorer {
     fn ord_to_doc(&self, ord: i32) -> i32 {
         ord
     }
+
+    /// Returns the [`Bits`] representing the live ordinals.
+    ///
+    /// This is the identity by default: the accept docs are returned unchanged.
+    ///
+    /// Equivalent to `org.apache.lucene.util.hnsw.RandomVectorScorer#getAcceptOrds`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java returns the very `Bits` it was
+    /// given, and `AbstractRandomVectorScorer` overrides it to return the
+    /// lazily mapped view `KnnVectorValues.getAcceptOrds` builds. Rust cannot
+    /// return "either the argument or a freshly built view" behind one borrow,
+    /// so the result is boxed; the default wraps the argument in
+    /// [`BorrowedBits`], which forwards every query to it unchanged. Ownership
+    /// of the underlying bits stays with the caller in both cases.
+    fn get_accept_ords<'a>(
+        &'a self,
+        accept_docs: Option<&'a dyn Bits>,
+    ) -> Option<Box<dyn Bits + 'a>> {
+        accept_docs.map(|bits| Box::new(BorrowedBits(bits)) as Box<dyn Bits + 'a>)
+    }
+}
+
+/// A [`Bits`] that forwards every query to a borrowed [`Bits`].
+///
+/// It exists so that [`RandomVectorScorer::get_accept_ords`] can hand back the
+/// bits it was given through the same boxed return type an overriding scorer
+/// uses for a mapped view; Java simply returns the argument.
+#[derive(Debug)]
+pub struct BorrowedBits<'a>(&'a dyn Bits);
+
+impl<'a> BorrowedBits<'a> {
+    /// Wraps `bits` so it can be returned as an owned [`Bits`].
+    pub fn new(bits: &'a dyn Bits) -> Self {
+        Self(bits)
+    }
+}
+
+impl Bits for BorrowedBits<'_> {
+    fn get(&self, index: usize) -> bool {
+        self.0.get(index)
+    }
+
+    fn length(&self) -> usize {
+        self.0.length()
+    }
 }
 
 /// A scorer whose scoring ordinal can be changed in place.
@@ -91,4 +140,83 @@ pub trait RandomVectorScorerSupplier {
 pub trait CloseableRandomVectorScorerSupplier: RandomVectorScorerSupplier {
     /// Returns the total number of vectors managed by this supplier.
     fn total_vector_count(&self) -> i32;
+
+    /// Releases the resource this supplier holds.
+    ///
+    /// Equivalent to the `java.io.Closeable#close` that
+    /// `CloseableRandomVectorScorerSupplier` extends.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever closing the underlying resource raises.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java leaves `close()` abstract, since
+    /// every implementor is a `Closeable`. Here it defaults to doing nothing,
+    /// so that a supplier holding no resource — which Java expresses by
+    /// wrapping itself with `create(supplier, count, () -> {})` — does not have
+    /// to restate an empty body.
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Creates a [`CloseableRandomVectorScorerSupplier`] that delegates its scorers
+/// to `supplier`, reports `total_vector_count`, and runs `on_close` when it is
+/// closed.
+///
+/// The supplier returned by [`RandomVectorScorerSupplier::copy`] is not
+/// necessarily closeable, exactly as Java documents.
+///
+/// Equivalent to the static
+/// `org.apache.lucene.util.hnsw.CloseableRandomVectorScorerSupplier#create`,
+/// which returns an anonymous implementation; Rust has no anonymous classes, so
+/// the same four members live on the named [`DelegatingCloseableSupplier`].
+pub fn create(
+    supplier: Box<dyn RandomVectorScorerSupplier>,
+    total_vector_count: i32,
+    on_close: Box<dyn FnMut() -> Result<()> + Send + Sync>,
+) -> DelegatingCloseableSupplier {
+    DelegatingCloseableSupplier {
+        supplier,
+        total_vector_count,
+        on_close,
+    }
+}
+
+/// The [`CloseableRandomVectorScorerSupplier`] that [`create`] returns.
+///
+/// Equivalent to the anonymous class declared inside
+/// `org.apache.lucene.util.hnsw.CloseableRandomVectorScorerSupplier#create`.
+pub struct DelegatingCloseableSupplier {
+    supplier: Box<dyn RandomVectorScorerSupplier>,
+    total_vector_count: i32,
+    on_close: Box<dyn FnMut() -> Result<()> + Send + Sync>,
+}
+
+impl Debug for DelegatingCloseableSupplier {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DelegatingCloseableSupplier")
+            .field("total_vector_count", &self.total_vector_count)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RandomVectorScorerSupplier for DelegatingCloseableSupplier {
+    fn scorer(&self) -> Result<Box<dyn UpdateableRandomVectorScorer>> {
+        self.supplier.scorer()
+    }
+
+    fn copy(&self) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        self.supplier.copy()
+    }
+}
+
+impl CloseableRandomVectorScorerSupplier for DelegatingCloseableSupplier {
+    fn total_vector_count(&self) -> i32 {
+        self.total_vector_count
+    }
+
+    fn close(&mut self) -> Result<()> {
+        (self.on_close)()
+    }
 }

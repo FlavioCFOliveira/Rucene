@@ -4,11 +4,13 @@
 
 #![deny(unsafe_code)]
 
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
+use std::sync::Arc;
 
 use crate::error::LuceneError;
+use crate::util::{Accountable, RamUsageEstimator};
 
-use super::neighbor::NeighborArray;
+use super::neighbor::{NeighborArray, OnHeapMemoryUsageListener};
 use super::{ArrayNodesIterator, DenseNodesIterator, HnswGraph, NodesIterator, Result};
 
 const INIT_SIZE: usize = 128;
@@ -29,6 +31,12 @@ pub struct OnHeapHnswGraph {
     // cursor state for the `HnswGraph` trait (not thread-safe)
     upto: i32,
     cur: Option<NeighborArray>,
+    /// Running total of the on-heap memory the graph has taken.
+    ///
+    /// Equivalent to Lucene's `LongAdder graphRamBytesUsed`; every
+    /// [`NeighborArray`] this graph creates is handed a listener that adds to
+    /// it, so it is shared and must be atomic.
+    graph_ram_bytes_used: Arc<AtomicI64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -84,9 +92,15 @@ impl OnHeapHnswGraph {
         } else {
             INIT_SIZE as i32
         };
+        let graph: Vec<Option<Vec<Option<NeighborArray>>>> =
+            (0..num_nodes.max(0) as usize).map(|_| None).collect();
+        // Shallow estimate of the statically used on-heap memory, equivalent to
+        // `OnHeapHnswGraph.RAM_BYTES_USED`, plus the outer graph array.
+        let ram_bytes_used = RamUsageEstimator::shallow_size_of_instance::<Self>()
+            + RamUsageEstimator::shallow_size_of(&graph);
         Self {
             entry_node: AtomicEntryNode::new(-1, 1),
-            graph: (0..num_nodes.max(0) as usize).map(|_| None).collect(),
+            graph,
             size: 0,
             max_node_id: -1,
             nsize: m + 1,
@@ -94,6 +108,7 @@ impl OnHeapHnswGraph {
             no_growth,
             upto: -1,
             cur: None,
+            graph_ram_bytes_used: Arc::new(AtomicI64::new(ram_bytes_used)),
         }
     }
 
@@ -210,9 +225,14 @@ impl OnHeapHnswGraph {
             levels.resize(target_len, None);
         }
 
-        levels[level as usize] = Some(NeighborArray::new(
+        let counter = Arc::clone(&self.graph_ram_bytes_used);
+        levels[level as usize] = Some(NeighborArray::with_listener(
             if level == 0 { self.nsize0 } else { self.nsize },
             true,
+            Some(OnHeapMemoryUsageListener::new(Arc::new(move |l| {
+                debug_assert!(l > 0);
+                counter.fetch_add(l, Ordering::Relaxed);
+            }))),
         ));
         self.max_node_id = self.max_node_id.max(node);
     }
@@ -246,6 +266,12 @@ impl OnHeapHnswGraph {
     }
 
     /// Returns whether `node` exists at `level`.
+    ///
+    /// Equivalent to `org.apache.lucene.util.hnsw.OnHeapHnswGraph#nodeExistAtLevel`,
+    /// which asks only whether the node's level array reaches `level`: a node
+    /// is inserted from its top level downward, so the slots below it are still
+    /// empty while the insertion is in progress and must nonetheless count as
+    /// existing.
     pub fn node_exists_at_level(&self, level: i32, node: i32) -> bool {
         let node_usize = node as usize;
         if node_usize >= self.graph.len() {
@@ -253,10 +279,7 @@ impl OnHeapHnswGraph {
         }
         match &self.graph[node_usize] {
             None => false,
-            Some(levels) => {
-                let l = level as usize;
-                l < levels.len() && levels[l].is_some()
-            }
+            Some(levels) => (level as usize) < levels.len(),
         }
     }
 
@@ -265,7 +288,19 @@ impl OnHeapHnswGraph {
         self.entry_node.get().level + 1
     }
 
-    /// Builds the level->nodes mapping used by `get_nodes_on_level`.
+    /// Builds the level-to-nodes mapping used by `get_nodes_on_level`.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.util.hnsw.OnHeapHnswGraph#generateLevelToNodes`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java memoises the mapping in the
+    /// `levelToNodes` field and skips the walk when `lastFreezeSize` still
+    /// equals `size()` (`OnHeapHnswGraph.java:273-296`). `getNodesOnLevel` is
+    /// `&self` here — the trait method it implements takes a shared borrow —
+    /// so the mapping is rebuilt and returned instead of cached. Only the cost
+    /// differs: the walk is the same and produces the same lists, and
+    /// `getNodesOnLevel` already refuses to run before the build is complete,
+    /// so the mapping it sees cannot change between calls.
     fn build_level_to_nodes(&self) -> Vec<Vec<i32>> {
         let num_levels = self.num_levels_internal();
         let mut level_to_nodes: Vec<Vec<i32>> = (0..num_levels).map(|_| Vec::new()).collect();
@@ -286,6 +321,19 @@ impl OnHeapHnswGraph {
             }
         }
         level_to_nodes
+    }
+}
+
+impl Accountable for OnHeapHnswGraph {
+    /// Provides an estimate of the current on-heap memory usage of the graph.
+    ///
+    /// This is not thread-safe, meaning the heap utilization while building the
+    /// graph concurrently may be inaccurate. Its main purpose is during initial
+    /// document indexing and flush.
+    ///
+    /// Equivalent to `org.apache.lucene.util.hnsw.OnHeapHnswGraph#ramBytesUsed`.
+    fn ram_bytes_used(&self) -> i64 {
+        self.graph_ram_bytes_used.load(Ordering::Relaxed)
     }
 }
 

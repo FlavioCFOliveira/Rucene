@@ -5,7 +5,9 @@
 #![deny(unsafe_code)]
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
+use crate::index::{IndexReader, LeafReaderContext};
 use crate::search::NO_MORE_DOCS;
 use crate::util::FixedBitSet;
 
@@ -48,6 +50,48 @@ impl HnswUtil {
     pub fn is_rooted(graph: &mut dyn HnswGraph) -> Result<bool> {
         for level in 0..graph.num_levels()? {
             if Self::components(graph, level, None, 0)?.len() > 1 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Returns whether the HNSW graph of `vector_field` is rooted in every leaf
+    /// of `reader`.
+    ///
+    /// In graph theory, "connected components" are really defined only for
+    /// undirected (that is, bidirectional) graphs. These graphs are directed,
+    /// because of pruning, but they are *mostly* undirected. Components are
+    /// computed starting from a single node, so what is really measured is
+    /// whether the graph is a "rooted graph".
+    ///
+    /// Equivalent to `org.apache.lucene.util.hnsw.HnswUtil#graphIsRooted`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever obtaining or walking a leaf's graph raises.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java reaches each leaf's graph with a
+    /// chain of casts (`HnswUtil.java:209-215`): it unwraps the leaf to a
+    /// `CodecReader`, casts its vector reader to
+    /// `PerFieldKnnVectorsFormat.FieldsReader`, asks it for the field's reader
+    /// and casts *that* to `HnswGraphProvider`. Two of those narrowings do not
+    /// exist in this port — a `dyn LeafReader` cannot be narrowed to a
+    /// `dyn CodecReader`, and a `dyn KnnVectorsReader` cannot be narrowed to a
+    /// `dyn HnswGraphProvider`, which is the same limitation
+    /// [`IncrementalHnswGraphMerger`](super::IncrementalHnswGraphMerger) records
+    /// for `addReader`. The cast chain is therefore supplied by the caller as
+    /// `graph_of_leaf`, and everything Java does around it — walking the
+    /// leaves, testing each graph with [`HnswUtil::is_rooted`] and answering
+    /// `false` at the first leaf that is not rooted — is unchanged.
+    pub fn graph_is_rooted(
+        reader: Arc<dyn IndexReader>,
+        vector_field: &str,
+        graph_of_leaf: &dyn Fn(&LeafReaderContext, &str) -> Result<Box<dyn HnswGraph>>,
+    ) -> Result<bool> {
+        for ctx in reader.leaves() {
+            let mut graph = graph_of_leaf(&ctx, vector_field)?;
+            if !Self::is_rooted(graph.as_mut())? {
                 return Ok(false);
             }
         }

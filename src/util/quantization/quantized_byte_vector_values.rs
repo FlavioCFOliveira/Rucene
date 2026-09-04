@@ -242,6 +242,19 @@ impl BaseQuantizedByteVectorValues {
     pub fn new(dimension: i32, size: i32) -> Self {
         Self { dimension, size }
     }
+
+    /// Returns the input the vectors are read from, which the shared state
+    /// never has.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.util.quantization.BaseQuantizedByteVectorValues#getSlice`,
+    /// which overrides `HasIndexSlice.getSlice()` to answer `null`. A concrete
+    /// values type that *is* backed by a file answers with its own slice —
+    /// [`LegacyQuantizedByteVectorValues::get_slice`] is one such override —
+    /// exactly as a Java subclass overrides this method.
+    pub fn get_slice(&self) -> Option<&dyn IndexInput> {
+        None
+    }
 }
 
 /// A vectors reader that can hand out the quantized form and its quantizer.

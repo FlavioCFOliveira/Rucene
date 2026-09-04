@@ -158,6 +158,7 @@ impl Automaton {
 
     /// Create a new state.
     pub fn create_state(&mut self) -> i32 {
+        self.grow_states();
         let state = self.next_state;
         self.states.push(-1);
         self.states.push(0);
@@ -285,6 +286,7 @@ impl Automaton {
             bounds
         );
 
+        self.grow_transitions();
         if self.cur_state != source {
             if self.cur_state != -1 {
                 self.finish_current_state();
@@ -501,6 +503,29 @@ impl Automaton {
     /// How many transitions this automaton has.
     pub fn get_num_transitions_total(&self) -> i32 {
         (self.transitions.len() / 3) as i32
+    }
+
+    /// Ensures the `states` array has room for one more state.
+    ///
+    /// Lucene keeps `states` as a plain `int[]` whose length is the capacity and
+    /// `nextState` as the write pointer, so it grows the array whenever
+    /// `nextState + 2 > states.length`. This port keeps `states` as a `Vec<i32>`
+    /// whose length is exactly the used prefix, so the same guarantee is
+    /// obtained by reserving room for the two slots the next state occupies.
+    ///
+    /// Equivalent to the private `org.apache.lucene.util.automaton.Automaton#growStates`.
+    fn grow_states(&mut self) {
+        self.states.reserve(2);
+    }
+
+    /// Ensures the `transitions` array has room for one more transition.
+    ///
+    /// The counterpart of [`Automaton::grow_states`] for the three slots
+    /// (`dest`, `min`, `max`) that each transition occupies.
+    ///
+    /// Equivalent to the private `org.apache.lucene.util.automaton.Automaton#growTransitions`.
+    fn grow_transitions(&mut self) {
+        self.transitions.reserve(3);
     }
 
     /// How many transitions this state has.

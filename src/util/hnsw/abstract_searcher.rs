@@ -2,8 +2,10 @@
 
 use crate::error::Result;
 use crate::search::knn::KnnCollector;
+use crate::util::bit_set::BitSet;
 use crate::util::Bits;
 
+use super::neighbor::NeighborQueue;
 use super::scorer::RandomVectorScorer;
 use super::HnswGraph;
 
@@ -69,4 +71,39 @@ pub trait AbstractHnswGraphSearcher {
         }
         self.search_level(results, scorer, 0, &eps, graph, accept_ords)
     }
+}
+
+/// Scores the entry points and seeds the candidate queue with them.
+///
+/// Equivalent to the `protected static`
+/// `org.apache.lucene.util.hnsw.AbstractHnswGraphSearcher#scoreEntryPoints`,
+/// which Rust expresses as a free function in the same module, since a trait
+/// cannot carry a static method that its implementors share.
+///
+/// # Errors
+///
+/// Returns an error when scoring the entry points fails.
+pub(crate) fn score_entry_points(
+    results: &mut dyn KnnCollector,
+    scorer: &mut dyn RandomVectorScorer,
+    visited: &mut dyn BitSet,
+    eps: &[i32],
+    accept_ords: Option<&dyn Bits>,
+    candidates: &mut NeighborQueue,
+    scores: &mut [f32],
+) -> Result<()> {
+    debug_assert!(!eps.is_empty());
+    debug_assert!(scores.len() >= eps.len());
+    scorer.bulk_score(eps, &mut scores[..eps.len()], eps.len() as i32)?;
+    results.inc_visited_count(eps.len() as i32);
+    for i in 0..eps.len() {
+        let score = scores[i];
+        let ep = eps[i];
+        visited.set(ep as usize);
+        candidates.add(ep, score);
+        if accept_ords.map_or(true, |b| b.get(ep as usize)) {
+            results.collect(ep, score);
+        }
+    }
+    Ok(())
 }

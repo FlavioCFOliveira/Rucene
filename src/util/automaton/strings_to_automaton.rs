@@ -194,6 +194,17 @@ impl StringsToAutomaton {
         a.finish()
     }
 
+    /// Copies `current` into an internal buffer.
+    ///
+    /// Returns `true`, as Java does so the call can sit inside an assertion.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.util.automaton.StringsToAutomaton#setPrevious`.
+    fn set_previous(&mut self, current: &BytesRef) -> bool {
+        self.previous = Some(BytesRef::deep_copy_of(current));
+        true
+    }
+
     fn add(&mut self, current: &BytesRef, as_binary: bool) -> Result<()> {
         if current.length > MAX_STRING_UNION_TERM_LENGTH {
             return Err(LuceneError::IllegalArgument(format!(
@@ -212,7 +223,7 @@ impl StringsToAutomaton {
                 )));
             }
         }
-        self.previous = Some(BytesRef::deep_copy_of(current));
+        self.set_previous(current);
 
         // Descend in the automaton (find the matching prefix).
         let bytes = &current.bytes;

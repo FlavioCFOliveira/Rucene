@@ -22,12 +22,17 @@ use crate::{
 // LongValues
 // ---------------------------------------------------------------------------
 
-/// Abstraction over an array of longs, equivalent to Lucene's `LongValues`.
+/// Abstraction over an array of longs.
 ///
 /// Implementations return the value at the given index. The `IDENTITY` and
-/// `ZEROES` instances are provided for convenience.
+/// `ZEROES` instances are provided for convenience as
+/// [`IdentityLongValues`] and [`ZeroesLongValues`].
+///
+/// Equivalent to `org.apache.lucene.util.LongValues`.
 pub trait LongValues {
     /// Returns the value at `index`.
+    ///
+    /// Equivalent to `org.apache.lucene.util.LongValues#get`.
     fn get(&self, index: i64) -> i64;
 }
 

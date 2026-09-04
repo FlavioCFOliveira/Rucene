@@ -6,9 +6,11 @@
 #![deny(unsafe_code)]
 
 use std::collections::BinaryHeap;
+use std::fmt::{self, Debug, Formatter};
+use std::sync::Arc;
 
 use crate::error::LuceneError;
-use crate::util::NumericUtils;
+use crate::util::{NumericUtils, RamUsageEstimator};
 
 use super::scorer::{RandomVectorScorer, UpdateableRandomVectorScorer};
 use super::Result;
@@ -28,19 +30,98 @@ pub struct NeighborArray {
     nodes: Vec<i32>,
     scores: Vec<f32>,
     sorted_node_size: usize,
+    ram_bytes_used: i64,
+    on_heap_memory_usage_listener: Option<OnHeapMemoryUsageListener>,
+}
+
+/// The callback a [`NeighborArray`] notifies whenever its buffers grow.
+///
+/// Equivalent to the `java.util.function.LongConsumer` that
+/// `org.apache.lucene.util.hnsw.NeighborArray` keeps in
+/// `onHeapMemoryUsageListener`. It is wrapped in a named type only so that
+/// [`NeighborArray`] can keep deriving [`Debug`], which a bare closure does not
+/// implement.
+#[derive(Clone)]
+pub struct OnHeapMemoryUsageListener(Arc<dyn Fn(i64) + Send + Sync>);
+
+impl OnHeapMemoryUsageListener {
+    /// Wraps `listener` so that a [`NeighborArray`] can hold it.
+    pub fn new(listener: Arc<dyn Fn(i64) + Send + Sync>) -> Self {
+        Self(listener)
+    }
+
+    /// Reports `bytes` of newly used on-heap memory.
+    ///
+    /// Equivalent to `LongConsumer.accept(long)`.
+    pub fn accept(&self, bytes: i64) {
+        (self.0)(bytes);
+    }
+}
+
+impl Debug for OnHeapMemoryUsageListener {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("OnHeapMemoryUsageListener")
+    }
 }
 
 impl NeighborArray {
     /// Creates an empty array with the given maximum size and ordering.
+    ///
+    /// Equivalent to `NeighborArray(int, boolean)`, which delegates to the
+    /// three-argument constructor with no listener.
     pub fn new(max_size: i32, desc_order: bool) -> Self {
+        Self::with_listener(max_size, desc_order, None)
+    }
+
+    /// Creates an empty array that reports every on-heap growth to `listener`.
+    ///
+    /// Equivalent to `NeighborArray(int, boolean, LongConsumer)`.
+    pub fn with_listener(
+        max_size: i32,
+        desc_order: bool,
+        on_heap_memory_usage_listener: Option<OnHeapMemoryUsageListener>,
+    ) -> Self {
         let max_size = max_size.max(0) as usize;
+        let nodes: Vec<i32> = Vec::with_capacity(max_size);
+        let scores: Vec<f32> = Vec::with_capacity(max_size);
+        // Shallow estimate of the statically used on-heap memory, equivalent to
+        // `NeighborArray.BASE_RAM_BYTES_USED`, plus the two backing buffers.
+        let ram_bytes_used = RamUsageEstimator::shallow_size_of_instance::<Self>()
+            + RamUsageEstimator::shallow_size_of_array::<i32>(nodes.capacity())
+            + RamUsageEstimator::shallow_size_of_array::<f32>(scores.capacity());
+        if let Some(listener) = &on_heap_memory_usage_listener {
+            listener.accept(ram_bytes_used);
+        }
         Self {
             scores_desc_order: desc_order,
             size: 0,
             max_size,
-            nodes: Vec::with_capacity(max_size),
-            scores: Vec::with_capacity(max_size),
+            nodes,
+            scores,
             sorted_node_size: 0,
+            ram_bytes_used,
+            on_heap_memory_usage_listener,
+        }
+    }
+
+    /// Reports the growth of the node and score buffers to the listener.
+    ///
+    /// `new_length` and `previous_length` are the buffer capacities after and
+    /// before the insertion; the delta is charged once for the node `i32` and
+    /// once for the score `f32`, exactly as Java charges `Integer.BYTES` and
+    /// `Float.BYTES`.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.util.hnsw.NeighborArray#alertOnHeapMemoryUsageChange`.
+    fn alert_on_heap_memory_usage_change(&mut self, new_length: usize, previous_length: usize) {
+        if new_length > previous_length {
+            if let Some(listener) = &self.on_heap_memory_usage_listener {
+                let length_delta = (new_length - previous_length) as i64;
+                let delta = length_delta * i64::from(std::mem::size_of::<i32>() as i32)
+                    + length_delta * i64::from(std::mem::size_of::<f32>() as i32);
+                listener.accept(delta);
+                self.ram_bytes_used += delta;
+            }
         }
     }
 
@@ -61,6 +142,8 @@ impl NeighborArray {
     }
 
     /// Returns the score at index `i`.
+    ///
+    /// Equivalent to `org.apache.lucene.util.hnsw.NeighborArray#getScores`.
     pub fn score(&self, i: i32) -> f32 {
         self.scores[i as usize]
     }
@@ -86,8 +169,10 @@ impl NeighborArray {
                 "nodes are added in incorrect order"
             );
         }
+        let previous_length = self.nodes.capacity();
         self.nodes.push(new_node);
         self.scores.push(new_score);
+        self.alert_on_heap_memory_usage_change(self.nodes.capacity(), previous_length);
         self.size += 1;
         self.sorted_node_size += 1;
         Ok(())
@@ -100,8 +185,10 @@ impl NeighborArray {
                 "No growth is allowed".to_string(),
             ));
         }
+        let previous_length = self.nodes.capacity();
         self.nodes.push(new_node);
         self.scores.push(new_score);
+        self.alert_on_heap_memory_usage_change(self.nodes.capacity(), previous_length);
         self.size += 1;
         Ok(())
     }
@@ -379,6 +466,12 @@ impl NeighborQueue {
         NumericUtils::sortable_int_to_float(sortable)
     }
 
+    /// Recovers the node id from a heap value.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.util.hnsw.NeighborQueue#decodeNodeId`. Java
+    /// complements the whole `long` and then narrows it; narrowing first and
+    /// complementing the `i32` gives the same bits.
     fn decode_node(&self, heap_value: u64) -> i32 {
         let raw = self.apply_order(heap_value);
         !(raw as i32)

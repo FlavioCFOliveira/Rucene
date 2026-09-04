@@ -935,7 +935,7 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
             }
         }
 
-        self.scratch_bytes.reverse_written_bytes();
+        self.reverse_scratch_bytes();
         // Write the padding byte if needed.
         if self.padding_byte_pending {
             self.write_padding_byte()?;
@@ -945,6 +945,74 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
 
         self.node_count += 1;
         Ok(self.num_bytes_written - 1)
+    }
+
+    /// Reverses the scratch bytes in place.
+    ///
+    /// This operation does not affect `scratch_bytes.position()`.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.util.fst.FSTCompiler#reverseScratchBytes`. The loop
+    /// itself lives on [`GrowableByteArrayDataOutput::reverse_written_bytes`],
+    /// next to the array it swaps, because Rust cannot hand out the backing
+    /// slice and the write position through `&mut self` at the same time.
+    fn reverse_scratch_bytes(&mut self) {
+        self.scratch_bytes.reverse_written_bytes();
+    }
+
+    /// Writes bytes from a source slice into the scratch bytes.
+    ///
+    /// The written bytes must fit within what was already written to the
+    /// scratch bytes. This operation does not affect
+    /// `scratch_bytes.position()`.
+    ///
+    /// * `scratch_bytes` — the buffer being written to;
+    /// * `dest_pos` — the position in the scratch bytes;
+    /// * `bytes` — the source slice;
+    /// * `offset` — the offset inside the source slice;
+    /// * `length` — the number of bytes to write.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.util.fst.FSTCompiler#writeScratchBytes`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java takes `scratchBytes` from the
+    /// enclosing instance (`FSTCompiler.java:722-725`); here it is an explicit
+    /// parameter, because every caller reads `bytes` out of another field of
+    /// the same compiler and Rust cannot borrow one field mutably through
+    /// `&mut self` while reading another. The one Java call site that copies
+    /// the scratch buffer onto itself (`FSTCompiler.java:688`) cannot go
+    /// through this function at all — a slice cannot alias the buffer it is
+    /// copied into — and uses
+    /// [`GrowableByteArrayDataOutput::copy_within`] instead.
+    fn write_scratch_bytes(
+        scratch_bytes: &mut GrowableByteArrayDataOutput,
+        dest_pos: usize,
+        bytes: &[u8],
+        offset: usize,
+        length: usize,
+    ) {
+        debug_assert!(dest_pos + length <= scratch_bytes.position());
+        scratch_bytes.bytes_mut()[dest_pos..dest_pos + length]
+            .copy_from_slice(&bytes[offset..offset + length]);
+    }
+
+    /// Whether `output` is a well-formed output value.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.util.fst.FSTCompiler#validOutput`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java writes
+    /// `output == NO_OUTPUT || !output.equals(NO_OUTPUT)`
+    /// (`FSTCompiler.java:967-969`): the first disjunct is *reference* equality
+    /// against the `Outputs` singleton, and the assertion exists to catch an
+    /// output that equals the empty output without being that singleton, since
+    /// `addNode` picks arc flags with `!=`. Rust values have no reference
+    /// identity, and this port compares outputs by value throughout — see the
+    /// divergence recorded on [`Outputs`] — so both disjuncts collapse onto the
+    /// same test and the invariant Java asserts holds for every output here.
+    fn valid_output(&self, output: &O::Output) -> bool {
+        let is_no_output = self.fst.metadata.outputs.equals(output, &self.no_output);
+        is_no_output || !is_no_output
     }
 
     /// Writes the padding byte, ensuring no node gets address `0`, which is
@@ -1054,9 +1122,13 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
         }
 
         // Finally write the header.
-        debug_assert!(header_len <= self.scratch_bytes.position());
-        self.scratch_bytes.bytes_mut()[..header_len]
-            .copy_from_slice(&self.fixed_length_arcs_buffer.bytes()[..header_len]);
+        Self::write_scratch_bytes(
+            &mut self.scratch_bytes,
+            0,
+            self.fixed_length_arcs_buffer.bytes(),
+            0,
+            header_len,
+        );
         Ok(())
     }
 
@@ -1250,6 +1322,7 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
             self.last_input.length() == 0 || ints_ref_compare(input, &self.last_input.get()) >= 0,
             "inputs are added out of order"
         );
+        debug_assert!(self.valid_output(&output));
 
         if input.length == 0 {
             // Empty input: only allowed as the first input. This is special
@@ -1296,12 +1369,15 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
         for idx in 1..prefix_len_plus_1 {
             let label = input.ints[input.offset + idx - 1];
             let last_output = self.frontier[idx - 1].get_last_output(label).clone();
+            debug_assert!(self.valid_output(&last_output));
 
             let common_output_prefix;
 
             if !outputs.equals(&last_output, &no_output) {
                 common_output_prefix = outputs.common(&output, &last_output);
+                debug_assert!(self.valid_output(&common_output_prefix));
                 let word_suffix = outputs.subtract(&last_output, &common_output_prefix);
+                debug_assert!(self.valid_output(&word_suffix));
                 self.frontier[idx - 1].set_last_output(label, common_output_prefix.clone());
                 self.frontier[idx].prepend_output(&outputs, &word_suffix);
             } else {
@@ -1309,6 +1385,7 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
             }
 
             output = outputs.subtract(&output, &common_output_prefix);
+            debug_assert!(self.valid_output(&output));
         }
 
         if self.last_input.length() == input.length && prefix_len_plus_1 == 1 + input.length {

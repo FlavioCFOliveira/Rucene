@@ -285,11 +285,6 @@ pub fn automaton_query_eq(
 ///
 /// Equivalent to `AutomatonQuery.visit(QueryVisitor)`, which delegates to
 /// `CompiledAutomaton.visit(QueryVisitor, Query, String)`.
-///
-/// **Divergence from Lucene 10.5.0.** `CompiledAutomaton.visit` belongs to
-/// `org.apache.lucene.util.automaton` and is not part of this port's
-/// [`CompiledAutomaton`], so the same four-way switch is written here. The
-/// visitor sees exactly the same calls.
 pub fn automaton_query_visit(
     parent: &dyn Query,
     inner: &AutomatonQuery,
@@ -298,41 +293,8 @@ pub fn automaton_query_visit(
     if !visitor.accept_field(&inner.field) {
         return;
     }
-    // `CompiledAutomaton.visit` re-checks `acceptField` before switching.
-    if !visitor.accept_field(&inner.field) {
-        return;
-    }
-    let (automaton_type, run_automaton, single_term) = {
-        let compiled = inner.lock_compiled();
-        (
-            compiled.automaton_type,
-            compiled.run_automaton.clone(),
-            compiled.term.clone(),
-        )
-    };
-    match automaton_type {
-        AutomatonType::Normal => {
-            visitor.consume_terms_matching(parent, &inner.field, &|| {
-                run_automaton
-                    .clone()
-                    .unwrap_or_else(empty_byte_run_automaton)
-            });
-        }
-        AutomatonType::None => {}
-        AutomatonType::All => {
-            visitor.consume_terms_matching(parent, &inner.field, &|| {
-                CompiledAutomaton::any_string_run_automaton()
-                    .unwrap_or_else(|_| empty_byte_run_automaton())
-            });
-        }
-        AutomatonType::Single => {
-            let term = match single_term.as_ref() {
-                Some(term) => Term::new(inner.field.clone(), term.clone()),
-                None => Term::empty(inner.field.clone()),
-            };
-            visitor.consume_terms(parent, std::slice::from_ref(&term));
-        }
-    }
+    // `CompiledAutomaton.visit` re-checks `acceptField` itself.
+    inner.lock_compiled().visit(visitor, parent, &inner.field);
 }
 
 /// The run automaton that accepts nothing, used where Java cannot fail.

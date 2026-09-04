@@ -12,7 +12,7 @@ use crate::search::NO_MORE_DOCS;
 use crate::util::bit_set::BitSet;
 use crate::util::{Bits, FixedBitSet, SparseFixedBitSet};
 
-use super::abstract_searcher::AbstractHnswGraphSearcher;
+use super::abstract_searcher::{score_entry_points, AbstractHnswGraphSearcher};
 use super::neighbor::{NeighborArray, NeighborQueue};
 use super::on_heap::OnHeapHnswGraph;
 use super::scorer::RandomVectorScorer;
@@ -265,32 +265,6 @@ impl HnswGraphSearcher {
             self.bulk_scores.resize(bulk, 0.0);
         }
     }
-}
-
-/// Scores the entry points and seeds the candidate queue with them.
-///
-/// Equivalent to `AbstractHnswGraphSearcher.scoreEntryPoints`.
-pub(crate) fn score_entry_points(
-    results: &mut dyn KnnCollector,
-    scorer: &mut dyn RandomVectorScorer,
-    visited: &mut dyn crate::util::bit_set::BitSet,
-    eps: &[i32],
-    accept_ords: Option<&dyn Bits>,
-    candidates: &mut NeighborQueue,
-    scores: &mut [f32],
-) -> Result<()> {
-    scorer.bulk_score(eps, &mut scores[..eps.len()], eps.len() as i32)?;
-    results.inc_visited_count(eps.len() as i32);
-    for i in 0..eps.len() {
-        let score = scores[i];
-        let ep = eps[i];
-        visited.set(ep as usize);
-        candidates.add(ep, score);
-        if accept_ords.map_or(true, |b| b.get(ep as usize)) {
-            results.collect(ep, score);
-        }
-    }
-    Ok(())
 }
 
 /// Thread-safe searcher for `OnHeapHnswGraph` that avoids mutating the graph.
