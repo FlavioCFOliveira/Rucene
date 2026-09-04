@@ -15,6 +15,8 @@ use std::sync::Arc;
 use crate::codecs::codec_util;
 use crate::codecs::codec_util::{write_footer, write_index_header};
 use crate::codecs::lucene103::field_reader::{BlockTreeShared, FieldReader};
+use crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnumFrame;
+use crate::codecs::lucene103::trie_reader::{self, ChildSaveStrategy};
 use crate::codecs::postings::{
     Fields, FieldsConsumer, FieldsProducer, MergeState, NormsProducer, PostingsReaderBase,
     PostingsWriterBase, Terms, TermsEnum,
@@ -27,7 +29,8 @@ use crate::index::index_file_names::segment_file_name;
 use crate::index::IndexOptions;
 use crate::index::SegmentInfo;
 use crate::store::{
-    ByteBuffersDataOutput, DataInput, DataOutput, Directory, IOContext, IndexOutput,
+    ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput, Directory, IOContext,
+    IndexOutput,
 };
 use crate::util::compress::{LowercaseAsciiCompression, Lz4, Lz4HashTable};
 use crate::util::{BytesRef, BytesRefBuilder, FixedBitSet, StringHelper};
@@ -166,7 +169,7 @@ pub struct Stats {
 
 #[allow(dead_code)]
 impl Stats {
-    fn new(segment: String, field: String) -> Self {
+    pub(crate) fn new(segment: String, field: String) -> Self {
         Self {
             block_count_by_prefix_len: vec![0; 10],
             segment,
@@ -175,11 +178,70 @@ impl Stats {
         }
     }
 
-    fn term(&mut self, term: &BytesRef) {
+    /// Records that the walk has entered `frame`'s block.
+    ///
+    /// Equivalent to `org.apache.lucene.codecs.lucene103.blocktree.Stats#startBlock`.
+    pub(crate) fn start_block(&mut self, frame: &SegmentTermsEnumFrame, is_floor: bool) {
+        self.total_block_count += 1;
+        if is_floor {
+            if frame.fp == frame.fp_orig {
+                self.floor_block_count += 1;
+            }
+            self.floor_sub_block_count += 1;
+        } else {
+            self.non_floor_block_count += 1;
+        }
+
+        if self.block_count_by_prefix_len.len() <= frame.prefix_length {
+            self.block_count_by_prefix_len
+                .resize(1 + frame.prefix_length, 0);
+        }
+        self.block_count_by_prefix_len[frame.prefix_length] += 1;
+        self.start_block_count += 1;
+        self.total_block_suffix_bytes += frame.total_suffix_bytes;
+        self.total_uncompressed_block_suffix_bytes += frame.suffixes_reader.length() as i64;
+        self.total_uncompressed_block_suffix_bytes += frame.suffix_lengths_reader.length() as i64;
+        self.total_block_stats_bytes += frame.stats_reader.length() as i64;
+        self.compression_algorithms[frame.compression_alg.code() as usize] += 1;
+    }
+
+    /// Records that the walk has left `frame`'s block.
+    ///
+    /// Equivalent to `org.apache.lucene.codecs.lucene103.blocktree.Stats#endBlock`.
+    pub(crate) fn end_block(&mut self, frame: &SegmentTermsEnumFrame) {
+        let term_count = if frame.is_leaf_block {
+            frame.ent_count
+        } else {
+            frame.state.term_block_ord
+        };
+        let sub_block_count = frame.ent_count - term_count;
+        self.total_term_count += i64::from(term_count);
+        if term_count != 0 && sub_block_count != 0 {
+            self.mixed_block_count += 1;
+        } else if term_count != 0 {
+            self.terms_only_block_count += 1;
+        } else if sub_block_count != 0 {
+            self.sub_blocks_only_block_count += 1;
+        } else {
+            panic!("a block must hold either terms or sub-blocks");
+        }
+        self.end_block_count += 1;
+        let other_bytes =
+            frame.fp_end - frame.fp - frame.total_suffix_bytes - frame.stats_reader.length() as i64;
+        debug_assert!(
+            other_bytes > 0,
+            "otherBytes={other_bytes} frame.fp={} frame.fpEnd={}",
+            frame.fp,
+            frame.fp_end
+        );
+        self.total_block_other_bytes += other_bytes;
+    }
+
+    pub(crate) fn term(&mut self, term: &BytesRef) {
         self.total_term_bytes += term.length as i64;
     }
 
-    fn finish(&self) {
+    pub(crate) fn finish(&self) {
         assert_eq!(
             self.start_block_count, self.end_block_count,
             "startBlockCount={} endBlockCount={}",
@@ -301,80 +363,442 @@ impl fmt::Display for Stats {
 }
 
 // -----------------------------------------------------------------------------
-// TrieBuilder / TrieReader skeletons
+// TrieBuilder
 // -----------------------------------------------------------------------------
 
-/// Builder for the blocktree term index trie.
+/// The block a trie node points at.
 ///
-/// This is a minimal skeleton for the current checkpoint. It stores the file
-/// pointer and has-terms flag of the root block for each field. The full
-/// prefix-tree construction (depth-first serialization, floor blocks, child
-/// strategies, etc.) will be added in a later run.
+/// `fp` is the position of the on-disk terms block; `has_terms` is false when
+/// the block holds nothing but pointers to child blocks; `floor_data` is set
+/// when one trie prefix's terms were split over several on-disk blocks.
 ///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.TrieBuilder`.
-/// Builder for the blocktree term index trie.
-///
-/// This is a minimal implementation for the current checkpoint. It stores the
-/// file pointer and has-terms flag of the root block for each field and writes
-/// a trivial one-node trie to the `.tip` file.
-///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.TrieBuilder`.
-#[derive(Debug, Default, Clone)]
-pub struct TrieBuilder {
-    /// File pointer in the `.tip` file where this field's trie starts.
-    pub index_start_fp: i64,
-    /// Whether the root block pointed to contains any terms.
+/// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.TrieBuilder.Output`.
+#[derive(Debug, Clone)]
+pub struct Output {
+    /// File pointer of the terms block this node points at.
+    pub fp: i64,
+    /// Whether that block holds terms, rather than only sub-blocks.
     pub has_terms: bool,
+    /// The floor data of that block, when it is a floor block.
+    pub floor_data: Option<BytesRef>,
+}
+
+/// One depth level of the path from the root to the last key inserted.
+///
+/// Lucene Core equivalent: `TrieBuilder.FrontierNode`.
+#[derive(Debug, Clone, Default)]
+struct FrontierNode {
+    output: Option<Output>,
+    child_labels: Vec<i32>,
+    child_fps: Vec<i64>,
+}
+
+impl FrontierNode {
+    fn reset(&mut self) {
+        self.output = None;
+        self.child_labels.clear();
+        self.child_fps.clear();
+    }
+
+    fn children_num(&self) -> usize {
+        self.child_labels.len()
+    }
+
+    fn add_child(&mut self, label: i32, fp: i64) {
+        self.child_labels.push(label);
+        self.child_fps.push(fp);
+    }
+}
+
+/// Builder for the block-tree term index trie, which is saved to the `.tip`
+/// file.
+///
+/// Entries are held in a compact prefix-coded byte buffer while the trie is
+/// being built. The first non-empty key is kept apart from the buffer so that
+/// [`TrieBuilder::append`] only has to re-encode that one entry and can copy
+/// the rest of the other builder's bytes verbatim. [`TrieBuilder::save`] then
+/// rebuilds the trie structure on the fly, using a frontier array, and writes
+/// it out in a single pass.
+///
+/// Memory is O(encoded bytes) while building and O(max key depth) while saving.
+///
+/// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.TrieBuilder`.
+#[derive(Debug, Clone)]
+pub struct TrieBuilder {
+    /// Output for the empty key, when there is one.
+    empty_output: Option<Output>,
+    /// The first non-empty key, held apart from the buffer.
+    min_key: BytesRef,
+    /// Output for [`Self::min_key`]; `None` when there is no non-empty key.
+    min_output: Option<Output>,
+    /// Every entry after `min_key`, each prefix-coded against its predecessor:
+    /// `[prefix len: vInt] [suffix len: vInt] [suffix] [fp: vLong]
+    /// [has terms: byte] [floor data len: vInt] [floor data]`.
+    buffer: ByteBuffersDataOutput,
+    /// The last key appended; entries always arrive in order, so this is also
+    /// the largest key.
+    last_key: BytesRefBuilder,
+    /// The longest key across all entries.
+    max_key_depth: usize,
 }
 
 impl TrieBuilder {
-    /// Creates a trie builder rooted at `index_start_fp` with the given term flag.
-    pub fn new(index_start_fp: i64, has_terms: bool) -> Self {
+    /// Builds a trie holding the single entry `k` -> `v`.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.TrieBuilder#bytesRefToTrie`.
+    pub fn bytes_ref_to_trie(k: &BytesRef, v: Output) -> Self {
+        let min_key = BytesRef::new(k.bytes[k.offset..k.offset + k.length].to_vec());
+        let mut last_key = BytesRefBuilder::new();
+        let (empty_output, min_output) = if k.length == 0 {
+            (Some(v), None)
+        } else {
+            last_key.copy_bytes(&k.bytes, k.offset, k.length);
+            (None, Some(v))
+        };
         Self {
-            index_start_fp,
-            has_terms,
+            empty_output,
+            min_key,
+            min_output,
+            buffer: ByteBuffersDataOutput::new(),
+            last_key,
+            max_key_depth: k.length,
         }
     }
 
-    /// Compiles the index for a list of pending blocks.
+    /// Builds a trie whose only entry is the empty key, pointing at the block at
+    /// `index_start_fp`.
     ///
-    /// In this simplified version only the first block's output is retained.
-    pub(crate) fn compile(
-        blocks: &[PendingBlock],
-        scratch: &mut ByteBuffersDataOutput,
-    ) -> Result<Self> {
-        scratch.reset();
-        let first = &blocks[0];
-        if first.is_floor {
-            scratch.write_v_int((blocks.len() - 1) as i32)?;
-            for block in &blocks[1..] {
-                scratch.write_byte(block.floor_lead_byte as u8)?;
-                scratch.write_v_long(
-                    ((block.fp - first.fp) << 1) | if block.has_terms { 1 } else { 0 },
-                )?;
+    /// This is [`Self::bytes_ref_to_trie`] over the empty key; it is what a
+    /// field with a single root block needs.
+    pub fn new(index_start_fp: i64, has_terms: bool) -> Self {
+        Self::bytes_ref_to_trie(
+            &BytesRef::new(Vec::new()),
+            Output {
+                fp: index_start_fp,
+                has_terms,
+                floor_data: None,
+            },
+        )
+    }
+
+    /// Appends every entry of `other` to this trie. Every key of `other` must be
+    /// greater than every key of this one.
+    ///
+    /// Equivalent to `org.apache.lucene.codecs.lucene103.blocktree.TrieBuilder#append`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error writing to the in-memory buffer raised, which in
+    /// practice is none.
+    pub fn append(&mut self, other: &TrieBuilder) -> Result<()> {
+        debug_assert!(&self.last_key.bytes()[..self.last_key.length()] < other.min_key.slice());
+
+        if other.empty_output.is_some() && self.empty_output.is_none() {
+            self.empty_output = other.empty_output.clone();
+        }
+
+        if let Some(min_output) = other.min_output.as_ref() {
+            // Encode `other`'s first entry into the buffer, prefix-coded against
+            // the last key of this trie.
+            // `BytesRefBuilder::bytes` hands back the whole buffer, which the
+            // oversizing in `copy_bytes` can leave longer than the key.
+            let last_key = &self.last_key.bytes()[..self.last_key.length()];
+            let other_min_key = other.min_key.slice();
+            let mismatch = last_key
+                .iter()
+                .zip(other_min_key.iter())
+                .position(|(a, b)| a != b)
+                .unwrap_or_else(|| last_key.len().min(other_min_key.len()));
+            let suffix_len = other_min_key.len() - mismatch;
+            self.buffer.write_v_int(mismatch as i32)?;
+            self.buffer.write_v_int(suffix_len as i32)?;
+            self.buffer
+                .write_bytes(other_min_key, mismatch, suffix_len)?;
+            self.buffer.write_v_long(min_output.fp)?;
+            self.buffer
+                .write_byte(if min_output.has_terms { 1 } else { 0 })?;
+            match min_output.floor_data.as_ref() {
+                Some(floor_data) => {
+                    self.buffer.write_v_int(floor_data.length as i32)?;
+                    self.buffer.write_bytes(
+                        &floor_data.bytes,
+                        floor_data.offset,
+                        floor_data.length,
+                    )?;
+                }
+                None => self.buffer.write_v_int(0)?,
+            }
+
+            // The rest of `other`'s entries are prefix-coded against
+            // `other.min_key`, which is now this trie's last key, so they can be
+            // copied over without re-encoding.
+            if other.buffer.size() > 0 {
+                let bytes = other.buffer.to_array_copy();
+                self.buffer.write_bytes(&bytes, 0, bytes.len())?;
             }
         }
-        Ok(Self::new(first.fp, first.has_terms))
+
+        self.last_key
+            .copy_bytes(other.last_key.bytes(), 0, other.last_key.length());
+        self.max_key_depth = self.max_key_depth.max(other.max_key_depth);
+        Ok(())
     }
 
-    /// Saves this trie to the index output, recording offsets in `meta`.
-    pub fn save(&self, meta: &mut dyn DataOutput, index_out: &mut dyn IndexOutput) -> Result<()> {
-        let index_start_fp = index_out.file_pointer();
-        meta.write_v_long(index_start_fp)?;
-        // Java's `TrieBuilder.saveNodes` returns the root node's file pointer
-        // *relative* to the start of the trie, because `TrieReader` adds the
-        // start back when it seeks. Writing an absolute pointer here would make
-        // the reader jump past the root of every non-empty trie.
-        let root_fp = index_out.file_pointer() - index_start_fp;
-        // Trivial trie: single leaf node with output.
-        let output_fp_bytes = Self::bytes_required_v_long(self.index_start_fp);
-        let header = ((output_fp_bytes - 1) << 2) | if self.has_terms { 1 << 5 } else { 0 };
-        index_out.write_byte(header as u8)?;
-        Self::write_long_n_bytes(index_out, self.index_start_fp, output_fp_bytes)?;
-        index_out.write_long(0)?;
+    /// Returns the output of the empty key, when the trie holds one.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.TrieBuilder#getEmptyOutput`.
+    pub fn get_empty_output(&self) -> Option<&Output> {
+        self.empty_output.as_ref()
+    }
+
+    /// Saves this trie to the term index, recording in `meta` where it starts,
+    /// where its root node sits, and where it ends.
+    ///
+    /// Equivalent to `org.apache.lucene.codecs.lucene103.blocktree.TrieBuilder#save`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error writing to either output raised.
+    pub fn save(&self, meta: &mut dyn DataOutput, index: &mut dyn IndexOutput) -> Result<()> {
+        meta.write_v_long(index.file_pointer())?;
+        let root_fp = self.save_nodes(index)?;
         meta.write_v_long(root_fp)?;
-        meta.write_v_long(index_out.file_pointer())?;
+        // Eight more bytes, so that the reader may over-read the last node.
+        index.write_long(0)?;
+        meta.write_v_long(index.file_pointer())?;
         Ok(())
+    }
+
+    /// Rebuilds the trie from the prefix-coded entries and writes it out,
+    /// returning the position of the root node relative to the trie's start.
+    ///
+    /// The iteration is in two phases: reading an entry's header exposes the
+    /// length of the prefix it shares with its predecessor while the key buffer
+    /// still holds that predecessor, which is exactly what
+    /// [`Self::freeze_from`] needs to read the labels off; reading the body then
+    /// overwrites the key buffer with the current entry.
+    ///
+    /// Equivalent to `org.apache.lucene.codecs.lucene103.blocktree.TrieBuilder#saveNodes`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error reading the buffer or writing the index raised.
+    pub fn save_nodes(&self, index: &mut dyn IndexOutput) -> Result<i64> {
+        let start_fp = index.file_pointer();
+
+        let mut frontier: Vec<FrontierNode> = vec![FrontierNode::default(); self.max_key_depth + 1];
+        frontier[0].output = self.empty_output.clone();
+
+        let mut iter = self.entry_iterator()?;
+        while iter.has_next() {
+            // Phase 1: the key buffer still holds the previous key.
+            let prev_key_len = iter.key_len;
+            iter.read_header()?;
+
+            // Freeze the frontier from the previous key's depth down to the
+            // depth the two keys share. On the first entry both are 0, so this
+            // does nothing.
+            Self::freeze_from(
+                &iter.key,
+                prev_key_len,
+                iter.prefix_len,
+                &mut frontier,
+                start_fp,
+                index,
+            )?;
+
+            // Phase 2: the key buffer now holds the current key.
+            iter.read_body()?;
+            frontier[iter.key_len].output = iter.output.clone();
+        }
+
+        // Freeze everything the last key left standing.
+        Self::freeze_from(&iter.key, iter.key_len, 0, &mut frontier, start_fp, index)?;
+
+        Self::freeze_node(&frontier[0], start_fp, index)
+    }
+
+    /// Freezes the frontier nodes from depth `key_len` down to `to_depth + 1`,
+    /// registering each frozen node as a child of the node one level up.
+    ///
+    /// Equivalent to `org.apache.lucene.codecs.lucene103.blocktree.TrieBuilder#freezeFrom`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error writing a node to the index raised.
+    fn freeze_from(
+        key: &[u8],
+        key_len: usize,
+        to_depth: usize,
+        frontier: &mut [FrontierNode],
+        start_fp: i64,
+        index: &mut dyn IndexOutput,
+    ) -> Result<()> {
+        let mut d = key_len;
+        while d > to_depth {
+            let fp = Self::freeze_node(&frontier[d], start_fp, index)?;
+            frontier[d - 1].add_child(i32::from(key[d - 1]), fp);
+            frontier[d].reset();
+            d -= 1;
+        }
+        Ok(())
+    }
+
+    /// Writes one node to the index and returns its position relative to
+    /// `start_fp`.
+    ///
+    /// Nodes are always written after all of their children, so every child
+    /// pointer is a positive delta backwards.
+    ///
+    /// Equivalent to `org.apache.lucene.codecs.lucene103.blocktree.TrieBuilder#freezeNode`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when a leaf node has no output,
+    /// and whatever error writing to the index raised.
+    fn freeze_node(node: &FrontierNode, start_fp: i64, index: &mut dyn IndexOutput) -> Result<i64> {
+        let children_num = node.children_num();
+
+        if children_num == 0 {
+            let bottom_fp = index.file_pointer() - start_fp;
+            let output = node.output.as_ref().ok_or_else(|| {
+                LuceneError::IllegalState("leaf nodes should have output".to_string())
+            })?;
+            let output_fp_bytes = Self::bytes_required_v_long(output.fp);
+            let header = trie_reader::SIGN_NO_CHILDREN
+                | ((output_fp_bytes - 1) << 2)
+                | if output.has_terms {
+                    trie_reader::LEAF_NODE_HAS_TERMS
+                } else {
+                    0
+                }
+                | if output.floor_data.is_some() {
+                    trie_reader::LEAF_NODE_HAS_FLOOR
+                } else {
+                    0
+                };
+            index.write_byte(header as u8)?;
+            Self::write_long_n_bytes(index, output.fp, output_fp_bytes)?;
+            if let Some(floor_data) = output.floor_data.as_ref() {
+                index.write_bytes(&floor_data.bytes, floor_data.offset, floor_data.length)?;
+            }
+            return Ok(bottom_fp);
+        }
+
+        if children_num == 1 {
+            let bottom_fp = index.file_pointer() - start_fp;
+            let child_delta_fp = bottom_fp - node.child_fps[0];
+            debug_assert!(
+                child_delta_fp > 0,
+                "parent node is always written after children: {child_delta_fp}"
+            );
+            let child_fp_bytes = Self::bytes_required_v_long(child_delta_fp);
+            let encoded_output_fp_bytes = match node.output.as_ref() {
+                None => 0,
+                Some(output) => Self::bytes_required_v_long(output.fp << 2),
+            };
+
+            let sign = if node.output.is_some() {
+                trie_reader::SIGN_SINGLE_CHILD_WITH_OUTPUT
+            } else {
+                trie_reader::SIGN_SINGLE_CHILD_WITHOUT_OUTPUT
+            };
+            let header = sign | ((child_fp_bytes - 1) << 2) | ((encoded_output_fp_bytes - 1) << 5);
+            index.write_byte(header as u8)?;
+            index.write_byte(node.child_labels[0] as u8)?;
+            Self::write_long_n_bytes(index, child_delta_fp, child_fp_bytes)?;
+
+            if let Some(output) = node.output.as_ref() {
+                let encoded_fp = Self::encode_fp(output);
+                Self::write_long_n_bytes(index, encoded_fp, encoded_output_fp_bytes)?;
+                if let Some(floor_data) = output.floor_data.as_ref() {
+                    index.write_bytes(&floor_data.bytes, floor_data.offset, floor_data.length)?;
+                }
+            }
+            return Ok(bottom_fp);
+        }
+
+        // Several children.
+        let bottom_fp = index.file_pointer() - start_fp;
+
+        let min_label = node.child_labels[0];
+        let max_label = node.child_labels[children_num - 1];
+        debug_assert!(max_label > min_label);
+        let child_save_strategy =
+            ChildSaveStrategy::choose(min_label, max_label, children_num as i32);
+        let strategy_bytes =
+            child_save_strategy.need_bytes(min_label, max_label, children_num as i32);
+        debug_assert!(strategy_bytes > 0 && strategy_bytes <= 32);
+
+        let max_child_delta_fp = bottom_fp - node.child_fps[0];
+        debug_assert!(
+            max_child_delta_fp > 0,
+            "parent always written after all children"
+        );
+
+        let children_fp_bytes = Self::bytes_required_v_long(max_child_delta_fp);
+        let encoded_output_fp_bytes = match node.output.as_ref() {
+            None => 1,
+            Some(output) => Self::bytes_required_v_long(output.fp << 2),
+        };
+        let header = i64::from(trie_reader::SIGN_MULTI_CHILDREN)
+            | i64::from((children_fp_bytes - 1) << 2)
+            | (i64::from(node.output.is_some()) << 5)
+            | (i64::from(encoded_output_fp_bytes - 1) << 6)
+            | (i64::from(child_save_strategy.code()) << 9)
+            | (i64::from(strategy_bytes - 1) << 11)
+            | (i64::from(min_label) << 16);
+
+        Self::write_long_n_bytes(index, header, 3)?;
+
+        if let Some(output) = node.output.as_ref() {
+            let encoded_fp = Self::encode_fp(output);
+            Self::write_long_n_bytes(index, encoded_fp, encoded_output_fp_bytes)?;
+            if output.floor_data.is_some() {
+                index.write_byte((children_num - 1) as u8)?;
+            }
+        }
+
+        let strategy_start_fp = index.file_pointer();
+        child_save_strategy.save(&node.child_labels, children_num, strategy_bytes, index)?;
+        debug_assert_eq!(
+            index.file_pointer(),
+            strategy_start_fp + i64::from(strategy_bytes),
+            "{child_save_strategy:?} strategy bytes compute error"
+        );
+
+        for i in 0..children_num {
+            debug_assert!(
+                bottom_fp > node.child_fps[i],
+                "parent always written after all children"
+            );
+            Self::write_long_n_bytes(index, bottom_fp - node.child_fps[i], children_fp_bytes)?;
+        }
+
+        if let Some(floor_data) = node.output.as_ref().and_then(|o| o.floor_data.as_ref()) {
+            index.write_bytes(&floor_data.bytes, floor_data.offset, floor_data.length)?;
+        }
+
+        Ok(bottom_fp)
+    }
+
+    /// Packs an output's file pointer together with its two flag bits, the way
+    /// a node that also has children stores it.
+    ///
+    /// Equivalent to `org.apache.lucene.codecs.lucene103.blocktree.TrieBuilder#encodeFP`.
+    fn encode_fp(output: &Output) -> i64 {
+        debug_assert!(output.fp < 1i64 << 62);
+        (if output.floor_data.is_some() {
+            trie_reader::NON_LEAF_NODE_HAS_FLOOR
+        } else {
+            0
+        }) | (if output.has_terms {
+            trie_reader::NON_LEAF_NODE_HAS_TERMS
+        } else {
+            0
+        }) | (output.fp << 2)
     }
 
     fn bytes_required_v_long(v: i64) -> i32 {
@@ -385,9 +809,245 @@ impl TrieBuilder {
         let mut v = v;
         for _ in 0..n {
             out.write_byte(v as u8)?;
-            v >>= 8;
+            v = ((v as u64) >> 8) as i64;
         }
+        debug_assert_eq!(v, 0);
         Ok(())
+    }
+
+    /// Starts an iteration over every non-empty-key entry of this trie.
+    fn entry_iterator(&self) -> Result<EntryIterator<'_>> {
+        EntryIterator::new(self)
+    }
+}
+
+/// Walks the entries of a [`TrieBuilder`]: first the separately held minimum
+/// key, then the prefix-coded buffer.
+///
+/// Lucene Core equivalent: `TrieBuilder.EntryIterator`.
+struct EntryIterator<'a> {
+    trie: &'a TrieBuilder,
+    input: Option<ByteBuffersDataInput>,
+    min_key_consumed: bool,
+    header_read: bool,
+    /// Length of the current entry's suffix.
+    suffix_len: usize,
+    /// Length of the prefix the current entry shares with its predecessor.
+    prefix_len: usize,
+    /// The key buffer; after `read_header` it still holds the previous key.
+    key: Vec<u8>,
+    /// Length of the key currently in the buffer.
+    key_len: usize,
+    /// The current entry's output.
+    output: Option<Output>,
+}
+
+impl<'a> EntryIterator<'a> {
+    fn new(trie: &'a TrieBuilder) -> Result<Self> {
+        let mut key = vec![0u8; trie.max_key_depth.max(1)];
+        key[..trie.min_key.length].copy_from_slice(trie.min_key.slice());
+        let input = if trie.buffer.size() > 0 {
+            Some(trie.buffer.to_data_input()?)
+        } else {
+            None
+        };
+        Ok(Self {
+            trie,
+            input,
+            min_key_consumed: trie.min_output.is_none(),
+            header_read: false,
+            suffix_len: 0,
+            prefix_len: 0,
+            key,
+            key_len: 0,
+            output: None,
+        })
+    }
+
+    fn has_next(&self) -> bool {
+        if !self.min_key_consumed {
+            return true;
+        }
+        match self.input.as_ref() {
+            Some(input) => input.position() < input.length(),
+            None => false,
+        }
+    }
+
+    /// Reads only the prefix and suffix lengths of the next entry, leaving the
+    /// key buffer holding the previous key.
+    ///
+    /// Equivalent to `TrieBuilder.EntryIterator#readHeader`.
+    fn read_header(&mut self) -> Result<()> {
+        debug_assert!(!self.header_read);
+        self.header_read = true;
+
+        if !self.min_key_consumed {
+            self.prefix_len = 0;
+            self.suffix_len = self.trie.min_key.length;
+            return Ok(());
+        }
+
+        let input = self
+            .input
+            .as_mut()
+            .ok_or_else(|| LuceneError::IllegalState("no more trie entries".to_string()))?;
+        self.prefix_len = input.read_v_int()?.max(0) as usize;
+        self.suffix_len = input.read_v_int()?.max(0) as usize;
+        Ok(())
+    }
+
+    /// Reads the suffix bytes and the output of the entry whose header was just
+    /// read, leaving the key buffer holding that entry's key.
+    ///
+    /// Equivalent to `TrieBuilder.EntryIterator#readBody`.
+    fn read_body(&mut self) -> Result<()> {
+        debug_assert!(self.header_read);
+        self.header_read = false;
+
+        if !self.min_key_consumed {
+            self.key_len = self.trie.min_key.length;
+            self.output = self.trie.min_output.clone();
+            self.min_key_consumed = true;
+            return Ok(());
+        }
+
+        let input = self
+            .input
+            .as_mut()
+            .ok_or_else(|| LuceneError::IllegalState("no more trie entries".to_string()))?;
+        self.key_len = self.prefix_len + self.suffix_len;
+        if self.key.len() < self.key_len {
+            self.key.resize(self.key_len, 0);
+        }
+        input.read_bytes(&mut self.key, self.prefix_len, self.suffix_len)?;
+        let fp = input.read_v_long()?;
+        let has_terms = input.read_byte()? == 1;
+        let floor_data_len = input.read_v_int()?.max(0) as usize;
+        let floor_data = if floor_data_len > 0 {
+            let mut fd = vec![0u8; floor_data_len];
+            input.read_bytes(&mut fd, 0, floor_data_len)?;
+            Some(BytesRef::new(fd))
+        } else {
+            None
+        };
+        self.output = Some(Output {
+            fp,
+            has_terms,
+            floor_data,
+        });
+        Ok(())
+    }
+}
+
+impl ChildSaveStrategy {
+    /// The strategies in the order they are considered, cheapest lookup first.
+    ///
+    /// Equivalent to `ChildSaveStrategy.STRATEGIES_IN_PRIORITY_ORDER`.
+    const IN_PRIORITY_ORDER: [ChildSaveStrategy; 3] = [
+        ChildSaveStrategy::Bits,
+        ChildSaveStrategy::Array,
+        ChildSaveStrategy::ReverseArray,
+    ];
+
+    /// Returns the code this strategy is written under.
+    ///
+    /// Equivalent to the `ChildSaveStrategy.code` field.
+    pub fn code(self) -> i32 {
+        match self {
+            Self::ReverseArray => 0,
+            Self::Array => 1,
+            Self::Bits => 2,
+        }
+    }
+
+    /// Returns how many bytes this strategy needs for the given label range.
+    ///
+    /// Equivalent to `ChildSaveStrategy.needBytes`.
+    pub fn need_bytes(self, min_label: i32, max_label: i32, label_cnt: i32) -> i32 {
+        match self {
+            Self::Bits => {
+                let byte_distance = max_label - min_label + 1;
+                (byte_distance + 7) >> 3
+            }
+            Self::Array => label_cnt - 1,
+            Self::ReverseArray => {
+                let byte_distance = max_label - min_label + 1;
+                byte_distance - label_cnt + 1
+            }
+        }
+    }
+
+    /// Returns the strategy that stores this label set in the fewest bytes.
+    ///
+    /// Equivalent to `ChildSaveStrategy.choose`.
+    pub fn choose(min_label: i32, max_label: i32, label_cnt: i32) -> Self {
+        let mut chosen = Self::Bits;
+        let mut strategy_bytes = i32::MAX;
+        for strategy in Self::IN_PRIORITY_ORDER {
+            let cost = strategy.need_bytes(min_label, max_label, label_cnt);
+            if cost < strategy_bytes {
+                chosen = strategy;
+                strategy_bytes = cost;
+            }
+        }
+        debug_assert!(strategy_bytes > 0 && strategy_bytes <= 32);
+        chosen
+    }
+
+    /// Writes the child labels in this strategy's layout.
+    ///
+    /// Equivalent to `ChildSaveStrategy.save`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error writing to the index raised.
+    pub fn save(
+        self,
+        child_labels: &[i32],
+        label_cnt: usize,
+        _strategy_bytes: i32,
+        output: &mut dyn IndexOutput,
+    ) -> Result<()> {
+        match self {
+            Self::Bits => {
+                // The first arc is always present.
+                let mut presence_bits: u8 = 1;
+                let mut presence_index = 0i32;
+                let mut previous_label = child_labels[0];
+                for &label in child_labels.iter().take(label_cnt).skip(1) {
+                    debug_assert!(label > previous_label);
+                    presence_index += label - previous_label;
+                    while presence_index >= 8 {
+                        output.write_byte(presence_bits)?;
+                        presence_bits = 0;
+                        presence_index -= 8;
+                    }
+                    presence_bits |= 1 << presence_index;
+                    previous_label = label;
+                }
+                output.write_byte(presence_bits)?;
+                Ok(())
+            }
+            Self::Array => {
+                for &label in child_labels.iter().take(label_cnt).skip(1) {
+                    output.write_byte(label as u8)?;
+                }
+                Ok(())
+            }
+            Self::ReverseArray => {
+                output.write_byte(child_labels[label_cnt - 1] as u8)?;
+                let mut last_label = child_labels[0];
+                for &label in child_labels.iter().take(label_cnt).skip(1) {
+                    last_label += 1;
+                    while last_label < label {
+                        output.write_byte(last_label as u8)?;
+                        last_label += 1;
+                    }
+                }
+                Ok(())
+            }
+        }
     }
 }
 
@@ -441,6 +1101,74 @@ struct PendingBlock {
 }
 
 impl PendingBlock {
+    /// Builds the trie index for the run of blocks that share this block's
+    /// prefix, folding in the index every sub-block already built.
+    ///
+    /// `blocks[0]` is the block the index is built for; the rest are the
+    /// further floor blocks of the same prefix, whose lead byte and file
+    /// pointer become this block's floor data.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.Lucene103BlockTreeTermsWriter.PendingBlock#compileIndex`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error writing the floor data or appending a sub-index
+    /// raised.
+    fn compile_index(
+        blocks: &mut [PendingBlock],
+        scratch_bytes: &mut ByteBuffersDataOutput,
+    ) -> Result<TrieBuilder> {
+        debug_assert!(
+            (blocks[0].is_floor && blocks.len() > 1) || (!blocks[0].is_floor && blocks.len() == 1)
+        );
+        debug_assert_eq!(scratch_bytes.size(), 0);
+
+        let (prefix, fp, has_terms, is_floor) = {
+            let first = &blocks[0];
+            (
+                first.prefix.clone(),
+                first.fp,
+                first.has_terms,
+                first.is_floor,
+            )
+        };
+
+        let floor_data = if is_floor {
+            scratch_bytes.write_v_int((blocks.len() - 1) as i32)?;
+            for sub in &blocks[1..] {
+                debug_assert!(sub.floor_lead_byte != -1);
+                scratch_bytes.write_byte(sub.floor_lead_byte as u8)?;
+                debug_assert!(sub.fp > fp);
+                scratch_bytes.write_v_long(((sub.fp - fp) << 1) | i64::from(sub.has_terms))?;
+            }
+            Some(BytesRef::new(scratch_bytes.to_array_copy()))
+        } else {
+            None
+        };
+
+        let mut trie_builder = TrieBuilder::bytes_ref_to_trie(
+            &prefix,
+            Output {
+                fp,
+                has_terms,
+                floor_data,
+            },
+        );
+        scratch_bytes.reset();
+
+        // Fold in the index of every sub-block.
+        for block in blocks.iter_mut() {
+            if let Some(sub_indices) = block.sub_indices.take() {
+                for sub_index in &sub_indices {
+                    trie_builder.append(sub_index)?;
+                }
+            }
+        }
+
+        Ok(trie_builder)
+    }
+
     fn new(
         prefix: BytesRef,
         fp: i64,
@@ -690,17 +1418,16 @@ impl<'a> TermsWriter<'a> {
         }
 
         debug_assert!(!self.new_blocks.is_empty());
-        let first_block = self.new_blocks.remove(0);
-        debug_assert!(first_block.is_floor || self.new_blocks.is_empty());
+        let mut all_blocks = std::mem::take(&mut self.new_blocks);
+        debug_assert!(all_blocks[0].is_floor || all_blocks.len() == 1);
 
-        // Compile index for the first block using the new_blocks list.
-        let mut all_blocks = vec![first_block.clone()];
-        all_blocks.extend(self.new_blocks.drain(..));
-        let compiled = TrieBuilder::compile(&all_blocks, &mut *self.scratch_bytes)?;
-        let first_block = PendingBlock {
-            index: Some(compiled),
-            ..all_blocks.into_iter().next().unwrap()
-        };
+        // Compile the index for the first block, over the whole floor run.
+        let index = PendingBlock::compile_index(&mut all_blocks, self.scratch_bytes)?;
+        let mut first_block = all_blocks
+            .into_iter()
+            .next()
+            .expect("INVARIANT: write_block pushed at least one block");
+        first_block.index = Some(index);
 
         self.pending.truncate(self.pending.len() - count as usize);
         self.pending.push(PendingEntry::Block(first_block));
@@ -953,9 +1680,11 @@ impl<'a> TermsWriter<'a> {
             )?;
 
             let first_term = self.first_pending_term.take().unwrap();
-            let root_index = root
-                .index
-                .unwrap_or_else(|| TrieBuilder::new(0, root.has_terms));
+            let root_index = root.index.ok_or_else(|| {
+                LuceneError::IllegalState(
+                    "the root block of a field must carry a compiled trie index".to_string(),
+                )
+            })?;
             root_index.save(&mut meta, self.index_out)?;
 
             // Keep postings writer in sync.
@@ -1309,6 +2038,8 @@ pub struct Lucene103BlockTreeTermsReader {
     shared: Arc<BlockTreeShared>,
     /// One reader per field that has terms, keyed by field name.
     fields: BTreeMap<String, FieldReader>,
+    /// The names of those fields, sorted, as [`Fields::iterator`] hands them out.
+    field_list: Vec<String>,
     segment: String,
     segment_suffix: String,
     version: i32,
@@ -1485,10 +2216,13 @@ impl Lucene103BlockTreeTermsReader {
         let mut terms_check = shared.terms_in.clone_input()?;
         codec_util::retrieve_checksum_expected_length(terms_check.as_mut(), terms_length)?;
 
+        let field_list = sort_field_names(&fields, state.field_infos);
+
         Ok(Self {
             postings_reader,
             shared,
             fields,
+            field_list,
             segment,
             segment_suffix,
             version,
@@ -1521,6 +2255,32 @@ impl Lucene103BlockTreeTermsReader {
     }
 }
 
+/// Returns the names of every field the terms dictionary holds, sorted.
+///
+/// Java keys its field map by field number and resolves each number to a name
+/// through `FieldInfos`; this port keys the map by name, and each
+/// [`FieldReader`] carries the [`FieldInfo`] its number came from, so the same
+/// resolution goes through the same `FieldInfos`.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene103.blocktree.Lucene103BlockTreeTermsReader#sortFieldNames`.
+fn sort_field_names(
+    field_map: &BTreeMap<String, FieldReader>,
+    field_infos: &FieldInfos,
+) -> Vec<String> {
+    let mut field_names: Vec<String> = Vec::with_capacity(field_map.len());
+    for reader in field_map.values() {
+        let number = reader.field_info().number;
+        let name = match field_infos.field_info_by_number(number) {
+            Some(field_info) => field_info.name.clone(),
+            None => reader.field_info().name.clone(),
+        };
+        field_names.push(name);
+    }
+    field_names.sort();
+    field_names
+}
+
 /// Reads a length-prefixed byte string, as the metadata file stores the minimum
 /// and maximum term of each field.
 ///
@@ -1551,7 +2311,7 @@ impl Fields for Lucene103BlockTreeTermsReader {
     }
 
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
-        Box::new(self.fields.keys().cloned())
+        Box::new(self.field_list.iter().cloned())
     }
 }
 

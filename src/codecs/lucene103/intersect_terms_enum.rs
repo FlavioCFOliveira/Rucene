@@ -14,7 +14,7 @@ use crate::index::terms::{SeekStatus, TermState, TermsEnum};
 use crate::index::{ImpactsEnum, IndexOptions, PostingsEnum};
 use crate::store::{ByteArrayDataInput, DataInput, IndexInput};
 use crate::util::automaton::{ByteRunnable, Transition, TransitionAccessor};
-use crate::util::{AttributeSource, BytesRef};
+use crate::util::{AttributeSource, BytesRef, StringHelper};
 
 /// One block of the terms dictionary, seen through the automaton.
 ///
@@ -289,17 +289,25 @@ impl IntersectTermsEnumFrame {
         self.suffix_bytes[index]
     }
 
+    /// Returns how many terms of this block have been passed.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnumFrame#getTermBlockOrd`.
+    pub fn get_term_block_ord(&self) -> i32 {
+        if self.is_leaf_block {
+            self.next_ent
+        } else {
+            self.state_data.term_block_ord
+        }
+    }
+
     /// Decodes the statistics and postings metadata of every term passed so far.
     pub fn decode_meta_data(
         &mut self,
         field_info: &crate::index::FieldInfo,
         postings_reader: &mut dyn crate::codecs::postings::PostingsReaderBase,
     ) -> Result<()> {
-        let limit = if self.is_leaf_block {
-            self.next_ent
-        } else {
-            self.state_data.term_block_ord
-        };
+        let limit = self.get_term_block_ord();
         let mut absolute = self.meta_data_upto == 0;
         while self.meta_data_upto < limit {
             if self.stats_singleton_run_length > 0 {
@@ -353,6 +361,8 @@ pub struct IntersectTermsEnum {
     automaton: Box<dyn TransitionAccessor>,
     common_suffix: Option<BytesRef>,
     stack: Vec<IntersectTermsEnumFrame>,
+    /// The trie node reached at each depth of the current term.
+    nodes: Vec<Node>,
     /// Index of the frame the cursor is in, or `None` once exhausted.
     current: Option<usize>,
     term: Vec<u8>,
@@ -377,11 +387,8 @@ impl IntersectTermsEnum {
         common_suffix: Option<BytesRef>,
         start_term: Option<BytesRef>,
     ) -> Result<Self> {
-        let shared = field.shared();
-        let terms_in = shared.terms_in.clone_input()?;
-        let index_in = shared.index_in.clone_input()?;
-        let index_slice = index_in.random_access_slice(0, index_in.length())?;
-        let trie = TrieReader::new(index_slice, field.index_start() + field.root_fp())?;
+        let terms_in = field.shared().terms_in.clone_input()?;
+        let trie = field.new_reader()?;
 
         let mut this = Self {
             field,
@@ -391,18 +398,147 @@ impl IntersectTermsEnum {
             automaton,
             common_suffix,
             stack: (0..5).map(IntersectTermsEnumFrame::new).collect(),
+            nodes: vec![Node::default(); 5],
             current: None,
             term: Vec::new(),
-            saved_start_term: start_term.map(|t| t.slice().to_vec()),
+            saved_start_term: None,
             attributes: AttributeSource::new(),
         };
         this.start()?;
+        this.set_saved_start_term(start_term.as_ref());
+        if let Some(start_term) = start_term.as_ref() {
+            this.seek_to_start_term(start_term)?;
+        }
         Ok(this)
+    }
+
+    /// Remembers the term the walk was started from.
+    ///
+    /// Java keeps this only to assert, later, that the walk never steps back
+    /// before the term it was seeded with; this port keeps the same copy for
+    /// the same purpose.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnum#setSavedStartTerm`.
+    fn set_saved_start_term(&mut self, start_term: Option<&BytesRef>) {
+        self.saved_start_term = start_term.map(|t| t.slice().to_vec());
+    }
+
+    /// Returns the trie node slot at depth `ord`, growing the array first.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnum#getNode`.
+    fn get_node(&mut self, ord: usize) -> &mut Node {
+        if ord >= self.nodes.len() {
+            self.nodes.resize(ord + 1, Node::default());
+        }
+        &mut self.nodes[ord]
+    }
+
+    /// Runs the current entry's suffix through the automaton, from the state
+    /// the current block's prefix reaches.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnum#getState`.
+    fn get_state(&self) -> i32 {
+        let cur = self.current.expect("get_state with no current frame");
+        let frame = &self.stack[cur];
+        let mut state = frame.state;
+        for idx in 0..frame.suffix {
+            state = self.run_automaton.step(
+                state,
+                i32::from(frame.suffix_byte(frame.start_byte_pos + idx)),
+            );
+            debug_assert!(state != -1);
+        }
+        state
+    }
+
+    /// Positions the cursor just before `target`, so that the first
+    /// [`TermsEnum::next`] returns the term after it.
+    ///
+    /// This is a seek *floor*: it is only ever used for the initial seek, and
+    /// it walks the blocks rather than the index, exactly as Java does.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnum#seekToStartTerm`.
+    fn seek_to_start_term(&mut self, target: &BytesRef) -> Result<()> {
+        debug_assert_eq!(self.current, Some(0));
+        let target_bytes = target.slice();
+
+        for _idx in 0..=target_bytes.len() {
+            loop {
+                let cur = self.current.expect("seek_to_start_term lost its frame");
+
+                // Remember enough of the frame to be able to step back onto the
+                // entry before the one that overshot the target.
+                let sav_next_ent = self.stack[cur].next_ent;
+                let save_pos = self.stack[cur].suffixes_reader.position();
+                let save_length_pos = self.stack[cur].suffix_lengths_reader.position();
+                let save_start_byte_pos = self.stack[cur].start_byte_pos;
+                let save_suffix = self.stack[cur].suffix;
+                let save_last_sub_fp = self.stack[cur].last_sub_fp;
+                let save_term_block_ord = self.stack[cur].state_data.term_block_ord;
+
+                let is_sub_block = self.stack[cur].next()?;
+                self.copy_term();
+
+                if is_sub_block
+                    && StringHelper::starts_with_bytes(
+                        target_bytes,
+                        &BytesRef::new(self.term.clone()),
+                    )
+                {
+                    // Recurse.
+                    let state = self.get_state();
+                    self.push_frame(state)?;
+                    break;
+                }
+
+                match self.term.as_slice().cmp(target_bytes) {
+                    std::cmp::Ordering::Less => {
+                        if self.stack[cur].next_ent == self.stack[cur].ent_count {
+                            if !self.stack[cur].is_last_in_floor {
+                                // Advance to the next floor block.
+                                let terms_in = &mut *self.terms_in;
+                                self.stack[cur].load_next_floor_block(terms_in)?;
+                                continue;
+                            }
+                            return Ok(());
+                        }
+                        continue;
+                    }
+                    std::cmp::Ordering::Equal => return Ok(()),
+                    std::cmp::Ordering::Greater => {
+                        // Fall back to the prior entry: the contract is that the
+                        // first next() returns the term after the requested one.
+                        let frame = &mut self.stack[cur];
+                        frame.next_ent = sav_next_ent;
+                        frame.last_sub_fp = save_last_sub_fp;
+                        frame.start_byte_pos = save_start_byte_pos;
+                        frame.suffix = save_suffix;
+                        frame.suffixes_reader.set_position(save_pos);
+                        frame.suffix_lengths_reader.set_position(save_length_pos);
+                        frame.state_data.term_block_ord = save_term_block_ord;
+                        // The last entry may have been a sub-block; there is no
+                        // need to recurse into it, because the first next() will
+                        // skip that frame anyway.
+                        self.copy_term();
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        Err(LuceneError::IllegalState(
+            "seek_to_start_term ran past the target term".to_string(),
+        ))
     }
 
     /// Pushes the root frame over the trie root.
     fn start(&mut self) -> Result<()> {
         let root = self.trie.root;
+        *self.get_node(0) = root;
         let frame = &mut self.stack[0];
         frame.ord = 0;
         frame.prefix = 0;
@@ -411,7 +547,7 @@ impl IntersectTermsEnum {
         frame.next_ent = -1;
         frame.node = Some(root);
         if root.is_floor() {
-            let end = self.field.index_end();
+            let end = self.field.index_end() - self.field.index_start();
             let len = (end - root.floor_data_fp).max(0) as usize;
             let floor = self.trie.floor_data(&root, len.min(1 << 16))?;
             self.stack[0].set_floor_data(floor)?;
@@ -459,11 +595,12 @@ impl IntersectTermsEnum {
                     "term index",
                 )
             })?;
+            *self.get_node(1 + idx) = node;
             idx += 1;
         }
 
         let floor = if node.is_floor() {
-            let end = self.field.index_end();
+            let end = self.field.index_end() - self.field.index_start();
             let len = (end - node.floor_data_fp).max(0) as usize;
             Some(self.trie.floor_data(&node, len.min(1 << 16))?)
         } else {

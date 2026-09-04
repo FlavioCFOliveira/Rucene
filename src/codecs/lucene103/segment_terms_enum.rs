@@ -4,16 +4,16 @@
 //! The cursor that walks one field's terms: a stack of frames, each holding one
 //! decoded block of the `.tim` file, navigated through the `.tip` trie.
 
-use crate::codecs::lucene103::blocktree::CompressionAlgorithm;
+use crate::codecs::lucene103::blocktree::{CompressionAlgorithm, Stats};
 use crate::codecs::lucene103::field_reader::FieldReader;
 use crate::codecs::lucene103::trie_reader::{Node, TrieReader};
 use crate::codecs::term_state::BlockTermState;
 use crate::error::{LuceneError, Result};
-use crate::index::terms::{SeekStatus, TermState, TermsEnum};
+use crate::index::terms::{SeekStatus, TermState, Terms, TermsEnum};
 use crate::index::ImpactsEnum;
 use crate::index::{IndexOptions, PostingsEnum};
 use crate::store::{ByteArrayDataInput, DataInput, IndexInput};
-use crate::util::{AttributeSource, BytesRef};
+use crate::util::{AttributeSource, BytesRef, IOBooleanSupplier};
 
 /// One decoded block of the terms dictionary.
 ///
@@ -45,12 +45,16 @@ pub struct SegmentTermsEnumFrame {
     pub fp_end: i64,
 
     suffix_bytes: Vec<u8>,
-    suffixes_reader: ByteArrayDataInput,
+    pub(crate) suffixes_reader: ByteArrayDataInput,
     suffix_length_bytes: Vec<u8>,
-    suffix_lengths_reader: ByteArrayDataInput,
+    pub(crate) suffix_lengths_reader: ByteArrayDataInput,
     stat_bytes: Vec<u8>,
-    stats_reader: ByteArrayDataInput,
+    pub(crate) stats_reader: ByteArrayDataInput,
     stats_singleton_run_length: i32,
+    /// How many bytes of the block the suffixes and their lengths occupy.
+    pub total_suffix_bytes: i64,
+    /// Which algorithm compressed this block's suffix bytes.
+    pub compression_alg: CompressionAlgorithm,
 
     /// Floor data, copied out of the `.tip` file.
     floor_data: Vec<u8>,
@@ -122,6 +126,8 @@ impl SegmentTermsEnumFrame {
             stat_bytes: Vec::new(),
             stats_reader: ByteArrayDataInput::new(Vec::new()),
             stats_singleton_run_length: 0,
+            total_suffix_bytes: 0,
+            compression_alg: CompressionAlgorithm::NoCompression,
             floor_data: Vec::new(),
             floor_data_pos: 0,
             prefix_length: 0,
@@ -186,6 +192,7 @@ impl SegmentTermsEnumFrame {
         }
         self.is_last_in_floor = code & 1 != 0;
 
+        let start_suffix_fp = terms_in.file_pointer();
         let code_l = terms_in.read_v_long()?;
         self.is_leaf_block = code_l & 0x04 != 0;
         let num_suffix_bytes = ((code_l as u64) >> 3) as usize;
@@ -193,6 +200,7 @@ impl SegmentTermsEnumFrame {
             self.suffix_bytes.resize(num_suffix_bytes, 0);
         }
         let compression = CompressionAlgorithm::by_code((code_l & 0x03) as i32)?;
+        self.compression_alg = compression;
         compression.read(terms_in, &mut self.suffix_bytes, num_suffix_bytes)?;
         self.suffixes_reader =
             ByteArrayDataInput::from_slice(&self.suffix_bytes[..num_suffix_bytes]);
@@ -211,6 +219,7 @@ impl SegmentTermsEnumFrame {
             terms_in.read_bytes(&mut self.suffix_length_bytes, 0, n)?;
         }
         self.suffix_lengths_reader = ByteArrayDataInput::from_slice(&self.suffix_length_bytes[..n]);
+        self.total_suffix_bytes = terms_in.file_pointer() - start_suffix_fp;
 
         let num_stat_bytes = terms_in.read_v_int()?.max(0) as usize;
         if self.stat_bytes.len() < num_stat_bytes {
@@ -359,6 +368,303 @@ impl SegmentTermsEnumFrame {
         }
     }
 
+    /// Returns whether `target` really does start with this block's prefix.
+    ///
+    /// Java uses this only inside an assertion; this port uses it the same way,
+    /// from `debug_assert!`.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnumFrame#prefixMatches`.
+    pub fn prefix_matches(&self, target: &[u8], term: &[u8]) -> bool {
+        for byte_pos in 0..self.prefix_length {
+            if target.get(byte_pos) != term.get(byte_pos) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Writes the current entry — this block's prefix followed by the suffix the
+    /// scan stopped on — into the cursor's term buffer.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnumFrame#fillTerm`.
+    pub fn fill_term(&self, term: &mut Vec<u8>) {
+        let term_length = self.prefix_length + self.suffix_length;
+        term.resize(term_length, 0);
+        term[self.prefix_length..term_length].copy_from_slice(
+            &self.suffix_bytes[self.start_byte_pos..self.start_byte_pos + self.suffix_length],
+        );
+    }
+
+    /// Scans this block for `target`, picking the search this block's shape
+    /// allows: a binary search when every suffix is the same length, a linear
+    /// scan otherwise, and the non-leaf scan when the block also holds
+    /// sub-blocks.
+    ///
+    /// The second half of the result is `true` when the caller must descend
+    /// into the sub-block the scan stopped on; see
+    /// [`Self::scan_to_term_non_leaf`].
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnumFrame#scanToTerm`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error decoding an entry of the block raised.
+    pub fn scan_to_term(
+        &mut self,
+        target: &[u8],
+        exact_only: bool,
+        term: &mut Vec<u8>,
+        term_exists: &mut bool,
+    ) -> Result<(SeekStatus, bool)> {
+        if self.is_leaf_block {
+            if self.all_equal {
+                self.binary_search_term_leaf(target, exact_only, term, term_exists)
+            } else {
+                self.scan_to_term_leaf(target, exact_only, term, term_exists)
+            }
+        } else {
+            self.scan_to_term_non_leaf(target, exact_only, term, term_exists)
+        }
+    }
+
+    /// Returns the part of `target` that lies past this block's prefix.
+    fn target_suffix<'a>(&self, target: &'a [u8]) -> &'a [u8] {
+        &target[self.prefix_length.min(target.len())..]
+    }
+
+    /// Scans a leaf block entry by entry until an entry reaches `target`.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnumFrame#scanToTermLeaf`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error decoding an entry of the block raised.
+    pub fn scan_to_term_leaf(
+        &mut self,
+        target: &[u8],
+        exact_only: bool,
+        term: &mut Vec<u8>,
+        term_exists: &mut bool,
+    ) -> Result<(SeekStatus, bool)> {
+        debug_assert!(self.next_ent != -1);
+
+        *term_exists = true;
+        self.sub_code = 0;
+
+        if self.next_ent == self.ent_count {
+            if exact_only {
+                self.fill_term(term);
+            }
+            return Ok((SeekStatus::END, false));
+        }
+
+        debug_assert!(self.prefix_matches(target, term));
+
+        let target_suffix = self.target_suffix(target);
+        loop {
+            self.next_ent += 1;
+            self.suffix_length = self.suffix_lengths_reader.read_v_int()?.max(0) as usize;
+            self.start_byte_pos = self.suffixes_reader.position();
+            self.suffixes_reader
+                .set_position(self.start_byte_pos + self.suffix_length);
+
+            let suffix =
+                &self.suffix_bytes[self.start_byte_pos..self.start_byte_pos + self.suffix_length];
+            match suffix.cmp(target_suffix) {
+                // Still before the target; keep scanning.
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Greater => {
+                    self.fill_term(term);
+                    return Ok((SeekStatus::NOT_FOUND, false));
+                }
+                std::cmp::Ordering::Equal => {
+                    // This cannot be a sub-block: the index would have taken us
+                    // straight into it.
+                    self.fill_term(term);
+                    return Ok((SeekStatus::FOUND, false));
+                }
+            }
+            if self.next_ent >= self.ent_count {
+                break;
+            }
+        }
+
+        // The index can legitimately point at a block that does not hold the
+        // target: the target is after this block's last term but before the
+        // first term of the next block.
+        if exact_only {
+            self.fill_term(term);
+        }
+        Ok((SeekStatus::END, false))
+    }
+
+    /// Binary-searches a leaf block whose suffixes all have the same length.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnumFrame#binarySearchTermLeaf`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error decoding an entry of the block raised.
+    pub fn binary_search_term_leaf(
+        &mut self,
+        target: &[u8],
+        exact_only: bool,
+        term: &mut Vec<u8>,
+        term_exists: &mut bool,
+    ) -> Result<(SeekStatus, bool)> {
+        debug_assert!(self.next_ent != -1);
+
+        *term_exists = true;
+        self.sub_code = 0;
+
+        if self.next_ent == self.ent_count {
+            if exact_only {
+                self.fill_term(term);
+            }
+            return Ok((SeekStatus::END, false));
+        }
+
+        debug_assert!(self.prefix_matches(target, term));
+
+        self.suffix_length = self.suffix_lengths_reader.read_v_int()?.max(0) as usize;
+        let target_suffix = self.target_suffix(target);
+        let mut start = self.next_ent;
+        let mut end = self.ent_count - 1;
+        let mut cmp = std::cmp::Ordering::Equal;
+        while start <= end {
+            let mid = ((start as u32 + end as u32) >> 1) as i32;
+            self.next_ent = mid + 1;
+            self.start_byte_pos = mid as usize * self.suffix_length;
+
+            let suffix =
+                &self.suffix_bytes[self.start_byte_pos..self.start_byte_pos + self.suffix_length];
+            cmp = suffix.cmp(target_suffix);
+            match cmp {
+                std::cmp::Ordering::Less => start = mid + 1,
+                std::cmp::Ordering::Greater => end = mid - 1,
+                std::cmp::Ordering::Equal => {
+                    self.suffixes_reader
+                        .set_position(self.start_byte_pos + self.suffix_length);
+                    self.fill_term(term);
+                    return Ok((SeekStatus::FOUND, false));
+                }
+            }
+        }
+
+        // As in `scan_to_term_leaf`, the index may point at a block that does
+        // not hold the target at all.
+        let seek_status = if end < self.ent_count - 1 {
+            // The search ended on a smaller term while a greater one exists, so
+            // step onto that greater term.
+            if cmp == std::cmp::Ordering::Less {
+                self.start_byte_pos += self.suffix_length;
+                self.next_ent += 1;
+            }
+            self.suffixes_reader
+                .set_position(self.start_byte_pos + self.suffix_length);
+            self.fill_term(term);
+            SeekStatus::NOT_FOUND
+        } else {
+            self.suffixes_reader
+                .set_position(self.start_byte_pos + self.suffix_length);
+            if exact_only {
+                self.fill_term(term);
+            }
+            SeekStatus::END
+        };
+        Ok((seek_status, false))
+    }
+
+    /// Scans a block that also holds sub-blocks.
+    ///
+    /// The `bool` half of the result is `true` when the scan stopped past the
+    /// target on a *sub-block* and the caller did not ask for an exact match:
+    /// the cursor must then descend into that sub-block, and keep descending,
+    /// until it stands on the first term after the target.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's frame holds a back-reference to
+    /// its `SegmentTermsEnum` and performs that descent itself
+    /// (`SegmentTermsEnumFrame.java:832-843`). Rust cannot express that cycle —
+    /// this file's frames are plain data — so the frame reports that the descent
+    /// is due and the cursor performs it. The blocks visited and the term the
+    /// cursor ends on are unchanged.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnumFrame#scanToTermNonLeaf`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error decoding an entry of the block raised.
+    pub fn scan_to_term_non_leaf(
+        &mut self,
+        target: &[u8],
+        exact_only: bool,
+        term: &mut Vec<u8>,
+        term_exists: &mut bool,
+    ) -> Result<(SeekStatus, bool)> {
+        debug_assert!(self.next_ent != -1);
+
+        if self.next_ent == self.ent_count {
+            if exact_only {
+                self.fill_term(term);
+                *term_exists = self.sub_code == 0;
+            }
+            return Ok((SeekStatus::END, false));
+        }
+
+        debug_assert!(self.prefix_matches(target, term));
+
+        let target_suffix = self.target_suffix(target);
+        while self.next_ent < self.ent_count {
+            self.next_ent += 1;
+
+            let code = self.suffix_lengths_reader.read_v_int()?;
+            self.suffix_length = ((code as u32) >> 1) as usize;
+            self.start_byte_pos = self.suffixes_reader.position();
+            self.suffixes_reader
+                .set_position(self.start_byte_pos + self.suffix_length);
+            *term_exists = code & 1 == 0;
+            if *term_exists {
+                self.state.term_block_ord += 1;
+                self.sub_code = 0;
+            } else {
+                self.sub_code = self.suffix_lengths_reader.read_v_long()?;
+                self.last_sub_fp = self.fp - self.sub_code;
+            }
+
+            let suffix =
+                &self.suffix_bytes[self.start_byte_pos..self.start_byte_pos + self.suffix_length];
+            match suffix.cmp(target_suffix) {
+                // Still before the target; keep scanning.
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Greater => {
+                    self.fill_term(term);
+                    let descend = !exact_only && !*term_exists;
+                    return Ok((SeekStatus::NOT_FOUND, descend));
+                }
+                std::cmp::Ordering::Equal => {
+                    // This cannot be a sub-block: the index would have taken us
+                    // straight into it.
+                    debug_assert!(*term_exists);
+                    self.fill_term(term);
+                    return Ok((SeekStatus::FOUND, false));
+                }
+            }
+        }
+
+        // As in `scan_to_term_leaf`, the index may point at a block that does
+        // not hold the target at all.
+        if exact_only {
+            self.fill_term(term);
+        }
+        Ok((SeekStatus::END, false))
+    }
+
     /// Decodes the statistics and postings metadata of every term passed so far.
     ///
     /// Equivalent to `SegmentTermsEnumFrame.decodeMetaData`.
@@ -404,6 +710,18 @@ impl SegmentTermsEnumFrame {
     }
 }
 
+/// What the index walk of [`SegmentTermsEnum::prepare_seek_exact_state`] found,
+/// before any block of the terms file was read.
+enum PrepareSeek {
+    /// The target cannot be a term of this field.
+    NoMatch,
+    /// The cursor already stands on the target.
+    AlreadyPositioned,
+    /// The block that would hold the target has been located; scanning it
+    /// settles whether the term is really there.
+    ScanBlock,
+}
+
 /// Walks the terms of one field.
 ///
 /// Equivalent to
@@ -432,6 +750,13 @@ pub struct SegmentTermsEnum {
     eof: bool,
     /// Whether the first frame has been pushed.
     started: bool,
+    /// How long a prefix of the current term the last seek left valid in the
+    /// index; a later seek can re-use the frames covering it.
+    valid_index_prefix: usize,
+    /// Ord of the frame the cursor stood in when the current operation began;
+    /// frames at or below it are still positioned before the new target and
+    /// need no rewind. `-1` means there was no prior seek.
+    target_before_current_length: i64,
     attributes: AttributeSource,
 }
 
@@ -448,11 +773,8 @@ impl std::fmt::Debug for SegmentTermsEnum {
 impl SegmentTermsEnum {
     /// Opens a cursor over `field`.
     pub fn new(field: FieldReader) -> Result<Self> {
-        let shared = field.shared();
-        let terms_in = shared.terms_in.clone_input()?;
-        let index_in = shared.index_in.clone_input()?;
-        let index_slice = index_in.random_access_slice(0, index_in.length())?;
-        let trie = TrieReader::new(index_slice, field.index_start() + field.root_fp())?;
+        let terms_in = field.shared().terms_in.clone_input()?;
+        let trie = field.new_reader()?;
 
         Ok(Self {
             field,
@@ -465,6 +787,8 @@ impl SegmentTermsEnum {
             term_exists: false,
             eof: false,
             started: false,
+            valid_index_prefix: 0,
+            target_before_current_length: -1,
             attributes: AttributeSource::new(),
         })
     }
@@ -499,7 +823,7 @@ impl SegmentTermsEnum {
 
         if frame.fp_orig == fp && frame.next_ent != -1 {
             // The frame already holds this block; rewind it rather than reload.
-            if frame.ord > self.current {
+            if frame.ord as i64 > self.target_before_current_length {
                 frame.rewind()?;
             }
         } else {
@@ -521,8 +845,9 @@ impl SegmentTermsEnum {
     /// Equivalent to `SegmentTermsEnum.pushFrame(Node, int)`.
     fn push_frame_from_node(&mut self, node: Node, length: usize) -> Result<usize> {
         let floor_data = if node.is_floor() {
-            // The floor data runs to the end of the field's slice of the index.
-            let end = self.field.index_end();
+            // The floor data runs to the end of the field's slice of the index,
+            // which the trie reader addresses from zero.
+            let end = self.field.index_end() - self.field.index_start();
             let len = (end - node.floor_data_fp).max(0) as usize;
             Some(self.trie.floor_data(&node, len.min(1 << 16))?)
         } else {
@@ -555,6 +880,573 @@ impl SegmentTermsEnum {
         self.load_current_block()
     }
 
+    /// Returns the trie node slot for depth `ord`, growing the array first.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnum#getNode`.
+    fn get_node(&mut self, ord: usize) -> &mut Node {
+        if ord >= self.nodes.len() {
+            self.nodes.resize(ord + 1, Node::default());
+        }
+        &mut self.nodes[ord]
+    }
+
+    /// Clears the end-of-input flag.
+    ///
+    /// Java calls this from an assertion, so that the flag is only maintained
+    /// when assertions are on; this port keeps the flag itself and returns the
+    /// same `true` so the call reads the same way.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnum#clearEOF`.
+    fn clear_eof(&mut self) -> bool {
+        self.eof = false;
+        true
+    }
+
+    /// Raises the end-of-input flag.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnum#setEOF`.
+    fn set_eof(&mut self) -> bool {
+        self.eof = true;
+        true
+    }
+
+    /// Hints that the current frame's block is about to be read.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnumFrame#prefetchBlock`.
+    fn prefetch_block(&mut self) -> Result<()> {
+        let frame = &self.stack[self.current];
+        if frame.next_ent != -1 {
+            // Already loaded.
+            return Ok(());
+        }
+        self.terms_in.prefetch(frame.fp, 1)
+    }
+
+    /// Reads the next entry of the current frame, moving on to the next floor
+    /// block when this one is exhausted.
+    ///
+    /// Equivalent to `SegmentTermsEnumFrame.next()`, whose non-leaf half loops
+    /// over the floor blocks; the loop lives here because the frame cannot
+    /// reach the terms file on its own in this port.
+    fn frame_next(&mut self) -> Result<bool> {
+        loop {
+            if self.stack[self.current].is_leaf_block {
+                let mut term = std::mem::take(&mut self.term);
+                let result = self.stack[self.current].next_leaf(&mut term);
+                self.term = term;
+                result?;
+                self.term_exists = true;
+                return Ok(false);
+            }
+            if self.stack[self.current].next_ent == self.stack[self.current].ent_count {
+                let terms_in = &mut *self.terms_in;
+                self.stack[self.current].load_next_floor_block(terms_in)?;
+                continue;
+            }
+            let mut term = std::mem::take(&mut self.term);
+            let result = self.stack[self.current].next_non_leaf_entry(&mut term);
+            self.term = term;
+            let is_sub_block = result?;
+            self.term_exists = !is_sub_block;
+            return Ok(is_sub_block);
+        }
+    }
+
+    /// Scans the current frame's block for `target`, descending into sub-blocks
+    /// when the scan asks for it.
+    ///
+    /// Equivalent to `SegmentTermsEnumFrame.scanToTerm` together with the
+    /// descent its non-leaf half performs through its cursor.
+    fn scan_to_term_current(&mut self, target: &[u8], exact_only: bool) -> Result<SeekStatus> {
+        let mut term = std::mem::take(&mut self.term);
+        let mut term_exists = self.term_exists;
+        let result =
+            self.stack[self.current].scan_to_term(target, exact_only, &mut term, &mut term_exists);
+        self.term = term;
+        self.term_exists = term_exists;
+        let (status, descend) = result?;
+
+        if descend {
+            // We stopped past the target on a sub-block, and the caller wants
+            // the next term rather than an exact match, so recurse into the
+            // sub-frame(s).
+            let (sub_fp, length) = {
+                let frame = &self.stack[self.current];
+                (frame.last_sub_fp, frame.prefix_length + frame.suffix_length)
+            };
+            self.push_frame(None, sub_fp, length)?;
+            self.load_current_block()?;
+            while self.frame_next()? {
+                let sub_fp = self.stack[self.current].last_sub_fp;
+                let length = self.term.len();
+                self.push_frame(None, sub_fp, length)?;
+                self.load_current_block()?;
+            }
+        }
+        Ok(status)
+    }
+
+    /// Writes `byte` at `index` of the term buffer, growing it when needed.
+    ///
+    /// Equivalent to `BytesRefBuilder.setByteAt` over the cursor's term, which
+    /// Java can call past the term's current length because the builder keeps
+    /// buffer and length apart.
+    fn set_term_byte(&mut self, index: usize, byte: u8) {
+        if self.term.len() <= index {
+            self.term.resize(index + 1, 0);
+        }
+        self.term[index] = byte;
+    }
+
+    /// Walks the term index towards `target` without reading any block.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `prepareSeekExact` both walks
+    /// the index and builds the `IOBooleanSupplier` it returns
+    /// (`SegmentTermsEnum.java:229-473`). Rust cannot return a value borrowing
+    /// `self` from a point the function then keeps running past, so the walk is
+    /// this method and the supplier is built by its caller from the outcome the
+    /// walk reports. The index walk and the state it leaves behind are
+    /// unchanged.
+    fn prepare_seek_exact_state(&mut self, target: &[u8]) -> Result<PrepareSeek> {
+        if self.field.size() > 0
+            && (target < self.field.get_min().slice() || target > self.field.get_max().slice())
+        {
+            return Ok(PrepareSeek::NoMatch);
+        }
+
+        debug_assert!(self.clear_eof());
+        self.clear_eof();
+
+        let mut node;
+        let mut target_upto;
+
+        self.target_before_current_length = if self.started {
+            self.current as i64
+        } else {
+            -1
+        };
+
+        if self.started {
+            // We are already seek'd: find the common prefix of the new target
+            // and the current term, and re-use the seek state that covers it.
+            node = self.nodes[0];
+            debug_assert!(node.has_output());
+            target_upto = 0;
+
+            let mut last_frame_ord = 0usize;
+            debug_assert!(self.valid_index_prefix <= self.term.len());
+            let target_limit = target.len().min(self.valid_index_prefix);
+
+            let mut cmp = std::cmp::Ordering::Equal;
+            while target_upto < target_limit {
+                cmp = self.term[target_upto].cmp(&target[target_upto]);
+                if cmp != std::cmp::Ordering::Equal {
+                    break;
+                }
+                node = self.nodes[1 + target_upto];
+                debug_assert_eq!(node.label, i32::from(target[target_upto]));
+                if node.has_output() {
+                    last_frame_ord += 1;
+                }
+                target_upto += 1;
+            }
+
+            if cmp == std::cmp::Ordering::Equal {
+                // Compare the rest of the term, without saving any state: this
+                // only decides whether the target is before, at or after it.
+                cmp = self.term[target_upto..].cmp(&target[target_upto..]);
+            }
+
+            match cmp {
+                std::cmp::Ordering::Less => {
+                    // Common case: the target is after the current term, ie the
+                    // caller is seeking terms in order.
+                    self.current = last_frame_ord;
+                }
+                std::cmp::Ordering::Greater => {
+                    // The target is before the current term: keep the frame but
+                    // rewind it, so the scan starts from the block's first entry.
+                    self.target_before_current_length = last_frame_ord as i64;
+                    self.current = last_frame_ord;
+                    self.stack[self.current].rewind()?;
+                }
+                std::cmp::Ordering::Equal => {
+                    debug_assert_eq!(self.term.len(), target.len());
+                    if self.term_exists {
+                        return Ok(PrepareSeek::AlreadyPositioned);
+                    }
+                }
+            }
+        } else {
+            self.target_before_current_length = -1;
+            let root = self.trie.root;
+            *self.get_node(0) = root;
+            node = root;
+            // The empty prefix must have a block in the index.
+            debug_assert!(node.has_output());
+            target_upto = 0;
+            self.push_frame_from_node(node, 0)?;
+        }
+
+        // Done sharing the prefix with wherever we were: walk the index on.
+        while target_upto < target.len() {
+            let target_label = i32::from(target[target_upto]);
+            let next_node = self.trie.lookup_child(target_label, &node)?;
+
+            let Some(next_node) = next_node else {
+                // The index is exhausted.
+                self.valid_index_prefix = self.stack[self.current].prefix_length;
+                self.stack[self.current].scan_to_floor_frame(target)?;
+
+                if !self.stack[self.current].has_terms {
+                    self.term_exists = false;
+                    self.set_term_byte(target_upto, target_label as u8);
+                    self.term.truncate(1 + target_upto);
+                    return Ok(PrepareSeek::NoMatch);
+                }
+                return Ok(PrepareSeek::ScanBlock);
+            };
+
+            // Follow this node.
+            node = next_node;
+            self.set_term_byte(target_upto, target_label as u8);
+            *self.get_node(1 + target_upto) = node;
+            target_upto += 1;
+
+            if node.has_output() {
+                self.push_frame_from_node(node, target_upto)?;
+            }
+        }
+
+        self.valid_index_prefix = self.stack[self.current].prefix_length;
+        self.stack[self.current].scan_to_floor_frame(target)?;
+
+        // The target term is entirely contained in the index.
+        if !self.stack[self.current].has_terms {
+            self.term_exists = false;
+            self.term.truncate(target_upto);
+            return Ok(PrepareSeek::NoMatch);
+        }
+
+        Ok(PrepareSeek::ScanBlock)
+    }
+
+    /// Returns the deferred half of a two-phase seek: reading the block the
+    /// index walk landed on and scanning it for `target`.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnum#getIOBooleanSupplier`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error prefetching the block raised; the scan's own
+    /// errors surface when the supplier is called.
+    fn get_io_boolean_supplier(
+        &mut self,
+        target: BytesRef,
+        prefetch: bool,
+    ) -> Result<Box<dyn IOBooleanSupplier + '_>> {
+        if prefetch {
+            self.prefetch_block()?;
+        }
+
+        Ok(Box::new(move || -> Result<bool> {
+            self.load_current_block()?;
+            let result = self.scan_to_term_current(target.slice(), true)?;
+            Ok(result == SeekStatus::FOUND)
+        }))
+    }
+
+    /// Two-phase [`TermsEnum::seek_exact`]: this call walks the term index and
+    /// prefetches the block the term would live in, and calling
+    /// [`IOBooleanSupplier::get`] on the returned supplier reads that block and
+    /// answers whether the term is there. `None` means the index alone settled
+    /// it: the term is not in this field.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnum#prepareSeekExact`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error walking the term index raised.
+    pub fn prepare_seek_exact(
+        &mut self,
+        target: &BytesRef,
+    ) -> Result<Option<Box<dyn IOBooleanSupplier + '_>>> {
+        self.prepare_seek_exact_with_prefetch(target, true)
+    }
+
+    /// [`Self::prepare_seek_exact`], with the prefetch made optional.
+    ///
+    /// Equivalent to the private
+    /// `SegmentTermsEnum.prepareSeekExact(BytesRef, boolean)`.
+    fn prepare_seek_exact_with_prefetch(
+        &mut self,
+        target: &BytesRef,
+        prefetch: bool,
+    ) -> Result<Option<Box<dyn IOBooleanSupplier + '_>>> {
+        match self.prepare_seek_exact_state(target.slice())? {
+            PrepareSeek::NoMatch => Ok(None),
+            PrepareSeek::AlreadyPositioned => Ok(Some(Box::new(|| -> Result<bool> { Ok(true) }))),
+            PrepareSeek::ScanBlock => {
+                let target = target.clone();
+                Ok(Some(self.get_io_boolean_supplier(target, prefetch)?))
+            }
+        }
+    }
+
+    /// Walks every term of the field, gathering the block statistics
+    /// `CheckIndex` reports, and leaves the cursor back at the root block.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnum#computeBlockStats`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error reading a block of the terms file raised.
+    pub fn compute_block_stats(&mut self) -> Result<Stats> {
+        let mut stats = Stats::new(
+            self.field.shared().segment.clone(),
+            self.field.field_info().name.clone(),
+        );
+
+        self.started = false;
+        let root = self.trie.root;
+        *self.get_node(0) = root;
+
+        // The empty prefix must have a block in the index.
+        self.push_frame_from_node(root, 0)?;
+        self.stack[self.current].fp_orig = self.stack[self.current].fp;
+        self.load_current_block()?;
+        self.valid_index_prefix = 0;
+
+        let is_floor = !self.stack[self.current].is_last_in_floor;
+        stats.start_block(&self.stack[self.current], is_floor);
+
+        'all_terms: loop {
+            // Pop finished blocks.
+            while self.stack[self.current].next_ent == self.stack[self.current].ent_count {
+                stats.end_block(&self.stack[self.current]);
+                if !self.stack[self.current].is_last_in_floor {
+                    // Advance to the next floor block.
+                    let terms_in = &mut *self.terms_in;
+                    self.stack[self.current].load_next_floor_block(terms_in)?;
+                    stats.start_block(&self.stack[self.current], true);
+                    break;
+                }
+                if self.stack[self.current].ord == 0 {
+                    break 'all_terms;
+                }
+                self.current -= 1;
+            }
+
+            loop {
+                if self.frame_next()? {
+                    // Push to a new block.
+                    let sub_fp = self.stack[self.current].last_sub_fp;
+                    let length = self.term.len();
+                    self.push_frame(None, sub_fp, length)?;
+                    self.stack[self.current].fp_orig = self.stack[self.current].fp;
+                    // This is a "next" frame: even when it is floor'd we must
+                    // pretend it is not, so that we do not scan to a floor block.
+                    self.load_current_block()?;
+                    let is_floor = !self.stack[self.current].is_last_in_floor;
+                    stats.start_block(&self.stack[self.current], is_floor);
+                } else {
+                    stats.term(&BytesRef::new(self.term.clone()));
+                    break;
+                }
+            }
+        }
+
+        stats.finish();
+
+        // Put the root frame back.
+        self.started = false;
+        let root = self.trie.root;
+        *self.get_node(0) = root;
+        self.push_frame_from_node(root, 0)?;
+        self.stack[self.current].rewind()?;
+        self.load_current_block()?;
+        self.valid_index_prefix = 0;
+        self.term.clear();
+
+        Ok(stats)
+    }
+
+    /// Prints the frame stack the last seek left behind, checking as it goes
+    /// that every frame still agrees with the term index.
+    ///
+    /// This is a debugging aid, kept because Lucene keeps it; it is what one
+    /// reaches for when a seek lands on the wrong block.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnum#printSeekState`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when a frame no longer matches the
+    /// index, and whatever error writing to `out` or reading the index raised.
+    #[allow(dead_code)]
+    pub fn print_seek_state(&mut self, out: &mut dyn std::io::Write) -> Result<()> {
+        if !self.started {
+            writeln!(out, "  no prior seek")?;
+            return Ok(());
+        }
+
+        writeln!(out, "  prior seek state:")?;
+        let mut ord = 0usize;
+        let mut is_seek_frame = true;
+        loop {
+            self.ensure_frame(ord)?;
+            let f = &self.stack[ord];
+            let prefix: Vec<u8> = self.term[..f.prefix_length.min(self.term.len())].to_vec();
+            if f.next_ent == -1 {
+                writeln!(
+                    out,
+                    "    frame {} ord={} fp={}{} prefixLen={} prefix={:?} hasTerms={} isFloor={} isLastInFloor={} mdUpto={} tbOrd={}",
+                    if is_seek_frame { "(seek)" } else { "(next)" },
+                    ord,
+                    f.fp,
+                    if f.is_floor {
+                        format!(" (fpOrig={})", f.fp_orig)
+                    } else {
+                        String::new()
+                    },
+                    f.prefix_length,
+                    prefix,
+                    f.has_terms,
+                    f.is_floor,
+                    f.is_last_in_floor,
+                    f.meta_data_upto,
+                    f.get_term_block_ord()
+                )?;
+            } else {
+                writeln!(
+                    out,
+                    "    frame {} ord={} fp={}{} prefixLen={} prefix={:?} nextEnt={} (of {}) hasTerms={} isFloor={} lastSubFP={} isLastInFloor={} mdUpto={} tbOrd={}",
+                    if is_seek_frame {
+                        "(seek, loaded)"
+                    } else {
+                        "(next, loaded)"
+                    },
+                    ord,
+                    f.fp,
+                    if f.is_floor {
+                        format!(" (fpOrig={})", f.fp_orig)
+                    } else {
+                        String::new()
+                    },
+                    f.prefix_length,
+                    prefix,
+                    f.next_ent,
+                    f.ent_count,
+                    f.has_terms,
+                    f.is_floor,
+                    f.last_sub_fp,
+                    f.is_last_in_floor,
+                    f.meta_data_upto,
+                    f.get_term_block_ord()
+                )?;
+            }
+
+            let frame_node = f.node;
+            let frame_fp = f.fp;
+            let frame_has_terms = f.has_terms;
+            let frame_is_floor = f.is_floor;
+            let frame_prefix_length = f.prefix_length;
+            let is_current = ord == self.current;
+
+            if frame_prefix_length > 0 && is_seek_frame {
+                let node = frame_node.ok_or_else(|| {
+                    LuceneError::IllegalState(format!(
+                        "seek state is broken: seek frame {ord} has no index node"
+                    ))
+                })?;
+                if node.label != i32::from(self.term[frame_prefix_length - 1]) {
+                    writeln!(
+                        out,
+                        "      broken seek state: node.label={} vs term byte={}",
+                        node.label,
+                        self.term[frame_prefix_length - 1]
+                    )?;
+                    return Err(LuceneError::IllegalState(
+                        "seek state is broken".to_string(),
+                    ));
+                }
+            }
+
+            let mut node = self.trie.root;
+            for &label in &prefix {
+                match self.trie.lookup_child(i32::from(label), &node)? {
+                    Some(child) => node = child,
+                    None => {
+                        return Err(LuceneError::IllegalState(
+                            "seek state is broken, prefix not exist in index".to_string(),
+                        ))
+                    }
+                }
+            }
+            if !node.has_output() {
+                writeln!(out, "      broken seek state: prefix is not final in index")?;
+                return Err(LuceneError::IllegalState(
+                    "seek state is broken".to_string(),
+                ));
+            } else if is_seek_frame
+                && !frame_is_floor
+                && (frame_fp != node.output_fp
+                    || frame_has_terms != node.has_terms
+                    || frame_is_floor != node.is_floor())
+            {
+                writeln!(
+                    out,
+                    "      broken seek state: output fp={}, hasTerms={}, isFloor={} doesn't match frame fp={}, hasTerms={}, isFloor={}",
+                    node.output_fp,
+                    node.has_terms,
+                    node.is_floor(),
+                    frame_fp,
+                    frame_has_terms,
+                    frame_is_floor
+                )?;
+                return Err(LuceneError::IllegalState(
+                    "seek state is broken".to_string(),
+                ));
+            }
+
+            if is_current {
+                break;
+            }
+            if frame_prefix_length == self.valid_index_prefix {
+                is_seek_frame = false;
+            }
+            ord += 1;
+        }
+        Ok(())
+    }
+
+    /// Turns the status a block scan ended on into the status `seek_ceil`
+    /// reports: a scan that ran off the end of its block has to step into the
+    /// next one before it can say whether any term follows the target.
+    ///
+    /// Equivalent to the tail shared by both `SegmentTermsEnum.seekCeil` exits.
+    fn finish_seek_ceil(&mut self, result: SeekStatus, target: &[u8]) -> Result<SeekStatus> {
+        if result != SeekStatus::END {
+            return Ok(result);
+        }
+        self.term.clear();
+        self.term.extend_from_slice(target);
+        self.term_exists = false;
+        if TermsEnum::next(self)?.is_some() {
+            Ok(SeekStatus::NOT_FOUND)
+        } else {
+            Ok(SeekStatus::END)
+        }
+    }
+
     /// Returns the field this cursor walks.
     pub fn field_reader(&self) -> &FieldReader {
         &self.field
@@ -584,6 +1476,7 @@ impl TermsEnum for SegmentTermsEnum {
         if !self.started {
             self.start()?;
         }
+        self.target_before_current_length = self.current as i64;
         if self.eof {
             return Ok(None);
         }
@@ -598,8 +1491,10 @@ impl TermsEnum for SegmentTermsEnum {
                     break;
                 }
                 if self.stack[self.current].ord == 0 {
-                    self.eof = true;
+                    self.set_eof();
                     self.term.clear();
+                    self.valid_index_prefix = 0;
+                    self.stack[self.current].rewind()?;
                     self.term_exists = false;
                     return Ok(None);
                 }
@@ -617,6 +1512,11 @@ impl TermsEnum for SegmentTermsEnum {
                     self.term = term;
                     result?;
                 }
+
+                // The seek state is invalid beyond this depth now.
+                self.valid_index_prefix = self
+                    .valid_index_prefix
+                    .min(self.stack[self.current].prefix_length);
             }
 
             let is_leaf = self.stack[self.current].is_leaf_block;
@@ -645,51 +1545,119 @@ impl TermsEnum for SegmentTermsEnum {
         }
     }
 
+    fn seek_exact(&mut self, text: &BytesRef) -> Result<bool> {
+        match self.prepare_seek_exact_with_prefetch(text, false)? {
+            None => Ok(false),
+            Some(mut supplier) => supplier.get(),
+        }
+    }
+
     fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {
-        // Walk the trie as far as the target's bytes take us, then scan the
-        // block that run of bytes lands in.
-        let target = text.slice().to_vec();
-        self.eof = false;
-        self.started = false;
-        self.current = 0;
+        let target = text.slice();
 
-        let mut node = self.trie.root;
-        self.nodes.clear();
-        self.nodes.push(node);
-        let mut depth = 0usize;
-        let mut best = (node, 0usize);
+        debug_assert!(self.clear_eof());
+        self.clear_eof();
 
-        while depth < target.len() {
-            let Some(child) = self.trie.lookup_child(i32::from(target[depth]), &node)? else {
-                break;
+        let mut node;
+        let mut target_upto;
+
+        self.target_before_current_length = if self.started {
+            self.current as i64
+        } else {
+            -1
+        };
+
+        if self.started {
+            // We are already seek'd: find the common prefix of the new target
+            // and the current term, and re-use the seek state that covers it.
+            node = self.nodes[0];
+            debug_assert!(node.has_output());
+            target_upto = 0;
+
+            let mut last_frame_ord = 0usize;
+            debug_assert!(self.valid_index_prefix <= self.term.len());
+            let target_limit = target.len().min(self.valid_index_prefix);
+
+            let mut cmp = std::cmp::Ordering::Equal;
+            while target_upto < target_limit {
+                cmp = self.term[target_upto].cmp(&target[target_upto]);
+                if cmp != std::cmp::Ordering::Equal {
+                    break;
+                }
+                node = self.nodes[1 + target_upto];
+                debug_assert_eq!(node.label, i32::from(target[target_upto]));
+                if node.has_output() {
+                    last_frame_ord += 1;
+                }
+                target_upto += 1;
+            }
+
+            if cmp == std::cmp::Ordering::Equal {
+                // Compare the rest of the term, without saving any state.
+                cmp = self.term[target_upto..].cmp(&target[target_upto..]);
+            }
+
+            match cmp {
+                std::cmp::Ordering::Less => {
+                    // Common case: the target is after the current term.
+                    self.current = last_frame_ord;
+                }
+                std::cmp::Ordering::Greater => {
+                    // The target is before the current term: keep the frame but
+                    // rewind it, so the scan starts from the block's first entry.
+                    self.target_before_current_length = 0;
+                    self.current = last_frame_ord;
+                    self.stack[self.current].rewind()?;
+                }
+                std::cmp::Ordering::Equal => {
+                    debug_assert_eq!(self.term.len(), target.len());
+                    if self.term_exists {
+                        return Ok(SeekStatus::FOUND);
+                    }
+                }
+            }
+        } else {
+            self.target_before_current_length = -1;
+            let root = self.trie.root;
+            *self.get_node(0) = root;
+            node = root;
+            // The empty prefix must have a block in the index.
+            debug_assert!(node.has_output());
+            target_upto = 0;
+            self.push_frame_from_node(node, 0)?;
+        }
+
+        // Done sharing the prefix with wherever we were: walk the index on.
+        while target_upto < target.len() {
+            let target_label = i32::from(target[target_upto]);
+            let next_node = self.trie.lookup_child(target_label, &node)?;
+
+            let Some(next_node) = next_node else {
+                // The index is exhausted; the block we stand on is the one that
+                // would hold the target, so scan it.
+                self.valid_index_prefix = self.stack[self.current].prefix_length;
+                self.stack[self.current].scan_to_floor_frame(target)?;
+                self.load_current_block()?;
+                let result = self.scan_to_term_current(target, false)?;
+                return self.finish_seek_ceil(result, target);
             };
-            depth += 1;
-            node = child;
-            self.nodes.push(node);
+
+            // Follow this node.
+            self.set_term_byte(target_upto, target_label as u8);
+            node = next_node;
+            *self.get_node(1 + target_upto) = node;
+            target_upto += 1;
+
             if node.has_output() {
-                best = (node, depth);
+                self.push_frame_from_node(node, target_upto)?;
             }
         }
 
-        self.term.clear();
-        self.term.extend_from_slice(&target[..best.1]);
-        self.push_frame_from_node(best.0, best.1)?;
+        self.valid_index_prefix = self.stack[self.current].prefix_length;
+        self.stack[self.current].scan_to_floor_frame(target)?;
         self.load_current_block()?;
-        self.stack[self.current].scan_to_floor_frame(&target)?;
-        let terms_in = &mut *self.terms_in;
-        self.stack[self.current].load_block(terms_in)?;
-
-        // Scan forward until a term at or after the target.
-        loop {
-            match self.next()? {
-                None => return Ok(SeekStatus::END),
-                Some(term) => match term.slice().cmp(target.as_slice()) {
-                    std::cmp::Ordering::Less => continue,
-                    std::cmp::Ordering::Equal => return Ok(SeekStatus::FOUND),
-                    std::cmp::Ordering::Greater => return Ok(SeekStatus::NOT_FOUND),
-                },
-            }
-        }
+        let result = self.scan_to_term_current(target, false)?;
+        self.finish_seek_ceil(result, target)
     }
 
     fn seek_ord(&mut self, _ord: i64) -> Result<()> {

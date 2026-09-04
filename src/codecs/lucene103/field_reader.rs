@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use crate::codecs::lucene103::trie_reader::TrieReader;
 use crate::error::{LuceneError, Result};
 use crate::index::terms::{Terms, TermsEnum};
 use crate::index::{FieldInfo, IndexOptions};
@@ -139,6 +140,30 @@ impl FieldReader {
     /// Returns the offset in the `.tip` file where this field's trie ends.
     pub fn index_end(&self) -> i64 {
         self.index_end
+    }
+
+    /// Opens a fresh cursor over this field's slice of the term index.
+    ///
+    /// Every terms cursor this field hands out gets its own reader, so that two
+    /// cursors over the same field never share a position in the `.tip` file.
+    ///
+    /// Equivalent to `org.apache.lucene.codecs.lucene103.blocktree.FieldReader#newReader`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error slicing the `.tip` file, or decoding the trie
+    /// root out of it, raised.
+    pub fn new_reader(&self) -> Result<TrieReader> {
+        // Java slices the `.tip` file down to this field's region and lets
+        // `TrieReader` take the random-access view of that slice; this port's
+        // `TrieReader` takes the random-access view directly, so the two steps
+        // collapse into one call. The addressing is identical: the root sits at
+        // `root_fp` inside the field's own region.
+        let slice = self
+            .shared
+            .index_in
+            .random_access_slice(self.index_start, self.index_end - self.index_start)?;
+        TrieReader::new(slice, self.root_fp)
     }
 
     /// Returns the smallest term of the field.
