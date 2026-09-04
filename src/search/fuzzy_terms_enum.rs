@@ -17,7 +17,7 @@ use crate::search::max_non_competitive_boost_attribute::{
 use crate::util::attribute::{Attribute, AttributeImpl, AttributeReflector, AttributeSource};
 use crate::util::automaton::ByteRunnable;
 use crate::util::automaton::CompiledAutomaton;
-use crate::util::{BytesRef, BytesRefBuilder, UnicodeUtil};
+use crate::util::{BytesRef, BytesRefBuilder, IOBooleanSupplier, UnicodeUtil};
 
 /// The Levenshtein automata of a fuzzy term, shared between segments.
 ///
@@ -331,6 +331,39 @@ impl FuzzyTermsEnum {
     /// Equivalent to `FuzzyTermsEnum.getBoost()`.
     pub fn get_boost(&self) -> f32 {
         boost_of(&self.atts)
+    }
+
+    /// Two-phase [`seek_exact`](TermsEnum::seek_exact): the first phase
+    /// prefetches the right range of bytes, the second — calling
+    /// [`IOBooleanSupplier::get`] on the returned supplier — actually seeks the
+    /// term within them. Several terms enums can therefore be prepared before
+    /// any of them is consumed, parallelising the I/O.
+    ///
+    /// It is illegal to call other methods on this enum after this one, until
+    /// the supplier has been consumed; the borrow the supplier holds enforces
+    /// that. `None` means the enum could tell without any I/O that the term
+    /// may not exist.
+    ///
+    /// Equivalent to `org.apache.lucene.search.FuzzyTermsEnum#prepareSeekExact`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java forwards to
+    /// `actualEnum.prepareSeekExact(text)` (`FuzzyTermsEnum.java:330-332`).
+    /// This port's [`TermsEnum`] carries no `prepare_seek_exact`, so the
+    /// supplier calls `actual_enum.seek_exact(text)` — which is exactly what
+    /// `BaseTermsEnum.prepareSeekExact` returns (`BaseTermsEnum.java:63-65`),
+    /// and therefore what every enum that does not implement the two-phase
+    /// seek does. The seek performed is the same one; only the prefetch is
+    /// not split out.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while preparing the seek.
+    pub fn prepare_seek_exact(
+        &mut self,
+        text: &BytesRef,
+    ) -> Result<Option<Box<dyn IOBooleanSupplier + '_>>> {
+        let text = text.clone();
+        Ok(Some(Box::new(move || self.actual_enum.seek_exact(&text))))
     }
 
     /// Returns an automaton-based enum matching up to `edit_distance` edits

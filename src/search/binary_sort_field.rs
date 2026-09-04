@@ -6,6 +6,7 @@
 use std::fmt;
 
 use crate::error::{LuceneError, Result};
+use crate::index::{BinaryDocValues, DocValues, LeafReader};
 use crate::search::sort::{MissingValue, SortField, SortFieldKind, SortFieldType};
 use crate::store::{DataInput, DataOutput};
 
@@ -137,6 +138,28 @@ impl BinarySortField {
             SortFieldKind::Binary { provider_name } => provider_name,
             _ => Self::NAME,
         }
+    }
+
+    /// Returns the per-document sort key, as [`BinaryDocValues`] whose value
+    /// is the bytes to sort on.
+    ///
+    /// The default returns the field's values unchanged; a subclass derives a
+    /// key from the stored bytes and/or other doc-values fields of the segment.
+    /// Values are read in increasing docID order, so any underlying doc values
+    /// must be advanced with `next_doc()` only, since at flush time the
+    /// in-memory doc values do not support `advance_exact`.
+    ///
+    /// Equivalent to `org.apache.lucene.search.BinarySortField#getSortKeyDocValues`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the field exists with another
+    /// doc-values type, and propagates any I/O error.
+    pub fn get_sort_key_doc_values(
+        &self,
+        reader: &dyn LeafReader,
+    ) -> Result<Box<dyn BinaryDocValues>> {
+        DocValues::get_binary(reader, self.get_field().unwrap_or(""))
     }
 
     /// Writes this sort field's payload, without the provider name.

@@ -48,6 +48,20 @@ impl CollectionTerminatedException {
     pub fn new() -> Self {
         Self
     }
+
+    /// Returns this signal unchanged, without recording a stack trace.
+    ///
+    /// Java overrides `Throwable.fillInStackTrace()` to return `this` without
+    /// walking the stack, because the signal is never re-thrown and the trace
+    /// would be pure overhead. This port carries no stack trace at all, so the
+    /// override is already the behaviour of the type; the method is kept so the
+    /// intent stays visible where Lucene states it.
+    ///
+    /// Equivalent to `org.apache.lucene.search.CollectionTerminatedException#fillInStackTrace`.
+    pub fn fill_in_stack_trace(&self) -> &Self {
+        // never re-thrown so we can save the expensive stacktrace
+        self
+    }
 }
 
 impl fmt::Display for CollectionTerminatedException {

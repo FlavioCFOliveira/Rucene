@@ -55,8 +55,20 @@ impl std::fmt::Debug for DisjunctionDISIApproximation {
 impl DisjunctionDISIApproximation {
     /// Creates a disjunction over the given clauses.
     ///
-    /// Equivalent to `DisjunctionDISIApproximation.of(Collection<? extends
-    /// DisiWrapper>, long)` and to the constructor it delegates to.
+    /// Equivalent to `org.apache.lucene.search.DisjunctionDISIApproximation#of`.
+    ///
+    /// # Panics
+    ///
+    /// As [`new`](Self::new).
+    pub fn of(sub_iterators: Vec<DisiWrapper>, lead_cost: i64) -> Self {
+        Self::new(sub_iterators, lead_cost)
+    }
+
+    /// Creates a disjunction over the given clauses.
+    ///
+    /// Equivalent to the `DisjunctionDISIApproximation(Collection<? extends
+    /// DisiWrapper>, long)` constructor that
+    /// [`of`](Self::of) delegates to.
     ///
     /// # Panics
     ///

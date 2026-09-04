@@ -61,7 +61,7 @@ impl FuzzyAutomatonBuilder {
                 "prefixLength cannot be less than 0".to_string(),
             ));
         }
-        let code_points: Vec<i32> = term.chars().map(|c| c as i32).collect();
+        let code_points = Self::string_to_utf32(term);
         let term_length = code_points.len() as i32;
         let prefix_length = (prefix_length as usize).min(code_points.len());
         let suffix = code_points[prefix_length..].to_vec();
@@ -132,5 +132,16 @@ impl FuzzyAutomatonBuilder {
     /// Equivalent to `FuzzyAutomatonBuilder.getTermLength()`.
     pub fn get_term_length(&self) -> i32 {
         self.term_length
+    }
+
+    /// Expands `text` into its UTF-32 code points.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.search.FuzzyAutomatonBuilder#stringToUTF32`, which
+    /// walks the UTF-16 string with `codePointAt` / `charCount` so that a
+    /// surrogate pair yields a single code point. A Rust `str` iterates over
+    /// `char`s, which are already code points, so the walk is the iteration.
+    fn string_to_utf32(text: &str) -> Vec<i32> {
+        text.chars().map(|c| c as i32).collect()
     }
 }

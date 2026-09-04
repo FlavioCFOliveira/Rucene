@@ -45,16 +45,20 @@ pub fn from_terms(
             )));
         }
     }
-    from_terms_enum(
-        context,
-        doc,
-        query,
-        field,
-        Box::new(TermBytesIterator {
-            terms: terms.iter().map(|t| t.bytes().clone()).collect(),
-            i: 0,
-        }),
-    )
+    from_terms_enum(context, doc, query, field, as_bytes_ref_iterator(terms))
+}
+
+/// Views a list of terms as a [`BytesRefIterator`] over their bytes.
+///
+/// Equivalent to the private
+/// `org.apache.lucene.search.DisjunctionMatchesIterator#asBytesRefIterator`,
+/// whose anonymous `BytesRefIterator` walks the list and answers
+/// `terms.get(i++).bytes()`.
+fn as_bytes_ref_iterator(terms: &[Term]) -> Box<dyn BytesRefIterator> {
+    Box::new(TermBytesIterator {
+        terms: terms.iter().map(|t| t.bytes().clone()).collect(),
+        i: 0,
+    })
 }
 
 /// A [`BytesRefIterator`] over the terms of a [`TermsEnum`].
@@ -81,7 +85,8 @@ impl BytesRefIterator for TermsEnumBytesRefIterator {
 
 /// A [`BytesRefIterator`] over the bytes of a list of terms.
 ///
-/// Equivalent to the anonymous `DisjunctionMatchesIterator.asBytesRefIterator`.
+/// Equivalent to the anonymous `BytesRefIterator` that
+/// [`as_bytes_ref_iterator`] returns.
 struct TermBytesIterator {
     terms: Vec<BytesRef>,
     i: usize,

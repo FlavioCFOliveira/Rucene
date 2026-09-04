@@ -429,7 +429,77 @@ impl WANDCore {
         }
         self.tail_size = 0;
         self.tail_max_score = 0;
+        debug_assert!(self.ensure_consistent()?);
         Ok(())
+    }
+
+    /// Checks the invariants that must hold whenever the current document is
+    /// settled: in [`ScoreMode::TOP_SCORES`], that `tail`'s scaled max scores
+    /// sum to `tail_max_score`, that every `lead` clause sits on `doc` and
+    /// sums back to `lead_score`, that the minimum competitive score is
+    /// respected, and that `doc` never runs past `up_to`; in every mode, that
+    /// `head`'s entries are strictly beyond `doc` once leads have been picked,
+    /// or merely at or beyond it before they have.
+    ///
+    /// Equivalent to the private `WANDScorer.ensureConsistent()`. Java calls it
+    /// through `assert ensureConsistent()`, and its return value carries no
+    /// information — it always returns `true` when assertions do not fire —
+    /// which is why every call site here wraps it in `debug_assert!` instead:
+    /// the idiomatic replacement for a Java assertion that Rust has no direct
+    /// counterpart for.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while scoring a lead clause.
+    fn ensure_consistent(&mut self) -> Result<bool> {
+        if self.score_mode == ScoreMode::TOP_SCORES {
+            let mut max_score_sum: i64 = 0;
+            for i in 0..self.tail_size {
+                let position = self.tail[i];
+                debug_assert!(self.wrappers[position].doc < self.doc);
+                max_score_sum = max_score_sum
+                    .checked_add(self.wrappers[position].scaled_max_score)
+                    .expect("INVARIANT: scaled max scores are bounded by MAX_SCALED_SCORE");
+            }
+            debug_assert!(
+                max_score_sum == self.tail_max_score,
+                "{max_score_sum} {}",
+                self.tail_max_score
+            );
+
+            // Collect in `lead`'s prepend order, then reverse, so that the
+            // score is recomputed in the same order as Java's linked-list
+            // traversal and picks up the same floating-point rounding errors.
+            let mut lead_scores = Vec::with_capacity(self.lead.len());
+            for &position in self.lead.iter().rev() {
+                debug_assert_eq!(self.wrappers[position].doc, self.doc);
+                lead_scores.push(self.wrappers[position].scorable().score()?);
+            }
+            lead_scores.reverse();
+            let mut recomputed_lead_score = 0.0f64;
+            for score in lead_scores {
+                recomputed_lead_score += f64::from(score);
+            }
+            debug_assert!(recomputed_lead_score == self.lead_score);
+
+            debug_assert!(
+                self.min_competitive_score == 0
+                    || self.tail_max_score < self.min_competitive_score
+                    || self.tail_size < self.min_should_match
+            );
+            debug_assert!(self.doc <= self.up_to);
+        }
+
+        for &w in self.head.entries() {
+            if self.lead.is_empty() {
+                // After calling advance() but before matches().
+                debug_assert!(self.wrappers[w].doc >= self.doc);
+            } else {
+                debug_assert!(self.wrappers[w].doc > self.doc);
+            }
+        }
+
+        Ok(true)
     }
 
     /// Inserts an entry in `tail` and evicts the least-costly clause if full.
@@ -601,6 +671,7 @@ impl TwoPhaseIterator for WANDCore {
         }
 
         while scaled_lead_score < self.min_competitive_score || self.freq < self.min_should_match {
+            debug_assert!(self.ensure_consistent()?);
             if scaled_lead_score + self.tail_max_score < self.min_competitive_score
                 || self.freq + self.tail_size < self.min_should_match
             {
@@ -618,6 +689,7 @@ impl TwoPhaseIterator for WANDCore {
             }
         }
 
+        debug_assert!(self.ensure_consistent()?);
         Ok(true)
     }
 

@@ -173,6 +173,18 @@ impl<T> TaskGroup<T> {
         }
     }
 
+    /// Checks whether every task has reached a terminal state.
+    ///
+    /// Equivalent to the private
+    /// `TaskExecutor.assertAllFuturesCompleted(Collection)`, which
+    /// `collectResults` runs through a Java `assert` right after every future
+    /// has been waited on, as a debug-only sanity check that no task is left
+    /// running.
+    fn all_futures_completed(&self) -> bool {
+        (0..self.slots.len())
+            .all(|id| matches!(&*self.lock_slot(id), Slot::Done(_) | Slot::Cancelled))
+    }
+
     /// Collects the results in submission order, or the first failure.
     ///
     /// Equivalent to `TaskExecutor.collectResults`. Java adds the subsequent
@@ -181,6 +193,10 @@ impl<T> TaskGroup<T> {
     /// are dropped, exactly as Java's rethrown exception hides them from the
     /// caller.
     fn collect_results(&self) -> Result<Vec<T>> {
+        debug_assert!(
+            self.all_futures_completed(),
+            "Some tasks are still running?"
+        );
         let mut results = Vec::with_capacity(self.slots.len());
         let mut first_error: Option<LuceneError> = None;
         for id in 0..self.slots.len() {

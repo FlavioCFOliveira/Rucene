@@ -399,9 +399,13 @@ impl FilterScorer {
         &mut *self.inner
     }
 
-    /// Unwraps this scorer.
+    /// Unwraps this scorer, handing back the scorer it wraps.
     ///
-    /// Equivalent to `FilterScorer.unwrap()`.
+    /// Equivalent to `org.apache.lucene.search.FilterScorer#unwrap`, the
+    /// `Unwrappable<Scorer>` method that answers the `in` field. Java hands
+    /// back a reference and keeps the wrapper usable; this port consumes the
+    /// wrapper, since the wrapped scorer is owned. Use
+    /// [`inner`](Self::inner) to peek at it without consuming.
     pub fn into_inner(self) -> Box<dyn Scorer> {
         self.inner
     }
