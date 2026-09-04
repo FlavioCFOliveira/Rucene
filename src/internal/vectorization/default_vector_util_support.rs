@@ -36,6 +36,34 @@ impl DefaultVectorUtilSupport {
         Self
     }
 
+    /// Returns `a * b + c`, fusing the multiply and the add when the platform
+    /// offers a fast scalar FMA.
+    ///
+    /// Lucene picks the fused form on `Constants.HAS_FAST_SCALAR_FMA`. This
+    /// port reads [`vector_util::USE_FMA`] instead, the very gate the float
+    /// kernels of [`crate::util::vector_util`] — the kernels this type
+    /// delegates to — are pinned to, so the two copies of this helper can never
+    /// disagree about the low-order bits of a score.
+    ///
+    /// # Divergence from Lucene 10.5.0
+    ///
+    /// Lucene declares the helper `private static` and calls it from the float
+    /// kernels declared in the same class. Those kernels live in
+    /// [`crate::util::vector_util`] in this port, which carries its own copy of
+    /// the helper, so this one has no caller inside the type and is `pub`
+    /// rather than private.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.internal.vectorization.DefaultVectorUtilSupport#fma`.
+    #[inline]
+    pub fn fma(a: f32, b: f32, c: f32) -> f32 {
+        if vector_util::USE_FMA {
+            a.mul_add(b, c)
+        } else {
+            a * b + c
+        }
+    }
+
     /// Computes the dot product between a transposed 4-bit query vector and a
     /// transposed binary document vector.
     ///

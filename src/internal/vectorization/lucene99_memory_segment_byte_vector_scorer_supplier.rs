@@ -9,10 +9,10 @@ use crate::error::Result;
 use crate::index::vector_values::ByteVectorValues;
 use crate::index::VectorSimilarityFunction;
 use crate::internal::vectorization::lucene99_memory_segment_byte_vector_scorer::{
-    check_invariants, check_ordinal, load_vector,
+    check_invariants, check_ordinal, load_vector, VectorBytes,
 };
 use crate::internal::vectorization::PanamaVectorUtilSupport;
-use crate::store::MemorySegmentAccessInput;
+use crate::store::{IndexInput, MemorySegmentAccessInput};
 use crate::util::hnsw::{
     RandomVectorScorer, RandomVectorScorerSupplier, UpdateableRandomVectorScorer,
 };
@@ -75,7 +75,7 @@ impl Lucene99MemorySegmentByteVectorScorerSupplier {
         values: Arc<dyn ByteVectorValues>,
     ) -> Result<Self> {
         let vector_byte_size = values.vector_byte_length() as usize;
-        check_invariants(values.size(), vector_byte_size, input)?;
+        Self::check_invariants(values.size(), vector_byte_size, input)?;
         Ok(Self {
             similarity,
             vector_byte_size,
@@ -84,6 +84,31 @@ impl Lucene99MemorySegmentByteVectorScorerSupplier {
             input: input.clone_access_input()?,
             values,
         })
+    }
+
+    /// Fails when `input` is shorter than the vector data it is supposed to
+    /// hold.
+    ///
+    /// Lucene repeats this body verbatim in each of its four memory-segment
+    /// scorers and suppliers. This port keeps a single copy of it, the
+    /// crate-private `check_invariants` of the byte scorer's module, and each
+    /// type's own member calls it, so the four members stay in step by
+    /// construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::LuceneError::IllegalArgument`], with the message
+    /// Lucene's `IllegalArgumentException` carries, when the input is too
+    /// short.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.internal.vectorization.Lucene99MemorySegmentByteVectorScorerSupplier#checkInvariants`.
+    pub fn check_invariants(
+        max_ord: i32,
+        vector_byte_length: usize,
+        input: &dyn IndexInput,
+    ) -> Result<()> {
+        check_invariants(max_ord, vector_byte_length, input)
     }
 }
 
@@ -132,27 +157,73 @@ struct MemorySegmentByteScorer {
     scratch2: Vec<u8>,
 }
 
-impl RandomVectorScorer for MemorySegmentByteScorer {
-    fn score(&mut self, node: i32) -> Result<f32> {
-        check_ordinal(node, self.max_ord)?;
-        let query_offset = i64::from(self.query_ord) * self.vector_byte_size as i64;
-        let node_offset = i64::from(node) * self.vector_byte_size as i64;
-        // Java reads the two vectors through `getFirstSegment` and
-        // `getSecondSegment`, which differ only in which scratch buffer they
-        // fall back to; both are needed because the two vectors can straddle a
-        // boundary at the same time.
-        let first = load_vector(
+impl MemorySegmentByteScorer {
+    /// Fails when `ord` is outside `[0, maxOrd)`.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.internal.vectorization.Lucene99MemorySegmentByteVectorScorerSupplier#checkOrdinal`.
+    ///
+    /// Java declares it `final` on the supplier and calls it from the anonymous
+    /// scorer through the enclosing instance. This port's scorer does not hold
+    /// its supplier — it carries `maxOrd` itself — so the member lives on the
+    /// scorer, which is where Lucene's call sites are.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::LuceneError::IllegalArgument`] with Lucene's message.
+    fn check_ordinal(&self, ord: i32) -> Result<()> {
+        check_ordinal(ord, self.max_ord)
+    }
+
+    /// Reads the vector at `ord`, in place when it lies inside one mapped
+    /// segment and through the first scratch buffer otherwise.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.internal.vectorization.Lucene99MemorySegmentByteVectorScorerSupplier#getFirstSegment`,
+    /// which lives on the scorer here for the reason given on
+    /// [`check_ordinal`](Self::check_ordinal); `scratch1` moved with it.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error raised while reading the vector.
+    fn get_first_segment(&mut self, ord: i32) -> Result<VectorBytes> {
+        let byte_offset = i64::from(ord) * self.vector_byte_size as i64;
+        load_vector(
             self.input.as_mut(),
             &mut self.scratch1,
-            query_offset,
+            byte_offset,
             self.vector_byte_size,
-        )?;
-        let second = load_vector(
+        )
+    }
+
+    /// Reads the vector at `ord` through the *second* scratch buffer when it
+    /// straddles a segment boundary.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.internal.vectorization.Lucene99MemorySegmentByteVectorScorerSupplier#getSecondSegment`.
+    /// It differs from [`get_first_segment`](Self::get_first_segment) only in
+    /// which buffer it falls back to; both exist because the query vector and
+    /// the scored vector can straddle a boundary at the same time.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error raised while reading the vector.
+    fn get_second_segment(&mut self, ord: i32) -> Result<VectorBytes> {
+        let byte_offset = i64::from(ord) * self.vector_byte_size as i64;
+        load_vector(
             self.input.as_mut(),
             &mut self.scratch2,
-            node_offset,
+            byte_offset,
             self.vector_byte_size,
-        )?;
+        )
+    }
+}
+
+impl RandomVectorScorer for MemorySegmentByteScorer {
+    fn score(&mut self, node: i32) -> Result<f32> {
+        self.check_ordinal(node)?;
+        let first = self.get_first_segment(self.query_ord)?;
+        let second = self.get_second_segment(node)?;
         let query = first.resolve(&self.scratch1);
         let doc = second.resolve(&self.scratch2);
         match self.similarity {
@@ -193,7 +264,7 @@ impl RandomVectorScorer for MemorySegmentByteScorer {
 
 impl UpdateableRandomVectorScorer for MemorySegmentByteScorer {
     fn set_scoring_ordinal(&mut self, node: i32) -> Result<()> {
-        check_ordinal(node, self.max_ord)?;
+        self.check_ordinal(node)?;
         self.query_ord = node;
         Ok(())
     }

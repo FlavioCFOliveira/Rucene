@@ -12,6 +12,63 @@ use crate::util::SloppyMath;
 use std::f64::consts::PI;
 use std::sync::Arc;
 
+// -----------------------------------------------------------------------------
+// Java hash-code primitives
+// -----------------------------------------------------------------------------
+
+/// Hashes a `f64` the way `java.lang.Double#hashCode(double)` does.
+fn double_hash_code(value: f64) -> i32 {
+    let bits = value.to_bits();
+    (bits ^ (bits >> 32)) as i32
+}
+
+/// Hashes a `f32` the way `java.lang.Float#hashCode(float)` does.
+fn float_hash_code(value: f32) -> i32 {
+    value.to_bits() as i32
+}
+
+/// Hashes a `f64` slice the way `java.util.Arrays#hashCode(double[])` does.
+fn double_array_hash_code(values: &[f64]) -> i32 {
+    let mut result = 1i32;
+    for &value in values {
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(double_hash_code(value));
+    }
+    result
+}
+
+/// Hashes a `f32` slice the way `java.util.Arrays#hashCode(float[])` does.
+fn float_array_hash_code(values: &[f32]) -> i32 {
+    let mut result = 1i32;
+    for &value in values {
+        result = result.wrapping_mul(31).wrapping_add(float_hash_code(value));
+    }
+    result
+}
+
+/// Hashes the holes of a [`Polygon`] the way `java.util.Arrays#hashCode(Object[])`
+/// does. Java admits null elements, which contribute `0`; a `Vec<Polygon>` cannot
+/// hold one, so every element is hashed.
+fn polygon_array_hash_code(values: &[Polygon]) -> i32 {
+    let mut result = 1i32;
+    for value in values {
+        result = result.wrapping_mul(31).wrapping_add(value.hash_code());
+    }
+    result
+}
+
+/// Hashes the holes of an [`XYPolygon`] the way `java.util.Arrays#hashCode(Object[])`
+/// does. Java admits null elements, which contribute `0`; a `Vec<XYPolygon>` cannot
+/// hold one, so every element is hashed.
+fn xy_polygon_array_hash_code(values: &[XYPolygon]) -> i32 {
+    let mut result = 1i32;
+    for value in values {
+        result = result.wrapping_mul(31).wrapping_add(value.hash_code());
+    }
+    result
+}
+
 /// A single point on the globe.
 ///
 /// Equivalent to `org.apache.lucene.geo.Point`.
@@ -37,6 +94,16 @@ impl Point {
     /// Returns the longitude.
     pub fn lon(&self) -> f64 {
         self.lon
+    }
+
+    /// Returns this point's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.Point#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        let result = double_hash_code(self.lat);
+        result
+            .wrapping_mul(31)
+            .wrapping_add(double_hash_code(self.lon))
     }
 }
 
@@ -109,6 +176,22 @@ impl Rectangle {
         } else {
             lon >= self.min_lon && lon <= self.max_lon
         }
+    }
+
+    /// Returns this box's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.Rectangle#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        let mut result = double_hash_code(self.min_lat);
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(double_hash_code(self.min_lon));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(double_hash_code(self.max_lat));
+        result
+            .wrapping_mul(31)
+            .wrapping_add(double_hash_code(self.max_lon))
     }
 }
 
@@ -223,6 +306,16 @@ impl Line {
     /// Returns the longitudes.
     pub fn lons(&self) -> &[f64] {
         &self.lons
+    }
+
+    /// Returns this line's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.Line#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        let result = double_array_hash_code(&self.lats);
+        result
+            .wrapping_mul(31)
+            .wrapping_add(double_array_hash_code(&self.lons))
     }
 }
 
@@ -454,6 +547,23 @@ impl Polygon {
         let max_lon = self.lons.iter().copied().fold(f64::MIN, f64::max);
         Rectangle::new(min_lat, max_lat, min_lon, max_lon)
     }
+
+    /// Returns this polygon's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.Polygon#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        const PRIME: i32 = 31;
+        let mut result = 1i32;
+        result = result
+            .wrapping_mul(PRIME)
+            .wrapping_add(polygon_array_hash_code(&self.holes));
+        result = result
+            .wrapping_mul(PRIME)
+            .wrapping_add(double_array_hash_code(&self.lats));
+        result
+            .wrapping_mul(PRIME)
+            .wrapping_add(double_array_hash_code(&self.lons))
+    }
 }
 
 /// A circle on the globe, given by a centre and a radius in metres.
@@ -497,6 +607,19 @@ impl Circle {
     pub fn get_radius(&self) -> f64 {
         self.radius_meters
     }
+
+    /// Returns this circle's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.Circle#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        let mut result = double_hash_code(self.lat);
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(double_hash_code(self.lon));
+        result
+            .wrapping_mul(31)
+            .wrapping_add(double_hash_code(self.radius_meters))
+    }
 }
 
 /// A single point in the cartesian plane.
@@ -525,6 +648,16 @@ impl XYPoint {
     /// Returns the y coordinate.
     pub fn get_y(&self) -> f32 {
         self.y
+    }
+
+    /// Returns this point's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.XYPoint#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        let result = float_hash_code(self.x);
+        result
+            .wrapping_mul(31)
+            .wrapping_add(float_hash_code(self.y))
     }
 }
 
@@ -587,6 +720,29 @@ impl XYRectangle {
     /// Returns whether `(x, y)` falls inside the box.
     pub fn contains(&self, x: f32, y: f32) -> bool {
         x >= self.min_x && x <= self.max_x && y >= self.min_y && y <= self.max_y
+    }
+
+    /// Returns this box's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.XYRectangle#hashCode`. Java widens
+    /// the `int` returned by `Float.floatToIntBits` into the `long` `temp`
+    /// before folding it with `temp >>> 32`, so a negative bit pattern is
+    /// sign-extended and the fold inverts it. That widening is reproduced here.
+    pub fn hash_code(&self) -> i32 {
+        let mut temp = i64::from(self.min_x.to_bits() as i32);
+        let mut result = (temp ^ ((temp as u64) >> 32) as i64) as i32;
+        temp = i64::from(self.min_y.to_bits() as i32);
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add((temp ^ ((temp as u64) >> 32) as i64) as i32);
+        temp = i64::from(self.max_x.to_bits() as i32);
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add((temp ^ ((temp as u64) >> 32) as i64) as i32);
+        temp = i64::from(self.max_y.to_bits() as i32);
+        result
+            .wrapping_mul(31)
+            .wrapping_add((temp ^ ((temp as u64) >> 32) as i64) as i32)
     }
 }
 
@@ -692,6 +848,16 @@ impl XYLine {
     /// Returns the y coordinates.
     pub fn get_y(&self) -> &[f32] {
         &self.ys
+    }
+
+    /// Returns this line's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.XYLine#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        let result = float_array_hash_code(&self.xs);
+        result
+            .wrapping_mul(31)
+            .wrapping_add(float_array_hash_code(&self.ys))
     }
 }
 
@@ -875,6 +1041,23 @@ impl XYPolygon {
     pub fn get_holes(&self) -> &[XYPolygon] {
         &self.holes
     }
+
+    /// Returns this polygon's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.XYPolygon#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        const PRIME: i32 = 31;
+        let mut result = 1i32;
+        result = result
+            .wrapping_mul(PRIME)
+            .wrapping_add(xy_polygon_array_hash_code(&self.holes));
+        result = result
+            .wrapping_mul(PRIME)
+            .wrapping_add(float_array_hash_code(&self.xs));
+        result
+            .wrapping_mul(PRIME)
+            .wrapping_add(float_array_hash_code(&self.ys))
+    }
 }
 
 /// A circle in the cartesian plane.
@@ -913,6 +1096,19 @@ impl XYCircle {
     /// Returns the radius.
     pub fn get_radius(&self) -> f32 {
         self.radius
+    }
+
+    /// Returns this circle's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.XYCircle#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        let mut result = float_hash_code(self.x);
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(float_hash_code(self.y));
+        result
+            .wrapping_mul(31)
+            .wrapping_add(float_hash_code(self.radius))
     }
 }
 

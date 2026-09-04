@@ -124,6 +124,94 @@ impl Lucene99MemorySegmentFlatVectorsScorer {
         ))
     }
 
+    /// Returns a supplier for float vectors, falling back to the delegate when
+    /// the memory-segment path does not apply.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.internal.vectorization.Lucene99MemorySegmentFlatVectorsScorer#getFloatScoringSupplier`,
+    /// the `FLOAT32` arm of `getRandomVectorScorerSupplier`. Where Java tests
+    /// `vectorValues instanceof HasIndexSlice sliceableValues && getSlice() != null`,
+    /// this port takes that slice as `slice`: `None` stands for values that are
+    /// not sliceable, or whose slice is null, and sends the call straight to
+    /// the delegate exactly as Java does.
+    ///
+    /// # Divergence from Lucene 10.5.0
+    ///
+    /// When the values *are* sliceable but the data does not fit one mapped
+    /// segment, Java hands the delegate the same `vectorValues` instance. The
+    /// delegate takes owned values here, and the memory-segment supplier needs
+    /// them behind an [`Arc`] which cannot be unwrapped back into a `Box`, so
+    /// that one fallback path hands the delegate `copy_float()` — the fresh
+    /// view over the same data that `FloatVectorValues.copy()` exists to
+    /// provide. The common `slice == None` path still passes the original.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`Lucene99MemorySegmentFloatVectorScorerSupplier::create`] or the
+    /// delegate returns.
+    pub fn get_float_scoring_supplier(
+        &self,
+        vector_values: Box<dyn FloatVectorValues>,
+        similarity_type: VectorSimilarityFunction,
+        slice: Option<&dyn MemorySegmentAccessInput>,
+    ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        if let Some(slice) = slice {
+            let values: Arc<dyn FloatVectorValues> = Arc::from(vector_values);
+            if let Some(scorer) = Lucene99MemorySegmentFloatVectorScorerSupplier::create(
+                similarity_type,
+                slice,
+                Arc::clone(&values),
+            )? {
+                return Ok(Box::new(scorer));
+            }
+            return self
+                .delegate
+                .get_random_vector_scorer_supplier_float(similarity_type, values.copy_float()?);
+        }
+        self.delegate
+            .get_random_vector_scorer_supplier_float(similarity_type, vector_values)
+    }
+
+    /// Returns a supplier for byte vectors, falling back to the delegate when
+    /// the memory-segment path does not apply.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.internal.vectorization.Lucene99MemorySegmentFlatVectorsScorer#getByteScorerSupplier`,
+    /// the `BYTE` arm of `getRandomVectorScorerSupplier`. As for
+    /// [`get_float_scoring_supplier`](Self::get_float_scoring_supplier),
+    /// `slice` carries what Java obtains from `HasIndexSlice.getSlice()`, and
+    /// `None` takes Lucene's delegate branch.
+    ///
+    /// Java also asserts that the values are not
+    /// `BaseQuantizedByteVectorValues`, since a quantized value reaching here
+    /// would be a wiring mistake; the typed entry points of this port make that
+    /// mistake unrepresentable, as the type's own documentation explains.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever
+    /// [`Lucene99MemorySegmentByteVectorScorerSupplier::create`] or the
+    /// delegate returns.
+    pub fn get_byte_scorer_supplier(
+        &self,
+        vector_values: Box<dyn ByteVectorValues>,
+        similarity_type: VectorSimilarityFunction,
+        slice: Option<&dyn MemorySegmentAccessInput>,
+    ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        if let Some(slice) = slice {
+            return Ok(Box::new(
+                Lucene99MemorySegmentByteVectorScorerSupplier::create(
+                    similarity_type,
+                    slice,
+                    Arc::from(vector_values),
+                )?,
+            ));
+        }
+        self.delegate
+            .get_random_vector_scorer_supplier_byte(similarity_type, vector_values)
+    }
+
     /// Returns a scorer for a float `target`, reading the stored vectors from
     /// `input`, or `None` when the data does not fit in a single mapped
     /// segment.

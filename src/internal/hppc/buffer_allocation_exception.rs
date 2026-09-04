@@ -1,7 +1,7 @@
 //! Port of `org.apache.lucene.internal.hppc.BufferAllocationException`.
 
 use std::error::Error;
-use std::fmt::{self, Display, Formatter};
+use std::fmt::{self, Arguments, Display, Formatter};
 
 use crate::error::LuceneError;
 
@@ -22,10 +22,15 @@ use crate::error::LuceneError;
 /// [`Error`] so a caller that recovers a panic, or a future fallible API, can
 /// convert it into a [`LuceneError`].
 ///
-/// Java's variadic `String.format` constructors are collapsed into a single
-/// message-carrying constructor: Rust's `format!` is applied at the call site,
-/// so the `IllegalFormatException` fallback of the Java version has no
-/// counterpart (a malformed format string is a compile error here).
+/// Java's variadic `String.format` constructors take a format string and its
+/// arguments separately; the Rust counterpart of that pair is
+/// [`std::fmt::Arguments`], which [`BufferAllocationException::with_args`]
+/// accepts and [`BufferAllocationException::format_message`] renders. Because
+/// `format_args!` is validated by the compiler, the `IllegalFormatException`
+/// fallback of the Java version cannot occur here, and neither can the
+/// `Throwable` it would suppress: the third Java constructor,
+/// `BufferAllocationException(String, Throwable, Object...)`, therefore has no
+/// counterpart — this type carries no cause.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BufferAllocationException {
     message: String,
@@ -37,6 +42,32 @@ impl BufferAllocationException {
         Self {
             message: message.into(),
         }
+    }
+
+    /// Creates a new exception from a format string and its arguments.
+    ///
+    /// Equivalent to `BufferAllocationException(String, Object...)`, whose
+    /// `Object...` arguments Rust carries inside `message` — build it with
+    /// [`format_args!`].
+    pub fn with_args(message: Arguments<'_>) -> Self {
+        Self::new(Self::format_message(message))
+    }
+
+    /// Renders the format string and its arguments into the exception message.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.internal.hppc.BufferAllocationException#formatMessage`.
+    ///
+    /// Java calls `String.format(Locale.ROOT, message, args)` and, when the
+    /// format string does not match the arguments, throws a substitute
+    /// exception whose message is suffixed `" [ILLEGAL FORMAT, ARGS
+    /// SUPPRESSED]"`, with the original cause and the `IllegalFormatException`
+    /// attached as suppressed. That branch has no counterpart here:
+    /// `format_args!` binds the arguments to the format string at compile time,
+    /// so rendering them cannot fail. `Locale.ROOT` likewise needs no
+    /// counterpart — Rust's formatting is not locale-sensitive.
+    fn format_message(message: Arguments<'_>) -> String {
+        fmt::format(message)
     }
 
     /// The exception message, equivalent to Java's `getMessage()`.

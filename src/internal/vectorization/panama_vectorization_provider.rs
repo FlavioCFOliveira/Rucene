@@ -60,6 +60,30 @@ pub struct PanamaVectorizationProvider {
 }
 
 impl PanamaVectorizationProvider {
+    /// Runs `action` with the privileges Lucene asks the access controller for.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.internal.vectorization.PanamaVectorizationProvider#doPrivileged`,
+    /// which exists in Java only so that the `@SuppressForbidden` annotation
+    /// can be applied to a single method: it wraps its argument in
+    /// `AccessController.doPrivileged` so the JVM's `SecurityManager` grants
+    /// the vector load of the JDK-8309727 warm-up. Rust has neither an access
+    /// controller nor a security manager — the caller's privileges *are* the
+    /// process's privileges — so the privileged block is the action itself,
+    /// exactly as
+    /// [`Constants::do_privileged`](crate::util::Constants) resolves the same
+    /// construct elsewhere in this crate.
+    ///
+    /// # Divergence from Lucene 10.5.0
+    ///
+    /// Lucene declares the helper `private static` and has one call site, the
+    /// JDK-8309727 warm-up that the constructor of this port does not reproduce
+    /// (see the type's divergences). The helper therefore has no caller here
+    /// and is `pub` rather than private.
+    pub fn do_privileged<T>(action: impl FnOnce() -> T) -> T {
+        action()
+    }
+
     /// Creates the provider.
     ///
     /// Equivalent to the package-private `PanamaVectorizationProvider()`

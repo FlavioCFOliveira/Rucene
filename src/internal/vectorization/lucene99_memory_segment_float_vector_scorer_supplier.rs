@@ -15,7 +15,7 @@ use crate::internal::vectorization::lucene99_memory_segment_float_vector_scorer:
     java_math_max, normalize_raw_score,
 };
 use crate::internal::vectorization::MemorySegmentBulkVectorOps;
-use crate::store::{MemorySegment, MemorySegmentAccessInput};
+use crate::store::{IndexInput, MemorySegment, MemorySegmentAccessInput};
 use crate::util::hnsw::{
     RandomVectorScorer, RandomVectorScorerSupplier, UpdateableRandomVectorScorer,
 };
@@ -79,7 +79,7 @@ impl Lucene99MemorySegmentFloatVectorScorerSupplier {
         let Some(seg) = input.segment_slice_or_null(0, input.length())? else {
             return Ok(None);
         };
-        check_invariants(values.size(), values.vector_byte_length() as usize, input)?;
+        Self::check_invariants(values.size(), values.vector_byte_length() as usize, input)?;
         Ok(Some(Self {
             similarity,
             vector_byte_size: i64::from(values.vector_byte_length()),
@@ -88,6 +88,30 @@ impl Lucene99MemorySegmentFloatVectorScorerSupplier {
             seg,
             values,
         }))
+    }
+
+    /// Fails when `input` is shorter than the vector data it is supposed to
+    /// hold.
+    ///
+    /// Lucene repeats this body verbatim in each of its four memory-segment
+    /// scorers and suppliers. This port keeps a single copy of it, the
+    /// crate-private `check_invariants` of the byte scorer's module, and each
+    /// type's own member calls it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::LuceneError::IllegalArgument`], with the message
+    /// Lucene's `IllegalArgumentException` carries, when the input is too
+    /// short.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.internal.vectorization.Lucene99MemorySegmentFloatVectorScorerSupplier#checkInvariants`.
+    pub fn check_invariants(
+        max_ord: i32,
+        vector_byte_length: usize,
+        input: &dyn IndexInput,
+    ) -> Result<()> {
+        check_invariants(max_ord, vector_byte_length, input)
     }
 }
 

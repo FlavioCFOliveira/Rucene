@@ -16,7 +16,7 @@
 //!
 //! | Rucene | Apache Lucene Core 10.5.0 (`src/java`) |
 //! | --- | --- |
-//! | [`VectorizationProvider`], [`get_instance`], [`lookup`], [`VALID_CALLERS`] | `VectorizationProvider` |
+//! | [`VectorizationProvider`], [`get_instance`], [`ensure_caller`], [`lookup`], [`lookup_vector_module`], [`get_upper_java_feature_version`], [`VALID_CALLERS`], [`VALID_CALLER_FILES`] | `VectorizationProvider` |
 //! | [`DefaultVectorizationProvider`] | `DefaultVectorizationProvider` |
 //! | [`VectorUtilSupport`] | `VectorUtilSupport` |
 //! | [`DefaultVectorUtilSupport`] | `DefaultVectorUtilSupport` |
@@ -144,4 +144,8 @@ pub use panama_vector_util_support::PanamaVectorUtilSupport;
 pub use panama_vectorization_provider::PanamaVectorizationProvider;
 pub use posting_decoding_util::PostingDecodingUtil;
 pub use vector_util_support::VectorUtilSupport;
-pub use vectorization_provider::{get_instance, lookup, VectorizationProvider, VALID_CALLERS};
+pub use vectorization_provider::{
+    ensure_caller, get_instance, get_upper_java_feature_version, lookup, lookup_vector_module,
+    VectorizationProvider, DEFAULT_UPPER_JAVA_FEATURE_VERSION, UPPER_JAVA_FEATURE_VERSION_SYSPROP,
+    VALID_CALLERS, VALID_CALLER_FILES,
+};

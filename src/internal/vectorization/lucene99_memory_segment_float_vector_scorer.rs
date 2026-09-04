@@ -11,7 +11,7 @@ use crate::internal::vectorization::lucene99_memory_segment_byte_vector_scorer::
     check_invariants, check_ordinal,
 };
 use crate::internal::vectorization::MemorySegmentBulkVectorOps;
-use crate::store::{MemorySegment, MemorySegmentAccessInput};
+use crate::store::{IndexInput, MemorySegment, MemorySegmentAccessInput};
 use crate::util::hnsw::RandomVectorScorer;
 use crate::util::vector_util;
 
@@ -175,7 +175,7 @@ impl Lucene99MemorySegmentFloatVectorScorer {
         let Some(seg) = input.segment_slice_or_null(0, input.length())? else {
             return Ok(None);
         };
-        check_invariants(values.size(), values.vector_byte_length() as usize, input)?;
+        Self::check_invariants(values.size(), values.vector_byte_length() as usize, input)?;
         Ok(Some(Self {
             similarity,
             vector_byte_size: i64::from(values.vector_byte_length()),
@@ -186,11 +186,51 @@ impl Lucene99MemorySegmentFloatVectorScorer {
             scratch_scores: [0.0; 4],
         }))
     }
+
+    /// Fails when `input` is shorter than the vector data it is supposed to
+    /// hold.
+    ///
+    /// Lucene repeats this body verbatim in each of its four memory-segment
+    /// scorers and suppliers. This port keeps a single copy of it, the
+    /// crate-private `check_invariants` of the byte scorer's module, and each
+    /// type's own member calls it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::LuceneError::IllegalArgument`], with the message
+    /// Lucene's `IllegalArgumentException` carries, when the input is too
+    /// short.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.internal.vectorization.Lucene99MemorySegmentFloatVectorScorer#checkInvariants`.
+    pub fn check_invariants(
+        max_ord: i32,
+        vector_byte_length: usize,
+        input: &dyn IndexInput,
+    ) -> Result<()> {
+        check_invariants(max_ord, vector_byte_length, input)
+    }
+
+    /// Fails when `ord` is outside `[0, maxOrd)`.
+    ///
+    /// Java reads the bound back through the `maxOrd()` accessor it inherits
+    /// from `RandomVectorScorer.AbstractRandomVectorScorer`; this port reads
+    /// the same field.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::LuceneError::IllegalArgument`] with Lucene's message.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.internal.vectorization.Lucene99MemorySegmentFloatVectorScorer#checkOrdinal`.
+    pub fn check_ordinal(&self, ord: i32) -> Result<()> {
+        check_ordinal(ord, self.max_ord)
+    }
 }
 
 impl RandomVectorScorer for Lucene99MemorySegmentFloatVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
-        check_ordinal(node, self.max_ord)?;
+        self.check_ordinal(node)?;
         // just delegates to the existing scorer that copies on-heap
         let vector = self.values.vector_value(node)?;
         self.similarity.compare_f32(&self.query, &vector)
