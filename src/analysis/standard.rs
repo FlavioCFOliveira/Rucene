@@ -13,13 +13,14 @@ use std::fmt::Debug;
 use unicode_segmentation::UnicodeSegmentation;
 
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::Rc;
 
 use crate::analysis::{
-    new_lower_case_filter, new_stop_filter, Analyzer, AnalyzerState, CharArraySet, CharReader,
-    CharTermAttribute, GlobalReuseStrategy, OffsetAttribute, PositionIncrementAttribute,
-    SharedTokenStream, TokenStream, TokenStreamComponents, Tokenizer, TokenizerLogic,
-    TypeAttribute,
+    get_buffered_reader, get_word_set, new_lower_case_filter, new_stop_filter, Analyzer,
+    AnalyzerState, CharArraySet, CharReader, CharTermAttribute, GlobalReuseStrategy,
+    OffsetAttribute, PositionIncrementAttribute, SharedTokenStream, StringCharReader, TokenStream,
+    TokenStreamComponents, Tokenizer, TokenizerLogic, TypeAttribute,
 };
 use crate::error::{LuceneError, Result};
 use crate::util::attribute::{AttributeImpl, AttributeSource};
@@ -511,21 +512,73 @@ pub fn new_standard_tokenizer() -> StandardTokenizer {
 
 /// Base class for analyzers that use a stop-word set.
 ///
-/// Equivalent to `org.apache.lucene.analysis.core.StopwordAnalyzerBase`.
+/// Equivalent to `org.apache.lucene.analysis.StopwordAnalyzerBase`.
 #[derive(Debug)]
 pub struct StopwordAnalyzerBase {
+    /// An immutable stop-word set.
     stopwords: CharArraySet,
 }
 
 impl StopwordAnalyzerBase {
     /// Creates a base analyzer using the supplied stop-word set.
+    ///
+    /// The set is copied and then made unmodifiable, so the analyzer's view of
+    /// it can neither be written to nor changed from underneath it.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.StopwordAnalyzerBase#StopwordAnalyzerBase(CharArraySet)`.
     pub fn new(stopwords: CharArraySet) -> Self {
-        Self { stopwords }
+        Self {
+            stopwords: CharArraySet::unmodifiable_set(stopwords.copy()),
+        }
     }
 
     /// Returns the stop-word set used by this analyzer.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.StopwordAnalyzerBase#getStopwordSet`.
     pub fn stopwords(&self) -> &CharArraySet {
         &self.stopwords
+    }
+
+    /// Reads a stop-word set from `reader`, closing it afterwards.
+    ///
+    /// Every non-blank line becomes one entry, trimmed of leading and trailing
+    /// whitespace; the returned set is unmodifiable.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever the reader returns while being read or closed. A read
+    /// failure is reported in preference to a close failure, which is the order
+    /// Java's `try`/`finally` produces.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.StopwordAnalyzerBase#loadStopwordSet(Reader)`.
+    pub fn load_stopword_set(reader: &mut dyn CharReader) -> Result<CharArraySet> {
+        let lines = get_buffered_reader(reader);
+        let closed = reader.close();
+        let lines = lines?;
+        closed?;
+        Ok(CharArraySet::unmodifiable_set(get_word_set(lines)))
+    }
+
+    /// Reads a stop-word set from the UTF-8 file at `stopwords`.
+    ///
+    /// Divergence: Java streams the file through
+    /// `Files.newBufferedReader(path, StandardCharsets.UTF_8)`
+    /// (`StopwordAnalyzerBase.java` lines 70-74). This crate's
+    /// [`CharReader`](crate::analysis::CharReader) has no file-backed
+    /// implementation, so the port decodes the file into memory and reads it
+    /// through a [`StringCharReader`](crate::analysis::StringCharReader). The
+    /// resulting set is the same; only the peak memory differs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] when the file cannot be read or is not valid
+    /// UTF-8.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.StopwordAnalyzerBase#loadStopwordSet(Path)`.
+    pub fn load_stopword_set_from_path(stopwords: &Path) -> Result<CharArraySet> {
+        let text = std::fs::read_to_string(stopwords)?;
+        let mut reader = StringCharReader::new(text);
+        Self::load_stopword_set(&mut reader)
     }
 }
 

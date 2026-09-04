@@ -18,6 +18,16 @@ pub struct CharArrayMap<V> {
     count: usize,
     keys: Vec<Option<Vec<char>>>,
     values: Vec<Option<V>>,
+    /// Whether this map refuses every write.
+    ///
+    /// Java expresses the same thing with a subclass,
+    /// `CharArrayMap.UnmodifiableCharArrayMap`, whose `put`, `clear` and
+    /// `remove` throw `UnsupportedOperationException`
+    /// (`CharArrayMap.java` lines 562-601). Rust has no implementation
+    /// inheritance, so the port carries the distinction in a field, and
+    /// [`is_unmodifiable`](Self::is_unmodifiable) stands in for Java's
+    /// `instanceof UnmodifiableCharArrayMap` test.
+    unmodifiable: bool,
 }
 
 impl<V> CharArrayMap<V> {
@@ -32,6 +42,7 @@ impl<V> CharArrayMap<V> {
             count: 0,
             keys: (0..size).map(|_| None).collect(),
             values: (0..size).map(|_| None).collect(),
+            unmodifiable: false,
         }
     }
 
@@ -41,7 +52,13 @@ impl<V> CharArrayMap<V> {
     }
 
     /// Clears all entries.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the map is unmodifiable, where Java's
+    /// `UnmodifiableCharArrayMap.clear()` throws `UnsupportedOperationException`.
     pub fn clear(&mut self) {
+        self.assert_modifiable();
         self.count = 0;
         for key in &mut self.keys {
             *key = None;
@@ -65,14 +82,50 @@ impl<V> CharArrayMap<V> {
             count: self.count,
             keys: self.keys.clone(),
             values: self.values.clone(),
+            // Java's copy builds a plain `CharArrayMap`, so a copy of an
+            // unmodifiable map can be written to again.
+            unmodifiable: false,
         }
     }
 
-    /// Returns an empty map.
+    /// Returns an empty map that refuses every write.
     ///
-    /// Equivalent to `CharArrayMap.emptyMap()`.
+    /// Equivalent to `CharArrayMap.emptyMap()`, whose `EMPTY_MAP` is an
+    /// `EmptyCharArrayMap`, itself an `UnmodifiableCharArrayMap`
+    /// (`CharArrayMap.java` lines 608-611).
     pub fn empty_map() -> Self {
-        Self::new(0, false)
+        let mut map = Self::new(0, false);
+        map.unmodifiable = true;
+        map
+    }
+
+    /// Reports whether this map refuses every write.
+    ///
+    /// Equivalent to Java's `map instanceof CharArrayMap.UnmodifiableCharArrayMap`
+    /// test, which `CharArrayMap.unmodifiableMap` and `CharArraySet.unmodifiableSet`
+    /// both perform to avoid wrapping a map twice.
+    pub fn is_unmodifiable(&self) -> bool {
+        self.unmodifiable
+    }
+
+    /// Returns an unmodifiable view of `map`.
+    ///
+    /// An empty map becomes [`empty_map`](Self::empty_map), a map that already
+    /// refuses writes is returned unchanged, and any other map is returned with
+    /// its writes disabled.
+    ///
+    /// Equivalent to `CharArrayMap.unmodifiableMap(CharArrayMap)`. Java's
+    /// `NullPointerException` for a null argument has no counterpart: the port
+    /// takes the map by value, so there is nothing to be null.
+    pub fn unmodifiable_map(mut map: Self) -> Self {
+        if map.is_empty() {
+            return Self::empty_map();
+        }
+        if map.unmodifiable {
+            return map;
+        }
+        map.unmodifiable = true;
+        map
     }
 
     /// Returns the hash Lucene computes for a key.
@@ -174,7 +227,13 @@ impl<V> CharArrayMap<V> {
 
     /// Inserts `value` under the `len` characters of `text` starting at `off`,
     /// returning the previous value if any.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the map is unmodifiable, where Java's
+    /// `UnmodifiableCharArrayMap.put(...)` throws `UnsupportedOperationException`.
     pub fn put_chars(&mut self, text: &[char], off: usize, len: usize, value: V) -> Option<V> {
+        self.assert_modifiable();
         let normalized = self.normalize(&text[off..off + len]);
         let slot = self.get_slot(&normalized);
         if self.keys[slot].is_some() {
@@ -194,6 +253,20 @@ impl<V> CharArrayMap<V> {
     /// Returns an iterator over the key/value pairs in the map.
     pub fn iter(&self) -> Iter<'_, V> {
         Iter { map: self, pos: 0 }
+    }
+
+    /// Refuses a write to an unmodifiable map.
+    ///
+    /// Divergence: Java raises `UnsupportedOperationException`, an unchecked
+    /// exception, from the overrides in `UnmodifiableCharArrayMap`. The port's
+    /// write methods do not return `Result`, so the unchecked exception becomes
+    /// a panic, which is how this crate carries Java's unchecked exceptions
+    /// through a method whose signature cannot report an error.
+    fn assert_modifiable(&self) {
+        assert!(
+            !self.unmodifiable,
+            "CharArrayMap is unmodifiable and cannot be written to"
+        );
     }
 
     /// Normalizes a key according to the map's case policy.

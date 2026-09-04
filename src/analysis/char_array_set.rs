@@ -42,7 +42,46 @@ impl CharArraySet {
         set
     }
 
+    /// Returns a copy of this set, preserving its case policy.
+    ///
+    /// The copy is always modifiable, even when this set is not: Java's
+    /// `CharArrayMap.copy` builds a plain `CharArrayMap`.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.CharArraySet#copy`. Java also
+    /// accepts a plain `Set`, which it copies entry by entry; that path is
+    /// [`from_iter`](Self::from_iter) here, because the Rust signature is
+    /// already typed to a `CharArraySet`.
+    pub fn copy(&self) -> Self {
+        Self {
+            map: self.map.copy(),
+        }
+    }
+
+    /// Returns an unmodifiable view of `set`.
+    ///
+    /// A set that already refuses writes is returned unchanged; any other set
+    /// is returned with its writes disabled, so [`add`](Self::add) and
+    /// [`clear`](Self::clear) then panic.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.CharArraySet#unmodifiableSet`.
+    /// Java's `NullPointerException` for a null argument has no counterpart:
+    /// the port takes the set by value, so there is nothing to be null.
+    pub fn unmodifiable_set(set: Self) -> Self {
+        if set.map.is_unmodifiable() {
+            return set;
+        }
+        Self {
+            map: CharArrayMap::unmodifiable_map(set.map),
+        }
+    }
+
     /// Clears all entries.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the set is unmodifiable, where Java's underlying
+    /// `CharArrayMap.UnmodifiableCharArrayMap.clear()` throws
+    /// `UnsupportedOperationException`.
     pub fn clear(&mut self) {
         self.map.clear();
     }
@@ -58,12 +97,22 @@ impl CharArraySet {
     }
 
     /// Adds `key` to the set, returning `true` if it was not already present.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the set is unmodifiable, where Java's `CharArraySet.add`
+    /// on an unmodifiable set throws `UnsupportedOperationException`.
     pub fn add(&mut self, key: impl AsRef<str>) -> bool {
         let chars: Vec<char> = key.as_ref().chars().collect();
         self.add_chars(&chars, 0, chars.len())
     }
 
     /// Adds the `len` characters of `text` starting at `off` to the set.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the set is unmodifiable, for the reason
+    /// [`add`](Self::add) does.
     pub fn add_chars(&mut self, text: &[char], off: usize, len: usize) -> bool {
         self.map.put_chars(text, off, len, ()).is_none()
     }

@@ -13,6 +13,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 
 use crate::util::attribute::{Attribute, AttributeImpl, AttributeReflector};
+use crate::util::byte_block_pool::hash_bytes;
 use crate::util::{ArrayUtil, BytesRef, BytesRefBuilder};
 
 /// Produces a lazily-initialized `&'static [TypeId]` that respects the crate's
@@ -26,6 +27,30 @@ macro_rules! static_type_ids {
             Box::leak(ids.into_boxed_slice())
         })
     }};
+}
+
+/// Reports whether `a` and `b` are the very same attribute instance.
+///
+/// This is the port of the `this == other` reference comparison every
+/// `AttributeImpl` subclass opens its `equals` with; two `&dyn AttributeImpl`
+/// designate the same object exactly when their data pointers agree.
+fn same_instance(a: &dyn AttributeImpl, b: &dyn AttributeImpl) -> bool {
+    std::ptr::eq(
+        a.as_any() as *const dyn Any as *const (),
+        b.as_any() as *const dyn Any as *const (),
+    )
+}
+
+/// Returns the hash Java's `String.hashCode()` computes for `s`.
+///
+/// The `31 * h + c` fold runs over UTF-16 code units in Java; the port folds
+/// `char`s, which agree for every code point in the Basic Multilingual Plane.
+fn java_string_hash_code(s: &str) -> i32 {
+    let mut code: i32 = 0;
+    for c in s.chars() {
+        code = code.wrapping_mul(31).wrapping_add(c as i32);
+    }
+    code
 }
 
 // -----------------------------------------------------------------------------
@@ -126,6 +151,27 @@ impl CharTermAttributeImpl {
             self.term_buffer =
                 vec!['\0'; ArrayUtil::oversize(new_size, std::mem::size_of::<char>())];
         }
+    }
+
+    /// Appends the four characters of `null`.
+    ///
+    /// Java's `Appendable` contract says a null `CharSequence` appends the
+    /// string `"null"`, and every `append` overload routes a null argument
+    /// here. A Rust `&str` is never null, so nothing in the port reaches this
+    /// from `append`; a caller holding an absent value calls it directly.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.analysis.tokenattributes.CharTermAttributeImpl#appendNull`.
+    pub fn append_null(&mut self) {
+        let start_len = self.term_length;
+        {
+            let buf = self.resize_buffer(start_len + 4);
+            buf[start_len] = 'n';
+            buf[start_len + 1] = 'u';
+            buf[start_len + 2] = 'l';
+            buf[start_len + 3] = 'l';
+        }
+        self.term_length += 4;
     }
 }
 
@@ -291,12 +337,12 @@ impl Eq for CharTermAttributeImpl {}
 
 impl Hash for CharTermAttributeImpl {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Matches Java's CharTermAttributeImpl.hashCode().
-        let mut code = self.term_length as i32;
-        for &c in &self.term_buffer[..self.term_length] {
-            code = code.wrapping_mul(31).wrapping_add(c as i32);
-        }
-        state.write_i32(code);
+        // Feeds Java's `CharTermAttributeImpl.hashCode()` to the hasher, by
+        // delegating to the `AttributeImpl::hash_code` that ports it. This
+        // used to fold the buffer forwards as `31 * h + c`, which is not what
+        // Java computes: `ArrayUtil.hashCode` walks the buffer *backwards*, so
+        // the two disagreed on every term of two characters or more.
+        state.write_i32(AttributeImpl::hash_code(self));
     }
 }
 
@@ -369,6 +415,44 @@ impl AttributeImpl for CharTermAttributeImpl {
             dyn CharTermAttribute,
             dyn TermToBytesRefAttribute
         ]
+    }
+
+    /// Reports whether `other` holds the same term text.
+    ///
+    /// The term buffers are compared only up to `term_length`, so the unused
+    /// tail of an oversized buffer never takes part.
+    ///
+    /// Divergence: Java's `other instanceof CharTermAttributeImpl` also accepts
+    /// a `PackedTokenAttributeImpl`, which extends it
+    /// (`PackedTokenAttributeImpl.java` line 37). Rust has no implementation
+    /// inheritance, so the subclass is matched explicitly to keep the same
+    /// answer.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.CharTermAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        if let Some(o) = other.as_any().downcast_ref::<CharTermAttributeImpl>() {
+            return self == o;
+        }
+        if let Some(o) = other.as_any().downcast_ref::<PackedTokenAttributeImpl>() {
+            return *self == o.term;
+        }
+        false
+    }
+
+    /// Returns the hash of the term text.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.CharTermAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        let mut code = self.term_length as i32;
+        code = code.wrapping_mul(31).wrapping_add(ArrayUtil::hash_code(
+            &self.term_buffer,
+            0,
+            self.term_length,
+        ));
+        code
     }
 }
 
@@ -469,6 +553,28 @@ impl AttributeImpl for OffsetAttributeImpl {
 
     fn attribute_interfaces(&self) -> &'static [TypeId] {
         static_type_ids![OffsetAttributeImpl, dyn OffsetAttribute]
+    }
+
+    /// Reports whether `other` carries the same start and end offset.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.OffsetAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<OffsetAttributeImpl>() {
+            Some(o) => o.start_offset == self.start_offset && o.end_offset == self.end_offset,
+            None => false,
+        }
+    }
+
+    /// Returns the hash of the two offsets.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.OffsetAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        let mut code = self.start_offset;
+        code = code.wrapping_mul(31).wrapping_add(self.end_offset);
+        code
     }
 }
 
@@ -571,6 +677,29 @@ impl AttributeImpl for PositionIncrementAttributeImpl {
             dyn PositionIncrementAttribute
         ]
     }
+
+    /// Reports whether `other` carries the same position increment.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PositionIncrementAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other
+            .as_any()
+            .downcast_ref::<PositionIncrementAttributeImpl>()
+        {
+            Some(o) => o.position_increment == self.position_increment,
+            None => false,
+        }
+    }
+
+    /// Returns the position increment, which is its own hash.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PositionIncrementAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        self.position_increment
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -663,6 +792,26 @@ impl AttributeImpl for PositionLengthAttributeImpl {
     fn attribute_interfaces(&self) -> &'static [TypeId] {
         static_type_ids![PositionLengthAttributeImpl, dyn PositionLengthAttribute]
     }
+
+    /// Reports whether `other` carries the same position length.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PositionLengthAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<PositionLengthAttributeImpl>() {
+            Some(o) => o.position_length == self.position_length,
+            None => false,
+        }
+    }
+
+    /// Returns the position length, which is its own hash.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PositionLengthAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        self.position_length
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -754,6 +903,30 @@ impl AttributeImpl for TypeAttributeImpl {
     fn attribute_interfaces(&self) -> &'static [TypeId] {
         static_type_ids![TypeAttributeImpl, dyn TypeAttribute]
     }
+
+    /// Reports whether `other` carries the same lexical type.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.TypeAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<TypeAttributeImpl>() {
+            Some(o) => o.type_value == self.type_value,
+            None => false,
+        }
+    }
+
+    /// Returns the hash of the lexical type.
+    ///
+    /// Divergence: Java answers `0` for a null `type`
+    /// (`TypeAttributeImpl.java` line 67). The port's `type_value` is a
+    /// `String`, which is never null, so that branch has no counterpart.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.TypeAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        java_string_hash_code(&self.type_value)
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -762,8 +935,8 @@ impl AttributeImpl for TypeAttributeImpl {
 
 /// A single reusable attribute implementation that combines
 /// [`CharTermAttribute`], [`OffsetAttribute`],
-/// [`PositionIncrementAttribute`], [`PositionLengthAttribute`] and
-/// [`TypeAttribute`].
+/// [`PositionIncrementAttribute`], [`PositionLengthAttribute`],
+/// [`TypeAttribute`] and [`TermFrequencyAttribute`].
 ///
 /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PackedTokenAttributeImpl`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -774,6 +947,7 @@ pub struct PackedTokenAttributeImpl {
     position_increment: i32,
     position_length: i32,
     type_value: String,
+    term_frequency: i32,
 }
 
 impl Default for PackedTokenAttributeImpl {
@@ -792,6 +966,7 @@ impl PackedTokenAttributeImpl {
             position_increment: 1,
             position_length: 1,
             type_value: DEFAULT_TYPE.to_string(),
+            term_frequency: 1,
         }
     }
 
@@ -920,6 +1095,20 @@ impl TypeAttribute for PackedTokenAttributeImpl {
     }
 }
 
+impl TermFrequencyAttribute for PackedTokenAttributeImpl {
+    fn set_term_frequency(&mut self, term_frequency: i32) {
+        assert!(
+            term_frequency >= 1,
+            "Term frequency must be 1 or greater; got {term_frequency}"
+        );
+        self.term_frequency = term_frequency;
+    }
+
+    fn get_term_frequency(&self) -> i32 {
+        self.term_frequency
+    }
+}
+
 impl Hash for PackedTokenAttributeImpl {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.term.hash(state);
@@ -928,6 +1117,7 @@ impl Hash for PackedTokenAttributeImpl {
         self.position_increment.hash(state);
         self.position_length.hash(state);
         self.type_value.hash(state);
+        self.term_frequency.hash(state);
     }
 }
 
@@ -938,6 +1128,7 @@ impl AttributeImpl for PackedTokenAttributeImpl {
         self.end_offset = 0;
         self.position_increment = 1;
         self.position_length = 1;
+        self.term_frequency = 1;
         self.type_value = DEFAULT_TYPE.to_string();
     }
 
@@ -955,6 +1146,7 @@ impl AttributeImpl for PackedTokenAttributeImpl {
             t.set_position_increment(self.position_increment);
             t.set_position_length(self.position_length);
             t.type_value.clone_from(&self.type_value);
+            t.term_frequency = self.term_frequency;
         }
     }
 
@@ -990,6 +1182,12 @@ impl AttributeImpl for PackedTokenAttributeImpl {
             "type",
             &self.type_value,
         );
+        reflector.reflect(
+            TypeId::of::<dyn TermFrequencyAttribute>(),
+            std::any::type_name::<PackedTokenAttributeImpl>(),
+            "termFrequency",
+            &self.term_frequency,
+        );
     }
 
     fn clone_box(&self) -> Box<dyn AttributeImpl> {
@@ -1012,8 +1210,53 @@ impl AttributeImpl for PackedTokenAttributeImpl {
             dyn OffsetAttribute,
             dyn PositionIncrementAttribute,
             dyn PositionLengthAttribute,
-            dyn TypeAttribute
+            dyn TypeAttribute,
+            dyn TermFrequencyAttribute
         ]
+    }
+
+    /// Reports whether `other` carries the same term text, offsets, position
+    /// data, lexical type and term frequency.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PackedTokenAttributeImpl#equals`,
+    /// whose last conjunct is `super.equals(obj)` — the term-buffer comparison
+    /// `CharTermAttributeImpl` performs, which here is the `PartialEq` of the
+    /// held [`CharTermAttributeImpl`].
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<PackedTokenAttributeImpl>() {
+            Some(o) => {
+                self.start_offset == o.start_offset
+                    && self.end_offset == o.end_offset
+                    && self.position_increment == o.position_increment
+                    && self.position_length == o.position_length
+                    && self.type_value == o.type_value
+                    && self.term_frequency == o.term_frequency
+                    && self.term == o.term
+            }
+            None => false,
+        }
+    }
+
+    /// Returns the hash of every packed field, seeded with the term text's own
+    /// hash.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PackedTokenAttributeImpl#hashCode`,
+    /// which starts from `super.hashCode()` — the term-text hash of
+    /// `CharTermAttributeImpl`.
+    fn hash_code(&self) -> i32 {
+        let mut code = AttributeImpl::hash_code(&self.term);
+        code = code.wrapping_mul(31).wrapping_add(self.start_offset);
+        code = code.wrapping_mul(31).wrapping_add(self.end_offset);
+        code = code.wrapping_mul(31).wrapping_add(self.position_increment);
+        code = code.wrapping_mul(31).wrapping_add(self.position_length);
+        code = code
+            .wrapping_mul(31)
+            .wrapping_add(java_string_hash_code(&self.type_value));
+        code = code.wrapping_mul(31).wrapping_add(self.term_frequency);
+        code
     }
 }
 
@@ -1111,6 +1354,26 @@ impl AttributeImpl for TermFrequencyAttributeImpl {
     fn attribute_interfaces(&self) -> &'static [TypeId] {
         static_type_ids![TermFrequencyAttributeImpl, dyn TermFrequencyAttribute]
     }
+
+    /// Reports whether `other` carries the same term frequency.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.TermFrequencyAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<TermFrequencyAttributeImpl>() {
+            Some(o) => o.term_frequency == self.term_frequency,
+            None => false,
+        }
+    }
+
+    /// Returns the term frequency, which is its own hash.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.TermFrequencyAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        self.term_frequency
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1193,6 +1456,31 @@ impl AttributeImpl for KeywordAttributeImpl {
     fn attribute_interfaces(&self) -> &'static [TypeId] {
         static_type_ids![KeywordAttributeImpl, dyn KeywordAttribute]
     }
+
+    /// Reports whether `other` carries the same keyword flag.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.KeywordAttributeImpl#equals`,
+    /// which demands the exact same class rather than an `instanceof` test.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<KeywordAttributeImpl>() {
+            Some(o) => o.keyword == self.keyword,
+            None => false,
+        }
+    }
+
+    /// Returns `31` for a keyword and `37` otherwise.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.KeywordAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        if self.keyword {
+            31
+        } else {
+            37
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1267,6 +1555,26 @@ impl AttributeImpl for FlagsAttributeImpl {
 
     fn attribute_interfaces(&self) -> &'static [TypeId] {
         static_type_ids![FlagsAttributeImpl, dyn FlagsAttribute]
+    }
+
+    /// Reports whether `other` carries the same flag bits.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.FlagsAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<FlagsAttributeImpl>() {
+            Some(o) => o.flags == self.flags,
+            None => false,
+        }
+    }
+
+    /// Returns the flag bits, which are their own hash.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.FlagsAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        self.flags
     }
 }
 
@@ -1357,6 +1665,40 @@ impl AttributeImpl for PayloadAttributeImpl {
 
     fn attribute_interfaces(&self) -> &'static [TypeId] {
         static_type_ids![PayloadAttributeImpl, dyn PayloadAttribute]
+    }
+
+    /// Reports whether `other` carries the same payload, two absent payloads
+    /// counting as equal.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PayloadAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<PayloadAttributeImpl>() {
+            Some(o) => match (&o.payload, &self.payload) {
+                (None, None) => true,
+                (Some(theirs), Some(ours)) => theirs == ours,
+                _ => false,
+            },
+            None => false,
+        }
+    }
+
+    /// Returns the hash of the payload bytes, or `0` when there is no payload.
+    ///
+    /// Divergence: Java delegates to `BytesRef.hashCode()`, which hashes with
+    /// `StringHelper.GOOD_FAST_HASH_SEED` — a seed randomised per JVM, so the
+    /// value is not reproducible across runs. This port uses the crate's
+    /// fixed-seed [`hash_bytes`](crate::util::byte_block_pool::hash_bytes),
+    /// which is deterministic and never reaches a file.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PayloadAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        match &self.payload {
+            Some(payload) => hash_bytes(payload.slice()),
+            None => 0,
+        }
     }
 }
 
@@ -1458,6 +1800,43 @@ impl AttributeImpl for BytesTermAttributeImpl {
             dyn TermToBytesRefAttribute
         ]
     }
+
+    /// Reports whether `other` carries the same bytes, two absent values
+    /// counting as equal.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.BytesTermAttributeImpl#equals`,
+    /// which compares through `Objects.equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<BytesTermAttributeImpl>() {
+            Some(o) => match (&self.bytes, &o.bytes) {
+                (None, None) => true,
+                (Some(ours), Some(theirs)) => ours == theirs,
+                _ => false,
+            },
+            None => false,
+        }
+    }
+
+    /// Returns the hash of the held bytes.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.BytesTermAttributeImpl#hashCode`,
+    /// which is `Objects.hash(bytes)`: `31 * 1` plus the element's own hash, or
+    /// plus zero when the element is null.
+    ///
+    /// Divergence: the element hash is Java's `BytesRef.hashCode()`, seeded
+    /// with the per-JVM `StringHelper.GOOD_FAST_HASH_SEED`. This port uses the
+    /// crate's fixed-seed [`hash_bytes`](crate::util::byte_block_pool::hash_bytes)
+    /// for the same reason [`PayloadAttributeImpl`] does.
+    fn hash_code(&self) -> i32 {
+        let element = match &self.bytes {
+            Some(bytes) => hash_bytes(bytes.slice()),
+            None => 0,
+        };
+        31i32.wrapping_add(element)
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1532,6 +1911,26 @@ impl AttributeImpl for SentenceAttributeImpl {
 
     fn attribute_interfaces(&self) -> &'static [TypeId] {
         static_type_ids![SentenceAttributeImpl, dyn SentenceAttribute]
+    }
+
+    /// Reports whether `other` carries the same sentence index.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.SentenceAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<SentenceAttributeImpl>() {
+            Some(o) => o.index == self.index,
+            None => false,
+        }
+    }
+
+    /// Returns the sentence index, which is its own hash.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.SentenceAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        self.index
     }
 }
 

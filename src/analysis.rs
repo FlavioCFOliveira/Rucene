@@ -58,8 +58,8 @@ pub use tokenattributes::{
     TermFrequencyAttributeImpl, TermToBytesRefAttribute, TypeAttribute, TypeAttributeImpl,
 };
 pub use wordlist_loader::{
-    get_snowball_word_set, get_word_set, get_word_set_ignoring_comments, get_word_set_into,
-    get_word_set_with_comment,
+    get_buffered_reader, get_snowball_word_set, get_stem_dict, get_word_set,
+    get_word_set_ignoring_comments, get_word_set_into, get_word_set_with_comment,
 };
 
 use crate::error::{LuceneError, Result};
@@ -223,6 +223,17 @@ where
 ///
 /// A `TokenStream` owns an [`AttributeSource`] and exposes a lifecycle:
 /// `reset`, `increment_token`, `end`, `close`.
+///
+/// Divergence: the token-stream API is a decorator chain, so Lucene requires
+/// every concrete subclass to be `final` or to declare `incrementToken` final,
+/// and each of its three constructors checks that with
+/// `assert assertFinal()` — a private method that reads the class's modifiers
+/// reflectively (`TokenStream.java` lines 88-119). There is no port of it: the
+/// check needs `java.lang.Class` reflection (`getModifiers`,
+/// `isAnonymousClass`, `getMethod`, `desiredAssertionStatus`), which Rust does
+/// not have, and the property it defends is already guaranteed here — Rust has
+/// no implementation inheritance, so an implementor's `increment_token` cannot
+/// be overridden by anything.
 pub trait TokenStream: Debug {
     /// Advances to the next token and updates the attributes.
     ///
@@ -311,6 +322,17 @@ pub trait TokenizerLogic: Debug {
     fn close(&mut self, _reader: &mut dyn CharReader) -> Result<()> {
         Ok(())
     }
+
+    /// Called by [`Tokenizer::set_reader`] once the new reader has been
+    /// accepted, before it is put in place by `reset`.
+    ///
+    /// The default does nothing. Lucene declares it so a test tokenizer can
+    /// observe that `setReader` was reached and assert the stream's lifecycle
+    /// from the inside; Rucene has no subclassing, so the hook belongs on the
+    /// logic a [`Tokenizer`] is built from.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.Tokenizer#setReaderTestPoint`.
+    fn set_reader_test_point(&mut self) {}
 }
 
 /// A `TokenStream` whose input is a [`CharReader`], equivalent to
@@ -350,6 +372,7 @@ impl<T: TokenizerLogic> Tokenizer<T> {
             ));
         }
         self.input_pending = Some(reader);
+        self.logic.set_reader_test_point();
         Ok(())
     }
 

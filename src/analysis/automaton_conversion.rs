@@ -100,6 +100,24 @@ impl TokenStreamToAutomaton {
         self
     }
 
+    /// Returns the token bytes to put into the graph.
+    ///
+    /// The token is returned unchanged. Lucene declares this so a subclass can
+    /// rewrite a token — escaping bytes that would otherwise collide with
+    /// [`POS_SEP`] or [`HOLE`], for instance — before it becomes arcs.
+    ///
+    /// Divergence: Rust has no implementation inheritance, so nothing can
+    /// replace this behaviour the way a Java subclass overrides
+    /// `changeToken` (`TokenStreamToAutomaton.java` lines 93-95). The default
+    /// body is ported exactly, and it is applied at the same point of
+    /// [`to_automaton`](Self::to_automaton) that Java applies it
+    /// (`TokenStreamToAutomaton.java` line 176).
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.TokenStreamToAutomaton#changeToken`.
+    pub fn change_token(&self, input: BytesRef) -> BytesRef {
+        input
+    }
+
     /// Returns the position record at `pos`, growing the buffer as needed.
     fn position_at(positions: &mut Vec<Position>, pos: usize) -> &mut Position {
         if positions.len() <= pos {
@@ -191,6 +209,7 @@ impl TokenStreamToAutomaton {
             }
 
             let end_pos = (pos + i64::from(pos_len)) as usize;
+            let term_bytes = self.change_token(term_bytes);
             let end_arriving = Self::position_at(&mut positions, end_pos).arriving;
             let end_arriving = if end_arriving == -1 {
                 let s = builder.create_state();

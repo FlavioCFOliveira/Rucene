@@ -435,6 +435,23 @@ pub trait TokenFilterFactory: Send + Sync + std::fmt::Debug {
     ///
     /// Equivalent to `TokenFilterFactory.create(TokenStream)`.
     fn create(&self, input: Box<dyn TokenFilterLogic>) -> Result<Box<dyn TokenFilterLogic>>;
+
+    /// Normalizes `input`.
+    ///
+    /// The default returns `input` unchanged. A filter that should also apply
+    /// at normalization time — when a query term is folded rather than
+    /// analysed — overrides this and delegates to
+    /// [`create`](Self::create).
+    ///
+    /// # Errors
+    ///
+    /// The default returns none; an override returns whatever
+    /// [`create`](Self::create) returns.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.TokenFilterFactory#normalize`.
+    fn normalize(&self, input: Box<dyn TokenFilterLogic>) -> Result<Box<dyn TokenFilterLogic>> {
+        Ok(input)
+    }
 }
 
 /// Builds a character filter from a configuration.
@@ -448,6 +465,55 @@ pub trait CharFilterFactory: Send + Sync + std::fmt::Debug {
     ///
     /// Equivalent to `CharFilterFactory.create(Reader)`.
     fn create(&self, input: Box<dyn CharFilter>) -> Result<Box<dyn CharFilter>>;
+
+    /// Normalizes `input`.
+    ///
+    /// The default returns `input` unchanged. A character filter that should
+    /// also apply at normalization time overrides this and delegates to
+    /// [`create`](Self::create).
+    ///
+    /// # Errors
+    ///
+    /// The default returns none; an override returns whatever
+    /// [`create`](Self::create) returns.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.CharFilterFactory#normalize`.
+    fn normalize(&self, input: Box<dyn CharFilter>) -> Result<Box<dyn CharFilter>> {
+        Ok(input)
+    }
+}
+
+/// The SPI name a factory declares.
+///
+/// Java reads it reflectively out of the factory class's
+/// `public static final String NAME` field, which is why
+/// `AnalysisSPILoader.lookupSPIName` can accept any
+/// `Class<? extends AbstractAnalysisFactory>`. Rust has neither reflection nor
+/// a shared supertype for the three factory traits — `AbstractAnalysisFactory`
+/// is a struct here, not a base class — so this trait carries what the three
+/// have in common, and each implementation forwards to that factory's own
+/// `name`.
+pub trait AnalysisFactorySPIName {
+    /// Returns the name the factory declares.
+    fn spi_name(&self) -> &str;
+}
+
+impl AnalysisFactorySPIName for dyn TokenizerFactory {
+    fn spi_name(&self) -> &str {
+        self.name()
+    }
+}
+
+impl AnalysisFactorySPIName for dyn TokenFilterFactory {
+    fn spi_name(&self) -> &str {
+        self.name()
+    }
+}
+
+impl AnalysisFactorySPIName for dyn CharFilterFactory {
+    fn spi_name(&self) -> &str {
+        self.name()
+    }
 }
 
 /// A registry of analysis factories of one kind, by SPI name.
@@ -585,6 +651,51 @@ impl<T: ?Sized> AnalysisSPILoader<T> {
     /// Equivalent to `AnalysisSPILoader.availableServices()`.
     pub fn available_services(&self) -> Vec<String> {
         self.original_names.clone()
+    }
+
+    /// Builds a factory by calling `ctor` with `args`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java looks the `Map<String, String>`
+    /// constructor up on the `Class` reflectively and turns a class that has
+    /// none into an `UnsupportedOperationException`
+    /// (`AnalysisSPILoader.java` lines 173-201). Rust has no run-time class
+    /// lookup, so the caller names the constructor; a type that has no such
+    /// constructor cannot be passed here at all, which is the compile-time form
+    /// of the same refusal. Java also unwraps an `InvocationTargetException` so
+    /// the constructor's own failure surfaces unchanged, which is already how a
+    /// returned `Err` behaves.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever the constructor returns.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.AnalysisSPILoader#newFactoryClassInstance`.
+    pub fn new_factory_class_instance<F, R>(
+        ctor: F,
+        args: &mut HashMap<String, String>,
+    ) -> Result<R>
+    where
+        F: FnOnce(&mut HashMap<String, String>) -> Result<R>,
+    {
+        ctor(args)
+    }
+}
+
+impl<T: ?Sized + AnalysisFactorySPIName> AnalysisSPILoader<T> {
+    /// Returns the SPI name `service` declares.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java reads the class's
+    /// `public static final String NAME` field by reflection and refuses a
+    /// field that is not static, not final, not declared on that very class or
+    /// not a `String` — with `NoSuchFieldException`, `IllegalAccessException`
+    /// or `IllegalStateException` (`AnalysisSPILoader.java` lines 160-172).
+    /// None of those failures can arise here: a factory carries its name
+    /// through [`AnalysisFactorySPIName`], so a type without one does not
+    /// compile, and the lookup cannot fail at run time.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.AnalysisSPILoader#lookupSPIName`.
+    pub fn lookup_spi_name(service: &T) -> &str {
+        service.spi_name()
     }
 }
 
