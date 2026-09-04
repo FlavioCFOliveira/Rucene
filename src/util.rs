@@ -177,6 +177,7 @@ use std::{
 };
 
 use crate::error::LuceneError;
+use crate::store::{DataInput, DataOutput};
 
 // ---------------------------------------------------------------------------
 // BytesRef
@@ -1043,6 +1044,252 @@ impl GroupVIntUtil {
             Self::write_vint(values[read_pos], dst);
             read_pos += 1;
         }
+    }
+
+    /// Reads all the group varints of `dst[0..limit]`, including the tail
+    /// vints, from a [`DataInput`].
+    ///
+    /// Equivalent to `GroupVIntUtil.readGroupVInts(DataInput, int[], int)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error raised by the underlying input.
+    pub fn read_group_vints_input<I: DataInput + ?Sized>(
+        input: &mut I,
+        dst: &mut [i32],
+        limit: usize,
+    ) -> Result<(), LuceneError> {
+        let mut i = 0;
+        while i + 4 <= limit {
+            Self::read_group_vint_input(input, dst, i)?;
+            i += 4;
+        }
+        while i < limit {
+            dst[i] = input.read_v_int()?;
+            i += 1;
+        }
+        Ok(())
+    }
+
+    /// Reads a single group of four varints from a [`DataInput`].
+    ///
+    /// Equivalent to `GroupVIntUtil.readGroupVInt(DataInput, int[], int)`.
+    ///
+    /// Divergence: Lucene first tests, with `instanceof`, whether the input is
+    /// both a `RandomAccessInput` and an `IndexInput` and, when it is and four
+    /// whole ints remain, decodes the group branch-lessly through absolute
+    /// reads followed by a single `seek`. Rust has no `instanceof` over a
+    /// `&mut dyn DataInput`, so this port always takes Lucene's own
+    /// fall-through path. That path decodes the identical bytes to the
+    /// identical values — the branch-less form is a speed optimisation, not a
+    /// different encoding — so only the speed of this call differs, never its
+    /// result. See `GroupVIntUtil.java` lines 65-96 in Apache Lucene Core
+    /// 10.5.0.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error raised by the underlying input.
+    pub fn read_group_vint_input<I: DataInput + ?Sized>(
+        input: &mut I,
+        dst: &mut [i32],
+        offset: usize,
+    ) -> Result<(), LuceneError> {
+        let flag = input.read_byte()? as usize;
+
+        let n1_minus1 = flag >> 6;
+        let n2_minus1 = (flag >> 4) & 0x03;
+        let n3_minus1 = (flag >> 2) & 0x03;
+        let n4_minus1 = flag & 0x03;
+
+        dst[offset] = Self::read_int_in_group_input(input, n1_minus1)?;
+        dst[offset + 1] = Self::read_int_in_group_input(input, n2_minus1)?;
+        dst[offset + 2] = Self::read_int_in_group_input(input, n3_minus1)?;
+        dst[offset + 3] = Self::read_int_in_group_input(input, n4_minus1)?;
+        Ok(())
+    }
+
+    /// Reads all the group varints of `dst[0..limit]` into an `i64` array.
+    ///
+    /// Equivalent to `GroupVIntUtil.readGroupVInts(DataInput, long[], int)`,
+    /// which Lucene keeps only for the backwards codecs.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error raised by the underlying input.
+    pub fn read_group_vints_input_long<I: DataInput + ?Sized>(
+        input: &mut I,
+        dst: &mut [i64],
+        limit: usize,
+    ) -> Result<(), LuceneError> {
+        let mut i = 0;
+        while i + 4 <= limit {
+            Self::read_group_vint_input_long(input, dst, i)?;
+            i += 4;
+        }
+        while i < limit {
+            dst[i] = input.read_v_int()? as i64 & 0xFFFF_FFFF;
+            i += 1;
+        }
+        Ok(())
+    }
+
+    /// Reads a single group of four varints into an `i64` array.
+    ///
+    /// Equivalent to `GroupVIntUtil.readGroupVInt(DataInput, long[], int)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error raised by the underlying input.
+    pub fn read_group_vint_input_long<I: DataInput + ?Sized>(
+        input: &mut I,
+        dst: &mut [i64],
+        offset: usize,
+    ) -> Result<(), LuceneError> {
+        let flag = input.read_byte()? as usize;
+
+        let n1_minus1 = flag >> 6;
+        let n2_minus1 = (flag >> 4) & 0x03;
+        let n3_minus1 = (flag >> 2) & 0x03;
+        let n4_minus1 = flag & 0x03;
+
+        dst[offset] = Self::read_int_in_group_input(input, n1_minus1)? as i64 & 0xFFFF_FFFF;
+        dst[offset + 1] = Self::read_int_in_group_input(input, n2_minus1)? as i64 & 0xFFFF_FFFF;
+        dst[offset + 2] = Self::read_int_in_group_input(input, n3_minus1)? as i64 & 0xFFFF_FFFF;
+        dst[offset + 3] = Self::read_int_in_group_input(input, n4_minus1)? as i64 & 0xFFFF_FFFF;
+        Ok(())
+    }
+
+    /// Equivalent to the private `GroupVIntUtil.readIntInGroup(DataInput, int)`.
+    fn read_int_in_group_input<I: DataInput + ?Sized>(
+        input: &mut I,
+        num_bytes_minus_one: usize,
+    ) -> Result<i32, LuceneError> {
+        match num_bytes_minus_one {
+            0 => Ok(input.read_byte()? as i32),
+            1 => Ok(input.read_short()? as i32 & 0xFFFF),
+            2 => {
+                let low = input.read_short()? as i32 & 0xFFFF;
+                let high = (input.read_byte()? as i32) << 16;
+                Ok(low | high)
+            }
+            _ => input.read_int(),
+        }
+    }
+
+    /// Encodes `values[0..limit]` with group-varint onto a [`DataOutput`],
+    /// using `scratch` — at most [`MAX_LENGTH_PER_GROUP`] bytes — as the
+    /// per-group staging buffer.
+    ///
+    /// Equivalent to `GroupVIntUtil.writeGroupVInts(DataOutput, byte[], int[],
+    /// int)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error raised by the underlying output.
+    pub fn write_group_vints_output<O: DataOutput + ?Sized>(
+        out: &mut O,
+        scratch: &mut [u8],
+        values: &[i32],
+        limit: usize,
+    ) -> Result<(), LuceneError> {
+        let mut read_pos = 0;
+
+        // encode each group
+        while limit - read_pos >= 4 {
+            let mut write_pos = 0;
+            let n1_minus1 = Self::num_bytes(values[read_pos]) - 1;
+            let n2_minus1 = Self::num_bytes(values[read_pos + 1]) - 1;
+            let n3_minus1 = Self::num_bytes(values[read_pos + 2]) - 1;
+            let n4_minus1 = Self::num_bytes(values[read_pos + 3]) - 1;
+            let flag = (n1_minus1 << 6) | (n2_minus1 << 4) | (n3_minus1 << 2) | n4_minus1;
+            scratch[write_pos] = flag as u8;
+            write_pos += 1;
+            BitUtil::write_le_int(scratch, write_pos, values[read_pos]);
+            read_pos += 1;
+            write_pos += n1_minus1 + 1;
+            BitUtil::write_le_int(scratch, write_pos, values[read_pos]);
+            read_pos += 1;
+            write_pos += n2_minus1 + 1;
+            BitUtil::write_le_int(scratch, write_pos, values[read_pos]);
+            read_pos += 1;
+            write_pos += n3_minus1 + 1;
+            BitUtil::write_le_int(scratch, write_pos, values[read_pos]);
+            read_pos += 1;
+            write_pos += n4_minus1 + 1;
+
+            out.write_bytes_full(scratch, write_pos)?;
+        }
+
+        // tail vints
+        while read_pos < limit {
+            out.write_v_int(values[read_pos])?;
+            read_pos += 1;
+        }
+        Ok(())
+    }
+
+    /// Encodes `values[0..limit]` with group-varint onto a [`DataOutput`], from
+    /// an `i64` array whose entries are all required to be integers.
+    ///
+    /// Equivalent to `GroupVIntUtil.writeGroupVInts(DataOutput, byte[], long[],
+    /// int)`, which Lucene keeps only for the backwards codecs.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error raised by the underlying output, and
+    /// `LuceneError::IllegalArgument("integer overflow")` when a value does not
+    /// fit in an unsigned 32-bit integer. Lucene throws `ArithmeticException`
+    /// with that message; this port has no arithmetic-error variant, so the
+    /// nearest one carries it.
+    pub fn write_group_vints_output_long<O: DataOutput + ?Sized>(
+        out: &mut O,
+        scratch: &mut [u8],
+        values: &[i64],
+        limit: usize,
+    ) -> Result<(), LuceneError> {
+        let mut read_pos = 0;
+
+        // encode each group
+        while limit - read_pos >= 4 {
+            let mut write_pos = 0;
+            let n1_minus1 = Self::num_bytes(Self::to_int(values[read_pos])?) - 1;
+            let n2_minus1 = Self::num_bytes(Self::to_int(values[read_pos + 1])?) - 1;
+            let n3_minus1 = Self::num_bytes(Self::to_int(values[read_pos + 2])?) - 1;
+            let n4_minus1 = Self::num_bytes(Self::to_int(values[read_pos + 3])?) - 1;
+            let flag = (n1_minus1 << 6) | (n2_minus1 << 4) | (n3_minus1 << 2) | n4_minus1;
+            scratch[write_pos] = flag as u8;
+            write_pos += 1;
+            BitUtil::write_le_int(scratch, write_pos, values[read_pos] as i32);
+            read_pos += 1;
+            write_pos += n1_minus1 + 1;
+            BitUtil::write_le_int(scratch, write_pos, values[read_pos] as i32);
+            read_pos += 1;
+            write_pos += n2_minus1 + 1;
+            BitUtil::write_le_int(scratch, write_pos, values[read_pos] as i32);
+            read_pos += 1;
+            write_pos += n3_minus1 + 1;
+            BitUtil::write_le_int(scratch, write_pos, values[read_pos] as i32);
+            read_pos += 1;
+            write_pos += n4_minus1 + 1;
+
+            out.write_bytes_full(scratch, write_pos)?;
+        }
+
+        // tail vints
+        while read_pos < limit {
+            out.write_v_int(Self::to_int(values[read_pos])?)?;
+            read_pos += 1;
+        }
+        Ok(())
+    }
+
+    /// Equivalent to the private `GroupVIntUtil.toInt(long)`: narrows a `long`
+    /// that is required to hold an unsigned 32-bit value.
+    fn to_int(value: i64) -> Result<i32, LuceneError> {
+        if (value & 0xFFFF_FFFF_0000_0000u64 as i64) != 0 {
+            return Err(LuceneError::IllegalArgument("integer overflow".to_string()));
+        }
+        Ok(value as i32)
     }
 
     fn num_bytes(v: i32) -> usize {

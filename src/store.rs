@@ -139,6 +139,25 @@ pub trait DataInput {
         Ok(((b4 << 24) | (b3 << 16) | (b2 << 8) | b1) as i32)
     }
 
+    /// Reads a single group of four group-varint encoded integers into
+    /// `dst[offset..offset + 4]`.
+    ///
+    /// Equivalent to `org.apache.lucene.store.DataInput#readGroupVInt`, which
+    /// Lucene deprecates: it is no longer called by Lucene's own code and is
+    /// kept only for backwards compatibility. Callers should use
+    /// [`crate::util::GroupVIntUtil::read_group_vints_input`] to decode a full
+    /// group including tails instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error raised while reading.
+    #[deprecated(
+        note = "no longer called by Lucene; use GroupVIntUtil::read_group_vints_input instead"
+    )]
+    fn read_group_vint(&mut self, dst: &mut [i32], offset: usize) -> Result<()> {
+        crate::util::GroupVIntUtil::read_group_vint_input(self, dst, offset)
+    }
+
     /// Reads an `i32` stored in variable-length format.
     ///
     /// Reads between one and five bytes. Negative numbers are supported but
@@ -490,6 +509,50 @@ pub trait DataOutput {
     }
 
     /// Copies `num_bytes` bytes from `input` to this output.
+    /// Encodes `values[0..limit]` using group-varint, falling back to
+    /// [`DataOutput::write_v_int`] for the tail values that do not fill a
+    /// group.
+    ///
+    /// Equivalent to `org.apache.lucene.store.DataOutput#writeGroupVInts(int[],
+    /// int)`.
+    ///
+    /// Divergence: Lucene lazily allocates a `groupVIntBytes` field the first
+    /// time this is called and reuses it across calls, because a Java array
+    /// would otherwise be heap-allocated on every call. This port stages the
+    /// group in a stack array of the same [`crate::util::MAX_LENGTH_PER_GROUP`]
+    /// size, which needs no field and no allocation at all. The bytes written
+    /// are identical; only the provenance of the scratch buffer differs.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error raised while writing.
+    fn write_group_vints(&mut self, values: &[i32], limit: usize) -> Result<()> {
+        let mut scratch = [0u8; crate::util::MAX_LENGTH_PER_GROUP];
+        crate::util::GroupVIntUtil::write_group_vints_output(self, &mut scratch, values, limit)
+    }
+
+    /// Encodes `values[0..limit]` using group-varint from an `i64` array whose
+    /// entries are all required to be integers, which is the shape the postings
+    /// use.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.store.DataOutput#writeGroupVInts(long[], int)`, which
+    /// Lucene deprecates and preserves only for the backwards codecs.
+    ///
+    /// The same scratch-buffer divergence as [`DataOutput::write_group_vints`]
+    /// applies.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error raised while writing, and
+    /// `LuceneError::IllegalArgument` when a value does not fit in an unsigned
+    /// 32-bit integer.
+    #[deprecated(note = "preserved only for backwards codecs")]
+    fn write_group_vints_long(&mut self, values: &[i64], limit: usize) -> Result<()> {
+        let mut scratch = [0u8; crate::util::MAX_LENGTH_PER_GROUP];
+        crate::util::GroupVIntUtil::write_group_vints_output_long(self, &mut scratch, values, limit)
+    }
+
     fn copy_bytes(&mut self, input: &mut dyn DataInput, mut num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
             return Err(LuceneError::IllegalArgument(format!(

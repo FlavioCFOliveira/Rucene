@@ -96,7 +96,7 @@ use crate::index::{
     POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_POSITIONS,
 };
 use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
-use crate::store::DataInput;
+use crate::store::{DataInput, DataOutput};
 use crate::util::byte_block_pool::{ByteBlockPool, BYTE_BLOCK_MASK, BYTE_BLOCK_SHIFT};
 use crate::util::bytes_ref_hash::BytesRefHash;
 use crate::util::{compare_utf16, AttributeSource, BytesRef, FixedBitSet};
@@ -335,6 +335,36 @@ impl ByteSliceReader {
             shift += 7;
         }
         Ok(value)
+    }
+
+    /// Copies every remaining byte of the stream to `out` and returns how many
+    /// bytes were written.
+    ///
+    /// Equivalent to `org.apache.lucene.index.ByteSliceReader#writeTo`.
+    ///
+    /// The pool is a parameter here because, unlike Lucene's reader, this one
+    /// does not hold a reference to it — see [`PooledSliceReader`] for the
+    /// reason.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error raised by `out`.
+    pub fn write_to(&mut self, pool: &ByteBlockPool, out: &mut dyn DataOutput) -> Result<i64> {
+        let mut size = 0i64;
+        loop {
+            if self.limit as i32 + self.block_offset == self.end_index {
+                debug_assert!(self.end_index - self.block_offset >= self.upto as i32);
+                let len = self.limit - self.upto;
+                out.write_bytes(pool.buffer(self.block), self.upto, len)?;
+                size += len as i64;
+                break;
+            }
+            let len = self.limit - self.upto;
+            out.write_bytes(pool.buffer(self.block), self.upto, len)?;
+            size += len as i64;
+            self.next_slice(pool);
+        }
+        Ok(size)
     }
 
     /// Advances to the next slice of the chain.
@@ -822,7 +852,7 @@ impl TermsHashPerField {
             })
         } else {
             Ok(TermSlot {
-                term_id: -raw - 1,
+                term_id: self.position_stream_slice(raw),
                 is_new: false,
             })
         }
@@ -861,10 +891,26 @@ impl TermsHashPerField {
             })
         } else {
             Ok(TermSlot {
-                term_id: -raw - 1,
+                term_id: self.position_stream_slice(raw),
                 is_new: false,
             })
         }
+    }
+
+    /// Repositions this table on the streams of a term it has already seen,
+    /// turning the negative id the hash returns into the term's real id.
+    ///
+    /// Equivalent to `org.apache.lucene.index.TermsHashPerField#positionStreamSlice`.
+    ///
+    /// Lucene also reloads `termStreamAddressBuffer` and `streamAddressOffset`
+    /// from the `IntBlockPool` here, and dispatches to `addTerm`. This port
+    /// needs neither: the stream addresses live in the term's own
+    /// [`FreqProxPosting`] slot, and the `newTerm`/`addTerm` dispatch is the
+    /// caller's, on the returned [`TermSlot`].
+    fn position_stream_slice(&self, term_id: i32) -> i32 {
+        let term_id = -term_id - 1;
+        debug_assert!((term_id as usize) < self.postings.len());
+        term_id
     }
 
     /// Reserves one slice per stream for a freshly interned term.

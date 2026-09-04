@@ -20,14 +20,18 @@ use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, Result};
 use std::fmt::Debug;
 
+use crate::index::automaton_terms_enum::AutomatonTermsEnum;
 use crate::index::leaf_reader::LeafReader;
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
 use crate::index::reader_context::LeafReaderContext;
-use crate::index::terms::{OrdTermState, SeekStatus, TermState, TermsEnum};
+use crate::index::terms::{
+    EmptyTermsEnum, OrdTermState, SeekStatus, SingleTermsEnum, TermState, TermsEnum,
+};
 use crate::index::terms_enum_index::{TermsEnumIndex, TermsEnumIndexState};
 use crate::index::DocValuesType;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::util::attribute::AttributeSource;
+use crate::util::automaton::{AutomatonType, CompiledAutomaton};
 use crate::util::extra::{
     IdentityLongValues, LongValues, PriorityQueue, PriorityQueueComparator, ZeroesLongValues,
 };
@@ -206,6 +210,48 @@ pub trait SortedDocValues: DocValuesIterator {
         }
         Ok(-(low + 1))
     }
+
+    /// Returns a [`TermsEnum`] over the values.
+    ///
+    /// The enum supports [`TermsEnum::ord`] and [`TermsEnum::seek_ord`].
+    ///
+    /// Equivalent to `org.apache.lucene.index.SortedDocValues#termsEnum`.
+    ///
+    /// Divergence: Java's `termsEnum()` keeps a reference to `this`, which
+    /// stays owned by the caller. Rust cannot hand out a borrow that outlives
+    /// this call through an object-safe trait method, so the returned enum
+    /// takes ownership of the boxed iterator instead. The observable contract
+    /// of the returned enum is unchanged.
+    fn terms_enum(self: Box<Self>) -> Result<Box<dyn TermsEnum>>
+    where
+        Self: 'static,
+    {
+        Ok(SortedDocValuesTermsEnum::new(self))
+    }
+
+    /// Returns a [`TermsEnum`] over the values, filtered by a
+    /// [`CompiledAutomaton`]. The enum supports [`TermsEnum::ord`].
+    ///
+    /// Equivalent to `org.apache.lucene.index.SortedDocValues#intersect`.
+    fn intersect(self: Box<Self>, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum>>
+    where
+        Self: 'static,
+    {
+        let terms = self.terms_enum()?;
+        match automaton.automaton_type {
+            AutomatonType::None => Ok(Box::new(EmptyTermsEnum::new())),
+            AutomatonType::All => Ok(terms),
+            AutomatonType::Single => {
+                let term = automaton.term.as_ref().ok_or_else(|| {
+                    LuceneError::IllegalState(
+                        "CompiledAutomaton of type Single carries no term".to_string(),
+                    )
+                })?;
+                Ok(SingleTermsEnum::new(terms, term.clone()))
+            }
+            AutomatonType::Normal => AutomatonTermsEnum::new(terms, automaton.clone()),
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -337,6 +383,46 @@ pub trait SortedSetDocValues: DocValuesIterator {
             }
         }
         Ok(-(low + 1))
+    }
+
+    /// Returns a [`TermsEnum`] over the values.
+    ///
+    /// The enum supports [`TermsEnum::ord`] and [`TermsEnum::seek_ord`].
+    ///
+    /// Equivalent to `org.apache.lucene.index.SortedSetDocValues#termsEnum`.
+    ///
+    /// Divergence: as for [`SortedDocValues::terms_enum`], the returned enum
+    /// owns the boxed iterator rather than borrowing it, because an
+    /// object-safe trait method cannot lend `self` beyond the call.
+    fn terms_enum(self: Box<Self>) -> Result<Box<dyn TermsEnum>>
+    where
+        Self: 'static,
+    {
+        Ok(SortedSetDocValuesTermsEnum::new(self))
+    }
+
+    /// Returns a [`TermsEnum`] over the values, filtered by a
+    /// [`CompiledAutomaton`]. The enum supports [`TermsEnum::ord`].
+    ///
+    /// Equivalent to `org.apache.lucene.index.SortedSetDocValues#intersect`.
+    fn intersect(self: Box<Self>, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum>>
+    where
+        Self: 'static,
+    {
+        let terms = self.terms_enum()?;
+        match automaton.automaton_type {
+            AutomatonType::None => Ok(Box::new(EmptyTermsEnum::new())),
+            AutomatonType::All => Ok(terms),
+            AutomatonType::Single => {
+                let term = automaton.term.as_ref().ok_or_else(|| {
+                    LuceneError::IllegalState(
+                        "CompiledAutomaton of type Single carries no term".to_string(),
+                    )
+                })?;
+                Ok(SingleTermsEnum::new(terms, term.clone()))
+            }
+            AutomatonType::Normal => AutomatonTermsEnum::new(terms, automaton.clone()),
+        }
     }
 }
 
@@ -1196,6 +1282,17 @@ impl SortedSetDocValues for SingletonSortedSetDocValues<'_> {
     fn lookup_term(&self, key: &BytesRef) -> Result<i64> {
         self.inner.lookup_term(key).map(|v| v as i64)
     }
+
+    /// Equivalent to `org.apache.lucene.index.SingletonSortedSetDocValues#termsEnum`.
+    ///
+    /// `SingletonSortedSetDocValues` does not override `intersect`; the
+    /// inherited default runs over this enum, exactly as in Java.
+    fn terms_enum(self: Box<Self>) -> Result<Box<dyn TermsEnum>>
+    where
+        Self: 'static,
+    {
+        self.inner.terms_enum()
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1412,6 +1509,16 @@ impl SortedDocValues for FilterSortedDocValues {
     fn lookup_term(&self, key: &BytesRef) -> Result<i32> {
         self.inner.lookup_term(key)
     }
+
+    /// Equivalent to `org.apache.lucene.index.FilterSortedDocValues#termsEnum`.
+    fn terms_enum(self: Box<Self>) -> Result<Box<dyn TermsEnum>> {
+        self.inner.terms_enum()
+    }
+
+    /// Equivalent to `org.apache.lucene.index.FilterSortedDocValues#intersect`.
+    fn intersect(self: Box<Self>, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum>> {
+        self.inner.intersect(automaton)
+    }
 }
 
 /// Delegates all methods to a wrapped [`SortedNumericDocValues`].
@@ -1537,6 +1644,16 @@ impl SortedSetDocValues for FilterSortedSetDocValues {
 
     fn lookup_term(&self, key: &BytesRef) -> Result<i64> {
         self.inner.lookup_term(key)
+    }
+
+    /// Equivalent to `org.apache.lucene.index.FilterSortedSetDocValues#termsEnum`.
+    fn terms_enum(self: Box<Self>) -> Result<Box<dyn TermsEnum>> {
+        self.inner.terms_enum()
+    }
+
+    /// Equivalent to `org.apache.lucene.index.FilterSortedSetDocValues#intersect`.
+    fn intersect(self: Box<Self>, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum>> {
+        self.inner.intersect(automaton)
     }
 }
 
@@ -1859,18 +1976,23 @@ impl LongValues for DeltaLongValues {
 /// Implements a [`TermsEnum`] wrapping a provided [`SortedDocValues`].
 ///
 /// Equivalent to `org.apache.lucene.index.SortedDocValuesTermsEnum`.
-pub struct SortedDocValuesTermsEnum {
-    values: Box<dyn SortedDocValues>,
+pub struct SortedDocValuesTermsEnum<V: SortedDocValues + ?Sized = dyn SortedDocValues> {
+    values: Box<V>,
     current_ord: i64,
     scratch: BytesRefBuilder,
     atts: AttributeSource,
 }
 
-impl SortedDocValuesTermsEnum {
+impl<V: SortedDocValues + ?Sized + 'static> SortedDocValuesTermsEnum<V> {
     /// Creates a new terms enum over the provided sorted doc values.
+    ///
+    /// The values iterator is generic over `V` so that
+    /// [`SortedDocValues::terms_enum`] can hand it its own `Box<Self>` without
+    /// an unsizing coercion, which is unavailable in a default trait method
+    /// where `Self: ?Sized`.
     #[allow(clippy::new_ret_no_self)]
-    pub fn new(values: Box<dyn SortedDocValues>) -> Box<dyn TermsEnum> {
-        Box::new(Self {
+    pub fn new(values: Box<V>) -> Box<dyn TermsEnum> {
+        Box::new(SortedDocValuesTermsEnum {
             values,
             current_ord: -1,
             scratch: BytesRefBuilder::new(),
@@ -1879,7 +2001,7 @@ impl SortedDocValuesTermsEnum {
     }
 }
 
-impl TermsEnum for SortedDocValuesTermsEnum {
+impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.atts
     }
@@ -1994,18 +2116,23 @@ impl TermsEnum for SortedDocValuesTermsEnum {
 /// Implements a [`TermsEnum`] wrapping a provided [`SortedSetDocValues`].
 ///
 /// Equivalent to `org.apache.lucene.index.SortedSetDocValuesTermsEnum`.
-pub struct SortedSetDocValuesTermsEnum {
-    values: Box<dyn SortedSetDocValues>,
+pub struct SortedSetDocValuesTermsEnum<V: SortedSetDocValues + ?Sized = dyn SortedSetDocValues> {
+    values: Box<V>,
     current_ord: i64,
     scratch: BytesRefBuilder,
     atts: AttributeSource,
 }
 
-impl SortedSetDocValuesTermsEnum {
+impl<V: SortedSetDocValues + ?Sized + 'static> SortedSetDocValuesTermsEnum<V> {
     /// Creates a new terms enum over the provided sorted-set doc values.
+    ///
+    /// The values iterator is generic over `V` so that
+    /// [`SortedSetDocValues::terms_enum`] can hand it its own `Box<Self>`
+    /// without an unsizing coercion, which is unavailable in a default trait
+    /// method where `Self: ?Sized`.
     #[allow(clippy::new_ret_no_self)]
-    pub fn new(values: Box<dyn SortedSetDocValues>) -> Box<dyn TermsEnum> {
-        Box::new(Self {
+    pub fn new(values: Box<V>) -> Box<dyn TermsEnum> {
+        Box::new(SortedSetDocValuesTermsEnum {
             values,
             current_ord: -1,
             scratch: BytesRefBuilder::new(),
@@ -2014,7 +2141,7 @@ impl SortedSetDocValuesTermsEnum {
     }
 }
 
-impl TermsEnum for SortedSetDocValuesTermsEnum {
+impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V> {
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.atts
     }
