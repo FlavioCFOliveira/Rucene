@@ -132,7 +132,7 @@ fn range_field_type(dimensions: usize, bytes: i32) -> Result<FieldType> {
 macro_rules! range_field {
     (
         $name:ident, $prim:ty, $bytes:expr, $encode:path, $decode:path,
-        $doc_equiv:literal, $kind:literal
+        $doc_equiv:literal, $kind:literal, $is_nan:expr
     ) => {
         #[doc = concat!("A range field over `", stringify!($prim), "` intervals.")]
         ///
@@ -275,7 +275,25 @@ macro_rules! range_field {
                         bytes.len()
                     )));
                 }
+                #[allow(clippy::redundant_closure_call)]
                 for d in 0..n {
+                    // Lucene rejects a NaN bound here rather than in checkArgs,
+                    // because `min[d] > max[d]` is false for NaN and would let
+                    // it through. IntRange and LongRange carry no such check —
+                    // Double.isNaN on an int is always false — so the predicate
+                    // is a constant `false` for them.
+                    if ($is_nan)(min[d]) {
+                        return Err(LuceneError::IllegalArgument(format!(
+                            "invalid min value (NaN) in {}",
+                            $kind
+                        )));
+                    }
+                    if ($is_nan)(max[d]) {
+                        return Err(LuceneError::IllegalArgument(format!(
+                            "invalid max value (NaN) in {}",
+                            $kind
+                        )));
+                    }
                     $encode(min[d], bytes, d * $bytes);
                     $encode(max[d], bytes, (n + d) * $bytes);
                 }
@@ -434,7 +452,8 @@ range_field!(
     encode_int,
     decode_int,
     "org.apache.lucene.document.IntRange",
-    "IntRange"
+    "IntRange",
+    |_: i32| false
 );
 range_field!(
     LongRange,
@@ -443,7 +462,8 @@ range_field!(
     encode_long,
     decode_long,
     "org.apache.lucene.document.LongRange",
-    "LongRange"
+    "LongRange",
+    |_: i64| false
 );
 range_field!(
     FloatRange,
@@ -452,7 +472,8 @@ range_field!(
     encode_float,
     decode_float,
     "org.apache.lucene.document.FloatRange",
-    "FloatRange"
+    "FloatRange",
+    |v: f32| v.is_nan()
 );
 range_field!(
     DoubleRange,
@@ -461,7 +482,8 @@ range_field!(
     encode_double,
     decode_double,
     "org.apache.lucene.document.DoubleRange",
-    "DoubleRange"
+    "DoubleRange",
+    |v: f64| v.is_nan()
 );
 
 // -----------------------------------------------------------------------------

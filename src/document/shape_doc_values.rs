@@ -17,7 +17,7 @@ use crate::document::FieldType;
 use crate::error::{LuceneError, Result};
 use crate::geo::encoding::{GeoEncodingUtils, XYEncodingUtils};
 use crate::geo::geometry::{Point, Rectangle, XYPoint, XYRectangle};
-use crate::geo::Component2D;
+use crate::geo::{Component2D, Geometry};
 use crate::index::point_values::Relation;
 use crate::index::{DocValuesType, IndexableField, IndexableFieldType};
 use crate::store::{DataInput, DataOutput};
@@ -802,6 +802,23 @@ fn write_header(output: &mut crate::store::ByteBuffersDataOutput, node: &TreeNod
     output.write_v_int(header)
 }
 
+/// Serialises a tessellation into the binary doc value that backs a
+/// [`ShapeDocValues`].
+///
+/// Builds the balanced tree in depth-first order and hands it to the writer,
+/// exactly as `ShapeDocValues.computeBinaryValue(List<DecodedTriangle>)` does.
+///
+/// Equivalent to the private
+/// `org.apache.lucene.document.ShapeDocValues#computeBinaryValue`.
+fn compute_binary_value(
+    tessellation: &[DecodedTriangle],
+    encoder: ShapeCoordinateSystem,
+) -> Result<BytesRef> {
+    // dfs order serialization
+    let (nodes, dfs) = build_tree(tessellation, encoder)?;
+    write_tree(&nodes, &dfs, encoder)
+}
+
 // -----------------------------------------------------------------------------
 // ShapeDocValues
 // -----------------------------------------------------------------------------
@@ -852,8 +869,7 @@ impl ShapeDocValues {
         tessellation: &[DecodedTriangle],
         encoder: ShapeCoordinateSystem,
     ) -> Result<Self> {
-        let (nodes, dfs) = build_tree(tessellation, encoder)?;
-        let data = write_tree(&nodes, &dfs, encoder)?;
+        let data = compute_binary_value(tessellation, encoder)?;
         Self::from_binary_value(data, encoder)
     }
 
@@ -900,7 +916,12 @@ impl ShapeDocValues {
         &self.data
     }
 
-    /// Returns the coordinate system the shape was encoded in.
+    /// Returns the coordinate system the shape was encoded in, which is this
+    /// port's rendering of the encoder.
+    ///
+    /// Equivalent to `org.apache.lucene.document.ShapeDocValues#getEncoder`,
+    /// abstract in Java and implemented by each subclass; here the choice is a
+    /// stored [`ShapeCoordinateSystem`], so the base class can answer it.
     pub fn coordinate_system(&self) -> ShapeCoordinateSystem {
         self.encoder
     }
@@ -960,6 +981,63 @@ impl ShapeDocValues {
     /// Equivalent to `ShapeDocValues.getHighestDimension()`.
     pub fn get_highest_dimension(&self) -> TriangleType {
         self.highest_dimension
+    }
+
+    /// Computes the shape's centroid in decoded space.
+    ///
+    /// Equivalent to `org.apache.lucene.document.ShapeDocValues#computeCentroid`,
+    /// which is abstract in Java: `LatLonShapeDocValues` builds a
+    /// [`Point`] and `XYShapeDocValues` an [`XYPoint`]. Because this port
+    /// stores the coordinate system instead of subclassing, the choice is a
+    /// match on it and the result is boxed, as Java's declared `Geometry`
+    /// return type is.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the decoded centroid is
+    /// not a valid point of its coordinate system, which the Java constructors
+    /// also reject.
+    pub fn compute_centroid(&self) -> Result<Box<dyn Geometry>> {
+        let encoder = self.coordinate_system();
+        match encoder {
+            ShapeCoordinateSystem::Geographic => Ok(Box::new(Point::new(
+                encoder.decode_y(self.get_encoded_centroid_y()),
+                encoder.decode_x(self.get_encoded_centroid_x()),
+            )?)),
+            ShapeCoordinateSystem::Cartesian => Ok(Box::new(XYPoint::new(
+                encoder.decode_x(self.get_encoded_centroid_x()) as f32,
+                encoder.decode_y(self.get_encoded_centroid_y()) as f32,
+            )?)),
+        }
+    }
+
+    /// Computes the shape's bounding box in decoded space.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.document.ShapeDocValues#computeBoundingBox`, abstract
+    /// in Java for the same reason as
+    /// [`compute_centroid`](Self::compute_centroid).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the decoded bounds are not
+    /// a valid rectangle of their coordinate system.
+    pub fn compute_bounding_box(&self) -> Result<Box<dyn Geometry>> {
+        let encoder = self.coordinate_system();
+        match encoder {
+            ShapeCoordinateSystem::Geographic => Ok(Box::new(Rectangle::new(
+                encoder.decode_y(self.get_encoded_min_y()),
+                encoder.decode_y(self.get_encoded_max_y()),
+                encoder.decode_x(self.get_encoded_min_x()),
+                encoder.decode_x(self.get_encoded_max_x()),
+            )?)),
+            ShapeCoordinateSystem::Cartesian => Ok(Box::new(XYRectangle::new(
+                encoder.decode_x(self.get_encoded_min_x()) as f32,
+                encoder.decode_x(self.get_encoded_max_x()) as f32,
+                encoder.decode_y(self.get_encoded_min_y()) as f32,
+                encoder.decode_y(self.get_encoded_max_y()) as f32,
+            )?)),
+        }
     }
 
     /// Computes the relation of `component` with this shape, walking the
@@ -1225,6 +1303,16 @@ impl LatLonShapeDocValues {
         &self.inner
     }
 
+    /// Returns the geographic coordinate system, this port's rendering of the
+    /// encoder every geographic shape doc value is encoded with.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.document.LatLonShapeDocValues#getEncoder`, which
+    /// returns a stateless `Encoder` backed by `GeoEncodingUtils`.
+    pub fn coordinate_system(&self) -> ShapeCoordinateSystem {
+        ShapeCoordinateSystem::Geographic
+    }
+
     /// Returns the shape's centroid.
     ///
     /// Equivalent to `LatLonShapeDocValues.getCentroid()`, which returns the
@@ -1232,16 +1320,25 @@ impl LatLonShapeDocValues {
     ///
     /// # Errors
     ///
+    /// As [`Self::compute_centroid`].
+    pub fn get_centroid(&self) -> Result<Point> {
+        self.compute_centroid()
+    }
+
+    /// Builds the shape's centroid from its encoded coordinates.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.document.LatLonShapeDocValues#computeCentroid`.
+    ///
+    /// # Errors
+    ///
     /// Returns [`LuceneError::IllegalArgument`] when the decoded centroid is
     /// not a valid latitude/longitude pair, which `new Point(...)` rejects.
-    pub fn get_centroid(&self) -> Result<Point> {
+    pub fn compute_centroid(&self) -> Result<Point> {
+        let encoder = self.coordinate_system();
         Point::new(
-            self.inner
-                .encoder
-                .decode_y(self.inner.get_encoded_centroid_y()),
-            self.inner
-                .encoder
-                .decode_x(self.inner.get_encoded_centroid_x()),
+            encoder.decode_y(self.inner.get_encoded_centroid_y()),
+            encoder.decode_x(self.inner.get_encoded_centroid_x()),
         )
     }
 
@@ -1251,15 +1348,27 @@ impl LatLonShapeDocValues {
     ///
     /// # Errors
     ///
+    /// As [`Self::compute_bounding_box`].
+    pub fn get_bounding_box(&self) -> Result<Rectangle> {
+        self.compute_bounding_box()
+    }
+
+    /// Builds the shape's bounding box from its encoded bounds.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.document.LatLonShapeDocValues#computeBoundingBox`.
+    ///
+    /// # Errors
+    ///
     /// Returns [`LuceneError::IllegalArgument`] when the decoded bounds are not
     /// a valid rectangle, which `new Rectangle(...)` rejects.
-    pub fn get_bounding_box(&self) -> Result<Rectangle> {
-        let e = self.inner.encoder;
+    pub fn compute_bounding_box(&self) -> Result<Rectangle> {
+        let encoder = self.coordinate_system();
         Rectangle::new(
-            e.decode_y(self.inner.get_encoded_min_y()),
-            e.decode_y(self.inner.get_encoded_max_y()),
-            e.decode_x(self.inner.get_encoded_min_x()),
-            e.decode_x(self.inner.get_encoded_max_x()),
+            encoder.decode_y(self.inner.get_encoded_min_y()),
+            encoder.decode_y(self.inner.get_encoded_max_y()),
+            encoder.decode_x(self.inner.get_encoded_min_x()),
+            encoder.decode_x(self.inner.get_encoded_max_x()),
         )
     }
 }
@@ -1311,19 +1420,40 @@ impl XYShapeDocValues {
         &self.inner
     }
 
+    /// Returns the cartesian coordinate system, this port's rendering of the
+    /// encoder every cartesian shape doc value is encoded with.
+    ///
+    /// Equivalent to `org.apache.lucene.document.XYShapeDocValues#getEncoder`,
+    /// which returns a stateless `Encoder` backed by `XYEncodingUtils`.
+    pub fn coordinate_system(&self) -> ShapeCoordinateSystem {
+        ShapeCoordinateSystem::Cartesian
+    }
+
     /// Returns the shape's centroid.
     ///
     /// Equivalent to `XYShapeDocValues.getCentroid()`.
     ///
     /// # Errors
     ///
+    /// As [`Self::compute_centroid`].
+    pub fn get_centroid(&self) -> Result<XYPoint> {
+        self.compute_centroid()
+    }
+
+    /// Builds the shape's centroid from its encoded coordinates.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.document.XYShapeDocValues#computeCentroid`.
+    ///
+    /// # Errors
+    ///
     /// Returns [`LuceneError::IllegalArgument`] when the decoded centroid is
     /// not finite, which `new XYPoint(...)` rejects.
-    pub fn get_centroid(&self) -> Result<XYPoint> {
-        let e = self.inner.encoder;
+    pub fn compute_centroid(&self) -> Result<XYPoint> {
+        let encoder = self.coordinate_system();
         XYPoint::new(
-            e.decode_x(self.inner.get_encoded_centroid_x()) as f32,
-            e.decode_y(self.inner.get_encoded_centroid_y()) as f32,
+            encoder.decode_x(self.inner.get_encoded_centroid_x()) as f32,
+            encoder.decode_y(self.inner.get_encoded_centroid_y()) as f32,
         )
     }
 
@@ -1333,15 +1463,27 @@ impl XYShapeDocValues {
     ///
     /// # Errors
     ///
+    /// As [`Self::compute_bounding_box`].
+    pub fn get_bounding_box(&self) -> Result<XYRectangle> {
+        self.compute_bounding_box()
+    }
+
+    /// Builds the shape's bounding box from its encoded bounds.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.document.XYShapeDocValues#computeBoundingBox`.
+    ///
+    /// # Errors
+    ///
     /// Returns [`LuceneError::IllegalArgument`] when the decoded bounds are not
     /// a valid rectangle, which `new XYRectangle(...)` rejects.
-    pub fn get_bounding_box(&self) -> Result<XYRectangle> {
-        let e = self.inner.encoder;
+    pub fn compute_bounding_box(&self) -> Result<XYRectangle> {
+        let encoder = self.coordinate_system();
         XYRectangle::new(
-            e.decode_x(self.inner.get_encoded_min_x()) as f32,
-            e.decode_x(self.inner.get_encoded_max_x()) as f32,
-            e.decode_y(self.inner.get_encoded_min_y()) as f32,
-            e.decode_y(self.inner.get_encoded_max_y()) as f32,
+            encoder.decode_x(self.inner.get_encoded_min_x()) as f32,
+            encoder.decode_x(self.inner.get_encoded_max_x()) as f32,
+            encoder.decode_y(self.inner.get_encoded_min_y()) as f32,
+            encoder.decode_y(self.inner.get_encoded_max_y()) as f32,
         )
     }
 }

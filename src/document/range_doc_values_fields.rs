@@ -248,9 +248,24 @@ macro_rules! range_doc_values_field {
                 b
             }
 
-            #[doc = concat!("Equivalent to the private `", $query_equiv, ".encodeRanges`.")]
+            /// Packs the query's bounds into the same layout the field wrote.
+            ///
+            #[doc = concat!("Equivalent to the private `", $query_equiv, ".encodeRanges`,")]
+            /// which sizes the buffer itself and then verifies and encodes into
+            /// it. Note that it calls
+            #[doc = concat!("`", stringify!($range), ".verifyAndEncode` directly, not")]
+            #[doc = concat!("`", stringify!($range), ".encode`: the caller has already")]
+            /// validated the bounds.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`LuceneError::IllegalArgument`] when a minimum exceeds
+            /// its maximum or a bound is not a number, which
+            #[doc = concat!("`", stringify!($range), ".verifyAndEncode` throws.")]
             fn encode_ranges(min: &[$prim], max: &[$prim]) -> Result<Vec<u8>> {
-                $range::encode(min, max)
+                let mut result = vec![0u8; 2 * $range::BYTES * min.len()];
+                $range::verify_and_encode(min, max, &mut result)?;
+                Ok(result)
             }
         }
 

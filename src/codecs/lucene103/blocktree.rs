@@ -118,6 +118,22 @@ impl CompressionAlgorithm {
     }
 }
 
+impl fmt::Display for CompressionAlgorithm {
+    /// Writes the algorithm's name.
+    ///
+    /// Equivalent to the inherited `Enum#toString` of
+    /// `org.apache.lucene.codecs.lucene103.blocktree.CompressionAlgorithm`,
+    /// which returns the constant's declared name and is what `Stats#toString`
+    /// appends to its compression breakdown.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::NoCompression => "NO_COMPRESSION",
+            Self::LowercaseAscii => "LOWERCASE_ASCII",
+            Self::Lz4 => "LZ4",
+        })
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Stats
 // -----------------------------------------------------------------------------
@@ -268,6 +284,9 @@ impl Stats {
 }
 
 impl fmt::Display for Stats {
+    /// Renders the statistics as the multi-line report `CheckIndex` prints.
+    ///
+    /// Equivalent to `org.apache.lucene.codecs.lucene103.blocktree.Stats#toString`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "  index trie:")?;
         writeln!(f, "    {} bytes", self.index_num_bytes)?;
@@ -275,14 +294,13 @@ impl fmt::Display for Stats {
         writeln!(f, "    {} terms", self.total_term_count)?;
         write!(f, "    {} bytes", self.total_term_bytes)?;
         if self.total_term_count != 0 {
-            writeln!(
+            write!(
                 f,
                 " ({:.1} bytes/term)",
                 self.total_term_bytes as f64 / self.total_term_count as f64
             )?;
-        } else {
-            writeln!(f)?;
         }
+        writeln!(f)?;
         writeln!(f, "  blocks:")?;
         writeln!(f, "    {} blocks", self.total_block_count)?;
         writeln!(f, "    {} terms-only blocks", self.terms_only_block_count)?;
@@ -313,16 +331,17 @@ impl fmt::Display for Stats {
         }
         writeln!(f)?;
         let mut compression_counts = String::new();
-        for code in 0..3 {
+        for code in 0..self.compression_algorithms.len() {
             if self.compression_algorithms[code] == 0 {
                 continue;
             }
             if !compression_counts.is_empty() {
                 compression_counts.push_str(", ");
             }
+            let algorithm = CompressionAlgorithm::by_code(code as i32)
+                .expect("INVARIANT: compression_algorithms has one slot per algorithm code");
             compression_counts.push_str(&format!(
-                "{:?}: {}",
-                CompressionAlgorithm::by_code(code as i32).unwrap(),
+                "{algorithm}: {}",
                 self.compression_algorithms[code]
             ));
         }
@@ -331,17 +350,19 @@ impl fmt::Display for Stats {
             "    {} compressed term suffix bytes",
             self.total_block_suffix_bytes
         )?;
-        if self.total_block_count != 0 && self.total_uncompressed_block_suffix_bytes > 0 {
+        if self.total_block_count != 0 {
             write!(
                 f,
-                " ({:.2} compression ratio - compression count by algorithm: {})",
+                " ({:.2} compression ratio - compression count by algorithm: {compression_counts}",
                 self.total_block_suffix_bytes as f64
-                    / self.total_uncompressed_block_suffix_bytes as f64,
-                compression_counts
+                    / self.total_uncompressed_block_suffix_bytes as f64
             )?;
         }
-        writeln!(f)?;
-        write!(f, "    {} term stats bytes", self.total_block_stats_bytes)?;
+        // Java concatenates this `)` outside the conditional, so it is printed
+        // even when the ratio it would close was not.
+        writeln!(f, ")")?;
+        // Java also leaves a trailing space after `bytes` here.
+        write!(f, "    {} term stats bytes ", self.total_block_stats_bytes)?;
         if self.total_block_count != 0 {
             write!(
                 f,
@@ -358,7 +379,19 @@ impl fmt::Display for Stats {
                 self.total_block_other_bytes as f64 / self.total_block_count as f64
             )?;
         }
-        writeln!(f)
+        writeln!(f)?;
+        if self.total_block_count != 0 {
+            writeln!(f, "    by prefix length:")?;
+            let mut total = 0;
+            for (prefix, &block_count) in self.block_count_by_prefix_len.iter().enumerate() {
+                total += block_count;
+                if block_count != 0 {
+                    writeln!(f, "      {prefix:2}: {block_count}")?;
+                }
+            }
+            debug_assert_eq!(self.total_block_count, total);
+        }
+        Ok(())
     }
 }
 
