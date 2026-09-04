@@ -168,10 +168,17 @@ impl LuceneError {
     ///
     /// **Divergence from Lucene 10.5.0.** Java keeps `message` and
     /// `resourceDescription` as separate fields, reachable through
-    /// `getOriginalMessage()` and `getResourceDescription()`. This variant carries
-    /// the composed string only, because 208 call sites in the crate already pass a
-    /// composed message; splitting the variant would have rewritten all of them for
-    /// an accessor pair nothing currently reads. The rendered message is identical.
+    /// `getOriginalMessage()` and `getResourceDescription()`
+    /// (`CorruptIndexException.java:62-70`). This variant carries the composed
+    /// string only, because 232 call sites in the crate construct
+    /// `LuceneError::CorruptIndex` directly with an already-composed message
+    /// (only 29 of them go through this constructor); splitting the variant
+    /// into separate fields would require rewriting every one of those sites,
+    /// most of which live outside this module. `getOriginalMessage()` and
+    /// `getResourceDescription()` are therefore not ported: recovering the two
+    /// parts from the composed string is not reliable, since most call sites
+    /// never route through the `" (resource=...)"` suffix this constructor
+    /// appends. The rendered message is identical to Java's.
     pub fn corrupt_index(message: impl AsRef<str>, resource_description: impl AsRef<str>) -> Self {
         Self::CorruptIndex(format!(
             "{} (resource={})",
@@ -223,6 +230,72 @@ impl LuceneError {
             version,
             min_version,
             max_version,
+        }
+    }
+
+    /// Returns a description of the file that was too old or too new, when
+    /// this error is an `IndexFormatTooOld` or `IndexFormatTooNew`.
+    ///
+    /// Equivalent to `org.apache.lucene.index.IndexFormatTooOldException#getResourceDescription`
+    /// and `org.apache.lucene.index.IndexFormatTooNewException#getResourceDescription`.
+    pub fn resource_description(&self) -> Option<&str> {
+        match self {
+            Self::IndexFormatTooOld {
+                resource_description,
+                ..
+            }
+            | Self::IndexFormatTooNew {
+                resource_description,
+                ..
+            } => Some(resource_description),
+            _ => None,
+        }
+    }
+
+    /// Returns the version of the file that was too old or too new.
+    ///
+    /// For `IndexFormatTooOld`, returns `None` when only a `reason` is
+    /// available, matching Java's `Integer` (nullable) return; for
+    /// `IndexFormatTooNew`, whose Java field is a primitive `int`, this is
+    /// always `Some`.
+    ///
+    /// Equivalent to `org.apache.lucene.index.IndexFormatTooOldException#getVersion`
+    /// and `org.apache.lucene.index.IndexFormatTooNewException#getVersion`.
+    pub fn version(&self) -> Option<i32> {
+        match self {
+            Self::IndexFormatTooOld { version, .. } => *version,
+            Self::IndexFormatTooNew { version, .. } => Some(*version),
+            _ => None,
+        }
+    }
+
+    /// Returns the minimum version accepted, when this error is an
+    /// `IndexFormatTooOld` or `IndexFormatTooNew`.
+    ///
+    /// See [`version`](Self::version) for the nullability of the two variants.
+    ///
+    /// Equivalent to `org.apache.lucene.index.IndexFormatTooOldException#getMinVersion`
+    /// and `org.apache.lucene.index.IndexFormatTooNewException#getMinVersion`.
+    pub fn min_version(&self) -> Option<i32> {
+        match self {
+            Self::IndexFormatTooOld { min_version, .. } => *min_version,
+            Self::IndexFormatTooNew { min_version, .. } => Some(*min_version),
+            _ => None,
+        }
+    }
+
+    /// Returns the maximum version accepted, when this error is an
+    /// `IndexFormatTooOld` or `IndexFormatTooNew`.
+    ///
+    /// See [`version`](Self::version) for the nullability of the two variants.
+    ///
+    /// Equivalent to `org.apache.lucene.index.IndexFormatTooOldException#getMaxVersion`
+    /// and `org.apache.lucene.index.IndexFormatTooNewException#getMaxVersion`.
+    pub fn max_version(&self) -> Option<i32> {
+        match self {
+            Self::IndexFormatTooOld { max_version, .. } => *max_version,
+            Self::IndexFormatTooNew { max_version, .. } => Some(*max_version),
+            _ => None,
         }
     }
 

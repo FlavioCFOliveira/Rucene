@@ -17,9 +17,9 @@ use crate::index::index_sorter::SorterDocMap;
 use crate::index::leaf_reader::{LeafMetaData, LeafReader, TermVectors};
 use crate::index::{
     BinaryDocValues, ByteVectorValues, DocValuesIterator, DocValuesSkipper, EmptyDocValuesSkipper,
-    FieldInfo, FieldInfos, Fields, FloatVectorValues, IntersectVisitor, NumericDocValues,
-    PointTree, PointValues, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
-    StoredFieldVisitor, Terms,
+    FieldInfo, FieldInfos, FieldInfosBuilder, FieldNumbers, Fields, FloatVectorValues,
+    IntersectVisitor, NumericDocValues, PointTree, PointValues, SortedDocValues,
+    SortedNumericDocValues, SortedSetDocValues, StoredFieldVisitor, Terms,
 };
 use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::search::knn::KnnCollector;
@@ -312,6 +312,14 @@ pub struct SlowCompositeCodecReaderWrapper {
     doc_starts: Vec<i32>,
     max_doc: i32,
     num_docs: i32,
+    /// The field infos of every wrapped reader, merged.
+    ///
+    /// Equivalent to `SlowCompositeCodecReaderWrapper.fieldInfos`
+    /// (`SlowCompositeCodecReaderWrapper.java:92-96`), which the constructor
+    /// builds with `FieldInfos.getMergedFieldInfos(multiReader)` so that
+    /// [`remap`](Self::remap) always answers with the composite's own field
+    /// numbering rather than a leaf's.
+    field_infos: FieldInfos,
 }
 
 impl std::fmt::Debug for SlowCompositeCodecReaderWrapper {
@@ -327,17 +335,23 @@ impl SlowCompositeCodecReaderWrapper {
     /// Wraps `readers`, returning the single reader unchanged when there is one.
     ///
     /// Equivalent to `SlowCompositeCodecReaderWrapper.wrap(List<CodecReader>)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// when `readers` is empty, and propagates whatever merging the readers'
+    /// field infos raises.
     pub fn wrap(readers: Vec<Arc<dyn CodecReader>>) -> Result<Arc<dyn CodecReader>> {
         match readers.len() {
             0 => Err(crate::error::LuceneError::IllegalArgument(
                 "Must take at least one reader, got 0".to_string(),
             )),
             1 => Ok(Arc::clone(&readers[0])),
-            _ => Ok(Arc::new(Self::new(readers))),
+            _ => Ok(Arc::new(Self::new(readers)?)),
         }
     }
 
-    fn new(readers: Vec<Arc<dyn CodecReader>>) -> Self {
+    fn new(readers: Vec<Arc<dyn CodecReader>>) -> Result<Self> {
         let mut doc_starts = vec![0i32; readers.len() + 1];
         let mut doc_start = 0i32;
         let mut num_docs = 0i32;
@@ -346,12 +360,92 @@ impl SlowCompositeCodecReaderWrapper {
             doc_starts[i + 1] = doc_start;
             num_docs += reader.num_docs();
         }
-        Self {
+        let field_infos = Self::merge_field_infos(&readers)?;
+        Ok(Self {
             readers,
             doc_starts,
             max_doc: doc_start,
             num_docs,
+            field_infos,
+        })
+    }
+
+    /// Merges the field infos of every reader in `readers`.
+    ///
+    /// Equivalent to the constructor's
+    /// `fieldInfos = FieldInfos.getMergedFieldInfos(multiReader)`
+    /// (`SlowCompositeCodecReaderWrapper.java:92-96`). Java builds a
+    /// `MultiReader` over the leaves and calls
+    /// [`FieldInfos::get_merged_field_infos`](FieldInfos::get_merged_field_infos),
+    /// which walks `IndexReader::leaves()`; this wrapper already holds its
+    /// leaves as a flat `Vec<Arc<dyn CodecReader>>`, so it merges them
+    /// directly with the same algorithm
+    /// (`FieldInfos.getMergedFieldInfos`/`getAndValidateParentField`) instead
+    /// of first wrapping every reader to satisfy the generic
+    /// `IndexReader`-based entry point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`](crate::error::LuceneError::IllegalState)
+    /// when the readers disagree about the parent field, and propagates
+    /// whatever adding a field to the merged builder raises.
+    fn merge_field_infos(readers: &[Arc<dyn CodecReader>]) -> Result<FieldInfos> {
+        if readers.len() == 1 {
+            return Ok(readers[0].get_field_infos());
         }
+        let soft_deletes_field = readers.iter().find_map(|reader| {
+            reader
+                .get_field_infos()
+                .get_soft_deletes_field()
+                .map(str::to_string)
+        });
+        let mut parent_field: Option<String> = None;
+        let mut parent_field_set = false;
+        for reader in readers {
+            let field = reader
+                .get_field_infos()
+                .get_parent_field()
+                .map(str::to_string);
+            if parent_field_set && field != parent_field {
+                return Err(crate::error::LuceneError::IllegalState(format!(
+                    "expected parent doc field to be \"{} \" across all segments but found a \
+                     segment with different field \"{}\"",
+                    parent_field.as_deref().unwrap_or("null"),
+                    field.as_deref().unwrap_or("null")
+                )));
+            }
+            parent_field = field;
+            parent_field_set = true;
+        }
+        let numbers = Arc::new(FieldNumbers::new(soft_deletes_field, parent_field)?);
+        let mut builder = FieldInfosBuilder::new(numbers);
+        for reader in readers {
+            for field_info in reader.get_field_infos().iter() {
+                builder.add(field_info)?;
+            }
+        }
+        builder.finish()
+    }
+
+    /// Remaps a leaf's [`FieldInfo`] to the one the composite reader's own,
+    /// merged field infos carry for the same name.
+    ///
+    /// Equivalent to `SlowCompositeCodecReaderWrapper.remap(FieldInfo)`
+    /// (`SlowCompositeCodecReaderWrapper.java:121-123`); used so that a caller
+    /// walking a wrapped reader's stored fields always sees the composite's
+    /// own field numbering rather than a leaf's.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `info`'s name is absent from the merged field infos, which
+    /// cannot happen for a `FieldInfo` obtained from one of the wrapped
+    /// readers, since every leaf's fields were folded into them in
+    /// [`new`](Self::new).
+    fn remap(&self, info: &FieldInfo) -> FieldInfo {
+        self.field_infos
+            .field_info(&info.name)
+            .expect("INVARIANT: every leaf field is present in the merged field infos")
+            .clone()
     }
 
     /// Returns the index of the reader that owns `doc_id`, and the document's

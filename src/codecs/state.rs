@@ -171,6 +171,7 @@ impl<'a> SegmentWriteState<'a> {
         context: &'a dyn IOContext,
         segment_suffix: String,
     ) -> Self {
+        debug_assert!(Self::assert_segment_suffix(&segment_suffix));
         Self {
             info_stream,
             directory,
@@ -182,6 +183,38 @@ impl<'a> SegmentWriteState<'a> {
             del_count_on_flush: 0,
             soft_del_count_on_flush: 0,
             live_docs: None,
+        }
+    }
+
+    /// Verifies that `segment_suffix` is either empty, a two-part suffix
+    /// (`X_Y`, separated by `_`), or a single part parsable as a base-36
+    /// generation.
+    ///
+    /// Equivalent to `SegmentWriteState.assertSegmentSuffix(String)`. Java
+    /// only ever calls it from an `assert` statement, so it runs solely under
+    /// assertions; this port calls it from a [`debug_assert!`], which is
+    /// compiled out of release builds exactly as Java's `assert` is disabled
+    /// without `-ea`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `segment_suffix` has exactly one `_`-separated part that is
+    /// not a valid base-36 integer, mirroring the `NumberFormatException`
+    /// Java's `Long.parseLong(segmentSuffix, Character.MAX_RADIX)` raises in
+    /// the same situation (`SegmentWriteState.java:133-146`).
+    fn assert_segment_suffix(segment_suffix: &str) -> bool {
+        if segment_suffix.is_empty() {
+            return true;
+        }
+        match segment_suffix.split('_').count() {
+            2 => true,
+            1 => {
+                i64::from_str_radix(segment_suffix, 36).unwrap_or_else(|error| {
+                    panic!("invalid segment suffix \"{segment_suffix}\": {error}")
+                });
+                true
+            }
+            _ => false,
         }
     }
 
