@@ -419,10 +419,27 @@ impl DisiPriorityQueueN {
             self.collect_top_list(wrappers, doc, 1, &mut order);
             self.collect_top_list(wrappers, doc, 2, &mut order);
         } else if size == 2 && wrappers[self.heap[1]].doc == doc {
-            order.push(self.heap[1]);
+            Self::prepend(self.heap[1], &mut order);
         }
         order.reverse();
         order
+    }
+
+    /// Prepends `w1`, an iterator, to `order`, the list being built.
+    ///
+    /// Equivalent to the private `DisiPriorityQueueN.prepend(DisiWrapper,
+    /// DisiWrapper)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java threads the top list through the
+    /// `next` field of `DisiWrapper` and prepends by pointing `w1.next` at the
+    /// current head (`DisiPriorityQueueN.java` lines 86-90). This port collects
+    /// the list into a `Vec` that [`top_list`](Self::top_list) reverses on the
+    /// way out, so prepending to the list is pushing onto the vector and the
+    /// resulting traversal order is identical. A `next` chain would need every
+    /// wrapper to hold a mutable reference to another wrapper, which Rust's
+    /// ownership rules do not allow.
+    fn prepend(w1: usize, order: &mut Vec<usize>) {
+        order.push(w1);
     }
 
     /// Equivalent to the private
@@ -437,14 +454,14 @@ impl DisiPriorityQueueN {
         let size = self.heap.len();
         let w = self.heap[i];
         if wrappers[w].doc == doc {
-            order.push(w);
+            Self::prepend(w, order);
             let left = left_node(i);
             let right = right_node(left);
             if right < size {
                 self.collect_top_list(wrappers, doc, left, order);
                 self.collect_top_list(wrappers, doc, right, order);
             } else if left < size && wrappers[self.heap[left]].doc == doc {
-                order.push(self.heap[left]);
+                Self::prepend(self.heap[left], order);
             }
         }
     }

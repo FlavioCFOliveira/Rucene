@@ -21,6 +21,7 @@ use crate::search::comparators::{
 };
 use crate::search::field_comparator::{FieldComparator, RelevanceComparator, TermValComparator};
 use crate::search::field_comparator_source::FieldComparatorSource;
+use crate::search::index_searcher::IndexSearcher;
 use crate::search::pruning::Pruning;
 use crate::search::sorted_numeric_selector::{SortedNumericSelector, SortedNumericSelectorType};
 use crate::search::sorted_numeric_sort_field::SortedNumericSortField;
@@ -974,11 +975,49 @@ impl SortField {
         Ok(())
     }
 
+    /// Reads a [`SortFieldType`] written as its Java enum constant name.
+    ///
+    /// Equivalent to the `protected static SortField.readType(DataInput)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates read errors, and returns
+    /// [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// when the name is not a known type — the `IllegalArgumentException` Java
+    /// throws.
+    pub fn read_type(input: &mut dyn DataInput) -> Result<SortFieldType> {
+        SortFieldType::parse(&input.read_string()?)
+    }
+
+    /// Rewrites this sort field, returning a new one when a change is made.
+    ///
+    /// Equivalent to `SortField.rewrite(IndexSearcher)`, whose base
+    /// implementation returns `this`. Subclasses override it to define their
+    /// rewriting behaviour when the field is of type
+    /// [`SortFieldType::Rewriteable`].
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java returns the very same object,
+    /// which lets `Sort.rewrite` detect a change with a reference comparison
+    /// (`Sort.java` line 91). Rust has no inheritance and cannot return `self`
+    /// by value without cloning, so this returns a clone and
+    /// [`Sort::rewrite`] detects a change by value equality instead. For a
+    /// field that rewrites to an equal value the two tests agree; they differ
+    /// only for a rewrite that produces an equal-but-distinct field, which
+    /// would then be reported as unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while rewriting.
+    pub fn rewrite(&self, searcher: &IndexSearcher) -> Result<Self> {
+        let _ = searcher;
+        Ok(self.clone())
+    }
+
     /// Reads a sort field previously written with [`Self::serialize`].
     pub fn deserialize(input: &mut dyn DataInput) -> Result<Self> {
         let field = input.read_string()?;
         let field = if field.is_empty() { None } else { Some(field) };
-        let field_type = SortFieldType::parse(&input.read_string()?)?;
+        let field_type = Self::read_type(input)?;
         let reverse = input.read_int()? == 1;
         let missing_value = if input.read_int()? == 1 {
             Some(match field_type {
@@ -1172,6 +1211,36 @@ impl Sort {
     /// Returns true if the relevance score is needed to sort documents.
     pub fn needs_scores(&self) -> bool {
         self.fields.iter().any(|f| f.needs_scores())
+    }
+
+    /// Rewrites the [`SortField`]s of this sort, returning a new [`Sort`] when
+    /// any of them changes during its rewriting.
+    ///
+    /// Equivalent to `Sort.rewrite(IndexSearcher)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java returns `this` unchanged and
+    /// detects a change by comparing object references. Rust returns a clone
+    /// and compares by value; see [`SortField::rewrite`] for why.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while rewriting a field.
+    pub fn rewrite(&self, searcher: &IndexSearcher) -> Result<Self> {
+        let mut changed = false;
+        let mut rewritten_sort_fields = Vec::with_capacity(self.fields.len());
+        for field in &self.fields {
+            let rewritten = field.rewrite(searcher)?;
+            if *field != rewritten {
+                changed = true;
+            }
+            rewritten_sort_fields.push(rewritten);
+        }
+
+        if changed {
+            Self::new_fields(rewritten_sort_fields)
+        } else {
+            Ok(self.clone())
+        }
     }
 }
 

@@ -224,6 +224,45 @@ impl MultiPhraseQuery {
     pub fn get_field(&self) -> Option<&str> {
         self.field.as_deref()
     }
+
+    /// Breakout calculation of the term-arrays hash code.
+    ///
+    /// Equivalent to the private `MultiPhraseQuery.termArraysHashCode()`, whose
+    /// `31 * hashCode + Arrays.hashCode(termArray)` fold is reproduced here over
+    /// the hash of each array's terms.
+    fn term_arrays_hash_code(&self) -> u64 {
+        let mut hash_code = 1u64;
+        for term_array in &self.term_arrays {
+            let mut hasher = DefaultHasher::new();
+            for term in term_array {
+                term.field().hash(&mut hasher);
+                term.bytes().slice().hash(&mut hasher);
+            }
+            hash_code = hash_code.wrapping_mul(31).wrapping_add(hasher.finish());
+        }
+        hash_code
+    }
+
+    /// Breakout calculation of the term-arrays equality.
+    ///
+    /// Equivalent to the private
+    /// `MultiPhraseQuery.termArraysEquals(Term[][], Term[][])`. Java also has
+    /// to compare a `null` array against a `null` array; a `Vec<Term>` is never
+    /// null, so that branch has no counterpart here.
+    fn term_arrays_equals(term_arrays1: &[Vec<Term>], term_arrays2: &[Vec<Term>]) -> bool {
+        if term_arrays1.len() != term_arrays2.len() {
+            return false;
+        }
+
+        for i in 0..term_arrays1.len() {
+            let term_array1 = &term_arrays1[i];
+            let term_array2 = &term_arrays2[i];
+            if term_array1 != term_array2 {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 impl Query for MultiPhraseQuery {
@@ -343,28 +382,20 @@ impl Query for MultiPhraseQuery {
         let Some(other) = other.as_any().downcast_ref::<MultiPhraseQuery>() else {
             return false;
         };
-        // Equal terms imply an equal field.
         self.slop == other.slop
-            && self.term_arrays == other.term_arrays
+            && Self::term_arrays_equals(&self.term_arrays, &other.term_arrays)
+            // Equal terms imply an equal field.
             && self.positions == other.positions
     }
 
     fn query_hash(&self) -> u64 {
-        // Equal terms imply an equal field.
-        let mut term_arrays_hash = 1u64;
-        for term_array in &self.term_arrays {
-            let mut hasher = DefaultHasher::new();
-            for term in term_array {
-                term.field().hash(&mut hasher);
-                term.bytes().slice().hash(&mut hasher);
-            }
-            term_arrays_hash = term_arrays_hash
-                .wrapping_mul(31)
-                .wrapping_add(hasher.finish());
-        }
         let mut hasher = DefaultHasher::new();
         self.positions.hash(&mut hasher);
-        self.class_hash() ^ (self.slop as u64) ^ term_arrays_hash ^ hasher.finish()
+        self.class_hash()
+            ^ (self.slop as u64)
+            // Equal terms imply an equal field.
+            ^ self.term_arrays_hash_code()
+            ^ hasher.finish()
     }
 }
 

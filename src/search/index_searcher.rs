@@ -922,7 +922,23 @@ impl IndexSearcher {
     /// partitions of the same leaf, and propagates the slice construction
     /// error.
     pub fn get_slices(&self) -> Result<&[LeafSlice]> {
-        let cached = self.leaf_slices.get_or_init(|| {
+        let cached = self.compute_and_cache_slices();
+        match cached {
+            Ok(slices) => Ok(slices),
+            Err(message) => Err(LuceneError::IllegalState(message.clone())),
+        }
+    }
+
+    /// Computes the leaf slices once and caches them.
+    ///
+    /// Equivalent to the private `synchronized
+    /// IndexSearcher.computeAndCacheSlices()`. The `OnceLock` provides the
+    /// once-only, synchronised initialisation Java gets from the `synchronized`
+    /// modifier plus the double null check on `leafSlices`; the failure Java
+    /// throws out of the method is cached alongside the value, because a
+    /// `OnceLock` cannot be initialised twice.
+    fn compute_and_cache_slices(&self) -> &std::result::Result<Vec<LeafSlice>, String> {
+        self.leaf_slices.get_or_init(|| {
             let slices = match Self::default_slices(&self.leaf_contexts) {
                 Ok(slices) => slices,
                 Err(err) => return Err(err.to_string()),
@@ -943,11 +959,7 @@ impl IndexSearcher {
                 }
             }
             Ok(slices)
-        });
-        match cached {
-            Ok(slices) => Ok(slices),
-            Err(message) => Err(LuceneError::IllegalState(message.clone())),
-        }
+        })
     }
 
     /// Equivalent to the private `IndexSearcher.enforceDistinctLeaves`.
@@ -1346,10 +1358,22 @@ impl IndexSearcher {
         while let Some(rewritten) = query.rewrite(self)? {
             query = rewritten;
         }
-        let mut visitor = NumClausesCheckVisitor::default();
+        let mut visitor = Self::get_num_clauses_check_visitor();
         query.visit(&mut visitor);
         visitor.check()?;
         Ok(query)
+    }
+
+    /// Returns a [`QueryVisitor`] that recursively counts the clauses a query
+    /// and its children cumulatively have and validates that the total does not
+    /// exceed [`get_max_clause_count`](Self::get_max_clause_count).
+    ///
+    /// Equivalent to the private static
+    /// `IndexSearcher.getNumClausesCheckVisitor()`. Java's visitor throws
+    /// `TooManyNestedClauses` from the visiting methods; see
+    /// [`NumClausesCheckVisitor`] for how this port reports the same violation.
+    fn get_num_clauses_check_visitor() -> NumClausesCheckVisitor {
+        NumClausesCheckVisitor::default()
     }
 
     /// Rewrites a query, taking advantage of the extra rewrite rules that apply

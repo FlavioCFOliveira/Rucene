@@ -211,7 +211,7 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
                     }
                 }
             };
-            if ref_arc.try_acquire_ref() {
+            if self.try_inc_ref(&ref_arc) {
                 return Ok(ref_arc);
             }
             // `tryIncRef` failed: the reference was closed concurrently.
@@ -247,7 +247,33 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
     ///
     /// [`acquire`]: ReferenceManager::acquire
     pub fn release(&self, reference: Arc<G>) -> Result<()> {
+        self.dec_ref(&reference)
+    }
+
+    /// Decrements the reference count of the given reference.
+    ///
+    /// Equivalent to the `protected abstract ReferenceManager.decRef(G)`, which
+    /// [`release`](Self::release) calls. Java leaves it to the subclass; this
+    /// port takes it from the [`ManagedReference`] contract the reference type
+    /// itself implements, so the manager stays generic over `G`. It is `pub`
+    /// because Rust has no `protected`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying decrement fails (for example, I/O
+    /// during close).
+    pub fn dec_ref(&self, reference: &G) -> Result<()> {
         reference.release_ref()
+    }
+
+    /// Attempts to increment the reference count of the given reference,
+    /// returning `true` when it succeeded.
+    ///
+    /// Equivalent to the `protected abstract ReferenceManager.tryIncRef(G)`,
+    /// which [`acquire`](Self::acquire) calls. See [`dec_ref`](Self::dec_ref)
+    /// for why it delegates to [`ManagedReference`] and why it is `pub`.
+    pub fn try_inc_ref(&self, reference: &G) -> bool {
+        reference.try_acquire_ref()
     }
 
     /// Periodically refreshes the managed reference if another thread is not
@@ -386,7 +412,7 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
         let reference = self.acquire()?;
         let mut refreshed = false;
         let inner: Result<()> = (|| {
-            self.notify_before_refresh()?;
+            self.notify_refresh_listeners_before()?;
             let new_ref = self.source.refresh_if_needed(&reference)?;
             if let Some(new_ref) = new_ref {
                 if Arc::ptr_eq(&new_ref, &reference) {
@@ -414,7 +440,7 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
         })();
         // finally: release the acquired reference and notify listeners.
         let _ = reference.release_ref();
-        let notify = self.notify_after_refresh(refreshed);
+        let notify = self.notify_refresh_listeners_refreshed(refreshed);
         match inner {
             Ok(()) => {
                 notify?;
@@ -431,7 +457,13 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
     }
 
     /// Snapshots the listeners and calls `before_refresh` on each.
-    fn notify_before_refresh(&self) -> Result<()> {
+    ///
+    /// Equivalent to the private
+    /// `ReferenceManager.notifyRefreshListenersBefore()`. Java iterates the
+    /// `CopyOnWriteArrayList` directly; the snapshot taken here is what makes
+    /// the `RwLock` behave like one, so a listener may add or remove listeners
+    /// without deadlocking.
+    fn notify_refresh_listeners_before(&self) -> Result<()> {
         let snapshot: Vec<Arc<dyn RefreshListener>> = self
             .listeners
             .read()
@@ -444,7 +476,12 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
     }
 
     /// Snapshots the listeners and calls `after_refresh` on each.
-    fn notify_after_refresh(&self, did_refresh: bool) -> Result<()> {
+    ///
+    /// Equivalent to the private
+    /// `ReferenceManager.notifyRefreshListenersRefreshed(boolean)`; see
+    /// [`notify_refresh_listeners_before`](Self::notify_refresh_listeners_before)
+    /// for why the listeners are snapshotted.
+    fn notify_refresh_listeners_refreshed(&self, did_refresh: bool) -> Result<()> {
         let snapshot: Vec<Arc<dyn RefreshListener>> = self
             .listeners
             .read()

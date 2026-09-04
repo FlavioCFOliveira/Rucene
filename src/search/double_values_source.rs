@@ -1017,6 +1017,141 @@ impl FieldComparator for DoubleValuesComparator {
     }
 }
 
+/// Values that report the score of the [`Scorable`] they wrap.
+///
+/// Equivalent to the anonymous `DoubleValues` the static
+/// `DoubleValuesSource.fromScorer(Scorable)` returns, whose `advanceExact`
+/// always accepts and whose `doubleValue` reads `scorer.score()`.
+pub struct ScorerDoubleValues<'a> {
+    scorer: &'a mut dyn Scorable,
+}
+
+impl Debug for ScorerDoubleValues<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ScorerDoubleValues")
+    }
+}
+
+impl DoubleValues for ScorerDoubleValues<'_> {
+    fn double_value(&mut self) -> Result<f64> {
+        Ok(f64::from(self.scorer.score()?))
+    }
+
+    fn advance_exact(&mut self, _doc: i32) -> Result<bool> {
+        Ok(true)
+    }
+}
+
+/// Returns [`DoubleValues`] that wrap the scores `scorer` returns.
+///
+/// Equivalent to the static `DoubleValuesSource.fromScorer(Scorable)`.
+///
+/// Note: if you intend to call [`Scorable::score`] on `scorer` separately, you
+/// may want to wrap the collector with
+/// [`ScoreCachingWrappingScorer`](crate::search::ScoreCachingWrappingScorer) so
+/// that the actual score is not computed several times.
+///
+/// **Divergence from Lucene 10.5.0.** Java's anonymous class captures the
+/// `Scorable` reference and the two can be read through independently. Rust's
+/// exclusive borrow means the returned values hold the scorable for their
+/// lifetime; a caller that cannot give it up — the comparator of
+/// [`DoubleValuesComparatorSource`], for one — publishes the score through a
+/// shared cell instead, which reads the very same number.
+pub fn from_scorer(scorer: &mut dyn Scorable) -> ScorerDoubleValues<'_> {
+    ScorerDoubleValues { scorer }
+}
+
+/// The conversion applied to every value by [`as_numeric_doc_values`].
+///
+/// Equivalent to the `DoubleToLongFunction` parameter of the private static
+/// `DoubleValuesSource.asNumericDocValues(DoubleValuesHolder,
+/// DoubleToLongFunction)`, which the comparator source always calls with
+/// `Double::doubleToLongBits`.
+pub type DoubleToLongFunction = fn(f64) -> i64;
+
+/// Presents a [`DoubleValues`] as a [`NumericDocValues`](crate::index::NumericDocValues).
+///
+/// Equivalent to the anonymous `NumericDocValues` of the private static
+/// `DoubleValuesSource.asNumericDocValues(DoubleValuesHolder,
+/// DoubleToLongFunction)`, whose iteration methods all throw: the comparator
+/// only ever positions it with `advanceExact` and reads `longValue`.
+///
+/// **Divergence from Lucene 10.5.0.** Java reads
+/// `converter.applyAsLong(in.values.doubleValue())` from `longValue()`, whose
+/// receiver this crate declares as `&self` while
+/// [`DoubleValues::double_value`] needs `&mut self`. The conversion is
+/// therefore performed inside
+/// [`advance_exact`](crate::index::DocValuesIterator::advance_exact), which
+/// does have exclusive access, and `long_value` returns what it computed — the
+/// same number, read one call earlier.
+pub struct DoubleValuesAsNumericDocValues<'a> {
+    values: Box<dyn DoubleValues + 'a>,
+    converter: DoubleToLongFunction,
+    value: i64,
+}
+
+impl Debug for DoubleValuesAsNumericDocValues<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DoubleValuesAsNumericDocValues")
+    }
+}
+
+/// Presents `values` as a [`NumericDocValues`](crate::index::NumericDocValues),
+/// converting each of them with `converter`.
+///
+/// Equivalent to the private static
+/// `DoubleValuesSource.asNumericDocValues(DoubleValuesHolder,
+/// DoubleToLongFunction)`.
+pub fn as_numeric_doc_values<'a>(
+    values: Box<dyn DoubleValues + 'a>,
+    converter: DoubleToLongFunction,
+) -> DoubleValuesAsNumericDocValues<'a> {
+    DoubleValuesAsNumericDocValues {
+        values,
+        converter,
+        value: 0,
+    }
+}
+
+impl crate::search::DocIdSetIterator for DoubleValuesAsNumericDocValues<'_> {
+    fn doc_id(&self) -> i32 {
+        unimplemented!("DoubleValuesSource.asNumericDocValues does not iterate")
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(
+            "DoubleValuesSource.asNumericDocValues does not iterate".to_string(),
+        ))
+    }
+
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(
+            "DoubleValuesSource.asNumericDocValues does not iterate".to_string(),
+        ))
+    }
+
+    fn cost(&self) -> i64 {
+        unimplemented!("DoubleValuesSource.asNumericDocValues does not iterate")
+    }
+}
+
+impl crate::index::DocValuesIterator for DoubleValuesAsNumericDocValues<'_> {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        if self.values.advance_exact(target)? {
+            self.value = (self.converter)(self.values.double_value()?);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+impl crate::index::NumericDocValues for DoubleValuesAsNumericDocValues<'_> {
+    fn long_value(&self) -> Result<i64> {
+        Ok(self.value)
+    }
+}
+
 /// Hashes a value with the crate's default hasher.
 pub(crate) fn hash_of<T: std::hash::Hash>(value: &T) -> u64 {
     use std::collections::hash_map::DefaultHasher;

@@ -45,14 +45,21 @@ impl ManagedSearcher {
 }
 
 impl ManagedReference for ManagedSearcher {
+    /// Equivalent to `SearcherManager.decRef(IndexSearcher)`, which decrements
+    /// the reference count of the searcher's reader.
     fn release_ref(&self) -> Result<()> {
         self.reader.dec_ref()
     }
 
+    /// Equivalent to `SearcherManager.tryIncRef(IndexSearcher)`, which
+    /// increments the reference count of the searcher's reader when it is still
+    /// open.
     fn try_acquire_ref(&self) -> bool {
         self.reader.try_inc_ref()
     }
 
+    /// Equivalent to `SearcherManager.getRefCount(IndexSearcher)`, which reads
+    /// the reference count of the searcher's reader.
     fn ref_count(&self) -> i32 {
         self.reader.get_ref_count()
     }

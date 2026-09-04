@@ -341,9 +341,7 @@ impl ConjunctionDISI {
         let cur_doc = members[0].doc_id();
         for member in &members {
             if member.doc_id() != cur_doc {
-                return Err(LuceneError::IllegalArgument(
-                    "Sub-iterators of ConjunctionDISI are not on the same document!".to_string(),
-                ));
+                return Err(throw_sub_iterators_not_on_same_document());
             }
         }
 
@@ -446,6 +444,27 @@ impl ConjunctionDISI {
             return Ok(doc);
         }
     }
+
+    /// Returns `true` if all sub-iterators are on the same doc ID, `false`
+    /// otherwise.
+    ///
+    /// Equivalent to the private `ConjunctionDISI.assertItersOnSameDoc()`,
+    /// which Java only ever evaluates from inside an `assert` — hence the
+    /// [`debug_assert!`] calls in [`next_doc`](DocIdSetIterator::next_doc) and
+    /// [`advance`](DocIdSetIterator::advance) below.
+    fn assert_iters_on_same_doc(&self) -> bool {
+        let lead1 = self.approx_order[0];
+        let lead2 = self.approx_order[1];
+        let cur_doc = self.members[lead1].doc_id();
+        let mut iterators_on_the_same_doc = self.members[lead2].doc_id() == cur_doc;
+        let mut i = 2;
+        while i < self.approx_order.len() && iterators_on_the_same_doc {
+            iterators_on_the_same_doc =
+                iterators_on_the_same_doc && self.members[self.approx_order[i]].doc_id() == cur_doc;
+            i += 1;
+        }
+        iterators_on_the_same_doc
+    }
 }
 
 impl DocIdSetIterator for ConjunctionDISI {
@@ -454,12 +473,20 @@ impl DocIdSetIterator for ConjunctionDISI {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
+        debug_assert!(
+            self.assert_iters_on_same_doc(),
+            "Sub-iterators of ConjunctionDISI are not on the same document!"
+        );
         let lead1 = self.approx_order[0];
         let doc = self.members[lead1].next_doc()?;
         self.do_next(doc)
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
+        debug_assert!(
+            self.assert_iters_on_same_doc(),
+            "Sub-iterators of ConjunctionDISI are not one the same document!"
+        );
         let lead1 = self.approx_order[0];
         let doc = self.members[lead1].advance(target)?;
         self.do_next(doc)
@@ -495,6 +522,59 @@ impl TwoPhaseIterator for ConjunctionDISI {
     }
 }
 
+/// Adds `scorer` to `members`, splitting it into two phases when it supports
+/// an approximation.
+///
+/// Equivalent to `ConjunctionDISI.addScorer(Scorer, List<DocIdSetIterator>,
+/// List<TwoPhaseIterator>)`, which dispatches to
+/// [`add_two_phase_iterator`] when `scorer.twoPhaseIterator()` is non-`null`
+/// and to [`add_iterator`] otherwise. Here the split is performed by
+/// [`ConjunctionMember::from_scorer`], because this port keeps the `Scorer`
+/// itself so that [`ConjunctionScorer`](crate::search::ConjunctionScorer) can
+/// score the matches; see the [module documentation](self).
+pub fn add_scorer(scorer: Box<dyn Scorer>, members: &mut Vec<ConjunctionMember>) {
+    members.push(ConjunctionMember::from_scorer(scorer));
+}
+
+/// Adds `disi` to `members` as a clause that needs no confirmation.
+///
+/// Equivalent to `ConjunctionDISI.addIterator(DocIdSetIterator,
+/// List<DocIdSetIterator>, List<TwoPhaseIterator>)`.
+///
+/// **Divergence from Lucene 10.5.0.** Java first probes the erased iterator
+/// with `TwoPhaseIterator.unwrap` and then with two `getClass()` tests, so
+/// that a two-phase iterator, a nested `ConjunctionDISI` or a
+/// `BitSetConjunctionDISI` is collapsed into the parent conjunction
+/// (`ConjunctionDISI.java` lines 53-76). Rust cannot downcast a
+/// `dyn DocIdSetIterator`, so the clause is appended as it is and a nested
+/// conjunction stays nested; the same documents match, only the depth of the
+/// call chain differs. Callers that hold the unerased shape should call
+/// [`add_two_phase_iterator`] instead. See the [module documentation](self).
+pub fn add_iterator(disi: Box<dyn DocIdSetIterator>, members: &mut Vec<ConjunctionMember>) {
+    members.push(ConjunctionMember::from_iterator(disi));
+}
+
+/// Adds `two_phase` to `members` as a clause whose candidates still need
+/// confirming.
+///
+/// Equivalent to `ConjunctionDISI.addTwoPhaseIterator(TwoPhaseIterator,
+/// List<DocIdSetIterator>, List<TwoPhaseIterator>)`, which appends the
+/// approximation to `allIterators` and the two-phase iterator itself to
+/// `twoPhaseIterators`. Here a single [`ConjunctionMember`] carries both,
+/// because Rust cannot own an approximation apart from the iterator that
+/// produces it; see the [module documentation](self).
+///
+/// **Divergence from Lucene 10.5.0.** Java also collapses a nested
+/// `ConjunctionTwoPhaseIterator` into the parent by a `getClass()` test
+/// (`ConjunctionDISI.java` lines 84-88), which Rust cannot reproduce for the
+/// reason [`add_iterator`] records.
+pub fn add_two_phase_iterator(
+    two_phase: Box<dyn TwoPhaseIterator>,
+    members: &mut Vec<ConjunctionMember>,
+) {
+    members.push(ConjunctionMember::from_two_phase(two_phase));
+}
+
 /// Builds a conjunction over the given clauses and returns it in the shape a
 /// caller can tell apart.
 ///
@@ -518,4 +598,17 @@ pub fn create_conjunction(members: Vec<ConjunctionMember>) -> Result<ScorerItera
     } else {
         Ok(ScorerIterator::Simple(Box::new(conjunction)))
     }
+}
+
+/// Returns the error Java throws when the clauses are not all positioned on the
+/// same document.
+///
+/// Equivalent to the private static
+/// `ConjunctionDISI.throwSubIteratorsNotOnSameDocument()`, which throws an
+/// `IllegalArgumentException` where Rust returns one for the caller to
+/// propagate.
+fn throw_sub_iterators_not_on_same_document() -> LuceneError {
+    LuceneError::IllegalArgument(
+        "Sub-iterators of ConjunctionDISI are not on the same document!".to_string(),
+    )
 }
