@@ -657,6 +657,22 @@ pub trait IndexInput: DataInput + Send + Sync {
         Ok(())
     }
 
+    /// Optional method: updates the [`IOContext`] to specify a new read access
+    /// pattern. Implementations may take advantage of this hint to optimize
+    /// reads from storage.
+    ///
+    /// The default implementation does nothing.
+    ///
+    /// Equivalent to `org.apache.lucene.store.IndexInput#updateIOContext`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever the implementation raises while applying the new
+    /// access pattern. The default never fails.
+    fn update_io_context(&self, _context: &dyn IOContext) -> Result<()> {
+        Ok(())
+    }
+
     /// Returns a hint whether the entire input is resident in physical memory.
     ///
     /// `Some(true)` suggests it is likely resident. `Some(false)` and `None`
@@ -858,6 +874,23 @@ impl FilterIndexInput {
     pub fn unwrap(input: &dyn IndexInput) -> &dyn IndexInput {
         input
     }
+
+    /// Unwraps all test `FilterIndexInput` wrappers until the first non-test
+    /// input and returns it.
+    ///
+    /// Divergence: Java keeps the set of test wrapper classes in the static
+    /// `TEST_FILTER_INPUTS` list, which `TestSecrets` fills in, and walks the
+    /// chain with `instanceof` plus `getClass()` membership
+    /// (`FilterIndexInput.java:33-59`). Rust trait objects carry no such
+    /// runtime type information and this port has no `TestSecrets`, so, exactly
+    /// as [`unwrap`](Self::unwrap) already does, this helper returns the input
+    /// unchanged; callers holding a concrete `FilterIndexInput` should inspect
+    /// its delegate directly.
+    ///
+    /// Equivalent to `org.apache.lucene.store.FilterIndexInput#unwrapOnlyTest`.
+    pub fn unwrap_only_test(input: &dyn IndexInput) -> &dyn IndexInput {
+        input
+    }
 }
 
 impl DataInput for FilterIndexInput {
@@ -972,11 +1005,7 @@ impl BufferedIndexInput {
     /// Returns [`LuceneError::IllegalArgument`] if `buffer_size` is smaller
     /// than [`MIN_BUFFER_SIZE`].
     pub fn new(source: Box<dyn IndexInput>, buffer_size: usize) -> Result<Self> {
-        if buffer_size < MIN_BUFFER_SIZE {
-            return Err(LuceneError::IllegalArgument(format!(
-                "bufferSize must be at least MIN_BUFFER_SIZE (got {buffer_size})"
-            )));
-        }
+        Self::check_buffer_size(buffer_size)?;
         let resource_description = source.resource_description().to_string();
         Ok(Self {
             source,
@@ -999,6 +1028,25 @@ impl BufferedIndexInput {
         self.buffer_size
     }
 
+    /// Rejects a buffer size smaller than [`MIN_BUFFER_SIZE`].
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.store.BufferedIndexInput#checkBufferSize`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `buffer_size` is smaller
+    /// than [`MIN_BUFFER_SIZE`], which is the `IllegalArgumentException` Java
+    /// throws.
+    fn check_buffer_size(buffer_size: usize) -> Result<()> {
+        if buffer_size < MIN_BUFFER_SIZE {
+            return Err(LuceneError::IllegalArgument(format!(
+                "bufferSize must be at least MIN_BUFFER_SIZE (got {buffer_size})"
+            )));
+        }
+        Ok(())
+    }
+
     fn remaining_in_buffer(&self) -> usize {
         self.buffer_limit.saturating_sub(self.buffer_position)
     }
@@ -1017,12 +1065,54 @@ impl BufferedIndexInput {
             self.buffer
                 .reserve(self.buffer_size - self.buffer.capacity());
         }
-        self.source.seek(start)?;
-        self.source.read_bytes(&mut self.buffer, 0, new_length)?;
+        self.seek_internal(start)?;
+        // `read_internal` borrows all of `self`, and the destination is a field
+        // of `self`, so the buffer is moved out for the duration of the read
+        // and put back immediately afterwards. Taking a `Vec` moves a pointer;
+        // it neither copies nor allocates.
+        let mut buffer = std::mem::take(&mut self.buffer);
+        let result = self.read_internal(&mut buffer[..new_length]);
+        self.buffer = buffer;
+        result?;
         self.buffer_start = start;
         self.buffer_position = 0;
         self.buffer_limit = new_length;
         Ok(())
+    }
+
+    /// Expert: implements buffer refill. Reads `b.len()` bytes into `b` from
+    /// the current position in the input.
+    ///
+    /// Equivalent to the protected abstract
+    /// `org.apache.lucene.store.BufferedIndexInput#readInternal(ByteBuffer)`,
+    /// which every Java subclass supplies. This port is a concrete wrapper
+    /// around a delegate [`IndexInput`] rather than an abstract base, so the
+    /// delegate is what it reads from.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever reading from the delegate raises, including the end of
+    /// file Java reports as `EOFException`.
+    fn read_internal(&mut self, b: &mut [u8]) -> Result<()> {
+        let len = b.len();
+        self.source.read_bytes(b, 0, len)
+    }
+
+    /// Expert: implements seek. Sets the current position in this file, where
+    /// the next [`read_internal`](Self::read_internal) will occur.
+    ///
+    /// Equivalent to the protected abstract
+    /// `org.apache.lucene.store.BufferedIndexInput#seekInternal(long)`. Java
+    /// calls it only when `refill()` allocates its buffer lazily, because a
+    /// subclass owns its own read position; this port shares the delegate's
+    /// position with the absolute random-access reads, so `refill()` calls it
+    /// before every read, which is what the port already did.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever seeking the delegate raises.
+    fn seek_internal(&mut self, pos: i64) -> Result<()> {
+        self.source.seek(pos)
     }
 
     fn resolve_position_in_buffer(&mut self, pos: i64, width: usize) -> Result<usize> {
@@ -1051,6 +1141,33 @@ impl BufferedIndexInput {
             )));
         }
         Ok(result as usize)
+    }
+
+    /// Wraps a portion of another [`IndexInput`] with buffering.
+    ///
+    /// **Please note:** this is in most cases ineffective, because it may
+    /// double buffer.
+    ///
+    /// Divergence: Java declares the return type as `BufferedIndexInput`
+    /// because its `SlicedIndexInput` extends it
+    /// (`BufferedIndexInput.java:376-380`). Rust has no inheritance, so this
+    /// port returns [`SlicedIndexInput`], the struct that already stands for
+    /// that inner class, which is the same object Java hands back.
+    ///
+    /// Equivalent to `org.apache.lucene.store.BufferedIndexInput#wrap`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the slice is out of
+    /// bounds, which is the `IllegalArgumentException` the Java constructor
+    /// throws.
+    pub fn wrap(
+        slice_description: &str,
+        other: Box<dyn IndexInput>,
+        offset: i64,
+        length: i64,
+    ) -> Result<SlicedIndexInput> {
+        SlicedIndexInput::new(slice_description, other, offset, length)
     }
 }
 
@@ -1985,14 +2102,42 @@ impl ByteArrayDataInput {
         Self::new(slice.to_vec())
     }
 
+    /// Rewinds the read position to the start of the buffer.
+    ///
+    /// Lucene notes that this is not right if the input was reset with a
+    /// non-zero offset, and the same caveat applies here.
+    ///
+    /// Equivalent to `org.apache.lucene.store.ByteArrayDataInput#rewind`.
+    pub fn rewind(&mut self) {
+        self.pos = 0;
+    }
+
     /// Returns the current read position.
     pub fn position(&self) -> usize {
         self.pos
     }
 
+    /// Sets the read position.
+    ///
+    /// Like Lucene, this performs no bounds check; a position past the end of
+    /// the buffer is only reported when a later read reaches it.
+    ///
+    /// Equivalent to `org.apache.lucene.store.ByteArrayDataInput#setPosition`.
+    pub fn set_position(&mut self, pos: usize) {
+        self.pos = pos;
+    }
+
     /// Returns the total number of bytes available.
     pub fn length(&self) -> usize {
         self.bytes.len()
+    }
+
+    /// Returns `true` once the read position has reached the end of the
+    /// buffer.
+    ///
+    /// Equivalent to `org.apache.lucene.store.ByteArrayDataInput#eof`.
+    pub fn eof(&self) -> bool {
+        self.pos == self.bytes.len()
     }
 
     /// Returns the remaining bytes from the current position to the end.
@@ -5106,6 +5251,13 @@ const LIMIT_MAX_BITS_PER_BLOCK: usize = 31;
 /// Number of blocks at the current size before expanding.
 const MAX_BLOCKS_BEFORE_BLOCK_EXPANSION: usize = 100;
 
+/// Number of characters converted at a time by
+/// `ByteBuffersDataOutput::write_long_string`.
+///
+/// Equivalent to
+/// `org.apache.lucene.store.ByteBuffersDataOutput.MAX_CHARS_PER_WINDOW`.
+const MAX_CHARS_PER_WINDOW: usize = 1024;
+
 /// A [`DataInput`] reading from a list of in-memory byte buffers.
 ///
 /// Equivalent to `org.apache.lucene.store.ByteBuffersDataInput`. All buffers
@@ -5135,7 +5287,7 @@ impl ByteBuffersDataInput {
             // explicitly in `block_index` / `block_offset`.
             (0, 0)
         } else {
-            let block_bytes = buffers[0].len();
+            let block_bytes = determine_block_page(&buffers);
             let block_bits = block_bytes.trailing_zeros() as usize;
             let block_mask = block_bytes - 1;
             (block_bits, block_mask)
@@ -5338,8 +5490,15 @@ impl ByteBuffersDataInput {
                 self.length
             )));
         }
-        let mut data = vec![0u8; length];
-        self.read_bytes_at(offset, &mut data, 0, length)?;
+        // Java hands the view list straight to the constructor, which keeps
+        // the blocks and remembers where inside the first one the slice starts
+        // (`ByteBuffersDataInput.java:406-418`). A block of this port is an
+        // owned `Vec<u8>` that carries no position, so the views are joined
+        // into the single block that holds the same bytes.
+        let mut data = Vec::with_capacity(length);
+        for view in slice_buffer_list(&self.blocks, offset, length)? {
+            data.extend_from_slice(view);
+        }
         Self::new(vec![data])
     }
 
@@ -5357,6 +5516,40 @@ impl ByteBuffersDataInput {
         } else {
             pos & self.block_mask
         }
+    }
+
+    /// Returns the bytes a `FloatBuffer` view for `pos` covers: the block that
+    /// holds `pos`, from that position's four-byte alignment onwards.
+    ///
+    /// Divergence: Java allocates one `FloatBuffer` per observed
+    /// block/alignment pair and caches it in the `floatBuffers` array
+    /// (`ByteBuffersDataInput.java:359-370`), because creating a view buffer
+    /// allocates on the JVM. A Rust sub-slice is a pointer and a length, so
+    /// there is nothing to cache; the view is returned directly and the caller
+    /// decodes the little-endian `f32` values from it, which is what a
+    /// little-endian heap `FloatBuffer` does as well.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.store.ByteBuffersDataInput#getFloatBuffer`.
+    fn get_float_buffer(&self, pos: usize) -> &[u8] {
+        let buffer_index = self.block_index(pos);
+        let alignment = pos & 0x3;
+        &self.blocks[buffer_index][alignment..]
+    }
+
+    /// Returns the bytes a `LongBuffer` view for `pos` covers: the block that
+    /// holds `pos`, from that position's eight-byte alignment onwards.
+    ///
+    /// The same divergence as [`get_float_buffer`](Self::get_float_buffer)
+    /// applies: Java caches one `LongBuffer` per block/alignment pair
+    /// (`ByteBuffersDataInput.java:372-383`), this port returns the sub-slice.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.store.ByteBuffersDataInput#getLongBuffer`.
+    fn get_long_buffer(&self, pos: usize) -> &[u8] {
+        let buffer_index = self.block_index(pos);
+        let alignment = pos & 0x7;
+        &self.blocks[buffer_index][alignment..]
     }
 }
 
@@ -5526,9 +5719,11 @@ impl DataInput for ByteBuffersDataInput {
             }
             let available_floats = available_bytes / 4;
             let chunk = remaining.min(available_floats);
+            let view_off = block_off - (self.pos & 0x3);
+            let view = self.get_float_buffer(self.pos);
             for i in 0..chunk {
-                let byte_off = block_off + i * 4;
-                let bits = BitUtil::read_le_int(&self.blocks[idx], byte_off) as u32;
+                let byte_off = view_off + i * 4;
+                let bits = BitUtil::read_le_int(view, byte_off) as u32;
                 floats[off + i] = f32::from_bits(bits);
             }
             self.pos += chunk * 4;
@@ -5560,9 +5755,11 @@ impl DataInput for ByteBuffersDataInput {
             }
             let available_longs = available_bytes / 8;
             let chunk = remaining.min(available_longs);
+            let view_off = block_off - (self.pos & 0x7);
+            let view = self.get_long_buffer(self.pos);
             for i in 0..chunk {
-                let byte_off = block_off + i * 8;
-                longs[off + i] = BitUtil::read_le_long(&self.blocks[idx], byte_off);
+                let byte_off = view_off + i * 8;
+                longs[off + i] = BitUtil::read_le_long(view, byte_off);
             }
             self.pos += chunk * 8;
             off += chunk;
@@ -5570,6 +5767,82 @@ impl DataInput for ByteBuffersDataInput {
         }
         Ok(())
     }
+}
+
+/// Returns `true` when `v` is zero or a power of two.
+///
+/// Equivalent to the private
+/// `org.apache.lucene.store.ByteBuffersDataInput#isPowerOfTwo`. Lucene keeps
+/// this next to `ensureAssumptions`, which is its only caller, even though
+/// `BitUtil.isZeroOrPowerOfTwo` computes the same thing.
+fn is_power_of_two(v: usize) -> bool {
+    (v & v.wrapping_sub(1)) == 0
+}
+
+/// Returns the block page size the buffer list implies, taken from its first
+/// buffer.
+///
+/// Java reads it as `first.position() + first.remaining()`; a block of this
+/// port is a whole `Vec<u8>` whose position is always zero, so that sum is the
+/// vector's length.
+///
+/// Equivalent to `org.apache.lucene.store.ByteBuffersDataInput#determineBlockPage`.
+fn determine_block_page(buffers: &[Vec<u8>]) -> usize {
+    buffers[0].len()
+}
+
+/// Returns the views over `buffers` that cover `length` bytes starting at
+/// `offset`.
+///
+/// A Java `ByteBuffer` view is a position and a limit over a shared backing
+/// array, and a Rust sub-slice is exactly that, so the returned views share the
+/// source blocks and copy nothing, as Lucene's do. The list keeps Lucene's
+/// shape: the first view starts inside its block, the intermediate views are
+/// whole blocks, the last view stops at the slice end, and a slice that ends on
+/// a block boundary gets the same empty trailing view Java appends.
+///
+/// Equivalent to the private
+/// `org.apache.lucene.store.ByteBuffersDataInput#sliceBufferList`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when `buffers` violates the block
+/// layout assumptions.
+fn slice_buffer_list(buffers: &[Vec<u8>], offset: usize, length: usize) -> Result<Vec<&[u8]>> {
+    ensure_assumptions(buffers)?;
+
+    if buffers.len() == 1 {
+        return Ok(vec![&buffers[0][offset..offset + length]]);
+    }
+
+    // Java adds `buffers.get(0).position()` here; a block of this port always
+    // starts at position zero, so the absolute start is the offset itself.
+    let abs_start = offset;
+    let abs_end = abs_start + length;
+
+    let block_bytes = determine_block_page(buffers);
+    let block_bits = block_bytes.trailing_zeros() as usize;
+    let block_mask = (1usize << block_bits) - 1;
+
+    let end_offset = abs_end & block_mask;
+
+    let mut cloned: Vec<&[u8]> = buffers
+        [abs_start / block_bytes..abs_end / block_bytes + if end_offset == 0 { 0 } else { 1 }]
+        .iter()
+        .map(Vec::as_slice)
+        .collect();
+
+    if end_offset == 0 {
+        cloned.push(&[]);
+    }
+
+    // The limit is set before the position so that a slice contained in a
+    // single block, where both land on the same view, ends up with the
+    // `[position, limit)` range Java gives it.
+    let last = cloned.len() - 1;
+    cloned[last] = &cloned[last][..end_offset];
+    cloned[0] = &cloned[0][abs_start & block_mask..];
+    Ok(cloned)
 }
 
 /// Validates the assumptions required by [`ByteBuffersDataInput`].
@@ -5582,8 +5855,8 @@ fn ensure_assumptions(buffers: &[Vec<u8>]) -> Result<()> {
     if buffers.len() == 1 {
         return Ok(());
     }
-    let block_page = buffers[0].len();
-    if !BitUtil::is_zero_or_power_of_two(block_page as i32) {
+    let block_page = determine_block_page(buffers);
+    if !is_power_of_two(block_page) {
         return Err(LuceneError::IllegalArgument(format!(
             "The first buffer must have a power-of-two length: {block_page}"
         )));
@@ -5730,6 +6003,33 @@ impl ByteBuffersDataOutput {
         result
     }
 
+    /// Returns a list of writeable blocks over the (source) content buffers.
+    ///
+    /// This hands back the raw content of the source buffers, which may change
+    /// over the lifetime of this object: blocks can be recycled or discarded.
+    /// Most callers should prefer [`to_buffer_list`](Self::to_buffer_list),
+    /// which returns a read-only view over the same content.
+    ///
+    /// Java draws the distinction between the two with `asReadOnlyBuffer()`
+    /// versus `duplicate()`; here it is the difference between a shared and a
+    /// mutable slice, which is why this one takes `&mut self`.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.store.ByteBuffersDataOutput#toWriteableBufferList`.
+    pub fn to_writeable_buffer_list(&mut self) -> Vec<&mut [u8]> {
+        let Self {
+            completed, current, ..
+        } = self;
+        let mut result: Vec<&mut [u8]> = Vec::with_capacity(completed.len().max(1));
+        for block in completed.iter_mut() {
+            result.push(block.as_mut_slice());
+        }
+        if !current.is_empty() || result.is_empty() {
+            result.push(current.as_mut_slice());
+        }
+        result
+    }
+
     /// Returns a [`ByteBuffersDataInput`] over the current content.
     ///
     /// # Errors
@@ -5842,6 +6142,48 @@ impl ByteBuffersDataOutput {
         self.completed = cloned.completed;
         self.current = cloned.current;
     }
+
+    /// Writes a long string in chunks.
+    ///
+    /// `byte_len` is the number of UTF-8 bytes `s` encodes to, which the
+    /// caller has already written as a VInt. As in Lucene, the only caller is
+    /// the [`write_string`](DataOutput::write_string) override, which reaches
+    /// here when the string does not fit in what is left of the current block.
+    ///
+    /// The string is converted a window at a time so that the whole UTF-8 form
+    /// is never held at once, which is the reason Lucene splits this out of
+    /// `writeString`.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.store.ByteBuffersDataOutput#writeLongString`.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error raised while writing.
+    fn write_long_string(&mut self, byte_len: usize, s: &str) -> Result<()> {
+        let units: Vec<u16> = s.encode_utf16().collect();
+        let mut buf = vec![
+            0u8;
+            byte_len.min(
+                crate::util::unicode_util::MAX_UTF8_BYTES_PER_CHAR * MAX_CHARS_PER_WINDOW
+            )
+        ];
+        let end = units.len();
+        let mut i = 0usize;
+        while i < end {
+            // do one fewer chars than MAX_CHARS_PER_WINDOW in case we run into
+            // an unpaired surrogate below and need to increase the step to
+            // cover the lower surrogate as well
+            let mut step = (end - i).min(MAX_CHARS_PER_WINDOW - 1);
+            if i + step < end && (0xD800..=0xDBFF).contains(&units[i + step - 1]) {
+                step += 1;
+            }
+            let up_to = crate::util::UnicodeUtil::utf16_to_utf8(&units, i, step, &mut buf);
+            self.write_bytes(&buf, 0, up_to)?;
+            i += step;
+        }
+        Ok(())
+    }
 }
 
 impl Default for ByteBuffersDataOutput {
@@ -5916,6 +6258,28 @@ impl DataOutput for ByteBuffersDataOutput {
             self.write_int(i as i32)?;
             self.write_int((i >> 32) as i32)?;
             Ok(())
+        }
+    }
+
+    /// Writes a string as a VInt length followed by UTF-8 bytes, copying it
+    /// straight into the current block when it fits there.
+    ///
+    /// Java works the byte length out with `UnicodeUtil.calcUTF16toUTF8Length`
+    /// because a Java string is UTF-16; a Rust `&str` is already UTF-8, so its
+    /// `len()` is that same count and no conversion is needed on the fast path
+    /// either. The bytes written are the ones
+    /// [`DataOutput::write_string`] writes.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.store.ByteBuffersDataOutput#writeString`.
+    fn write_string(&mut self, v: &str) -> Result<()> {
+        let byte_len = v.len();
+        self.write_v_int(byte_len as i32)?;
+        if self.current.capacity() - self.current.len() >= byte_len {
+            self.current.extend_from_slice(v.as_bytes());
+            Ok(())
+        } else {
+            self.write_long_string(byte_len, v)
         }
     }
 

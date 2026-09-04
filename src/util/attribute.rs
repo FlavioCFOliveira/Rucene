@@ -14,6 +14,7 @@ use std::any::{Any, TypeId};
 use std::cell::{Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -115,6 +116,37 @@ pub trait AttributeImpl: Attribute + Debug + Send + Sync + 'static {
     ///
     /// Implementations typically return `self`.
     fn as_any_mut(&mut self) -> &mut dyn Any;
+
+    /// Reports whether this attribute equals `other`.
+    ///
+    /// `org.apache.lucene.util.AttributeImpl` does not override
+    /// `java.lang.Object#equals`, so the default here is Java's: identity.
+    /// Implementations that Lucene gives value equality — `CharTermAttributeImpl`
+    /// and its siblings — override this, exactly as they override `equals` in
+    /// Java.
+    ///
+    /// Used by [`AttributeSource`]'s [`PartialEq`], which is the port of
+    /// `AttributeSource#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        std::ptr::eq(
+            self.as_any() as *const dyn Any as *const (),
+            other.as_any() as *const dyn Any as *const (),
+        )
+    }
+
+    /// Returns this attribute's hash code.
+    ///
+    /// `org.apache.lucene.util.AttributeImpl` does not override
+    /// `java.lang.Object#hashCode`, so the default here is Java's: an identity
+    /// hash, derived from the address the implementation lives at.
+    /// Implementations that override [`Self::equals`] must override this too,
+    /// exactly as they override `hashCode` in Java.
+    ///
+    /// Used by [`AttributeSource::hash_code`], which is the port of
+    /// `AttributeSource#hashCode`.
+    fn hash_code(&self) -> i32 {
+        (self.as_any() as *const dyn Any as *const () as usize) as i32
+    }
 }
 
 /// Factory that creates [`AttributeImpl`] instances on demand.
@@ -132,6 +164,25 @@ pub trait AttributeFactory: Send + Sync + Debug {
         &self,
         attribute_type: TypeId,
     ) -> Result<Box<dyn AttributeImpl>, LuceneError>;
+}
+
+/// Returns a correctly typed constructor for the no-argument constructor of
+/// `I`.
+///
+/// Equivalent to the package-private
+/// `AttributeFactory.findAttributeImplCtor(Class<? extends AttributeImpl>)`,
+/// which resolves the constructor through `MethodHandles.publicLookup()` and
+/// adapts the handle to one returning `AttributeImpl`.
+///
+/// Divergence: Lucene performs the lookup reflectively at run time and raises
+/// `IllegalArgumentException` ("Cannot lookup accessible no-arg constructor
+/// for: ...") when the class has no accessible no-argument constructor
+/// (`AttributeFactory.java` lines 38-45). Rust has no reflection, so the lookup
+/// is expressed as the `Default` bound — the language's own no-argument
+/// constructor — which the compiler checks. The failure Lucene reports at run
+/// time therefore cannot arise, and this function is infallible.
+pub fn find_attribute_impl_ctor<I: AttributeImpl + Default>() -> AttributeCtor {
+    Box::new(|| Box::new(I::default()))
 }
 
 /// Default attribute factory backed by a [`TypeId`] registry.
@@ -216,6 +267,106 @@ impl AttributeFactory for DefaultAttributeFactory {
     }
 }
 
+/// **Expert**: an [`AttributeFactory`] returning an instance of one
+/// implementation for the attributes that implementation covers, and calling a
+/// delegate factory for every other attribute.
+///
+/// This lets a single [`AttributeImpl`] combining several attributes be
+/// preferred over separate implementations.
+///
+/// Equivalent to `org.apache.lucene.util.AttributeFactory.StaticImplementationAttributeFactory`.
+///
+/// Divergence: Lucene's class is `abstract` with a `protected abstract A
+/// createInstance()` that `getStaticImplementation` overrides in an anonymous
+/// subclass invoking a `MethodHandle` (`AttributeFactory.java` lines 97-158).
+/// Rust has no inheritance, so the single abstract method is held as the
+/// constructor field the anonymous subclass would have captured, and the class
+/// is concrete.
+pub struct StaticImplementationAttributeFactory {
+    delegate: Arc<dyn AttributeFactory>,
+    clazz: TypeId,
+    interfaces: &'static [TypeId],
+    ctor: AttributeCtor,
+}
+
+impl StaticImplementationAttributeFactory {
+    /// Creates an instance of the implementation this factory is fixed to.
+    ///
+    /// Equivalent to
+    /// `AttributeFactory.StaticImplementationAttributeFactory#createInstance()`.
+    pub fn create_instance(&self) -> Box<dyn AttributeImpl> {
+        (self.ctor)()
+    }
+}
+
+impl Debug for StaticImplementationAttributeFactory {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StaticImplementationAttributeFactory")
+            .field("clazz", &self.clazz)
+            .field("interfaces", &self.interfaces)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AttributeFactory for StaticImplementationAttributeFactory {
+    fn create_attribute_instance(
+        &self,
+        attribute_type: TypeId,
+    ) -> Result<Box<dyn AttributeImpl>, LuceneError> {
+        // `attClass.isAssignableFrom(clazz)`: the requested interface is one
+        // the fixed implementation covers, or the implementation itself.
+        if attribute_type == self.clazz || self.interfaces.contains(&attribute_type) {
+            Ok(self.create_instance())
+        } else {
+            self.delegate.create_attribute_instance(attribute_type)
+        }
+    }
+}
+
+impl PartialEq for StaticImplementationAttributeFactory {
+    fn eq(&self, other: &Self) -> bool {
+        // Lucene compares `this.delegate.equals(af.delegate)`; `AttributeFactory`
+        // does not override `equals`, so that is reference identity.
+        Arc::ptr_eq(&self.delegate, &other.delegate) && self.clazz == other.clazz
+    }
+}
+
+impl Eq for StaticImplementationAttributeFactory {}
+
+impl Hash for StaticImplementationAttributeFactory {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Lucene computes `31 * delegate.hashCode() + clazz.hashCode()`, and
+        // `AttributeFactory` inherits `Object.hashCode`, i.e. identity.
+        (Arc::as_ptr(&self.delegate) as *const () as usize).hash(state);
+        self.clazz.hash(state);
+    }
+}
+
+/// Returns an [`AttributeFactory`] returning an instance of `A` for the
+/// attributes it implements, and calling `delegate` for all other attributes.
+///
+/// This can be used to prefer a specific [`AttributeImpl`] that combines
+/// several attributes over separate implementations.
+///
+/// Equivalent to `org.apache.lucene.util.AttributeFactory#getStaticImplementation`.
+///
+/// Divergence: Lucene takes the implementation as a `Class<A>` argument and
+/// looks its constructor up reflectively, which is why its documentation asks
+/// callers to cache the result in a static field. Rust takes the
+/// implementation as the type parameter `A` and its `Default` bound as the
+/// constructor, so nothing is resolved at run time and no caching is needed.
+pub fn get_static_implementation<A: AttributeImpl + Default>(
+    delegate: Arc<dyn AttributeFactory>,
+) -> StaticImplementationAttributeFactory {
+    let constr = find_attribute_impl_ctor::<A>();
+    StaticImplementationAttributeFactory {
+        delegate,
+        clazz: TypeId::of::<A>(),
+        interfaces: A::default().attribute_interfaces(),
+        ctor: constr,
+    }
+}
+
 /// Internal linked-list node used by [`AttributeSource`] to represent the
 /// current attribute state.
 #[derive(Clone, Debug)]
@@ -291,6 +442,8 @@ impl AttributeSource {
     }
 
     /// Returns the factory used by this source.
+    ///
+    /// Equivalent to `org.apache.lucene.util.AttributeSource#getAttributeFactory`.
     pub fn factory(&self) -> &dyn AttributeFactory {
         self.factory.as_ref()
     }
@@ -419,12 +572,19 @@ impl AttributeSource {
 
     /// Returns an iterator over the attribute interface [`TypeId`]s in
     /// insertion order.
+    ///
+    /// Equivalent to `org.apache.lucene.util.AttributeSource#getAttributeClassesIterator`.
     pub fn attribute_classes(&self) -> impl Iterator<Item = TypeId> + '_ {
         self.attributes.keys().copied()
     }
 
     /// Returns an iterator over the unique attribute implementations in this
     /// source.
+    ///
+    /// This may yield fewer entries than [`Self::attribute_classes`], when one
+    /// implementation covers more than one attribute interface.
+    ///
+    /// Equivalent to `org.apache.lucene.util.AttributeSource#getAttributeImplsIterator`.
     pub fn attribute_impls_iter(
         &self,
     ) -> impl Iterator<Item = Rc<RefCell<Box<dyn AttributeImpl>>>> + '_ {
@@ -521,6 +681,28 @@ impl AttributeSource {
         }
     }
 
+    /// Returns a hash code combining the hash codes of every attribute
+    /// implementation this source holds.
+    ///
+    /// Equivalent to `org.apache.lucene.util.AttributeSource#hashCode`.
+    ///
+    /// Divergence: Lucene folds the implementations with `code = code * 31 +
+    /// state.attribute.hashCode()` while walking the state list, whose order is
+    /// the insertion order of the `LinkedHashMap` backing `attributeImpls`
+    /// (`AttributeSource.java` lines 335-341). This port's `attribute_impls` is
+    /// a [`HashMap`], which has no insertion order and whose iteration order
+    /// differs between two instances holding the same entries, so a positional
+    /// fold could not agree with [`PartialEq`]. The implementations' hash codes
+    /// are therefore summed, which is order-independent; the resulting value
+    /// differs from Java's, but it is not part of any index format.
+    pub fn hash_code(&self) -> i32 {
+        let mut code: i32 = 0;
+        for att in self.attribute_impls.values() {
+            code = code.wrapping_add(att.borrow().hash_code());
+        }
+        code
+    }
+
     /// Returns a comma-separated string of all reflected attribute values.
     ///
     /// If `prepend_att_class` is true, each key is prefixed with the attribute
@@ -532,6 +714,48 @@ impl AttributeSource {
         };
         self.reflect_with(&mut reflector);
         reflector.buffer
+    }
+}
+
+/// Equivalent to `org.apache.lucene.util.AttributeSource#equals`.
+///
+/// Two sources are equal when neither holds any attribute, or when both hold
+/// the same number of implementations and every implementation is of the same
+/// concrete type and equal to its counterpart.
+///
+/// Divergence: Lucene walks both state lists in step and requires the
+/// implementations to match pairwise *in insertion order*
+/// (`AttributeSource.java` lines 343-377). This port's `attribute_impls` is a
+/// [`HashMap`], which has no insertion order and whose iteration order differs
+/// between two instances holding the same entries, so a pairwise walk would not
+/// even be deterministic. The counterpart is therefore looked up by concrete
+/// implementation type — the very key Lucene's `attributeImpls` map uses, so
+/// the class check is subsumed by the lookup. The two answers agree except when
+/// the same implementations were added in different orders, which Lucene
+/// reports unequal and this reports equal.
+impl PartialEq for AttributeSource {
+    fn eq(&self, other: &Self) -> bool {
+        if !self.has_attributes() {
+            return !other.has_attributes();
+        }
+        if !other.has_attributes() {
+            return false;
+        }
+        if self.attribute_impls.len() != other.attribute_impls.len() {
+            return false;
+        }
+        // it is only equal if all attribute impls are the same
+        for (impl_type, att) in &self.attribute_impls {
+            let Some(other_att) = other.attribute_impls.get(impl_type) else {
+                return false;
+            };
+            let this_att = att.borrow();
+            let that_att = other_att.borrow();
+            if !that_att.equals(&**this_att) {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -657,12 +881,27 @@ impl<T: 'static> CloseableThreadLocal<T> {
         }
     }
 
+    /// Returns the value to install for a thread that does not have one yet.
+    ///
+    /// Equivalent to `org.apache.lucene.util.CloseableThreadLocal#initialValue`.
+    ///
+    /// Divergence: Lucene declares the method `protected` and returns `null`
+    /// from it, so that a subclass supplies the value by overriding it
+    /// (`CloseableThreadLocal.java` lines 62-64), and `get` returns `null` when
+    /// it is not overridden. Rust has no inheritance, so the override is the
+    /// closure handed to [`Self::new`] and this method invokes it; because a
+    /// closure is always supplied, the `null` case does not arise and the
+    /// return type is not an [`Option`].
+    pub fn initial_value(&self) -> Rc<RefCell<T>> {
+        (self.initial_value)()
+    }
+
     /// Returns the thread-local value, creating it if necessary.
     pub fn get(&self) -> Rc<RefCell<T>> {
         CLOSEABLE_THREAD_LOCALS.with(|map| {
             let mut map = map.borrow_mut();
             let boxed = map.entry(self.id).or_insert_with(|| {
-                let value = (self.initial_value)();
+                let value = self.initial_value();
                 Box::new(value)
             });
             boxed
