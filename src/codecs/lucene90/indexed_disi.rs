@@ -177,7 +177,17 @@ fn flush_block_jumps(
     Ok(block_count as i16)
 }
 
-fn create_block_slice(
+/// Opens the data-blocks slice of an `IndexedDISI` stream, i.e. everything at
+/// `offset` except the jump table stored after it.
+///
+/// # Errors
+///
+/// Propagates the error `slice` raises for a range the input cannot serve,
+/// which is how a corrupt `length` or `jump_table_entry_count` is refused.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene90.IndexedDISI#createBlockSlice`.
+pub fn create_block_slice(
     slice: &dyn IndexInput,
     slice_description: &str,
     offset: i64,
@@ -200,7 +210,18 @@ fn create_block_slice(
     )
 }
 
-fn create_jump_table(
+/// Opens the jump table of an `IndexedDISI` stream, which sits in the last
+/// `8 * jump_table_entry_count` bytes of the range, or `None` when the stream
+/// was written without one.
+///
+/// # Errors
+///
+/// Propagates the error `random_access_slice` raises for a range the input
+/// cannot serve.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene90.IndexedDISI#createJumpTable`.
+pub fn create_jump_table(
     slice: &dyn IndexInput,
     offset: i64,
     length: i64,
@@ -325,6 +346,26 @@ impl IndexedDISI {
     /// Returns the ordinal (index) of the current document.
     pub fn index(&self) -> i32 {
         self.index
+    }
+
+    /// Returns an iterator that delegates to this `IndexedDISI`. Advancing the
+    /// returned iterator advances the underlying `IndexedDISI`, and vice-versa.
+    ///
+    /// Divergence: Lucene wraps `disi` in an anonymous
+    /// `KnnVectorValues.DocIndexIterator` that forwards `docID`, `index`,
+    /// `nextDoc`, `advance` and `cost` to it
+    /// (`IndexedDISI.java:428-456`), because the Java `IndexedDISI` extends
+    /// `DocIdSetIterator` only. In this port `IndexedDISI` already implements
+    /// [`DocIndexIterator`] with exactly those five methods, so the forwarding
+    /// object would be pure indirection; the disi is moved into the box
+    /// instead. Rust ownership also means the caller cannot keep a second,
+    /// independently advanced handle on the same disi, which is why the value
+    /// is taken by move rather than by reference.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene90.IndexedDISI#asDocIndexIterator`.
+    pub fn as_doc_index_iterator(disi: IndexedDISI) -> Box<dyn DocIndexIterator> {
+        Box::new(disi)
     }
 
     fn advance_block(&mut self, target_block: i32) -> Result<()> {

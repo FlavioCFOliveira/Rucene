@@ -59,13 +59,13 @@ use crate::codecs::codec_util::{
     check_footer, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
     write_index_header,
 };
-use crate::codecs::compressing::{CompressionMode, Compressor, Decompressor};
+use crate::codecs::compressing::{CompressionMode, Compressor, Decompressor, MatchingReaders};
 use crate::codecs::stored_fields::{StoredFieldsFormat, StoredFieldsReader, StoredFieldsWriter};
 use crate::codecs::stub::{
     FieldInfo, FieldInfos, SegmentInfo, StoredFieldVisitor, StoredFieldVisitorStatus,
 };
 use crate::error::{LuceneError, Result};
-use crate::index::{segment_file_name, StoredFieldDataInput};
+use crate::index::{segment_file_name, DocIDMergerSub, DocMap, MergeState, StoredFieldDataInput};
 use crate::store::{
     ByteArrayDataInput, ByteBuffersDataOutput, DataInput, DataOutput, Directory, IOContext,
     IndexInput, IndexOutput,
@@ -785,6 +785,72 @@ impl FieldsIndexWriter {
 // Lucene90CompressingStoredFieldsWriter
 // -----------------------------------------------------------------------------
 
+// bulk merge is scary: it has caused corruption bugs in the past.
+// we try to be extra safe with this impl, but keep an escape hatch to work
+// around undiscovered bugs.
+//
+// Divergence: Lucene reads the switch from the system property named by
+// `BULK_MERGE_ENABLED_SYSPROP`
+// (`Lucene90CompressingStoredFieldsWriter.java:494-509`). Rust has no system
+// properties, and reading an environment variable at first use would give the
+// constant a different lifetime than Java's static initialiser, so the escape
+// hatch is a compile-time constant with Java's default value.
+const BULK_MERGE_ENABLED: bool = true;
+
+/// How one source segment's stored fields are copied into the merged one.
+///
+/// Equivalent to the private enum
+/// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingStoredFieldsWriter.MergeStrategy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MergeStrategy {
+    /// Copy chunk by chunk in a compressed format.
+    Bulk,
+
+    /// Copy document by document in a decompressed format.
+    Doc,
+
+    /// Copy field by field of decompressed documents.
+    Visitor,
+}
+
+/// One source segment of a stored-fields merge, together with the strategy
+/// chosen for it.
+///
+/// Equivalent to the private class
+/// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingStoredFieldsWriter.CompressingStoredFieldsMergeSub`.
+struct CompressingStoredFieldsMergeSub {
+    doc_map: DocMap,
+    reader_index: usize,
+    max_doc: i32,
+    #[allow(dead_code)]
+    merge_strategy: MergeStrategy,
+    doc_id: i32,
+    mapped_doc_id: i32,
+}
+
+impl DocIDMergerSub for CompressingStoredFieldsMergeSub {
+    fn next_doc(&mut self) -> Result<i32> {
+        self.doc_id += 1;
+        if self.doc_id == self.max_doc {
+            Ok(crate::search::NO_MORE_DOCS)
+        } else {
+            Ok(self.doc_id)
+        }
+    }
+
+    fn doc_map(&self) -> &DocMap {
+        &self.doc_map
+    }
+
+    fn mapped_doc_id(&self) -> i32 {
+        self.mapped_doc_id
+    }
+
+    fn set_mapped_doc_id(&mut self, doc_id: i32) {
+        self.mapped_doc_id = doc_id;
+    }
+}
+
 /// Compresses blocks of stored documents.
 pub struct Lucene90CompressingStoredFieldsWriter {
     index_writer: FieldsIndexWriter,
@@ -954,6 +1020,198 @@ impl Lucene90CompressingStoredFieldsWriter {
         self.doc_base += self.num_buffered_docs as i32;
         self.num_buffered_docs = 0;
         self.buffered_docs.reset();
+        Ok(())
+    }
+
+    /// Returns whether `candidate` should be recompressed rather than
+    /// bulk-merged.
+    ///
+    /// The last chunk written for a segment is typically incomplete, so without
+    /// recompressing, in some worst-case situations (frequent reopens with tiny
+    /// flushes) the compression ratio degrades over time. A segment counts as
+    /// dirty only when it has enough dirty documents to fill a whole block
+    /// *and* more than one per cent of its blocks are dirty.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingStoredFieldsWriter#tooDirty`.
+    fn too_dirty(&self, candidate: &Lucene90CompressingStoredFieldsReader) -> bool {
+        candidate.num_dirty_docs() > self.max_docs_per_chunk as i64
+            && candidate.num_dirty_chunks() * 100 > candidate.num_chunks()
+    }
+
+    /// Decides how one source segment's stored fields should be merged.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingStoredFieldsWriter#getMergeStrategy`.
+    fn get_merge_strategy(
+        &self,
+        merge_state: &MergeState,
+        matching_readers: &MatchingReaders,
+        reader_index: usize,
+    ) -> MergeStrategy {
+        let candidate = merge_state.stored_fields_readers[reader_index]
+            .as_ref()
+            .and_then(|reader| reader.as_any())
+            .and_then(|any| any.downcast_ref::<Lucene90CompressingStoredFieldsReader>());
+        let Some(reader) = candidate else {
+            return MergeStrategy::Visitor;
+        };
+        if !matching_readers.matching_readers[reader_index]
+            || reader.version() != DATA_VERSION_CURRENT
+        {
+            return MergeStrategy::Visitor;
+        }
+        if BULK_MERGE_ENABLED
+            && reader.compression_mode() == self.compression_mode
+            && reader.chunk_size() == self.chunk_size
+            // it's not worth fine-graining this if there are deletions.
+            && merge_state.live_docs[reader_index].is_none()
+            && !self.too_dirty(reader)
+        {
+            MergeStrategy::Bulk
+        } else {
+            MergeStrategy::Doc
+        }
+    }
+
+    /// Copies one document from `reader` in its decompressed form, re-encoding
+    /// it into this writer's own chunk buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::CorruptIndex`] when the source chunk is
+    /// inconsistent, and propagates any I/O error.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingStoredFieldsWriter#copyOneDoc`.
+    fn copy_one_doc(
+        &mut self,
+        reader: &Lucene90CompressingStoredFieldsReader,
+        doc_id: i32,
+    ) -> Result<()> {
+        debug_assert_eq!(reader.version(), DATA_VERSION_CURRENT);
+        let mut doc = reader.serialized_document(doc_id)?;
+        self.start_document()?;
+        self.buffered_docs
+            .copy_bytes(doc.input.as_mut(), doc.length as i64)?;
+        self.num_stored_fields_in_doc = doc.num_stored_fields;
+        self.finish_document()?;
+        Ok(())
+    }
+
+    /// Copies documents `[from_doc_id, to_doc_id)` of one source segment,
+    /// moving whole compressed chunks byte for byte wherever a chunk boundary
+    /// allows it and falling back to
+    /// [`copy_one_doc`](Self::copy_one_doc) for the documents at either end
+    /// that do not line up with one.
+    ///
+    /// Only the chunk header is rewritten, to rebase the document numbers onto
+    /// the merged segment; the compressed payload is copied verbatim, which is
+    /// what makes a bulk merge cheap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::CorruptIndex`] when a chunk header disagrees with
+    /// the stored-fields index, and propagates any I/O error.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingStoredFieldsWriter#copyChunks`.
+    fn copy_chunks(
+        &mut self,
+        merge_state: &MergeState,
+        sub: &CompressingStoredFieldsMergeSub,
+        from_doc_id: i32,
+        to_doc_id: i32,
+    ) -> Result<()> {
+        let reader = merge_state.stored_fields_readers[sub.reader_index]
+            .as_ref()
+            .and_then(|reader| reader.as_any())
+            .and_then(|any| any.downcast_ref::<Lucene90CompressingStoredFieldsReader>())
+            .ok_or_else(|| {
+                LuceneError::IllegalState(
+                    "bulk merge needs a Lucene90CompressingStoredFieldsReader".to_string(),
+                )
+            })?;
+        debug_assert_eq!(reader.version(), DATA_VERSION_CURRENT);
+        debug_assert_eq!(reader.chunk_size(), self.chunk_size);
+        debug_assert_eq!(reader.compression_mode(), self.compression_mode);
+        debug_assert!(!self.too_dirty(reader));
+        debug_assert!(merge_state.live_docs[sub.reader_index].is_none());
+
+        let mut doc_id = from_doc_id;
+
+        // copy docs that belong to the previous chunk
+        while doc_id < to_doc_id && reader.is_loaded(doc_id) {
+            self.copy_one_doc(reader, doc_id)?;
+            doc_id += 1;
+        }
+        if doc_id >= to_doc_id {
+            return Ok(());
+        }
+        // copy chunks
+        let mut from_pointer = reader.index_reader().get_start_pointer(doc_id)?;
+        let to_pointer = if to_doc_id == sub.max_doc {
+            reader.max_pointer()
+        } else {
+            reader.index_reader().get_start_pointer(to_doc_id)?
+        };
+        if from_pointer < to_pointer {
+            if self.num_buffered_docs > 0 {
+                self.flush(true)?;
+            }
+            let mut raw_docs = reader.fields_stream()?;
+            raw_docs.seek(from_pointer)?;
+            loop {
+                let base = raw_docs.read_v_int()?;
+                let code = raw_docs.read_v_int()?;
+                let buffered_docs = ((code as u32) >> 2) as i32;
+                if base != doc_id {
+                    return Err(LuceneError::CorruptIndex(format!(
+                        "invalid state: base={base}, docID={doc_id}"
+                    )));
+                }
+                // write a new index entry and new header for this chunk.
+                self.index_writer
+                    .write_index(buffered_docs, self.fields_stream.file_pointer())?;
+                self.fields_stream.write_v_int(self.doc_base)?; // rebase
+                self.fields_stream.write_v_int(code)?;
+                doc_id += buffered_docs;
+                self.doc_base += buffered_docs;
+                if doc_id > to_doc_id {
+                    return Err(LuceneError::CorruptIndex(format!(
+                        "invalid state: base={base}, count={buffered_docs}, toDocID={to_doc_id}"
+                    )));
+                }
+                // copy bytes until the next chunk boundary (or end of chunk data).
+                // using the stored fields index for this isn't the most efficient, but fast
+                // enough and is a source of redundancy for detecting bad things.
+                let end_chunk_pointer = if doc_id == sub.max_doc {
+                    reader.max_pointer()
+                } else {
+                    reader.index_reader().get_start_pointer(doc_id)?
+                };
+                let to_copy = end_chunk_pointer - raw_docs.file_pointer();
+                self.fields_stream.copy_bytes(raw_docs.as_mut(), to_copy)?;
+                self.num_chunks += 1;
+                let dirty_chunk = (code & 2) != 0;
+                if dirty_chunk {
+                    debug_assert!((buffered_docs as usize) < self.max_docs_per_chunk);
+                    self.num_dirty_chunks += 1;
+                    self.num_dirty_docs += i64::from(buffered_docs);
+                }
+                from_pointer = end_chunk_pointer;
+                if from_pointer >= to_pointer {
+                    break;
+                }
+            }
+        }
+
+        // copy leftover docs that don't form a complete chunk
+        debug_assert!(!reader.is_loaded(doc_id));
+        while doc_id < to_doc_id {
+            self.copy_one_doc(reader, doc_id)?;
+            doc_id += 1;
+        }
         Ok(())
     }
 
@@ -1600,38 +1858,7 @@ impl fmt::Debug for Lucene90CompressingStoredFieldsReader {
 
 impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
     fn document(&self, doc_id: i32, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
-        let mut state = self.state.lock().unwrap();
-        if !state.contains(doc_id) {
-            let mut input = self.fields_stream.clone_input()?;
-            let start_pointer = self.index_reader.get_start_pointer(doc_id)?;
-            input.seek(start_pointer)?;
-            state.reset(
-                doc_id,
-                input.as_mut(),
-                self.num_docs,
-                self.chunk_size,
-                &mut **self.decompressor.lock().unwrap(),
-                self.merging,
-            )?;
-        }
-
-        let mut decompressor = self.decompressor.lock().unwrap();
-        let doc = if self.merging {
-            state.document(doc_id, None, self.chunk_size, &mut **decompressor, true)?
-        } else {
-            let mut inp = self.fields_stream.clone_input()?;
-            let start_pointer = self.index_reader.get_start_pointer(doc_id)?;
-            inp.seek(start_pointer)?;
-            state.document(
-                doc_id,
-                Some(inp.as_mut()),
-                self.chunk_size,
-                &mut **decompressor,
-                false,
-            )?
-        };
-        drop(state);
-        drop(decompressor);
+        let doc = self.serialized_document(doc_id)?;
 
         let mut input = doc.input;
         for field_idx in 0..doc.num_stored_fields {
@@ -1709,9 +1936,138 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             state: Mutex::new(BlockState::new()),
         })
     }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 impl Lucene90CompressingStoredFieldsReader {
+    /// Returns the format version this segment was written with.
+    ///
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.getVersion`.
+    fn version(&self) -> i32 {
+        self.version
+    }
+
+    /// Returns the uncompressed size of one chunk, in bytes.
+    ///
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.getChunkSize`.
+    fn chunk_size(&self) -> usize {
+        self.chunk_size
+    }
+
+    /// Returns the compression mode the chunks were written with.
+    ///
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.getCompressionMode`.
+    fn compression_mode(&self) -> CompressionMode {
+        self.compression_mode
+    }
+
+    /// Returns the number of chunks in this segment.
+    ///
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.getNumChunks`.
+    fn num_chunks(&self) -> i64 {
+        self.num_chunks
+    }
+
+    /// Returns the number of chunks that were flushed before they were full.
+    ///
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.getNumDirtyChunks`.
+    fn num_dirty_chunks(&self) -> i64 {
+        self.num_dirty_chunks
+    }
+
+    /// Returns the number of documents held by those incomplete chunks.
+    ///
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.getNumDirtyDocs`.
+    fn num_dirty_docs(&self) -> i64 {
+        self.num_dirty_docs
+    }
+
+    /// Returns the offset just past the last chunk of the `.fdt` file.
+    ///
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.getMaxPointer`.
+    fn max_pointer(&self) -> i64 {
+        self.max_pointer
+    }
+
+    /// Returns the stored-fields index, which maps a document to the start of
+    /// the chunk that holds it.
+    ///
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.getIndexReader`.
+    fn index_reader(&self) -> &dyn FieldsIndex {
+        self.index_reader.as_ref()
+    }
+
+    /// Opens a cursor over the `.fdt` file, positioned at its start.
+    ///
+    /// Divergence: Lucene hands out its own `fieldsStream` and lets the caller
+    /// seek it (`Lucene90CompressingStoredFieldsReader.java:696-698`), which is
+    /// safe there because only a merge instance is ever driven this way. A
+    /// `&self` method cannot hand out a seekable cursor here, so an independent
+    /// clone of the same file is returned; a clone starts at offset zero and
+    /// the caller seeks it exactly as Java does.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the I/O error raised while cloning the input.
+    fn fields_stream(&self) -> Result<Box<dyn IndexInput>> {
+        self.fields_stream.clone_input()
+    }
+
+    /// Returns whether the chunk that holds `doc_id` is the one already
+    /// decoded, so that reading the document costs no decompression.
+    ///
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.isLoaded`.
+    fn is_loaded(&self, doc_id: i32) -> bool {
+        self.state.lock().unwrap().contains(doc_id)
+    }
+
+    /// Returns one document as it sits inside its decompressed chunk: the raw
+    /// bytes of its stored fields, their total length, and how many there are.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::CorruptIndex`] when the chunk header or the
+    /// document offsets are inconsistent, and propagates any I/O error.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingStoredFieldsReader#serializedDocument`.
+    fn serialized_document(&self, doc_id: i32) -> Result<SerializedDocument> {
+        let mut state = self.state.lock().unwrap();
+        if !state.contains(doc_id) {
+            let mut input = self.fields_stream.clone_input()?;
+            let start_pointer = self.index_reader.get_start_pointer(doc_id)?;
+            input.seek(start_pointer)?;
+            state.reset(
+                doc_id,
+                input.as_mut(),
+                self.num_docs,
+                self.chunk_size,
+                &mut **self.decompressor.lock().unwrap(),
+                self.merging,
+            )?;
+        }
+        debug_assert!(state.contains(doc_id));
+
+        let mut decompressor = self.decompressor.lock().unwrap();
+        if self.merging {
+            state.document(doc_id, None, self.chunk_size, &mut **decompressor, true)
+        } else {
+            let mut inp = self.fields_stream.clone_input()?;
+            let start_pointer = self.index_reader.get_start_pointer(doc_id)?;
+            inp.seek(start_pointer)?;
+            state.document(
+                doc_id,
+                Some(inp.as_mut()),
+                self.chunk_size,
+                &mut **decompressor,
+                false,
+            )
+        }
+    }
+
     fn read_field(
         input: &mut dyn DataInput,
         visitor: &mut dyn StoredFieldVisitor,

@@ -67,6 +67,22 @@ pub trait TermVectorsReader: Send + Sync + fmt::Debug {
         Ok(())
     }
 
+    /// Returns this reader as [`std::any::Any`], for the one caller that has to
+    /// recognise a concrete reader type: the compressing term-vectors writer,
+    /// which can only copy raw chunks out of a reader of its own format.
+    ///
+    /// Divergence: Lucene writes `mergeState.termVectorsReaders[readerIndex]
+    /// instanceof Lucene90CompressingTermVectorsReader`
+    /// (`Lucene90CompressingTermVectorsWriter.java:956-971`). Rust has no
+    /// `instanceof` over a trait object, so the concrete type is reached
+    /// through `Any`. The default answers `None`, which reads as "not a type
+    /// anybody can bulk-merge from" and lands the caller on the same
+    /// document-by-document path Java takes for a foreign reader; only the
+    /// readers that support the fast path override it.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Closes this reader, releasing all resources.
     fn close(&mut self) -> Result<()> {
         Ok(())

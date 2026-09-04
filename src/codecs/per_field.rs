@@ -79,6 +79,25 @@ impl PerFieldPostingsFormat {
                 .unwrap_or_else(|| default_format.clone())
         })
     }
+
+    /// Returns the postings format that should be used for writing new segments
+    /// of `field`.
+    ///
+    /// The field-to-format mapping is written to the index, so this is only
+    /// consulted when writing, never when reading.
+    ///
+    /// Divergence: Lucene declares this method abstract and expects a subclass
+    /// to supply the mapping (`PerFieldPostingsFormat.java:383-389`). Rust has no inheritance,
+    /// so this port takes the mapping as a resolver closure given to
+    /// [`new`](Self::new) or [`from_map`](Self::from_map), and this method is
+    /// the call through it. The contract is unchanged: one format per field,
+    /// decided by the caller.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.perfield.PerFieldPostingsFormat#getPostingsFormatForField`.
+    pub fn get_postings_format_for_field(&self, field: &str) -> Arc<dyn PostingsFormat> {
+        (self.resolver)(field)
+    }
 }
 
 impl PostingsFormat for PerFieldPostingsFormat {
@@ -489,6 +508,25 @@ impl PerFieldDocValuesFormat {
                 .cloned()
                 .unwrap_or_else(|| default_format.clone())
         })
+    }
+
+    /// Returns the doc-values format that should be used for writing new
+    /// segments of `field`.
+    ///
+    /// The field-to-format mapping is written to the index, so this is only
+    /// consulted when writing, never when reading.
+    ///
+    /// Divergence: Lucene declares this method abstract and expects a subclass
+    /// to supply the mapping (`PerFieldDocValuesFormat.java:382-389`). Rust has no inheritance,
+    /// so this port takes the mapping as a resolver closure given to
+    /// [`new`](Self::new) or [`from_map`](Self::from_map), and this method is
+    /// the call through it. The contract is unchanged: one format per field,
+    /// decided by the caller.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.perfield.PerFieldDocValuesFormat#getDocValuesFormatForField`.
+    pub fn get_doc_values_format_for_field(&self, field: &str) -> Arc<dyn DocValuesFormat> {
+        (self.resolver)(field)
     }
 }
 
@@ -908,6 +946,25 @@ impl PerFieldKnnVectorsFormat {
                 .unwrap_or_else(|| default_format.clone())
         })
     }
+
+    /// Returns the numeric-vector format that should be used for writing new
+    /// segments of `field`.
+    ///
+    /// The field-to-format mapping is written to the index, so this is only
+    /// consulted when writing, never when reading.
+    ///
+    /// Divergence: Lucene declares this method abstract and expects a subclass
+    /// to supply the mapping (`PerFieldKnnVectorsFormat.java:93-100`). Rust has no inheritance,
+    /// so this port takes the mapping as a resolver closure given to
+    /// [`new`](Self::new) or [`from_map`](Self::from_map), and this method is
+    /// the call through it. The contract is unchanged: one format per field,
+    /// decided by the caller.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat#getKnnVectorsFormatForField`.
+    pub fn get_knn_vectors_format_for_field(&self, field: &str) -> Arc<dyn KnnVectorsFormat> {
+        (self.resolver)(field)
+    }
 }
 
 impl KnnVectorsFormat for PerFieldKnnVectorsFormat {
@@ -924,7 +981,8 @@ impl KnnVectorsFormat for PerFieldKnnVectorsFormat {
     }
 
     fn get_max_dimensions(&self, field_name: &str) -> i32 {
-        (self.resolver)(field_name).get_max_dimensions(field_name)
+        self.get_knn_vectors_format_for_field(field_name)
+            .get_max_dimensions(field_name)
     }
 }
 

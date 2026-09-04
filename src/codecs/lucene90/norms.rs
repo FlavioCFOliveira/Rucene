@@ -48,7 +48,9 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::codecs::codec_util;
-use crate::codecs::lucene90::indexed_disi::{write_bit_set, IndexedDISI, DEFAULT_DENSE_RANK_POWER};
+use crate::codecs::lucene90::indexed_disi::{
+    create_block_slice, create_jump_table, write_bit_set, IndexedDISI, DEFAULT_DENSE_RANK_POWER,
+};
 use crate::codecs::norms::{NormsConsumer, NormsFormat, NormsProducer};
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
@@ -460,15 +462,76 @@ impl Lucene90NormsProducer {
         self.data.random_access_slice(entry.norms_offset, length)
     }
 
-    /// Opens the docs-with-field iterator of one sparse field.
+    /// Opens the data-blocks slice of one sparse field's docs-with-field
+    /// stream.
     ///
-    /// Equivalent to `Lucene90NormsProducer.getDisiInput` plus
-    /// `getDisiJumpTable`, which [`IndexedDISI::new`] performs together.
-    fn disi(&self, entry: &NormsEntry) -> Result<IndexedDISI> {
-        IndexedDISI::new(
+    /// Divergence: Lucene keeps a per-field cache of these inputs while it is
+    /// serving a merge, and hands out an offset-tracking wrapper over the
+    /// cached one so two norms instances pulled in parallel do not fight over
+    /// its file pointer (`Lucene90NormsProducer.java:267-356`). Rucene's merge
+    /// instance clones the whole input, so there is no shared input to cache or
+    /// to guard, and a fresh slice is opened every time — the same policy the
+    /// sibling [`data_input`](Self::data_input) already follows.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error the input raises for a range it cannot serve.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene90.Lucene90NormsProducer#getDisiInput`.
+    fn get_disi_input(
+        &self,
+        _field: &FieldInfo,
+        entry: &NormsEntry,
+    ) -> Result<Box<dyn IndexInput>> {
+        create_block_slice(
+            self.data.as_ref(),
+            "docs",
+            entry.docs_with_field_offset,
+            entry.docs_with_field_length,
+            entry.jump_table_entry_count as i32,
+        )
+    }
+
+    /// Opens the jump table of one sparse field's docs-with-field stream, or
+    /// `None` when it was written without one.
+    ///
+    /// Divergence: as in [`get_disi_input`](Self::get_disi_input), Lucene's
+    /// per-field merge cache (`Lucene90NormsProducer.java:358-375`) has no
+    /// counterpart here, because the merge instance owns its own clone of the
+    /// data input.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error the input raises for a range it cannot serve.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene90.Lucene90NormsProducer#getDisiJumpTable`.
+    fn get_disi_jump_table(
+        &self,
+        _field: &FieldInfo,
+        entry: &NormsEntry,
+    ) -> Result<Option<Box<dyn RandomAccessInput>>> {
+        create_jump_table(
             self.data.as_ref(),
             entry.docs_with_field_offset,
             entry.docs_with_field_length,
+            entry.jump_table_entry_count as i32,
+        )
+    }
+
+    /// Opens the docs-with-field iterator of one sparse field.
+    ///
+    /// Equivalent to the `IndexedDISI` that `Lucene90NormsProducer.getNorms`
+    /// builds on the sparse branch (`Lucene90NormsProducer.java:435-444`), out
+    /// of the two slices [`get_disi_input`](Self::get_disi_input) and
+    /// [`get_disi_jump_table`](Self::get_disi_jump_table) return.
+    fn disi(&self, field: &FieldInfo, entry: &NormsEntry) -> Result<IndexedDISI> {
+        let disi_input = self.get_disi_input(field, entry)?;
+        let disi_jump_table = self.get_disi_jump_table(field, entry)?;
+        IndexedDISI::with_slices(
+            disi_input,
+            disi_jump_table,
             entry.jump_table_entry_count as i32,
             entry.dense_rank_power,
             entry.num_docs_with_field as i64,
@@ -547,7 +610,7 @@ impl NormsProducer for Lucene90NormsProducer {
         }
 
         // Sparse: the docs-with-field set is an `IndexedDISI` stream.
-        let disi = self.disi(entry)?;
+        let disi = self.disi(field, entry)?;
         if entry.bytes_per_norm == 0 {
             return Ok(Box::new(SparseConstantNormsIterator::new(
                 disi,

@@ -689,11 +689,18 @@ impl BlockPostingsEnum {
             term_state.doc_freq as i64
         };
 
-        if self.doc_freq > 1 && self.doc_in.is_none() {
-            // doc_in is lazily initialized by the parent reader in postings().
-            return Err(LuceneError::IllegalState(
-                "BlockPostingsEnum.doc_in must be initialized by the reader".to_string(),
-            ));
+        if self.doc_freq > 1 {
+            if self.doc_in.is_none() {
+                // doc_in is lazily initialized by the parent reader in postings().
+                return Err(LuceneError::IllegalState(
+                    "BlockPostingsEnum.doc_in must be initialized by the reader".to_string(),
+                ));
+            }
+            let doc_in = self
+                .doc_in
+                .as_ref()
+                .expect("INVARIANT: doc_in was just checked to be Some");
+            Self::prefetch_postings(doc_in.as_ref(), term_state)?;
         }
 
         let pos_term_start_fp = term_state.pos_start_fp;
@@ -734,6 +741,27 @@ impl BlockPostingsEnum {
             self.level1_doc_end_fp = term_state.doc_start_fp;
         }
 
+        Ok(())
+    }
+
+    /// Prefetches the start of this term's postings in the `.doc` file.
+    ///
+    /// Nothing is prefetched when the input already sits at the right offset:
+    /// that suggests the caller is streaming the whole inverted index (for
+    /// example while merging), and the read-ahead logic does a better job.
+    /// Note that this heuristic does not work for terms that have skip data,
+    /// since skip data is stored after the last term, but handling every term
+    /// with fewer than 256 docs is already a good start. Positions and offsets
+    /// are deliberately not prefetched: they are less likely to be needed.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene104.Lucene104PostingsReader#prefetchPostings`.
+    fn prefetch_postings(doc_in: &dyn IndexInput, state: &BlockTermState) -> Result<()> {
+        // Singletons are inlined in the terms dict, nothing to prefetch.
+        debug_assert!(state.doc_freq > 1);
+        if doc_in.file_pointer() != state.doc_start_fp {
+            doc_in.prefetch(state.doc_start_fp, 1)?;
+        }
         Ok(())
     }
 

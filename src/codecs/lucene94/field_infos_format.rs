@@ -94,7 +94,44 @@ impl FieldInfosFormat for Lucene94FieldInfosFormat {
 
         output.write_v_int(infos.iter().count() as i32)?;
         for fi in infos.iter() {
-            fi.write(output.as_mut())?;
+            fi.check_consistency()?;
+
+            output.write_string(&fi.name)?;
+            output.write_v_int(fi.number)?;
+
+            let mut bits = 0u8;
+            if fi.has_term_vectors() {
+                bits |= STORE_TERMVECTOR;
+            }
+            if fi.omits_norms() {
+                bits |= OMIT_NORMS;
+            }
+            if fi.has_payloads() {
+                bits |= STORE_PAYLOADS;
+            }
+            if fi.soft_deletes_field {
+                bits |= SOFT_DELETES_FIELD;
+            }
+            if fi.is_parent_field {
+                bits |= PARENT_FIELD_FIELD;
+            }
+            output.write_byte(bits)?;
+
+            output.write_byte(index_options_byte(fi.index_options))?;
+
+            // pack the DV type and hasNorms in one byte
+            output.write_byte(doc_values_byte(fi.doc_values_type))?;
+            output.write_byte(doc_values_skip_index_byte(fi.doc_values_skip_index_type))?;
+            output.write_long(fi.doc_values_gen)?;
+            output.write_map_of_strings(&fi.attributes())?;
+            output.write_v_int(fi.point_dimension_count)?;
+            if fi.point_dimension_count != 0 {
+                output.write_v_int(fi.point_index_dimension_count)?;
+                output.write_v_int(fi.point_num_bytes)?;
+            }
+            output.write_v_int(fi.vector_dimension)?;
+            output.write_byte(fi.vector_encoding as u8)?;
+            output.write_byte(dist_func_to_ord(fi.vector_similarity_function)?)?;
         }
 
         codec_util::write_footer(output.as_mut())?;
@@ -158,7 +195,7 @@ fn read_field_info(input: &mut dyn DataInput, format: i32) -> Result<FieldInfo> 
 
     let vector_dimension = input.read_v_int()?;
     let vector_encoding = vector_encoding_from_byte(input.read_byte()?)?;
-    let vector_similarity_function = vector_similarity_function_from_byte(input.read_byte()?)?;
+    let vector_similarity_function = get_dist_func(input.read_byte()?)?;
 
     FieldInfo::new_full(
         name,
@@ -180,6 +217,137 @@ fn read_field_info(input: &mut dyn DataInput, format: i32) -> Result<FieldInfo> 
         soft_deletes_field,
         is_parent_field,
     )
+}
+
+/// The vector similarity functions this format can encode, in the order it
+/// encodes them.
+///
+/// The list is declared here, rather than derived from the declaration order of
+/// [`VectorSimilarityFunction`], so that reordering that enum cannot silently
+/// change the on-disk format. The values and their order match
+/// `VectorSimilarityFunction` as of Lucene 9.10.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat.SIMILARITY_FUNCTIONS`.
+const SIMILARITY_FUNCTIONS: [VectorSimilarityFunction; 4] = [
+    VectorSimilarityFunction::EUCLIDEAN,
+    VectorSimilarityFunction::DOT_PRODUCT,
+    VectorSimilarityFunction::COSINE,
+    VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
+];
+
+/// Returns the byte that encodes `index_options`.
+///
+/// Divergence: Lucene's `switch` ends in a `default` branch that throws an
+/// `AssertionError` for an unhandled `IndexOptions`, and a static initialiser
+/// asserts the enum still has six values
+/// (`Lucene94FieldInfosFormat.java:363-388`). Rust checks the match for
+/// exhaustiveness at compile time, so adding a variant to [`IndexOptions`]
+/// breaks the build here instead of at run time and the unreachable branch is
+/// dropped; this function therefore cannot fail.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat#indexOptionsByte`.
+fn index_options_byte(index_options: IndexOptions) -> u8 {
+    match index_options {
+        IndexOptions::NONE => 0,
+        IndexOptions::DOCS => 1,
+        IndexOptions::DOCS_AND_FREQS => 2,
+        IndexOptions::DOCS_AND_FREQS_AND_POSITIONS => 3,
+        IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS => 4,
+        IndexOptions::DOCS_AND_CUSTOM_FREQS => 5,
+    }
+}
+
+/// Returns the byte that encodes `doc_values_type`.
+///
+/// Divergence: as in [`index_options_byte`], Lucene's unhandled-value
+/// `AssertionError` (`Lucene94FieldInfosFormat.java:258-276`) becomes a
+/// compile-time exhaustiveness check, so this function cannot fail.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat#docValuesByte`.
+fn doc_values_byte(doc_values_type: DocValuesType) -> u8 {
+    match doc_values_type {
+        DocValuesType::NONE => 0,
+        DocValuesType::NUMERIC => 1,
+        DocValuesType::BINARY => 2,
+        DocValuesType::SORTED => 3,
+        DocValuesType::SORTED_SET => 4,
+        DocValuesType::SORTED_NUMERIC => 5,
+    }
+}
+
+/// Returns the byte that encodes `doc_values_skip_index_type`.
+///
+/// Divergence: as in [`index_options_byte`], Lucene's unhandled-value
+/// `AssertionError` (`Lucene94FieldInfosFormat.java:278-288`) becomes a
+/// compile-time exhaustiveness check, so this function cannot fail.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat#docValuesSkipIndexByte`.
+fn doc_values_skip_index_byte(doc_values_skip_index_type: DocValuesSkipIndexType) -> u8 {
+    match doc_values_skip_index_type {
+        DocValuesSkipIndexType::NONE => 0,
+        DocValuesSkipIndexType::RANGE => 1,
+    }
+}
+
+/// Returns the similarity function that ordinal `i` stands for.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when `i` names no function, which
+/// [`get_dist_func`] turns into a corruption report once it knows the ordinal
+/// came off disk.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat#distOrdToFunc`.
+fn dist_ord_to_func(i: u8) -> Result<VectorSimilarityFunction> {
+    SIMILARITY_FUNCTIONS
+        .get(i as usize)
+        .copied()
+        .ok_or_else(|| LuceneError::IllegalArgument(format!("invalid distance function: {i}")))
+}
+
+/// Returns the ordinal that encodes `func`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] for a similarity function this
+/// format cannot encode.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat#distFuncToOrd`.
+fn dist_func_to_ord(func: VectorSimilarityFunction) -> Result<u8> {
+    for (i, candidate) in SIMILARITY_FUNCTIONS.iter().enumerate() {
+        if *candidate == func {
+            return Ok(i as u8);
+        }
+    }
+    Err(LuceneError::IllegalArgument(format!(
+        "invalid distance function: {func:?}"
+    )))
+}
+
+/// Reads back the similarity function that byte `b` encodes, reporting an
+/// unknown ordinal as index corruption rather than as a programming error.
+///
+/// Divergence: Lucene takes the `IndexInput` as well, only so that the
+/// `CorruptIndexException` can name the file it came from
+/// (`Lucene94FieldInfosFormat.java:328-334`). This crate's
+/// [`LuceneError::CorruptIndex`] carries a message and no resource, so the
+/// input is not passed.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::CorruptIndex`] when `b` names no similarity function.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat#getDistFunc`.
+fn get_dist_func(b: u8) -> Result<VectorSimilarityFunction> {
+    dist_ord_to_func(b)
+        .map_err(|_| LuceneError::CorruptIndex(format!("invalid distance function: {b}")))
 }
 
 fn index_options_from_byte(b: u8) -> Result<IndexOptions> {

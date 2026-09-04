@@ -27,14 +27,14 @@ use crate::codecs::codec_util::{
     check_footer, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
     write_index_header,
 };
-use crate::codecs::compressing::{CompressionMode, Compressor, Decompressor};
+use crate::codecs::compressing::{CompressionMode, Compressor, Decompressor, MatchingReaders};
 use crate::codecs::lucene90::stored_fields::{FieldsIndex, FieldsIndexReader, FieldsIndexWriter};
 use crate::codecs::stub::{FieldInfo, FieldInfos, SegmentInfo};
 use crate::codecs::term_vectors::{TermVectorsFormat, TermVectorsReader, TermVectorsWriter};
 use crate::error::{LuceneError, Result};
 use crate::index::postings_enum::{Impacts, ImpactsEnum, ImpactsSource, PostingsEnum};
-use crate::index::segment_file_name;
 use crate::index::terms::{Fields, SeekStatus, TermState, Terms, TermsEnum};
+use crate::index::{segment_file_name, DocIDMergerSub, DocMap, MergeState};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{
     ByteArrayDataInput, ByteBuffersDataOutput, DataInput, DataOutput, Directory, IOContext,
@@ -419,6 +419,56 @@ pub struct Lucene90CompressingTermVectorsWriter {
     finished: bool,
 }
 
+// bulk merge is scary: it has caused corruption bugs in the past.
+// we try to be extra safe with this impl, but keep an escape hatch to work
+// around undiscovered bugs.
+//
+// Divergence: Lucene reads the switch from the system property named by
+// `BULK_MERGE_ENABLED_SYSPROP`
+// (`Lucene90CompressingTermVectorsWriter.java:795-807`). Rust has no system
+// properties, and reading an environment variable at first use would give the
+// constant a different lifetime than Java's static initialiser, so the escape
+// hatch is a compile-time constant with Java's default value.
+const BULK_MERGE_ENABLED: bool = true;
+
+/// One source segment of a term-vectors merge, together with whether its chunks
+/// can be copied verbatim.
+///
+/// Equivalent to the private class
+/// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingTermVectorsWriter.CompressingTermVectorsSub`.
+struct CompressingTermVectorsSub {
+    doc_map: DocMap,
+    max_doc: i32,
+    reader_index: usize,
+    #[allow(dead_code)]
+    can_perform_bulk_merge: bool,
+    doc_id: i32,
+    mapped_doc_id: i32,
+}
+
+impl DocIDMergerSub for CompressingTermVectorsSub {
+    fn next_doc(&mut self) -> Result<i32> {
+        self.doc_id += 1;
+        if self.doc_id == self.max_doc {
+            Ok(NO_MORE_DOCS)
+        } else {
+            Ok(self.doc_id)
+        }
+    }
+
+    fn doc_map(&self) -> &DocMap {
+        &self.doc_map
+    }
+
+    fn mapped_doc_id(&self) -> i32 {
+        self.mapped_doc_id
+    }
+
+    fn set_mapped_doc_id(&mut self, doc_id: i32) {
+        self.mapped_doc_id = doc_id;
+    }
+}
+
 impl Lucene90CompressingTermVectorsWriter {
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -538,6 +588,186 @@ impl Lucene90CompressingTermVectorsWriter {
             pay_start,
         ));
         self.pending_docs.last_mut().unwrap()
+    }
+
+    /// Returns whether `candidate` should be recompressed rather than
+    /// bulk-merged.
+    ///
+    /// The last chunk written for a segment is typically incomplete, so without
+    /// recompressing, in some worst-case situations (frequent reopens with tiny
+    /// flushes) the compression ratio degrades over time. A segment counts as
+    /// dirty only when it has enough dirty documents to fill a whole block
+    /// *and* more than one per cent of its blocks are dirty.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingTermVectorsWriter#tooDirty`.
+    fn too_dirty(&self, candidate: &Lucene90CompressingTermVectorsReader) -> bool {
+        candidate.num_dirty_docs() > self.max_docs_per_chunk as i64
+            && candidate.num_dirty_chunks() * 100 > candidate.num_chunks()
+    }
+
+    /// Returns whether one source segment's term vectors can be copied chunk by
+    /// chunk instead of being decoded and re-encoded.
+    ///
+    /// That is only possible when the reader is one of this format's own, was
+    /// written with the same version, compression mode and chunk size, carries
+    /// no deletions, and is not so fragmented that recompressing it is worth
+    /// the cost.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingTermVectorsWriter#canPerformBulkMerge`.
+    fn can_perform_bulk_merge(
+        &self,
+        merge_state: &MergeState,
+        matching_readers: &MatchingReaders,
+        reader_index: usize,
+    ) -> bool {
+        let candidate = merge_state.term_vectors_readers[reader_index]
+            .as_ref()
+            .and_then(|reader| reader.as_any())
+            .and_then(|any| any.downcast_ref::<Lucene90CompressingTermVectorsReader>());
+        match candidate {
+            Some(reader) => {
+                BULK_MERGE_ENABLED
+                    && matching_readers.matching_readers[reader_index]
+                    && reader.compression_mode() == self.compression_mode
+                    && reader.chunk_size() == self.chunk_size as i32
+                    && reader.version() == VERSION_CURRENT
+                    && reader.packed_ints_version() == PackedInts::VERSION_CURRENT
+                    && merge_state.live_docs[reader_index].is_none()
+                    && !self.too_dirty(reader)
+            }
+            None => false,
+        }
+    }
+
+    /// Copies documents `[from_doc_id, to_doc_id)` of one source segment,
+    /// moving whole compressed chunks byte for byte wherever a chunk boundary
+    /// allows it and re-encoding the documents at either end that do not line
+    /// up with one.
+    ///
+    /// Only the chunk header is rewritten, to rebase the document numbers onto
+    /// the merged segment; the compressed payload is copied verbatim, which is
+    /// what makes a bulk merge cheap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::CorruptIndex`] when a chunk header disagrees with
+    /// the term-vectors index, and propagates any I/O error.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingTermVectorsWriter#copyChunks`.
+    fn copy_chunks(
+        &mut self,
+        merge_state: &MergeState,
+        sub: &CompressingTermVectorsSub,
+        from_doc_id: i32,
+        to_doc_id: i32,
+    ) -> Result<()> {
+        // The reader is cloned out of the merge state so that this writer can
+        // be borrowed mutably while its documents are read; a clone shares the
+        // same files and the same metadata.
+        let reader = merge_state.term_vectors_readers[sub.reader_index]
+            .as_ref()
+            .and_then(|reader| reader.as_any())
+            .and_then(|any| any.downcast_ref::<Lucene90CompressingTermVectorsReader>())
+            .ok_or_else(|| {
+                LuceneError::IllegalState(
+                    "bulk merge needs a Lucene90CompressingTermVectorsReader".to_string(),
+                )
+            })?
+            .clone();
+        debug_assert_eq!(reader.version(), VERSION_CURRENT);
+        debug_assert_eq!(reader.chunk_size(), self.chunk_size as i32);
+        debug_assert_eq!(reader.compression_mode(), self.compression_mode);
+        debug_assert!(!self.too_dirty(&reader));
+        debug_assert!(merge_state.live_docs[sub.reader_index].is_none());
+
+        let mut doc_id = from_doc_id;
+
+        // copy docs that belong to the previous chunk
+        while doc_id < to_doc_id && reader.is_loaded(doc_id) {
+            let vectors = reader.get(doc_id)?;
+            self.add_all_doc_vectors(vectors.as_deref(), &merge_state.merge_field_infos)?;
+            doc_id += 1;
+        }
+
+        if doc_id >= to_doc_id {
+            return Ok(());
+        }
+        // copy chunks
+        let mut from_pointer = reader.index_reader().get_start_pointer(doc_id)?;
+        let to_pointer = if to_doc_id == sub.max_doc {
+            reader.max_pointer()
+        } else {
+            reader.index_reader().get_start_pointer(to_doc_id)?
+        };
+        if from_pointer < to_pointer {
+            // flush any pending chunks
+            if !self.pending_docs.is_empty() {
+                self.flush(true)?;
+            }
+            let mut raw_docs = reader.vectors_stream()?;
+            raw_docs.seek(from_pointer)?;
+            loop {
+                // iterate over each chunk. we use the vectors index to find chunk
+                // boundaries, read the docstart + doccount from the chunk header (we
+                // write a new header, since doc numbers will change), and just copy the
+                // bytes directly.
+                // read header
+                let base = raw_docs.read_v_int()?;
+                if base != doc_id {
+                    return Err(LuceneError::CorruptIndex(format!(
+                        "invalid state: base={base}, docID={doc_id}"
+                    )));
+                }
+
+                let code = raw_docs.read_v_int()?;
+                let buffered_docs = ((code as u32) >> 1) as i32;
+
+                // write a new index entry and new header for this chunk.
+                self.index_writer
+                    .write_index(buffered_docs, self.vectors_stream.file_pointer())?;
+                self.vectors_stream.write_v_int(self.num_docs)?; // rebase
+                self.vectors_stream.write_v_int(code)?;
+                doc_id += buffered_docs;
+                self.num_docs += buffered_docs;
+                if doc_id > to_doc_id {
+                    return Err(LuceneError::CorruptIndex(format!(
+                        "invalid state: base={base}, count={buffered_docs}, toDocID={to_doc_id}"
+                    )));
+                }
+
+                // copy bytes until the next chunk boundary (or end of chunk data).
+                // using the term vectors index for this isn't the most efficient, but
+                // fast enough and is a source of redundancy for detecting bad things.
+                let end = if doc_id == sub.max_doc {
+                    reader.max_pointer()
+                } else {
+                    reader.index_reader().get_start_pointer(doc_id)?
+                };
+                let to_copy = end - raw_docs.file_pointer();
+                self.vectors_stream.copy_bytes(raw_docs.as_mut(), to_copy)?;
+                self.num_chunks += 1;
+                let dirty_chunk = (code & 1) != 0;
+                if dirty_chunk {
+                    self.num_dirty_chunks += 1;
+                    self.num_dirty_docs += i64::from(buffered_docs);
+                }
+                from_pointer = end;
+                if from_pointer >= to_pointer {
+                    break;
+                }
+            }
+        }
+        // copy leftover docs that don't form a complete chunk
+        debug_assert!(!reader.is_loaded(doc_id));
+        while doc_id < to_doc_id {
+            let vectors = reader.get(doc_id)?;
+            self.add_all_doc_vectors(vectors.as_deref(), &merge_state.merge_field_infos)?;
+            doc_id += 1;
+        }
+        Ok(())
     }
 
     fn flush(&mut self, force: bool) -> Result<()> {
@@ -1199,6 +1429,32 @@ pub struct Lucene90CompressingTermVectorsReader {
     /// opened from — including a compound-file directory, whose files no
     /// `SegmentInfo` can point at.
     vectors_stream: Box<dyn IndexInput>,
+    /// The chunk the last [`get`](TermVectorsReader::get) decoded, so that a
+    /// read inside the same chunk skips the index lookup and a bulk merge can
+    /// tell whether a document's chunk is already in flight.
+    block_state: Mutex<BlockState>,
+}
+
+/// Which chunk the reader last decoded, and where it starts.
+///
+/// Equivalent to the private record
+/// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingTermVectorsReader.BlockState`.
+#[derive(Debug, Clone, Copy)]
+struct BlockState {
+    start_pointer: i64,
+    doc_base: i32,
+    chunk_docs: i32,
+}
+
+impl BlockState {
+    /// The state a freshly opened reader starts in: no chunk decoded yet.
+    fn new() -> Self {
+        Self {
+            start_pointer: -1,
+            doc_base: -1,
+            chunk_docs: 0,
+        }
+    }
 }
 
 impl Lucene90CompressingTermVectorsReader {
@@ -1292,6 +1548,7 @@ impl Lucene90CompressingTermVectorsReader {
             num_dirty_docs,
             max_pointer,
             vectors_stream,
+            block_state: Mutex::new(BlockState::new()),
         })
     }
 }
@@ -1329,14 +1586,25 @@ impl Clone for Lucene90CompressingTermVectorsReader {
                 .vectors_stream
                 .clone_input()
                 .expect("INVARIANT: cloning an open IndexInput never fails"),
+            block_state: Mutex::new(BlockState::new()),
         }
     }
 }
 
 impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     #[allow(clippy::needless_range_loop)]
     fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
-        let start_pointer = self.index_reader.get_start_pointer(doc)?;
+        // seek to the right place
+        let start_pointer = if self.is_loaded(doc) {
+            // avoid searching the start pointer
+            self.block_state.lock().unwrap().start_pointer
+        } else {
+            self.index_reader.get_start_pointer(doc)?
+        };
         let mut input = self.vectors_stream.clone_input()?;
         input.seek(start_pointer)?;
 
@@ -1357,6 +1625,11 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
             )));
         }
         let chunk_docs = chunk_docs as i32;
+        *self.block_state.lock().unwrap() = BlockState {
+            start_pointer,
+            doc_base,
+            chunk_docs,
+        };
         // Taken before the block-packed reader borrows the stream, because
         // every count it decodes is bounded by what is still left to read.
         let available = remaining(input.as_ref());
@@ -1608,7 +1881,6 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         let mut total_positions = 0i32;
         let mut total_offsets = 0i32;
         let mut total_payloads = 0i32;
-        let mut position_index = vec![Vec::new(); num_fields as usize];
         let mut term_index = 0i32;
         for i in 0..total_fields as usize {
             let f = flags(i as i32);
@@ -1628,19 +1900,7 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
             term_index = term_index.wrapping_add(term_count);
         }
 
-        term_index = 0;
-        for i in 0..skip as usize {
-            term_index = term_index.wrapping_add(num_terms_at(i as i64) as i32);
-        }
-        for i in 0..num_fields as usize {
-            let term_count = num_terms_at((skip + i as i32) as i64) as usize;
-            position_index[i] = vec![0; term_count + 1];
-            for j in 0..term_count {
-                let freq = term_freqs[(term_index + j as i32) as usize];
-                position_index[i][j + 1] = position_index[i][j] + freq;
-            }
-            term_index = term_index.wrapping_add(term_count as i32);
-        }
+        let position_index = Self::position_index(skip, num_fields, &num_terms_at, &term_freqs);
 
         let mut positions = vec![None; num_fields as usize];
         let mut start_offsets = vec![None; num_fields as usize];
@@ -1937,6 +2197,124 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
 impl Lucene90CompressingTermVectorsReader {
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::needless_range_loop)]
+    /// Builds, per field of the document, the running offset at which each of
+    /// its terms' positions (or offsets, or payloads) start inside that field's
+    /// flat array — so entry `j + 1` is entry `j` plus the frequency of term
+    /// `j`, and the last entry is the field's total number of occurrences.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingTermVectorsReader#positionIndex`.
+    fn position_index(
+        skip: i32,
+        num_fields: i32,
+        num_terms_at: &dyn Fn(i64) -> i64,
+        term_freqs: &[i32],
+    ) -> Vec<Vec<i32>> {
+        let mut position_index = vec![Vec::new(); num_fields as usize];
+        let mut term_index = 0i32;
+        for i in 0..skip as usize {
+            term_index = term_index.wrapping_add(num_terms_at(i as i64) as i32);
+        }
+        for i in 0..num_fields as usize {
+            let term_count = num_terms_at((skip + i as i32) as i64) as usize;
+            position_index[i] = vec![0; term_count + 1];
+            for j in 0..term_count {
+                let freq = term_freqs[(term_index + j as i32) as usize];
+                position_index[i][j + 1] = position_index[i][j] + freq;
+            }
+            term_index = term_index.wrapping_add(term_count as i32);
+        }
+        position_index
+    }
+
+    /// Returns the format version this segment was written with.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.getVersion`.
+    fn version(&self) -> i32 {
+        self.version
+    }
+
+    /// Returns the packed-integers version the block-packed streams use.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.getPackedIntsVersion`.
+    fn packed_ints_version(&self) -> i32 {
+        self.packed_ints_version
+    }
+
+    /// Returns the uncompressed size of one chunk, in bytes.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.getChunkSize`.
+    fn chunk_size(&self) -> i32 {
+        self.chunk_size
+    }
+
+    /// Returns the compression mode the chunks were written with.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.getCompressionMode`.
+    fn compression_mode(&self) -> CompressionMode {
+        self.compression_mode
+    }
+
+    /// Returns the number of chunks in this segment.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.getNumChunks`.
+    fn num_chunks(&self) -> i64 {
+        self.num_chunks
+    }
+
+    /// Returns the number of chunks that were flushed before they were full.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.getNumDirtyChunks`.
+    fn num_dirty_chunks(&self) -> i64 {
+        self.num_dirty_chunks
+    }
+
+    /// Returns the number of documents held by those incomplete chunks.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.getNumDirtyDocs`.
+    fn num_dirty_docs(&self) -> i64 {
+        self.num_dirty_docs
+    }
+
+    /// Returns the offset just past the last chunk of the `.tvd` file.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.getMaxPointer`.
+    fn max_pointer(&self) -> i64 {
+        self.max_pointer
+    }
+
+    /// Returns the term-vectors index, which maps a document to the start of
+    /// the chunk that holds it.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.getIndexReader`.
+    fn index_reader(&self) -> &dyn FieldsIndex {
+        self.index_reader.as_ref()
+    }
+
+    /// Opens a cursor over the `.tvd` file, positioned at its start.
+    ///
+    /// Divergence: Lucene hands out its own `vectorsStream` and lets the caller
+    /// seek it (`Lucene90CompressingTermVectorsReader.java:333-335`). A `&self`
+    /// method cannot hand out a seekable cursor here, so an independent clone
+    /// of the same file is returned; a clone starts at offset zero and the
+    /// caller seeks it exactly as Java does.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the I/O error raised while cloning the input.
+    fn vectors_stream(&self) -> Result<Box<dyn IndexInput>> {
+        self.vectors_stream.clone_input()
+    }
+
+    /// Returns whether `doc_id` falls inside the chunk this reader last
+    /// decoded, in which case its start pointer is already known.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.isLoaded`.
+    fn is_loaded(&self, doc_id: i32) -> bool {
+        let state = self.block_state.lock().unwrap();
+        state.doc_base <= doc_id && doc_id < state.doc_base.wrapping_add(state.chunk_docs)
+    }
+
     fn read_positions(
         input: &mut dyn DataInput,
         packed_ints_version: i32,

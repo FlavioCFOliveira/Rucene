@@ -233,6 +233,63 @@ pub fn check_index_header(
     Ok(version)
 }
 
+/// Verifies that `input` starts with an index header whose object id matches
+/// `expected_id`, and copies that header verbatim into `out`.
+///
+/// The codec name, version and suffix cannot be verified here, so they are
+/// passed through unchanged; only the magic and the object id are checked.
+/// This is what the compound-file writer uses when it folds a sub-file into a
+/// `.cfs`.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::CorruptIndex`] when `input` is too small to hold a
+/// header and a footer, when the first four bytes are not [`CODEC_MAGIC`], or
+/// when the object id does not match `expected_id`; propagates any I/O error.
+///
+/// Equivalent to `org.apache.lucene.codecs.CodecUtil#verifyAndCopyIndexHeader`.
+pub fn verify_and_copy_index_header(
+    input: &mut dyn IndexInput,
+    out: &mut dyn DataOutput,
+    expected_id: &[u8],
+) -> Result<()> {
+    // make sure it's large enough to have a header and footer
+    if input.length() < (footer_length() + header_length("")) as i64 {
+        return Err(LuceneError::CorruptIndex(format!(
+            "compound sub-files must have a valid codec header and footer: file is too small ({} bytes)",
+            input.length()
+        )));
+    }
+
+    let actual_header = read_be_int(input)?;
+    if actual_header != CODEC_MAGIC {
+        return Err(LuceneError::CorruptIndex(format!(
+            "compound sub-files must have a valid codec header and footer: codec header mismatch: actual header={actual_header} vs expected header={CODEC_MAGIC}"
+        )));
+    }
+
+    // we can't verify these, so we pass-through:
+    let codec = input.read_string()?;
+    let version = read_be_int(input)?;
+
+    // verify id:
+    check_index_header_id(input, expected_id)?;
+
+    // we can't verify extension either, so we pass-through:
+    let suffix_length = input.read_byte()? as usize;
+    let mut suffix_bytes = vec![0u8; suffix_length];
+    input.read_bytes(&mut suffix_bytes, 0, suffix_length)?;
+
+    // now write the header we just verified
+    write_be_int(out, CODEC_MAGIC)?;
+    out.write_string(&codec)?;
+    write_be_int(out, version)?;
+    out.write_bytes(expected_id, 0, expected_id.len())?;
+    out.write_byte(suffix_length as u8)?;
+    out.write_bytes(&suffix_bytes, 0, suffix_length)?;
+    Ok(())
+}
+
 /// Reads and validates the 16-byte object id of an index header.
 ///
 /// Equivalent to `CodecUtil.checkIndexHeaderID`.

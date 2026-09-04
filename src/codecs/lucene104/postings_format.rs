@@ -13,11 +13,12 @@ use crate::codecs::lucene103::blocktree::{
     Lucene103BlockTreeTermsReader, Lucene103BlockTreeTermsWriter, DEFAULT_MAX_BLOCK_SIZE,
     DEFAULT_MIN_BLOCK_SIZE,
 };
-use crate::codecs::lucene104::postings_reader::Lucene104PostingsReader;
+use crate::codecs::lucene104::postings_reader::{BlockPostingsEnum, Lucene104PostingsReader};
 use crate::codecs::lucene104::postings_writer::Lucene104PostingsWriter;
 use crate::codecs::postings::{FieldsConsumer, FieldsProducer, PostingsFormat};
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::error::{LuceneError, Result};
+use std::any::TypeId;
 
 // -----------------------------------------------------------------------------
 // Format constants
@@ -179,6 +180,26 @@ impl Lucene104PostingsFormat {
     /// Returns the format version.
     pub fn version(&self) -> i32 {
         self.version
+    }
+
+    /// Returns the identity of the type that implements `ImpactsEnum` in this
+    /// postings format.
+    ///
+    /// This is internally used to help the search layer keep the call sites of
+    /// [`DocIdSetIterator::next_doc`](crate::search::DocIdSetIterator::next_doc)
+    /// and [`advance`](crate::search::DocIdSetIterator::advance) bimorphic at
+    /// most, so that they remain candidates for inlining.
+    ///
+    /// Divergence: Lucene returns a `Class<? extends ImpactsEnum>` object
+    /// (`Lucene104PostingsFormat.java:361-363`). Rust has no `Class` and no
+    /// reflection; the nearest counterpart of a runtime type identity is
+    /// [`std::any::TypeId`], which is what this port returns. The value it
+    /// identifies is the same type Lucene names, [`BlockPostingsEnum`].
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat#getImpactsEnumImpl`.
+    pub fn get_impacts_enum_impl() -> TypeId {
+        TypeId::of::<BlockPostingsEnum>()
     }
 }
 

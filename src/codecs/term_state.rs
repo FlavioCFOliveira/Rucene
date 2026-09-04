@@ -99,6 +99,7 @@ impl CompetitiveImpactAccumulator {
     pub fn clear(&mut self) {
         self.max_freqs.fill(0);
         self.other_pairs.clear();
+        debug_assert!(self.assert_consistent());
     }
 
     /// Adds a single `(freq, norm)` pair.
@@ -109,6 +110,7 @@ impl CompetitiveImpactAccumulator {
         } else {
             Self::add_impact(Impact::new(freq, norm), &mut self.other_pairs);
         }
+        debug_assert!(self.assert_consistent());
     }
 
     /// Merges another accumulator into this one.
@@ -119,6 +121,7 @@ impl CompetitiveImpactAccumulator {
         for impact in &other.other_pairs {
             Self::add_impact(*impact, &mut self.other_pairs);
         }
+        debug_assert!(self.assert_consistent());
     }
 
     /// Replaces the content of this accumulator with `other`.
@@ -126,6 +129,7 @@ impl CompetitiveImpactAccumulator {
         self.max_freqs.copy_from_slice(&other.max_freqs);
         self.other_pairs.clear();
         self.other_pairs.extend(&other.other_pairs);
+        debug_assert!(self.assert_consistent());
     }
 
     /// Returns the competitive `(freq, norm)` pairs, ordered by increasing
@@ -185,6 +189,28 @@ impl CompetitiveImpactAccumulator {
         for entry in to_remove {
             set.remove(&entry);
         }
+    }
+
+    /// Checks the invariants of the outlier set: every pair it holds has a norm
+    /// outside the signed-byte range, and the pairs are strictly increasing in
+    /// both frequency and unsigned norm.
+    ///
+    /// Always returns `true`; it is only ever called from a `debug_assert!`, in
+    /// the same places where Lucene calls it from an `assert` statement.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.CompetitiveImpactAccumulator#assertConsistent`.
+    fn assert_consistent(&self) -> bool {
+        let mut previous_freq = 0i32;
+        let mut previous_norm = 0i64;
+        for impact in &self.other_pairs {
+            assert!(impact.norm < i8::MIN as i64 || impact.norm > i8::MAX as i64);
+            assert!(previous_freq < impact.freq);
+            assert!((previous_norm as u64) < (impact.norm as u64));
+            previous_freq = impact.freq;
+            previous_norm = impact.norm;
+        }
+        true
     }
 }
 
