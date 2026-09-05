@@ -29,11 +29,15 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 
 use rucene::codecs::{register_codec, Lucene104Codec};
+use rucene::document::{Document, Store, StringField};
 use rucene::error::{LuceneError, Result};
+use rucene::index::index_writer::IndexWriter;
+use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::{
     execute_two_phase_commit, list_commits, IndexCommit, IndexDeletionPolicy,
     KeepLastNCommitsDeletionPolicy, KeepOnlyLastCommitDeletionPolicy, NoDeletionPolicy, OpenMode,
-    PersistentSnapshotDeletionPolicy, SnapshotDeletionPolicy, TwoPhaseCommit, TwoPhaseCommitError,
+    PersistentSnapshotDeletionPolicy, SegmentInfos, SnapshotDeletionPolicy, TwoPhaseCommit,
+    TwoPhaseCommitError,
 };
 use rucene::store::{
     DataOutput, Directory, IOContext, IndexInput, IndexOutput, Lock, NIOFSDirectory,
@@ -331,6 +335,86 @@ fn keep_last_n_larger_than_the_history_matches_lucene() {
 
     let policy = KeepLastNCommitsDeletionPolicy::new(10).unwrap();
     assert_eq!(replay_commits(&policy, &created, |_| {}), expected);
+}
+
+/// Replays the Java fixture's own operation sequence — five `addDocument` +
+/// `commit()` pairs, then `close()` — through a real Rucene `IndexWriter`, and
+/// returns the generations the writer created and the `segments_N` that
+/// survived on disk.
+///
+/// This is deliberately *not* [`replay_commits`], which drives a deletion
+/// policy over synthetic commit points and never touches the writer's commit
+/// path. That is precisely why the existing suite could not see that Rucene's
+/// `IndexWriter` reused generation 1 on every commit.
+fn rucene_commit_sequence(commits: usize) -> (Vec<i64>, Vec<i64>) {
+    let _ = register_codec("Lucene104", Lucene104Codec::new());
+
+    let directory: Arc<dyn Directory> = Arc::new(rucene::store::RamDirectory::default());
+    let mut config = IndexWriterConfig::new();
+    config
+        .set_index_deletion_policy(NoDeletionPolicy::instance())
+        .expect("NoDeletionPolicy is a valid deletion policy");
+
+    let mut created = Vec::with_capacity(commits);
+    let writer = IndexWriter::new(Arc::clone(&directory), config).expect("writer opens");
+    for i in 0..commits {
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            StringField::new("id", format!("doc-{i}"), Store::YES).expect("field"),
+        ));
+        writer.add_document(&doc).expect("add_document");
+        writer.commit().expect("commit");
+        created.push(
+            SegmentInfos::get_last_commit_generation_dir(directory.as_ref())
+                .expect("the directory can be listed"),
+        );
+    }
+    // The Java fixture closes the writer before listing the directory, so this
+    // does too: a `close()` that wrote a further commit would show up here.
+    writer.close().expect("close");
+
+    let mut surviving: Vec<i64> = directory
+        .list_all()
+        .expect("the directory can be listed")
+        .iter()
+        .filter(|name| name.starts_with("segments_"))
+        .map(|name| {
+            SegmentInfos::generation_from_segments_file_name(name)
+                .expect("a segments_N name parses as a generation")
+        })
+        .collect();
+    surviving.sort_unstable();
+    (created, surviving)
+}
+
+/// The `segments_N` sequence Rucene's `IndexWriter` produces must be the one
+/// Lucene 10.5.0 produces for the same operations.
+///
+/// Lucene names each commit point from
+/// `SegmentInfos.getNextPendingGeneration()`, which is `generation + 1`, so five
+/// commits over a fresh directory yield `segments_1` through `segments_5`, and a
+/// `close()` with nothing left to commit adds none — `IndexWriter.startCommit`
+/// returns early when `pendingCommitChangeCount == lastCommitChangeCount`
+/// (`IndexWriter.java:5714-5724`). Both halves are read off a live Lucene
+/// 10.5.0 run rather than assumed.
+#[test]
+fn commit_generations_match_lucene() {
+    let out = scratch_dir("commit-generations");
+    let stdout = run_java_fixture(&out, "no-deletion");
+
+    let java_created = generations(&stdout, "created_generations");
+    let java_surviving = generations(&stdout, "surviving_generations");
+
+    let (rucene_created, rucene_surviving) = rucene_commit_sequence(java_created.len());
+
+    assert_eq!(
+        rucene_created, java_created,
+        "Rucene must name each commit point exactly as Lucene 10.5.0 does"
+    );
+    assert_eq!(
+        rucene_surviving, java_surviving,
+        "the same commit points must survive on disk, and close() must add none"
+    );
 }
 
 #[test]

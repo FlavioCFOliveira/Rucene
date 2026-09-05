@@ -657,8 +657,18 @@ impl SegmentInfos {
             Ok(infos)
         })();
 
-        codec_util::check_footer(input)?;
-        result
+        // Java's `finally` calls `CodecUtil.checkFooter(input, priorE)`, which
+        // *rethrows* the parse failure when there is one, reporting the footer
+        // only as extra context. Validating the footer with `?` before the
+        // parse result would replace the real cause with a footer complaint,
+        // because a parse that stopped early always leaves unread bytes.
+        match result {
+            Ok(infos) => {
+                codec_util::check_footer(input)?;
+                Ok(infos)
+            }
+            Err(prior) => Err(codec_util::check_footer_with_prior(input, prior)),
+        }
     }
 
     fn parse_segment_infos(
@@ -1005,11 +1015,17 @@ impl SegmentInfos {
     ///
     /// Equivalent to `SegmentInfos.write(IndexOutput)`.
     pub fn write_to_output(&self, out: &mut dyn IndexOutput) -> Result<()> {
+        // Java stamps every written commit with a *fresh* id
+        // (`StringHelper.randomId()` in `SegmentInfos.write(IndexOutput)`),
+        // not with the `id` field, which only records the id that was read
+        // back from disk. Two commits of the same `SegmentInfos` therefore
+        // carry different ids.
+        let commit_id = StringHelper::random_id();
         codec_util::write_index_header(
             out,
             "segments",
             VERSION_CURRENT,
-            &self.id,
+            &commit_id,
             &radix_36(self.generation as u64),
         )?;
 
@@ -1133,16 +1149,26 @@ impl SegmentInfos {
         let mut success_rename_and_sync = false;
         let result: Result<()> = (|| {
             directory.rename(&src, &dest)?;
-            directory.sync_metadata()?;
-            success_rename_and_sync = true;
-            Ok(())
+            // Only now does `dest` name a file this commit created. Java's
+            // inner `finally` — the one that deletes `dest` — is entered only
+            // after `rename` returns, so a failing `rename` must leave `dest`
+            // alone: it is still the previous, valid commit point.
+            match directory.sync_metadata() {
+                Ok(()) => {
+                    success_rename_and_sync = true;
+                    Ok(())
+                }
+                Err(err) => {
+                    // The file was created but the directory was never synced,
+                    // so remove the renamed file as Java does.
+                    let _ = directory.delete_file(&dest);
+                    Err(err)
+                }
+            }
         })();
 
-        if result.is_err() && !success_rename_and_sync {
-            let _ = directory.delete_file(&dest);
-        }
-
-        if result.is_err() {
+        if !success_rename_and_sync {
+            // Deletes pending_segments_N.
             self.rollback_commit(directory);
         }
 

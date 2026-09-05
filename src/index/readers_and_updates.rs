@@ -2536,14 +2536,18 @@ impl ReaderPool {
     /// Commits all pending deletes and DV updates for segments in `infos`.
     ///
     /// Equivalent to `ReaderPool.commit(SegmentInfos)`.
-    pub fn commit(&self, infos: &[SegmentCommitInfo]) -> Result<()> {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
-        for info in infos {
-            if let Some(rld) = map.get(&info.info.name) {
-                let _ = rld;
-            }
-        }
-        Ok(())
+    pub fn commit(&self, _infos: &[SegmentCommitInfo]) -> Result<bool> {
+        // Java walks the pooled readers, writes each one's live docs and field
+        // updates, and returns whether any of them changed
+        // (`ReaderPool.java:345-370`).
+        //
+        // **Divergence from Lucene 10.5.0.** This port does not write them yet,
+        // so no pooled reader can report a change and the answer is always
+        // `false`. Reporting that boolean — rather than merely "the call
+        // succeeded" — is what stops `IndexWriter.writeReaderPool` from
+        // checkpointing, and therefore from burning a commit generation, when
+        // nothing was written.
+        Ok(false)
     }
 
     /// Drops all entries from the pool.

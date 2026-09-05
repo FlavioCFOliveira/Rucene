@@ -12,6 +12,21 @@ fn ensure_codec() {
     let _ = rucene::codecs::register_codec("Lucene104", rucene::codecs::Lucene104Codec::new());
 }
 
+/// A directory of this test binary's own, unique to the calling test.
+///
+/// The process id alone is not enough: every test in this binary shares it, so
+/// two tests that both wrote on disk would meet in the same directory and, with
+/// them, on the same `write.lock`. The counter makes the name unique per test.
+fn scratch_dir(name: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir =
+        std::env::temp_dir().join(format!("rucene-smoke-{}-{seq}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    dir
+}
+
 fn build(dir: Arc<dyn Directory>, segments: usize) {
     ensure_codec();
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
@@ -77,9 +92,7 @@ fn only_segments_marks_the_status_partial() {
 
 #[test]
 fn do_main_reports_a_clean_index() {
-    let tmp = std::env::temp_dir().join(format!("rucene-smoke-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).unwrap();
+    let tmp = scratch_dir("do-main");
     let dir: Arc<dyn Directory> = Arc::new(rucene::store::FSDirectory::open(&tmp).unwrap());
     build(Arc::clone(&dir), 2);
     drop(dir);

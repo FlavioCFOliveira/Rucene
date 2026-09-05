@@ -105,8 +105,13 @@ pub struct IndexWriter {
     /// Equivalent to `IndexWriter.globalFieldNumberMap`.
     global_field_numbers: Arc<FieldNumbers>,
     state: Mutex<WriterState>,
-    /// Held for the writer's whole life, so only one writer opens a directory.
-    _write_lock: Box<dyn Lock>,
+    /// Held from construction until the writer closes, so only one writer
+    /// opens a directory at a time.
+    ///
+    /// Equivalent to `IndexWriter.writeLock`. Java closes it and sets the field
+    /// to `null` in `rollbackInternalNoCommit`, which is why this is an
+    /// `Option`: `None` is Java's `writeLock == null`.
+    write_lock: Mutex<Option<Box<dyn Lock>>>,
     closed: AtomicBool,
     /// Documents buffered plus published, capped at [`MAX_DOCS`].
     pending_num_docs: Arc<AtomicI64>,
@@ -118,6 +123,14 @@ pub struct IndexWriter {
     ///
     /// Equivalent to `IndexWriter.changeCount`.
     change_count: AtomicI64,
+    /// The `change_count` the last successful commit wrote.
+    ///
+    /// Equivalent to `IndexWriter.lastCommitChangeCount`.
+    last_commit_change_count: AtomicI64,
+    /// The `change_count` the commit under way is about to write.
+    ///
+    /// Equivalent to `IndexWriter.pendingCommitChangeCount`.
+    pending_commit_change_count: AtomicI64,
     /// Bumped once per flushed segment.
     ///
     /// Equivalent to `IndexWriter.flushCount`.
@@ -347,12 +360,14 @@ impl IndexWriter {
                 merge_max_num_segments: -1,
                 stop_merges: false,
             }),
-            _write_lock: write_lock,
+            write_lock: Mutex::new(Some(write_lock)),
             closed: AtomicBool::new(false),
             pending_num_docs,
             segment_counter,
             tragedy,
             change_count: AtomicI64::new(0),
+            last_commit_change_count: AtomicI64::new(0),
+            pending_commit_change_count: AtomicI64::new(0),
             flush_count: AtomicI32::new(0),
             flush_deletes_count: AtomicI32::new(0),
             did_message_state: AtomicBool::new(false),
@@ -1132,9 +1147,16 @@ impl IndexWriter {
         for info in flushed {
             state.segment_infos.add(info)?;
         }
-        state.segment_infos.changed();
-        let infos = clone_infos(&state.segment_infos)?;
-        state.deleter.checkpoint(&infos, false)?;
+        // Java's `publishFlushedSegment` ends with `checkpoint()`
+        // (`IndexWriter.java:2961-2963`), which bumps `changeCount` as well as
+        // marking the `SegmentInfos` changed. Without the bump the writer
+        // cannot tell a flushed segment from no change at all, and
+        // `startCommit` would skip the very commit that publishes it. This port
+        // publishes the batch in one go, so it checkpoints once for the batch
+        // rather than once per segment; the two differ only in the absolute
+        // value of `changeCount`, which is never read, only compared with
+        // `lastCommitChangeCount`.
+        self.checkpoint(&mut state)?;
         Ok(())
     }
 
@@ -1193,9 +1215,21 @@ impl IndexWriter {
         self.do_after_flush()?;
 
         let mut state = self.state()?;
+        if self.change_count.load(Ordering::Acquire)
+            != self.last_commit_change_count.load(Ordering::Acquire)
+        {
+            // There are changes to commit, so `start_commit` will write a new
+            // `segments_N`. Committing is itself an NRT-visible change, so Java
+            // bumps `changeCount` and the segments version here so that a later
+            // NRT reopen sees it (`IndexWriter.java:3806-3812`).
+            self.change_count.fetch_add(1, Ordering::AcqRel);
+            state.segment_infos.changed();
+        }
         let user_data = state.commit_user_data.clone();
         state.segment_infos.set_user_data(user_data, false);
         let to_sync = clone_infos(&state.segment_infos)?;
+        self.pending_commit_change_count
+            .store(self.change_count.load(Ordering::Acquire), Ordering::Release);
         self.start_commit(&mut state, to_sync)?;
         Ok(seq_no)
     }
@@ -1220,6 +1254,24 @@ impl IndexWriter {
                     self.seg_string_of(state, to_sync.as_slice())?
                 ),
             );
+        }
+        let last_commit_change_count = self.last_commit_change_count.load(Ordering::Acquire);
+        if last_commit_change_count > self.change_count.load(Ordering::Acquire) {
+            return Err(LuceneError::IllegalState(format!(
+                "lastCommitChangeCount={last_commit_change_count},changeCount={}",
+                self.change_count.load(Ordering::Acquire)
+            )));
+        }
+        if self.pending_commit_change_count.load(Ordering::Acquire) == last_commit_change_count {
+            // Nothing changed since the last commit, so Lucene writes no new
+            // `segments_N` at all (`IndexWriter.java:5714-5724`). Without this
+            // a `commit()` or a `close()` over an unchanged index would burn a
+            // generation that Lucene never produces.
+            if self.info_stream.is_enabled(IW) {
+                self.info_stream
+                    .message(IW, "  skip startCommit(): no changes pending");
+            }
+            return Ok(());
         }
         debug_assert!(self.files_exist(state, &to_sync)?);
         to_sync.prepare_commit(self.directory.as_ref())?;
@@ -1283,6 +1335,10 @@ impl IndexWriter {
         };
         pending.finish_commit(self.directory.as_ref())?;
         state.segment_infos.update_generation(&pending);
+        self.last_commit_change_count.store(
+            self.pending_commit_change_count.load(Ordering::Acquire),
+            Ordering::Release,
+        );
         state.rollback_segments = state
             .segment_infos
             .iter()
@@ -1360,11 +1416,38 @@ impl IndexWriter {
         let infos = clone_infos(&state.segment_infos)?;
         state.deleter.checkpoint(&infos, false)?;
         state.deleter.refresh()?;
+        // Java discards any change the rollback undid, so the next writer over
+        // this index starts level with the commit on disk
+        // (`IndexWriter.java:2636`).
+        self.last_commit_change_count
+            .store(self.change_count.load(Ordering::Acquire), Ordering::Release);
         // Must set `closed` before releasing the writer's state, so no
         // concurrent thread sneaks a flush in behind the rollback.
         self.closed.store(true, Ordering::Release);
+        // Java closes the write lock and nulls the field in the same
+        // synchronized block, so the directory is free the moment the writer
+        // is closed rather than whenever the object is finally dropped.
+        self.release_write_lock()?;
         self.closing.store(false, Ordering::Release);
         Ok(())
+    }
+
+    /// Releases the directory's write lock, so another writer may open it.
+    ///
+    /// Equivalent to the `IOUtils.close(writeLock, cleanupAndNotify)` /
+    /// `writeLock = null` pair in `IndexWriter.rollbackInternalNoCommit()`.
+    /// Idempotent, because Java's `writeLock` is already `null` on a second
+    /// pass.
+    fn release_write_lock(&self) -> Result<()> {
+        let taken = self
+            .write_lock
+            .lock()
+            .map_err(|_| LuceneError::IllegalState("write lock mutex poisoned".to_string()))?
+            .take();
+        match taken {
+            Some(mut lock) => lock.close(),
+            None => Ok(()),
+        }
     }
 
     /// Discards everything since the last commit and closes the deleter.
@@ -1422,6 +1505,11 @@ impl IndexWriter {
                 state.deleter.close()?;
                 self.reader_pool.close()?;
                 self.closed.store(true, Ordering::Release);
+                // Java reaches this through `rollbackInternal()`, which closes
+                // the write lock; this port inlines that tail, so it must
+                // release the lock here too.
+                drop(state);
+                self.release_write_lock()?;
                 self.closing.store(false, Ordering::Release);
                 Ok(())
             }
@@ -3151,15 +3239,22 @@ fn radix_36(mut value: i64) -> String {
     String::from_utf8(out).expect("base-36 digits are ASCII")
 }
 
-/// Produces an independent `SegmentInfos` carrying the same segments.
+/// Produces an independent snapshot of `SegmentInfos`.
 ///
-/// `SegmentInfos` is not `Clone` in this crate, and both the deleter's
-/// checkpoint and the merge policy need a snapshot that does not borrow the
-/// writer's state.
+/// Equivalent to `SegmentInfos.clone()`: a field-by-field copy — `generation`,
+/// `lastGeneration`, `counter`, `version` and `id` included — with the segment
+/// list deep-cloned. Both the deleter's checkpoint and the merge policy need a
+/// snapshot that does not borrow the writer's state.
+///
+/// This is deliberately **not** `SegmentInfos::replace`, which is Java's
+/// `SegmentInfos.replace(SegmentInfos)`: that one copies only the segments,
+/// `lastGeneration` and the user data, keeping the target's own `generation`
+/// so a rollback can never make the next commit reuse a `segments_N` name.
+/// Using it here would leave every commit's snapshot at generation `-1`, so
+/// `SegmentInfos.getNextPendingGeneration()` would return `1` forever and the
+/// second commit would try to write `segments_1` again.
 fn clone_infos(source: &SegmentInfos) -> Result<SegmentInfos> {
-    let mut copy = SegmentInfos::new(source.index_created_version_major())?;
-    copy.replace(source);
-    Ok(copy)
+    Ok(source.clone())
 }
 
 /// Document statistics taken in one consistent snapshot.
@@ -3856,7 +3951,7 @@ impl IndexWriter {
                 let state = self.state()?;
                 state.segment_infos.as_slice().to_vec()
             };
-            if self.reader_pool.commit(&infos).is_ok() {
+            if self.reader_pool.commit(&infos)? {
                 let mut state = self.state()?;
                 self.checkpoint_no_sis(&mut state)?;
             }
