@@ -29,6 +29,7 @@ use crate::search::field_comparator::SortValue;
 use crate::search::field_doc::FieldDoc;
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::match_no_docs_query::MatchNoDocsQuery;
+use crate::search::point_in_set_query::{PointFormatter, PointInSetQuery};
 use crate::search::point_range_query::{DimensionFormatter, PointRangeQuery};
 use crate::search::top_field_docs::TopFieldDocs;
 use crate::search::total_hits::{TotalHits, TotalHitsRelation};
@@ -1317,6 +1318,47 @@ impl InetAddressPoint {
             Arc::new(InetAddressPointFormatter),
         )?))
     }
+
+    /// Creates a query matching one exact address.
+    ///
+    /// Equivalent to `InetAddressPoint.newExactQuery(String, InetAddress)`,
+    /// which is a range query whose two bounds are the same address.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`new_range_query`](Self::new_range_query) raises.
+    pub fn new_exact_query(field: &str, value: &[u8]) -> Result<Arc<dyn Query>> {
+        Self::new_range_query(field, value, value)
+    }
+
+    /// Creates a query matching any of `values`, the points equivalent of a
+    /// terms query.
+    ///
+    /// Equivalent to `InetAddressPoint.newSetQuery(String, InetAddress...)`.
+    /// The addresses are encoded first and then sorted by their encoded bytes,
+    /// because that is the order the points index is in — Java notes that
+    /// `InetAddress` is not `Comparable`, and that even if it were, the IPv4
+    /// mapping would make its order the wrong one.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`encode`](Self::encode) and
+    /// [`PointInSetQuery::new`](crate::search::PointInSetQuery) raise.
+    pub fn new_set_query(field: &str, values: &[&[u8]]) -> Result<Arc<dyn Query>> {
+        let mut sorted_values = values
+            .iter()
+            .map(|v| Self::encode(v))
+            .collect::<Result<Vec<Vec<u8>>>>()?;
+        sorted_values.sort();
+        let mut stream = crate::document::PointValueStream::new(sorted_values);
+        Ok(Arc::new(PointInSetQuery::new(
+            field,
+            1,
+            Self::BYTES as i32,
+            &mut stream,
+            Arc::new(InetAddressPointFormatter),
+        )?))
+    }
 }
 
 /// Renders an encoded address as a host address for a range query's string
@@ -1331,6 +1373,19 @@ struct InetAddressPointFormatter;
 
 impl DimensionFormatter for InetAddressPointFormatter {
     fn format(&self, _dimension: i32, value: &[u8]) -> String {
+        inet_address_host_address(value)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl PointFormatter for InetAddressPointFormatter {
+    /// Equivalent to the `toString(byte[])` override of the anonymous
+    /// `PointInSetQuery` subclass in `InetAddressPoint.newSetQuery`, which
+    /// prints `decode(value).getHostAddress()`.
+    fn format(&self, value: &[u8]) -> String {
         inet_address_host_address(value)
     }
 
@@ -1683,5 +1738,84 @@ impl DimensionFormatter for LatLonPointFormatter {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod inet_address_query_tests {
+    use super::*;
+
+    /// The 16-byte IPv6 form of an IPv4 address, which is what the field
+    /// indexes and therefore what a query must ask for.
+    fn encoded(address: &[u8]) -> Vec<u8> {
+        InetAddressPoint::encode(address).unwrap()
+    }
+
+    #[test]
+    fn new_exact_query_is_a_range_of_one_address() {
+        // Java's `newExactQuery(field, value)` is `newRangeQuery(field, value,
+        // value)`, so the two must render identically.
+        let exact = InetAddressPoint::new_exact_query("ip", &[10, 0, 0, 1]).unwrap();
+        let range =
+            InetAddressPoint::new_range_query("ip", &[10, 0, 0, 1], &[10, 0, 0, 1]).unwrap();
+        assert!(exact.query_eq(range.as_ref()));
+        assert_eq!(exact.query_hash(), range.query_hash());
+        // The rendered bounds are host addresses, not raw bytes.
+        let rendered = exact.to_query_string("ip");
+        assert!(
+            rendered.contains("10.0.0.1"),
+            "unexpected rendering: {rendered}"
+        );
+    }
+
+    #[test]
+    fn new_exact_query_encodes_into_the_indexed_form() {
+        // The field stores every address in its 16-byte IPv6 form, so an exact
+        // query over an IPv4 literal has to ask for the mapped form or it would
+        // match nothing.
+        let mapped = encoded(&[10, 0, 0, 1]);
+        assert_eq!(mapped.len(), InetAddressPoint::BYTES);
+        assert_eq!(&mapped[..12], &InetAddressPoint::IPV4_PREFIX[..]);
+        assert_eq!(&mapped[12..], &[10, 0, 0, 1]);
+    }
+
+    #[test]
+    fn new_set_query_sorts_the_encoded_addresses() {
+        // Java sorts the *encoded* forms, because `InetAddress` is not
+        // comparable and the IPv4 mapping would make its order the wrong one.
+        // Two set queries built from the same addresses in different orders are
+        // therefore the same query.
+        let one =
+            InetAddressPoint::new_set_query("ip", &[&[192, 168, 0, 1][..], &[10, 0, 0, 1][..]])
+                .unwrap();
+        let other =
+            InetAddressPoint::new_set_query("ip", &[&[10, 0, 0, 1][..], &[192, 168, 0, 1][..]])
+                .unwrap();
+        assert!(one.query_eq(other.as_ref()));
+        assert_eq!(one.query_hash(), other.query_hash());
+    }
+
+    #[test]
+    fn new_set_query_renders_its_addresses_as_hosts() {
+        let query = InetAddressPoint::new_set_query("ip", &[&[10, 0, 0, 1][..]]).unwrap();
+        let rendered = query.to_query_string("ip");
+        assert!(
+            rendered.contains("10.0.0.1"),
+            "unexpected rendering: {rendered}"
+        );
+    }
+
+    #[test]
+    fn new_set_query_over_different_addresses_is_a_different_query() {
+        let one = InetAddressPoint::new_set_query("ip", &[&[10, 0, 0, 1][..]]).unwrap();
+        let other = InetAddressPoint::new_set_query("ip", &[&[10, 0, 0, 2][..]]).unwrap();
+        assert!(!one.query_eq(other.as_ref()));
+    }
+
+    #[test]
+    fn address_queries_reject_a_malformed_address() {
+        // `encode` accepts a 4-byte or a 16-byte address and nothing else.
+        assert!(InetAddressPoint::new_exact_query("ip", &[10, 0, 0]).is_err());
+        assert!(InetAddressPoint::new_set_query("ip", &[&[10, 0, 0][..]]).is_err());
     }
 }

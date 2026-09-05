@@ -1139,6 +1139,159 @@ impl Field {
         }
     }
 
+    /// Returns the Java simple name of the kind of value this field holds.
+    ///
+    /// Equivalent to `fieldsData.getClass().getSimpleName()`, which Java's typed
+    /// setters splice into the message of the exception they throw. Java names
+    /// the *concrete* runtime class, so a reader value renders as (say)
+    /// `StringReader`; this port has one variant per kind and names the kind,
+    /// because the concrete reader sits behind a `dyn Read`.
+    fn value_type_name(&self) -> &'static str {
+        match &self.fields_data {
+            FieldData::String(_) => "String",
+            FieldData::Reader(_) => "Reader",
+            FieldData::TokenStream(_) => "TokenStream",
+            FieldData::Bytes(_) => "BytesRef",
+            FieldData::Number(NumericValue::Int(_)) => "Integer",
+            FieldData::Number(NumericValue::Long(_)) => "Long",
+            FieldData::Number(NumericValue::Float(_)) => "Float",
+            FieldData::Number(NumericValue::Double(_)) => "Double",
+            FieldData::StoredInput { .. } => "StoredFieldDataInput",
+        }
+    }
+
+    /// Changes the `byte` value of this field.
+    ///
+    /// Equivalent to `Field.setByteValue(byte)`, which refuses unless the field
+    /// already holds a `Byte`.
+    ///
+    /// # A value no field can hold
+    ///
+    /// [`NumericValue`] has no byte variant, and needs none: in Lucene 10.5.0
+    /// `Field.setByteValue` is the only place in the whole of Lucene Core that
+    /// ever assigns a `Byte` to `fieldsData` (`Field.java:354`), and it demands
+    /// a `Byte` be there already. No constructor and no subclass puts one
+    /// there, so the state is unreachable in Java too, and this method answers
+    /// exactly as Java's does for every field either library can build.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`], as Java throws
+    /// `IllegalArgumentException`, for every field this crate can construct.
+    pub fn set_byte_value(&mut self, _value: i8) -> Result<()> {
+        Err(LuceneError::IllegalArgument(format!(
+            "cannot change value type from {} to Byte",
+            self.value_type_name()
+        )))
+    }
+
+    /// Changes the `short` value of this field.
+    ///
+    /// Equivalent to `Field.setShortValue(short)`, which refuses unless the
+    /// field already holds a `Short`. As with
+    /// [`set_byte_value`](Self::set_byte_value), no Lucene 10.5.0 field ever
+    /// holds one (`Field.java:363` is the only assignment), so the rejection is
+    /// what Java produces too.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`], as Java throws
+    /// `IllegalArgumentException`, for every field this crate can construct.
+    pub fn set_short_value(&mut self, _value: i16) -> Result<()> {
+        Err(LuceneError::IllegalArgument(format!(
+            "cannot change value type from {} to Short",
+            self.value_type_name()
+        )))
+    }
+
+    /// Changes the `int` value of this field.
+    ///
+    /// Equivalent to `Field.setIntValue(int)`. The value type cannot change:
+    /// the field must already hold an `int`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when this field holds anything
+    /// but an `int`, as Java throws `IllegalArgumentException`.
+    pub fn set_int_value(&mut self, value: i32) -> Result<()> {
+        match &self.fields_data {
+            FieldData::Number(NumericValue::Int(_)) => {
+                self.fields_data = FieldData::Number(NumericValue::Int(value));
+                Ok(())
+            }
+            _ => Err(LuceneError::IllegalArgument(format!(
+                "cannot change value type from {} to Integer",
+                self.value_type_name()
+            ))),
+        }
+    }
+
+    /// Changes the `long` value of this field.
+    ///
+    /// Equivalent to `Field.setLongValue(long)`. The value type cannot change:
+    /// the field must already hold a `long`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when this field holds anything
+    /// but a `long`, as Java throws `IllegalArgumentException`.
+    pub fn set_long_value(&mut self, value: i64) -> Result<()> {
+        match &self.fields_data {
+            FieldData::Number(NumericValue::Long(_)) => {
+                self.fields_data = FieldData::Number(NumericValue::Long(value));
+                Ok(())
+            }
+            _ => Err(LuceneError::IllegalArgument(format!(
+                "cannot change value type from {} to Long",
+                self.value_type_name()
+            ))),
+        }
+    }
+
+    /// Changes the `float` value of this field.
+    ///
+    /// Equivalent to `Field.setFloatValue(float)`. The value type cannot
+    /// change: the field must already hold a `float`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when this field holds anything
+    /// but a `float`, as Java throws `IllegalArgumentException`.
+    pub fn set_float_value(&mut self, value: f32) -> Result<()> {
+        match &self.fields_data {
+            FieldData::Number(NumericValue::Float(_)) => {
+                self.fields_data = FieldData::Number(NumericValue::Float(value));
+                Ok(())
+            }
+            _ => Err(LuceneError::IllegalArgument(format!(
+                "cannot change value type from {} to Float",
+                self.value_type_name()
+            ))),
+        }
+    }
+
+    /// Changes the `double` value of this field.
+    ///
+    /// Equivalent to `Field.setDoubleValue(double)`. The value type cannot
+    /// change: the field must already hold a `double`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when this field holds anything
+    /// but a `double`, as Java throws `IllegalArgumentException`.
+    pub fn set_double_value(&mut self, value: f64) -> Result<()> {
+        match &self.fields_data {
+            FieldData::Number(NumericValue::Double(_)) => {
+                self.fields_data = FieldData::Number(NumericValue::Double(value));
+                Ok(())
+            }
+            _ => Err(LuceneError::IllegalArgument(format!(
+                "cannot change value type from {} to Double",
+                self.value_type_name()
+            ))),
+        }
+    }
+
     /// Changes the token stream value of this field.
     pub fn set_token_stream_value(&mut self, value: Rc<RefCell<dyn TokenStream>>) -> Result<()> {
         match &self.fields_data {
@@ -2337,6 +2490,34 @@ impl IntPoint {
         self.set_values(point)
     }
 
+    /// Changes the single value of this one-dimensional field.
+    ///
+    /// Equivalent to `IntPoint.setIntValue(int)`, which delegates to
+    /// [`set_int_values`](Self::set_int_values) with a one-dimensional point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field was created with
+    /// more than one dimension, as Java throws `IllegalArgumentException`.
+    pub fn set_int_value(&mut self, value: i32) -> Result<()> {
+        self.set_int_values(&[value])
+    }
+
+    /// Packs one or more `int` dimensions into a [`BytesRef`].
+    ///
+    /// Equivalent to `IntPoint.pack(int...)`. This is the exact byte
+    /// layout the BKD tree stores, so it is also what a query must produce for
+    /// its bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `point` has no dimensions,
+    /// as Java throws `IllegalArgumentException`. Java also rejects a null
+    /// array, which Rust's type system already does.
+    pub fn pack(point: &[i32]) -> Result<BytesRef> {
+        pack_int_point(point)
+    }
+
     /// Creates a query matching an exact value.
     ///
     /// Equivalent to `IntPoint.newExactQuery(String, int)`. This is for
@@ -2540,6 +2721,34 @@ impl LongPoint {
     /// number of dimensions than the field was created with.
     pub fn set_long_values(&mut self, point: &[i64]) -> Result<()> {
         self.set_values(point)
+    }
+
+    /// Changes the single value of this one-dimensional field.
+    ///
+    /// Equivalent to `LongPoint.setLongValue(long)`, which delegates to
+    /// [`set_long_values`](Self::set_long_values) with a one-dimensional point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field was created with
+    /// more than one dimension, as Java throws `IllegalArgumentException`.
+    pub fn set_long_value(&mut self, value: i64) -> Result<()> {
+        self.set_long_values(&[value])
+    }
+
+    /// Packs one or more `long` dimensions into a [`BytesRef`].
+    ///
+    /// Equivalent to `LongPoint.pack(long...)`. This is the exact byte
+    /// layout the BKD tree stores, so it is also what a query must produce for
+    /// its bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `point` has no dimensions,
+    /// as Java throws `IllegalArgumentException`. Java also rejects a null
+    /// array, which Rust's type system already does.
+    pub fn pack(point: &[i64]) -> Result<BytesRef> {
+        pack_long_point(point)
     }
 
     /// Creates a query matching an exact value.
@@ -2830,6 +3039,34 @@ impl FloatPoint {
         self.set_values(point)
     }
 
+    /// Changes the single value of this one-dimensional field.
+    ///
+    /// Equivalent to `FloatPoint.setFloatValue(float)`, which delegates to
+    /// [`set_float_values`](Self::set_float_values) with a one-dimensional point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field was created with
+    /// more than one dimension, as Java throws `IllegalArgumentException`.
+    pub fn set_float_value(&mut self, value: f32) -> Result<()> {
+        self.set_float_values(&[value])
+    }
+
+    /// Packs one or more `float` dimensions into a [`BytesRef`].
+    ///
+    /// Equivalent to `FloatPoint.pack(float...)`. This is the exact byte
+    /// layout the BKD tree stores, so it is also what a query must produce for
+    /// its bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `point` has no dimensions,
+    /// as Java throws `IllegalArgumentException`. Java also rejects a null
+    /// array, which Rust's type system already does.
+    pub fn pack(point: &[f32]) -> Result<BytesRef> {
+        pack_float_point(point)
+    }
+
     /// Creates a query matching an exact value.
     ///
     /// Equivalent to `FloatPoint.newExactQuery(String, float)`. This is for
@@ -3044,6 +3281,34 @@ impl DoublePoint {
     /// number of dimensions than the field was created with.
     pub fn set_double_values(&mut self, point: &[f64]) -> Result<()> {
         self.set_values(point)
+    }
+
+    /// Changes the single value of this one-dimensional field.
+    ///
+    /// Equivalent to `DoublePoint.setDoubleValue(double)`, which delegates to
+    /// [`set_double_values`](Self::set_double_values) with a one-dimensional point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field was created with
+    /// more than one dimension, as Java throws `IllegalArgumentException`.
+    pub fn set_double_value(&mut self, value: f64) -> Result<()> {
+        self.set_double_values(&[value])
+    }
+
+    /// Packs one or more `double` dimensions into a [`BytesRef`].
+    ///
+    /// Equivalent to `DoublePoint.pack(double...)`. This is the exact byte
+    /// layout the BKD tree stores, so it is also what a query must produce for
+    /// its bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `point` has no dimensions,
+    /// as Java throws `IllegalArgumentException`. Java also rejects a null
+    /// array, which Rust's type system already does.
+    pub fn pack(point: &[f64]) -> Result<BytesRef> {
+        pack_double_point(point)
     }
 
     /// Creates a query matching an exact value.
@@ -3545,17 +3810,39 @@ pub struct FloatDocValuesField {
 
 impl FloatDocValuesField {
     /// Creates a new FloatDocValuesField.
+    ///
+    /// Equivalent to `FloatDocValuesField(String, float)`, which stores
+    /// `Float.floatToRawIntBits(value)` as the numeric doc value.
     pub fn new(name: &str, value: f32) -> Self {
-        let bits = value.to_bits() as i64;
         Self {
-            inner: NumericDocValuesField::new(name, bits),
+            inner: NumericDocValuesField::new(name, raw_float_bits_as_long(value)),
         }
     }
 
     /// Sets a new value.
+    ///
+    /// Equivalent to `FloatDocValuesField.setFloatValue(float)`, which
+    /// re-encodes the value and hands it to `Field.setLongValue`. Java's
+    /// companion override `setLongValue` throws
+    /// `IllegalArgumentException("cannot change value type from Float to
+    /// Long")`; this port exposes no such method at all, so the same misuse is
+    /// refused at compile time.
     pub fn set_value(&mut self, value: f32) {
-        self.inner.set_value(value.to_bits() as i64);
+        self.inner.set_value(raw_float_bits_as_long(value));
     }
+}
+
+/// Returns the `long` Lucene stores for a `float` doc value.
+///
+/// Equivalent to Java's `Float.floatToRawIntBits(value)` where the resulting
+/// `int` is then widened to the `long` that `Field.setLongValue` takes. That
+/// widening is a JLS 5.1.2 widening primitive conversion, which **sign-extends**
+/// (`FloatDocValuesField.java:44-45` of Lucene 10.5.0). The `as i32` step here
+/// is what reproduces it: [`f32::to_bits`] yields a `u32`, and casting that
+/// straight to `i64` would zero-extend instead, storing a value 2^32 too large
+/// for every negative float and breaking index compatibility.
+fn raw_float_bits_as_long(value: f32) -> i64 {
+    i64::from(value.to_bits() as i32)
 }
 
 impl IndexableField for FloatDocValuesField {
@@ -5722,12 +6009,62 @@ mod tests {
     }
 
     #[test]
+    fn float_doc_values_field_sign_extends_a_negative_value() {
+        // Java widens the `int` of `Float.floatToRawIntBits` to a `long`, which
+        // sign-extends. Values measured with Lucene 10.5.0 itself:
+        //   new FloatDocValuesField("f", -1.0f).numericValue() == -1082130432
+        //   new FloatDocValuesField("f", -0.0f).numericValue() == -2147483648
+        for (value, expected) in [
+            (-1.0f32, -1_082_130_432i64),
+            (-0.5f32, -1_090_519_040i64),
+            (-0.0f32, -2_147_483_648i64),
+            (2.5f32, 1_075_838_976i64),
+        ] {
+            assert_eq!(
+                FloatDocValuesField::new("score", value).numeric_value(),
+                Some(NumericValue::Long(expected)),
+                "constructor disagrees with Lucene for {value}"
+            );
+            let mut field = FloatDocValuesField::new("score", 1.0f32);
+            field.set_value(value);
+            assert_eq!(
+                field.numeric_value(),
+                Some(NumericValue::Long(expected)),
+                "set_value disagrees with Lucene for {value}"
+            );
+        }
+    }
+
+    #[test]
     fn double_doc_values_field_encodes_raw_bits() {
         let field = DoubleDocValuesField::new("score", 1.5f64);
         assert_eq!(
             field.numeric_value(),
             Some(NumericValue::Long(1.5f64.to_bits() as i64))
         );
+    }
+
+    #[test]
+    fn double_doc_values_field_keeps_the_sign_of_a_negative_value() {
+        // `Double.doubleToRawLongBits` already yields a `long`, so no widening
+        // takes place. Values measured with Lucene 10.5.0 itself.
+        for (value, expected) in [
+            (-1.0f64, -4_616_189_618_054_758_400i64),
+            (2.5f64, 4_612_811_918_334_230_528i64),
+        ] {
+            assert_eq!(
+                DoubleDocValuesField::new("score", value).numeric_value(),
+                Some(NumericValue::Long(expected)),
+                "constructor disagrees with Lucene for {value}"
+            );
+            let mut field = DoubleDocValuesField::new("score", 1.0f64);
+            field.set_value(value);
+            assert_eq!(
+                field.numeric_value(),
+                Some(NumericValue::Long(expected)),
+                "set_value disagrees with Lucene for {value}"
+            );
+        }
     }
 
     #[test]

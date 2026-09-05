@@ -5,6 +5,7 @@
 //! yours" — which a point field cannot express.
 
 use std::io::Read;
+use std::sync::Arc;
 
 use crate::analysis::{Analyzer, TokenStream};
 use crate::document::{
@@ -12,8 +13,19 @@ use crate::document::{
 };
 use crate::error::{LuceneError, Result};
 use crate::index::point_values::Relation as PointRelation;
-use crate::index::{IndexableField, IndexableFieldType};
-use crate::util::{BytesRef, NumericUtils};
+use crate::index::{
+    BinaryDocValues, DocValues, DocValuesIterator, IndexableField, IndexableFieldType,
+    IntersectVisitor, LeafReaderContext, PointValues,
+};
+use crate::search::constant_score_scorer_supplier::{
+    ConstantScoreIteratorSupplier, ConstantScoreScorerSupplier,
+};
+use crate::search::constant_score_weight::{ConstantScoreWeight, ConstantScoreWeightImpl};
+use crate::search::two_phase_iterator::{ScorerIterator, TwoPhaseIterator};
+use crate::search::{
+    DocIdSetIterator, IndexSearcher, Query, QueryVisitor, ScoreMode, ScorerSupplier, Weight,
+};
+use crate::util::{BytesRef, DocIdSetBuilder, IntsRef, NumericUtils};
 
 /// Largest number of dimensions a range field may have.
 ///
@@ -24,7 +36,7 @@ pub const MAX_RANGE_DIMENSIONS: usize = 4;
 /// How a range query compares the query interval against a document's.
 ///
 /// Equivalent to `RangeFieldQuery.QueryType`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RangeQueryType {
     /// The two intervals overlap at all.
     Intersects,
@@ -619,38 +631,6 @@ impl BinaryRangeDocValues {
         }
     }
 
-    /// Advances to the next document with a range, decoding it.
-    pub fn next_doc(&mut self) -> Result<i32> {
-        let doc = self.inner.next_doc()?;
-        if doc != crate::search::NO_MORE_DOCS {
-            self.decode_ranges()?;
-        }
-        Ok(doc)
-    }
-
-    /// Advances to the first document at or after `target`, decoding its range.
-    pub fn advance(&mut self, target: i32) -> Result<i32> {
-        let doc = self.inner.advance(target)?;
-        if doc != crate::search::NO_MORE_DOCS {
-            self.decode_ranges()?;
-        }
-        Ok(doc)
-    }
-
-    /// Positions on `target` exactly, decoding its range when it has one.
-    pub fn advance_exact(&mut self, target: i32) -> Result<bool> {
-        let found = self.inner.advance_exact(target)?;
-        if found {
-            self.decode_ranges()?;
-        }
-        Ok(found)
-    }
-
-    /// Returns the document the cursor is on.
-    pub fn doc_id(&self) -> i32 {
-        self.inner.doc_id()
-    }
-
     /// Returns the packed range of the current document.
     pub fn packed_value(&self) -> &[u8] {
         &self.packed_value
@@ -683,6 +663,70 @@ impl BinaryRangeDocValues {
     }
 }
 
+impl DocIdSetIterator for BinaryRangeDocValues {
+    /// Returns the document the cursor is on.
+    ///
+    /// Equivalent to `BinaryRangeDocValues.docID()`, which reports the wrapped
+    /// iterator's position rather than the one it caches itself.
+    fn doc_id(&self) -> i32 {
+        self.inner.doc_id()
+    }
+
+    /// Advances to the next document with a range, decoding it.
+    ///
+    /// Equivalent to `BinaryRangeDocValues.nextDoc()`.
+    fn next_doc(&mut self) -> Result<i32> {
+        let doc = self.inner.next_doc()?;
+        if doc != crate::search::NO_MORE_DOCS {
+            self.decode_ranges()?;
+        }
+        Ok(doc)
+    }
+
+    /// Advances to the first document at or after `target`, decoding its range.
+    ///
+    /// Equivalent to `BinaryRangeDocValues.advance(int)`.
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        let doc = self.inner.advance(target)?;
+        if doc != crate::search::NO_MORE_DOCS {
+            self.decode_ranges()?;
+        }
+        Ok(doc)
+    }
+
+    /// Returns the wrapped iterator's cost estimate.
+    ///
+    /// Equivalent to `BinaryRangeDocValues.cost()`: wrapping the values changes
+    /// no document, so the estimate is the one the doc values report.
+    fn cost(&self) -> i64 {
+        self.inner.cost()
+    }
+}
+
+impl DocValuesIterator for BinaryRangeDocValues {
+    /// Positions on `target` exactly, decoding its range when it has one.
+    ///
+    /// Equivalent to `BinaryRangeDocValues.advanceExact(int)`.
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        let found = self.inner.advance_exact(target)?;
+        if found {
+            self.decode_ranges()?;
+        }
+        Ok(found)
+    }
+}
+
+impl BinaryDocValues for BinaryRangeDocValues {
+    /// Returns the raw binary value of the current document.
+    ///
+    /// Equivalent to `BinaryRangeDocValues.binaryValue()`, which forwards to the
+    /// wrapped values: it is the *undecoded* value, whereas
+    /// [`packed_value`](BinaryRangeDocValues::packed_value) is the decoded copy.
+    fn binary_value(&self) -> Result<BytesRef> {
+        self.inner.binary_value()
+    }
+}
+
 /// A range query answered by scanning doc values rather than a BKD tree.
 ///
 /// Equivalent to `org.apache.lucene.document.BinaryRangeFieldRangeQuery`, the
@@ -704,20 +748,36 @@ pub struct BinaryRangeFieldRangeQuery {
 
 impl BinaryRangeFieldRangeQuery {
     /// Creates the query from an already packed range.
+    ///
+    /// Equivalent to the sole constructor of
+    /// `BinaryRangeFieldRangeQuery(String, byte[], int, int, RangeFieldQuery.QueryType)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::UnsupportedOperation`] for any relation other
+    /// than [`Intersects`](RangeQueryType::Intersects), which is what Java
+    /// throws: the doc-values scan implements no other relation, and accepting
+    /// one would answer a question it has not been taught to answer.
     pub fn new(
         field: impl Into<String>,
         query_ranges: Vec<u8>,
         num_dims: usize,
         num_bytes_per_dimension: usize,
         query_type: RangeQueryType,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        if query_type != RangeQueryType::Intersects {
+            return Err(LuceneError::UnsupportedOperation(
+                "INTERSECTS is the only query type supported for this field type right now"
+                    .to_string(),
+            ));
+        }
+        Ok(Self {
             field: field.into(),
             query_ranges,
             num_dims,
             num_bytes_per_dimension,
             query_type,
-        }
+        })
     }
 
     /// Returns the field the query reads.
@@ -743,6 +803,178 @@ impl BinaryRangeFieldRangeQuery {
             self.num_dims,
             self.num_bytes_per_dimension,
         )
+    }
+
+    /// Opens the leaf's range doc values, or returns `None` when the leaf never
+    /// saw the field.
+    ///
+    /// Equivalent to the private
+    /// `BinaryRangeFieldRangeQuery.getValues(LeafReader, String)`. Java returns
+    /// `null` for the absent field so that the weight can return a null scorer,
+    /// which is a little cheaper than an empty one.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while opening the doc values.
+    fn get_values(
+        &self,
+        reader: &dyn crate::index::LeafReader,
+    ) -> Result<Option<BinaryRangeDocValues>> {
+        if reader.get_field_infos().field_info(&self.field).is_none() {
+            return Ok(None);
+        }
+        Ok(Some(BinaryRangeDocValues::new(
+            DocValues::get_binary(reader, &self.field)?,
+            self.num_dims,
+            self.num_bytes_per_dimension,
+        )))
+    }
+}
+
+/// Confirms a candidate document by comparing its decoded range with the
+/// query's.
+///
+/// Equivalent to the anonymous `TwoPhaseIterator` of
+/// `BinaryRangeFieldRangeQuery.createWeight`: the approximation is the doc
+/// values cursor itself, so every document that has a range is a candidate, and
+/// the confirmation is the byte-wise relation test.
+struct BinaryRangeTwoPhaseIterator {
+    query: BinaryRangeFieldRangeQuery,
+    values: BinaryRangeDocValues,
+}
+
+impl TwoPhaseIterator for BinaryRangeTwoPhaseIterator {
+    fn approximation(&mut self) -> &mut dyn DocIdSetIterator {
+        &mut self.values
+    }
+
+    fn approximation_ref(&self) -> &dyn DocIdSetIterator {
+        &self.values
+    }
+
+    fn matches(&mut self) -> Result<bool> {
+        Ok(self.query.matches(&self.values))
+    }
+
+    fn match_cost(&self) -> f32 {
+        // Java charges the length of the packed query value: the confirmation
+        // is one unsigned comparison per byte.
+        self.query.query_ranges.len() as f32
+    }
+}
+
+/// The weight of a [`BinaryRangeFieldRangeQuery`].
+///
+/// Equivalent to the anonymous `ConstantScoreWeight` of
+/// `BinaryRangeFieldRangeQuery.createWeight`.
+#[derive(Debug)]
+struct BinaryRangeWeight {
+    query: BinaryRangeFieldRangeQuery,
+    score: f32,
+    score_mode: ScoreMode,
+}
+
+impl ConstantScoreWeightImpl for BinaryRangeWeight {
+    fn scorer_supplier(
+        &self,
+        context: &LeafReaderContext,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
+        let reader = context.leaf_reader();
+        let max_doc = reader.max_doc();
+        let Some(values) = self.query.get_values(reader.as_ref())? else {
+            return Ok(None);
+        };
+        let iterator = ScorerIterator::TwoPhase(Box::new(BinaryRangeTwoPhaseIterator {
+            query: self.query.clone(),
+            values,
+        }));
+        Ok(Some(Box::new(ConstantScoreScorerSupplier::from_iterator(
+            iterator,
+            self.score,
+            self.score_mode,
+            max_doc,
+        ))))
+    }
+
+    fn is_cacheable(&self, ctx: &LeafReaderContext) -> bool {
+        DocValues::is_cacheable(ctx, &[self.query.field.as_str()])
+    }
+}
+
+impl Query for BinaryRangeFieldRangeQuery {
+    /// Renders the query.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's class is abstract and leaves
+    /// `toString(String)` to the four typed subclasses, which print their own
+    /// decoded bounds; this port's class is concrete and reachable on its own,
+    /// so it prints the field and the encoded range it actually holds. The
+    /// typed queries in
+    /// [`range_doc_values_fields`](crate::document::range_doc_values_fields)
+    /// still print exactly what Java's subclasses print.
+    fn to_query_string(&self, field: &str) -> String {
+        let mut b = String::new();
+        if self.field != field {
+            b.push_str(&self.field);
+            b.push(':');
+        }
+        b.push_str(&format!("{:?}", self.query_ranges));
+        b
+    }
+
+    /// Equivalent to `BinaryRangeFieldRangeQuery.visit(QueryVisitor)`.
+    fn visit(&self, visitor: &mut dyn QueryVisitor) {
+        if visitor.accept_field(&self.field) {
+            visitor.visit_leaf(self);
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    /// Equivalent to `BinaryRangeFieldRangeQuery.rewrite(IndexSearcher)`, which
+    /// calls `super.rewrite` and so leaves the query unchanged.
+    fn rewrite(&self, _searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
+        Ok(None)
+    }
+
+    /// Equivalent to
+    /// `BinaryRangeFieldRangeQuery.createWeight(IndexSearcher, ScoreMode, float)`.
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        Ok(Arc::new(ConstantScoreWeight::new(
+            Arc::new(self.clone()),
+            boost,
+            BinaryRangeWeight {
+                query: self.clone(),
+                score: boost,
+                score_mode,
+            },
+        )))
+    }
+
+    /// Equivalent to `BinaryRangeFieldRangeQuery.equals(Object)`, which compares
+    /// the field and the packed query value.
+    fn query_eq(&self, other: &dyn Query) -> bool {
+        match other.as_any().downcast_ref::<Self>() {
+            Some(other) => self.field == other.field && self.query_ranges == other.query_ranges,
+            None => false,
+        }
+    }
+
+    /// Equivalent to `BinaryRangeFieldRangeQuery.hashCode()`.
+    fn query_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.class_hash().hash(&mut hasher);
+        self.field.hash(&mut hasher);
+        self.query_ranges.hash(&mut hasher);
+        hasher.finish()
     }
 }
 
@@ -971,5 +1203,715 @@ impl RangeFieldQuery {
             self.num_dims,
             self.bytes_per_dim,
         )
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Executing RangeFieldQuery
+// -----------------------------------------------------------------------------
+
+/// Gathers the documents whose indexed range stands in the query's relation to
+/// the query range.
+///
+/// Equivalent to the anonymous `IntersectVisitor` that
+/// `RangeFieldQuery.createWeight` builds in `getIntersectVisitor`.
+struct RangeFieldVisitor<'a> {
+    query: &'a RangeFieldQuery,
+    result: &'a mut DocIdSetBuilder,
+}
+
+impl IntersectVisitor for RangeFieldVisitor<'_> {
+    fn grow(&mut self, count: i32) {
+        self.result.grow(count);
+    }
+
+    fn visit(&mut self, doc_id: i32) -> Result<()> {
+        self.result.grow(0).add(doc_id);
+        Ok(())
+    }
+
+    fn visit_iterator(&mut self, iterator: &mut dyn DocIdSetIterator) -> Result<()> {
+        self.result.grow(0).add_iterator(iterator)
+    }
+
+    fn visit_ints_ref(&mut self, ints_ref: &IntsRef) -> Result<()> {
+        self.result.grow(0).add_ints(ints_ref);
+        Ok(())
+    }
+
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
+        if self.query.matches(packed_value) {
+            self.visit(doc_id)?;
+        }
+        Ok(())
+    }
+
+    fn visit_iterator_with_value(
+        &mut self,
+        iterator: &mut dyn DocIdSetIterator,
+        packed_value: &[u8],
+    ) -> Result<()> {
+        if self.query.matches(packed_value) {
+            self.result.grow(0).add_iterator(iterator)?;
+        }
+        Ok(())
+    }
+
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> PointRelation {
+        // `RangeQueryType::compare` only fails for CROSSES, which it answers
+        // before it can fail; the fallback keeps the walk conservative — the
+        // cell is visited and every value in it is tested by
+        // `visit_with_value`, so no document is ever wrongly matched.
+        self.query
+            .relate(min_packed_value, max_packed_value)
+            .unwrap_or(PointRelation::CellCrossesQuery)
+    }
+}
+
+/// The iteration half of the scorer supplier a [`RangeFieldQuery`] builds.
+///
+/// Equivalent to the anonymous `ScorerSupplier` of
+/// `RangeFieldQuery.createWeight`, which walks the BKD tree on `get(long)` and
+/// estimates its cost from the same visitor.
+struct RangeFieldIteratorSupplier {
+    query: RangeFieldQuery,
+    values: Box<dyn PointValues>,
+    max_doc: i32,
+    cost: i64,
+}
+
+impl std::fmt::Debug for RangeFieldIteratorSupplier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RangeFieldIteratorSupplier")
+            .field("query", &self.query)
+            .field("max_doc", &self.max_doc)
+            .field("cost", &self.cost)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RangeFieldIteratorSupplier {
+    /// Computes the cost once, which Java defers to the first `cost()` call.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java caches the estimate in a mutable
+    /// field that `cost()` fills in on demand; `cost()` takes `&self` here, so
+    /// the estimate is computed when the supplier is built. It is the same
+    /// estimate from the same visitor, and a supplier is only built when its
+    /// cost is about to be asked for. This matches what
+    /// [`PointRangeQuery`](crate::search::PointRangeQuery) already does.
+    fn new(query: RangeFieldQuery, values: Box<dyn PointValues>, max_doc: i32) -> Result<Self> {
+        let cost = {
+            let mut builder = DocIdSetBuilder::from_point_values(max_doc, values.as_ref());
+            let mut visitor = RangeFieldVisitor {
+                query: &query,
+                result: &mut builder,
+            };
+            values.estimate_doc_count(&mut visitor)?
+        };
+        debug_assert!(cost >= 0);
+        Ok(Self {
+            query,
+            values,
+            max_doc,
+            cost,
+        })
+    }
+}
+
+impl ConstantScoreIteratorSupplier for RangeFieldIteratorSupplier {
+    fn iterator(&mut self, _lead_cost: i64) -> Result<ScorerIterator> {
+        let mut result = DocIdSetBuilder::from_point_values(self.max_doc, self.values.as_ref());
+        {
+            let mut visitor = RangeFieldVisitor {
+                query: &self.query,
+                result: &mut result,
+            };
+            self.values.intersect(&mut visitor)?;
+        }
+        Ok(ScorerIterator::Simple(result.build()?.iterator()?))
+    }
+
+    fn cost(&self) -> i64 {
+        self.cost
+    }
+}
+
+/// The weight of a [`RangeFieldQuery`].
+///
+/// Equivalent to the anonymous `ConstantScoreWeight` of
+/// `RangeFieldQuery.createWeight`.
+#[derive(Debug)]
+struct RangeFieldWeight {
+    query: RangeFieldQuery,
+    score: f32,
+    score_mode: ScoreMode,
+}
+
+impl ConstantScoreWeightImpl for RangeFieldWeight {
+    fn scorer_supplier(
+        &self,
+        context: &LeafReaderContext,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
+        let reader = context.leaf_reader();
+        let Some(values) = reader.get_point_values(&self.query.field)? else {
+            // No document in this segment indexed any range.
+            return Ok(None);
+        };
+        let field_infos = reader.get_field_infos();
+        let Some(field_info) = field_infos.field_info(&self.query.field) else {
+            // No document in this segment indexed this field.
+            return Ok(None);
+        };
+        self.query.check_field_info(field_info)?;
+
+        let max_doc = reader.max_doc();
+        let mut all_docs_match = false;
+        if values.doc_count() == max_doc {
+            if let (Some(min), Some(max)) = (values.min_packed_value()?, values.max_packed_value()?)
+            {
+                all_docs_match = self.query.relate(&min, &max)? == PointRelation::CellInsideQuery;
+            }
+        }
+
+        if all_docs_match {
+            Ok(Some(Box::new(ConstantScoreScorerSupplier::match_all(
+                self.score,
+                self.score_mode,
+                max_doc,
+            )?)))
+        } else {
+            let inner = RangeFieldIteratorSupplier::new(self.query.clone(), values, max_doc)?;
+            Ok(Some(Box::new(ConstantScoreScorerSupplier::new(
+                self.score,
+                self.score_mode,
+                max_doc,
+                inner,
+            ))))
+        }
+    }
+
+    /// Equivalent to the `isCacheable(LeafReaderContext)` of the same anonymous
+    /// weight, which answers `true` unconditionally.
+    fn is_cacheable(&self, _ctx: &LeafReaderContext) -> bool {
+        true
+    }
+}
+
+impl Query for RangeFieldQuery {
+    /// Renders the query.
+    ///
+    /// Equivalent to `RangeFieldQuery.toString(String)`, which prints the field
+    /// and then defers the range itself to the subclass's `toString(byte[],
+    /// int)`. This port's class is concrete, so it prints the relation and the
+    /// encoded range it holds.
+    fn to_query_string(&self, field: &str) -> String {
+        let mut b = String::new();
+        if self.field != field {
+            b.push_str(&self.field);
+            b.push(':');
+        }
+        b.push('<');
+        b.push_str(&format!("{:?}", self.query_type));
+        b.push(':');
+        b.push_str(&format!("{:?}", self.ranges));
+        b.push('>');
+        b
+    }
+
+    /// Equivalent to `RangeFieldQuery.visit(QueryVisitor)`.
+    fn visit(&self, visitor: &mut dyn QueryVisitor) {
+        if visitor.accept_field(&self.field) {
+            visitor.visit_leaf(self);
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    /// Equivalent to
+    /// `RangeFieldQuery.createWeight(IndexSearcher, ScoreMode, float)`.
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        Ok(Arc::new(ConstantScoreWeight::new(
+            Arc::new(self.clone()),
+            boost,
+            RangeFieldWeight {
+                query: self.clone(),
+                score: boost,
+                score_mode,
+            },
+        )))
+    }
+
+    /// Equivalent to `RangeFieldQuery.equals(Object)`, which compares the
+    /// field, the dimension count, the relation and the encoded range.
+    fn query_eq(&self, other: &dyn Query) -> bool {
+        match other.as_any().downcast_ref::<Self>() {
+            Some(other) => {
+                self.field == other.field
+                    && self.num_dims == other.num_dims
+                    && self.query_type == other.query_type
+                    && self.ranges == other.ranges
+            }
+            None => false,
+        }
+    }
+
+    /// Equivalent to `RangeFieldQuery.hashCode()`.
+    fn query_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.class_hash().hash(&mut hasher);
+        self.field.hash(&mut hasher);
+        self.num_dims.hash(&mut hasher);
+        self.query_type.hash(&mut hasher);
+        self.ranges.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::IntRangeSlowRangeQuery;
+    use crate::index::IntersectVisitor as _;
+    use crate::search::query_visitor::QueryVisitor;
+    use crate::search::NO_MORE_DOCS;
+
+    /// A `BinaryDocValues` over a fixed table of documents and packed values,
+    /// so that [`BinaryRangeDocValues`] can be driven without an index.
+    #[derive(Debug)]
+    struct StubBinaryDocValues {
+        entries: Vec<(i32, Vec<u8>)>,
+        /// Index of the entry the cursor sits on, or `entries.len()` when
+        /// exhausted and `usize::MAX` before the first move.
+        upto: usize,
+    }
+
+    impl StubBinaryDocValues {
+        fn new(entries: Vec<(i32, Vec<u8>)>) -> Self {
+            Self {
+                entries,
+                upto: usize::MAX,
+            }
+        }
+
+        fn seek_at_least(&mut self, target: i32) {
+            let mut i = if self.upto == usize::MAX {
+                0
+            } else {
+                self.upto
+            };
+            while i < self.entries.len() && self.entries[i].0 < target {
+                i += 1;
+            }
+            self.upto = i;
+        }
+    }
+
+    impl DocIdSetIterator for StubBinaryDocValues {
+        fn doc_id(&self) -> i32 {
+            match self.upto {
+                usize::MAX => -1,
+                i if i < self.entries.len() => self.entries[i].0,
+                _ => NO_MORE_DOCS,
+            }
+        }
+
+        fn next_doc(&mut self) -> Result<i32> {
+            self.upto = if self.upto == usize::MAX {
+                0
+            } else {
+                self.upto.saturating_add(1)
+            };
+            Ok(self.doc_id())
+        }
+
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            self.seek_at_least(target);
+            Ok(self.doc_id())
+        }
+
+        fn cost(&self) -> i64 {
+            self.entries.len() as i64
+        }
+    }
+
+    impl DocValuesIterator for StubBinaryDocValues {
+        fn advance_exact(&mut self, target: i32) -> Result<bool> {
+            self.seek_at_least(target);
+            Ok(self.doc_id() == target)
+        }
+    }
+
+    impl BinaryDocValues for StubBinaryDocValues {
+        fn binary_value(&self) -> Result<BytesRef> {
+            Ok(BytesRef::new(self.entries[self.upto].1.clone()))
+        }
+    }
+
+    /// A visitor that counts the leaves it is shown and records the fields it
+    /// was asked about, and can be told to refuse one field.
+    struct RecordingVisitor {
+        accepted: std::cell::RefCell<Vec<String>>,
+        leaves: usize,
+        reject: Option<String>,
+    }
+
+    impl RecordingVisitor {
+        fn new() -> Self {
+            Self {
+                accepted: std::cell::RefCell::new(Vec::new()),
+                leaves: 0,
+                reject: None,
+            }
+        }
+
+        fn rejecting(field: &str) -> Self {
+            Self {
+                accepted: std::cell::RefCell::new(Vec::new()),
+                leaves: 0,
+                reject: Some(field.to_string()),
+            }
+        }
+
+        fn accepted(&self) -> Vec<String> {
+            self.accepted.borrow().clone()
+        }
+    }
+
+    impl QueryVisitor for RecordingVisitor {
+        fn visit_leaf(&mut self, _query: &dyn Query) {
+            self.leaves += 1;
+        }
+
+        fn accept_field(&self, field: &str) -> bool {
+            if self.reject.as_deref() == Some(field) {
+                return false;
+            }
+            self.accepted.borrow_mut().push(field.to_string());
+            true
+        }
+    }
+
+    /// The packed value an `IntRange` of one dimension writes.
+    fn packed_int_range(min: i32, max: i32) -> Vec<u8> {
+        let field = IntRange::new("r", &[min], &[max]).unwrap();
+        field.binary_value().unwrap().slice().to_vec()
+    }
+
+    #[test]
+    fn binary_range_doc_values_reports_the_wrapped_cost() {
+        let inner = StubBinaryDocValues::new(vec![
+            (0, packed_int_range(0, 10)),
+            (2, packed_int_range(20, 30)),
+            (5, packed_int_range(40, 50)),
+        ]);
+        let values = BinaryRangeDocValues::new(Box::new(inner), 1, IntRange::BYTES);
+        // `BinaryRangeDocValues.cost()` forwards to the wrapped iterator:
+        // wrapping the values changes no document.
+        assert_eq!(values.cost(), 3);
+    }
+
+    #[test]
+    fn binary_range_doc_values_decodes_the_range_it_lands_on() {
+        let inner = StubBinaryDocValues::new(vec![
+            (0, packed_int_range(0, 10)),
+            (2, packed_int_range(20, 30)),
+            (5, packed_int_range(40, 50)),
+        ]);
+        let mut values = BinaryRangeDocValues::new(Box::new(inner), 1, IntRange::BYTES);
+        assert_eq!(values.doc_id(), -1);
+
+        assert_eq!(values.next_doc().unwrap(), 0);
+        assert_eq!(values.packed_value(), &packed_int_range(0, 10)[..]);
+        // `binaryValue()` is the *undecoded* value, straight from the wrapped
+        // doc values, and equals the decoded copy for a well-formed field.
+        assert_eq!(
+            values.binary_value().unwrap().slice(),
+            &packed_int_range(0, 10)[..]
+        );
+
+        assert_eq!(values.advance(3).unwrap(), 5);
+        assert_eq!(values.packed_value(), &packed_int_range(40, 50)[..]);
+
+        assert_eq!(values.next_doc().unwrap(), NO_MORE_DOCS);
+    }
+
+    #[test]
+    fn binary_range_doc_values_advance_exact_only_decodes_on_a_hit() {
+        let inner = StubBinaryDocValues::new(vec![
+            (0, packed_int_range(0, 10)),
+            (5, packed_int_range(40, 50)),
+        ]);
+        let mut values = BinaryRangeDocValues::new(Box::new(inner), 1, IntRange::BYTES);
+        assert!(values.advance_exact(0).unwrap());
+        assert_eq!(values.packed_value(), &packed_int_range(0, 10)[..]);
+        // Document 3 has no range: the cursor moves past it, and the last
+        // decoded range is left untouched.
+        assert!(!values.advance_exact(3).unwrap());
+        assert_eq!(values.packed_value(), &packed_int_range(0, 10)[..]);
+        assert!(values.advance_exact(5).unwrap());
+        assert_eq!(values.packed_value(), &packed_int_range(40, 50)[..]);
+    }
+
+    #[test]
+    fn binary_range_field_range_query_confirms_only_intersecting_ranges() {
+        // The query asks for ranges intersecting [25, 45].
+        let query =
+            IntRangeSlowRangeQuery::new("r", &[25], &[45], RangeQueryType::Intersects).unwrap();
+        let query = query.as_binary_range_field_range_query().clone();
+
+        let entries = vec![
+            (0, packed_int_range(0, 10)),  // disjoint, below
+            (1, packed_int_range(20, 30)), // overlaps
+            (2, packed_int_range(30, 40)), // inside
+            (3, packed_int_range(40, 50)), // overlaps
+            (4, packed_int_range(60, 70)), // disjoint, above
+        ];
+        let mut values = BinaryRangeDocValues::new(
+            Box::new(StubBinaryDocValues::new(entries)),
+            1,
+            IntRange::BYTES,
+        );
+
+        let mut matched = Vec::new();
+        loop {
+            let doc = values.next_doc().unwrap();
+            if doc == NO_MORE_DOCS {
+                break;
+            }
+            if query.matches(&values) {
+                matched.push(doc);
+            }
+        }
+        assert_eq!(matched, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn binary_range_field_range_query_refuses_a_relation_it_cannot_answer() {
+        // Regression test. Java's constructor throws
+        // UnsupportedOperationException for anything but INTERSECTS, because
+        // the doc-values scan implements no other relation; this port used to
+        // accept them and answer silently.
+        for relation in [
+            RangeQueryType::Within,
+            RangeQueryType::Contains,
+            RangeQueryType::Crosses,
+        ] {
+            let error = BinaryRangeFieldRangeQuery::new("r", vec![0u8; 8], 1, 4, relation)
+                .expect_err("only INTERSECTS is supported");
+            assert!(
+                error
+                    .to_string()
+                    .contains("INTERSECTS is the only query type supported"),
+                "unexpected message: {error}"
+            );
+            assert!(
+                IntRangeSlowRangeQuery::new("r", &[0], &[1], relation).is_err(),
+                "the typed query must refuse {relation:?} too"
+            );
+        }
+        assert!(BinaryRangeFieldRangeQuery::new(
+            "r",
+            vec![0u8; 8],
+            1,
+            4,
+            RangeQueryType::Intersects
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn binary_range_field_range_query_visits_its_field_as_a_leaf() {
+        let query =
+            BinaryRangeFieldRangeQuery::new("r", vec![0u8; 8], 1, 4, RangeQueryType::Intersects)
+                .unwrap();
+        let mut visitor = RecordingVisitor::new();
+        query.visit(&mut visitor);
+        assert_eq!(visitor.accepted(), vec!["r".to_string()]);
+        assert_eq!(visitor.leaves, 1);
+
+        let mut visitor = RecordingVisitor::rejecting("r");
+        query.visit(&mut visitor);
+        assert_eq!(visitor.leaves, 0);
+    }
+
+    /// An `IndexSearcher` over an index with no segments, which is enough to
+    /// call a query's `rewrite`.
+    fn empty_searcher() -> IndexSearcher {
+        let reader: Arc<dyn crate::index::IndexReader> =
+            Arc::new(crate::index::MultiReader::new(Vec::new(), true).unwrap());
+        IndexSearcher::new(reader).unwrap()
+    }
+
+    #[test]
+    fn binary_range_field_range_query_rewrites_to_itself() {
+        // Java's override calls `super.rewrite`, which returns the query
+        // unchanged; `None` is how this port says "unchanged".
+        let query =
+            BinaryRangeFieldRangeQuery::new("r", vec![0u8; 8], 1, 4, RangeQueryType::Intersects)
+                .unwrap();
+        assert!(Query::rewrite(&query, &empty_searcher()).unwrap().is_none());
+    }
+
+    #[test]
+    fn binary_range_field_range_query_equality_follows_field_and_range() {
+        let a =
+            BinaryRangeFieldRangeQuery::new("r", vec![1u8; 8], 1, 4, RangeQueryType::Intersects)
+                .unwrap();
+        let b =
+            BinaryRangeFieldRangeQuery::new("r", vec![1u8; 8], 1, 4, RangeQueryType::Intersects)
+                .unwrap();
+        let other_field =
+            BinaryRangeFieldRangeQuery::new("s", vec![1u8; 8], 1, 4, RangeQueryType::Intersects)
+                .unwrap();
+        let other_range =
+            BinaryRangeFieldRangeQuery::new("r", vec![2u8; 8], 1, 4, RangeQueryType::Intersects)
+                .unwrap();
+        assert!(a.query_eq(&b));
+        assert_eq!(a.query_hash(), b.query_hash());
+        assert!(!a.query_eq(&other_field));
+        assert!(!a.query_eq(&other_range));
+    }
+
+    #[test]
+    fn range_field_query_visits_its_field_as_a_leaf() {
+        let query = LongRange::new_intersects_query("r", &[0i64], &[10i64]).unwrap();
+        let mut visitor = RecordingVisitor::new();
+        Query::visit(&query, &mut visitor);
+        assert_eq!(visitor.accepted(), vec!["r".to_string()]);
+        assert_eq!(visitor.leaves, 1);
+
+        let mut visitor = RecordingVisitor::rejecting("r");
+        Query::visit(&query, &mut visitor);
+        assert_eq!(visitor.leaves, 0);
+    }
+
+    /// Runs the visitor the weight of a [`RangeFieldQuery`] builds over a table
+    /// of documents and their packed ranges, and returns what it collected.
+    ///
+    /// This is the decision surface of `RangeFieldQuery.createWeight`: the BKD
+    /// walk hands the visitor one cell at a time through `compare` and one
+    /// value at a time through `visit(int, byte[])`, and what the visitor keeps
+    /// is what the query matches.
+    fn collect(query: &RangeFieldQuery, docs: &[(i32, Vec<u8>)]) -> Vec<i32> {
+        let mut result = DocIdSetBuilder::new(16);
+        {
+            let mut visitor = RangeFieldVisitor {
+                query,
+                result: &mut result,
+            };
+            visitor.grow(docs.len() as i32);
+            for (doc, packed) in docs {
+                visitor.visit_with_value(*doc, packed).unwrap();
+            }
+        }
+        let mut iterator = result.build().unwrap().iterator().unwrap();
+        let mut out = Vec::new();
+        loop {
+            let doc = iterator.next_doc().unwrap();
+            if doc == NO_MORE_DOCS {
+                break;
+            }
+            out.push(doc);
+        }
+        out
+    }
+
+    /// The documents the relation tests below run over.
+    fn range_table() -> Vec<(i32, Vec<u8>)> {
+        vec![
+            (0, packed_int_range(0, 10)),
+            (1, packed_int_range(20, 30)),
+            (2, packed_int_range(30, 40)),
+            (3, packed_int_range(40, 50)),
+            (4, packed_int_range(60, 70)),
+        ]
+    }
+
+    #[test]
+    fn range_field_query_keeps_the_documents_of_each_relation() {
+        let docs = range_table();
+        // INTERSECTS: any overlap with [25,45].
+        let q = IntRange::new_intersects_query("r", &[25], &[45]).unwrap();
+        assert_eq!(collect(&q, &docs), vec![1, 2, 3]);
+        // WITHIN: the document's range lies inside [25,45].
+        let q = IntRange::new_within_query("r", &[25], &[45]).unwrap();
+        assert_eq!(collect(&q, &docs), vec![2]);
+        // CONTAINS: the document's range encloses [32,36].
+        let q = IntRange::new_contains_query("r", &[32], &[36]).unwrap();
+        assert_eq!(collect(&q, &docs), vec![2]);
+        // CROSSES: intersects, but neither within nor containing.
+        let q = IntRange::new_crosses_query("r", &[25], &[45]).unwrap();
+        assert_eq!(collect(&q, &docs), vec![1, 3]);
+        // Nothing overlaps a range beyond every document's.
+        let q = IntRange::new_intersects_query("r", &[1000], &[2000]).unwrap();
+        assert_eq!(collect(&q, &docs), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn range_field_query_prunes_a_cell_by_its_bounds() {
+        // `compare` is what lets the BKD walk skip a subtree without looking at
+        // a single value. A cell whose ranges all lie in [0,10] cannot
+        // intersect [25,45]; one whose ranges all lie in [30,35] must.
+        let query = IntRange::new_intersects_query("r", &[25], &[45]).unwrap();
+        let mut result = DocIdSetBuilder::new(16);
+        let visitor = RangeFieldVisitor {
+            query: &query,
+            result: &mut result,
+        };
+        assert_eq!(
+            visitor.compare(&packed_int_range(0, 5), &packed_int_range(6, 10)),
+            PointRelation::CellOutsideQuery
+        );
+        assert_eq!(
+            visitor.compare(&packed_int_range(30, 31), &packed_int_range(34, 35)),
+            PointRelation::CellInsideQuery
+        );
+        assert_eq!(
+            visitor.compare(&packed_int_range(0, 5), &packed_int_range(40, 80)),
+            PointRelation::CellCrossesQuery
+        );
+    }
+
+    #[test]
+    fn range_field_query_crosses_relation_visits_every_cell() {
+        // CROSSES cannot be decided from a cell's bounds, so Java's `compare`
+        // answers CELL_CROSSES_QUERY for every cell and the walk tests each
+        // value. The visitor must not fail while doing so.
+        let query = IntRange::new_crosses_query("r", &[25], &[45]).unwrap();
+        let mut result = DocIdSetBuilder::new(16);
+        let visitor = RangeFieldVisitor {
+            query: &query,
+            result: &mut result,
+        };
+        assert_eq!(
+            visitor.compare(&packed_int_range(0, 5), &packed_int_range(6, 10)),
+            PointRelation::CellCrossesQuery
+        );
+    }
+
+    #[test]
+    fn range_field_query_equality_follows_field_dims_relation_and_range() {
+        let a = LongRange::new_intersects_query("r", &[0i64], &[10i64]).unwrap();
+        let b = LongRange::new_intersects_query("r", &[0i64], &[10i64]).unwrap();
+        let other_relation = LongRange::new_within_query("r", &[0i64], &[10i64]).unwrap();
+        let other_range = LongRange::new_intersects_query("r", &[0i64], &[11i64]).unwrap();
+        let other_field = LongRange::new_intersects_query("s", &[0i64], &[10i64]).unwrap();
+        assert!(a.query_eq(&b));
+        assert_eq!(a.query_hash(), b.query_hash());
+        assert!(!a.query_eq(&other_relation));
+        assert!(!a.query_eq(&other_range));
+        assert!(!a.query_eq(&other_field));
+        // The rendered form names the field only when it is not the default.
+        assert!(Query::to_query_string(&a, "r").starts_with('<'));
+        assert!(Query::to_query_string(&a, "other").starts_with("r:<"));
     }
 }

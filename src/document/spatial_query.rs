@@ -38,7 +38,7 @@ use crate::geo::geometry::{
 use crate::geo::Component2D;
 use crate::index::point_values::Relation;
 use crate::index::{LeafReader, PointValues};
-use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
+use crate::search::{DocIdSetIterator, Query, QueryVisitor, NO_MORE_DOCS};
 use crate::util::doc_id_set::DocIdSetBuilder;
 use crate::util::{BitSet, BitSetIterator, FixedBitSet, IntsRef, NumericUtils};
 
@@ -759,6 +759,22 @@ impl SpatialQuery {
     /// answers `true`.
     pub fn query_is_cacheable(&self) -> bool {
         true
+    }
+
+    /// Reports `leaf_query` to `visitor` when the visitor wants this field.
+    ///
+    /// Equivalent to `SpatialQuery.visit(QueryVisitor)`, which every concrete
+    /// spatial query inherits.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's method passes `this`, the
+    /// concrete subclass instance. Rust has no implementation inheritance, so a
+    /// concrete query *holds* this state instead of extending it and must pass
+    /// itself in as `leaf_query`; the field test and the leaf visit are
+    /// otherwise identical.
+    pub fn visit(&self, visitor: &mut dyn QueryVisitor, leaf_query: &dyn Query) {
+        if visitor.accept_field(&self.field) {
+            visitor.visit_leaf(leaf_query);
+        }
     }
 
     /// Returns the documents of `reader` this query matches, or `None` when it
@@ -3196,4 +3212,70 @@ where
     Ok(Arc::new(crate::search::ConstantScoreWeight::new(
         query, boost, inner,
     )))
+}
+
+#[cfg(test)]
+mod visit_tests {
+    use super::*;
+    use crate::document::shape_field::QueryRelation;
+    use crate::geo::geometry::Rectangle;
+    use crate::search::MatchAllDocsQuery;
+
+    /// Counts the leaves a visitor is shown, and can be told to refuse a field.
+    struct RecordingVisitor {
+        leaves: usize,
+        reject: Option<String>,
+    }
+
+    impl QueryVisitor for RecordingVisitor {
+        fn visit_leaf(&mut self, _query: &dyn Query) {
+            self.leaves += 1;
+        }
+
+        fn accept_field(&self, field: &str) -> bool {
+            self.reject.as_deref() != Some(field)
+        }
+    }
+
+    fn spatial_query(field: &str) -> SpatialQuery {
+        let geometry =
+            LatLonGeometryValue::Rectangle(Rectangle::new(-1.0, 1.0, -1.0, 1.0).unwrap());
+        let component = SpatialQuery::create_component_2d(&[geometry]).unwrap();
+        SpatialQuery::new(field, QueryRelation::Intersects, component)
+    }
+
+    #[test]
+    fn visit_reports_the_leaf_when_the_field_is_wanted() {
+        // Equivalent to `SpatialQuery.visit(QueryVisitor)`: the concrete query
+        // is reported as a leaf exactly when the visitor accepts the field.
+        let query = spatial_query("shape");
+        let leaf = MatchAllDocsQuery::instance();
+
+        let mut visitor = RecordingVisitor {
+            leaves: 0,
+            reject: None,
+        };
+        query.visit(&mut visitor, &leaf);
+        assert_eq!(visitor.leaves, 1);
+
+        let mut visitor = RecordingVisitor {
+            leaves: 0,
+            reject: Some("shape".to_string()),
+        };
+        query.visit(&mut visitor, &leaf);
+        assert_eq!(visitor.leaves, 0);
+    }
+
+    #[test]
+    fn visit_tests_the_field_the_query_reads() {
+        // A visitor that refuses a *different* field still sees the leaf.
+        let query = spatial_query("shape");
+        let leaf = MatchAllDocsQuery::instance();
+        let mut visitor = RecordingVisitor {
+            leaves: 0,
+            reject: Some("other".to_string()),
+        };
+        query.visit(&mut visitor, &leaf);
+        assert_eq!(visitor.leaves, 1);
+    }
 }

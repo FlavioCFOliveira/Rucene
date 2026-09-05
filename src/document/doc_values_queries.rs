@@ -21,7 +21,7 @@ use crate::search::constant_score_scorer::ConstantScoreScorer;
 use crate::search::constant_score_scorer_supplier::ConstantScoreScorerSupplier;
 use crate::search::constant_score_weight::{ConstantScoreWeight, ConstantScoreWeightImpl};
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
-use crate::search::doc_id_set_iterator::{DocIdSetIterator as _, NO_MORE_DOCS};
+use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::doc_values_range_iterator::DocValuesRangeIterator;
 use crate::search::field_exists_query::FieldExistsQuery;
 use crate::search::index_searcher::IndexSearcher;
@@ -35,8 +35,10 @@ use crate::search::scorer::Scorer;
 use crate::search::scorer_supplier::ScorerSupplier;
 use crate::search::two_phase_iterator::{ScorerIterator, TwoPhaseIterator};
 use crate::search::weight::Weight;
+use crate::util::packed::PackedInts;
 use crate::util::Bits;
 use crate::util::BytesRef;
+use crate::util::{Accountable, RamUsageEstimator};
 
 /// Sentinel standing for a value the table cannot hold, which is also the
 /// smallest long.
@@ -60,11 +62,28 @@ pub struct DocValuesLongHashSet {
 impl DocValuesLongHashSet {
     /// Builds the set from `values`, which must be sorted ascending.
     ///
-    /// The table is sized at 1.5x the input and rounded up to a power of two,
-    /// so the linear probe below stays short.
+    /// Equivalent to the `DocValuesLongHashSet(long[])` constructor, which
+    /// sizes the table as `1 << PackedInts.bitsRequired(values.length * 3 / 2)`.
+    ///
+    /// That is deliberately *not* "round 1.5x up to a power of two": for a
+    /// `wanted` that is already a power of two, `bitsRequired` still needs one
+    /// more bit, so the table lands on the next power of two **strictly above**
+    /// it. Lucene asserts `tableSize >= values.length * 3 / 2` and relies on the
+    /// strictness: it is what guarantees the table always keeps a free slot, and
+    /// so what makes the linear probe in [`add`](Self::add) terminate. Rounding
+    /// with `next_power_of_two` instead would size a one-element set at a
+    /// single slot, filling the table completely and leaving `add` unable to
+    /// finish — besides reporting a different `ram_bytes_used` than Java for
+    /// every input whose `3n/2` is a power of two.
+    ///
+    /// Java computes the intermediate with `Math.toIntExact`, which would throw
+    /// on a slice of more than about 1.4 billion values; a `usize` count cannot
+    /// overflow the `i64` used here on any target this crate supports.
     pub fn new(values: &[i64]) -> Self {
-        let wanted = (values.len() as i64 * 3 / 2).max(1) as usize;
-        let table_size = wanted.next_power_of_two();
+        let wanted = values.len() as i64 * 3 / 2;
+        let table_size = 1usize
+            << PackedInts::bits_required(wanted)
+                .expect("INVARIANT: a length times 3/2 is never negative");
         let mut set = Self {
             table: vec![MISSING; table_size],
             mask: table_size - 1,
@@ -79,7 +98,7 @@ impl DocValuesLongHashSet {
                     set.size += 1;
                 }
                 set.has_missing_value = true;
-            } else if set.insert(value) {
+            } else if set.add(value) {
                 set.size += 1;
             }
         }
@@ -90,8 +109,18 @@ impl DocValuesLongHashSet {
         set
     }
 
-    /// Inserts `value`, returning whether it was new.
-    fn insert(&mut self, value: i64) -> bool {
+    /// Inserts `value` into the table, returning whether it was new.
+    ///
+    /// Equivalent to the private `DocValuesLongHashSet.add(long)`, which the
+    /// constructor calls once per input value. Like Java's, it assumes `value`
+    /// is not the [`MISSING`] sentinel, which the caller filters out.
+    ///
+    /// The linear probe is unbounded, exactly as Java's is. It terminates
+    /// because [`new`](Self::new) sizes the table strictly above `3n/2`, so a
+    /// free slot always remains after the constructor has inserted every value.
+    /// Calling this on a table with no free slot would never return — which is
+    /// why the sizing must stay faithful to Lucene's.
+    fn add(&mut self, value: i64) -> bool {
         let mut slot = (hash_long(value) as usize) & self.mask;
         loop {
             if self.table[slot] == MISSING {
@@ -138,6 +167,18 @@ impl DocValuesLongHashSet {
     /// Returns the largest member.
     pub fn max_value(&self) -> i64 {
         self.max_value
+    }
+}
+
+impl Accountable for DocValuesLongHashSet {
+    /// Returns the heap the set occupies: the object itself plus its table.
+    ///
+    /// Equivalent to `DocValuesLongHashSet.ramBytesUsed()`, which charges
+    /// `BASE_RAM_BYTES` — the shallow size of the instance — plus
+    /// `RamUsageEstimator.sizeOfObject(table)`.
+    fn ram_bytes_used(&self) -> i64 {
+        RamUsageEstimator::shallow_size_of_instance::<Self>()
+            + RamUsageEstimator::size_of_long(&self.table)
     }
 }
 
@@ -232,6 +273,22 @@ impl SortedNumericDocValuesSetQuery {
     /// Returns the set the query tests against.
     pub fn values(&self) -> &DocValuesLongHashSet {
         &self.values
+    }
+}
+
+impl Accountable for SortedNumericDocValuesSetQuery {
+    /// Returns the heap the query occupies: the object itself, its field name
+    /// and the set of values it tests against.
+    ///
+    /// Equivalent to `SortedNumericDocValuesSetQuery.ramBytesUsed()`, which
+    /// charges `BASE_RAM_BYTES` plus `sizeOfObject(field)` plus
+    /// `sizeOfObject(numbers)`. Java reaches the set's own `ramBytesUsed`
+    /// through the `Accountable` branch of `sizeOfObject`; the call here is
+    /// direct, and is the same number.
+    fn ram_bytes_used(&self) -> i64 {
+        RamUsageEstimator::shallow_size_of_instance::<Self>()
+            + RamUsageEstimator::size_of_string(&self.field)
+            + self.values.ram_bytes_used()
     }
 }
 
@@ -1284,5 +1341,105 @@ impl ScorerSupplier for SortedSkipperScorerSupplier {
             return i64::from(self.skipper_max_doc_id - self.skipper_min_doc_id);
         }
         i64::from(self.skipper_max_doc_id - self.skipper_min_doc_id + self.skipper.doc_count(0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doc_values_long_hash_set_add_reports_whether_a_value_was_new() {
+        // `add` is the private insert Java's constructor calls once per input
+        // value; it returns false for a repeat so the constructor does not
+        // count it twice. The set is built from four values so that the table
+        // (eight slots) keeps free slots for the inserts below, which is the
+        // condition under which Lucene calls `add` at all.
+        let mut set = DocValuesLongHashSet::new(&[1, 2, 3, 4]);
+        assert!(!set.add(1));
+        assert!(set.add(7));
+        assert!(!set.add(7));
+        assert!(set.add(8));
+    }
+
+    #[test]
+    fn doc_values_long_hash_set_sizes_its_table_as_java_does() {
+        // Java: `1 << PackedInts.bitsRequired(values.length * 3 / 2)`, which is
+        // the next power of two *strictly above* `3n/2` — never `3n/2` itself.
+        // The expected lengths were measured by running PackedInts.bitsRequired
+        // from lucene-core-10.5.0.jar for each n.
+        let expected = [
+            (0usize, 2usize),
+            (1, 2),
+            (2, 4),
+            (3, 8),
+            (4, 8),
+            (5, 8),
+            (6, 16),
+            (7, 16),
+            (8, 16),
+            (9, 16),
+            (10, 16),
+            (11, 32),
+            (12, 32),
+        ];
+        for (n, table_len) in expected {
+            let values: Vec<i64> = (0..n as i64).collect();
+            let set = DocValuesLongHashSet::new(&values);
+            assert_eq!(
+                set.table.len(),
+                table_len,
+                "table length for {n} values must match Lucene's"
+            );
+            // A free slot always remains, which is what lets `add` terminate.
+            assert!(
+                set.table.iter().any(|&slot| slot == MISSING),
+                "the table for {n} values must keep a free slot"
+            );
+        }
+    }
+
+    #[test]
+    fn doc_values_long_hash_set_counts_distinct_values_only() {
+        let set = DocValuesLongHashSet::new(&[1, 1, 2, 2, 2, 5]);
+        assert_eq!(set.size(), 3);
+        assert_eq!(set.min_value(), 1);
+        assert_eq!(set.max_value(), 5);
+        for value in [1, 2, 5] {
+            assert!(set.contains(value));
+        }
+        for value in [0, 3, 4, 6] {
+            assert!(!set.contains(value));
+        }
+    }
+
+    #[test]
+    fn doc_values_long_hash_set_ram_bytes_used_charges_the_object_and_its_table() {
+        // Java charges `BASE_RAM_BYTES` — the shallow size of the instance —
+        // plus `RamUsageEstimator.sizeOfObject(table)`. The two terms are
+        // asserted separately so that a change to either shows up here.
+        let set = DocValuesLongHashSet::new(&[1, 2, 3, 4, 5]);
+        let expected = RamUsageEstimator::shallow_size_of_instance::<DocValuesLongHashSet>()
+            + RamUsageEstimator::size_of_long(&set.table);
+        assert_eq!(set.ram_bytes_used(), expected);
+        // A larger set costs more, because its table is longer.
+        let bigger = DocValuesLongHashSet::new(&(0..1000).collect::<Vec<i64>>());
+        assert!(bigger.ram_bytes_used() > set.ram_bytes_used());
+    }
+
+    #[test]
+    fn sorted_numeric_set_query_ram_bytes_used_charges_the_field_and_the_values() {
+        // Java charges `BASE_RAM_BYTES + sizeOfObject(field) + sizeOfObject(numbers)`,
+        // and reaches the set's own `ramBytesUsed` through the `Accountable`
+        // branch of `sizeOfObject`.
+        let query = SortedNumericDocValuesSetQuery::new("field", &[1, 2, 3]);
+        let expected =
+            RamUsageEstimator::shallow_size_of_instance::<SortedNumericDocValuesSetQuery>()
+                + RamUsageEstimator::size_of_string("field")
+                + query.values().ram_bytes_used();
+        assert_eq!(query.ram_bytes_used(), expected);
+        // A longer field name costs more.
+        let longer = SortedNumericDocValuesSetQuery::new("a_much_longer_field_name", &[1, 2, 3]);
+        assert!(longer.ram_bytes_used() > query.ram_bytes_used());
     }
 }
