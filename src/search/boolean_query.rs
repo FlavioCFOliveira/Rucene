@@ -542,6 +542,17 @@ impl BooleanQuery {
     }
 }
 
+impl<'a> IntoIterator for &'a BooleanQuery {
+    type Item = &'a BooleanClause;
+    type IntoIter = std::slice::Iter<'a, BooleanClause>;
+
+    /// Equivalent to `BooleanQuery.iterator()`, the `Iterable<BooleanClause>` implementation,
+    /// which hands out the clauses in the order they were added.
+    fn into_iter(self) -> Self::IntoIter {
+        self.clauses.iter()
+    }
+}
+
 impl Query for BooleanQuery {
     fn as_any(&self) -> &dyn Any {
         self

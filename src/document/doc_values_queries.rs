@@ -168,6 +168,35 @@ impl DocValuesLongHashSet {
     pub fn max_value(&self) -> i64 {
         self.max_value
     }
+
+    /// Iterates the members in table order.
+    ///
+    /// Equivalent to `DocValuesLongHashSet.stream()`, which filters the
+    /// sentinel out of the table and, when the sentinel is itself a member,
+    /// prepends it. The order is therefore the hash table's layout, not the
+    /// insertion order and not sorted — and it is exactly the order
+    /// [`Display`](std::fmt::Display) prints.
+    pub fn stream(&self) -> impl Iterator<Item = i64> + '_ {
+        self.has_missing_value
+            .then_some(MISSING)
+            .into_iter()
+            .chain(self.table.iter().copied().filter(|v| *v != MISSING))
+    }
+}
+
+impl std::fmt::Display for DocValuesLongHashSet {
+    /// Equivalent to `DocValuesLongHashSet.toString()`, which joins
+    /// [`stream`](Self::stream) with `", "` between `[` and `]`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[")?;
+        for (i, value) in self.stream().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{value}")?;
+        }
+        f.write_str("]")
+    }
 }
 
 impl Accountable for DocValuesLongHashSet {

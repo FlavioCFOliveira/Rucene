@@ -706,6 +706,24 @@ impl PartialEq for SpatialQuery {
     }
 }
 
+impl Eq for SpatialQuery {}
+
+impl std::hash::Hash for SpatialQuery {
+    /// Consistent with [`PartialEq`], and folding in the same state
+    /// `SpatialQuery.hashCode()` folds: the field and the query relation.
+    ///
+    /// Java also folds in `Arrays.hashCode(geometries)` and `classHash()`.
+    /// Neither belongs here: the geometries are what the concrete query carries
+    /// — this struct holds the derived [`Component2D`] instead, which
+    /// [`PartialEq`] deliberately does not compare, exactly as
+    /// `SpatialQuery.equalsTo` does not — and the class hash is contributed by
+    /// the concrete query's own `query_hash`.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.field.hash(state);
+        std::mem::discriminant(&self.query_relation).hash(state);
+    }
+}
+
 impl std::fmt::Debug for SpatialQuery {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SpatialQuery")
@@ -2614,6 +2632,22 @@ impl PartialEq for LatLonShapeBoundingBoxQuery {
         self.query.get_field() == other.query.get_field()
             && self.query.get_query_relation() == other.query.get_query_relation()
             && self.rectangle == other.rectangle
+    }
+}
+
+impl Eq for LatLonShapeBoundingBoxQuery {}
+
+impl std::hash::Hash for LatLonShapeBoundingBoxQuery {
+    /// Equivalent to `LatLonShapeBoundingBoxQuery.hashCode()`, which folds the
+    /// rectangle into the hash its superclass produced, and consistent with
+    /// [`PartialEq`] above.
+    ///
+    /// `Rectangle`'s own contribution is the bits of its four coordinates,
+    /// which is what `Rectangle.hashCode()` folds and what makes the pair
+    /// consistent — see [`crate::geo::geometry::Rectangle`].
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.query.hash(state);
+        self.rectangle.hash(state);
     }
 }
 

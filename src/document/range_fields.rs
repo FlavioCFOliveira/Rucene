@@ -144,7 +144,7 @@ fn range_field_type(dimensions: usize, bytes: i32) -> Result<FieldType> {
 macro_rules! range_field {
     (
         $name:ident, $prim:ty, $bytes:expr, $encode:path, $decode:path,
-        $doc_equiv:literal, $kind:literal, $is_nan:expr
+        $doc_equiv:literal, $kind:literal, $is_nan:expr, $render:path, $value_kind:expr
     ) => {
         #[doc = concat!("A range field over `", stringify!($prim), "` intervals.")]
         ///
@@ -269,6 +269,19 @@ macro_rules! range_field {
                 $decode(b, b.len() / 2 + dimension * $bytes)
             }
 
+            /// Renders one dimension of an encoded range as `[min : max]`.
+            ///
+            #[doc = concat!("Equivalent to the private static `", $doc_equiv, ".toString(byte[], int)`,")]
+            /// which the anonymous `RangeFieldQuery` subclass this type builds
+            /// installs as its `toString(byte[], int)` override.
+            pub fn range_to_string(ranges: &[u8], dimension: usize) -> String {
+                format!(
+                    "[{} : {}]",
+                    $render(Self::decode_min(ranges, dimension)),
+                    $render(Self::decode_max(ranges, dimension))
+                )
+            }
+
             /// Checks the intervals and packs them into `bytes`.
             ///
             #[doc = concat!("Equivalent to `", $doc_equiv, ".verifyAndEncode(", stringify!($prim), "[], ", stringify!($prim), "[], byte[])`.")]
@@ -367,7 +380,13 @@ macro_rules! range_field {
                 relation: RangeQueryType,
             ) -> Result<RangeFieldQuery> {
                 check_args(min, max, $kind)?;
-                RangeFieldQuery::new(field, Self::encode(min, max)?, min.len(), relation)
+                RangeFieldQuery::new(
+                    field,
+                    Self::encode(min, max)?,
+                    min.len(),
+                    relation,
+                    $value_kind,
+                )
             }
         }
 
@@ -418,6 +437,28 @@ macro_rules! range_field {
                 Some(InvertableType::BINARY)
             }
         }
+
+        impl std::fmt::Display for $name {
+            #[doc = concat!("Equivalent to `", $doc_equiv, ".toString()`.")]
+            ///
+            /// Java computes the rendering of dimension `0` before the loop and
+            /// then throws it away — `toString(b, 0);` is a bare statement whose
+            /// result is never appended — so the value part opens with the space
+            /// the loop writes before its first dimension. That quirk is part of
+            /// the observable string and is reproduced here.
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{} <{}:", $kind, self.name)?;
+                if let FieldData::Bytes(bytes) = &self.fields_data {
+                    let dims =
+                        IndexableFieldType::point_dimension_count(&self.field_type) / 2;
+                    for d in 0..dims as usize {
+                        f.write_str(" ")?;
+                        f.write_str(&Self::range_to_string(bytes.slice(), d))?;
+                    }
+                }
+                f.write_str(">")
+            }
+        }
     };
 }
 
@@ -457,6 +498,27 @@ fn decode_double(bytes: &[u8], offset: usize) -> f64 {
     NumericUtils::sortable_long_to_double(NumericUtils::sortable_bytes_to_long(bytes, offset))
 }
 
+/// Renders an `int` the way `Integer.toString(int)` does.
+fn render_int(value: i32) -> String {
+    value.to_string()
+}
+
+/// Renders a `long` the way `Long.toString(long)` does.
+fn render_long(value: i64) -> String {
+    value.to_string()
+}
+
+/// Renders a `float` the way `Float.toString(float)` does, which prints `2.0`
+/// where Rust prints `2` and `1.0E-8` where Rust prints `0.00000001`.
+fn render_float(value: f32) -> String {
+    crate::search::similarities::java_fmt::float_to_string(value)
+}
+
+/// Renders a `double` the way `Double.toString(double)` does.
+fn render_double(value: f64) -> String {
+    crate::search::similarities::java_fmt::double_to_string(value)
+}
+
 range_field!(
     IntRange,
     i32,
@@ -465,7 +527,9 @@ range_field!(
     decode_int,
     "org.apache.lucene.document.IntRange",
     "IntRange",
-    |_: i32| false
+    |_: i32| false,
+    render_int,
+    RangeValueKind::Int
 );
 range_field!(
     LongRange,
@@ -475,7 +539,9 @@ range_field!(
     decode_long,
     "org.apache.lucene.document.LongRange",
     "LongRange",
-    |_: i64| false
+    |_: i64| false,
+    render_long,
+    RangeValueKind::Long
 );
 range_field!(
     FloatRange,
@@ -485,7 +551,9 @@ range_field!(
     decode_float,
     "org.apache.lucene.document.FloatRange",
     "FloatRange",
-    |v: f32| v.is_nan()
+    |v: f32| v.is_nan(),
+    render_float,
+    RangeValueKind::Float
 );
 range_field!(
     DoubleRange,
@@ -495,7 +563,9 @@ range_field!(
     decode_double,
     "org.apache.lucene.document.DoubleRange",
     "DoubleRange",
-    |v: f64| v.is_nan()
+    |v: f64| v.is_nan(),
+    render_double,
+    RangeValueKind::Double
 );
 
 // -----------------------------------------------------------------------------
@@ -1087,6 +1157,56 @@ impl RangeQueryType {
     }
 }
 
+/// Which range type built a [`RangeFieldQuery`], and therefore how one
+/// dimension of its encoded range is rendered.
+///
+/// Java has no such enum: `RangeFieldQuery` is abstract and declares
+/// `protected abstract String toString(byte[] ranges, int dimension)`, which
+/// each `XxxRange.newRelationQuery` overrides in a one-off anonymous subclass.
+/// Rust has no implementation inheritance and this port makes
+/// [`RangeFieldQuery`] concrete, so the choice of override becomes a value the
+/// query carries.
+///
+/// It also stands in for the class identity Java's `equals` tests. Each
+/// `XxxRange` contributes exactly one anonymous subclass, shared by its four
+/// relations, so `Query.sameClassAs` makes two range queries of different value
+/// types unequal however identical their encoded bytes — measured from
+/// `lucene-core-10.5.0.jar`, where
+/// `IntRange.newIntersectsQuery(...).getClass() == FloatRange.newIntersectsQuery(...).getClass()`
+/// is `false` while the same comparison between two relations of `IntRange` is
+/// `true`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RangeValueKind {
+    /// Built by `IntRange`.
+    Int,
+    /// Built by `LongRange`.
+    Long,
+    /// Built by `FloatRange`.
+    Float,
+    /// Built by `DoubleRange`.
+    Double,
+    /// Built by `InetAddressRange`.
+    InetAddress,
+}
+
+impl RangeValueKind {
+    /// Renders one dimension of an encoded range as `[min : max]`.
+    ///
+    /// Equivalent to the `toString(byte[], int)` override the matching
+    /// `XxxRange` installs on its anonymous `RangeFieldQuery` subclass.
+    pub fn range_to_string(self, ranges: &[u8], dimension: usize) -> String {
+        match self {
+            RangeValueKind::Int => IntRange::range_to_string(ranges, dimension),
+            RangeValueKind::Long => LongRange::range_to_string(ranges, dimension),
+            RangeValueKind::Float => FloatRange::range_to_string(ranges, dimension),
+            RangeValueKind::Double => DoubleRange::range_to_string(ranges, dimension),
+            RangeValueKind::InetAddress => {
+                crate::document::geo_fields::InetAddressRange::range_to_string(ranges, dimension)
+            }
+        }
+    }
+}
+
 /// Finds the documents whose indexed range stands in a given relation to the
 /// query's range.
 ///
@@ -1099,6 +1219,7 @@ pub struct RangeFieldQuery {
     num_dims: usize,
     bytes_per_dim: usize,
     query_type: RangeQueryType,
+    value_kind: RangeValueKind,
 }
 
 impl RangeFieldQuery {
@@ -1115,6 +1236,7 @@ impl RangeFieldQuery {
         ranges: Vec<u8>,
         num_dims: usize,
         query_type: RangeQueryType,
+        value_kind: RangeValueKind,
     ) -> Result<Self> {
         let field = field.into();
         Self::check_args(&field, &ranges, num_dims)?;
@@ -1125,7 +1247,16 @@ impl RangeFieldQuery {
             num_dims,
             bytes_per_dim,
             query_type,
+            value_kind,
         })
+    }
+
+    /// Returns which range type built this query.
+    ///
+    /// Equivalent to asking Java which anonymous `RangeFieldQuery` subclass the
+    /// instance belongs to.
+    pub fn get_value_kind(&self) -> RangeValueKind {
+        self.value_kind
     }
 
     /// Checks the constructor's arguments.
@@ -1404,16 +1535,25 @@ impl Query for RangeFieldQuery {
     /// and then defers the range itself to the subclass's `toString(byte[],
     /// int)`. This port's class is concrete, so it prints the relation and the
     /// encoded range it holds.
+    /// Equivalent to `RangeFieldQuery.toString(String)`, which prints the
+    /// literal `ranges:` and then one `[min : max]` group per dimension,
+    /// separated by single spaces.
+    ///
+    /// The per-dimension rendering is what Java leaves abstract in
+    /// `toString(byte[], int)`; here it comes from
+    /// [`RangeValueKind::range_to_string`].
     fn to_query_string(&self, field: &str) -> String {
         let mut b = String::new();
         if self.field != field {
             b.push_str(&self.field);
             b.push(':');
         }
-        b.push('<');
-        b.push_str(&format!("{:?}", self.query_type));
-        b.push(':');
-        b.push_str(&format!("{:?}", self.ranges));
+        b.push_str("<ranges:");
+        b.push_str(&self.value_kind.range_to_string(&self.ranges, 0));
+        for d in 1..self.num_dims {
+            b.push(' ');
+            b.push_str(&self.value_kind.range_to_string(&self.ranges, d));
+        }
         b.push('>');
         b
     }
@@ -1453,7 +1593,11 @@ impl Query for RangeFieldQuery {
     fn query_eq(&self, other: &dyn Query) -> bool {
         match other.as_any().downcast_ref::<Self>() {
             Some(other) => {
-                self.field == other.field
+                // The value kind stands in for Java's `sameClassAs`: each
+                // `XxxRange` builds its own anonymous subclass, so two range
+                // queries of different value types are never equal.
+                self.value_kind == other.value_kind
+                    && self.field == other.field
                     && self.num_dims == other.num_dims
                     && self.query_type == other.query_type
                     && self.ranges == other.ranges
@@ -1468,6 +1612,10 @@ impl Query for RangeFieldQuery {
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         self.class_hash().hash(&mut hasher);
+        // `classHash()` in Java already distinguishes the anonymous subclasses;
+        // this port has one concrete type, so the kind carries that difference
+        // and keeps the hash consistent with `query_eq`.
+        self.value_kind.hash(&mut hasher);
         self.field.hash(&mut hasher);
         self.num_dims.hash(&mut hasher);
         self.query_type.hash(&mut hasher);

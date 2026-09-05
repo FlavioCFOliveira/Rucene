@@ -217,6 +217,17 @@ impl LogOddsFusionQuery {
     }
 }
 
+impl<'a> IntoIterator for &'a LogOddsFusionQuery {
+    type Item = &'a Arc<dyn Query>;
+    type IntoIter = std::slice::Iter<'a, Arc<dyn Query>>;
+
+    /// Equivalent to `LogOddsFusionQuery.iterator()`, the `Iterable<Query>` implementation,
+    /// which iterates `getClauses()`.
+    fn into_iter(self) -> Self::IntoIter {
+        self.get_clauses().iter()
+    }
+}
+
 impl Query for LogOddsFusionQuery {
     fn to_query_string(&self, field: &str) -> String {
         let joined = self

@@ -110,7 +110,15 @@ impl Point {
 /// An axis-aligned box on the globe.
 ///
 /// Equivalent to `org.apache.lucene.geo.Rectangle`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+///
+/// [`PartialEq`], [`Eq`] and [`Hash`] are written out rather than derived,
+/// because Java compares the four coordinates with `Double.compare` and hashes
+/// them with `Double.doubleToLongBits`. Those two agree with each other but not
+/// with IEEE 754 equality, which a derive would use: `Double.compare` makes
+/// `NaN` equal to itself and `-0.0` different from `0.0`, and
+/// `doubleToLongBits` canonicalises every `NaN` to one bit pattern, so hashing
+/// the bits is exactly consistent with comparing them.
+#[derive(Clone, Copy, Debug)]
 pub struct Rectangle {
     min_lat: f64,
     max_lat: f64,
@@ -1265,11 +1273,19 @@ impl Rectangle {
 
 impl std::fmt::Display for Rectangle {
     /// Equivalent to `Rectangle.toString()`.
+    ///
+    /// The coordinates go through
+    /// [`double_to_string`](crate::search::similarities::java_fmt::double_to_string)
+    /// because Java concatenates them with `Double.toString`, which prints
+    /// `10.0` where Rust's `Display` prints `10`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "Rectangle(lat={} TO {} lon={} TO {}",
-            self.min_lat, self.max_lat, self.min_lon, self.max_lon
+            crate::search::similarities::java_fmt::double_to_string(self.min_lat),
+            crate::search::similarities::java_fmt::double_to_string(self.max_lat),
+            crate::search::similarities::java_fmt::double_to_string(self.min_lon),
+            crate::search::similarities::java_fmt::double_to_string(self.max_lon)
         )?;
         if self.max_lon < self.min_lon {
             write!(f, " [crosses dateline!]")?;
@@ -1468,3 +1484,213 @@ impl Geometry for XYCircle {
     }
 }
 impl XYGeometry for XYCircle {}
+
+// -----------------------------------------------------------------------------
+// Object contract: `toString`
+// -----------------------------------------------------------------------------
+//
+// Lucene builds every one of these strings by concatenation, so the exact text
+// depends on `Double.toString` and `Float.toString` rather than on Rust's own
+// float rendering, which prints `35` where Java prints `35.0` and
+// `0.0001` where Java prints `1.0E-4`. The renderings live in
+// [`java_fmt`](crate::search::similarities::java_fmt) and are used verbatim
+// here.
+
+use crate::search::similarities::java_fmt::{double_to_string, float_to_string};
+
+impl std::fmt::Display for Point {
+    /// Equivalent to `Point.toString()`, which prints the longitude first.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Point({},{})",
+            double_to_string(self.lon),
+            double_to_string(self.lat)
+        )
+    }
+}
+
+impl std::fmt::Display for Line {
+    /// Equivalent to `Line.toString()`, which prints one `[lon, lat]` pair per
+    /// vertex with no separator between pairs.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Line(")?;
+        for i in 0..self.lats.len() {
+            write!(
+                f,
+                "[{}, {}]",
+                double_to_string(self.lons[i]),
+                double_to_string(self.lats[i])
+            )?;
+        }
+        f.write_str(")")
+    }
+}
+
+impl std::fmt::Display for Polygon {
+    /// Equivalent to `Polygon.toString()`, which prints one `[lat, lon] ` pair
+    /// per vertex — note the trailing space — and appends the holes through
+    /// `Arrays.toString` when there are any.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Polygon")?;
+        for i in 0..self.lats.len() {
+            write!(
+                f,
+                "[{}, {}] ",
+                double_to_string(self.lats[i]),
+                double_to_string(self.lons[i])
+            )?;
+        }
+        if !self.holes.is_empty() {
+            f.write_str(", holes=")?;
+            write_java_array(f, &self.holes)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for Circle {
+    /// Equivalent to `Circle.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Circle([{},{}] radius = {} meters)",
+            double_to_string(self.lat),
+            double_to_string(self.lon),
+            double_to_string(self.radius_meters)
+        )
+    }
+}
+
+impl std::fmt::Display for XYPoint {
+    /// Equivalent to `XYPoint.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "XYPoint({},{})",
+            float_to_string(self.x),
+            float_to_string(self.y)
+        )
+    }
+}
+
+impl std::fmt::Display for XYRectangle {
+    /// Equivalent to `XYRectangle.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "XYRectangle(x={} TO {} y={} TO {})",
+            float_to_string(self.min_x),
+            float_to_string(self.max_x),
+            float_to_string(self.min_y),
+            float_to_string(self.max_y)
+        )
+    }
+}
+
+impl std::fmt::Display for XYCircle {
+    /// Equivalent to `XYCircle.toString()`, which — unlike
+    /// [`Circle`] — prints no unit after the radius.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "XYCircle([{},{}] radius = {})",
+            float_to_string(self.x),
+            float_to_string(self.y),
+            float_to_string(self.radius)
+        )
+    }
+}
+
+impl std::fmt::Display for XYLine {
+    /// Equivalent to `XYLine.toString()`, which prints one `[x, y]` pair per
+    /// vertex with no separator between pairs.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("XYLine(")?;
+        for i in 0..self.xs.len() {
+            write!(
+                f,
+                "[{}, {}]",
+                float_to_string(self.xs[i]),
+                float_to_string(self.ys[i])
+            )?;
+        }
+        f.write_str(")")
+    }
+}
+
+impl std::fmt::Display for XYPolygon {
+    /// Equivalent to `XYPolygon.toString()`, which prints one `[x, y] ` pair
+    /// per vertex — note the trailing space — and appends the holes through
+    /// `Arrays.toString` when there are any.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("XYPolygon")?;
+        for i in 0..self.xs.len() {
+            write!(
+                f,
+                "[{}, {}] ",
+                float_to_string(self.xs[i]),
+                float_to_string(self.ys[i])
+            )?;
+        }
+        if !self.holes.is_empty() {
+            f.write_str(", holes=")?;
+            write_java_array(f, &self.holes)?;
+        }
+        Ok(())
+    }
+}
+
+/// Renders a slice the way `java.util.Arrays.toString(Object[])` does:
+/// `[first, second]`, with each element rendered by its own `toString`.
+fn write_java_array<T: std::fmt::Display>(
+    f: &mut std::fmt::Formatter<'_>,
+    values: &[T],
+) -> std::fmt::Result {
+    f.write_str("[")?;
+    for (i, value) in values.iter().enumerate() {
+        if i > 0 {
+            f.write_str(", ")?;
+        }
+        write!(f, "{value}")?;
+    }
+    f.write_str("]")
+}
+
+/// The bits `java.lang.Double.doubleToLongBits(double)` produces: the raw bits,
+/// except that every `NaN` collapses to the canonical quiet `NaN`.
+///
+/// It is what makes Java's `equals`/`hashCode` pairs on floating-point fields
+/// consistent, and reproducing it is the only way a port can be consistent in
+/// the same way.
+pub(crate) fn java_double_to_long_bits(value: f64) -> u64 {
+    if value.is_nan() {
+        0x7ff8_0000_0000_0000
+    } else {
+        value.to_bits()
+    }
+}
+
+impl PartialEq for Rectangle {
+    /// Equivalent to `Rectangle.equals(Object)`, which compares each coordinate
+    /// with `Double.compare` rather than with `==`.
+    fn eq(&self, other: &Self) -> bool {
+        java_double_to_long_bits(self.min_lat) == java_double_to_long_bits(other.min_lat)
+            && java_double_to_long_bits(self.min_lon) == java_double_to_long_bits(other.min_lon)
+            && java_double_to_long_bits(self.max_lat) == java_double_to_long_bits(other.max_lat)
+            && java_double_to_long_bits(self.max_lon) == java_double_to_long_bits(other.max_lon)
+    }
+}
+
+impl Eq for Rectangle {}
+
+impl std::hash::Hash for Rectangle {
+    /// Consistent with [`PartialEq`], and built from the same bits Java's
+    /// `Rectangle.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        java_double_to_long_bits(self.min_lat).hash(state);
+        java_double_to_long_bits(self.min_lon).hash(state);
+        java_double_to_long_bits(self.max_lat).hash(state);
+        java_double_to_long_bits(self.max_lon).hash(state);
+    }
+}

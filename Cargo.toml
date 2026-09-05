@@ -187,3 +187,7 @@ codegen-units = 1
 [[test]]
 name = "search_on_disk"
 path = "tests/search_on_disk.rs"
+
+[[test]]
+name = "portability_object_contract"
+path = "tests/portability/object_contract.rs"

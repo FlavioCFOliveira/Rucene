@@ -80,7 +80,7 @@ pub mod distribution;
 pub mod explanation;
 pub mod ib_similarity;
 pub mod independence;
-mod java_fmt;
+pub(crate) mod java_fmt;
 mod java_math;
 pub mod lambda;
 pub mod lm_similarity;

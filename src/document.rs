@@ -40,6 +40,7 @@ use crate::index::{
     IndexableFieldType, StoredFieldVisitor, StoredFieldVisitorStatus, VectorEncoding,
     VectorSimilarityFunction, MAX_DIMENSIONS, MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
 };
+use crate::search::similarities::java_fmt;
 use crate::search::{
     BoostQuery, ConstantScoreQuery, IndexOrDocValuesQuery,
     IndexSortSortedNumericDocValuesRangeQuery, PointInSetQuery, PointRangeQuery, Query,
@@ -117,12 +118,19 @@ pub enum NumericValue {
 }
 
 impl std::fmt::Display for NumericValue {
+    /// Renders the value the way Java's `String.valueOf(Number)` does, which is
+    /// what `Field.toString()` reaches when `fieldsData` holds a boxed number.
+    ///
+    /// The float and double arms go through
+    /// [`java_fmt`](crate::search::similarities::java_fmt) rather than Rust's
+    /// own `Display`, which prints `100` where `Double.toString` prints
+    /// `100.0` and `0.0001` where it prints `1.0E-4`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NumericValue::Int(v) => write!(f, "{v}"),
             NumericValue::Long(v) => write!(f, "{v}"),
-            NumericValue::Float(v) => write!(f, "{v}"),
-            NumericValue::Double(v) => write!(f, "{v}"),
+            NumericValue::Float(v) => f.write_str(&java_fmt::float_to_string(*v)),
+            NumericValue::Double(v) => f.write_str(&java_fmt::double_to_string(*v)),
         }
     }
 }
@@ -5748,6 +5756,316 @@ impl IndexableField for KnnByteVectorField {
 
     fn byte_vector_value(&self) -> Option<&[u8]> {
         Some(&self.vector)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Object contract: `toString`, `equals`, `hashCode` and `iterator`
+// -----------------------------------------------------------------------------
+//
+// Every string below is built by concatenation in Java, so the exact text is
+// part of the contract: it reaches score explanations, `IndexWriter` error
+// messages and Luke. The renderings were measured from `lucene-core-10.5.0.jar`
+// through `tests/fixtures/java-codec-harness/.../RuceneObjectContractFixture.java`
+// and are locked in by `tests/portability/object_contract.rs`.
+
+/// Renders a byte slice the way `org.apache.lucene.util.BytesRef.toString()`
+/// does: `[` then each byte as unsigned hexadecimal separated by a single
+/// space, then `]`.
+///
+/// Java uses `Integer.toHexString(b & 0xff)`, which does **not** pad to two
+/// digits, so `0x0a` renders as `a` and `0x00` as `0`.
+fn bytes_ref_to_string(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(2 + 3 * bytes.len());
+    out.push('[');
+    for (i, byte) in bytes.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(&format!("{byte:x}"));
+    }
+    out.push(']');
+    out
+}
+
+/// Renders a [`FieldData`] the way Java's `StringBuilder.append(Object)` renders
+/// the `fieldsData` of a `Field`.
+///
+/// **Divergence from Lucene 10.5.0.** Java can also hold a `Reader` or a
+/// `TokenStream` in `fieldsData`, and appending either of those calls
+/// `Object.toString()`, which prints the class name and the identity hash code
+/// of that particular JVM object. Neither is reproducible — Rust has no
+/// identity hash — and neither is stable across Java runs either, so this port
+/// prints a fixed placeholder for those two cases. Every other case is exact.
+fn field_data_to_string(data: &FieldData) -> String {
+    match data {
+        FieldData::String(v) => v.clone(),
+        FieldData::Bytes(v) => bytes_ref_to_string(v.slice()),
+        FieldData::Number(v) => v.to_string(),
+        FieldData::Reader(_) => "java.io.Reader".to_string(),
+        FieldData::TokenStream(_) => "org.apache.lucene.analysis.TokenStream".to_string(),
+        FieldData::StoredInput { .. } => "org.apache.lucene.index.StoredFieldDataInput".to_string(),
+    }
+}
+
+/// Renders the point value of a field the way the `toString()` of `IntPoint`
+/// and its three siblings does: the dimensions of the packed value, separated
+/// by commas, each decoded by `decode`.
+fn point_to_string(
+    f: &mut Formatter<'_>,
+    class_name: &str,
+    name: &str,
+    field_type: &FieldType,
+    data: &FieldData,
+    bytes_per_dim: usize,
+    decode: impl Fn(&[u8], usize) -> String,
+) -> std::fmt::Result {
+    write!(f, "{class_name} <{name}:")?;
+    if let FieldData::Bytes(bytes) = data {
+        let dims = IndexableFieldType::point_dimension_count(field_type);
+        for dim in 0..dims as usize {
+            if dim > 0 {
+                f.write_str(",")?;
+            }
+            f.write_str(&decode(bytes.slice(), dim * bytes_per_dim))?;
+        }
+    }
+    f.write_str(">")
+}
+
+impl std::fmt::Display for IntPoint {
+    /// Equivalent to `IntPoint.toString()`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        point_to_string(
+            f,
+            "IntPoint",
+            &self.name,
+            &self.field_type,
+            &self.fields_data,
+            4,
+            |bytes, offset| IntPoint::decode_dimension(bytes, offset).to_string(),
+        )
+    }
+}
+
+impl std::fmt::Display for LongPoint {
+    /// Equivalent to `LongPoint.toString()`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        point_to_string(
+            f,
+            "LongPoint",
+            &self.name,
+            &self.field_type,
+            &self.fields_data,
+            8,
+            |bytes, offset| LongPoint::decode_dimension(bytes, offset).to_string(),
+        )
+    }
+}
+
+impl std::fmt::Display for FloatPoint {
+    /// Equivalent to `FloatPoint.toString()`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        point_to_string(
+            f,
+            "FloatPoint",
+            &self.name,
+            &self.field_type,
+            &self.fields_data,
+            4,
+            |bytes, offset| java_fmt::float_to_string(FloatPoint::decode_dimension(bytes, offset)),
+        )
+    }
+}
+
+impl std::fmt::Display for DoublePoint {
+    /// Equivalent to `DoublePoint.toString()`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        point_to_string(
+            f,
+            "DoublePoint",
+            &self.name,
+            &self.field_type,
+            &self.fields_data,
+            8,
+            |bytes, offset| {
+                java_fmt::double_to_string(DoublePoint::decode_dimension(bytes, offset))
+            },
+        )
+    }
+}
+
+impl std::fmt::Display for IntField {
+    /// Equivalent to `IntField.toString()`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IntField <{}:{}>", self.name, self.value)
+    }
+}
+
+impl std::fmt::Display for LongField {
+    /// Equivalent to `LongField.toString()`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LongField <{}:{}>", self.name, self.value)
+    }
+}
+
+impl std::fmt::Display for FloatField {
+    /// Equivalent to `FloatField.toString()`, which prints
+    /// `getValueAsFloat()` because `fieldsData` holds the sortable `int`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "FloatField <{}:{}>",
+            self.name,
+            java_fmt::float_to_string(self.value)
+        )
+    }
+}
+
+impl std::fmt::Display for DoubleField {
+    /// Equivalent to `DoubleField.toString()`, which prints
+    /// `getValueAsDouble()` because `fieldsData` holds the sortable `long`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "DoubleField <{}:{}>",
+            self.name,
+            java_fmt::double_to_string(self.value)
+        )
+    }
+}
+
+impl std::fmt::Display for Field {
+    /// Equivalent to `Field.toString()`, which is the field type, then the
+    /// name and the value between angle brackets.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}<{}:{}>",
+            self.field_type,
+            self.name,
+            field_data_to_string(&self.fields_data)
+        )
+    }
+}
+
+impl std::fmt::Display for FieldType {
+    /// Equivalent to `FieldType.toString()`, which lists only the properties
+    /// that are set, in a fixed order, separated by commas.
+    ///
+    /// Note that the vector attributes and the field attributes never appear:
+    /// Java's rendering ignores them, so the string of a vector field is the
+    /// same as that of the same field without vectors.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut result = String::new();
+        if self.stored {
+            result.push_str("stored");
+        }
+        if self.index_options != IndexOptions::NONE {
+            if !result.is_empty() {
+                result.push(',');
+            }
+            result.push_str("indexed");
+            if self.tokenized {
+                result.push_str(",tokenized");
+            }
+            if self.store_term_vectors {
+                result.push_str(",termVector");
+            }
+            if self.store_term_vector_offsets {
+                result.push_str(",termVectorOffsets");
+            }
+            if self.store_term_vector_positions {
+                // Java's spelling: the singular is not a typo in this port.
+                result.push_str(",termVectorPosition");
+            }
+            if self.store_term_vector_payloads {
+                result.push_str(",termVectorPayloads");
+            }
+            if self.omit_norms {
+                result.push_str(",omitNorms");
+            }
+            if self.index_options != IndexOptions::DOCS_AND_FREQS_AND_POSITIONS {
+                result.push_str(",indexOptions=");
+                result.push_str(&format!("{:?}", self.index_options));
+            }
+        }
+        if self.dimension_count != 0 {
+            if !result.is_empty() {
+                result.push(',');
+            }
+            result.push_str("pointDimensionCount=");
+            result.push_str(&self.dimension_count.to_string());
+            result.push_str(",pointIndexDimensionCount=");
+            result.push_str(&self.index_dimension_count.to_string());
+            result.push_str(",pointNumBytes=");
+            result.push_str(&self.dimension_num_bytes.to_string());
+        }
+        if self.doc_values_type != DocValuesType::NONE {
+            if !result.is_empty() {
+                result.push(',');
+            }
+            result.push_str("docValuesType=");
+            result.push_str(&format!("{:?}", self.doc_values_type));
+        }
+        f.write_str(&result)
+    }
+}
+
+impl PartialEq for FieldType {
+    /// Equivalent to `FieldType.equals(Object)`, which compares thirteen
+    /// properties and deliberately ignores the frozen flag, the vector
+    /// attributes and the attribute map.
+    fn eq(&self, other: &Self) -> bool {
+        self.dimension_count == other.dimension_count
+            && self.index_dimension_count == other.index_dimension_count
+            && self.dimension_num_bytes == other.dimension_num_bytes
+            && self.doc_values_type == other.doc_values_type
+            && self.doc_values_skip_index_type == other.doc_values_skip_index_type
+            && self.index_options == other.index_options
+            && self.omit_norms == other.omit_norms
+            && self.store_term_vector_offsets == other.store_term_vector_offsets
+            && self.store_term_vector_payloads == other.store_term_vector_payloads
+            && self.store_term_vector_positions == other.store_term_vector_positions
+            && self.store_term_vectors == other.store_term_vectors
+            && self.stored == other.stored
+            && self.tokenized == other.tokenized
+    }
+}
+
+impl Eq for FieldType {}
+
+impl std::hash::Hash for FieldType {
+    /// Consistent with [`PartialEq`]: it folds in exactly the thirteen
+    /// properties `FieldType.equals` compares, in the order
+    /// `FieldType.hashCode()` folds them.
+    ///
+    /// **Divergence from Lucene 10.5.0.** The numeric value cannot be
+    /// reproduced, and neither can Java reproduce it across runs: two of the
+    /// terms Java folds in are `docValuesType.hashCode()` and
+    /// `indexOptions.hashCode()`, and a Java enum inherits `Object.hashCode()`,
+    /// an identity hash that differs between JVM launches. Only the consistency
+    /// with equality is a contract, and that is reproduced exactly.
+    ///
+    /// The three enum-valued properties are folded in through
+    /// [`std::mem::discriminant`] rather than through [`Hash`], because they are
+    /// declared in [`crate::index`] and carry no payload: for such an enum,
+    /// discriminant equality *is* value equality, so this is consistent with
+    /// [`PartialEq`] above.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.dimension_count.hash(state);
+        self.index_dimension_count.hash(state);
+        self.dimension_num_bytes.hash(state);
+        std::mem::discriminant(&self.doc_values_type).hash(state);
+        std::mem::discriminant(&self.doc_values_skip_index_type).hash(state);
+        std::mem::discriminant(&self.index_options).hash(state);
+        self.omit_norms.hash(state);
+        self.store_term_vector_offsets.hash(state);
+        self.store_term_vector_payloads.hash(state);
+        self.store_term_vector_positions.hash(state);
+        self.store_term_vectors.hash(state);
+        self.stored.hash(state);
+        self.tokenized.hash(state);
     }
 }
 

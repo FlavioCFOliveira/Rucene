@@ -14,7 +14,7 @@ use crate::document::point_queries::{
     LatLonDocValuesBoxQuery, LatLonDocValuesQuery, LatLonPointDistanceQuery, LatLonPointQuery,
     XYDocValuesPointInGeometryQuery,
 };
-use crate::document::range_fields::{RangeFieldQuery, RangeQueryType};
+use crate::document::range_fields::{RangeFieldQuery, RangeQueryType, RangeValueKind};
 use crate::document::shape_field::QueryRelation;
 use crate::document::spatial_query::{LatLonGeometryValue, XYGeometryValue};
 use crate::document::{FieldData, FieldType, InvertableType, NumericValue, StoredValue};
@@ -31,6 +31,7 @@ use crate::search::index_searcher::IndexSearcher;
 use crate::search::match_no_docs_query::MatchNoDocsQuery;
 use crate::search::point_in_set_query::{PointFormatter, PointInSetQuery};
 use crate::search::point_range_query::{DimensionFormatter, PointRangeQuery};
+use crate::search::similarities::java_fmt;
 use crate::search::top_field_docs::TopFieldDocs;
 use crate::search::total_hits::{TotalHits, TotalHitsRelation};
 use crate::search::{Occur, Query};
@@ -1606,14 +1607,33 @@ impl InetAddressRange {
         Self::new_relation_query(field, min, max, RangeQueryType::Crosses)
     }
 
+    /// Renders one dimension of an encoded range as `[min : max]`.
+    ///
+    /// Equivalent to the private static
+    /// `InetAddressRange.toString(byte[], int)`, which the anonymous
+    /// `RangeFieldQuery` subclass this type builds installs as its
+    /// `toString(byte[], int)` override.
+    ///
+    /// Java concatenates the two `InetAddress` objects `InetAddressPoint.decode`
+    /// returns, so it is `InetAddress.toString()` that renders them —
+    /// `hostname + "/" + hostAddress`, and the host name of an address decoded
+    /// from bytes is always empty. Hence the leading slash on each bound.
+    pub fn range_to_string(ranges: &[u8], _dimension: usize) -> String {
+        let half = ranges.len() / 2;
+        format!(
+            "[/{} : /{}]",
+            inet_address_host_address(&ranges[..half]),
+            inet_address_host_address(&ranges[half..])
+        )
+    }
+
     /// Builds the query for the desired relation.
     ///
     /// Equivalent to the private static
-    /// `InetAddressRange.newRelationQuery(String, InetAddress, InetAddress, QueryType)`.
-    /// Java's anonymous `RangeFieldQuery` subclass exists only to override
-    /// `toString(byte[], int)` with `InetAddressRange.toString`, which prints
-    /// `[min : max]`; [`RangeFieldQuery`] has no such rendering hook in this
-    /// port, so there is nothing to override.
+    /// `InetAddressRange.newRelationQuery(String, InetAddress, InetAddress, QueryType)`,
+    /// whose anonymous `RangeFieldQuery` subclass exists only to override
+    /// `toString(byte[], int)` with [`range_to_string`](Self::range_to_string).
+    /// This port carries that choice as [`RangeValueKind::InetAddress`] instead.
     ///
     /// # Errors
     ///
@@ -1625,7 +1645,13 @@ impl InetAddressRange {
         max: &[u8],
         relation: RangeQueryType,
     ) -> Result<RangeFieldQuery> {
-        RangeFieldQuery::new(field, Self::encode(min, max)?, 1, relation)
+        RangeFieldQuery::new(
+            field,
+            Self::encode(min, max)?,
+            1,
+            relation,
+            RangeValueKind::InetAddress,
+        )
     }
 }
 
@@ -1817,5 +1843,105 @@ mod inet_address_query_tests {
         // `encode` accepts a 4-byte or a 16-byte address and nothing else.
         assert!(InetAddressPoint::new_exact_query("ip", &[10, 0, 0]).is_err());
         assert!(InetAddressPoint::new_set_query("ip", &[&[10, 0, 0][..]]).is_err());
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Object contract: `toString`
+// -----------------------------------------------------------------------------
+//
+// Every string below is built by concatenation in Java, so the coordinates go
+// through `java_fmt` rather than Rust's own float rendering, which prints `35`
+// where `Double.toString` prints `35.0`. The exact strings were measured from
+// `lucene-core-10.5.0.jar` and are locked in by
+// `tests/portability/object_contract.rs`.
+
+impl std::fmt::Display for LatLonPoint {
+    /// Equivalent to `LatLonPoint.toString()`, which prints the latitude and
+    /// then the longitude decoded back out of the packed value.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LatLonPoint <{}:", self.name)?;
+        if let Some(bytes) = self.packed_value() {
+            write!(
+                f,
+                "{},{}",
+                java_fmt::double_to_string(GeoEncodingUtils::decode_latitude_bytes(bytes, 0)),
+                java_fmt::double_to_string(GeoEncodingUtils::decode_longitude_bytes(
+                    bytes,
+                    COORDINATE_BYTES
+                ))
+            )?;
+        }
+        f.write_str(">")
+    }
+}
+
+impl std::fmt::Display for LatLonDocValuesField {
+    /// Equivalent to `LatLonDocValuesField.toString()`, which splits the packed
+    /// `long` into its two encoded halves.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "LatLonDocValuesField <{}:{},{}>",
+            self.name,
+            java_fmt::double_to_string(Self::decode_latitude(self.value)),
+            java_fmt::double_to_string(Self::decode_longitude(self.value))
+        )
+    }
+}
+
+impl std::fmt::Display for XYPointField {
+    /// Equivalent to `XYPointField.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "XYPointField <{}:", self.name)?;
+        if let Some(bytes) = self.packed_value() {
+            write!(
+                f,
+                "{},{}",
+                java_fmt::float_to_string(XYEncodingUtils::decode_bytes(bytes, 0)),
+                java_fmt::float_to_string(XYEncodingUtils::decode_bytes(bytes, COORDINATE_BYTES))
+            )?;
+        }
+        f.write_str(">")
+    }
+}
+
+impl std::fmt::Display for XYDocValuesField {
+    /// Equivalent to `XYDocValuesField.toString()`, which splits the packed
+    /// `long` into its two encoded halves.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "XYDocValuesField <{}:{},{}>",
+            self.name,
+            java_fmt::float_to_string(Self::decode_x(self.value)),
+            java_fmt::float_to_string(Self::decode_y(self.value))
+        )
+    }
+}
+
+impl std::fmt::Display for InetAddressPoint {
+    /// Equivalent to `InetAddressPoint.toString()`, which brackets an IPv6
+    /// address so that it cannot be confused with the historic `field:value`
+    /// form, and leaves an IPv4 address bare.
+    ///
+    /// Java decides between the two by the length `InetAddress.getAddress()`
+    /// reports, which is four exactly when `decode` produced an `Inet4Address`
+    /// — that is, when the encoded bytes are an IPv4-mapped address.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "InetAddressPoint <{}:", self.name)?;
+        if let Some(bytes) = self.packed_value() {
+            let is_v4 = bytes.len() == Self::BYTES
+                && bytes[..10].iter().all(|&b| b == 0)
+                && bytes[10] == 0xFF
+                && bytes[11] == 0xFF;
+            let rendered = inet_address_host_address(bytes);
+            if is_v4 {
+                f.write_str(&rendered)?;
+            } else {
+                write!(f, "[{rendered}]")?;
+            }
+        }
+        f.write_str(">")
     }
 }

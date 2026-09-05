@@ -354,6 +354,17 @@ impl Weight for DisjunctionMaxWeight {
     }
 }
 
+impl<'a> IntoIterator for &'a DisjunctionMaxQuery {
+    type Item = &'a Arc<dyn Query>;
+    type IntoIter = std::slice::Iter<'a, Arc<dyn Query>>;
+
+    /// Equivalent to `DisjunctionMaxQuery.iterator()`, the `Iterable<Query>` implementation,
+    /// which iterates `getDisjuncts()`.
+    fn into_iter(self) -> Self::IntoIter {
+        self.get_disjuncts().iter()
+    }
+}
+
 impl Query for DisjunctionMaxQuery {
     fn as_any(&self) -> &dyn Any {
         self
