@@ -3468,6 +3468,15 @@ mod tests {
         }
     }
 
+    impl std::fmt::Display for TestDocValuesField {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `IndexableField` carries it as a supertrait, standing in for
+        /// the `toString()` every Java field inherits.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("TestDocValuesField")
+        }
+    }
+
     impl IndexableField for TestDocValuesField {
         fn name(&self) -> &str {
             &self.name

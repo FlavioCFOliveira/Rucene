@@ -475,6 +475,22 @@ pub struct Triangle {
     fields_data: FieldData,
 }
 
+impl std::fmt::Display for Triangle {
+    /// `ShapeField.Triangle` extends `Field` and overrides no `toString()` —
+    /// the `toString()` further down `ShapeField.java` belongs to the unrelated
+    /// `DecodedTriangle`. Measured against `lucene-core-10.5.0.jar`, where a
+    /// tessellated line renders as
+    /// `pointDimensionCount=7,pointIndexDimensionCount=4,pointNumBytes=4<shape:[80 0 …]>`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        crate::document::field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &crate::document::field_data_to_string(&self.fields_data),
+        )
+    }
+}
+
 impl Triangle {
     /// Creates the field from three already encoded vertices.
     #[allow(clippy::too_many_arguments)]
@@ -610,6 +626,21 @@ impl IndexableField for Triangle {
 pub struct LateInteractionField {
     name: String,
     value: BytesRef,
+}
+
+impl std::fmt::Display for LateInteractionField {
+    /// `LateInteractionField` extends `BinaryDocValuesField`, which extends
+    /// `Field`, and overrides no `toString()`. Measured against
+    /// `lucene-core-10.5.0.jar`:
+    /// `docValuesType=BINARY<li:[2 0 0 0 0 0 80 3f 0 0 0 40]>`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        crate::document::field_to_string(
+            f,
+            crate::document::binary_doc_values_field_type(),
+            &self.name,
+            &crate::document::bytes_ref_to_string(self.value.slice()),
+        )
+    }
 }
 
 impl LateInteractionField {

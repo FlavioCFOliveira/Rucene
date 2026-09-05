@@ -5,7 +5,7 @@
 
 #![deny(unsafe_code)]
 
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::sync::{Arc, Weak};
 
 use crate::error::{LuceneError, Result};
@@ -149,7 +149,7 @@ impl TermVectors for EmptyTermVectors {
 /// Equivalent to `org.apache.lucene.index.LeafReader`. Concrete leaf readers
 /// implement this trait; a blanket implementation makes them usable as
 /// `dyn IndexReader`.
-pub trait LeafReader: Send + Sync + Debug + 'static {
+pub trait LeafReader: Send + Sync + Debug + Display + 'static {
     /// Returns the shared core state for this reader.
     fn core(&self) -> &IndexReaderCore;
 
@@ -498,6 +498,16 @@ mod tests {
         max_doc: i32,
         num_docs: i32,
         meta: LeafMetaData,
+    }
+
+    impl std::fmt::Display for DummyLeafReader {
+        /// Test double; it has no Lucene counterpart whose `toString()` could be
+        /// reproduced, so it renders under its own name. `Display` is required
+        /// because `LeafReader`/`IndexReader` carry it as a supertrait, standing in
+        /// for the `toString()` every Java reader inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("DummyLeafReader")
+        }
     }
 
     impl DummyLeafReader {

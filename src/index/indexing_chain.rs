@@ -686,6 +686,17 @@ impl std::fmt::Debug for ColumnFieldTypeCarrier {
     }
 }
 
+impl std::fmt::Display for ColumnFieldTypeCarrier {
+    /// Port-only carrier with no Lucene counterpart: Java passes the column's
+    /// name and field type as two arguments, so there is no object whose
+    /// `toString()` could be reproduced. It renders in the inherited
+    /// `Field.toString()` shape with an empty value, which is what a `Field`
+    /// carrying no `fieldsData` renders as.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}<{}:>", self.field_type, self.name)
+    }
+}
+
 impl IndexableField for ColumnFieldTypeCarrier {
     fn name(&self) -> &str {
         &self.name
@@ -4091,6 +4102,15 @@ mod tests {
         }
     }
 
+    impl std::fmt::Display for VectorlessVectorField {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `IndexableField` carries it as a supertrait, standing in for
+        /// the `toString()` every Java field inherits.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("VectorlessVectorField")
+        }
+    }
+
     impl IndexableField for VectorlessVectorField {
         fn name(&self) -> &str {
             &self.name
@@ -6075,6 +6095,26 @@ struct BufferedDocValuesReader {
             Arc<dyn crate::codecs::doc_values::DocValuesProducer>,
         ),
     >,
+}
+
+impl std::fmt::Display for BufferedDocValuesReader {
+    /// `DocValuesLeafReader` declares no `toString()`, and neither does the
+    /// anonymous subclass `IndexingChain.getDocValuesLeafReader()` returns, so
+    /// `java.lang.Object`'s applies.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java renders the anonymous class's
+    /// own binary name, `org.apache.lucene.index.IndexingChain$N`, where `N` is
+    /// the ordinal javac assigns. That ordinal is a compiler artifact, it is
+    /// not reachable from outside the package to be measured, and no Lucene
+    /// format or `toString()` depends on it; this port renders the named base
+    /// class instead. The identity suffix diverges for the reason given on
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.DocValuesLeafReader",
+            self,
+        ))
+    }
 }
 
 impl std::fmt::Debug for BufferedDocValuesReader {

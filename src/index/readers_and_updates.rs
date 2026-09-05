@@ -73,6 +73,36 @@ impl std::fmt::Debug for PendingDeletes {
 }
 
 impl PendingDeletes {
+    /// Port of `PendingDeletes.toString()` (`PendingDeletes.java:161-168`).
+    ///
+    /// Measured against `lucene-core-10.5.0.jar`, where a fresh tracker over a
+    /// three-document segment renders as
+    /// `PendingDeletes(seg=_0(10.5.0):C3 numPendingDeletes=0 writeable=false` —
+    /// Lucene never closes the parenthesis it opens, exactly as it never closes
+    /// `SparseFixedBitSet`'s or `TieredMergePolicy`'s.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java reads `info` off the
+    /// `protected final SegmentCommitInfo info` field this class holds; the
+    /// port takes it as a parameter, because [`PendingDeletes`] owns no
+    /// `SegmentCommitInfo` — every other method that needs one
+    /// ([`delete`](Self::delete), [`write_live_docs`](Self::write_live_docs),
+    /// [`get_del_count`](Self::get_del_count) …) receives it the same way.
+    /// That existing divergence is what keeps the port from holding a second,
+    /// silently diverging copy of a segment commit that `write_live_docs`
+    /// mutates in place: in Java the two are one object, and Rust cannot alias
+    /// a `&mut` that way without moving the whole commit behind a lock.
+    /// Rendering is therefore parameterised rather than becoming the one place
+    /// that needs its own copy.
+    pub fn to_string_with_info(&self, info: &SegmentCommitInfo) -> String {
+        format!(
+            "PendingDeletes(seg={info} numPendingDeletes={} writeable={}",
+            self.pending_delete_count,
+            self.writeable_live_docs.is_some()
+        )
+    }
+}
+
+impl PendingDeletes {
     /// Creates a `PendingDeletes` from a previously opened `SegmentReader`.
     ///
     /// Equivalent to `PendingDeletes(SegmentReader, SegmentCommitInfo)`.
@@ -403,6 +433,25 @@ impl std::fmt::Debug for PendingSoftDeletes {
             .field("pending_delete_count", &self.pending_delete_count)
             .field("hard_deletes", &self.hard_deletes)
             .finish_non_exhaustive()
+    }
+}
+
+impl PendingSoftDeletes {
+    /// Port of `PendingSoftDeletes.toString()`
+    /// (`PendingSoftDeletes.java:176-185`), which renders its own state and
+    /// then the whole inherited `hardDeletes` tracker — parenthesis left open
+    /// on both, as Java leaves them.
+    ///
+    /// Measured against `lucene-core-10.5.0.jar`. See
+    /// [`PendingDeletes::to_string_with_info`] for why `info` is a parameter.
+    pub fn to_string_with_info(&self, info: &SegmentCommitInfo) -> String {
+        format!(
+            "PendingSoftDeletes(seg={info} numPendingDeletes={} field={} dvGeneration={} hardDeletes={}",
+            self.pending_delete_count,
+            self.field,
+            self.dv_generation,
+            self.hard_deletes.to_string_with_info(info)
+        )
     }
 }
 
@@ -988,6 +1037,17 @@ pub(crate) enum PendingDeletesKind {
     Soft(PendingSoftDeletes),
 }
 
+impl PendingDeletesKind {
+    /// Renders whichever tracker this is, the way Java's virtual dispatch on
+    /// `PendingDeletes.toString()` would.
+    pub(crate) fn to_string_with_info(&self, info: &SegmentCommitInfo) -> String {
+        match self {
+            Self::Hard(deletes) => deletes.to_string_with_info(info),
+            Self::Soft(deletes) => deletes.to_string_with_info(info),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ReadersAndUpdates
 // ---------------------------------------------------------------------------
@@ -1020,6 +1080,25 @@ impl std::fmt::Debug for ReadersAndUpdates {
             .field("seg", &state.info.info.name)
             .field("ref_count", &self.ref_count.load(Ordering::Relaxed))
             .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for ReadersAndUpdates {
+    /// Port of `ReadersAndUpdates.toString()`
+    /// (`ReadersAndUpdates.java:885-891`).
+    ///
+    /// The class renames itself: the string opens with `ReadersAndLiveDocs`,
+    /// not `ReadersAndUpdates` — the name the class carried before doc-values
+    /// updates were added. It also leaves its parenthesis open, and so does the
+    /// `PendingDeletes` it embeds. Measured against `lucene-core-10.5.0.jar`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = self.state.lock().expect("state mutex poisoned");
+        write!(
+            f,
+            "ReadersAndLiveDocs(seg={} pendingDeletes={}",
+            state.info,
+            state.pending_deletes.to_string_with_info(&state.info)
+        )
     }
 }
 

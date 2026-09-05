@@ -1483,6 +1483,21 @@ pub struct InetAddressRange {
     fields_data: FieldData,
 }
 
+impl std::fmt::Display for InetAddressRange {
+    /// `InetAddressRange` extends `Field` and overrides no `toString()`, so the
+    /// packed range renders as a plain `BytesRef`. Measured against
+    /// `lucene-core-10.5.0.jar`:
+    /// `pointDimensionCount=2,pointIndexDimensionCount=2,pointNumBytes=16<r:[0 0 …]>`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        crate::document::field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &crate::document::field_data_to_string(&self.fields_data),
+        )
+    }
+}
+
 impl InetAddressRange {
     /// How many bytes one address occupies.
     pub const BYTES: usize = InetAddressPoint::BYTES;

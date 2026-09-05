@@ -2647,6 +2647,15 @@ mod tests {
         atts: crate::util::attribute::AttributeSource,
     }
 
+    impl std::fmt::Display for TestTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("TestTermsEnum")
+        }
+    }
+
     impl TermsEnum for TestTermsEnum {
         fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
             &mut self.atts

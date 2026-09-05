@@ -2086,6 +2086,17 @@ impl<V: SortedDocValues + ?Sized + 'static> SortedDocValuesTermsEnum<V> {
     }
 }
 
+impl<V: SortedDocValues + ?Sized> std::fmt::Display for SortedDocValuesTermsEnum<V> {
+    /// `org.apache.lucene.index.SortedDocValuesTermsEnum` declares no
+    /// `toString()`, so `java.lang.Object`'s applies.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.SortedDocValuesTermsEnum",
+            self,
+        ))
+    }
+}
+
 impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.atts
@@ -2223,6 +2234,17 @@ impl<V: SortedSetDocValues + ?Sized + 'static> SortedSetDocValuesTermsEnum<V> {
             scratch: BytesRefBuilder::new(),
             atts: AttributeSource::new(),
         })
+    }
+}
+
+impl<V: SortedSetDocValues + ?Sized> std::fmt::Display for SortedSetDocValuesTermsEnum<V> {
+    /// `org.apache.lucene.index.SortedSetDocValuesTermsEnum` declares no
+    /// `toString()`, so `java.lang.Object`'s applies.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.SortedSetDocValuesTermsEnum",
+            self,
+        ))
     }
 }
 

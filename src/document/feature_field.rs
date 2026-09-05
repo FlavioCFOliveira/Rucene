@@ -353,6 +353,17 @@ pub struct FeatureField {
     field_type: FieldType,
 }
 
+impl std::fmt::Display for FeatureField {
+    /// `FeatureField` extends `Field` and overrides no `toString()`. Its
+    /// `fieldsData` is the **feature name**, not the value, so a
+    /// `FeatureField("f", "name", 2.5f)` renders as
+    /// `indexed,omitNorms,indexOptions=DOCS_AND_FREQS<f:name>`. Measured
+    /// against `lucene-core-10.5.0.jar`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        crate::document::field_to_string(f, &self.field_type, &self.name, &self.feature_name)
+    }
+}
+
 impl FeatureField {
     /// Creates the field.
     ///
@@ -1070,6 +1081,15 @@ mod tests {
 
         fn cost(&self) -> i64 {
             self.entries.len() as i64
+        }
+    }
+
+    impl std::fmt::Display for StubPostings {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubPostings")
         }
     }
 

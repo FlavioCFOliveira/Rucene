@@ -1526,6 +1526,21 @@ pub struct ShapeDocValuesField {
     shape_doc_values: ShapeDocValues,
 }
 
+impl std::fmt::Display for ShapeDocValuesField {
+    /// `ShapeDocValuesField` extends `Field` and overrides no `toString()`, so
+    /// the inherited `Field.toString()` applies. Measured against
+    /// `lucene-core-10.5.0.jar`, where a line's doc-values field renders as
+    /// `docValuesType=BINARY<shape:[0 1 c1 ad …]>`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        crate::document::field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &crate::document::bytes_ref_to_string(self.shape_doc_values.binary_value().slice()),
+        )
+    }
+}
+
 impl ShapeDocValuesField {
     /// Creates the field.
     ///
@@ -1605,6 +1620,15 @@ impl ShapeDocValuesField {
 /// Implements the accessors every shape doc-values field shares.
 macro_rules! shape_doc_values_field_delegates {
     ($name:ident, $equiv:literal) => {
+        impl std::fmt::Display for $name {
+            /// Extends `ShapeDocValuesField`, which extends `Field`, and
+            /// overrides no `toString()`; the whole rendering is the inherited
+            /// `Field.toString()`.
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Display::fmt(&self.inner, f)
+            }
+        }
+
         impl $name {
             /// Returns the field's name.
             pub fn name(&self) -> &str {

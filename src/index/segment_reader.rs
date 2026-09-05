@@ -11,7 +11,7 @@
 #![deny(unsafe_code)]
 
 use std::collections::HashMap;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -31,7 +31,7 @@ use crate::codecs::DocValuesSkipper;
 use crate::error::{LuceneError, Result};
 use crate::index::codec_reader::CodecReader;
 use crate::index::index_reader::{
-    CacheHelper, CacheKey, ClosedListener, IndexReaderCore, StoredFields,
+    java_object_to_string, CacheHelper, CacheKey, ClosedListener, IndexReaderCore, StoredFields,
 };
 use crate::index::leaf_reader::{LeafMetaData, LeafReader, TermVectors};
 use crate::index::{
@@ -877,6 +877,18 @@ pub struct DocValuesLeafReader {
     doc_values_producer: Arc<dyn DocValuesProducer>,
 }
 
+impl Display for DocValuesLeafReader {
+    /// `org.apache.lucene.index.DocValuesLeafReader` declares no `toString()`,
+    /// so `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash in hexadecimal. See [`java_object_to_string`].
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&java_object_to_string(
+            "org.apache.lucene.index.DocValuesLeafReader",
+            self,
+        ))
+    }
+}
+
 impl DocValuesLeafReader {
     /// Creates a doc-values-only reader.
     pub fn new(
@@ -1094,6 +1106,27 @@ impl Debug for SegmentReader {
             .field("max_doc", &self.max_doc)
             .field("num_docs", &self.num_docs)
             .finish_non_exhaustive()
+    }
+}
+
+impl Display for SegmentReader {
+    /// Port of `SegmentReader.toString()` (`SegmentReader.java:296-301`).
+    ///
+    /// Java reverse-computes the *pending* deletion count — the deletes this
+    /// reader knows about that the commit does not — and hands it to
+    /// `SegmentCommitInfo.toString(int)`, which adds it to the committed
+    /// `delCount` before rendering. Note that the maximum comes from
+    /// `si.info.maxDoc()` rather than this reader's own `maxDoc()`.
+    ///
+    /// Measured against `lucene-core-10.5.0.jar`: a three-document segment with
+    /// no deletions renders as `_0(10.5.0):C3`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        // `self.max_doc` is initialised from `segment_info.info.max_doc()`, which
+        // is the very value Java reads here — `SegmentReader.maxDoc()` returns
+        // `si.info.maxDoc()` too. Reading the field avoids the fallible
+        // accessor, which `Display` has no way to propagate.
+        let pending = self.max_doc - self.num_docs - self.segment_info.get_del_count();
+        f.write_str(&self.segment_info.to_string_with_pending_del_count(pending))
     }
 }
 

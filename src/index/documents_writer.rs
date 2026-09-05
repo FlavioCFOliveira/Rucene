@@ -73,7 +73,7 @@
 #![deny(unsafe_code)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fmt::{self, Debug, Formatter};
+use std::fmt::{self, Debug, Display, Formatter};
 use std::ops::Deref;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicUsize, Ordering};
@@ -268,7 +268,20 @@ pub struct BufferedUpdates {
     /// RAM charged to `field_updates`, kept apart exactly as Java keeps
     /// `fieldUpdatesBytesUsed` apart from `bytesUsed`.
     field_updates_bytes_used: i64,
-    /// Running RAM estimate for queries and terms.
+    /// RAM charged to `delete_terms`.
+    ///
+    /// Equivalent to `BufferedUpdates.DeletedTerms.bytesUsed`
+    /// (`BufferedUpdates.java:182`), the counter the nested `DeletedTerms`
+    /// carries for its own pool and maps. Lucene keeps it apart from
+    /// `bytesUsed` and sums the three only in `ramBytesUsed()`
+    /// (`BufferedUpdates.java:176-178`) — and, crucially, `toString()` renders
+    /// `bytesUsed` alone, so a buffer holding nothing but deleted terms reports
+    /// no `bytesUsed=` clause at all.
+    delete_terms_bytes_used: i64,
+    /// Running RAM estimate for buffered delete queries.
+    ///
+    /// Equivalent to `BufferedUpdates.bytesUsed` (`BufferedUpdates.java:70`),
+    /// which `addQuery` is the only writer of.
     bytes_used: i64,
     /// Generation assigned by the delete queue that produced this buffer.
     gen: i64,
@@ -322,7 +335,7 @@ impl BufferedUpdates {
                 }
             }
             None => {
-                self.bytes_used += field_bytes + BYTES_PER_DEL_TERM + key.len() as i64;
+                self.delete_terms_bytes_used += field_bytes + BYTES_PER_DEL_TERM + key.len() as i64;
                 per_field.insert(key, doc_id_upto);
                 self.terms_size += 1;
             }
@@ -497,6 +510,7 @@ impl BufferedUpdates {
         self.num_field_updates = 0;
         self.field_updates.clear();
         self.bytes_used = 0;
+        self.delete_terms_bytes_used = 0;
         self.field_updates_bytes_used = 0;
     }
 
@@ -515,20 +529,77 @@ impl BufferedUpdates {
             num_field_updates: self.num_field_updates,
             field_updates: std::mem::take(&mut self.field_updates),
             field_updates_bytes_used: self.field_updates_bytes_used,
+            delete_terms_bytes_used: self.delete_terms_bytes_used,
             bytes_used: self.bytes_used,
             gen: self.gen,
         };
         self.terms_size = 0;
         self.num_field_updates = 0;
         self.field_updates_bytes_used = 0;
+        self.delete_terms_bytes_used = 0;
         self.bytes_used = 0;
         taken
     }
 }
 
 impl Accountable for BufferedUpdates {
+    /// Port of `BufferedUpdates.ramBytesUsed()`
+    /// (`BufferedUpdates.java:175-178`), which is the sum of the three counters
+    /// Lucene keeps apart: the query bytes, the field-update bytes, and the
+    /// `DeletedTerms` bytes.
     fn ram_bytes_used(&self) -> i64 {
-        self.bytes_used + self.field_updates_bytes_used
+        self.bytes_used + self.field_updates_bytes_used + self.delete_terms_bytes_used
+    }
+}
+
+impl BufferedUpdates {
+    /// Whether `BufferedUpdates.toString()` renders the whole buffer instead of
+    /// the summary.
+    ///
+    /// Equivalent to `BufferedUpdates.VERBOSE_DELETES`
+    /// (`BufferedUpdates.java:73`), a `private static final boolean` that is
+    /// `false` in the released jar. It is reproduced as a constant rather than
+    /// dropped so that the branch [`Display`] does not take stays visible where
+    /// Lucene put it.
+    const VERBOSE_DELETES: bool = false;
+}
+
+impl std::fmt::Display for BufferedUpdates {
+    /// Port of `BufferedUpdates.toString()` (`BufferedUpdates.java:83-108`).
+    ///
+    /// Measured against `lucene-core-10.5.0.jar`. Two oddities are Lucene's and
+    /// are reproduced: the `unique deleted terms` clause ends with a **trailing
+    /// space**, so a buffer that also has queries renders two spaces between
+    /// the clauses; and the query clause says `deleted queries` in the plural
+    /// even for one. An empty buffer is just `gen=0`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if Self::VERBOSE_DELETES {
+            // Unreachable while `VERBOSE_DELETES` is `false`, exactly as in
+            // Java, where the branch is dead in every released build.
+            return write!(
+                f,
+                "gen={}, deleteTerms={:?}, deleteQueries={:?}, fieldUpdates={:?}, bytesUsed={}",
+                self.gen,
+                self.delete_terms,
+                self.delete_queries,
+                self.field_updates,
+                self.bytes_used
+            );
+        }
+        write!(f, "gen={}", self.gen)?;
+        if self.terms_size != 0 {
+            write!(f, " {} unique deleted terms ", self.terms_size)?;
+        }
+        if !self.delete_queries.is_empty() {
+            write!(f, " {} deleted queries", self.delete_queries.len())?;
+        }
+        if self.num_field_updates != 0 {
+            write!(f, " {} field updates", self.num_field_updates)?;
+        }
+        if self.bytes_used != 0 {
+            write!(f, " bytesUsed={}", self.bytes_used)?;
+        }
+        Ok(())
     }
 }
 
@@ -570,6 +641,51 @@ pub struct FrozenBufferedUpdates {
     /// `isApplied()`. A boolean is enough here because nothing waits on it;
     /// its purpose in both languages is to stop a packet being resolved twice.
     applied: AtomicBool,
+}
+
+impl std::fmt::Display for FrozenBufferedUpdates {
+    /// Port of `FrozenBufferedUpdates.toString()`
+    /// (`FrozenBufferedUpdates.java:511-531`): `delGen=`, then one optional
+    /// clause per non-empty part, in Java's order.
+    ///
+    /// Measured against `lucene-core-10.5.0.jar`, which renders an empty packet
+    /// as `delGen=-1 bytesUsed=16`. Note that the `fieldUpdates=` clause is
+    /// guarded on the *number of fields* carrying updates but prints the *total
+    /// number of updates*, which are different quantities.
+    ///
+    /// **Divergence from Lucene 10.5.0**, inherited from this type's structure
+    /// and not introduced by this rendering. Java freezes the terms into
+    /// `PrefixCodedTerms` and the queries into a `Query[]`, and its `bytesUsed`
+    /// is the RAM of *those* structures; this port keeps the source
+    /// [`BufferedUpdates`] (see the note on the type), so the `bytesUsed=`
+    /// clause reports the source buffer's figure. Likewise Java holds the
+    /// private segment as a `SegmentCommitInfo` and renders
+    /// `privateSegment=_0(10.5.0):C3`, where this port holds only the segment
+    /// *name* and renders `privateSegment=_0`. Closing either means changing
+    /// the freezing model, not this rendering.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Java reads the `delGen` *field* here, not the `delGen()` accessor,
+        // which asserts the packet has been pushed. An unpushed packet
+        // therefore renders `delGen=-1` rather than tripping the assertion.
+        write!(f, "delGen={}", self.del_gen.load(Ordering::Acquire))?;
+        if self.updates.terms_size() != 0 {
+            write!(f, " unique deleteTerms={}", self.updates.terms_size())?;
+        }
+        if self.updates.queries_size() != 0 {
+            write!(f, " numDeleteQueries={}", self.updates.queries_size())?;
+        }
+        if !self.updates.field_updates().is_empty() {
+            write!(f, " fieldUpdates={}", self.updates.num_field_updates())?;
+        }
+        let bytes_used = self.updates.ram_bytes_used();
+        if bytes_used != 0 {
+            write!(f, " bytesUsed={bytes_used}")?;
+        }
+        if let Some(segment) = self.private_segment_name.as_deref() {
+            write!(f, " privateSegment={segment}")?;
+        }
+        Ok(())
+    }
 }
 
 impl FrozenBufferedUpdates {
@@ -2930,6 +3046,59 @@ impl Debug for DocumentsWriterPerThread {
     }
 }
 
+/// The body of `DocumentsWriterPerThread.toString()`, shared by the two places
+/// the lock-guarded half of the state can be read from.
+fn dwpt_to_string(
+    dwpt: &DocumentsWriterPerThread,
+    state: &DwptState,
+    f: &mut Formatter<'_>,
+) -> fmt::Result {
+    write!(
+        f,
+        "DocumentsWriterPerThread [pendingDeletes={}, segment={}, aborted={}, numDocsInRAM={}, \
+         deleteQueue={}, {} deleted docIds]",
+        state.pending_updates,
+        dwpt.segment_name,
+        dwpt.is_aborted(),
+        dwpt.num_docs_in_ram(),
+        dwpt.delete_queue,
+        state.delete_doc_ids.len()
+    )
+}
+
+impl Display for DocumentsWriterPerThread {
+    /// Port of `DocumentsWriterPerThread.toString()`
+    /// (`DocumentsWriterPerThread.java:736-752`). Measured against
+    /// `lucene-core-10.5.0.jar`, where a freshly built DWPT renders as
+    /// `DocumentsWriterPerThread [pendingDeletes=gen=0, segment=_9, aborted=false, \
+    /// numDocsInRAM=0, deleteQueue=DWDQ: [ generation: 0 ], 0 deleted docIds]`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java reads `pendingUpdates` and
+    /// `numDeletedDocIds` as plain fields, without synchronisation, so its
+    /// `toString()` never blocks. In this port both live in the lock-guarded
+    /// [`DwptState`], so rendering waits for whichever [`DwptGuard`] currently
+    /// holds it. A thread that already holds the guard must render **the
+    /// guard**, not the DWPT — [`DwptGuard`] carries its own [`Display`] that
+    /// produces the identical string from the state it is holding; going
+    /// through the DWPT from that thread would wait for a guard it will not
+    /// release until it returns.
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut slot = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            if let Some(state) = slot.as_ref() {
+                return dwpt_to_string(self, state, f);
+            }
+            slot = self
+                .unlocked
+                .wait(slot)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+}
+
 impl DocumentsWriterPerThread {
     /// Creates a DWPT that will buffer the segment named `segment_name`.
     ///
@@ -3227,6 +3396,26 @@ impl DocumentsWriterPerThread {
 pub struct DwptGuard {
     dwpt: Arc<DocumentsWriterPerThread>,
     state: Option<DwptState>,
+}
+
+impl Display for DwptGuard {
+    /// The same string [`Display for DocumentsWriterPerThread`] produces, read
+    /// straight off the state this guard is holding.
+    ///
+    /// It exists so that the thread holding the guard has a way to render the
+    /// DWPT: going through the DWPT itself would wait for this very guard. It
+    /// also shadows the [`Deref`] that would otherwise route `to_string()`
+    /// there silently.
+    ///
+    /// [`Display for DocumentsWriterPerThread`]: DocumentsWriterPerThread
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.state.as_ref() {
+            Some(state) => dwpt_to_string(&self.dwpt, state, f),
+            // Only reachable between `seal`/`drop` taking the state and the
+            // guard going away; nothing renders a guard in that window.
+            None => Display::fmt(self.dwpt.as_ref(), f),
+        }
+    }
 }
 
 impl Deref for DwptGuard {
@@ -7394,7 +7583,10 @@ mod tests {
 }
 
 impl std::fmt::Display for DocumentsWriterDeleteQueue {
-    /// Port of `DocumentsWriterDeleteQueue.toString()`.
+    /// Port of `DocumentsWriterDeleteQueue.toString()`
+    /// (`DocumentsWriterDeleteQueue.java:560-563`). Measured against
+    /// `lucene-core-10.5.0.jar`: a fresh queue renders as
+    /// `DWDQ: [ generation: 0 ]`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "DWDQ: [ generation: {} ]", self.generation)
     }

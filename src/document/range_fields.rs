@@ -626,6 +626,21 @@ impl BinaryRangeDocValuesField {
     }
 }
 
+impl std::fmt::Display for BinaryRangeDocValuesField {
+    /// `BinaryRangeDocValuesField` extends `BinaryDocValuesField`, which
+    /// extends `Field`, and none of the three overrides `toString()`. Measured
+    /// against `lucene-core-10.5.0.jar` through its concrete
+    /// `IntRangeDocValuesField`: `docValuesType=BINARY<r:[80 0 0 a 80 0 0 14]>`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        crate::document::field_to_string(
+            f,
+            crate::document::binary_doc_values_field_type(),
+            &self.field,
+            &crate::document::bytes_ref_to_string(&self.packed_value),
+        )
+    }
+}
+
 impl IndexableField for BinaryRangeDocValuesField {
     fn name(&self) -> &str {
         &self.field

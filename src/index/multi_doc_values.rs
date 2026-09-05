@@ -1674,6 +1674,16 @@ mod tests {
         fetches: Arc<Mutex<Vec<String>>>,
     }
 
+    impl std::fmt::Display for StubLeaf {
+        /// Test double; it has no Lucene counterpart whose `toString()` could be
+        /// reproduced, so it renders under its own name. `Display` is required
+        /// because `LeafReader`/`IndexReader` carry it as a supertrait, standing in
+        /// for the `toString()` every Java reader inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubLeaf")
+        }
+    }
+
     impl std::fmt::Debug for StubLeaf {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.debug_struct("StubLeaf")

@@ -54,7 +54,11 @@ pub fn feature_requested(flags: i32, feature: i32) -> bool {
 /// before using any per-document method.
 ///
 /// [`next_doc`]: crate::search::DocIdSetIterator::next_doc
-pub trait PostingsEnum: DocIdSetIterator {
+/// [`Display`](std::fmt::Display) is a supertrait because
+/// `MultiPostingsEnum.EnumWithSlice` renders the enumeration it wraps: every
+/// Java `PostingsEnum` has a `toString()`, inherited from `Object` unless
+/// overridden.
+pub trait PostingsEnum: DocIdSetIterator + std::fmt::Display {
     /// Returns the term frequency in the current document, or `1` if the field
     /// was indexed with `IndexOptions::DOCS`.
     fn freq(&self) -> Result<i32>;
@@ -241,6 +245,15 @@ impl DocIdSetIterator for EmptyPostingsEnum {
     }
 }
 
+impl std::fmt::Display for EmptyPostingsEnum {
+    /// Port-only: Lucene 10.5.0 has no `PostingsEnum.EMPTY` counterpart —
+    /// `TermsEnum.EMPTY` exists, but its postings method throws. Rendered under
+    /// its own name.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EmptyPostingsEnum")
+    }
+}
+
 impl PostingsEnum for EmptyPostingsEnum {
     fn freq(&self) -> Result<i32> {
         Ok(0)
@@ -346,6 +359,15 @@ mod tests {
 
         fn cost(&self) -> i64 {
             self.docs.len() as i64
+        }
+    }
+
+    impl std::fmt::Display for VecPostingsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("VecPostingsEnum")
         }
     }
 

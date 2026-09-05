@@ -1461,6 +1461,29 @@ impl Debug for Document {
     }
 }
 
+impl std::fmt::Display for Document {
+    /// Port of `Document.toString()` (`Document.java:227-240`): `Document<`,
+    /// then every field rendered by **its own** `toString()` separated by a
+    /// single space, then `>`.
+    ///
+    /// The rendering is polymorphic in Java and is polymorphic here too, over
+    /// the [`Display`](std::fmt::Display) supertrait of
+    /// [`IndexableField`](crate::index::IndexableField). Measured against
+    /// `lucene-core-10.5.0.jar`: an empty document is `Document<>`, and a
+    /// document holding a `StringField` and an `IntPoint` is
+    /// `Document<indexed,omitNorms,indexOptions=DOCS<id:1> IntPoint <count:42>>`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Document<")?;
+        for (i, field) in self.fields.iter().enumerate() {
+            if i != 0 {
+                f.write_str(" ")?;
+            }
+            std::fmt::Display::fmt(field, f)?;
+        }
+        f.write_str(">")
+    }
+}
+
 impl Document {
     /// Creates a new empty document.
     pub fn new() -> Self {
@@ -3692,7 +3715,7 @@ fn sorted_set_doc_values_indexed_field_type() -> &'static FieldType {
     })
 }
 
-fn binary_doc_values_field_type() -> &'static FieldType {
+pub(crate) fn binary_doc_values_field_type() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
         let mut ft = FieldType::new();
@@ -5775,7 +5798,7 @@ impl IndexableField for KnnByteVectorField {
 ///
 /// Java uses `Integer.toHexString(b & 0xff)`, which does **not** pad to two
 /// digits, so `0x0a` renders as `a` and `0x00` as `0`.
-fn bytes_ref_to_string(bytes: &[u8]) -> String {
+pub(crate) fn bytes_ref_to_string(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(2 + 3 * bytes.len());
     out.push('[');
     for (i, byte) in bytes.iter().enumerate() {
@@ -5797,7 +5820,24 @@ fn bytes_ref_to_string(bytes: &[u8]) -> String {
 /// of that particular JVM object. Neither is reproducible — Rust has no
 /// identity hash — and neither is stable across Java runs either, so this port
 /// prints a fixed placeholder for those two cases. Every other case is exact.
-fn field_data_to_string(data: &FieldData) -> String {
+/// Renders any field the way the inherited `Field.toString()` does
+/// (`Field.java:437-451`): the field type, then the name and the value between
+/// angle brackets.
+///
+/// Every `IndexableField` in `org.apache.lucene.document` except the point,
+/// range and geometry classes inherits exactly this, so a port of each one is a
+/// call to this helper with its own `fieldsData` rendered as Java renders that
+/// Java object.
+pub(crate) fn field_to_string(
+    f: &mut Formatter<'_>,
+    field_type: &FieldType,
+    name: &str,
+    data: &str,
+) -> std::fmt::Result {
+    write!(f, "{field_type}<{name}:{data}>")
+}
+
+pub(crate) fn field_data_to_string(data: &FieldData) -> String {
     match data {
         FieldData::String(v) => v.clone(),
         FieldData::Bytes(v) => bytes_ref_to_string(v.slice()),
@@ -5931,6 +5971,174 @@ impl std::fmt::Display for DoubleField {
             "DoubleField <{}:{}>",
             self.name,
             java_fmt::double_to_string(self.value)
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `Field.toString()`, inherited by every field class below
+// ---------------------------------------------------------------------------
+//
+// None of the classes in this block overrides `toString()` in Lucene 10.5.0;
+// they all extend `Field` and so render through `Field.toString()`. Each impl
+// therefore differs only in how its own `fieldsData` is rendered, and every one
+// of the strings below was measured from `lucene-core-10.5.0.jar`.
+
+impl std::fmt::Display for StringField {
+    /// `indexed,omitNorms,indexOptions=DOCS<id:1>` for a non-stored
+    /// `StringField("id", "1")`; a `BytesRef` value renders as `[61 62 63]`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &field_data_to_string(&self.fields_data),
+        )
+    }
+}
+
+impl std::fmt::Display for TextField {
+    /// `stored,indexed,tokenized<body:hello world>` for a stored `TextField`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &field_data_to_string(&self.fields_data),
+        )
+    }
+}
+
+impl std::fmt::Display for StoredField {
+    /// `stored<s:42>`; the whole rendering is the wrapped [`Field`]'s.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::fmt::Display for KeywordField {
+    /// `indexed,omitNorms,indexOptions=DOCS,docValuesType=SORTED_SET<k:v>`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &field_data_to_string(&self.fields_data),
+        )
+    }
+}
+
+impl std::fmt::Display for BinaryPoint {
+    /// `pointDimensionCount=1,pointIndexDimensionCount=1,pointNumBytes=3<b:[1 2 3]>`
+    /// — unlike `IntPoint` and its siblings, `BinaryPoint` overrides no
+    /// `toString()`, so the packed value renders as a plain `BytesRef`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &field_data_to_string(&self.fields_data),
+        )
+    }
+}
+
+impl std::fmt::Display for NumericDocValuesField {
+    /// `docValuesType=NUMERIC<n:17>`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(f, &self.field_type, &self.name, &self.value.to_string())
+    }
+}
+
+impl std::fmt::Display for FloatDocValuesField {
+    /// `docValuesType=NUMERIC<n:1075838976>` for `2.5f`: Java's constructor is
+    /// `super(name, Float.floatToRawIntBits(value))`, so `fieldsData` is the
+    /// **raw bit pattern**, and that is what renders — not the float.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.inner, f)
+    }
+}
+
+impl std::fmt::Display for DoubleDocValuesField {
+    /// `docValuesType=NUMERIC<n:4612811918334230528>` for `2.5`: the raw
+    /// `Double.doubleToRawLongBits` pattern, exactly as for
+    /// [`FloatDocValuesField`].
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.inner, f)
+    }
+}
+
+impl std::fmt::Display for SortedDocValuesField {
+    /// `docValuesType=SORTED<s:[61 62 63]>`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &bytes_ref_to_string(self.value.slice()),
+        )
+    }
+}
+
+impl std::fmt::Display for SortedSetDocValuesField {
+    /// `docValuesType=SORTED_SET<s:[61 62 63]>`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &bytes_ref_to_string(self.value.slice()),
+        )
+    }
+}
+
+impl std::fmt::Display for SortedNumericDocValuesField {
+    /// `docValuesType=SORTED_NUMERIC<s:17>`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(f, &self.field_type, &self.name, &self.value.to_string())
+    }
+}
+
+impl std::fmt::Display for BinaryDocValuesField {
+    /// `docValuesType=BINARY<b:[61 62 63]>`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &bytes_ref_to_string(self.value.slice()),
+        )
+    }
+}
+
+impl std::fmt::Display for KnnFloatVectorField {
+    /// `<v:[F@1b6d3586>` — the field type renders empty, because
+    /// `FieldType.toString()` ignores the vector attributes, and `fieldsData`
+    /// is a bare `float[]`, whose `toString()` is `java.lang.Object`'s over the
+    /// JVM's array class name `[F`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Only the hexadecimal identity differs,
+    /// for the reason given on
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string);
+    /// the `[F@` prefix is reproduced exactly.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &crate::index::index_reader::java_object_to_string("[F", self.vector.as_slice()),
+        )
+    }
+}
+
+impl std::fmt::Display for KnnByteVectorField {
+    /// `<v:[B@1b6d3586>`; see [`KnnFloatVectorField`] for the array-identity
+    /// note.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &crate::index::index_reader::java_object_to_string("[B", self.vector.as_slice()),
         )
     }
 }

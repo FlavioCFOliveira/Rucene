@@ -235,7 +235,10 @@ pub enum SeekStatus {
 /// [`prepare_seek_exact`](Self::prepare_seek_exact),
 /// [`seek_term_state`](Self::seek_term_state) and
 /// [`term_state`](Self::term_state) mirror `BaseTermsEnum`.
-pub trait TermsEnum {
+/// [`Display`](std::fmt::Display) is a supertrait because `MultiTermsEnum` and
+/// `TermsEnumIndex` render the enumerations they wrap: every Java `TermsEnum`
+/// has a `toString()`, inherited from `Object` unless overridden.
+pub trait TermsEnum: std::fmt::Display {
     /// Returns the attribute source attached to this enum.
     fn attributes(&mut self) -> &mut AttributeSource;
 
@@ -403,6 +406,20 @@ impl FilteredTermsEnum {
             do_seek: true,
             actual_term: None,
         }
+    }
+}
+
+impl std::fmt::Display for FilteredTermsEnum {
+    /// `org.apache.lucene.index.FilteredTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FilteredTermsEnum",
+            self,
+        ))
     }
 }
 
@@ -1231,6 +1248,20 @@ impl EmptyTermsEnum {
     }
 }
 
+impl std::fmt::Display for EmptyTermsEnum {
+    /// `1` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.TermsEnum$1",
+            self,
+        ))
+    }
+}
+
 impl TermsEnum for EmptyTermsEnum {
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.atts
@@ -1546,6 +1577,15 @@ mod tests {
                 pos: 0,
                 atts: AttributeSource::new(),
             }
+        }
+    }
+
+    impl std::fmt::Display for VecTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("VecTermsEnum")
         }
     }
 

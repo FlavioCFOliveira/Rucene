@@ -440,6 +440,20 @@ impl FuzzyTermsEnum {
     }
 }
 
+impl std::fmt::Display for FuzzyTermsEnum {
+    /// `org.apache.lucene.search.FuzzyTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.search.FuzzyTermsEnum",
+            self,
+        ))
+    }
+}
+
 impl TermsEnum for FuzzyTermsEnum {
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.atts

@@ -1027,6 +1027,15 @@ mod tests {
         }
     }
 
+    impl std::fmt::Display for TestPostingsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("TestPostingsEnum")
+        }
+    }
+
     impl PostingsEnum for TestPostingsEnum {
         fn freq(&self) -> crate::error::Result<i32> {
             Ok(self.freqs[self.doc_idx as usize])
@@ -1067,6 +1076,15 @@ mod tests {
                 idx: -1,
                 atts: AttributeSource::new(),
             }
+        }
+    }
+
+    impl std::fmt::Display for TestTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("TestTermsEnum")
         }
     }
 

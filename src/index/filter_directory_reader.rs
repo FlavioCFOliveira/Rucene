@@ -72,6 +72,32 @@ pub trait DirectoryReaderWrapper: Send + Sync {
     ///
     /// Propagates whatever building the wrapped reader raises.
     fn wrap(&self, inner: Arc<dyn DirectoryReader>) -> Result<Arc<dyn DirectoryReader>>;
+
+    /// Renders the `FilterDirectoryReader` subclass this wrapper stands for.
+    ///
+    /// **Divergence from Lucene 10.5.0.** In Java each wrapping is its own
+    /// subclass of `FilterDirectoryReader` — `ExitableDirectoryReader`,
+    /// `SoftDeletesDirectoryReaderWrapper` — and `toString()` is resolved on
+    /// that subclass. This port has a single [`FilterDirectoryReader`] struct
+    /// parameterised by the wrapper, so the rendering that would live on the
+    /// subclass lives here instead, on the object that identifies which
+    /// subclass it is.
+    ///
+    /// The default reproduces what a subclass that overrides no `toString()`
+    /// inherits from `CompositeReader`: its own simple name, then the wrapped
+    /// leaves. `ExitableDirectoryReader` overrides it, and so overrides this.
+    fn reader_to_string(&self, reader: &FilterDirectoryReader) -> String {
+        crate::index::index_reader::composite_reader_to_string(
+            self.subclass_simple_name(),
+            &reader.get_sequential_sub_readers(),
+        )
+    }
+
+    /// The simple name of the `FilterDirectoryReader` subclass this wrapper
+    /// stands for, which is what `CompositeReader.toString()` renders.
+    fn subclass_simple_name(&self) -> &'static str {
+        "FilterDirectoryReader"
+    }
 }
 
 /// A [`DirectoryReader`] that forwards every call to a wrapped reader, with its
@@ -90,6 +116,15 @@ impl std::fmt::Debug for FilterDirectoryReader {
         f.debug_struct("FilterDirectoryReader")
             .field("leaves", &self.wrapped_leaves.len())
             .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for FilterDirectoryReader {
+    /// `FilterDirectoryReader` is abstract in Java and declares no
+    /// `toString()`; what renders is always the concrete subclass's, so this
+    /// defers to the [`DirectoryReaderWrapper`] that stands for that subclass.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.directory_wrapper.reader_to_string(self))
     }
 }
 
@@ -136,6 +171,14 @@ impl FilterDirectoryReader {
     /// Returns the wrapped leaves.
     pub fn wrapped_leaves(&self) -> &[Arc<dyn LeafReader>] {
         &self.wrapped_leaves
+    }
+
+    /// Returns the reader this one wraps.
+    ///
+    /// Equivalent to reading `FilterDirectoryReader.in`, which is what
+    /// `ExitableDirectoryReader.toString()` renders.
+    pub fn delegate(&self) -> &Arc<dyn DirectoryReader> {
+        &self.inner
     }
 
     /// Returns a new wrapped instance of `inner`, produced by the injected
@@ -348,6 +391,18 @@ impl ExitableDirectoryReaderWrapper {
 }
 
 impl DirectoryReaderWrapper for ExitableDirectoryReaderWrapper {
+    /// Port of `ExitableDirectoryReader.toString()`
+    /// (`ExitableDirectoryReader.java:960-963`), which renders the *delegate*
+    /// rather than the wrapped leaves `CompositeReader.toString()` would.
+    /// Measured against `lucene-core-10.5.0.jar`.
+    fn reader_to_string(&self, reader: &FilterDirectoryReader) -> String {
+        format!("ExitableDirectoryReader({})", reader.delegate())
+    }
+
+    fn subclass_simple_name(&self) -> &'static str {
+        "ExitableDirectoryReader"
+    }
+
     fn wrap(&self, inner: Arc<dyn DirectoryReader>) -> Result<Arc<dyn DirectoryReader>> {
         // Equivalent to `FilterDirectoryReader(DirectoryReader, SubReaderWrapper)`
         // reaching `in.getSequentialSubReaders()`: Rust has no downcast from
@@ -416,6 +471,17 @@ impl std::fmt::Debug for ExitableFilterLeafReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExitableFilterLeafReader")
             .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for ExitableFilterLeafReader {
+    /// `ExitableDirectoryReader.ExitableFilterAtomicReader` overrides no
+    /// `toString()`, so it inherits `FilterLeafReader`'s — which hardcodes the
+    /// name `FilterLeafReader`, not the subclass's. Measured against
+    /// `lucene-core-10.5.0.jar`, where the leaf of an `ExitableDirectoryReader`
+    /// renders as `FilterLeafReader(_0(10.5.0):C3)`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.inner, f)
     }
 }
 
@@ -764,6 +830,7 @@ impl SlowCodecReaderWrapper {
         })
     }
 }
+
 /// A [`CodecReader`] view over an arbitrary [`LeafReader`].
 ///
 /// Equivalent to the anonymous `CodecReader` `SlowCodecReaderWrapper.wrap`
@@ -784,8 +851,15 @@ impl SlowCodecReader {
 }
 
 impl std::fmt::Display for SlowCodecReader {
+    /// Port of the `toString()` the anonymous `CodecReader` in
+    /// `SlowCodecReaderWrapper.wrap` overrides
+    /// (`SlowCodecReaderWrapper.java:135-138`): `"SlowCodecReaderWrapper(" + reader + ")"`,
+    /// where `reader` is rendered by its **own** `toString()`.
+    ///
+    /// Measured against `lucene-core-10.5.0.jar`: over a `ParallelLeafReader`
+    /// this is `SlowCodecReaderWrapper(ParallelLeafReader(_0(10.5.0):C3, _1(10.5.0):C3))`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SlowCodecReaderWrapper({:?})", self.reader)
+        write!(f, "SlowCodecReaderWrapper({})", self.reader)
     }
 }
 
@@ -1481,6 +1555,15 @@ struct SoftDeletesFilterLeafReader {
     num_docs: i32,
 }
 
+impl std::fmt::Display for SoftDeletesFilterLeafReader {
+    /// `SoftDeletesDirectoryReaderWrapper.SoftDeletesFilterLeafReader`
+    /// overrides no `toString()`, so `FilterLeafReader`'s applies — including
+    /// its hardcoded name.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.inner, f)
+    }
+}
+
 impl SoftDeletesFilterLeafReader {
     fn new(reader: Arc<dyn LeafReader>, bits: crate::util::FixedBitSet, num_docs: i32) -> Self {
         Self {
@@ -1647,6 +1730,12 @@ impl SoftDeletesDirectoryReaderWrapper {
 }
 
 impl DirectoryReaderWrapper for SoftDeletesDirectoryReaderWrapper {
+    /// `SoftDeletesDirectoryReaderWrapper` overrides no `toString()`, so the
+    /// inherited `CompositeReader` rendering applies under this name.
+    fn subclass_simple_name(&self) -> &'static str {
+        "SoftDeletesDirectoryReaderWrapper"
+    }
+
     fn wrap(&self, inner: Arc<dyn DirectoryReader>) -> Result<Arc<dyn DirectoryReader>> {
         // See `ExitableDirectoryReaderWrapper::wrap` for why the leaves are
         // read back off `inner`'s own `LeafReaderContext`s.

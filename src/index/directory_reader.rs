@@ -13,7 +13,7 @@
 #![deny(unsafe_code)]
 
 use std::collections::{HashMap, HashSet};
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::io;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -154,6 +154,31 @@ impl Debug for StandardDirectoryReader {
             .field("segments", &self.segment_infos.size())
             .field("version", &self.segment_infos.version())
             .finish()
+    }
+}
+
+impl Display for StandardDirectoryReader {
+    /// Port of `StandardDirectoryReader.toString()`
+    /// (`StandardDirectoryReader.java:377-395`): the simple name, then the
+    /// segments file and the commit version joined by `:`, then `:nrt` when the
+    /// reader was opened from an `IndexWriter`, then every segment reader
+    /// preceded by a space — all inside one pair of parentheses.
+    ///
+    /// Measured against `lucene-core-10.5.0.jar`, where a two-segment
+    /// non-NRT reader renders as
+    /// `StandardDirectoryReader(segments_1:6 _0(10.5.0):C3 _1(10.5.0):C3)`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StandardDirectoryReader(")?;
+        if let Some(segments_file) = self.segment_infos.segments_file_name() {
+            write!(f, "{}:{}", segments_file, self.segment_infos.version())?;
+        }
+        if self.writer.is_some() {
+            f.write_str(":nrt")?;
+        }
+        for reader in &self.segment_readers {
+            write!(f, " {reader}")?;
+        }
+        f.write_str(")")
     }
 }
 

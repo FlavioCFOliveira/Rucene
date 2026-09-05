@@ -105,7 +105,12 @@ fn which_mvn() -> Result<String, String> {
 }
 
 /// Runs the Java harness and returns its `key=value` lines.
-fn run_fixture() -> Vec<(String, String)> {
+///
+/// `index_dir` is handed to the fixture so that it builds, with Lucene itself,
+/// the index every reader-side measurement is taken from — and so that the
+/// assertions below can then open *those very files* with this crate. A reader
+/// rendered from a different index would only be compared with itself.
+fn run_fixture(index_dir: &std::path::Path) -> Vec<(String, String)> {
     let mvn = which_mvn().unwrap_or_else(|e| {
         panic!("the object-contracts portability test needs Maven and a JDK: {e}")
     });
@@ -115,6 +120,7 @@ fn run_fixture() -> Vec<(String, String)> {
         .arg("exec:java")
         .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.ObjectContractsFixture")
         .arg(format!("-Dtests.seed={TESTS_SEED}"))
+        .arg(format!("-Dexec.args={}", index_dir.display()))
         .current_dir(harness_dir())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -171,7 +177,8 @@ fn object_contracts_match_lucene() {
     // once per JVM.
     std::env::set_var("tests.seed", TESTS_SEED);
 
-    let measured = Measured(run_fixture());
+    let index_dir = tempfile::tempdir().expect("temp dir for the Lucene-written index");
+    let measured = Measured(run_fixture(index_dir.path()));
 
     util_bit_sets(&measured);
     util_refs(&measured);
@@ -183,6 +190,12 @@ fn object_contracts_match_lucene() {
     codecs(&measured);
     index(&measured);
     analysis(&measured);
+    document_fields(&measured);
+    documents(&measured);
+    readers(&measured, index_dir.path());
+    enumerations(&measured, index_dir.path());
+    pending_deletes(&measured, index_dir.path());
+    buffered_updates(&measured, index_dir.path());
 }
 
 fn util_bit_sets(m: &Measured) {
@@ -807,4 +820,662 @@ fn analysis(m: &Measured) {
         m.get("CharTermAttributeImpl.toString/unicode"),
         "the bare term, with no class name and no delimiters"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Document and the fields it renders
+// ---------------------------------------------------------------------------
+
+/// Every `IndexableField` implementation renders through the inherited
+/// `Field.toString()`; these pin what each one's `fieldsData` looks like.
+fn document_fields(m: &Measured) {
+    use rucene::document::{
+        BinaryDocValuesField, BinaryPoint, DoubleDocValuesField, FloatDocValuesField, KeywordField,
+        NumericDocValuesField, NumericValue, SortedDocValuesField, SortedNumericDocValuesField,
+        SortedSetDocValuesField, Store, StoredField, StringField, TextField,
+    };
+
+    assert_eq!(
+        StringField::new("id", "1".to_string(), Store::NO)
+            .expect("string field")
+            .to_string(),
+        m.get("field.StringField.string")
+    );
+    assert_eq!(
+        StringField::new("id", "1".to_string(), Store::YES)
+            .expect("string field")
+            .to_string(),
+        m.get("field.StringField.stored")
+    );
+    assert_eq!(
+        StringField::new_with_bytes("id", BytesRef::new(b"abc".to_vec()), Store::NO)
+            .expect("string field")
+            .to_string(),
+        m.get("field.StringField.bytes"),
+        "a BytesRef value renders as Lucene's `[61 62 63]`"
+    );
+    assert_eq!(
+        TextField::new("body", "hello world".to_string(), Store::NO)
+            .expect("text field")
+            .to_string(),
+        m.get("field.TextField.string")
+    );
+    assert_eq!(
+        TextField::new("body", "hello world".to_string(), Store::YES)
+            .expect("text field")
+            .to_string(),
+        m.get("field.TextField.stored")
+    );
+    assert_eq!(
+        StoredField::new_string("s", "text".to_string())
+            .expect("stored field")
+            .to_string(),
+        m.get("field.StoredField.string")
+    );
+    assert_eq!(
+        StoredField::new_number("s", NumericValue::Int(42))
+            .expect("stored field")
+            .to_string(),
+        m.get("field.StoredField.int")
+    );
+    assert_eq!(
+        StoredField::new_number("s", NumericValue::Long(42))
+            .expect("stored field")
+            .to_string(),
+        m.get("field.StoredField.long")
+    );
+    assert_eq!(
+        StoredField::new_number("s", NumericValue::Float(2.5))
+            .expect("stored field")
+            .to_string(),
+        m.get("field.StoredField.float")
+    );
+    assert_eq!(
+        StoredField::new_number("s", NumericValue::Double(2.5))
+            .expect("stored field")
+            .to_string(),
+        m.get("field.StoredField.double")
+    );
+    assert_eq!(
+        StoredField::new_bytes("s", BytesRef::new(b"abc".to_vec()))
+            .expect("stored field")
+            .to_string(),
+        m.get("field.StoredField.bytes")
+    );
+    assert_eq!(
+        KeywordField::new("k", "v".to_string(), Store::NO)
+            .expect("keyword field")
+            .to_string(),
+        m.get("field.KeywordField.string")
+    );
+    assert_eq!(
+        KeywordField::new("k", "v".to_string(), Store::YES)
+            .expect("keyword field")
+            .to_string(),
+        m.get("field.KeywordField.stored")
+    );
+    assert_eq!(
+        KeywordField::new_with_bytes("k", BytesRef::new(b"abc".to_vec()), Store::NO)
+            .expect("keyword field")
+            .to_string(),
+        m.get("field.KeywordField.bytes")
+    );
+    assert_eq!(
+        BinaryPoint::new("b", &[BytesRef::new(vec![1u8, 2, 3])])
+            .expect("binary point")
+            .to_string(),
+        m.get("field.BinaryPoint")
+    );
+    assert_eq!(
+        NumericDocValuesField::new("n", 17).to_string(),
+        m.get("field.NumericDocValuesField")
+    );
+    assert_eq!(
+        FloatDocValuesField::new("n", 2.5).to_string(),
+        m.get("field.FloatDocValuesField"),
+        "Java stores `Float.floatToRawIntBits`, so the raw bits are what render"
+    );
+    assert_eq!(
+        DoubleDocValuesField::new("n", 2.5).to_string(),
+        m.get("field.DoubleDocValuesField"),
+        "likewise `Double.doubleToRawLongBits`"
+    );
+    assert_eq!(
+        SortedDocValuesField::new("s", BytesRef::new(b"abc".to_vec())).to_string(),
+        m.get("field.SortedDocValuesField")
+    );
+    assert_eq!(
+        SortedSetDocValuesField::new("s", BytesRef::new(b"abc".to_vec())).to_string(),
+        m.get("field.SortedSetDocValuesField")
+    );
+    assert_eq!(
+        SortedNumericDocValuesField::new("s", 17).to_string(),
+        m.get("field.SortedNumericDocValuesField")
+    );
+    assert_eq!(
+        BinaryDocValuesField::new("b", BytesRef::new(b"abc".to_vec())).to_string(),
+        m.get("field.BinaryDocValuesField")
+    );
+}
+
+/// `Document.toString()` is polymorphic over `IndexableField`, so what it pins
+/// is that every field renders through its own `toString()`.
+fn documents(m: &Measured) {
+    use rucene::document::{Document, IntPoint, Store, StringField};
+
+    assert_eq!(
+        Document::new().to_string(),
+        m.get("Document.toString/empty")
+    );
+
+    let mut one = Document::new();
+    one.add(Box::new(
+        StringField::new("id", "1".to_string(), Store::NO).expect("string field"),
+    ));
+    assert_eq!(
+        one.to_string(),
+        m.get("Document.toString/single-string-field")
+    );
+
+    let mut two = Document::new();
+    two.add(Box::new(
+        StringField::new("id", "1".to_string(), Store::NO).expect("string field"),
+    ));
+    two.add(Box::new(IntPoint::new("count", &[42]).expect("int point")));
+    assert_eq!(
+        two.to_string(),
+        m.get("Document.toString/string-and-point"),
+        "the `IntPoint` renders through its own override, the `StringField` through `Field`'s"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The reader hierarchy
+// ---------------------------------------------------------------------------
+
+/// Opens, with this crate, the very index the Java fixture wrote.
+fn open_java_index(index_dir: &std::path::Path) -> Arc<dyn rucene::index::DirectoryReader> {
+    // The codec SPI has no `META-INF/services` equivalent here, so the codec the
+    // Java fixture wrote with has to be seeded before a segment naming it can be
+    // read back.
+    let _ = rucene::codecs::register_codec("Lucene104", rucene::codecs::Lucene104Codec::new());
+    let directory: Arc<dyn Directory> =
+        Arc::new(rucene::store::FSDirectory::open(index_dir).expect("open the Java index"));
+    rucene::index::open_directory_reader(directory).expect("open a directory reader over it")
+}
+
+fn readers(m: &Measured, index_dir: &std::path::Path) {
+    use rucene::index::filter_directory_reader::{
+        DirectoryReaderWrapper, ExitableDirectoryReaderWrapper, ExitableSubReaderWrapper,
+        SlowCodecReaderWrapper, SubReaderWrapper,
+    };
+    use rucene::index::filter_reader::FilterLeafReader;
+    use rucene::index::leaf_reader::LeafReader;
+    use rucene::index::reader_context::IndexReaderContext;
+    use rucene::index::sorting_codec_reader::SlowCompositeCodecReaderWrapper;
+    use rucene::index::{MultiReader, ParallelLeafReader};
+
+    let reader = open_java_index(index_dir);
+    assert_eq!(
+        reader.to_string(),
+        m.get("StandardDirectoryReader.toString/two-segments"),
+        "the segments file, the commit version and every segment reader"
+    );
+
+    let leaves = Arc::clone(&reader).leaves();
+    let leaf0 = leaves[0].leaf_reader();
+    let leaf1 = leaves[1].leaf_reader();
+
+    assert_eq!(
+        leaf0.to_string(),
+        m.get("SegmentReader.toString/segment-0"),
+        "`si.toString(si.info.maxDoc() - numDocs - si.getDelCount())`"
+    );
+    assert_eq!(
+        leaves[0].to_string(),
+        m.get("LeafReaderContext.toString/leaf-0")
+    );
+    assert_eq!(
+        leaves[1].to_string(),
+        m.get("LeafReaderContext.toString/leaf-1"),
+        "docBase and ord both move with the ordinal"
+    );
+
+    // `Arc<dyn LeafReader>` does not coerce to `Arc<dyn IndexReader>` in this
+    // port — the two are related by a blanket impl, not by inheritance — so the
+    // composite view comes off the leaf context, which carries both handles.
+    let multi = MultiReader::new(vec![leaves[0].reader(), leaves[1].reader()], false)
+        .expect("multi reader");
+    assert_eq!(
+        multi.to_string(),
+        m.get("CompositeReader.toString/MultiReader-two-leaves"),
+        "`CompositeReader.toString()`, inherited: the sub-readers are space-separated"
+    );
+    assert_eq!(
+        MultiReader::new(Vec::new(), false)
+            .expect("empty multi reader")
+            .to_string(),
+        m.get("CompositeReader.toString/MultiReader-empty")
+    );
+
+    assert_eq!(
+        FilterLeafReader::new(Arc::clone(&leaf0)).to_string(),
+        m.get("FilterLeafReader.toString/over-segment-0"),
+        "Lucene hardcodes the name `FilterLeafReader`, it does not ask for its own"
+    );
+
+    assert_eq!(
+        ParallelLeafReader::new(vec![Arc::clone(&leaf0)])
+            .expect("parallel leaf reader")
+            .to_string(),
+        m.get("ParallelLeafReader.toString/one-leaf")
+    );
+    assert_eq!(
+        ParallelLeafReader::new(Vec::new())
+            .expect("empty parallel leaf reader")
+            .to_string(),
+        m.get("ParallelLeafReader.toString/no-leaves")
+    );
+    // Java iterates an `IdentityHashMap`-backed set here, so the *order* of the
+    // readers is unspecified — two instances built from the same two readers in
+    // the same JVM were observed to render them in opposite orders. What is
+    // compared is therefore the set and the separator, not the sequence.
+    let two = ParallelLeafReader::new(vec![Arc::clone(&leaf0), Arc::clone(&leaf1)])
+        .expect("parallel leaf reader")
+        .to_string();
+    assert_eq!(
+        sorted_inside("ParallelLeafReader(", &two),
+        sorted_inside(
+            "ParallelLeafReader(",
+            m.get("ParallelLeafReader.toString/two-leaves")
+        ),
+        "the same two readers, comma-separated; only Java's unspecified order differs"
+    );
+
+    let exitable = ExitableDirectoryReaderWrapper::new(Arc::new(NeverTimesOut))
+        .wrap(Arc::clone(&reader))
+        .expect("wrap as an exitable reader");
+    assert_eq!(
+        exitable.to_string(),
+        m.get("ExitableDirectoryReader.toString/two-segments"),
+        "the subclass renders its *delegate*, not the wrapped leaves"
+    );
+    // The wrapped leaf is taken straight off the `SubReaderWrapper` rather than
+    // off `exitable.leaves()`. That is deliberate: this port's
+    // `FilterDirectoryReader::get_sequential_sub_readers` currently answers with
+    // the *delegate's* leaves instead of the wrapped ones, so `leaves()` hands
+    // back bare `SegmentReader`s — a defect reported alongside this task, whose
+    // fix changes observable behaviour and therefore needs a decision. What is
+    // pinned here is the rendering of the wrapped leaf itself.
+    let wrapped_leaf = ExitableSubReaderWrapper::new(Arc::new(NeverTimesOut))
+        .wrap(Arc::clone(&leaf0))
+        .expect("wrap the leaf");
+    assert_eq!(
+        wrapped_leaf.to_string(),
+        m.get("ExitableFilterAtomicReader.toString/leaf-0"),
+        "`ExitableFilterAtomicReader` overrides no toString(), so `FilterLeafReader`'s applies"
+    );
+
+    let slow = SlowCodecReaderWrapper::wrap(Arc::new(
+        ParallelLeafReader::new(vec![Arc::clone(&leaf0), Arc::clone(&leaf1)]).unwrap(),
+    ) as Arc<dyn LeafReader>)
+    .expect("slow codec reader");
+    assert_eq!(
+        sorted_inside(
+            "SlowCodecReaderWrapper(ParallelLeafReader(",
+            &slow.to_string()
+        ),
+        sorted_inside(
+            "SlowCodecReaderWrapper(ParallelLeafReader(",
+            m.get("SlowCodecReaderWrapper.toString/over-parallel")
+        ),
+        "the wrapped reader is rendered by its own toString(), not by Rust's `Debug`"
+    );
+
+    let composite = SlowCompositeCodecReaderWrapper::wrap(vec![
+        rucene::index::filter_directory_reader::SlowCodecReaderWrapper::wrap(Arc::clone(&leaf0))
+            .expect("codec view"),
+        rucene::index::filter_directory_reader::SlowCodecReaderWrapper::wrap(Arc::clone(&leaf1))
+            .expect("codec view"),
+    ])
+    .expect("slow composite codec reader");
+    assert_eq!(
+        identity_erased(&composite.to_string()),
+        m.get("SlowCompositeCodecReaderWrapper.toString/shape"),
+        "no toString() of its own, so `Object`'s binary name and `name@hex` shape"
+    );
+}
+
+/// A [`QueryTimeout`](rucene::index::index_utilities::QueryTimeout) that never trips.
+#[derive(Debug)]
+struct NeverTimesOut;
+
+impl rucene::index::index_utilities::QueryTimeout for NeverTimesOut {
+    fn should_exit(&self) -> bool {
+        false
+    }
+}
+
+/// Replaces the hexadecimal identity Java's `Object.toString()` ends with, so
+/// that the class name and the shape can be compared while the digits — which
+/// no port can reproduce — are not.
+fn identity_erased(rendered: &str) -> String {
+    match rendered.rfind('@') {
+        Some(at) => format!("{}@<identity>", &rendered[..at]),
+        None => rendered.to_string(),
+    }
+}
+
+/// Sorts the comma-separated elements a `prefix(...)` rendering holds, so that
+/// an order Java leaves unspecified does not decide the comparison.
+fn sorted_inside(prefix: &str, rendered: &str) -> String {
+    let body = rendered
+        .strip_prefix(prefix)
+        .unwrap_or_else(|| panic!("`{rendered}` does not start with `{prefix}`"));
+    let body = body.trim_end_matches(')');
+    let mut parts: Vec<&str> = body.split(", ").collect();
+    parts.sort_unstable();
+    format!("{prefix}{})", parts.join(", "))
+}
+
+// ---------------------------------------------------------------------------
+// Term and postings enumerations
+// ---------------------------------------------------------------------------
+
+fn enumerations(m: &Measured, index_dir: &std::path::Path) {
+    use rucene::index::index_reader::IndexReader;
+    use rucene::index::{MultiTerms, TermsEnumIndex};
+
+    let reader = open_java_index(index_dir);
+    // `Arc<dyn DirectoryReader>` does not coerce to `Arc<dyn IndexReader>`, so
+    // the erased view comes off the reader's own top-level context.
+    let as_index_reader: Arc<dyn IndexReader> = Arc::clone(&reader).get_context().reader();
+
+    let terms = MultiTerms::get_terms(&as_index_reader, "body")
+        .expect("read the merged terms")
+        .expect("the `body` field is indexed in both segments");
+    let multi_terms_enum = terms.iterator().expect("iterate the merged terms");
+    assert_eq!(
+        rendered_shape(&multi_terms_enum.to_string()),
+        rendered_shape(m.get("MultiTermsEnum.toString/body-unpositioned")),
+        "the wrapper name, the `ReaderSlice` record rendering, the `:` and the sub-enum's class"
+    );
+
+    let postings = MultiTerms::get_term_postings_enum(
+        &as_index_reader,
+        "body",
+        &BytesRef::new(b"alpha".to_vec()),
+        rucene::index::postings_enum::POSTINGS_ENUM_ALL,
+    )
+    .expect("read the merged postings")
+    .expect("`alpha` occurs in both segments");
+    assert_eq!(
+        rendered_shape(&postings.to_string()),
+        rendered_shape(m.get("MultiPostingsEnum.toString/body-alpha")),
+        "the class renames itself `MultiDocsAndPositionsEnum`"
+    );
+
+    let leaves = Arc::clone(&reader).leaves();
+    let leaf0 = leaves[0].leaf_reader();
+    let leaf_terms = leaf0
+        .terms("body")
+        .expect("read the leaf terms")
+        .expect("the `body` field is indexed");
+    let index = TermsEnumIndex::new(leaf_terms.iterator().expect("iterate"), 0);
+    let bare = leaf_terms.iterator().expect("iterate");
+    assert_eq!(
+        identity_erased(&index.to_string()),
+        identity_erased(&bare.to_string()),
+        "`TermsEnumIndex.toString()` is `Objects.toString(termsEnum)` and nothing else"
+    );
+    assert_eq!(
+        identity_erased(&index.to_string()),
+        identity_erased(m.get("TermsEnumIndex.toString/leaf-0-unpositioned")),
+        "the class of the wrapped enumeration is Lucene's own blocktree `SegmentTermsEnum`"
+    );
+}
+
+/// Replaces every `…@<hex>` identity inside a rendering, so that the structure
+/// — the wrapper names, the `ReaderSlice` records, the separators and the class
+/// names — is what is compared, and the digits Java draws from a JVM-internal
+/// PRNG are not.
+fn rendered_shape(rendered: &str) -> String {
+    let mut out = String::with_capacity(rendered.len());
+    let mut rest = rendered;
+    while let Some(at) = rest.find('@') {
+        out.push_str(&rest[..at]);
+        out.push_str("@<identity>");
+        rest = &rest[at + 1..];
+        let end = rest
+            .find(|c: char| !c.is_ascii_hexdigit())
+            .unwrap_or(rest.len());
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Pending deletes
+// ---------------------------------------------------------------------------
+
+fn pending_deletes(m: &Measured, index_dir: &std::path::Path) {
+    use rucene::index::{PendingDeletes, PendingSoftDeletes, ReadersAndUpdates, SegmentInfos};
+
+    let _ = rucene::codecs::register_codec("Lucene104", rucene::codecs::Lucene104Codec::new());
+    let directory: Arc<dyn Directory> =
+        Arc::new(rucene::store::FSDirectory::open(index_dir).expect("open the Java index"));
+    let infos = SegmentInfos::read_latest_commit(directory).expect("read segments_N");
+    let info = infos.info(0).clone();
+
+    let mut hard = PendingDeletes::new(&info);
+    assert_eq!(
+        hard.to_string_with_info(&info),
+        m.get("PendingDeletes.toString/fresh"),
+        "Lucene never closes the parenthesis it opens here"
+    );
+    hard.get_mutable_bits(&info);
+    assert_eq!(
+        hard.to_string_with_info(&info),
+        m.get("PendingDeletes.toString/writeable")
+    );
+    hard.delete(1, &info).expect("delete document 1");
+    assert_eq!(
+        hard.to_string_with_info(&info),
+        m.get("PendingDeletes.toString/one-deleted")
+    );
+
+    let soft = PendingSoftDeletes::new("__soft_deletes", &info);
+    assert_eq!(
+        soft.to_string_with_info(&info),
+        m.get("PendingSoftDeletes.toString/fresh"),
+        "the embedded hardDeletes tracker is rendered whole, its parenthesis open too"
+    );
+
+    let rau = ReadersAndUpdates::new(10, info.clone(), None);
+    assert_eq!(
+        rau.to_string(),
+        m.get("ReadersAndUpdates.toString/fresh"),
+        "the class renames itself `ReadersAndLiveDocs`"
+    );
+    let soft_rau = ReadersAndUpdates::new(10, info.clone(), Some("__soft_deletes"));
+    assert_eq!(
+        soft_rau.to_string(),
+        m.get("ReadersAndUpdates.toString/soft-deletes")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Buffered updates
+// ---------------------------------------------------------------------------
+
+fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
+    use rucene::index::doc_values_update::{DocValuesUpdate, DocValuesUpdateValue};
+    use rucene::index::{BufferedUpdates, DocumentsWriterDeleteQueue, FrozenBufferedUpdates, Term};
+    use rucene::search::MatchAllDocsQuery;
+
+    assert_eq!(
+        BufferedUpdates::new("_0").to_string(),
+        m.get("BufferedUpdates.toString/empty")
+    );
+
+    let mut terms = BufferedUpdates::new("_0");
+    terms.add_term(Term::new("id", BytesRef::new(b"0-0".to_vec())), 5);
+    terms.add_term(Term::new("id", BytesRef::new(b"0-1".to_vec())), 7);
+    assert_eq!(
+        terms.to_string(),
+        m.get("BufferedUpdates.toString/two-terms"),
+        "note the trailing space Lucene leaves after `unique deleted terms`"
+    );
+
+    let mut queries = BufferedUpdates::new("_0");
+    queries.add_query(Arc::new(MatchAllDocsQuery::instance()), 3);
+    assert_eq!(
+        queries.to_string(),
+        m.get("BufferedUpdates.toString/one-query"),
+        "`deleted queries` is plural even for one, and `bytesUsed` is charged per query"
+    );
+
+    let queue = Arc::new(DocumentsWriterDeleteQueue::new(Arc::new(
+        rucene::util::NoOutputInfoStream,
+    )));
+    assert_eq!(
+        queue.to_string(),
+        m.get("DocumentsWriterDeleteQueue.toString/fresh")
+    );
+
+    // `DocumentsWriterPerThread.toString()` renders the buffered updates, the
+    // segment name, the abort flag, the in-RAM document count, the delete queue
+    // and the deleted-docID count, in that order and with Java's punctuation.
+    let _ = rucene::codecs::register_codec("Lucene104", rucene::codecs::Lucene104Codec::new());
+    let directory: Arc<dyn Directory> =
+        Arc::new(rucene::store::FSDirectory::open(index_dir).expect("open the Java index"));
+    let config = Arc::new(
+        rucene::index::index_writer_config::LiveIndexWriterConfig::new(Arc::new(
+            rucene::analysis::standard::StandardAnalyzer::new(),
+        )),
+    );
+    let field_numbers =
+        Arc::new(rucene::index::field_infos::FieldNumbers::new(None, None).expect("field numbers"));
+    let dwpt = rucene::index::DocumentsWriterPerThread::new(
+        10,
+        "_9".to_string(),
+        Arc::clone(&directory),
+        Arc::clone(&directory),
+        Arc::clone(&config),
+        Arc::clone(&queue),
+        rucene::index::field_infos::FieldInfosBuilder::new(field_numbers),
+        Arc::new(std::sync::atomic::AtomicI64::new(0)),
+        Arc::new(std::sync::atomic::AtomicI32::new(rucene::index::MAX_DOCS)),
+        false,
+        Box::new(rucene::index::indexing_chain::DefaultIndexingChain::new(
+            Arc::clone(&config),
+        )),
+    )
+    .expect("build a DWPT");
+    assert_eq!(
+        dwpt.to_string(),
+        m.get("DocumentsWriterPerThread.toString/fresh")
+    );
+
+    let mut everything = BufferedUpdates::new("_0");
+    everything.add_term(Term::new("id", BytesRef::new(b"0-0".to_vec())), 5);
+    everything.add_query(
+        Arc::new(rucene::search::TermQuery::new(Term::new(
+            "id",
+            BytesRef::new(b"0-2".to_vec()),
+        ))),
+        9,
+    );
+    everything
+        .add_numeric_update(
+            &DocValuesUpdate::new(
+                rucene::index::DocValuesType::NUMERIC,
+                Term::new("id", BytesRef::new(b"0-1".to_vec())),
+                "price",
+                4,
+                DocValuesUpdateValue::Numeric(33),
+            ),
+            4,
+        )
+        .expect("buffer a numeric update");
+    everything.set_generation(12);
+    assert_eq!(
+        everything.to_string(),
+        m.get("BufferedUpdates.toString/terms-query-and-updates"),
+        "the trailing space of the terms clause leaves two spaces before the query clause"
+    );
+
+    // `FrozenBufferedUpdates` is where this port's freezing model shows: Java
+    // packs the terms into `PrefixCodedTerms` and the queries into an array and
+    // reports *their* RAM, while this port keeps the source `BufferedUpdates`
+    // and reports its own. The `bytesUsed=` clause therefore cannot agree — an
+    // empty Java packet already reports `bytesUsed=16` for an empty
+    // `PrefixCodedTerms` — so what is compared is every other clause, in Java's
+    // order and wording. See the divergence recorded on `Display for
+    // FrozenBufferedUpdates`.
+    let frozen_empty = FrozenBufferedUpdates::new(BufferedUpdates::new("_0"), None, 0);
+    assert_eq!(
+        frozen_empty.to_string(),
+        without_bytes_used(m.get("FrozenBufferedUpdates.toString/empty")),
+        "an unpushed packet renders `delGen=-1`: Java reads the field, not the asserting accessor"
+    );
+
+    let mut source = BufferedUpdates::new("_0");
+    source.add_term(Term::new("id", BytesRef::new(b"0-0".to_vec())), 5);
+    source.add_term(Term::new("id", BytesRef::new(b"0-1".to_vec())), 7);
+    source
+        .add_numeric_update(
+            &DocValuesUpdate::new(
+                rucene::index::DocValuesType::NUMERIC,
+                Term::new("id", BytesRef::new(b"0-1".to_vec())),
+                "price",
+                4,
+                DocValuesUpdateValue::Numeric(33),
+            ),
+            4,
+        )
+        .expect("buffer a numeric update");
+    let frozen = FrozenBufferedUpdates::new(source, None, 0);
+    frozen.set_del_gen(7);
+    assert_eq!(
+        without_bytes_used(&frozen.to_string()),
+        without_bytes_used(m.get("FrozenBufferedUpdates.toString/terms-and-updates")),
+        "`unique deleteTerms=` then `fieldUpdates=`, guarded on the field count but printing \
+         the update count"
+    );
+
+    let mut private_source = BufferedUpdates::new("_0");
+    private_source.add_query(Arc::new(MatchAllDocsQuery::instance()), 3);
+    let private_frozen = FrozenBufferedUpdates::new(private_source, Some("_0".to_string()), 0);
+    let rendered = without_bytes_used(&private_frozen.to_string());
+    let expected = without_bytes_used(m.get("FrozenBufferedUpdates.toString/private-segment"));
+    assert!(
+        expected.starts_with("delGen=-1 numDeleteQueries=1 privateSegment="),
+        "the Java shape this comparison relies on: {expected}"
+    );
+    assert!(
+        rendered.starts_with("delGen=-1 numDeleteQueries=1 privateSegment=_0"),
+        "the query clause and the private-segment clause, in Java's order: {rendered}"
+    );
+}
+
+/// Strips the `bytesUsed=<n>` clause from a `FrozenBufferedUpdates` rendering.
+///
+/// Java's figure is the RAM of the frozen `PrefixCodedTerms` and `Query[]`;
+/// this port freezes by keeping the source `BufferedUpdates`, so the two count
+/// different objects. Everything else in the string is comparable.
+fn without_bytes_used(rendered: &str) -> String {
+    let mut out = Vec::new();
+    let mut rest = rendered;
+    while let Some(at) = rest.find(" bytesUsed=") {
+        out.push(&rest[..at]);
+        rest = &rest[at + " bytesUsed=".len()..];
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit() && c != '-')
+            .unwrap_or(rest.len());
+        rest = &rest[end..];
+    }
+    out.push(rest);
+    out.concat()
 }

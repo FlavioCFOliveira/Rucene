@@ -123,6 +123,20 @@ impl std::fmt::Debug for SingleTermsEnum {
     }
 }
 
+impl std::fmt::Display for SingleTermsEnum {
+    /// `org.apache.lucene.index.SingleTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.SingleTermsEnum",
+            self,
+        ))
+    }
+}
+
 impl TermsEnum for SingleTermsEnum {
     fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
         &mut self.atts
@@ -775,6 +789,15 @@ mod tests {
         atts: crate::util::attribute::AttributeSource,
     }
 
+    impl std::fmt::Display for StubTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubTermsEnum")
+        }
+    }
+
     impl TermsEnum for StubTermsEnum {
         fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
             &mut self.atts
@@ -861,6 +884,15 @@ mod tests {
         }
     }
 
+    impl std::fmt::Display for StubPostingsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubPostingsEnum")
+        }
+    }
+
     impl PostingsEnum for StubPostingsEnum {
         fn freq(&self) -> Result<i32> {
             Ok(0)
@@ -902,6 +934,15 @@ mod tests {
 
         fn cost(&self) -> i64 {
             0
+        }
+    }
+
+    impl std::fmt::Display for StubImpactsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubImpactsEnum")
         }
     }
 

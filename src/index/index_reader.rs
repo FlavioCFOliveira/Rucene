@@ -8,7 +8,7 @@
 #![deny(unsafe_code)]
 
 use std::{
-    fmt::{Debug, Formatter},
+    fmt::{Debug, Display, Formatter},
     sync::{
         atomic::{AtomicBool, AtomicI32, Ordering},
         Arc, Mutex, Weak,
@@ -371,7 +371,7 @@ impl IndexReaderCore {
 /// implement [`CompositeReader`] (which extends `IndexReader`) and must provide
 /// an explicit `IndexReader` implementation, typically overriding
 /// [`IndexReader::build_context`] to build a [`CompositeReaderContext`].
-pub trait IndexReader: Send + Sync + Debug + 'static {
+pub trait IndexReader: Send + Sync + Debug + Display + 'static {
     /// Returns the shared core state for this reader.
     fn core(&self) -> &IndexReaderCore;
 
@@ -569,5 +569,58 @@ pub fn build_composite_context(
         doc_base_in_parent,
         leaf_ord,
         leaf_doc_base,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// toString helpers shared by the reader hierarchy
+// ---------------------------------------------------------------------------
+
+/// Renders a composite reader exactly as `CompositeReader.toString()` does:
+/// the reader's own simple name, then its sequential sub-readers separated by a
+/// single space, inside one pair of parentheses.
+///
+/// Equivalent to `org.apache.lucene.index.CompositeReader.toString()`
+/// (`CompositeReader.java:56-78`). Java obtains the leading name by walking up
+/// the class hierarchy until it finds a class that is not anonymous; Rust has
+/// no anonymous types and no runtime class walk, so each concrete composite
+/// reader passes the name its Java counterpart would have produced.
+///
+/// Measured against `lucene-core-10.5.0.jar`: a `MultiReader` over two segment
+/// readers renders as `MultiReader(_0(10.5.0):C3 _1(10.5.0):C3)`, and an empty
+/// one as `MultiReader()`.
+pub fn composite_reader_to_string(simple_name: &str, subs: &[Arc<dyn IndexReader>]) -> String {
+    let mut buffer = String::from(simple_name);
+    buffer.push('(');
+    for (i, sub) in subs.iter().enumerate() {
+        if i != 0 {
+            buffer.push(' ');
+        }
+        buffer.push_str(&sub.to_string());
+    }
+    buffer.push(')');
+    buffer
+}
+
+/// Renders an object the way `java.lang.Object.toString()` does, for the types
+/// whose Lucene counterpart declares no `toString()` of its own.
+///
+/// Java's default is `getClass().getName() + "@" + Integer.toHexString(hashCode())`,
+/// where `hashCode()` is the identity hash. `class_name` must therefore be the
+/// **binary** Java name (`org.apache.lucene.index.FilterCodecReader`, with a
+/// `$` before a nested class), and `identity` stands in for the identity hash.
+///
+/// **Divergence from Lucene 10.5.0.** The hexadecimal suffix cannot match:
+/// Java's identity hash is drawn from a per-thread PRNG inside the JVM and has
+/// no counterpart in Rust. The port substitutes the object's own address, which
+/// is the same kind of value — a per-instance identity, stable for the object's
+/// lifetime and distinct between live objects — and reproduces the class name
+/// and the `name@hex` shape exactly. No Lucene format, and no `toString()` that
+/// Lucene itself defines, depends on the digits.
+pub fn java_object_to_string<T: ?Sized>(class_name: &str, identity: &T) -> String {
+    format!(
+        "{}@{:x}",
+        class_name,
+        std::ptr::from_ref(identity).cast::<()>() as usize
     )
 }

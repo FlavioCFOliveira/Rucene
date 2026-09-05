@@ -1825,6 +1825,16 @@ mod tests {
         values: Option<InMemoryPointValues>,
     }
 
+    impl std::fmt::Display for PointsLeafReader {
+        /// Test double; it has no Lucene counterpart whose `toString()` could be
+        /// reproduced, so it renders under its own name. `Display` is required
+        /// because `LeafReader`/`IndexReader` carry it as a supertrait, standing in
+        /// for the `toString()` every Java reader inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("PointsLeafReader")
+        }
+    }
+
     impl PointsLeafReader {
         fn new(field: &str, values: Option<InMemoryPointValues>) -> Arc<Self> {
             Arc::new(Self {
@@ -1943,6 +1953,16 @@ mod tests {
     struct StubCompositeReader {
         core: IndexReaderCore,
         subs: Vec<Arc<dyn IndexReader>>,
+    }
+
+    impl std::fmt::Display for StubCompositeReader {
+        /// Test double; it has no Lucene counterpart whose `toString()` could be
+        /// reproduced, so it renders under its own name. `Display` is required
+        /// because `LeafReader`/`IndexReader` carry it as a supertrait, standing in
+        /// for the `toString()` every Java reader inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubCompositeReader")
+        }
     }
 
     impl IndexReader for StubCompositeReader {

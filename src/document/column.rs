@@ -1063,6 +1063,36 @@ impl ColumnFieldAdapter for LongColumnAdapter<'_> {
     }
 }
 
+impl std::fmt::Display for LongColumnAdapter<'_> {
+    /// `LongColumnAdapter` extends the sealed `ColumnFieldAdapter`, which extends `Field`;
+    /// none of them overrides `toString()`, so the inherited `Field.toString()`
+    /// applies over whatever value the cursor is currently positioned on.
+    ///
+    /// Verified from the class hierarchy in
+    /// `lucene/core/src/java/org/apache/lucene/document/column/ColumnFieldAdapter.java`
+    /// at `releases/lucene/10.5.0`, not measured: `LongColumn` and
+    /// `BinaryColumn` are abstract with protected constructors, so no adapter
+    /// can be built from outside the `column` package to render.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}<{}:{}>",
+            self.field_type,
+            self.name,
+            match IndexableField::string_value(self) {
+                Some(value) => value,
+                None => match IndexableField::binary_value(self) {
+                    Some(bytes) => crate::document::bytes_ref_to_string(bytes.slice()),
+                    None => match IndexableField::numeric_value(self) {
+                        Some(number) => number.to_string(),
+                        None => String::from("null"),
+                    },
+                },
+            }
+        )
+    }
+}
+
 impl IndexableField for LongColumnAdapter<'_> {
     fn name(&self) -> &str {
         &self.name
@@ -1268,6 +1298,36 @@ impl ColumnFieldAdapter for BinaryColumnAdapter<'_> {
             BinarySource::Bytes(cursor) => cursor.next_doc(),
             BinarySource::TokenStream(cursor) => cursor.next_doc(),
         }
+    }
+}
+
+impl std::fmt::Display for BinaryColumnAdapter<'_> {
+    /// `BinaryColumnAdapter` extends the sealed `ColumnFieldAdapter`, which extends `Field`;
+    /// none of them overrides `toString()`, so the inherited `Field.toString()`
+    /// applies over whatever value the cursor is currently positioned on.
+    ///
+    /// Verified from the class hierarchy in
+    /// `lucene/core/src/java/org/apache/lucene/document/column/ColumnFieldAdapter.java`
+    /// at `releases/lucene/10.5.0`, not measured: `LongColumn` and
+    /// `BinaryColumn` are abstract with protected constructors, so no adapter
+    /// can be built from outside the `column` package to render.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}<{}:{}>",
+            self.field_type,
+            self.name,
+            match IndexableField::string_value(self) {
+                Some(value) => value,
+                None => match IndexableField::binary_value(self) {
+                    Some(bytes) => crate::document::bytes_ref_to_string(bytes.slice()),
+                    None => match IndexableField::numeric_value(self) {
+                        Some(number) => number.to_string(),
+                        None => String::from("null"),
+                    },
+                },
+            }
+        )
     }
 }
 

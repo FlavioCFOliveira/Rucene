@@ -1514,6 +1514,20 @@ impl BitsFilteredTermsEnum {
     }
 }
 
+impl std::fmt::Display for BitsFilteredTermsEnum {
+    /// `BitsFilteredTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.codecs.DocValuesConsumer$BitsFilteredTermsEnum",
+            self,
+        ))
+    }
+}
+
 impl TermsEnum for BitsFilteredTermsEnum {
     fn attributes(&mut self) -> &mut AttributeSource {
         self.inner.attributes()

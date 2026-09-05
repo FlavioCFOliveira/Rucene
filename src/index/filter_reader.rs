@@ -49,6 +49,19 @@ impl std::fmt::Debug for FilterLeafReader {
     }
 }
 
+impl std::fmt::Display for FilterLeafReader {
+    /// Port of `FilterLeafReader.toString()` (`FilterLeafReader.java:416-422`).
+    ///
+    /// Java hardcodes the literal `"FilterLeafReader("` instead of asking for
+    /// its own simple name, so every subclass that does not override
+    /// `toString()` — `ExitableFilterAtomicReader` and
+    /// `SoftDeletesFilterLeafReader` among them — also renders under this name.
+    /// Measured against `lucene-core-10.5.0.jar`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FilterLeafReader({})", self.inner)
+    }
+}
+
 impl FilterLeafReader {
     /// Wraps `inner`.
     pub fn new(inner: Arc<dyn LeafReader>) -> Self {
@@ -203,6 +216,17 @@ pub struct FilterCodecReader {
 impl std::fmt::Debug for FilterCodecReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FilterCodecReader").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for FilterCodecReader {
+    /// `org.apache.lucene.index.FilterCodecReader` declares no `toString()` of
+    /// its own — unlike its sibling `FilterLeafReader` — so `Object`'s applies.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FilterCodecReader",
+            self,
+        ))
     }
 }
 
@@ -416,6 +440,19 @@ impl std::fmt::Debug for LiveDocsCodecReader {
         f.debug_struct("LiveDocsCodecReader")
             .field("num_docs", &self.num_docs)
             .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for LiveDocsCodecReader {
+    /// The anonymous `FilterCodecReader` that `FilterCodecReader.wrapLiveDocs`
+    /// returns overrides no `toString()`, so `Object`'s applies. The binary
+    /// name javac gives it was measured from `lucene-core-10.5.0.jar`:
+    /// `org.apache.lucene.index.FilterCodecReader$1`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FilterCodecReader$1",
+            self,
+        ))
     }
 }
 

@@ -118,6 +118,13 @@ public final class ObjectContractsFixture {
     org.apache.lucene.codecs.RuceneCodecsContracts.emit(ObjectContractsFixture::out);
     org.apache.lucene.codecs.lucene90.RuceneLucene90Contracts.emit(ObjectContractsFixture::out);
     org.apache.lucene.index.RuceneIndexContracts.emit(ObjectContractsFixture::out);
+    if (args.length < 1) {
+      throw new IllegalArgumentException(
+          "usage: ObjectContractsFixture <indexDir> — the directory the reader "
+              + "contracts build their index in, so the Rust side can open the same files");
+    }
+    org.apache.lucene.index.RuceneToStringContracts.emit(
+        ObjectContractsFixture::out, java.nio.file.Path.of(args[0]));
 
     for (String line : LINES) {
       System.out.println(line);

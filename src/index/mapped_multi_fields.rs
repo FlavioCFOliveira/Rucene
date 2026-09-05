@@ -247,6 +247,20 @@ impl MappedMultiTermsEnum {
     }
 }
 
+impl std::fmt::Display for MappedMultiTermsEnum {
+    /// `MappedMultiTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.MappedMultiFields$MappedMultiTermsEnum",
+            self,
+        ))
+    }
+}
+
 impl TermsEnum for MappedMultiTermsEnum {
     fn attributes(&mut self) -> &mut AttributeSource {
         self.inner.attributes()
@@ -393,6 +407,15 @@ mod tests {
         }
     }
 
+    impl std::fmt::Display for VecPostings {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("VecPostings")
+        }
+    }
+
     impl PostingsEnum for VecPostings {
         fn freq(&self) -> Result<i32> {
             Ok(1)
@@ -427,6 +450,15 @@ mod tests {
                 pos: -1,
                 atts: AttributeSource::new(),
             }
+        }
+    }
+
+    impl std::fmt::Display for VecTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("VecTermsEnum")
         }
     }
 

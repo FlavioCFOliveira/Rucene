@@ -1619,6 +1619,20 @@ impl FreqProxTermsEnum {
     }
 }
 
+impl std::fmt::Display for FreqProxTermsEnum {
+    /// `FreqProxTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FreqProxFields$FreqProxTermsEnum",
+            self,
+        ))
+    }
+}
+
 impl TermsEnum for FreqProxTermsEnum {
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.attributes
@@ -1826,6 +1840,20 @@ impl DocIdSetIterator for FreqProxDocsEnum {
     }
 }
 
+impl std::fmt::Display for FreqProxDocsEnum {
+    /// `FreqProxDocsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FreqProxFields$FreqProxDocsEnum",
+            self,
+        ))
+    }
+}
+
 impl PostingsEnum for FreqProxDocsEnum {
     fn freq(&self) -> Result<i32> {
         if self.read_term_freq {
@@ -1952,6 +1980,20 @@ impl DocIdSetIterator for FreqProxPostingsEnum {
     /// [`FreqProxDocsEnum`].
     fn cost(&self) -> i64 {
         i64::MAX
+    }
+}
+
+impl std::fmt::Display for FreqProxPostingsEnum {
+    /// `FreqProxPostingsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FreqProxFields$FreqProxPostingsEnum",
+            self,
+        ))
     }
 }
 
