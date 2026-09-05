@@ -188,6 +188,17 @@ impl ScalarEncoding {
 /// A sequence of quantized vectors, each with its corrective offset.
 ///
 /// Equivalent to `org.apache.lucene.util.quantization.QuantizedByteVectorValues`.
+///
+/// This trait carried a `get_scalar_quantizer` returning a [`ScalarQuantizer`]
+/// until rmp task #173, documented as "equivalent to
+/// `QuantizedByteVectorValues.getScalarQuantizer()`". Lucene 10.5.0 declares no
+/// such method on this class: `getScalarQuantizer()` belongs to
+/// `LegacyQuantizedByteVectorValues`
+/// (`LegacyQuantizedByteVectorValues.java:29-31`), where the port already has
+/// it as [`LegacyQuantizedByteVectorValues::scalar_quantizer`]. The duplicate
+/// had no implementor and no caller, so it was removed rather than
+/// re-documented. The quantizer this class really exposes is the
+/// [`OptimizedScalarQuantizer`] of [`get_quantizer`](Self::get_quantizer).
 pub trait QuantizedByteVectorValues: Send + Sync {
     /// Returns the quantized vector at `ord`.
     ///
@@ -221,13 +232,6 @@ pub trait QuantizedByteVectorValues: Send + Sync {
     /// implementation that overrides it propagates its own I/O errors.
     fn scorer(&self, query: &[f32]) -> Result<Option<Box<dyn VectorScorer>>> {
         BaseQuantizedByteVectorValues::new(self.dimension(), self.size()).scorer(query)
-    }
-
-    /// Returns the quantizer these vectors were compressed with.
-    ///
-    /// Equivalent to `QuantizedByteVectorValues.getScalarQuantizer()`.
-    fn get_scalar_quantizer(&self) -> Option<&ScalarQuantizer> {
-        None
     }
 
     /// Returns a second view of the same vectors, so that two ordinals can be
@@ -457,6 +461,7 @@ pub trait LegacyQuantizedByteVectorValues: QuantizedByteVectorValues {
 #[cfg(test)]
 mod scorer_tests {
     use super::*;
+    use crate::index::VectorSimilarityFunction;
     use crate::search::DocIdSetIterator;
 
     /// The smallest `QuantizedByteVectorValues` there is: it supplies only what
@@ -483,6 +488,89 @@ mod scorer_tests {
 
         fn dimension(&self) -> i32 {
             self.base.dimension
+        }
+    }
+
+    /// A values type that holds a quantizer, standing for
+    /// `OffHeapScalarQuantizedVectorValues`, whose `getQuantizer()` returns the
+    /// `new OptimizedScalarQuantizer(fi.similarityFunction)` its reader built.
+    struct Quantized(OptimizedScalarQuantizer);
+
+    impl QuantizedByteVectorValues for Quantized {
+        fn vector_value(&mut self, _ord: i32) -> Result<&[u8]> {
+            Ok(&[])
+        }
+
+        fn get_score_correction_constant(&mut self, _ord: i32) -> Result<f32> {
+            Ok(0.0)
+        }
+
+        fn size(&self) -> i32 {
+            1
+        }
+
+        fn dimension(&self) -> i32 {
+            2
+        }
+
+        fn get_quantizer(&self) -> Option<&OptimizedScalarQuantizer> {
+            Some(&self.0)
+        }
+    }
+
+    /// `QuantizedByteVectorValues.getQuantizer()` is abstract in Lucene, so
+    /// every real implementation answers with the quantizer the field's
+    /// similarity determines. Rust cannot make a trait method abstract without
+    /// breaking implementors, so it is provided and answers `None`; what
+    /// matters is that an implementor's override is what a consumer sees
+    /// through the trait object — which is the shape Java's
+    /// `Lucene104ScalarQuantizedVectorScorer` uses (`qv.getQuantizer()` on a
+    /// `QuantizedByteVectorValues`).
+    #[test]
+    fn get_quantizer_is_visible_through_the_trait_object() {
+        let plain = Plain {
+            base: BaseQuantizedByteVectorValues::new(2, 1),
+            bytes: vec![0, 0],
+        };
+        let plain: &dyn QuantizedByteVectorValues = &plain;
+        assert!(
+            plain.get_quantizer().is_none(),
+            "an implementation that holds no quantizer answers None"
+        );
+
+        for similarity in [
+            VectorSimilarityFunction::EUCLIDEAN,
+            VectorSimilarityFunction::DOT_PRODUCT,
+            VectorSimilarityFunction::COSINE,
+            VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
+        ] {
+            let values = Quantized(OptimizedScalarQuantizer::new(similarity));
+            let values: &dyn QuantizedByteVectorValues = &values;
+            let quantizer = values
+                .get_quantizer()
+                .expect("a value-holding implementation answers its quantizer");
+
+            // Identity is asserted behaviourally: quantizing the same vector
+            // with the returned quantizer and with a freshly built one for the
+            // same similarity must give the same corrections. `OptimizedScalar\
+            // Quantizer` has no equality, and comparing addresses would prove
+            // nothing about which similarity it was built for.
+            let mut a = vec![1.0f32, -2.0];
+            let mut b = vec![1.0f32, -2.0];
+            let mut dst_a = vec![0u8; 2];
+            let mut dst_b = vec![0u8; 2];
+            let centroid = [0.5f32, 0.5];
+            let from_trait = quantizer
+                .scalar_quantize(&mut a, &mut dst_a, 8, &centroid)
+                .expect("quantize");
+            let from_fresh = OptimizedScalarQuantizer::new(similarity)
+                .scalar_quantize(&mut b, &mut dst_b, 8, &centroid)
+                .expect("quantize");
+            assert_eq!(
+                from_trait, from_fresh,
+                "getQuantizer() must answer the quantizer of the field's similarity ({similarity:?})"
+            );
+            assert_eq!(dst_a, dst_b);
         }
     }
 

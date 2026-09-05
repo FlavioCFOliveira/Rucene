@@ -150,6 +150,10 @@ name = "portability_compressing_accounting"
 path = "tests/portability/compressing_accounting.rs"
 
 [[test]]
+name = "portability_store_analysis_contracts"
+path = "tests/portability/store_analysis_contracts.rs"
+
+[[test]]
 name = "portability_hnsw_graph"
 path = "tests/portability/hnsw_graph.rs"
 

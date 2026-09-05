@@ -58,7 +58,7 @@ pub use tokenattributes::{
     TermFrequencyAttributeImpl, TermToBytesRefAttribute, TypeAttribute, TypeAttributeImpl,
 };
 pub use wordlist_loader::{
-    get_buffered_reader, get_snowball_word_set, get_stem_dict, get_word_set,
+    get_buffered_reader, get_lines, get_snowball_word_set, get_stem_dict, get_word_set,
     get_word_set_ignoring_comments, get_word_set_into, get_word_set_with_comment,
 };
 
@@ -379,6 +379,39 @@ impl<T: TokenizerLogic> Tokenizer<T> {
     /// Returns a mutable reference to the tokenizer logic.
     pub fn logic_mut(&mut self) -> &mut T {
         &mut self.logic
+    }
+
+    /// Maps an offset in this tokenizer's output back onto the original input.
+    ///
+    /// When the input is a [`CharFilter`], the offset is corrected through it —
+    /// and, because [`CharFilter::correct_offset`] chains, through every filter
+    /// below it as well. Otherwise the offset is returned unchanged.
+    ///
+    /// Equivalent to `Tokenizer.correctOffset(int)`:
+    ///
+    /// ```text
+    /// return (input instanceof CharFilter)
+    ///     ? ((CharFilter) input).correctOffset(currentOff)
+    ///     : currentOff;
+    /// ```
+    ///
+    /// Before `reset()` Java's `input` is the `ILLEGAL_STATE_READER` sentinel,
+    /// which is not a `CharFilter`, so the offset comes back unchanged; this
+    /// port has no reader at all in that state, which answers the same.
+    ///
+    /// This is the offset a tokenizer must report on
+    /// [`OffsetAttribute`](crate::analysis::OffsetAttribute): the positions its
+    /// scanner sees are positions in the *filtered* text, and a consumer such
+    /// as a highlighter needs positions in the text the user supplied.
+    pub fn correct_offset(&self, current_off: i32) -> i32 {
+        match self
+            .input
+            .as_ref()
+            .and_then(|reader| reader.as_char_filter())
+        {
+            Some(filter) => filter.correct_offset(current_off),
+            None => current_off,
+        }
     }
 }
 

@@ -2649,6 +2649,30 @@ impl<R: Read> InputStreamDataInput<R> {
     pub fn into_inner(self) -> R {
         self.input
     }
+
+    /// Closes the underlying stream.
+    ///
+    /// Equivalent to `InputStreamDataInput.close()`, which is the whole of the
+    /// `java.io.Closeable` the class implements: `is.close()`
+    /// (`InputStreamDataInput.java:51-54`).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `close()` leaves the
+    /// `InputStreamDataInput` alive, and a read after it fails at run time with
+    /// whatever the closed stream raises. Rust has no `close` on
+    /// [`Read`](std::io::Read) — a handle is released when its owner is dropped
+    /// — so this takes `self`, drops the owned stream, and turns "no reads
+    /// after close" into a compile error instead of a run-time one. The
+    /// signature still returns [`Result`] so that a stream whose release can
+    /// fail has somewhere to report it.
+    ///
+    /// # Errors
+    ///
+    /// Never fails for a plain [`Read`](std::io::Read); the result is part of
+    /// the ported signature.
+    pub fn close(self) -> Result<()> {
+        drop(self.input);
+        Ok(())
+    }
 }
 
 impl<R: Read> DataInput for InputStreamDataInput<R> {
@@ -2720,6 +2744,32 @@ impl<W: Write> OutputStreamDataOutput<W> {
     /// Consumes this wrapper and returns the underlying stream.
     pub fn into_inner(self) -> W {
         self.output
+    }
+
+    /// Flushes and closes the underlying stream.
+    ///
+    /// Equivalent to `OutputStreamDataOutput.close()`, which is the whole of
+    /// the `java.io.Closeable` the class implements: `os.close()`
+    /// (`OutputStreamDataOutput.java:38-41`). Closing a buffered
+    /// `java.io.OutputStream` writes out whatever it still holds before
+    /// releasing the file, and that is the half that is observable in the
+    /// bytes on disk — so this flushes and **propagates** the error.
+    ///
+    /// Dropping the writer instead is not the same thing:
+    /// [`BufWriter`](std::io::BufWriter) flushes on drop but discards any error
+    /// it hits, so a truncated file would be reported as a successful write.
+    ///
+    /// **Divergence from Lucene 10.5.0.** As with
+    /// [`InputStreamDataInput::close`], Java's `close()` leaves the object
+    /// alive and later writes fail at run time; this takes `self`, so the
+    /// release of the handle happens when the owned writer is dropped and a
+    /// write after close does not compile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::Io`] if the buffered bytes cannot be written out.
+    pub fn close(mut self) -> Result<()> {
+        self.output.flush().map_err(LuceneError::from)
     }
 }
 
@@ -5697,6 +5747,26 @@ pub struct ByteBuffersDataInput {
     pos: usize,
 }
 
+/// Accounts for the blocks this input reads from.
+///
+/// Equivalent to `ByteBuffersDataInput implements Accountable`, whose
+/// `ramBytesUsed()` is
+/// `NUM_BYTES_OBJECT_REF * blocks.length + Sum(block.capacity())`
+/// (`ByteBuffersDataInput.java:86-91`). Java charges the *capacity* of each
+/// buffer, not the bytes readable through it, and adds one object reference per
+/// block; `Vec::capacity` is this port's `ByteBuffer.capacity()` just as
+/// `Vec::len` is its `remaining()`, so the same two terms are summed here.
+///
+/// Java calls this "a rough estimation for allocated blocks" and deliberately
+/// leaves out the shallow size of the object itself, so nothing is added for it
+/// here either.
+impl crate::util::Accountable for ByteBuffersDataInput {
+    fn ram_bytes_used(&self) -> i64 {
+        self.blocks.len() as i64 * crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + self.blocks.iter().map(Vec::capacity).sum::<usize>() as i64
+    }
+}
+
 impl ByteBuffersDataInput {
     /// Creates an input over a set of contiguous byte buffers.
     ///
@@ -5925,6 +5995,22 @@ impl ByteBuffersDataInput {
             data.extend_from_slice(view);
         }
         Self::new(vec![data])
+    }
+
+    /// Returns the size, in bytes, of every block but possibly the last.
+    ///
+    /// Equivalent to the private `ByteBuffersDataInput.blockSize()`, which is
+    /// `1 << blockBits`.
+    ///
+    /// A single-block input answers `1`, on both sides and for closely related
+    /// reasons. Java sets `blockBits = 32` for that case
+    /// (`ByteBuffersDataInput.java:66`) and `1 << 32` on an `int` masks the
+    /// shift distance to five bits, so it evaluates to `1 << 0`; this port
+    /// stores `0` as the same sentinel, so the shift is `1 << 0` outright. The
+    /// value is only ever reported — `block_index`/`block_offset` special-case
+    /// the single-block layout rather than shifting by it.
+    pub fn block_size(&self) -> usize {
+        1usize << self.block_bits
     }
 
     fn block_index(&self, pos: usize) -> usize {
@@ -11943,10 +12029,9 @@ impl std::fmt::Display for ByteBuffersDataInput {
     ///
     /// Two details of Java's arithmetic survive here:
     ///
-    /// * `blockSize()` is `1 << blockBits`, and a single-block input sets
-    ///   `blockBits = 32` (`ByteBuffersDataInput.java:66`). Java's shift on an
-    ///   `int` takes the count modulo 32, so `1 << 32` is `1`, and a one-block
-    ///   input reports `block size: 1`.
+    /// * the block size comes from [`ByteBuffersDataInput::block_size`], which
+    ///   reports `1` for a one-block input exactly as Java's `blockSize()`
+    ///   does.
     /// * `%,d` groups the digits in threes under `Locale.ROOT`.
     ///
     /// The `offset` suffix is never emitted, because this port's `slice()`
@@ -11954,12 +12039,7 @@ impl std::fmt::Display for ByteBuffersDataInput {
     /// divergence already documented on [`ByteBuffersDataInput::slice`].
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::util::java_fmt::format_grouped;
-        let block_size: i64 = if self.blocks.len() == 1 {
-            // Java: blockBits == 32, and `1 << 32` on an `int` is 1.
-            1
-        } else {
-            1i64 << self.block_bits
-        };
+        let block_size = self.block_size() as i64;
         write!(
             f,
             "{} bytes, block size: {}, blocks: {}, position: {}",
