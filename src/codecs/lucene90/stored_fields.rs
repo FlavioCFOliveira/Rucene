@@ -128,6 +128,8 @@ const STORED_FIELDS_INTS_BLOCK_SIZE: usize = 128;
 // StoredFieldsInts
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.codecs.lucene90.compressing.StoredFieldsInts`.
+///
 /// Packed integer encoding for the per-chunk `numStoredFields` and
 /// `lengths` arrays.
 struct StoredFieldsInts;
@@ -386,6 +388,8 @@ impl StoredFieldsInts {
 // FieldsIndex
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.codecs.lucene90.compressing.FieldsIndex`.
+///
 /// Doc-id to block-offset mapping used by the stored-fields reader.
 pub(crate) trait FieldsIndex: Send + Sync {
     /// Returns the block that contains `doc_id`.
@@ -417,6 +421,8 @@ pub(crate) trait FieldsIndex: Send + Sync {
 // FieldsIndexReader
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.codecs.lucene90.compressing.FieldsIndexReader`.
+///
 /// Reader side of the block index.
 pub(crate) struct FieldsIndexReader {
     max_doc: i32,
@@ -631,6 +637,8 @@ impl FieldsIndex for FieldsIndexReader {
 // FieldsIndexWriter
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.codecs.lucene90.compressing.FieldsIndexWriter`.
+///
 /// Writer side of the block index. Accumulates per-chunk first doc IDs and
 /// start pointers in memory and flushes them as monotonic arrays when the
 /// segment is finished.

@@ -834,6 +834,8 @@ impl PointWriter for HeapPointWriter {
     }
 }
 
+/// Port of `org.apache.lucene.util.bkd.HeapPointReader`.
+///
 /// In-memory point reader that reads from a [`HeapPointWriter`].
 pub struct HeapPointReader<'a> {
     writer: &'a HeapPointWriter,
@@ -1030,6 +1032,8 @@ impl OfflinePointWriter {
     }
 }
 
+/// Port of `org.apache.lucene.util.bkd.OfflinePointReader`.
+///
 /// Disk-backed point reader for records previously written by
 /// [`OfflinePointWriter`].
 pub struct OfflinePointReader {

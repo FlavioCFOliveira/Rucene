@@ -121,6 +121,8 @@ pub trait CharTermAttribute: Attribute {
     fn append_char_term_attribute(&mut self, term_att: &dyn CharTermAttribute);
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.CharTermAttributeImpl`.
+///
 /// Default implementation of [`CharTermAttribute`], also implementing
 /// [`TermToBytesRefAttribute`].
 pub struct CharTermAttributeImpl {
@@ -460,6 +462,8 @@ impl AttributeImpl for CharTermAttributeImpl {
 // OffsetAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.OffsetAttribute`.
+///
 /// The start and end character offset of a token.
 pub trait OffsetAttribute: Attribute {
     /// Returns the token's starting offset.
@@ -477,6 +481,8 @@ pub trait OffsetAttribute: Attribute {
     fn end_offset(&self) -> i32;
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.OffsetAttributeImpl`.
+///
 /// Default implementation of [`OffsetAttribute`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct OffsetAttributeImpl {
@@ -582,6 +588,8 @@ impl AttributeImpl for OffsetAttributeImpl {
 // PositionIncrementAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute`.
+///
 /// Determines the position of this token relative to the previous token.
 pub trait PositionIncrementAttribute: Attribute {
     /// Sets the position increment.
@@ -595,6 +603,8 @@ pub trait PositionIncrementAttribute: Attribute {
     fn get_position_increment(&self) -> i32;
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.PositionIncrementAttributeImpl`.
+///
 /// Default implementation of [`PositionIncrementAttribute`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PositionIncrementAttributeImpl {
@@ -706,6 +716,8 @@ impl AttributeImpl for PositionIncrementAttributeImpl {
 // PositionLengthAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.PositionLengthAttribute`.
+///
 /// Determines how many positions this token spans.
 pub trait PositionLengthAttribute: Attribute {
     /// Sets the position length.
@@ -719,6 +731,8 @@ pub trait PositionLengthAttribute: Attribute {
     fn get_position_length(&self) -> i32;
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.PositionLengthAttributeImpl`.
+///
 /// Default implementation of [`PositionLengthAttribute`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PositionLengthAttributeImpl {
@@ -821,6 +835,8 @@ impl AttributeImpl for PositionLengthAttributeImpl {
 /// The default lexical type value, matching Lucene's `"word"`.
 pub const DEFAULT_TYPE: &str = "word";
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.TypeAttribute`.
+///
 /// A token's lexical type.
 pub trait TypeAttribute: Attribute {
     /// Returns the lexical type.
@@ -830,6 +846,8 @@ pub trait TypeAttribute: Attribute {
     fn set_type(&mut self, type_value: String);
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.TypeAttributeImpl`.
+///
 /// Default implementation of [`TypeAttribute`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TypeAttributeImpl {
@@ -1264,6 +1282,8 @@ impl AttributeImpl for PackedTokenAttributeImpl {
 // TermFrequencyAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.TermFrequencyAttribute`.
+///
 /// Custom term frequency within one document.
 pub trait TermFrequencyAttribute: Attribute {
     /// Sets the custom term frequency.
@@ -1277,6 +1297,8 @@ pub trait TermFrequencyAttribute: Attribute {
     fn get_term_frequency(&self) -> i32;
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.TermFrequencyAttributeImpl`.
+///
 /// Default implementation of [`TermFrequencyAttribute`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TermFrequencyAttributeImpl {
@@ -1380,6 +1402,8 @@ impl AttributeImpl for TermFrequencyAttributeImpl {
 // KeywordAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.KeywordAttribute`.
+///
 /// Marks a token as a keyword.
 pub trait KeywordAttribute: Attribute {
     /// Returns `true` if the current token is a keyword.
@@ -1389,6 +1413,8 @@ pub trait KeywordAttribute: Attribute {
     fn set_keyword(&mut self, is_keyword: bool);
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.KeywordAttributeImpl`.
+///
 /// Default implementation of [`KeywordAttribute`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KeywordAttributeImpl {
@@ -1487,6 +1513,8 @@ impl AttributeImpl for KeywordAttributeImpl {
 // FlagsAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.FlagsAttribute`.
+///
 /// Passes bit flags down the tokenizer chain.
 pub trait FlagsAttribute: Attribute {
     /// Returns the current flags.
@@ -1496,6 +1524,8 @@ pub trait FlagsAttribute: Attribute {
     fn set_flags(&mut self, flags: i32);
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.FlagsAttributeImpl`.
+///
 /// Default implementation of [`FlagsAttribute`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct FlagsAttributeImpl {
@@ -1582,6 +1612,8 @@ impl AttributeImpl for FlagsAttributeImpl {
 // PayloadAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.PayloadAttribute`.
+///
 /// The payload of a token.
 pub trait PayloadAttribute: Attribute {
     /// Returns this token's payload, if any.
@@ -1591,6 +1623,8 @@ pub trait PayloadAttribute: Attribute {
     fn set_payload(&mut self, payload: Option<BytesRef>);
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.PayloadAttributeImpl`.
+///
 /// Default implementation of [`PayloadAttribute`].
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PayloadAttributeImpl {
@@ -1706,18 +1740,24 @@ impl AttributeImpl for PayloadAttributeImpl {
 // TermToBytesRefAttribute & BytesTermAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute`.
+///
 /// Provides the raw bytes used for indexing a term.
 pub trait TermToBytesRefAttribute: Attribute {
     /// Returns a `BytesRef` for the current term.
     fn get_bytes_ref(&self) -> BytesRef;
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.BytesTermAttribute`.
+///
 /// Attribute for raw binary term bytes.
 pub trait BytesTermAttribute: TermToBytesRefAttribute {
     /// Sets the term bytes.
     fn set_bytes_ref(&mut self, bytes: BytesRef);
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.BytesTermAttributeImpl`.
+///
 /// Default implementation of [`BytesTermAttribute`].
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct BytesTermAttributeImpl {
@@ -1843,6 +1883,8 @@ impl AttributeImpl for BytesTermAttributeImpl {
 // SentenceAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.SentenceAttribute`.
+///
 /// Tracks which sentence a token belongs to.
 pub trait SentenceAttribute: Attribute {
     /// Returns the sentence index for the current token.
@@ -1852,6 +1894,8 @@ pub trait SentenceAttribute: Attribute {
     fn set_sentence_index(&mut self, sentence_index: i32);
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.SentenceAttributeImpl`.
+///
 /// Default implementation of [`SentenceAttribute`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SentenceAttributeImpl {

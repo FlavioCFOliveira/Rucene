@@ -256,6 +256,8 @@ impl<T: LeafCollector + ?Sized> LeafCollector for &mut T {
     }
 }
 
+/// Port of `org.apache.lucene.search.CollectorManager`.
+///
 /// A manager of collectors, used to parallelise the execution of a search
 /// request.
 ///

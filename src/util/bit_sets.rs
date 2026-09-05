@@ -770,6 +770,8 @@ impl DocIdSetIterator for SparseFixedBitSetIterator {
 const ROARING_BLOCK_SIZE: usize = 1 << 16; // 65536
 const ROARING_MAX_ARRAY_LENGTH: usize = 1 << 12; // 4096
 
+/// Port of `org.apache.lucene.util.RoaringDocIdSet`.
+///
 /// A roaring-bitmap-inspired doc-id set, equivalent to Lucene's
 /// `RoaringDocIdSet`.
 ///

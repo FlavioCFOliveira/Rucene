@@ -66,6 +66,7 @@ pub use reader::{
 // PackedInts helpers
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.util.packed.PackedInts`.
 pub struct PackedInts;
 
 impl PackedInts {
@@ -480,6 +481,7 @@ pub fn read_packed_ints_no_header(
 // DirectWriter / DirectReader
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.util.packed.DirectWriter`.
 pub struct DirectWriter<'a> {
     output: &'a mut dyn DataOutput,
     num_values: i64,
@@ -1017,6 +1019,7 @@ impl LongValues for DirectReaderMergeInstance {
 // DirectMonotonicWriter / DirectMonotonicReader
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.util.packed.DirectMonotonicWriter`.
 pub struct DirectMonotonicWriter<'a> {
     meta: &'a mut dyn IndexOutput,
     data: &'a mut dyn IndexOutput,
@@ -1686,6 +1689,7 @@ fn read_block_packed_v_long(input: &mut dyn DataInput) -> Result<i64> {
     Ok((l | (u64::from(input.read_byte()?) << 56)) as i64)
 }
 
+/// Port of `org.apache.lucene.util.packed.BlockPackedReaderIterator`.
 pub struct BlockPackedReaderIterator<'a> {
     input: &'a mut dyn DataInput,
     packed_ints_version: i32,

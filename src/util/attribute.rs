@@ -395,6 +395,8 @@ impl Clone for CapturedState {
     }
 }
 
+/// Port of `org.apache.lucene.util.AttributeSource`.
+///
 /// Container that stores a set of attribute implementations and provides
 /// lifecycle operations matching Lucene's `AttributeSource`.
 ///
@@ -822,6 +824,8 @@ impl Default for AttributeSource {
     }
 }
 
+/// Port of `org.apache.lucene.util.Unwrappable`.
+///
 /// Trait for wrappers that expose their underlying delegate.
 ///
 /// Equivalent to Lucene's `Unwrappable<T>`.
@@ -860,6 +864,8 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
+/// Port of `org.apache.lucene.util.CloseableThreadLocal`.
+///
 /// Per-thread object reuse with explicit cleanup.
 ///
 /// Equivalent to Lucene's `CloseableThreadLocal`. Each instance owns an entry

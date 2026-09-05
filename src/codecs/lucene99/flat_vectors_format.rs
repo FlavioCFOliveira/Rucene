@@ -1237,6 +1237,7 @@ impl FieldEntry {
 // Off-heap vector values
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.codecs.lucene95.OffHeapFloatVectorValues`.
 struct OffHeapFloatVectorValues {
     dimension: i32,
     size: i32,
@@ -1413,6 +1414,7 @@ impl FloatVectorValues for OffHeapFloatVectorValues {
     }
 }
 
+/// Port of `org.apache.lucene.codecs.lucene95.OffHeapByteVectorValues`.
 struct OffHeapByteVectorValues {
     dimension: i32,
     size: i32,

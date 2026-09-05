@@ -66,6 +66,8 @@ pub const DEFAULT_MAX_BLOCK_SIZE: i32 = 48;
 // CompressionAlgorithm
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.codecs.lucene103.blocktree.CompressionAlgorithm`.
+///
 /// Compression algorithm used for suffix bytes of a block.
 ///
 /// Lucene Core equivalent: `CompressionAlgorithm`.

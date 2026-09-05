@@ -60,6 +60,8 @@ impl LongValues for ZeroesLongValues {
 // LongBitSet
 // ---------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.util.LongBitSet`.
+///
 /// BitSet of fixed length backed by a `Vec<i64>`, indexed with a `long`,
 /// equivalent to Lucene's `LongBitSet`.
 ///
@@ -467,6 +469,8 @@ pub trait PriorityQueueComparator<T> {
     fn less_than(&self, a: &T, b: &T) -> bool;
 }
 
+/// Port of `org.apache.lucene.util.PriorityQueue`.
+///
 /// A priority queue that maintains a partial ordering so that the least element
 /// is always available in constant time, equivalent to Lucene's `PriorityQueue`.
 ///
@@ -863,6 +867,8 @@ impl<T: Ord> Iterator for MergedIterator<T> {
 // Version
 // ---------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.util.Version`.
+///
 /// Lucene version compatibility marker, equivalent to Lucene's `Version`.
 ///
 /// Encodes `major.minor.bugfix.prerelease` into a single integer so that

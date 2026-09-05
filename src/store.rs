@@ -2081,6 +2081,8 @@ fn check_from_index_size(offset: usize, length: usize, len: usize) -> Result<()>
     Ok(())
 }
 
+/// Port of `org.apache.lucene.store.ByteArrayDataInput`.
+///
 /// A [`DataInput`] backed by an in-memory byte buffer.
 ///
 /// This is a test and utility implementation equivalent to operating on a
@@ -2735,6 +2737,8 @@ pub enum DataAccessHint {
 
 impl_file_open_hint!(DataAccessHint);
 
+/// Port of `org.apache.lucene.store.ReadOnceHint`.
+///
 /// Hint that the file will only be read once, sequentially.
 ///
 /// Equivalent to `org.apache.lucene.store.ReadOnceHint.INSTANCE`.
@@ -2750,6 +2754,8 @@ impl ReadOnceHint {
     }
 }
 
+/// Port of `org.apache.lucene.store.PreloadHint`.
+///
 /// Hint that the file should be preloaded into memory.
 ///
 /// Equivalent to `org.apache.lucene.store.PreloadHint.INSTANCE`.
@@ -2947,8 +2953,17 @@ impl IOContext for DefaultIOContext {
 
 /// [`IOContext`] describing a flush.
 ///
-/// Equivalent to `org.apache.lucene.store.FlushIOContext`, which
-/// `IOContext.flush(FlushInfo)` returns.
+/// This struct is this crate's representation of the flush context. It carries
+/// no equivalence declaration, because Lucene 10.5.0 has **no** named type for
+/// the flush context: `IOContext` is an interface (`IOContext.java:31`), and
+/// its static factory `IOContext.flush(FlushInfo)` (`IOContext.java:95`) returns an
+/// anonymous implementation of that interface. A class named `FlushIOContext`
+/// does not exist in the `org.apache.lucene.store` package.
+///
+/// **Divergence from Lucene 10.5.0.** Lucene models every context with the one
+/// `IOContext` interface and distinguishes them by the `context()` value; this
+/// crate gives the flush context its own struct. Reconciling that structural
+/// difference is open work, tracked outside this item's documentation.
 #[derive(Clone, Debug)]
 pub struct FlushIOContext {
     flush_info: FlushInfo,
@@ -2989,8 +3004,17 @@ impl IOContext for FlushIOContext {
 
 /// [`IOContext`] describing a merge.
 ///
-/// Equivalent to `org.apache.lucene.store.MergeIOContext`, which
-/// `IOContext.merge(MergeInfo)` returns.
+/// This struct is this crate's representation of the merge context. It carries
+/// no equivalence declaration, because Lucene 10.5.0 has **no** named type for
+/// the merge context: `IOContext` is an interface (`IOContext.java:31`), and
+/// its static factory `IOContext.merge(MergeInfo)` (`IOContext.java:64`) returns an
+/// anonymous implementation of that interface. A class named `MergeIOContext`
+/// does not exist in the `org.apache.lucene.store` package.
+///
+/// **Divergence from Lucene 10.5.0.** Lucene models every context with the one
+/// `IOContext` interface and distinguishes them by the `context()` value; this
+/// crate gives the merge context its own struct. Reconciling that structural
+/// difference is open work, tracked outside this item's documentation.
 #[derive(Clone, Debug)]
 pub struct MergeIOContext {
     merge_info: MergeInfo,
@@ -3124,7 +3148,9 @@ pub trait Lock: Send + Sync {
 /// A lock that never rejects acquisition and performs no actual locking.
 ///
 /// Used by in-memory directories where cross-process locking is unnecessary.
-/// Equivalent to `org.apache.lucene.store.NoLock`.
+/// Equivalent to `org.apache.lucene.store.NoLockFactory.NoLock`, the private
+/// nested class declared at `NoLockFactory.java:42`. There is no top-level
+/// `org.apache.lucene.store.NoLock`.
 #[derive(Debug, Clone, Copy)]
 pub struct NoOpLock;
 

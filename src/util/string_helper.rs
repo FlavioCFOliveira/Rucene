@@ -23,6 +23,8 @@ use super::BytesRef;
 // IntsRef
 // ---------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.util.IntsRef`.
+///
 /// A reference to a slice of `i32` values, equivalent to Lucene's `IntsRef`.
 #[derive(Clone, Default, Debug)]
 pub struct IntsRef {
