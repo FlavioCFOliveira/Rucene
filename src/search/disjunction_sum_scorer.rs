@@ -91,6 +91,8 @@ impl Scorer for DisjunctionSumScorer {
     }
 
     fn two_phase_iterator(&mut self) -> Option<&mut dyn TwoPhaseIterator> {
+        // `DisjunctionScorer.twoPhaseIterator()`, which returns the `twoPhase`
+        // field: an inner object in Java, this scorer's base here.
         if self.base.has_two_phase() {
             Some(&mut self.base)
         } else {

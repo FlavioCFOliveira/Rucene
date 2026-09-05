@@ -118,7 +118,14 @@ impl PointRangeQuery {
     /// Returns [`LuceneError::IllegalArgument`] — with the message text Java
     /// produces — when `num_dims` is not positive, when `lower_point` is empty
     /// or is not a fixed multiple of `num_dims`, or when the two points have
-    /// different lengths. Java's null checks are unnecessary here.
+    /// different lengths.
+    ///
+    /// Java opens the constructor with `checkArgs(field, lowerPoint,
+    /// upperPoint)`, a public static helper that rejects a null field or a null
+    /// bound and that the point factories in `org.apache.lucene.document` call
+    /// before packing. It has no counterpart here: `&str` and `Vec<u8>` cannot
+    /// be null, so every check it performs is discharged by the type system at
+    /// each of those call sites, and only the three checks above remain.
     pub fn new(
         field: &str,
         lower_point: Vec<u8>,
@@ -900,6 +907,10 @@ impl Query for PointRangeQuery {
         let Some(other) = other.as_any().downcast_ref::<PointRangeQuery>() else {
             return false;
         };
+        // Java's `sameClassAs` guard, then the body of the private
+        // `PointRangeQuery.equalsTo`. The formatter stands in for the concrete
+        // subclass each factory creates, so an `IntPoint` range and a
+        // `LongPoint` range over the same packed bytes stay unequal.
         self.formatter.as_any().type_id() == other.formatter.as_any().type_id()
             && self.field == other.field
             && self.num_dims == other.num_dims

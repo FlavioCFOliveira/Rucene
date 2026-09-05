@@ -321,6 +321,12 @@ impl Query for LogOddsFusionQuery {
             return Ok(Some(rewritten_clauses.remove(0)));
         }
 
+        // Java funnels the three surviving `List<Float>` through the private
+        // static `toFloatArray`, which unboxes into a `float[]` and maps a null
+        // list to a null array. There is nothing to unbox here: the port
+        // already carries the three fields as `Option<Vec<f32>>`, which is what
+        // that helper exists to produce, and `None` plays the null array. The
+        // renormalisation Java performs on the unboxed weights follows.
         if let Some(filtered) = new_weights.as_mut() {
             let sum: f32 = filtered.iter().sum();
             if sum > 0.0 {
@@ -342,11 +348,14 @@ impl Query for LogOddsFusionQuery {
     fn query_eq(&self, other: &dyn Query) -> bool {
         match other.as_any().downcast_ref::<LogOddsFusionQuery>() {
             Some(other) => {
+                // `alpha` with `==`, exactly as Java's `equalsTo` writes it;
+                // the arrays with `Arrays.equals` semantics, which is not the
+                // same predicate. See [`float_arrays_equal`].
                 self.alpha == other.alpha
                     && self.clauses == other.clauses
-                    && self.signal_weights == other.signal_weights
-                    && self.logit_min == other.logit_min
-                    && self.logit_max == other.logit_max
+                    && float_arrays_equal(&self.signal_weights, &other.signal_weights)
+                    && float_arrays_equal(&self.logit_min, &other.logit_min)
+                    && float_arrays_equal(&self.logit_max, &other.logit_max)
             }
             None => false,
         }
@@ -357,7 +366,11 @@ impl Query for LogOddsFusionQuery {
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         self.class_hash().hash(&mut hasher);
-        self.alpha.to_bits().hash(&mut hasher);
+        // `Float.floatToIntBits(alpha)`, as Java's `hashCode` writes it. The
+        // constructor rejects a NaN alpha, so this only differs from the raw
+        // bits for a value the query cannot hold; it is spelled this way so
+        // that the hash cannot drift away from `query_eq`.
+        float_to_int_bits(self.alpha).hash(&mut hasher);
         self.clauses.hash(&mut hasher);
         hash_float_slice(&self.signal_weights, &mut hasher);
         hash_float_slice(&self.logit_min, &mut hasher);
@@ -366,6 +379,51 @@ impl Query for LogOddsFusionQuery {
     }
 }
 
+/// Canonicalises NaN the way `java.lang.Float.floatToIntBits` does.
+///
+/// Unlike [`f32::to_bits`] — which is `floatToRawIntBits` — Java collapses
+/// every NaN payload to the canonical quiet NaN `0x7fc00000`. Both
+/// `java.util.Arrays.equals(float[], float[])` and
+/// `java.util.Arrays.hashCode(float[])` are defined in terms of this
+/// conversion, so reproducing them starts here.
+fn float_to_int_bits(value: f32) -> u32 {
+    if value.is_nan() {
+        0x7fc0_0000
+    } else {
+        value.to_bits()
+    }
+}
+
+/// Compares two optional float arrays with `java.util.Arrays.equals(float[],
+/// float[])` semantics, which is what `LogOddsFusionQuery.equalsTo` applies to
+/// `signalWeights`, `logitMin` and `logitMax`.
+///
+/// That method compares elements through `Float.floatToIntBits`, not with `==`,
+/// so it differs from IEEE equality in both directions: every `NaN` equals
+/// every other `NaN`, and `+0.0` does not equal `-0.0`. Both cases are
+/// reachable — the constructor validates the weights as finite and
+/// non-negative, which admits `-0.0`, and it does not validate the logit bounds
+/// at all, which admits `NaN` — so plain `PartialEq` on `Option<Vec<f32>>`
+/// would disagree with Lucene on real queries. A `null` array equals only
+/// another `null` array, per `Arrays.equals`.
+fn float_arrays_equal(a: &Option<Vec<f32>>, b: &Option<Vec<f32>>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b.iter())
+                    .all(|(x, y)| float_to_int_bits(*x) == float_to_int_bits(*y))
+        }
+        _ => false,
+    }
+}
+
+/// Hashes an optional float array consistently with [`float_arrays_equal`].
+///
+/// `java.util.Arrays.hashCode(float[])` mixes `Float.hashCode(element)`, which
+/// is `Float.floatToIntBits(element)`, so two arrays that `Arrays.equals`
+/// reports equal always hash alike — including two different NaN payloads.
 fn hash_float_slice<H: std::hash::Hasher>(values: &Option<Vec<f32>>, hasher: &mut H) {
     use std::hash::Hash;
     match values {
@@ -373,7 +431,7 @@ fn hash_float_slice<H: std::hash::Hasher>(values: &Option<Vec<f32>>, hasher: &mu
         Some(values) => {
             1u8.hash(hasher);
             for value in values {
-                value.to_bits().hash(hasher);
+                float_to_int_bits(*value).hash(hasher);
             }
         }
     }

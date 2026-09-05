@@ -497,7 +497,9 @@ impl SortField {
         self.field.as_deref()
     }
 
-    /// Returns the sort field type.
+    /// Returns the type of the contents of the field.
+    ///
+    /// Equivalent to `SortField.getType()`.
     pub fn field_type(&self) -> SortFieldType {
         self.field_type
     }
@@ -1203,7 +1205,10 @@ impl Sort {
         Ok(Self { fields })
     }
 
-    /// Returns the sort fields.
+    /// Returns the sort criteria, in the order they were supplied.
+    ///
+    /// Equivalent to `Sort.getSort()`, which returns the backing
+    /// `SortField[]`.
     pub fn fields(&self) -> &[SortField] {
         &self.fields
     }

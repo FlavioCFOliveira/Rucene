@@ -987,6 +987,11 @@ impl Query for BooleanQuery {
         let Some(other) = other.as_any().downcast_ref::<BooleanQuery>() else {
             return false;
         };
+        // The body of the private `BooleanQuery.equalsTo`, which Java factors
+        // out only because `equals` has to take an `Object`. Comparing the
+        // clause sets is what makes the order of clauses irrelevant, duplicate
+        // MUST and SHOULD clauses significant, and duplicate FILTER and
+        // MUST_NOT clauses insignificant.
         self.get_minimum_number_should_match() == other.get_minimum_number_should_match()
             && self.clause_sets == other.clause_sets
     }

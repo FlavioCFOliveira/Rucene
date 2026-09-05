@@ -37,8 +37,20 @@ const MAX_SKIP_INTERVAL: i32 = 8192;
 ///
 /// **Divergence from Lucene 10.5.0.** Java declares `sortableBytesToLong` as an
 /// abstract method that each subclass overrides with a one-line call into
-/// `NumericUtils`. Rust models the same two choices as data, so that the shared
-/// state can decode without a virtual call back into the concrete comparator.
+/// `NumericUtils`, and the inner `NumericLeafComparator` calls it back on the
+/// enclosing object. Rust cannot express that: [`NumericComparator`] is *owned*
+/// by the concrete comparator rather than inherited by it, so a call back into
+/// the owner from inside the state it owns would be a self-referential borrow.
+/// The two decoders are therefore modelled as data, and each concrete
+/// comparator passes the variant its own override would have used —
+/// [`IntComparator`](crate::search::comparators::IntComparator) and
+/// [`FloatComparator`](crate::search::comparators::FloatComparator) pass
+/// [`Int`](SortableBytes::Int), and
+/// [`LongComparator`](crate::search::comparators::LongComparator) and
+/// [`DoubleComparator`](crate::search::comparators::DoubleComparator) pass
+/// [`Long`](SortableBytes::Long). The portability test
+/// `comparator_sortable_bytes_to_long_matches_java` measures that mapping
+/// against the four real Java overrides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortableBytes {
     /// Four bytes decoded with `NumericUtils.sortableBytesToInt`, used by

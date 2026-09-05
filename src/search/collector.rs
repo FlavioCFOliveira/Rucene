@@ -309,6 +309,11 @@ pub trait CollectorManager {
 /// has no implementation inheritance, so the collecting half is this trait and
 /// [`SimpleCollector`] supplies the `Collector` half around it.
 pub trait SimpleCollectorImpl: LeafCollector {
+    // `SimpleCollector.collect(int)` is the `LeafCollector::collect` this
+    // trait's supertrait already requires. Java redeclares it abstract only so
+    // that the javadoc is inherited on subclasses, which the `@Override`
+    // comment above it states; it carries no behaviour of its own.
+
     /// Indicates what features are required from the scorer.
     ///
     /// Equivalent to `Collector.scoreMode()`, which `SimpleCollector` leaves

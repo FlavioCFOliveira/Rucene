@@ -92,6 +92,11 @@ impl DocIdSetIterator for DisjunctionMaxScorer {
 }
 
 impl Scorable for DisjunctionMaxScorer {
+    /// Equivalent to `DisjunctionScorer.score()`, which is
+    /// `score(getSubMatches())`, fused with the `score(DisiWrapper)` override.
+    ///
+    /// The accumulator is a `double` and the whole expression is narrowed once,
+    /// as Java writes it: narrowing per addition would give a different score.
     fn score(&mut self) -> Result<f32> {
         let mut score_max = 0.0f32;
         let mut other_score_sum = 0.0f64;
@@ -147,6 +152,8 @@ impl Scorer for DisjunctionMaxScorer {
     }
 
     fn two_phase_iterator(&mut self) -> Option<&mut dyn TwoPhaseIterator> {
+        // `DisjunctionScorer.twoPhaseIterator()`, which returns the `twoPhase`
+        // field: an inner object in Java, this scorer's base here.
         if self.base.has_two_phase() {
             Some(&mut self.base)
         } else {

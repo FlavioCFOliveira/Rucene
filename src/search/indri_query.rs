@@ -82,6 +82,15 @@ impl IndriQuery {
     ///
     /// Equivalent to the private `IndriQuery.equalsTo(IndriQuery)`, which
     /// compares the clause lists.
+    /// Compares two Indri queries by their clauses.
+    ///
+    /// Equivalent to the private `IndriQuery.equalsTo(IndriQuery)`, which
+    /// `equals` calls after `sameClassAs`.
+    ///
+    /// `IndriQuery` also redeclares `createWeight` as abstract, which adds
+    /// nothing to the `Query.createWeight` it already inherits; the concrete
+    /// Indri queries implement
+    /// [`Query::create_weight`](crate::search::Query::create_weight) directly.
     pub fn base_eq(&self, other: &IndriQuery) -> bool {
         self.clauses.len() == other.clauses.len()
             && self

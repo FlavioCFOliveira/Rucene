@@ -110,6 +110,10 @@ name = "portability_norms"
 path = "tests/portability/norms.rs"
 
 [[test]]
+name = "portability_search_domain"
+path = "tests/portability/search_domain.rs"
+
+[[test]]
 name = "portability_doc_values"
 path = "tests/portability/doc_values.rs"
 

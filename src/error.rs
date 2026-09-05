@@ -252,6 +252,19 @@ impl LuceneError {
         }
     }
 
+    /// Returns the reason an `IndexFormatTooOld` carries when the version
+    /// itself could not be read off the file.
+    ///
+    /// Equivalent to `org.apache.lucene.index.IndexFormatTooOldException#getReason`,
+    /// which returns `null` when the version *was* available; this returns
+    /// `None` in that case, and `None` for every other error.
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::IndexFormatTooOld { reason, .. } => reason.as_deref(),
+            _ => None,
+        }
+    }
+
     /// Returns the version of the file that was too old or too new.
     ///
     /// For `IndexFormatTooOld`, returns `None` when only a `reason` is
