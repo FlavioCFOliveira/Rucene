@@ -4,7 +4,9 @@ use crate::codecs::postings::{empty_terms_enum, SingleTermsEnum, Terms, TermsEnu
 use crate::error::Result;
 use crate::index::Term;
 use crate::search::{Query, QueryVisitor};
-use crate::util::{BytesRef, BytesRefBuilder, IntsRef, StringHelper, UnicodeUtil};
+use crate::util::{
+    Accountable, BytesRef, BytesRefBuilder, IntsRef, RamUsageEstimator, StringHelper, UnicodeUtil,
+};
 
 use super::automata::Automata;
 use super::automaton::{Automaton, Transition, TransitionAccessor};
@@ -538,3 +540,66 @@ impl PartialEq for CompiledAutomaton {
 }
 
 impl Eq for CompiledAutomaton {}
+
+impl CompiledAutomaton {
+    /// Shallow size of the Java class, the fixed part of
+    /// [`CompiledAutomaton::ram_bytes_used`].
+    ///
+    /// Equivalent to the private `CompiledAutomaton.BASE_RAM_BYTES`, which Java
+    /// computes as
+    /// `RamUsageEstimator.shallowSizeOfInstance(CompiledAutomaton.class)`: an
+    /// object header, the seven references `type`, `term`, `runAutomaton`,
+    /// `automaton`, `nfaRunAutomaton`, `commonSuffixRef` and `transition`, the
+    /// `boolean finite` and the `int sinkState`. Measured against
+    /// `lucene-core-10.5.0.jar` on a JVM with compressed references, that is 48
+    /// bytes.
+    const BASE_RAM_BYTES: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + 7 * RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + 4
+            + 1,
+    );
+}
+
+impl Accountable for CompiledAutomaton {
+    /// Returns an estimate of the heap this compiled automaton occupies.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.util.automaton.CompiledAutomaton#ramBytesUsed`
+    /// (`CompiledAutomaton.java:537-545`): the shallow size of the class plus
+    /// `commonSuffixRef`, `runAutomaton`, `nfaRunAutomaton`, `term` and
+    /// `transition`. As Java's own comment records, `automaton` is *not* charged
+    /// here — it is already accounted for through `runAutomaton.ramBytesUsed()`.
+    ///
+    /// `BytesRef` is not `Accountable` in Lucene, so
+    /// `RamUsageEstimator.sizeOfObject` charges it the
+    /// [`UNKNOWN_DEFAULT_RAM_BYTES_USED`](RamUsageEstimator::UNKNOWN_DEFAULT_RAM_BYTES_USED)
+    /// flat rate, and `null` costs nothing; both terms are reproduced here.
+    ///
+    /// Java holds a scratch `Transition transition = new Transition()` field
+    /// (`CompiledAutomaton.java:273`) and charges `Transition.BYTES_USED` for
+    /// it. This port creates that scratch on the stack where it is needed
+    /// rather than storing it, but the term is charged all the same: like every
+    /// other figure [`RamUsageEstimator`] produces, this one reports the heap
+    /// *the JVM* would use — the object header, reference and alignment
+    /// constants it is built on are the JVM's — so dropping the term would
+    /// answer a different question from the one Lucene answers.
+    fn ram_bytes_used(&self) -> i64 {
+        let size_of_bytes_ref = |r: &Option<BytesRef>| match r {
+            Some(_) => RamUsageEstimator::UNKNOWN_DEFAULT_RAM_BYTES_USED,
+            None => 0,
+        };
+        Self::BASE_RAM_BYTES
+            + size_of_bytes_ref(&self.common_suffix_ref)
+            + self
+                .run_automaton
+                .as_ref()
+                .map_or(0, ByteRunAutomaton::ram_bytes_used)
+            + self
+                .nfa_run_automaton
+                .as_ref()
+                .map_or(0, NFARunAutomaton::ram_bytes_used)
+            + size_of_bytes_ref(&self.term)
+            + Transition::BYTES_USED
+    }
+}

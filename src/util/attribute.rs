@@ -95,6 +95,32 @@ pub trait AttributeImpl: Attribute + Debug + Send + Sync + 'static {
     /// be passed in the same order, but the values may differ.
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector);
 
+    /// Returns this attribute's properties as a comma-separated string.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.util.AttributeImpl#reflectAsString(boolean)`
+    /// (`AttributeImpl.java:58-71`), which drives [`Self::reflect_with`] with a
+    /// reflector that appends `key=value` for each property, separated by
+    /// commas, optionally prefixing each key with the attribute interface's
+    /// name and `#`.
+    ///
+    /// Java declares the method `final`, so no implementation may change it;
+    /// a provided trait method is the closest Rust equivalent — an
+    /// implementation *may* override it, but Lucene's contract says it should
+    /// not, and overriding [`Self::reflect_with`] is what changes the output.
+    ///
+    /// This is the per-attribute counterpart of
+    /// [`AttributeSource::reflect_as_string`], which concatenates the same
+    /// rendering over every implementation a source holds.
+    fn reflect_as_string(&self, prepend_att_class: bool) -> String {
+        let mut reflector = ReflectAsString {
+            buffer: String::new(),
+            prepend_att_class,
+        };
+        self.reflect_with(&mut reflector);
+        reflector.buffer
+    }
+
     /// Returns a boxed deep clone of this attribute.
     fn clone_box(&self) -> Box<dyn AttributeImpl>;
 
@@ -1289,5 +1315,96 @@ mod tests {
                 .value,
             3
         );
+    }
+
+    /// `AttributeImpl.reflectAsString(boolean)` renders one attribute's own
+    /// properties, unlike `AttributeSource.reflectAsString`, which concatenates
+    /// every implementation a source holds.
+    #[test]
+    fn attribute_impl_reflect_as_string_renders_its_own_properties() {
+        let att = TestAttribute { value: 77 };
+        assert_eq!(att.reflect_as_string(false), "value=77");
+
+        // With the class prefix, Java writes `attClass.getName() + '#' + key`.
+        let with_class = att.reflect_as_string(true);
+        assert!(
+            with_class.ends_with("#value=77"),
+            "expected a `<class>#value=77` rendering, got {with_class}"
+        );
+        assert!(with_class.contains("TestAttribute"), "got {with_class}");
+    }
+
+    /// An attribute that reflects several properties separates them with a
+    /// comma and no space, and never leads with one.
+    #[test]
+    fn attribute_impl_reflect_as_string_separates_properties_with_commas() {
+        #[derive(Clone, Debug, Default)]
+        struct TwoValues {
+            a: i32,
+            b: i32,
+        }
+        impl Attribute for TwoValues {}
+        impl AttributeImpl for TwoValues {
+            fn clear(&mut self) {
+                self.a = 0;
+                self.b = 0;
+            }
+            fn copy_to(&self, target: &mut dyn AttributeImpl) {
+                if let Some(t) = target.as_any_mut().downcast_mut::<TwoValues>() {
+                    t.a = self.a;
+                    t.b = self.b;
+                }
+            }
+            fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
+                reflector.reflect(TypeId::of::<TwoValues>(), "TwoValues", "a", &self.a);
+                reflector.reflect(TypeId::of::<TwoValues>(), "TwoValues", "b", &self.b);
+            }
+            fn clone_box(&self) -> Box<dyn AttributeImpl> {
+                Box::new(self.clone())
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+            fn as_any_mut(&mut self) -> &mut dyn Any {
+                self
+            }
+            fn attribute_interfaces(&self) -> &'static [TypeId] {
+                static INTERFACES: [TypeId; 1] = [TypeId::of::<TwoValues>()];
+                &INTERFACES
+            }
+        }
+
+        let att = TwoValues { a: 1, b: 2 };
+        assert_eq!(att.reflect_as_string(false), "a=1,b=2");
+        assert_eq!(att.reflect_as_string(true), "TwoValues#a=1,TwoValues#b=2");
+    }
+
+    /// An attribute that reflects nothing renders the empty string, which is
+    /// what Java's empty `StringBuilder` produces.
+    #[test]
+    fn attribute_impl_reflect_as_string_of_a_silent_attribute_is_empty() {
+        #[derive(Clone, Debug, Default)]
+        struct Silent;
+        impl Attribute for Silent {}
+        impl AttributeImpl for Silent {
+            fn clear(&mut self) {}
+            fn copy_to(&self, _target: &mut dyn AttributeImpl) {}
+            fn reflect_with(&self, _reflector: &mut dyn AttributeReflector) {}
+            fn clone_box(&self) -> Box<dyn AttributeImpl> {
+                Box::new(self.clone())
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+            fn as_any_mut(&mut self) -> &mut dyn Any {
+                self
+            }
+            fn attribute_interfaces(&self) -> &'static [TypeId] {
+                static INTERFACES: [TypeId; 1] = [TypeId::of::<Silent>()];
+                &INTERFACES
+            }
+        }
+        assert_eq!(Silent.reflect_as_string(false), "");
+        assert_eq!(Silent.reflect_as_string(true), "");
     }
 }

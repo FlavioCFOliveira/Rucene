@@ -1,6 +1,7 @@
 //! Port of `org.apache.lucene.util.automaton.ByteRunAutomaton`.
 
 use crate::error::{LuceneError, Result};
+use crate::util::Accountable;
 
 use super::automaton::Automaton;
 use super::operations::Operations;
@@ -101,5 +102,19 @@ impl ByteRunnable for ByteRunAutomaton {
 
     fn size(&self) -> i32 {
         self.inner.size()
+    }
+}
+
+impl Accountable for ByteRunAutomaton {
+    /// Returns an estimate of the heap this automaton occupies.
+    ///
+    /// Java's `ByteRunAutomaton extends RunAutomaton` and adds no field of its
+    /// own, so it inherits `RunAutomaton.ramBytesUsed()` unchanged — measured
+    /// against `lucene-core-10.5.0.jar`,
+    /// `shallowSizeOfInstance(ByteRunAutomaton.class)` equals
+    /// `shallowSizeOfInstance(RunAutomaton.class)`. This port composes instead
+    /// of inheriting, so the estimate delegates to the wrapped run automaton.
+    fn ram_bytes_used(&self) -> i64 {
+        self.inner.ram_bytes_used()
     }
 }

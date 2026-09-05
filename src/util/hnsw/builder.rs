@@ -49,6 +49,12 @@ pub trait HnswBuilder {
     /// Equivalent to `HnswBuilder.addGraphNode(int, IntHashSet)`.
     fn add_graph_node_with_eps(&mut self, node: i32, eps: &IntHashSet) -> Result<()>;
 
+    /// Sets where the builder reports its progress.
+    ///
+    /// Equivalent to `org.apache.lucene.util.hnsw.HnswBuilder#setInfoStream`
+    /// (`HnswBuilder.java:47`), which every implementation supplies.
+    fn set_info_stream(&mut self, info_stream: Arc<dyn InfoStream>);
+
     /// Returns the partially built graph.
     fn get_graph(&self) -> &OnHeapHnswGraph;
 
@@ -406,6 +412,10 @@ impl HnswBuilder for HnswGraphBuilder {
         self.add_graph_node_internal(node, Some(eps))
     }
 
+    fn set_info_stream(&mut self, info_stream: Arc<dyn InfoStream>) {
+        HnswGraphBuilder::set_info_stream(self, info_stream);
+    }
+
     fn get_graph(&self) -> &OnHeapHnswGraph {
         &self.hnsw
     }
@@ -425,8 +435,28 @@ impl HnswBuilder for HnswGraphBuilder {
 impl HnswGraphBuilder {
     /// Adds every node in `[min_ord, max_ord)` to the graph.
     ///
-    /// Equivalent to `HnswGraphBuilder.addVectors`.
+    /// Equivalent to `HnswGraphBuilder.addVectors(int, int)`.
     pub fn add_vectors(&mut self, min_ord: i32, max_ord: i32) -> Result<()> {
+        self.add_vectors_skipping(min_ord, max_ord, None)
+    }
+
+    /// Adds every node in `[min_ord, max_ord)` that `skip` does not already
+    /// hold, reporting progress the whole time.
+    ///
+    /// This is still `HnswGraphBuilder.addVectors(int, int)`: Java's
+    /// `HnswConcurrentMergeBuilder.ConcurrentMergeWorker` calls the *inherited*
+    /// `addVectors` and overrides `addGraphNode(int)` to return early for a
+    /// node the initializer graph already placed
+    /// (`HnswConcurrentMergeBuilder.java:216-222`). Rust has no implementation
+    /// inheritance, so the override becomes this parameter — which keeps the
+    /// progress reporting and the elapsed-time message on the shared path,
+    /// where Java's inheritance puts them, instead of duplicating the loop.
+    pub fn add_vectors_skipping(
+        &mut self,
+        min_ord: i32,
+        max_ord: i32,
+        skip: Option<&FixedBitSet>,
+    ) -> Result<()> {
         if self.frozen {
             return Err(LuceneError::IllegalState(
                 "This HnswGraphBuilder is frozen and cannot be updated".to_string(),
@@ -434,6 +464,11 @@ impl HnswGraphBuilder {
         }
         let start = Instant::now();
         for node in min_ord..max_ord {
+            if let Some(initialized) = skip {
+                if initialized.get(node as usize) {
+                    continue;
+                }
+            }
             self.add_graph_node(node)?;
             if node % 10000 == 0 && self.info_stream.is_enabled(HNSW_COMPONENT) {
                 self.print_graph_build_status(node, start);

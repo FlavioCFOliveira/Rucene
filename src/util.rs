@@ -2238,7 +2238,11 @@ impl RamUsageEstimator {
     pub const UNKNOWN_DEFAULT_RAM_BYTES_USED: i64 = 256;
 
     /// Aligns a size to the next multiple of the object alignment.
-    pub fn align_object_size(size: i64) -> i64 {
+    ///
+    /// `const` so that a type whose Java counterpart declares its shallow size
+    /// as a `static final` — `Transition.BYTES_USED`, for one — can declare the
+    /// same thing as an associated constant.
+    pub const fn align_object_size(size: i64) -> i64 {
         let size = size + Self::NUM_BYTES_OBJECT_ALIGNMENT - 1;
         size - (size % Self::NUM_BYTES_OBJECT_ALIGNMENT)
     }
@@ -3894,9 +3898,31 @@ impl Bits for FixedBitSet {
     }
 }
 
+impl FixedBitSet {
+    /// Shallow size of the Java class, the fixed part of
+    /// [`FixedBitSet::ram_bytes_used`](Accountable::ram_bytes_used).
+    ///
+    /// Equivalent to the private `FixedBitSet.BASE_RAM_BYTES_USED`, which Java
+    /// computes as
+    /// `RamUsageEstimator.shallowSizeOfInstance(FixedBitSet.class)`: an object
+    /// header, the `bits` reference and the `int` fields `numBits` and
+    /// `numWords`. Measured against `lucene-core-10.5.0.jar` on a JVM with
+    /// compressed references, that is 24 bytes.
+    pub const BASE_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + 2 * 4,
+    );
+}
+
 impl Accountable for FixedBitSet {
+    /// Returns an estimate of the heap this bit set occupies.
+    ///
+    /// Equivalent to `org.apache.lucene.util.FixedBitSet#ramBytesUsed`
+    /// (`FixedBitSet.java:203-205`), which is
+    /// `BASE_RAM_BYTES_USED + RamUsageEstimator.sizeOf(bits)`.
     fn ram_bytes_used(&self) -> i64 {
-        RamUsageEstimator::size_of_u64(&self.bits)
+        Self::BASE_RAM_BYTES_USED + RamUsageEstimator::size_of_u64(&self.bits)
     }
 }
 

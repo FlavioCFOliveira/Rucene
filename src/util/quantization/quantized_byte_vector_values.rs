@@ -5,6 +5,7 @@ use crate::codecs::state::SegmentWriteState;
 use crate::error::{LuceneError, Result};
 use crate::index::field_infos::FieldInfo;
 use crate::index::vector_values::DocIndexIterator;
+use crate::search::VectorScorer;
 use crate::store::IndexInput;
 use crate::util::hnsw::CloseableRandomVectorScorerSupplier;
 use crate::util::quantization::optimized_scalar_quantizer::QuantizationResult;
@@ -159,6 +160,24 @@ pub trait QuantizedByteVectorValues {
     /// Returns how many components each vector has.
     fn dimension(&self) -> i32;
 
+    /// Returns a scorer for `query`, or `None` when there is none.
+    ///
+    /// Java reaches this through inheritance: `QuantizedByteVectorValues`
+    /// extends `BaseQuantizedByteVectorValues`, so every implementation
+    /// responds to `scorer(float[])` and the ones that can score a float query
+    /// against their quantized bytes override it. Rust has no implementation
+    /// inheritance, so the overridable form is this provided trait method,
+    /// whose default is the base behaviour —
+    /// [`BaseQuantizedByteVectorValues::scorer`], which throws.
+    ///
+    /// # Errors
+    ///
+    /// The default returns [`LuceneError::UnsupportedOperation`]; an
+    /// implementation that overrides it propagates its own I/O errors.
+    fn scorer(&self, query: &[f32]) -> Result<Option<Box<dyn VectorScorer>>> {
+        BaseQuantizedByteVectorValues::new(self.dimension(), self.size()).scorer(query)
+    }
+
     /// Returns the quantizer these vectors were compressed with.
     ///
     /// Equivalent to `QuantizedByteVectorValues.getScalarQuantizer()`.
@@ -241,6 +260,31 @@ impl BaseQuantizedByteVectorValues {
     /// Creates the shared state.
     pub fn new(dimension: i32, size: i32) -> Self {
         Self { dimension, size }
+    }
+
+    /// Returns a scorer for `query`, which the shared state never has.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.util.quantization.BaseQuantizedByteVectorValues#scorer(float[])`
+    /// (`BaseQuantizedByteVectorValues.java:38-40`), whose body is
+    /// `throw new UnsupportedOperationException()`: the method exists so that a
+    /// concrete values type that *can* score a float query against its
+    /// quantized bytes may override it — `Lucene104ScalarQuantizedVectorsReader`
+    /// is the caller that relies on such an override
+    /// (`Lucene104ScalarQuantizedVectorsReader.java:662`).
+    ///
+    /// [`QuantizedByteVectorValues::scorer`] is the overridable form; this is
+    /// the base behaviour it falls back to.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`], which is the
+    /// exception Java throws.
+    pub fn scorer(&self, query: &[f32]) -> Result<Option<Box<dyn VectorScorer>>> {
+        let _ = query;
+        Err(LuceneError::UnsupportedOperation(
+            "BaseQuantizedByteVectorValues does not score float queries".to_string(),
+        ))
     }
 
     /// Returns the input the vectors are read from, which the shared state
@@ -334,5 +378,132 @@ pub trait LegacyQuantizedByteVectorValues: QuantizedByteVectorValues {
     /// explicit `&mut` to do the same, so the mutable accessor is separate.
     fn get_slice_mut(&mut self) -> Option<&mut dyn IndexInput> {
         None
+    }
+}
+
+#[cfg(test)]
+mod scorer_tests {
+    use super::*;
+    use crate::search::DocIdSetIterator;
+
+    /// The smallest `QuantizedByteVectorValues` there is: it supplies only what
+    /// the trait requires and overrides nothing.
+    struct Plain {
+        base: BaseQuantizedByteVectorValues,
+        bytes: Vec<u8>,
+    }
+
+    impl QuantizedByteVectorValues for Plain {
+        fn vector_value(&mut self, ord: i32) -> Result<&[u8]> {
+            let dim = self.base.dimension as usize;
+            let start = ord as usize * dim;
+            Ok(&self.bytes[start..start + dim])
+        }
+
+        fn get_score_correction_constant(&mut self, _ord: i32) -> Result<f32> {
+            Ok(0.0)
+        }
+
+        fn size(&self) -> i32 {
+            self.base.size
+        }
+
+        fn dimension(&self) -> i32 {
+            self.base.dimension
+        }
+    }
+
+    /// A values type that *can* score a float query, standing for the
+    /// `Lucene104ScalarQuantizedVectorsReader` override.
+    struct Scoring;
+
+    struct ConstantScorer(f32);
+
+    impl VectorScorer for ConstantScorer {
+        fn score(&mut self) -> Result<f32> {
+            Ok(self.0)
+        }
+
+        fn iterator(&mut self) -> &mut dyn DocIdSetIterator {
+            unimplemented!("not exercised by this test")
+        }
+
+        fn bulk(
+            self: Box<Self>,
+            _matching_docs: Option<Box<dyn DocIdSetIterator>>,
+        ) -> Result<Box<dyn crate::search::VectorScorerBulk>> {
+            unimplemented!("not exercised by this test")
+        }
+    }
+
+    impl QuantizedByteVectorValues for Scoring {
+        fn vector_value(&mut self, _ord: i32) -> Result<&[u8]> {
+            Ok(&[])
+        }
+
+        fn get_score_correction_constant(&mut self, _ord: i32) -> Result<f32> {
+            Ok(0.0)
+        }
+
+        fn size(&self) -> i32 {
+            1
+        }
+
+        fn dimension(&self) -> i32 {
+            2
+        }
+
+        fn scorer(&self, query: &[f32]) -> Result<Option<Box<dyn VectorScorer>>> {
+            Ok(Some(Box::new(ConstantScorer(query.iter().sum()))))
+        }
+    }
+
+    /// `BaseQuantizedByteVectorValues.scorer(float[])` throws
+    /// `UnsupportedOperationException`.
+    #[test]
+    fn base_scorer_is_unsupported() {
+        let base = BaseQuantizedByteVectorValues::new(4, 2);
+        let err = match base.scorer(&[1.0, 2.0, 3.0, 4.0]) {
+            Err(e) => e,
+            Ok(_) => panic!("the base must not produce a scorer"),
+        };
+        assert!(
+            matches!(err, LuceneError::UnsupportedOperation(_)),
+            "expected UnsupportedOperation, got {err:?}"
+        );
+        // The base also has no slice, the other thing Java's base answers.
+        assert!(base.get_slice().is_none());
+    }
+
+    /// An implementation that does not override `scorer` inherits the base
+    /// behaviour, exactly as a Java subclass of
+    /// `BaseQuantizedByteVectorValues` does.
+    #[test]
+    fn an_implementation_that_does_not_override_scorer_inherits_the_base_error() {
+        let values = Plain {
+            base: BaseQuantizedByteVectorValues::new(2, 2),
+            bytes: vec![1, 2, 3, 4],
+        };
+        let err = match values.scorer(&[0.5, 0.5]) {
+            Err(e) => e,
+            Ok(_) => panic!("an implementation that does not override must not score"),
+        };
+        assert!(
+            matches!(err, LuceneError::UnsupportedOperation(_)),
+            "expected UnsupportedOperation, got {err:?}"
+        );
+    }
+
+    /// An implementation that overrides `scorer` answers with its own scorer,
+    /// which is what the caller in `Lucene104ScalarQuantizedVectorsReader`
+    /// relies on.
+    #[test]
+    fn an_implementation_that_overrides_scorer_answers_with_it() {
+        let values = Scoring;
+        let mut scorer = values
+            .scorer(&[1.5, 2.5])
+            .expect("the override must not error")
+            .expect("the override returns a scorer");
+        assert_eq!(scorer.score().expect("score"), 4.0);
     }
 }

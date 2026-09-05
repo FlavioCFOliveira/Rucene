@@ -466,4 +466,87 @@ mod tests {
             results
         );
     }
+
+    /// A recording [`InfoStream`], to prove that `setInfoStream` actually
+    /// reaches the builder that logs.
+    #[derive(Debug, Default)]
+    struct RecordingInfoStream {
+        messages: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl crate::util::InfoStream for RecordingInfoStream {
+        fn message(&self, component: &str, message: &str) {
+            self.messages
+                .lock()
+                .expect("lock")
+                .push(format!("{component}: {message}"));
+        }
+
+        fn is_enabled(&self, _component: &str) -> bool {
+            true
+        }
+
+        fn close(&self) {}
+    }
+
+    /// `HnswConcurrentMergeBuilder.setInfoStream` forwards the stream to the
+    /// workers, so the builder that reports build progress must receive it.
+    ///
+    /// Java's implementation is
+    /// `this.infoStream = infoStream; for (worker : workers) worker.setInfoStream(infoStream);`
+    /// (`HnswConcurrentMergeBuilder.java:131-137`); executing on the calling
+    /// thread means there is one worker here, and it is the one that logs.
+    #[test]
+    fn concurrent_merge_builder_forwards_the_info_stream_to_its_worker() {
+        let vectors = vec![
+            vec![1.0f32, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0],
+            vec![0.0, 0.0, 1.0],
+            vec![0.7, 0.7, 0.0],
+            vec![0.5, 0.5, 0.5],
+        ];
+        let supplier = TestVectorScorerSupplier::new(vectors.clone());
+        let graph = OnHeapHnswGraph::new(4, vectors.len() as i32);
+        let mut builder =
+            HnswConcurrentMergeBuilder::new(1, &supplier, 4, 20, graph, None).expect("builder");
+
+        let stream = std::sync::Arc::new(RecordingInfoStream::default());
+        builder.set_info_stream(stream.clone());
+        builder.build(vectors.len() as i32).expect("build");
+
+        let messages = stream.messages.lock().expect("lock");
+        assert!(
+            !messages.is_empty(),
+            "the forwarded stream must receive the worker's build messages"
+        );
+        assert!(
+            messages.iter().any(|m| m.starts_with("HNSW")),
+            "expected HNSW component messages, got {messages:?}"
+        );
+    }
+
+    /// `finish()` is what `getCompletedGraph()` calls to freeze the workers'
+    /// builder, so the graph must be complete and the builder must refuse
+    /// further work afterwards.
+    #[test]
+    fn concurrent_merge_builder_finish_freezes_the_graph() {
+        let vectors = vec![
+            vec![1.0f32, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0],
+            vec![0.0, 0.0, 1.0],
+        ];
+        let supplier = TestVectorScorerSupplier::new(vectors.clone());
+        let graph = OnHeapHnswGraph::new(4, vectors.len() as i32);
+        let mut builder =
+            HnswConcurrentMergeBuilder::new(1, &supplier, 4, 20, graph, None).expect("builder");
+
+        builder.build(vectors.len() as i32).expect("build");
+        // `build` ends in `getCompletedGraph()`, which calls `finish()`.
+        assert_eq!(
+            builder.get_completed_graph().expect("completed").size(),
+            vectors.len() as i32
+        );
+        // A frozen builder refuses to build again, exactly as Java's does.
+        assert!(builder.build(vectors.len() as i32).is_err());
+    }
 }

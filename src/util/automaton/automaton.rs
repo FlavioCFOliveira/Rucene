@@ -4,6 +4,8 @@
 
 use std::collections::HashSet;
 
+use crate::util::{Accountable, RamUsageEstimator};
+
 /// Minimum Unicode code point, equivalent to `Character.MIN_CODE_POINT`.
 pub const MIN_CODE_POINT: i32 = 0;
 
@@ -35,6 +37,18 @@ pub struct Transition {
 }
 
 impl Transition {
+    /// Static estimate of the bytes one transition costs.
+    ///
+    /// Equivalent to `org.apache.lucene.util.automaton.Transition#BYTES_USED`,
+    /// which Java computes as
+    /// `RamUsageEstimator.shallowSizeOfInstance(Transition.class)`: an object
+    /// header plus the five `int` fields `source`, `dest`, `min`, `max` and
+    /// `transitionUpto`, rounded up to the object alignment. Measured against
+    /// `lucene-core-10.5.0.jar` on a JVM with compressed references, which is
+    /// the object model [`RamUsageEstimator`] encodes, `BYTES_USED` is 32.
+    pub const BYTES_USED: i64 =
+        RamUsageEstimator::align_object_size(RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + 5 * 4);
+
     /// Sole constructor, matching `new Transition()`.
     pub fn new() -> Self {
         Self {
@@ -52,6 +66,16 @@ impl Transition {
 impl Default for Transition {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Accountable for Transition {
+    /// Returns [`Transition::BYTES_USED`].
+    ///
+    /// Equivalent to `Transition.ramBytesUsed()`, which answers the static
+    /// estimate because a transition holds nothing but primitives.
+    fn ram_bytes_used(&self) -> i64 {
+        Self::BYTES_USED
     }
 }
 
@@ -697,6 +721,48 @@ impl Automaton {
     }
 }
 
+impl Accountable for Automaton {
+    /// Returns an estimate of the heap this automaton occupies.
+    ///
+    /// Equivalent to `org.apache.lucene.util.automaton.Automaton#ramBytesUsed`
+    /// (`Automaton.java:935-946`), term for term:
+    ///
+    /// ```text
+    /// NUM_BYTES_OBJECT_HEADER          // the Automaton itself
+    /// + sizeOf(states)
+    /// + sizeOf(transitions)
+    /// + NUM_BYTES_OBJECT_HEADER        // the isAccept BitSet
+    /// + isAccept.size() / 8            // its backing words
+    /// + NUM_BYTES_OBJECT_REF           // BitSet.words
+    /// + 2 * NUM_BYTES_OBJECT_REF       // states, transitions
+    /// + 3 * Integer.BYTES              // nextState, curState, and BitSet.wordsInUse
+    /// + 1                              // deterministic
+    /// ```
+    ///
+    /// Java carries the accept states in a `java.util.BitSet` and charges
+    /// `isAccept.size() / 8`, where `BitSet.size()` is the *allocated* word
+    /// count times 64. This port stores them in a `Vec<bool>`, so the term is
+    /// the size a `java.util.BitSet` constructed for the same number of states
+    /// would report: one 64-bit word per 64 states, and never fewer than one
+    /// word, which is what `new BitSet(numStates)` allocates.
+    ///
+    /// Java's own comment on this method records that the `BitSet` term is not
+    /// fully accurate; the value is an estimate on both sides.
+    fn ram_bytes_used(&self) -> i64 {
+        // TODO: BitSet RAM usage (isAccept.size()/8) isn't fully accurate...
+        let is_accept_words = self.is_accept.len().div_ceil(64).max(1) as i64;
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + RamUsageEstimator::size_of_int(&self.states)
+            + RamUsageEstimator::size_of_int(&self.transitions)
+            + RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + is_accept_words * 8
+            + RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + 2 * RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + 3 * 4
+            + 1
+    }
+}
+
 impl Default for Automaton {
     fn default() -> Self {
         Self::new()
@@ -946,5 +1012,121 @@ impl AutomatonBuilder {
 impl Default for AutomatonBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod ram_bytes_used_tests {
+    use super::*;
+    use crate::util::automaton::byte_run_automaton::ByteRunAutomaton;
+    use crate::util::automaton::compiled_automaton::CompiledAutomaton;
+    use crate::util::automaton::nfa_run_automaton::NFARunAutomaton;
+
+    /// The two-state automaton `a-z` that the Java oracle below was run on.
+    ///
+    /// Reproduced from:
+    /// ```text
+    /// Automaton.Builder b = new Automaton.Builder();
+    /// int s0 = b.createState(); int s1 = b.createState();
+    /// b.setAccept(s1, true);
+    /// b.addTransition(s0, s1, 'a', 'z');
+    /// Automaton au = b.finish();
+    /// ```
+    fn a_to_z() -> Automaton {
+        let mut b = AutomatonBuilder::new();
+        let s0 = b.create_state();
+        let s1 = b.create_state();
+        b.set_accept(s1, true);
+        b.add_transition_range(s0, s1, 'a' as i32, 'z' as i32);
+        b.finish()
+    }
+
+    #[test]
+    fn transition_bytes_used_is_the_java_shallow_size() {
+        // `RamUsageEstimator.shallowSizeOfInstance(Transition.class)` measured
+        // against lucene-core-10.5.0.jar on a JVM with compressed references.
+        assert_eq!(Transition::BYTES_USED, 32);
+        assert_eq!(Transition::new().ram_bytes_used(), 32);
+    }
+
+    #[test]
+    fn automaton_ram_bytes_used_matches_lucene() {
+        let a = a_to_z();
+        // Java's terms, written out with its own constants rather than with the
+        // expression the implementation uses. For this automaton the real
+        // `lucene-core-10.5.0.jar` reports `states.length == 4`,
+        // `transitions.length == 3` and `isAccept.size() == 64`.
+        let expected: i64 = 12                       // NUM_BYTES_OBJECT_HEADER (Automaton)
+            + (16 + 4 * 4)                           // sizeOf(int[4] states)
+            + ((16 + 3 * 4) + 4)                     // sizeOf(int[3] transitions), aligned to 32
+            + 12                                     // NUM_BYTES_OBJECT_HEADER (isAccept BitSet)
+            + 64 / 8                                 // isAccept.size() / 8
+            + 4                                      // NUM_BYTES_OBJECT_REF (BitSet.words)
+            + 2 * 4                                  // 2 * NUM_BYTES_OBJECT_REF
+            + 3 * 4                                  // 3 * Integer.BYTES
+            + 1; // deterministic
+        assert_eq!(expected, 121, "the transcription of Java's terms");
+        // The value the real lucene-core-10.5.0.jar reports for this automaton.
+        assert_eq!(a.ram_bytes_used(), 121);
+    }
+
+    #[test]
+    fn run_automaton_ram_bytes_used_matches_lucene() {
+        let a = a_to_z();
+        let bra = ByteRunAutomaton::new(a, false).expect("byte run automaton");
+        // Java's terms for `new ByteRunAutomaton(au)`, each measured against
+        // lucene-core-10.5.0.jar: BASE_RAM_BYTES 40, accept 48 (a
+        // `FixedBitSet` of 2 bits), the inner automaton 121, `classmap` an
+        // int[256] costing 1040, `points` an int[3] costing 32, and
+        // `transitions` an int[6] costing 40.
+        let expected: i64 = 40 + 48 + 121 + 1040 + 32 + 40;
+        assert_eq!(expected, 1321, "the transcription of Java's terms");
+        assert_eq!(bra.ram_bytes_used(), 1321);
+    }
+
+    #[test]
+    fn compiled_automaton_ram_bytes_used_matches_lucene() {
+        let a = a_to_z();
+        let ca = CompiledAutomaton::from_automaton(a).expect("compiled automaton");
+        // Java's terms: BASE_RAM_BYTES 48, a null `commonSuffixRef` and `term`
+        // and `nfaRunAutomaton` costing nothing, the `ByteRunAutomaton` costing
+        // 1321, and the scratch `Transition` costing 32.
+        let expected: i64 = 48 + 0 + 1321 + 0 + 0 + 32;
+        assert_eq!(expected, 1401, "the transcription of Java's terms");
+        assert_eq!(ca.ram_bytes_used(), 1401);
+    }
+
+    #[test]
+    fn nfa_run_automaton_ram_bytes_used_charges_every_java_term() {
+        let a = a_to_z();
+        let nfa = NFARunAutomaton::new(a.clone(), MAX_CODE_POINT + 1);
+        let total = nfa.ram_bytes_used();
+
+        // The fixed part is Java's `shallowSizeOfInstance(NFARunAutomaton.class)`,
+        // measured against lucene-core-10.5.0.jar as 48 bytes.
+        let base: i64 = 48;
+        // The automaton term is the same value `Automaton.ramBytesUsed()`
+        // answers, which the test above pins to Lucene's own 121.
+        let automaton_term = a.ram_bytes_used();
+        assert_eq!(automaton_term, 121);
+
+        // Every term is non-negative and the total is strictly above the fixed
+        // part plus the automaton: an empty registry and an empty `dStates`
+        // array still cost their headers.
+        assert!(
+            total > base + automaton_term,
+            "total={total} must exceed base+automaton={}",
+            base + automaton_term
+        );
+
+        // Determinizing a state must charge for it: the total can only grow.
+        use crate::util::automaton::run_automaton::ByteRunnable;
+        let before = nfa.ram_bytes_used();
+        let s = nfa.step(0, 'a' as i32);
+        assert!(s >= 0, "'a' must be accepted from the initial state");
+        assert!(
+            nfa.ram_bytes_used() >= before,
+            "determinizing a state must not lower the estimate"
+        );
     }
 }

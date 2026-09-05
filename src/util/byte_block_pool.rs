@@ -151,10 +151,18 @@ impl ByteBlockPool {
 
     /// Returns the byte at the given global offset.
     ///
+    /// Equivalent to `org.apache.lucene.util.ByteBlockPool#readByte(long)`
+    /// (`ByteBlockPool.java:335-339`).
+    ///
+    /// Java's parameter is a `long`; this port takes an `i32` because its
+    /// global offsets are bounded by `i32`
+    /// ([`next_buffer`](Self::next_buffer) refuses to grow past that), so a
+    /// wider parameter could only carry an offset the pool cannot hold.
+    ///
     /// # Panics
     ///
     /// Panics if the offset addresses a block that was never allocated.
-    pub fn byte_at(&self, offset: i32) -> u8 {
+    pub fn read_byte(&self, offset: i32) -> u8 {
         let offset = offset as usize;
         self.buffers[offset >> BYTE_BLOCK_SHIFT][offset & BYTE_BLOCK_MASK]
     }
@@ -553,7 +561,44 @@ mod tests {
         pool.buffer_mut(0)[BYTE_BLOCK_SIZE - 1] = 42;
         pool.next_buffer().expect("block");
         pool.buffer_mut(1)[0] = 43;
-        assert_eq!(pool.byte_at(BYTE_BLOCK_SIZE as i32 - 1), 42);
-        assert_eq!(pool.byte_at(BYTE_BLOCK_SIZE as i32), 43);
+        assert_eq!(pool.read_byte(BYTE_BLOCK_SIZE as i32 - 1), 42);
+        assert_eq!(pool.read_byte(BYTE_BLOCK_SIZE as i32), 43);
+    }
+
+    /// `readByte(long)` reads one byte at a global offset, across block
+    /// boundaries, and agrees with `readBytes` over the same range.
+    #[test]
+    fn read_byte_reads_one_byte_at_any_global_offset() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(bytes_used);
+
+        // Fill two whole blocks plus a little, with a position-dependent value
+        // so a misread offset cannot pass.
+        let total = BYTE_BLOCK_SIZE * 2 + 37;
+        let payload: Vec<u8> = (0..total).map(|i| (i % 251) as u8).collect();
+        pool.append(&payload).expect("append");
+
+        for offset in 0..total {
+            assert_eq!(
+                pool.read_byte(offset as i32),
+                payload[offset],
+                "offset={offset}"
+            );
+        }
+
+        // The same bytes through the bulk reader.
+        let mut buf = vec![0u8; total];
+        pool.read_bytes(0, &mut buf, 0, total);
+        assert_eq!(buf, payload);
+
+        // The block boundaries specifically.
+        assert_eq!(
+            pool.read_byte(BYTE_BLOCK_SIZE as i32 - 1),
+            payload[BYTE_BLOCK_SIZE - 1]
+        );
+        assert_eq!(
+            pool.read_byte(BYTE_BLOCK_SIZE as i32),
+            payload[BYTE_BLOCK_SIZE]
+        );
     }
 }

@@ -1370,6 +1370,7 @@ impl MSBRadixSorter {
             }
             return;
         }
+        debug_assert!(Self::assert_histogram(common_prefix_length, &histogram));
 
         // `startOffsets` and `endOffsets` are Lucene's two views of the same
         // counters; after `reorder` they are equal, and Java then reads the
@@ -1398,13 +1399,38 @@ impl MSBRadixSorter {
         self.histograms[l] = Some(histogram);
     }
 
+    /// Checks the invariant that ties the histogram to the common prefix: a
+    /// histogram with exactly one non-empty bucket means every entry shares at
+    /// least one byte at this level, and more than one non-empty bucket means
+    /// they share none.
+    ///
+    /// Equivalent to the private `MSBRadixSorter.assertHistogram(int, int[])`,
+    /// which Java reaches only through `assert assertHistogram(...)` and which
+    /// therefore returns `true` so it can sit inside an assertion. This port
+    /// calls it from a [`debug_assert!`] for the same reason: both are compiled
+    /// out of a release build.
+    fn assert_histogram(common_prefix_length: usize, histogram: &[i32]) -> bool {
+        let number_of_unique_bytes = histogram.iter().filter(|&&freq| freq > 0).count();
+        if number_of_unique_bytes == 1 {
+            assert!(common_prefix_length >= 1);
+        } else {
+            assert_eq!(common_prefix_length, 0, "{common_prefix_length}");
+        }
+        true
+    }
+
     /// Builds the histogram of `[from, to)` and returns the length of the
     /// common prefix shared by every entry.
     ///
-    /// Equivalent to `MSBRadixSorter.computeCommonPrefixLengthAndBuildHistogram`.
-    /// Java splits this into three methods to work around a JVM crash
-    /// (<https://github.com/apache/lucene/issues/12898>); that split has no
-    /// meaning outside the JVM, so this port keeps one method.
+    /// Equivalent to
+    /// `MSBRadixSorter.computeCommonPrefixLengthAndBuildHistogram(int, int, int, int[])`.
+    ///
+    /// Lucene splits the work across this method and its three namesakes below
+    /// to work around a JVM crash
+    /// (<https://github.com/apache/lucene/issues/12898>). The reason for the
+    /// split does not apply outside the JVM, but the split itself is Lucene's
+    /// structure and is kept: each part does exactly what its Java namesake
+    /// does, and the boundaries are where Java put them.
     fn compute_common_prefix_length_and_build_histogram<O: MSBRadixSorterOps + ?Sized>(
         &mut self,
         ops: &O,
@@ -1412,6 +1438,29 @@ impl MSBRadixSorter {
         to: usize,
         k: usize,
         histogram: &mut [i32],
+    ) -> usize {
+        let common_prefix_length = self.compute_initial_common_prefix_length(ops, from, k);
+        self.compute_common_prefix_length_and_build_histogram_part1(
+            ops,
+            from,
+            to,
+            k,
+            histogram,
+            common_prefix_length,
+        )
+    }
+
+    /// Reads the first entry's bytes into the common-prefix buffer and returns
+    /// how many of them there are.
+    ///
+    /// Equivalent to the private
+    /// `MSBRadixSorter.computeInitialCommonPrefixLength(int, int)`. A `-1`
+    /// byte means the entry ended, so the prefix stops one past it.
+    fn compute_initial_common_prefix_length<O: MSBRadixSorterOps + ?Sized>(
+        &mut self,
+        ops: &O,
+        from: usize,
+        k: usize,
     ) -> usize {
         let mut common_prefix_length = self.common_prefix.len().min(self.max_length - k);
         for j in 0..common_prefix_length {
@@ -1422,7 +1471,25 @@ impl MSBRadixSorter {
                 break;
             }
         }
+        common_prefix_length
+    }
 
+    /// Shortens the common prefix against every remaining entry, stopping early
+    /// at the first entry that shares nothing.
+    ///
+    /// Equivalent to the private
+    /// `MSBRadixSorter.computeCommonPrefixLengthAndBuildHistogramPart1(int, int, int, int[], int)`,
+    /// which hands the loop index it stopped at to
+    /// [`part 2`](Self::compute_common_prefix_length_and_build_histogram_part2).
+    fn compute_common_prefix_length_and_build_histogram_part1<O: MSBRadixSorterOps + ?Sized>(
+        &mut self,
+        ops: &O,
+        from: usize,
+        to: usize,
+        k: usize,
+        histogram: &mut [i32],
+        mut common_prefix_length: usize,
+    ) -> usize {
         let mut i = from + 1;
         'outer: while i < to {
             // Java shortens `commonPrefixLength` inside this loop and breaks
@@ -1443,7 +1510,39 @@ impl MSBRadixSorter {
             }
             i += 1;
         }
+        self.compute_common_prefix_length_and_build_histogram_part2(
+            ops,
+            from,
+            to,
+            k,
+            histogram,
+            common_prefix_length,
+            i,
+        )
+    }
 
+    /// Fills the histogram and returns the common-prefix length.
+    ///
+    /// Equivalent to the private
+    /// `MSBRadixSorter.computeCommonPrefixLengthAndBuildHistogramPart2(int, int, int, int[], int, int)`.
+    /// When `i < to` the prefix loop broke because there is no common prefix at
+    /// all, so the buckets have to be counted from `i` on, with the entries
+    /// before `i` credited in bulk to the first entry's bucket. Otherwise every
+    /// entry shares the prefix and the whole range lands in that one bucket.
+    // Eight parameters because Java's is six plus the receiver and the ops the
+    // receiver does not own; changing the signature would move the boundary
+    // Lucene drew between the parts.
+    #[allow(clippy::too_many_arguments)]
+    fn compute_common_prefix_length_and_build_histogram_part2<O: MSBRadixSorterOps + ?Sized>(
+        &self,
+        ops: &O,
+        from: usize,
+        to: usize,
+        k: usize,
+        histogram: &mut [i32],
+        common_prefix_length: usize,
+        i: usize,
+    ) -> usize {
         if i < to {
             debug_assert_eq!(common_prefix_length, 0);
             ops.build_histogram(
@@ -2183,5 +2282,194 @@ impl<O: StableStringSorterOps + ?Sized> MergeSorter for StableStringFallbackSort
 
     fn restore(&mut self, i: usize, j: usize) {
         self.ops.restore(i, j);
+    }
+}
+
+#[cfg(test)]
+mod msb_radix_sorter_tests {
+    use super::*;
+
+    /// A sortable array of byte strings, the simplest concrete
+    /// [`MSBRadixSorterOps`].
+    struct Strings {
+        values: Vec<Vec<u8>>,
+    }
+
+    impl MSBRadixSorterOps for Strings {
+        fn byte_at(&self, i: usize, k: usize) -> i32 {
+            match self.values[i].get(k) {
+                Some(&b) => i32::from(b),
+                None => -1,
+            }
+        }
+
+        fn swap(&mut self, i: usize, j: usize) {
+            self.values.swap(i, j);
+        }
+    }
+
+    fn sorted_copy(values: &[Vec<u8>]) -> Vec<Vec<u8>> {
+        let mut v = values.to_vec();
+        v.sort();
+        v
+    }
+
+    fn sort_all(values: Vec<Vec<u8>>, max_length: usize) -> Vec<Vec<u8>> {
+        let expected = sorted_copy(&values);
+        let len = values.len();
+        let mut ops = Strings { values };
+        let mut sorter = MSBRadixSorter::new(max_length);
+        sorter.sort(&mut ops, 0, len);
+        assert_eq!(ops.values, expected);
+        ops.values
+    }
+
+    #[test]
+    fn assert_histogram_accepts_one_bucket_with_a_common_prefix() {
+        let mut histogram = vec![0i32; MSB_HISTOGRAM_SIZE];
+        histogram[7] = 12;
+        // Exactly one non-empty bucket: every entry shares at least one byte.
+        assert!(MSBRadixSorter::assert_histogram(1, &histogram));
+        assert!(MSBRadixSorter::assert_histogram(5, &histogram));
+    }
+
+    #[test]
+    fn assert_histogram_accepts_many_buckets_with_no_common_prefix() {
+        let mut histogram = vec![0i32; MSB_HISTOGRAM_SIZE];
+        histogram[7] = 3;
+        histogram[9] = 4;
+        assert!(MSBRadixSorter::assert_histogram(0, &histogram));
+    }
+
+    #[test]
+    #[should_panic(expected = "assertion failed")]
+    fn assert_histogram_rejects_one_bucket_without_a_common_prefix() {
+        let mut histogram = vec![0i32; MSB_HISTOGRAM_SIZE];
+        histogram[7] = 12;
+        MSBRadixSorter::assert_histogram(0, &histogram);
+    }
+
+    #[test]
+    #[should_panic]
+    fn assert_histogram_rejects_many_buckets_with_a_common_prefix() {
+        let mut histogram = vec![0i32; MSB_HISTOGRAM_SIZE];
+        histogram[7] = 3;
+        histogram[9] = 4;
+        MSBRadixSorter::assert_histogram(2, &histogram);
+    }
+
+    #[test]
+    fn compute_initial_common_prefix_length_reads_the_first_entry() {
+        let ops = Strings {
+            values: vec![b"abcdef".to_vec()],
+        };
+        let mut sorter = MSBRadixSorter::new(6);
+        // The whole of the first entry, capped by the common-prefix buffer.
+        let len = sorter.compute_initial_common_prefix_length(&ops, 0, 0);
+        assert_eq!(len, sorter.common_prefix.len().min(6));
+        assert_eq!(sorter.common_prefix[0], i32::from(b'a'));
+        assert_eq!(sorter.common_prefix[1], i32::from(b'b'));
+    }
+
+    #[test]
+    fn compute_initial_common_prefix_length_stops_one_past_the_end_of_a_short_entry() {
+        let ops = Strings {
+            values: vec![b"ab".to_vec()],
+        };
+        let mut sorter = MSBRadixSorter::new(10);
+        let len = sorter.compute_initial_common_prefix_length(&ops, 0, 0);
+        // 'a', 'b', then the -1 that marks the end: three positions.
+        assert_eq!(len, 3);
+        assert_eq!(sorter.common_prefix[2], -1);
+    }
+
+    #[test]
+    fn histogram_parts_count_a_shared_prefix_as_one_bucket() {
+        // Every entry starts with 'a', so the prefix survives the whole scan
+        // and part 2 must credit the whole range to bucket 'a' + 1.
+        let ops = Strings {
+            values: vec![b"aax".to_vec(), b"aay".to_vec(), b"aaz".to_vec()],
+        };
+        let mut sorter = MSBRadixSorter::new(3);
+        let mut histogram = vec![0i32; MSB_HISTOGRAM_SIZE];
+        let cpl =
+            sorter.compute_common_prefix_length_and_build_histogram(&ops, 0, 3, 0, &mut histogram);
+        assert_eq!(cpl, 2, "the entries share 'aa'");
+        let bucket = usize::try_from(i32::from(b'a') + 1).unwrap();
+        assert_eq!(histogram[bucket], 3);
+        assert_eq!(histogram.iter().filter(|&&f| f > 0).count(), 1);
+        assert!(MSBRadixSorter::assert_histogram(cpl, &histogram));
+    }
+
+    #[test]
+    fn histogram_parts_count_every_bucket_when_nothing_is_shared() {
+        let ops = Strings {
+            values: vec![b"a".to_vec(), b"b".to_vec(), b"b".to_vec(), b"c".to_vec()],
+        };
+        let mut sorter = MSBRadixSorter::new(1);
+        let mut histogram = vec![0i32; MSB_HISTOGRAM_SIZE];
+        let cpl =
+            sorter.compute_common_prefix_length_and_build_histogram(&ops, 0, 4, 0, &mut histogram);
+        assert_eq!(cpl, 0, "the entries share nothing");
+        assert_eq!(histogram[usize::try_from(i32::from(b'a') + 1).unwrap()], 1);
+        assert_eq!(histogram[usize::try_from(i32::from(b'b') + 1).unwrap()], 2);
+        assert_eq!(histogram[usize::try_from(i32::from(b'c') + 1).unwrap()], 1);
+        assert!(MSBRadixSorter::assert_histogram(cpl, &histogram));
+    }
+
+    #[test]
+    fn radix_sort_orders_a_range_longer_than_the_fallback_threshold() {
+        // Above MSB_LENGTH_THRESHOLD the radix path runs, so the split
+        // histogram methods and `assert_histogram` are all exercised.
+        let mut values = Vec::new();
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        for _ in 0..(MSB_LENGTH_THRESHOLD * 4) {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let len = 1 + (state >> 60) as usize;
+            let mut v = Vec::with_capacity(len);
+            let mut w = state;
+            for _ in 0..len {
+                w = w.wrapping_mul(6364136223846793005).wrapping_add(1);
+                v.push((w >> 56) as u8);
+            }
+            values.push(v);
+        }
+        sort_all(values, 16);
+    }
+
+    #[test]
+    fn radix_sort_orders_entries_that_share_a_long_prefix() {
+        // A long shared prefix drives the `common_prefix_length > 0` branch of
+        // `radix_sort`, which recurses past the prefix instead of reordering.
+        let mut values = Vec::new();
+        for i in 0..(MSB_LENGTH_THRESHOLD * 2) {
+            let mut v = b"the-very-same-prefix-".to_vec();
+            v.extend_from_slice(format!("{i:04}").as_bytes());
+            values.push(v);
+        }
+        values.reverse();
+        sort_all(values, 25);
+    }
+
+    #[test]
+    fn radix_sort_handles_entries_that_are_prefixes_of_each_other() {
+        let values = vec![
+            b"ab".to_vec(),
+            b"a".to_vec(),
+            b"abc".to_vec(),
+            b"".to_vec(),
+            b"abcd".to_vec(),
+        ];
+        sort_all(values, 4);
+    }
+
+    #[test]
+    fn fallback_sort_orders_a_short_range() {
+        // Below MSB_LENGTH_THRESHOLD `sort` takes the fallback intro sorter,
+        // the port of `MSBRadixSorter.getFallbackSorter(int)`.
+        let values: Vec<Vec<u8>> = (0..10u8).rev().map(|b| vec![b, b + 1]).collect();
+        sort_all(values, 2);
     }
 }

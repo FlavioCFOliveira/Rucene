@@ -135,6 +135,10 @@ impl MergingHnswGraphBuilder {
 }
 
 impl HnswBuilder for MergingHnswGraphBuilder {
+    fn set_info_stream(&mut self, info_stream: std::sync::Arc<dyn crate::util::InfoStream>) {
+        self.inner.set_info_stream(info_stream);
+    }
+
     fn build(&mut self, max_ord: i32) -> Result<&OnHeapHnswGraph> {
         if self.inner.frozen {
             return Err(crate::error::LuceneError::IllegalState(

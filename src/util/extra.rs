@@ -109,6 +109,42 @@ impl LongBitSet {
         })
     }
 
+    /// Returns a bit set that can hold at least `num_bits`, reusing `bits` when
+    /// it is already large enough.
+    ///
+    /// Equivalent to `org.apache.lucene.util.LongBitSet#ensureCapacity`, which
+    /// hands back the argument untouched when `numBits < bits.numBits`, and
+    /// otherwise wraps the (possibly grown) backing array in a new instance
+    /// whose length is the *whole* array (`arr.length << 6`), not `numBits`.
+    ///
+    /// Growing depends on the ghost bits being clear, exactly as Java's comment
+    /// records: were a bit past `numBits` set, widening the length would make it
+    /// visible in the returned set.
+    ///
+    /// Java's signature is `static LongBitSet ensureCapacity(LongBitSet, long)`
+    /// and either returns its argument or a new instance sharing its array.
+    /// This port takes the set by value, which is how Rust expresses the same
+    /// "consume and hand back" ownership without copying the buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LuceneError::IllegalArgument` when `num_bits` is out of the
+    /// range [`bits2words`](Self::bits2words) accepts.
+    pub fn ensure_capacity(bits: LongBitSet, num_bits: i64) -> Result<LongBitSet, LuceneError> {
+        if num_bits < bits.num_bits {
+            return Ok(bits);
+        }
+        // Depends on the ghost bits being clear!
+        // (Otherwise, they may become visible in the new instance)
+        let num_words = Self::bits2words(num_bits)?;
+        let mut arr = bits.bits;
+        if num_words as usize >= arr.len() {
+            arr = ArrayUtil::grow_long(&arr, num_words as usize + 1);
+        }
+        let new_num_bits = (arr.len() as i64) << 6;
+        Self::from_bits(arr, new_num_bits)
+    }
+
     /// Creates a bit set from an existing backing buffer.
     ///
     /// Any "ghost" bits past `num_bits` must be clear.
@@ -1341,5 +1377,64 @@ mod tests {
     fn version_accepts_optional_components() {
         let v = Version::parse("10.5").unwrap();
         assert_eq!(v, Version::LUCENE_10_5_0);
+    }
+
+    /// Modelled on Lucene's `TestLongBitSet#testEnsureCapacity`.
+    ///
+    /// Java can hand back either the argument or a new instance sharing its
+    /// array, so its test also checks *which*. This port takes the set by
+    /// value, so sharing is not observable; what remains observable — and what
+    /// is checked here — is that the bits survive, that growing widens the
+    /// length to the whole backing array, and that a request that already fits
+    /// changes nothing.
+    #[test]
+    fn ensure_capacity_grows_and_reuses_like_lucene() {
+        let mut bits = LongBitSet::new(5).unwrap();
+        bits.set(1);
+        bits.set(4);
+
+        // Grow "within the word": numBits 8 still needs one word, but Java
+        // grows anyway because `numWords >= arr.length`.
+        let grown = LongBitSet::ensure_capacity(bits, 8).unwrap();
+        assert!(grown.get(1));
+        assert!(grown.get(4));
+        // The new length is the whole array, not the requested 8 bits.
+        assert_eq!(grown.length(), (grown.get_bits().len() as i64) << 6);
+        assert!(grown.length() >= 64);
+
+        // A request that already fits is a no-op: `numBits < bits.numBits`.
+        let len_before = grown.length();
+        let reused = LongBitSet::ensure_capacity(grown, len_before - 2).unwrap();
+        assert_eq!(reused.length(), len_before);
+        assert!(reused.get(1));
+        assert!(reused.get(4));
+
+        // Grow beyond one word.
+        let mut bits = LongBitSet::new(5).unwrap();
+        bits.set(1);
+        bits.set(4);
+        let wide = LongBitSet::ensure_capacity(bits, 72).unwrap();
+        assert!(wide.get(1));
+        assert!(wide.get(4));
+        assert!(wide.length() >= 72);
+        assert_eq!(wide.length(), (wide.get_bits().len() as i64) << 6);
+        // Everything above the two set bits is clear.
+        for i in 0..wide.length() {
+            assert_eq!(wide.get(i), i == 1 || i == 4, "bit {i}");
+        }
+    }
+
+    /// `ensure_capacity` must keep working when the set is already wide enough
+    /// for the request but the request equals the current length, which is the
+    /// `numBits < bits.numBits` boundary Java writes with a strict `<`.
+    #[test]
+    fn ensure_capacity_at_the_exact_length_still_grows() {
+        let mut bits = LongBitSet::new(64).unwrap();
+        bits.set(63);
+        let len = bits.length();
+        // numBits == numBits is *not* `<`, so Java takes the growing branch.
+        let grown = LongBitSet::ensure_capacity(bits, len).unwrap();
+        assert!(grown.get(63));
+        assert!(grown.length() > len);
     }
 }
