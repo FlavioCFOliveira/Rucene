@@ -3519,6 +3519,20 @@ impl IndexingChain for DefaultIndexingChain {
         self.terms_writer
             .flush(&mut write_state, state.delete_terms, &norms)?;
 
+        // Important to save after asking the consumers to flush, so that a
+        // consumer can still alter a `FieldInfo` on its way out — Lucene's
+        // `FreqProxTermsWriter` does exactly that with `FieldInfo.storePayloads`
+        // (`IndexingChain.java:377-387`). Java takes the codec off the
+        // `IndexWriterConfig` and passes `IOContext.DEFAULT` rather than the
+        // flush context, and both are reproduced here.
+        self.config.codec().field_infos_format().write(
+            state.directory,
+            state.segment_info,
+            "",
+            state.field_infos,
+            &*crate::store::DEFAULT_IO_CONTEXT,
+        )?;
+
         if state.info_stream.is_enabled("DWPT") {
             state.info_stream.message(
                 "DWPT",
@@ -3538,6 +3552,7 @@ impl IndexingChain for DefaultIndexingChain {
         Ok(IndexingChainFlushResult {
             live_docs: write_state.live_docs,
             del_count_on_flush: write_state.del_count_on_flush,
+            sort_map,
         })
     }
 
@@ -4859,10 +4874,19 @@ mod tests {
             .filter_map(|name| name.rsplit_once('.').map(|(_, ext)| ext.to_string()))
             .collect();
         extensions.sort();
+        // The `.fnm` is unconditional: `IndexingChain.flush` writes the field
+        // infos on its way out whatever the fields hold
+        // (`IndexingChain.java:377-387`), and without it no reader could open
+        // the segment. Everything else here is postings, and there are none.
         assert_eq!(
             extensions,
-            vec!["fdm".to_string(), "fdt".to_string(), "fdx".to_string()],
-            "a stored-only document produces the stored-fields files and no postings: {files:?}"
+            vec![
+                "fdm".to_string(),
+                "fdt".to_string(),
+                "fdx".to_string(),
+                "fnm".to_string()
+            ],
+            "a stored-only document produces the stored-fields files, the field infos and no postings: {files:?}"
         );
         assert_eq!(result.del_count_on_flush, 0);
         assert!(result.live_docs.is_none());

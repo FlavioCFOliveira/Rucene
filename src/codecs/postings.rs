@@ -353,8 +353,30 @@ pub fn reload_postings_formats(format: Arc<dyn PostingsFormat>) -> Result<()> {
     GLOBAL_POSTINGS_REGISTRY.register_arc(format)
 }
 
-static GLOBAL_POSTINGS_REGISTRY: LazyLock<PostingsFormatRegistry> =
-    LazyLock::new(PostingsFormatRegistry::new);
+/// The global registry, seeded with the formats this crate ships.
+///
+/// Lucene discovers postings formats through the Java service loader:
+/// `PostingsFormat.forName` consults a `NamedSPILoader` that reads
+/// `META-INF/services/org.apache.lucene.codecs.PostingsFormat`, and the
+/// `lucene-core` jar lists exactly one entry there,
+/// `org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat`. Nothing in
+/// Lucene registers it explicitly, so a caller that merely has `lucene-core` on
+/// the classpath can already resolve the name `Lucene104` — which is what
+/// `PerFieldPostingsFormat.FieldsReader` does when it reads a segment back and
+/// looks up the format named by each field's
+/// `PerFieldPostingsFormat.format` attribute.
+///
+/// Rust has no run-time service discovery, so the built-in entries of that
+/// service file are registered here instead, when the registry is first
+/// touched. [`reload_postings_formats`] remains the equivalent of
+/// `reloadPostingsFormats(ClassLoader)` for formats defined outside this crate.
+static GLOBAL_POSTINGS_REGISTRY: LazyLock<PostingsFormatRegistry> = LazyLock::new(|| {
+    let registry = PostingsFormatRegistry::new();
+    registry
+        .register_arc(Arc::new(crate::codecs::Lucene104PostingsFormat::new()))
+        .expect("built-in postings formats have valid, distinct SPI names");
+    registry
+});
 
 /// Looks up a postings format by name from the global registry.
 ///

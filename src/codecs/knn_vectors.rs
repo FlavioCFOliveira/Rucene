@@ -472,8 +472,28 @@ pub fn reload_knn_vectors_format(format: Arc<dyn KnnVectorsFormat>) -> Result<()
     GLOBAL_KNN_VECTORS_REGISTRY.register_arc(format)
 }
 
-static GLOBAL_KNN_VECTORS_REGISTRY: LazyLock<KnnVectorsFormatRegistry> =
-    LazyLock::new(KnnVectorsFormatRegistry::new);
+/// The global registry, seeded with the formats this crate ships.
+///
+/// The `lucene-core` jar lists three KNN-vectors formats in
+/// `META-INF/services/org.apache.lucene.codecs.KnnVectorsFormat` —
+/// `Lucene99HnswVectorsFormat`, `Lucene104ScalarQuantizedVectorsFormat` and
+/// `Lucene104HnswScalarQuantizedVectorsFormat` — which the Java service loader
+/// makes resolvable by name without anyone registering them. Rust has no
+/// run-time service discovery, so those entries are registered here when the
+/// registry is first touched; see the postings registry for the full reasoning.
+///
+/// Only the first is seeded today: the two `Lucene104` quantized formats exist
+/// in this crate as types but do not yet implement [`KnnVectorsFormat`], so
+/// there is nothing to register under their names. Registering them belongs to
+/// the task that finishes porting them, and until then a segment whose fields
+/// name those formats cannot be read back — exactly as it cannot be written.
+static GLOBAL_KNN_VECTORS_REGISTRY: LazyLock<KnnVectorsFormatRegistry> = LazyLock::new(|| {
+    let registry = KnnVectorsFormatRegistry::new();
+    registry
+        .register_arc(Arc::new(crate::codecs::Lucene99HnswVectorsFormat::new()))
+        .expect("built-in KNN-vectors formats have valid, distinct SPI names");
+    registry
+});
 
 /// Looks up a KNN-vectors format by name from the global registry.
 ///

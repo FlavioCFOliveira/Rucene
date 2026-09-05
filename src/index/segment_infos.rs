@@ -577,7 +577,7 @@ impl SegmentInfos {
     /// Reads the named commit file from the directory.
     ///
     /// Equivalent to `SegmentInfos.readCommit(Directory, String)`.
-    pub fn read_commit(directory: &dyn Directory, segment_file_name: &str) -> Result<Self> {
+    pub fn read_commit(directory: Arc<dyn Directory>, segment_file_name: &str) -> Result<Self> {
         Self::read_commit_with_min_version(
             directory,
             segment_file_name,
@@ -590,7 +590,7 @@ impl SegmentInfos {
     ///
     /// Equivalent to `SegmentInfos.readCommit(Directory, String, int)`.
     pub fn read_commit_with_min_version(
-        directory: &dyn Directory,
+        directory: Arc<dyn Directory>,
         segment_file_name: &str,
         min_supported_major_version: i32,
     ) -> Result<Self> {
@@ -608,7 +608,7 @@ impl SegmentInfos {
     ///
     /// Equivalent to `SegmentInfos.readCommit(Directory, ChecksumIndexInput, long, int)`.
     pub fn read_commit_input(
-        directory: &dyn Directory,
+        directory: Arc<dyn Directory>,
         input: &mut dyn crate::store::ChecksumIndexInput,
         generation: i64,
         min_supported_major_version: i32,
@@ -672,7 +672,7 @@ impl SegmentInfos {
     }
 
     fn parse_segment_infos(
-        directory: &dyn Directory,
+        directory: Arc<dyn Directory>,
         input: &mut dyn crate::store::DataInput,
         infos: &mut SegmentInfos,
         format: i32,
@@ -704,7 +704,7 @@ impl SegmentInfos {
             let codec = Self::read_codec(input)?;
 
             let mut info = codec.segment_info_format().read(
-                directory,
+                Arc::clone(&directory),
                 &seg_name,
                 &segment_id,
                 &*crate::store::READONCE_IO_CONTEXT,
@@ -847,7 +847,7 @@ impl SegmentInfos {
     /// Finds the latest commit and loads all `SegmentCommitInfo`s.
     ///
     /// Equivalent to `SegmentInfos.readLatestCommit(Directory)`.
-    pub fn read_latest_commit(directory: &dyn Directory) -> Result<Self> {
+    pub fn read_latest_commit(directory: Arc<dyn Directory>) -> Result<Self> {
         Self::read_latest_commit_with_min_version(directory, Version::MIN_SUPPORTED_MAJOR)
     }
 
@@ -886,7 +886,7 @@ impl SegmentInfos {
     ///
     /// Equivalent to `SegmentInfos.readLatestCommit(Directory, int)`.
     pub fn read_latest_commit_with_min_version(
-        directory: &dyn Directory,
+        directory: Arc<dyn Directory>,
         min_supported_major_version: i32,
     ) -> Result<Self> {
         let mut last_gen = -1i64;
@@ -925,7 +925,7 @@ impl SegmentInfos {
                         ))
                     })?;
                 match Self::read_commit_with_min_version(
-                    directory,
+                    Arc::clone(&directory),
                     &segment_file_name,
                     min_supported_major_version,
                 ) {
@@ -1384,14 +1384,14 @@ mod tests {
 
     #[test]
     fn round_trip_empty_segments_file() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let mut sis = SegmentInfos::new(10).unwrap();
         sis.user_data = HashMap::from([("foo".to_string(), "bar".to_string())]);
 
-        let written = sis.commit(&dir).unwrap();
+        let written = sis.commit(dir.as_ref()).unwrap();
         assert_eq!(written, "segments_1");
 
-        let read = SegmentInfos::read_latest_commit(&dir).unwrap();
+        let read = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
         assert_eq!(read.size(), 0);
         assert_eq!(read.version(), sis.version());
         assert_eq!(read.counter, sis.counter);
@@ -1401,7 +1401,7 @@ mod tests {
 
     #[test]
     fn round_trip_single_segment() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let mut info = test_segment_info("_0", 42);
         info.set_codec(test_codec());
         info.set_index_sort(
@@ -1415,7 +1415,7 @@ mod tests {
         info.set_diagnostics(HashMap::from([("source".to_string(), "test".to_string())]));
         info.set_files(HashSet::from(["_0.fnm".to_string(), "_0.fdt".to_string()]));
 
-        write_segment_info_file(&dir, &info).unwrap();
+        write_segment_info_file(dir.as_ref(), &info).unwrap();
 
         let sci = SegmentCommitInfo::new(info, 2, 1, 0, 1, 2, StringHelper::random_id()).unwrap();
         let mut sis = SegmentInfos::new(10).unwrap();
@@ -1424,10 +1424,10 @@ mod tests {
         sis.user_data = HashMap::from([("user".to_string(), "data".to_string())]);
         sis.add(sci).unwrap();
 
-        let written = sis.commit(&dir).unwrap();
+        let written = sis.commit(dir.as_ref()).unwrap();
         assert_eq!(written, "segments_1");
 
-        let read = SegmentInfos::read_latest_commit(&dir).unwrap();
+        let read = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
         assert_eq!(read.size(), 1);
         assert_eq!(read.counter, 1);
         assert_eq!(read.version(), sis.version());

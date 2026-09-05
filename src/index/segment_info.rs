@@ -546,10 +546,27 @@ pub struct SegmentCommitInfo {
 impl SegmentCommitInfo {
     /// Creates a new `SegmentCommitInfo`.
     ///
+    /// Equivalent to `SegmentCommitInfo(SegmentInfo, int, int, long, long, long,
+    /// byte[])` (`SegmentCommitInfo.java:132-153`), which stores its arguments
+    /// and validates nothing but the length of `id` — a length this port checks
+    /// in the type system instead.
+    ///
+    /// In particular it does **not** validate the deletion counts against
+    /// `maxDoc`. It cannot: `IndexWriter._mergeInit` builds the info of the
+    /// segment a merge is about to write with `maxDoc = -1`, because the count
+    /// is only known once the merge has run (`IndexWriter.java:4630-4646`), and
+    /// `SegmentInfo.maxDoc()` throws until it is set. The deletion counts are
+    /// validated where Lucene validates them: on the way in and out of
+    /// `segments_N` (`SegmentInfos.readCommit`/`write`), and in
+    /// [`set_del_count`](Self::set_del_count) and
+    /// [`set_soft_del_count`](Self::set_soft_del_count), which are only reached
+    /// once `maxDoc` is known.
+    ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `del_count` or `soft_del_count`
-    /// are out of range for the wrapped `SegmentInfo::max_doc`.
+    /// Currently infallible; the `Result` is kept because the equivalent Java
+    /// constructor can throw and because the callers of this constructor sit on
+    /// fallible paths.
     pub fn new(
         info: SegmentInfo,
         del_count: i32,
@@ -559,22 +576,6 @@ impl SegmentCommitInfo {
         doc_values_gen: i64,
         id: [u8; ID_LENGTH],
     ) -> Result<Self> {
-        let max_doc = info.max_doc()?;
-        if del_count < 0 || del_count > max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
-                "invalid delCount={del_count} (maxDoc={max_doc})"
-            )));
-        }
-        if soft_del_count < 0 || soft_del_count > max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
-                "invalid softDelCount={soft_del_count} (maxDoc={max_doc})"
-            )));
-        }
-        if del_count + soft_del_count > max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
-                "delCount + softDelCount > maxDoc (maxDoc={max_doc}, delCount={del_count}, softDelCount={soft_del_count})"
-            )));
-        }
         Ok(Self {
             info,
             id,

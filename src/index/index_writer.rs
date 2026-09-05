@@ -115,8 +115,25 @@ pub struct IndexWriter {
     closed: AtomicBool,
     /// Documents buffered plus published, capped at [`MAX_DOCS`].
     pending_num_docs: Arc<AtomicI64>,
-    /// Next segment name, as Java's `segmentInfos.counter` is.
-    segment_counter: Arc<AtomicI32>,
+    /// Source of the next segment name, i.e. Java's `segmentInfos.counter`.
+    ///
+    /// Java increments the field of the `SegmentInfos` itself, under
+    /// `synchronized (segmentInfos)` and deliberately *not* under the writer's
+    /// own monitor, because doing the latter deadlocks
+    /// (`IndexWriter.java:2129-2142`). This port cannot hand the segment-name
+    /// supplier a borrow of `WriterState.segment_infos` for the same reason —
+    /// the supplier runs from the indexing threads, which must not take the
+    /// writer's state lock — so the counter lives in this atomic and is
+    /// published into [`SegmentInfos::counter`] by
+    /// [`Self::publish_segment_counter`] at every point where the segments are
+    /// registered or written. The value the atomic holds and the value Java's
+    /// field holds are therefore the same at every observable moment; only the
+    /// place it is kept between those moments differs.
+    ///
+    /// It is seeded from the counter of the commit the writer opened, so that a
+    /// writer reopened on an existing index carries on naming segments where
+    /// the previous one stopped instead of restarting at `_0`.
+    segment_counter: Arc<AtomicI64>,
     /// Set when an unrecoverable error forces the writer closed.
     tragedy: Mutex<Option<String>>,
     /// Bumped on every change that must be written at close.
@@ -165,6 +182,15 @@ pub struct IndexWriter {
     /// between, the merged segment may have missed some of the packet's
     /// updates, so the pass is repeated against the new segment.
     merge_finished_gen: AtomicI64,
+    /// The callbacks installed on the documents writer, kept so that the writer
+    /// can drain the events they record.
+    ///
+    /// Equivalent to holding the anonymous `DocumentsWriter.FlushNotifications`
+    /// together with `IndexWriter.eventQueue`: Java's notifications push a
+    /// closure onto the queue and `processEvents` runs it, so the writer needs a
+    /// handle on the queue. Here the queue lives inside the notifications and
+    /// [`process_events`](Self::process_events) drains it.
+    flush_notifications: Arc<WriterFlushNotifications>,
     /// Serialises the two-stage full flushes, so that only one runs at a time.
     ///
     /// Equivalent to `IndexWriter.fullFlushLock`. A full flush swaps the
@@ -250,6 +276,19 @@ impl FlushNotifications for WriterFlushNotifications {
     fn on_ticket_backlog(&self) {}
 }
 
+impl WriterFlushNotifications {
+    /// Takes the files recorded so far, leaving the set empty.
+    ///
+    /// Equivalent to draining the `deleteUnusedFiles` events off
+    /// `IndexWriter.eventQueue`.
+    fn take_orphaned_files(&self) -> HashSet<String> {
+        match self.orphaned_files.lock() {
+            Ok(mut guard) => std::mem::take(&mut *guard),
+            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+        }
+    }
+}
+
 impl IndexWriter {
     /// Opens a writer over `directory`.
     ///
@@ -272,7 +311,7 @@ impl IndexWriter {
         let mut segment_infos = if create {
             SegmentInfos::new(Version::LATEST.major as i32)?
         } else {
-            SegmentInfos::read_latest_commit(directory.as_ref())?
+            SegmentInfos::read_latest_commit(Arc::clone(&directory))?
         };
 
         let initial_index_exists =
@@ -304,13 +343,16 @@ impl IndexWriter {
 
         let live_config = Arc::new(config.into_live());
         let pending_num_docs = Arc::new(AtomicI64::new(i64::from(segment_infos.total_max_doc())));
-        let segment_counter = Arc::new(AtomicI32::new(0));
+        // Java reads `counter` off the commit it opened, because `SegmentInfos`
+        // carries it in the `segments_N` it was read from; a fresh index starts
+        // at zero. Seeding from `segment_infos` reproduces both cases.
+        let segment_counter = Arc::new(AtomicI64::new(segment_infos.counter));
 
         let segment_name_supplier = {
             let counter = Arc::clone(&segment_counter);
             Arc::new(move || {
                 let n = counter.fetch_add(1, Ordering::AcqRel);
-                format!("_{}", radix_36(i64::from(n)))
+                format!("_{}", radix_36(n))
             })
         };
 
@@ -328,7 +370,7 @@ impl IndexWriter {
         reader_pool.enable_reader_pooling(live_config.reader_pooling());
 
         let documents_writer = Arc::new(DocumentsWriter::with_default_chain(
-            notifications,
+            Arc::clone(&notifications) as Arc<dyn FlushNotifications>,
             segment_infos.index_created_version_major(),
             Arc::clone(&pending_num_docs),
             segment_name_supplier,
@@ -375,6 +417,7 @@ impl IndexWriter {
             buffered_updates_stream: BufferedUpdatesStream::with_info_stream(info_stream),
             closing: AtomicBool::new(false),
             merge_finished_gen: AtomicI64::new(0),
+            flush_notifications: notifications,
             full_flush_lock: Mutex::new(()),
             self_ref: OnceLock::new(),
         })
@@ -1122,8 +1165,14 @@ impl IndexWriter {
         // finally block does.
         self.documents_writer
             .finish_full_flush(flush_result.is_ok() && published.is_ok())?;
+        // Java's same finally block then drains the event queue, and explicitly
+        // must not trigger merges here or it can deadlock
+        // (`IndexWriter.java:3799`, `:4396`). This is what deletes the raw
+        // segment files a compound file has just replaced.
+        let processed = self.process_events(false);
         flush_result?;
-        published
+        published?;
+        processed
     }
 
     /// Moves every flushed segment from the ticket queue into `segment_infos`.
@@ -1227,6 +1276,7 @@ impl IndexWriter {
         }
         let user_data = state.commit_user_data.clone();
         state.segment_infos.set_user_data(user_data, false);
+        self.publish_segment_counter(&mut state.segment_infos);
         let to_sync = clone_infos(&state.segment_infos)?;
         self.pending_commit_change_count
             .store(self.change_count.load(Ordering::Acquire), Ordering::Release);
@@ -1398,7 +1448,7 @@ impl IndexWriter {
         state.merging_segments.clear();
 
         // Restore the segments the last commit recorded.
-        let restored = match SegmentInfos::read_latest_commit(self.directory.as_ref()) {
+        let restored = match SegmentInfos::read_latest_commit(Arc::clone(&self.directory)) {
             Ok(infos) => infos,
             // An index with no commit rolls back to empty.
             Err(_) => SegmentInfos::new(Version::LATEST.major as i32)?,
@@ -3366,7 +3416,31 @@ impl IndexWriter {
         self.change_count.fetch_add(1, Ordering::AcqRel);
         state.segment_infos.changed();
         let n = self.segment_counter.fetch_add(1, Ordering::AcqRel);
-        format!("_{}", radix_36(i64::from(n)))
+        state.segment_infos.counter = n + 1;
+        format!("_{}", radix_36(n))
+    }
+
+    /// Copies the segment counter into `infos`, which is where Lucene keeps it.
+    ///
+    /// Java has nothing to copy: `newSegmentName` increments
+    /// `segmentInfos.counter` in place (`IndexWriter.java:2140`), so the field
+    /// that `SegmentInfos.write` serialises
+    /// (`SegmentInfos.java`, `writeVLong(counter)`) is always current. This port
+    /// keeps the counter in an atomic the indexing threads can reach without
+    /// the writer's state lock — see [`Self::segment_counter`] — so the value
+    /// has to be published before the segments are written or handed out.
+    ///
+    /// The counter only ever grows, so publishing takes the larger of the two:
+    /// a `SegmentInfos` that a merge or an `addIndexes` already pushed further
+    /// must not be pulled back.
+    fn publish_segment_counter(&self, infos: &mut SegmentInfos) {
+        let counter = self.segment_counter.load(Ordering::Acquire);
+        if infos.counter < counter {
+            infos.counter = counter;
+        } else {
+            self.segment_counter
+                .fetch_max(infos.counter, Ordering::AcqRel);
+        }
     }
 
     // -- Document accounting -------------------------------------------------
@@ -3519,10 +3593,35 @@ impl IndexWriter {
     /// Renders one segment together with the deletions pending against it.
     ///
     /// Equivalent to `IndexWriter.segString(SegmentCommitInfo)`.
-    fn seg_string_info(&self, _state: &WriterState, info: &SegmentCommitInfo) -> Result<String> {
-        let pending =
-            self.num_deleted_docs(info)? - info.get_del_count_with_soft(self.soft_deletes_enabled);
+    fn seg_string_info(&self, state: &WriterState, info: &SegmentCommitInfo) -> Result<String> {
+        let pending = self.num_deleted_docs_with(state, info)?
+            - info.get_del_count_with_soft(self.soft_deletes_enabled);
         Ok(info.info.to_string_with_del_count(pending))
+    }
+
+    /// [`num_deleted_docs`](Self::num_deleted_docs) for a caller that already
+    /// holds the writer state.
+    ///
+    /// Java's `IndexWriter` guards its state with the object monitor, which is
+    /// reentrant, so `segString(SegmentCommitInfo)` can call `numDeletedDocs`,
+    /// and through it `validate` and `readerPool.get`, while the caller is
+    /// already inside a `synchronized` block — which is exactly what
+    /// `startCommit` does when it renders the segments for the info stream
+    /// (`IndexWriter.java:5687-5692`). A Rust `Mutex` is not reentrant, so
+    /// re-locking there deadlocks the committing thread against itself. This
+    /// variant reuses the caller's guard instead of taking a second one.
+    fn num_deleted_docs_with(&self, state: &WriterState, info: &SegmentCommitInfo) -> Result<i32> {
+        self.ensure_open_with(false)?;
+        if !state.segment_infos.contains(info) {
+            return Err(LuceneError::IllegalArgument(
+                "SegmentCommitInfo must be from the same directory".to_string(),
+            ));
+        }
+        let created_version_major = state.segment_infos.index_created_version_major();
+        if let Some(rld) = self.reader_pool.get(info, false, created_version_major)? {
+            return Ok(rld.get_del_count());
+        }
+        Ok(info.get_del_count())
     }
 
     /// Prints the one-shot banner Lucene writes to the info stream.
@@ -4015,6 +4114,16 @@ impl IndexWriter {
     ///
     /// Equivalent to `IndexWriter.processEvents(boolean)`.
     fn process_events(&self, trigger_merge: bool) -> Result<()> {
+        // Java drains the event queue first, and skips it once the writer is
+        // tragic (`IndexWriter.java:5568-5576`). The only event this port
+        // records is `deleteUnusedFiles`, which a flush raises for the raw
+        // segment files a compound file has just replaced.
+        if self.get_tragic_exception().is_none() {
+            let files = self.flush_notifications.take_orphaned_files();
+            if !files.is_empty() {
+                self.delete_new_files(files)?;
+            }
+        }
         if trigger_merge && !self.closed.load(Ordering::Acquire) {
             self.maybe_merge()?;
         }
@@ -4323,7 +4432,7 @@ impl IndexWriter {
                 self.info_stream
                     .message(IW, "addIndexes: process directory");
             }
-            let sis = SegmentInfos::read_latest_commit(dir.as_ref())?;
+            let sis = SegmentInfos::read_latest_commit(Arc::clone(dir))?;
             if created != sis.index_created_version_major() {
                 return Err(LuceneError::IllegalArgument(format!(
                     "Cannot use addIndexes(Directory) with indexes that have been created by a different Lucene version. The current index was generated by Lucene {created} while one of the directories contains an index that was generated with Lucene {}",
@@ -4886,6 +4995,9 @@ impl IndexWriter {
 
         let mut state = self.state()?;
         state.segment_infos.add(new_segment)?;
+        // The name of the segment just added came from the atomic counter, so
+        // the `SegmentInfos` that now holds it must record the counter too.
+        self.publish_segment_counter(&mut state.segment_infos);
         self.checkpoint(&mut state)
     }
 }

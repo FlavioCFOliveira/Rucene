@@ -1156,6 +1156,14 @@ pub struct IndexingChainFlushResult {
     pub live_docs: Option<FixedBitSet>,
     /// Number of deleted documents after the chain applied them.
     pub del_count_on_flush: i32,
+    /// The permutation an index sort applied to the segment, or `None` when the
+    /// segment was written in the order the documents were buffered in.
+    ///
+    /// Equivalent to the `Sorter.PackableDocMap` Lucene's `IndexingChain.flush`
+    /// returns (`IndexingChain.java:296`, `:391`), which
+    /// [`DwptGuard::seal_flushed_segment`] needs in order to write the live-docs
+    /// bit set in the segment's own document order.
+    pub sort_map: Option<crate::index::index_sorter::SorterDocMap>,
 }
 
 impl Debug for IndexingChainFlushState<'_> {
@@ -3494,7 +3502,7 @@ impl DwptGuard {
             "all deletes must be applied in prepareFlush"
         );
 
-        let outcome = match self.flush_inner() {
+        let outcome = match self.flush_inner(notifications) {
             Ok(value) => {
                 self.maybe_abort("flush", notifications);
                 Ok(value)
@@ -3513,7 +3521,10 @@ impl DwptGuard {
         outcome
     }
 
-    fn flush_inner(&mut self) -> Result<Option<FlushedSegment>> {
+    fn flush_inner(
+        &mut self,
+        notifications: &dyn FlushNotifications,
+    ) -> Result<Option<FlushedSegment>> {
         let max_doc = self.dwpt.num_docs_in_ram();
         let last_committed_bytes_used = self.dwpt.last_committed_bytes_used();
 
@@ -3586,7 +3597,11 @@ impl DwptGuard {
         };
         // `FreqProxTermsWriter.applyDeletes` may have deleted more documents of
         // this very segment while flushing it.
-        let (live_docs, del_count) = (flush_result.live_docs, flush_result.del_count_on_flush);
+        let (live_docs, del_count, sort_map) = (
+            flush_result.live_docs,
+            flush_result.del_count_on_flush,
+            flush_result.sort_map,
+        );
 
         // Delete terms have now been applied to this segment and are also
         // carried by the frozen global packet, so Lucene drops them here to
@@ -3619,13 +3634,129 @@ impl DwptGuard {
                 .message("DWPT", &format!("new segment has {del_count} deleted docs"));
         }
 
-        Ok(Some(FlushedSegment {
+        let mut flushed = FlushedSegment {
             segment_info: segment_commit_info,
             field_infos,
             segment_updates,
             live_docs,
             del_count,
-        }))
+        };
+        self.seal_flushed_segment(&mut flushed, sort_map.as_ref(), notifications)?;
+        Ok(Some(flushed))
+    }
+
+    /// Seals the [`SegmentInfo`] of a freshly flushed segment and persists its
+    /// deleted documents.
+    ///
+    /// This is the step that turns the raw files the indexing chain wrote into a
+    /// segment a reader can open: it packs them into a compound file when the
+    /// configuration asks for one, has the codec write the `.si`, and writes the
+    /// `.liv` bit set when documents were deleted while the segment was being
+    /// indexed.
+    ///
+    /// Equivalent to `DocumentsWriterPerThread.sealFlushedSegment(FlushedSegment,
+    /// Sorter.DocMap, DocumentsWriter.FlushNotifications)`
+    /// (`DocumentsWriterPerThread.java:625-712`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error raised while writing the compound file, the segment
+    /// info or the live-docs file.
+    pub fn seal_flushed_segment(
+        &mut self,
+        flushed_segment: &mut FlushedSegment,
+        sort_map: Option<&crate::index::index_sorter::SorterDocMap>,
+        notifications: &dyn FlushNotifications,
+    ) -> Result<()> {
+        // Java opens with `IndexWriter.setDiagnostics(newSegment.info,
+        // SOURCE_FLUSH)`. This port records the same diagnostics in
+        // `flush_inner`, on the `SegmentInfo` that is about to be moved into the
+        // `SegmentCommitInfo`: Java's `SegmentCommitInfo` holds a reference to a
+        // `SegmentInfo` that can still be mutated afterwards, whereas this port
+        // owns it by value. The recorded map is identical either way.
+        let context = {
+            let new_segment = &mut flushed_segment.segment_info;
+            let max_doc = new_segment.info.max_doc()?;
+            let size = new_segment.size_in_bytes()?;
+            flush_io_context(FlushInfo::new(max_doc, size))
+        };
+
+        if self.dwpt.index_writer_config.use_compound_file() {
+            let original_files = flushed_segment.segment_info.info.files()?;
+            // Java wraps the DWPT's own tracking directory in a second tracking
+            // layer, so that `createCompoundFile` starts from an empty
+            // created-file set while the `.cfs`/`.cfe` it writes still land in
+            // the DWPT's set.
+            let tracking = TrackingDirectoryWrapper::new(Box::new(SharedDirectory(Arc::clone(
+                &self.dwpt.directory,
+            )
+                as Arc<dyn Directory>)));
+            let mut delete_files = |files: HashSet<String>| -> Result<()> {
+                notifications.delete_unused_files(&files);
+                Ok(())
+            };
+            crate::index::index_writer::IndexWriter::create_compound_file(
+                self.dwpt.info_stream.as_ref(),
+                &tracking,
+                &flushed_segment.segment_info.info,
+                context.as_ref(),
+                &mut delete_files,
+            )?;
+            self.state_mut().files_to_delete.extend(original_files);
+            flushed_segment
+                .segment_info
+                .info
+                .set_use_compound_file(true);
+        }
+
+        // Have the codec write the `SegmentInfo`. This must happen after the
+        // compound file so that (1) the `.si` is not slurped into the CFS and
+        // (2) the `.si` records the `useCompoundFile=true` set just above.
+        self.dwpt.codec.segment_info_format().write(
+            self.dwpt.directory.as_ref(),
+            &flushed_segment.segment_info.info,
+            context.as_ref(),
+        )?;
+
+        // The deleted documents must be written after the compound file too, so
+        // that the `.liv` is not slurped into it either.
+        let del_count = flushed_segment.del_count;
+        let bits = flushed_segment.live_docs.as_ref().map(|live_docs| {
+            debug_assert!(del_count > 0);
+            match sort_map {
+                None => live_docs.clone(),
+                Some(map) => DocumentsWriterPerThread::sort_live_docs(live_docs, map),
+            }
+        });
+        if let Some(bits) = bits {
+            if self.dwpt.info_stream.is_enabled("DWPT") {
+                self.dwpt.info_stream.message(
+                    "DWPT",
+                    &format!(
+                        "flush: write {del_count} deletes gen={}",
+                        flushed_segment.segment_info.get_del_gen()
+                    ),
+                );
+            }
+            let codec = flushed_segment.segment_info.info.codec().ok_or_else(|| {
+                LuceneError::IllegalState(format!(
+                    "segment {} has no codec",
+                    flushed_segment.segment_info.info.name
+                ))
+            })?;
+            // `writeLiveDocs` names the file from `getNextDelGen()`, so it has
+            // to run before `advanceDelGen`.
+            codec.live_docs_format().write_live_docs(
+                &bits,
+                self.dwpt.directory.as_ref(),
+                &flushed_segment.segment_info,
+                del_count,
+                context.as_ref(),
+            )?;
+            flushed_segment.segment_info.set_del_count(del_count)?;
+            flushed_segment.segment_info.advance_del_gen();
+        }
+        Ok(())
     }
 
     /// Discards every buffered document and delete.
@@ -3657,11 +3788,35 @@ impl DwptGuard {
 
 /// Records the standard flush diagnostics on a freshly flushed segment.
 ///
-/// Equivalent to `IndexWriter.setDiagnostics(SegmentInfo, IndexWriter.SOURCE_FLUSH)`.
-/// The JVM-specific keys Lucene also records (`java.runtime.version`,
-/// `java.vendor`, `os.version`) have no Rust counterpart and are omitted; the
-/// diagnostics map is free-form metadata and does not affect index
-/// compatibility.
+/// Equivalent to `IndexWriter.setDiagnostics(SegmentInfo, IndexWriter.SOURCE_FLUSH)`,
+/// which delegates to the private three-argument form
+/// (`IndexWriter.java:5132-5150`).
+///
+/// **Divergence from Lucene 10.5.0.** Java records eight entries — `source`,
+/// `lucene.version`, `os`, `os.arch`, `os.version`, `java.runtime.version`,
+/// `java.vendor` and `timestamp`. This port records five, and two of those hold
+/// different text:
+///
+/// * `java.runtime.version` and `java.vendor` name the Java runtime that wrote
+///   the segment. There is no Java runtime here, and writing a value anyway
+///   would put a false statement in the index.
+/// * `os.version` comes from the JVM's `os.version` system property, which the
+///   Rust standard library has no equivalent of; reaching outside it for a
+///   field nothing reads is not worth a platform dependency.
+/// * `os` and `os.arch` come from [`std::env::consts::OS`] and
+///   [`std::env::consts::ARCH`], so they read `linux`/`x86_64` where a JVM
+///   writes `Linux`/`amd64`. They name the same machine in this port's own
+///   vocabulary.
+///
+/// The divergence is confined to values nothing acts on. Within Lucene 10.5.0
+/// the diagnostics map is only copied (`IndexWriter.java:3642`), printed by
+/// `CheckIndex` (`CheckIndex.java:985`) and serialised into the `.si`
+/// (`Lucene99SegmentInfoFormat.java:212`); no reader, merge policy or codec
+/// branches on any of these keys, and `tests/portability/flush_files.rs` shows
+/// Lucene 10.5.0 opening the segments this port writes.
+///
+/// A byte-identical diagnostics map is unreachable in any case: `timestamp` is
+/// the wall clock at flush, so two runs of Lucene itself already differ.
 fn set_flush_diagnostics(info: &mut SegmentInfo) {
     let mut diagnostics = HashMap::new();
     diagnostics.insert("source".to_string(), SOURCE_FLUSH.to_string());
@@ -5746,6 +5901,7 @@ mod tests {
             Ok(IndexingChainFlushResult {
                 live_docs: state.live_docs.cloned(),
                 del_count_on_flush: state.del_count_on_flush,
+                sort_map: None,
             })
         }
 
@@ -5757,7 +5913,9 @@ mod tests {
     struct Fixture {
         writer: Arc<DocumentsWriter>,
         pending_num_docs: Arc<AtomicI64>,
-        _directory: Arc<dyn Directory>,
+        /// The directory the flushed segments land in, so that a test can check
+        /// what was actually written and not only what the `SegmentInfo` lists.
+        directory: Arc<dyn Directory>,
     }
 
     fn new_writer_with_chain(
@@ -5785,7 +5943,7 @@ mod tests {
         Fixture {
             writer: Arc::new(writer),
             pending_num_docs,
-            _directory: directory,
+            directory,
         }
     }
 
@@ -6678,23 +6836,45 @@ mod tests {
         assert_eq!(segments[0].segment_info.info.max_doc().unwrap(), 5);
         assert!(!fixture.writer.any_changes());
 
-        // The indexing chain writes the postings files of the segment, and the
-        // tracking directory records them on the `SegmentInfo`.
-        let files = segments[0]
+        // The segment was sealed on its way out of the flush, so the files it
+        // lists are the ones `sealFlushedSegment` leaves behind: the compound
+        // file that swallowed every per-format file, its entry table, and the
+        // `.si` that records the whole thing
+        // (`DocumentsWriterPerThread.java:643-661`). The default configuration
+        // has compound files on, exactly as Lucene's does.
+        assert!(
+            segments[0].segment_info.info.get_use_compound_file(),
+            "a sealed segment records that it is a compound file"
+        );
+        let mut files: Vec<String> = segments[0]
             .segment_info
             .info
             .files()
-            .expect("segment files");
-        assert!(
-            files.iter().any(|name| name.ends_with(".doc")),
-            "a flushed segment must carry its postings files, got {files:?}"
+            .expect("segment files")
+            .into_iter()
+            .collect();
+        files.sort();
+        assert_eq!(
+            files,
+            vec![
+                "_0.cfe".to_string(),
+                "_0.cfs".to_string(),
+                "_0.si".to_string()
+            ],
+            "a sealed segment lists its compound file, its entry table and its .si"
         );
-        for extension in ["tim", "tip", "tmd"] {
+
+        // The per-format files the indexing chain wrote are still on disk —
+        // `createCompoundFile` only records them for deletion, it does not
+        // delete them — so this is where the postings can still be seen.
+        let mut written = fixture.directory.list_all().expect("directory listing");
+        written.sort();
+        for extension in ["doc", "tim", "tip", "tmd", "fnm"] {
             assert!(
-                files
+                written
                     .iter()
                     .any(|name| name.ends_with(&format!(".{extension}"))),
-                "a flushed segment must carry its .{extension} file, got {files:?}"
+                "the flush must write a .{extension} file, got {written:?}"
             );
         }
     }

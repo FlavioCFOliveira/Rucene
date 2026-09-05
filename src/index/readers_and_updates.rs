@@ -2442,7 +2442,7 @@ impl ReaderPool {
             self.new_pending_deletes(info),
         ));
         map.insert(info.info.name.clone(), Arc::clone(&rld));
-        debug_assert!(self.no_dups());
+        debug_assert!(Self::no_dups(&map));
         Ok(Some(rld))
     }
 
@@ -2493,8 +2493,11 @@ impl ReaderPool {
     /// `SegmentCommitInfo`, and two distinct infos can name one segment; this
     /// pool is keyed by the name itself, so the property holds by construction
     /// and the check confirms it rather than being able to fail.
-    pub(crate) fn no_dups(&self) -> bool {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+    ///
+    /// It takes the map rather than the pool because Java asserts it from inside
+    /// a `synchronized` method whose monitor is reentrant, while a Rust `Mutex`
+    /// is not: re-locking here would deadlock [`get`](Self::get) against itself.
+    fn no_dups(map: &HashMap<String, Arc<ReadersAndUpdates>>) -> bool {
         let mut seen: HashSet<&str> = HashSet::new();
         for name in map.keys() {
             assert!(!seen.contains(name.as_str()), "seen twice: {name}");

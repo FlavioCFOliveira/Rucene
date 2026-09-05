@@ -996,9 +996,29 @@ fn vector_similarity_function_from_byte(b: u8) -> Result<VectorSimilarityFunctio
 /// Equivalent to `org.apache.lucene.index.FieldInfos`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FieldInfos {
-    by_number: Vec<Option<FieldInfo>>,
+    /// Field metadata indexed by field number, with a gap for every number no
+    /// field was assigned.
+    ///
+    /// Java stores `FieldInfo[] byNumber` and `Collection<FieldInfo> values`
+    /// (`FieldInfos.java:64-68`) and fills both from the very same objects —
+    /// `values = Arrays.asList(byNumber)`, or `Arrays.asList(infos)` when the
+    /// numbering is sparse (`FieldInfos.java:157-185`). Every handle onto a
+    /// field is therefore a handle onto *one* object, which is what lets a
+    /// codec mutate a `FieldInfo` through one of them and have the change seen
+    /// through the others. `PerFieldPostingsFormat.FieldsWriter.write` relies
+    /// on exactly that: it looks a field up by name and calls `putAttribute`
+    /// (`PerFieldPostingsFormat.java:253-254`), and `IndexingChain.flush` then
+    /// serialises the very same objects while iterating
+    /// (`IndexingChain.java:382-387`).
+    ///
+    /// The two collections hold `Arc<FieldInfo>` so that they alias one object
+    /// per field, as Java's references do; storing `FieldInfo` by value in each
+    /// would make them independent copies and silently drop such a mutation.
+    by_number: Vec<Option<Arc<FieldInfo>>>,
     by_name: HashMap<String, i32>,
-    values: Vec<FieldInfo>,
+    /// The same objects as [`Self::by_number`], in the order Java's `values`
+    /// collection presents them.
+    values: Vec<Arc<FieldInfo>>,
 
     has_freq: bool,
     has_postings: bool,
@@ -1108,7 +1128,12 @@ impl FieldInfos {
             }
         }
 
-        let mut by_number: Vec<Option<FieldInfo>> = vec![None; (max_field_number + 1) as usize];
+        // One `Arc` per field, shared by `by_number` and `values`, so that the
+        // two collections alias a single object exactly as Java's arrays do.
+        let infos: Vec<Arc<FieldInfo>> = infos.into_iter().map(Arc::new).collect();
+
+        let mut by_number: Vec<Option<Arc<FieldInfo>>> =
+            vec![None; (max_field_number + 1) as usize];
         for info in &infos {
             let slot = &mut by_number[info.number as usize];
             if slot.is_some() {
@@ -1118,7 +1143,7 @@ impl FieldInfos {
                     existing.name, info.name, info.number
                 )));
             }
-            *slot = Some(info.clone());
+            *slot = Some(Arc::clone(info));
         }
 
         let values =
@@ -1183,6 +1208,7 @@ impl FieldInfos {
     pub fn iter(&self) -> impl Iterator<Item = &FieldInfo> {
         self.values
             .iter()
+            .map(Arc::as_ref)
             .filter(move |fi| self.is_visible(&fi.name))
     }
 
@@ -1205,7 +1231,7 @@ impl FieldInfos {
         if !self.is_visible(&fi.name) {
             return None;
         }
-        Some(fi)
+        Some(fi.as_ref())
     }
 
     /// Returns `true` if any visible field has term frequencies.
@@ -1380,6 +1406,7 @@ impl FieldInfos {
         let visible: Vec<&FieldInfo> = result
             .values
             .iter()
+            .map(Arc::as_ref)
             .filter(|fi| result.is_visible(&fi.name))
             .collect();
 

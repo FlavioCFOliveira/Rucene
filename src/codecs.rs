@@ -798,7 +798,7 @@ pub(crate) mod tests {
 
         fn read(
             &self,
-            _directory: &dyn crate::store::Directory,
+            _directory: Arc<dyn crate::store::Directory>,
             segment_name: &str,
             segment_id: &[u8],
             _context: &dyn crate::store::IOContext,

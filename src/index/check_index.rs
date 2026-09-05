@@ -832,30 +832,33 @@ impl CheckIndex {
             // Do not use `SegmentInfos::read_latest_commit`, since the spooky
             // retrying it does is not necessary here (we hold the write lock);
             // always open old indices if codecs are around.
-            let infos =
-                match SegmentInfos::read_commit_with_min_version(self.dir.as_ref(), file_name, 0) {
-                    Ok(infos) => infos,
-                    Err(error) => {
-                        if self.fail_fast {
-                            return Err(error);
-                        }
-                        let message = if is_last_commit {
-                            format!(
-                                "ERROR: could not read latest commit point from segments file \
-                                 \"{file_name}\" in directory"
-                            )
-                        } else {
-                            format!(
-                                "ERROR: could not read old (not latest) commit point segments \
-                                 file \"{file_name}\" in directory"
-                            )
-                        };
-                        msg(self.info(), &message);
-                        msg(self.info(), &format!("{error}"));
-                        result.missing_segments = true;
-                        return Ok(result);
+            let infos = match SegmentInfos::read_commit_with_min_version(
+                Arc::clone(&self.dir),
+                file_name,
+                0,
+            ) {
+                Ok(infos) => infos,
+                Err(error) => {
+                    if self.fail_fast {
+                        return Err(error);
                     }
-                };
+                    let message = if is_last_commit {
+                        format!(
+                            "ERROR: could not read latest commit point from segments file \
+                                 \"{file_name}\" in directory"
+                        )
+                    } else {
+                        format!(
+                            "ERROR: could not read old (not latest) commit point segments \
+                                 file \"{file_name}\" in directory"
+                        )
+                    };
+                    msg(self.info(), &message);
+                    msg(self.info(), &format!("{error}"));
+                    result.missing_segments = true;
+                    return Ok(result);
+                }
+            };
 
             if is_last_commit {
                 // Record the latest commit point: we will deeply check all
@@ -4354,7 +4357,7 @@ impl IndexUpgrader {
         // `get_live_commit_data`; it reads the same value from the commit the
         // writer is about to open on, which is exactly what Java's writer
         // initialises its `commitUserData` from (`IndexWriter.java:1122`).
-        let commit_user_data = SegmentInfos::read_latest_commit(self.dir.as_ref())
+        let commit_user_data = SegmentInfos::read_latest_commit(Arc::clone(&self.dir))
             .map(|infos| infos.user_data().clone())
             .unwrap_or_default();
 

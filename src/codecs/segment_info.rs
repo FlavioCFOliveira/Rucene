@@ -3,6 +3,7 @@
 //! Equivalent to `org.apache.lucene.codecs.SegmentInfoFormat`.
 
 use std::fmt;
+use std::sync::Arc;
 
 use crate::error::Result;
 use crate::index::SegmentInfo;
@@ -18,7 +19,7 @@ pub trait SegmentInfoFormat: Send + Sync + fmt::Debug {
     /// Read [`SegmentInfo`] data from a directory.
     fn read(
         &self,
-        directory: &dyn Directory,
+        directory: Arc<dyn Directory>,
         segment_name: &str,
         segment_id: &[u8],
         context: &dyn IOContext,
@@ -44,7 +45,7 @@ impl SegmentInfoFormat for EmptySegmentInfoFormat {
 
     fn read(
         &self,
-        _directory: &dyn Directory,
+        _directory: Arc<dyn Directory>,
         _segment_name: &str,
         _segment_id: &[u8],
         _context: &dyn IOContext,

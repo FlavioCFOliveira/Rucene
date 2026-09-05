@@ -656,7 +656,7 @@ fn dump(reader: &dyn PointsReader, field_infos: &FieldInfos, case: &str) -> Vec<
 fn read_java_index(dir: &Path, case: &str) -> Vec<String> {
     let codec = ensure_codec();
     let directory: Arc<dyn Directory> = Arc::new(FSDirectory::open(dir).expect("directory"));
-    let infos = SegmentInfos::read_latest_commit(directory.as_ref()).expect("segments file");
+    let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory)).expect("segments file");
     let segment_info = infos.info(0).info.clone();
     let field_infos = codec
         .field_infos_format()

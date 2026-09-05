@@ -545,9 +545,19 @@ impl IndexReader for StandardDirectoryReader {
     }
 
     fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-        Err(LuceneError::UnsupportedOperation(
-            "DirectoryReader does not support storedFields".to_string(),
-        ))
+        let mut sub_fields = Vec::with_capacity(self.segment_readers.len());
+        let mut starts = Vec::with_capacity(self.segment_readers.len());
+        let mut doc_base = 0;
+        for reader in &self.segment_readers {
+            sub_fields.push(None);
+            starts.push(doc_base);
+            doc_base += LeafReader::max_doc(reader.as_ref());
+        }
+        Ok(Box::new(CompositeStoredFields {
+            sub_readers: self.segment_readers.clone(),
+            starts,
+            sub_fields: Mutex::new(sub_fields),
+        }))
     }
 
     fn do_close(&self) -> Result<()> {
@@ -618,6 +628,87 @@ impl IndexReader for StandardDirectoryReader {
     }
 }
 
+/// The [`StoredFields`] a composite reader hands out.
+///
+/// Equivalent to the anonymous `StoredFields` that
+/// `BaseCompositeReader.storedFields()` returns
+/// (`BaseCompositeReader.java:171-194`): it finds the sub-reader that owns the
+/// document, translates the document id into that sub-reader's own numbering by
+/// subtracting the sub-reader's start, and dispatches. Like Java's, it opens
+/// each sub-reader's `StoredFields` only when a document of that sub-reader is
+/// first asked for, and reuses it afterwards.
+///
+/// Java caches the sub-`StoredFields` in a plain array captured by the
+/// anonymous class, because the object it returns is documented as
+/// single-threaded and is never shared. This port must still satisfy the
+/// `Send + Sync` bound the [`StoredFields`] trait carries, and the trait's
+/// methods take `&self`, so the cache sits behind a [`Mutex`]. Every handle is
+/// otherwise the same object Java's is: a per-call view over the sub-readers.
+#[derive(Debug)]
+struct CompositeStoredFields {
+    sub_readers: Vec<Arc<SegmentReader>>,
+    /// First document id of each sub-reader, i.e. Java's `starts`.
+    starts: Vec<i32>,
+    sub_fields: Mutex<Vec<Option<Box<dyn StoredFields>>>>,
+}
+
+impl CompositeStoredFields {
+    /// Returns the index of the sub-reader holding `doc_id`.
+    ///
+    /// Equivalent to `BaseCompositeReader.readerIndex(int)`, which Java
+    /// implements as a binary search over `starts`
+    /// (`BaseCompositeReader.java:96-104`, `ReaderUtil.subIndex`).
+    fn reader_index(&self, doc_id: i32) -> Result<usize> {
+        if doc_id < 0 || self.starts.is_empty() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "docID must be >= 0 and < maxDoc; got {doc_id}"
+            )));
+        }
+        // `starts` is ascending, so the owning sub-reader is the last one whose
+        // start is <= doc_id.
+        Ok(match self.starts.binary_search(&doc_id) {
+            Ok(index) => index,
+            Err(insertion) => insertion - 1,
+        })
+    }
+
+    /// Runs `body` against the [`StoredFields`] of the sub-reader owning
+    /// `doc_id`, opening it on first use, and hands it the sub-reader-local id.
+    fn with_sub<T>(
+        &self,
+        doc_id: i32,
+        body: impl FnOnce(&mut dyn StoredFields, i32) -> Result<T>,
+    ) -> Result<T> {
+        let index = self.reader_index(doc_id)?;
+        let mut cache = self.sub_fields.lock().map_err(|_| {
+            LuceneError::IllegalState("stored fields lock was poisoned".to_string())
+        })?;
+        if cache[index].is_none() {
+            cache[index] = Some(LeafReader::stored_fields(self.sub_readers[index].as_ref())?);
+        }
+        let sub = cache[index]
+            .as_mut()
+            .expect("INVARIANT: the entry was just filled");
+        body(sub.as_mut(), doc_id - self.starts[index])
+    }
+}
+
+impl StoredFields for CompositeStoredFields {
+    fn prefetch(&mut self, doc_id: i32) -> Result<()> {
+        self.with_sub(doc_id, |sub, local| sub.prefetch(local))
+    }
+
+    fn document_with_visitor(
+        &self,
+        doc_id: i32,
+        visitor: &mut dyn crate::codecs::stub::StoredFieldVisitor,
+    ) -> Result<()> {
+        self.with_sub(doc_id, |sub, local| {
+            sub.document_with_visitor(local, visitor)
+        })
+    }
+}
+
 impl CompositeReader for StandardDirectoryReader {
     fn get_sequential_sub_readers(&self) -> Vec<Arc<dyn IndexReader>> {
         self.segment_readers
@@ -648,7 +739,7 @@ impl DirectoryReader for StandardDirectoryReader {
                 return Ok(writer.nrt_is_current(&self.segment_infos));
             }
         }
-        let latest = SegmentInfos::read_latest_commit(self.directory.as_ref())?;
+        let latest = SegmentInfos::read_latest_commit(Arc::clone(&self.directory))?;
         Ok(latest.version() == self.segment_infos.version())
     }
 
@@ -803,10 +894,10 @@ impl StandardDirectoryReader {
     ) -> Result<Option<Arc<dyn DirectoryReader>>> {
         let infos = match commit {
             Some(commit) => SegmentInfos::read_commit(
-                self.directory.as_ref(),
+                Arc::clone(&self.directory),
                 &commit.get_segments_file_name(),
             )?,
-            None => SegmentInfos::read_latest_commit(self.directory.as_ref())?,
+            None => SegmentInfos::read_latest_commit(Arc::clone(&self.directory))?,
         };
         Self::open_from_infos(Arc::clone(&self.directory), infos, None, None).map(Some)
     }
@@ -1000,7 +1091,7 @@ impl CacheHelper for Arc<DirectoryReaderCacheHelper> {
 ///
 /// Equivalent to `DirectoryReader.open(Directory)`.
 pub fn open(directory: Arc<dyn Directory>) -> Result<Arc<dyn DirectoryReader>> {
-    let infos = SegmentInfos::read_latest_commit(directory.as_ref())?;
+    let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory))?;
     StandardDirectoryReader::open_from_infos(directory, infos, None, None)
 }
 
@@ -1009,7 +1100,8 @@ pub fn open(directory: Arc<dyn Directory>) -> Result<Arc<dyn DirectoryReader>> {
 /// Equivalent to `DirectoryReader.open(IndexCommit)`.
 pub fn open_with_commit(commit: &dyn IndexCommit) -> Result<Arc<dyn DirectoryReader>> {
     let directory = commit.get_directory();
-    let infos = SegmentInfos::read_commit(directory.as_ref(), &commit.get_segments_file_name())?;
+    let infos =
+        SegmentInfos::read_commit(Arc::clone(&directory), &commit.get_segments_file_name())?;
     StandardDirectoryReader::open_from_infos(directory, infos, None, None)
 }
 
@@ -1098,7 +1190,7 @@ pub fn open_if_changed_with_writer(
 /// read.
 pub fn list_commits(directory: Arc<dyn Directory>) -> Result<Vec<Arc<dyn IndexCommit>>> {
     let files = directory.list_all()?;
-    let latest = SegmentInfos::read_latest_commit_with_min_version(directory.as_ref(), 0)?;
+    let latest = SegmentInfos::read_latest_commit_with_min_version(Arc::clone(&directory), 0)?;
     let current_gen = latest.generation();
 
     let mut commits: Vec<Arc<dyn IndexCommit>> = Vec::new();
@@ -1119,7 +1211,7 @@ pub fn list_commits(directory: Arc<dyn Directory>) -> Result<Vec<Arc<dyn IndexCo
         if file.starts_with(SEGMENTS) {
             let gen = SegmentInfos::generation_from_segments_file_name(&file)?;
             if gen < current_gen {
-                match SegmentInfos::read_commit_with_min_version(directory.as_ref(), &file, 0) {
+                match SegmentInfos::read_commit_with_min_version(Arc::clone(&directory), &file, 0) {
                     Ok(infos) => {
                         commits.push(Arc::new(ReaderCommit::new(
                             None,
@@ -1281,7 +1373,7 @@ mod tests {
         assert!(reader.is_current().unwrap());
 
         // Write a second commit with an additional segment.
-        let latest = SegmentInfos::read_latest_commit(dir.as_ref()).unwrap();
+        let latest = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
         let mut sis = latest.clone();
         sis.set_next_write_generation(latest.generation() + 1)
             .unwrap();
@@ -1325,7 +1417,7 @@ mod tests {
         assert!(same.is_none());
 
         // Write a new commit and reopen from it.
-        let latest = SegmentInfos::read_latest_commit(dir.as_ref()).unwrap();
+        let latest = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
         let mut sis = latest.clone();
         sis.set_next_write_generation(latest.generation() + 1)
             .unwrap();
@@ -1339,7 +1431,7 @@ mod tests {
         let new_commit = Box::new(
             ReaderCommit::new(
                 None,
-                SegmentInfos::read_latest_commit(dir.as_ref()).unwrap(),
+                SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap(),
                 Arc::clone(&dir),
             )
             .unwrap(),
@@ -1379,7 +1471,7 @@ mod tests {
         let _reader = commit_single_segment(Arc::clone(&dir));
 
         // Write a second commit.
-        let latest = SegmentInfos::read_latest_commit(dir.as_ref()).unwrap();
+        let latest = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
         let mut sis = latest.clone();
         sis.set_next_write_generation(latest.generation() + 1)
             .unwrap();
@@ -1436,7 +1528,7 @@ mod tests {
         assert!(index_exists(dir.as_ref()).unwrap());
 
         // A second commit is still detected.
-        let mut sis = SegmentInfos::read_latest_commit(dir.as_ref()).unwrap();
+        let mut sis = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
         sis.set_next_write_generation(2).unwrap();
         sis.changed();
         sis.commit(dir.as_ref()).unwrap();
@@ -1529,7 +1621,7 @@ mod tests {
 
         let reader = StandardDirectoryReader::open_from_infos(
             Arc::clone(&dir),
-            SegmentInfos::read_latest_commit(dir.as_ref()).unwrap(),
+            SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap(),
             None,
             Some(writer),
         )

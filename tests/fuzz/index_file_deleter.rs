@@ -389,7 +389,7 @@ fn a_corrupt_older_commit_is_an_error_not_an_abort() {
         }
 
         // The newest commit is still readable, so a writer would get this far.
-        let mut latest = SegmentInfos::read_latest_commit(directory.as_ref())
+        let mut latest = SegmentInfos::read_latest_commit(Arc::clone(&directory))
             .expect("the healthy newest commit must still be readable");
         assert_eq!(latest.segments_file_name().as_deref(), Some("segments_2"));
 

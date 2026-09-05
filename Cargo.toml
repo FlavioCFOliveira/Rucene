@@ -74,6 +74,14 @@ name = "portability_codecs"
 path = "tests/portability/codecs.rs"
 
 [[test]]
+name = "portability_seal_bytes"
+path = "tests/portability/seal_bytes.rs"
+
+[[test]]
+name = "portability_flush_files"
+path = "tests/portability/flush_files.rs"
+
+[[test]]
 name = "portability_indexing_chain"
 path = "tests/portability/indexing_chain.rs"
 

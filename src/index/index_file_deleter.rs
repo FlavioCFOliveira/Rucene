@@ -375,7 +375,7 @@ impl IndexFileDeleter {
                     if info_stream.is_enabled(IFD) {
                         info_stream.message(IFD, &format!("init: load commit \"{file_name}\""));
                     }
-                    let sis = SegmentInfos::read_commit(directory_orig.as_ref(), file_name)?;
+                    let sis = SegmentInfos::read_commit(Arc::clone(&directory_orig), file_name)?;
 
                     let commit_point = CommitPoint::new(
                         Arc::clone(&commits_to_delete),
@@ -409,11 +409,12 @@ impl IndexFileDeleter {
             let name = current_segments_file
                 .as_deref()
                 .expect("checked is_some above");
-            let sis = SegmentInfos::read_commit(directory_orig.as_ref(), name).map_err(|e| {
-                LuceneError::CorruptIndex(format!(
-                    "unable to read current segments_N file \"{name}\": {e}"
-                ))
-            })?;
+            let sis =
+                SegmentInfos::read_commit(Arc::clone(&directory_orig), name).map_err(|e| {
+                    LuceneError::CorruptIndex(format!(
+                        "unable to read current segments_N file \"{name}\": {e}"
+                    ))
+                })?;
             if info_stream.is_enabled(IFD) {
                 info_stream.message(IFD, &format!("forced open of current segments file {name}"));
             }

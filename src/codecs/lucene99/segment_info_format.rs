@@ -14,7 +14,7 @@ use crate::index::index_file_names::{
     parse_segment_name, segment_file_name, SEGMENT_INFO_EXTENSION,
 };
 use crate::search::write_sort;
-use crate::store::{DataInput, Directory, IOContext, IndexOutput, RamDirectory};
+use crate::store::{DataInput, Directory, IOContext, IndexOutput};
 use crate::util::Version;
 
 const CODEC_NAME: &str = "Lucene90SegmentInfo";
@@ -41,7 +41,7 @@ impl SegmentInfoFormat for Lucene99SegmentInfoFormat {
 
     fn read(
         &self,
-        directory: &dyn Directory,
+        directory: Arc<dyn Directory>,
         segment_name: &str,
         segment_id: &[u8],
         _context: &dyn IOContext,
@@ -89,7 +89,7 @@ impl SegmentInfoFormat for Lucene99SegmentInfoFormat {
 }
 
 fn parse_segment_info(
-    _directory: &dyn Directory,
+    directory: Arc<dyn Directory>,
     input: &mut dyn DataInput,
     segment_name: &str,
     segment_id: &[u8],
@@ -139,11 +139,6 @@ fn parse_segment_info(
     let id: [u8; 16] = segment_id
         .try_into()
         .map_err(|_| LuceneError::IllegalArgument("segment id must be 16 bytes".to_string()))?;
-
-    // The directory reference in SegmentInfo is used for path information; on
-    // read we attach a fresh in-memory directory placeholder. The real files are
-    // accessed through the directory passed to the format methods.
-    let directory = Arc::new(RamDirectory::default()) as Arc<dyn Directory>;
 
     let info = SegmentInfo::new_without_codec(
         directory,
@@ -233,8 +228,32 @@ fn write_segment_info(output: &mut dyn IndexOutput, info: &SegmentInfo) -> Resul
     output.write_set_of_strings(&files)?;
     output.write_map_of_strings(&info.get_attributes())?;
 
-    write_sort(output, info.index_sort())?;
+    write_segment_sort(output, info.index_sort())?;
     Ok(())
+}
+
+/// Writes the segment's index sort, using the same "unsorted" encoding
+/// [`read_segment_sort`] decodes.
+///
+/// Java writes `numSortFields = indexSort == null ? 0 : indexSort.getSort().length`
+/// (`Lucene99SegmentInfoFormat.java:223-234`), because `SegmentInfo.getIndexSort()`
+/// returns `null` for an unsorted segment.
+///
+/// **Divergence from Lucene 10.5.0.** This port's [`SegmentInfo`] carries a
+/// [`Sort`](crate::search::Sort) rather than an `Option`, and encodes "unsorted"
+/// as the relevance sort — the same convention
+/// `IndexingChain::maybe_sort_segment` reads. The relevance sort therefore has
+/// to be mapped back to a zero field count here, exactly as `read_segment_sort`
+/// maps a zero field count to it. Writing it as one `SCORE` field instead would
+/// both fail (a `SCORE` sort field has no `IndexSorter`, so Java refuses to
+/// serialize it too) and produce a `.si` Lucene could not read. The bytes on
+/// disk are identical to Java's for both the sorted and the unsorted case.
+fn write_segment_sort(output: &mut dyn IndexOutput, sort: &crate::search::Sort) -> Result<()> {
+    if *sort == crate::search::Sort::new() {
+        output.write_v_int(0)?;
+        return Ok(());
+    }
+    write_sort(output, sort)
 }
 
 #[cfg(test)]
@@ -247,7 +266,7 @@ mod tests {
 
     #[test]
     fn round_trip_segment_info() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let format = Lucene99SegmentInfoFormat::new();
         let mut info = test_segment_info("_0", 42);
         info.set_diagnostics(
@@ -267,11 +286,16 @@ mod tests {
         );
 
         format
-            .write(&dir, &info, &*crate::store::DEFAULT_IO_CONTEXT)
+            .write(dir.as_ref(), &info, &*crate::store::DEFAULT_IO_CONTEXT)
             .unwrap();
 
         let read = format
-            .read(&dir, "_0", &info.id(), &*crate::store::DEFAULT_IO_CONTEXT)
+            .read(
+                Arc::clone(&dir),
+                "_0",
+                &info.id(),
+                &*crate::store::DEFAULT_IO_CONTEXT,
+            )
             .unwrap();
 
         assert_eq!(read.name, info.name);

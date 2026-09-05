@@ -335,8 +335,24 @@ pub fn reload_doc_values_formats(format: Arc<dyn DocValuesFormat>) -> Result<()>
     GLOBAL_DOC_VALUES_REGISTRY.register_arc(format)
 }
 
-static GLOBAL_DOC_VALUES_REGISTRY: LazyLock<DocValuesFormatRegistry> =
-    LazyLock::new(DocValuesFormatRegistry::new);
+/// The global registry, seeded with the formats this crate ships.
+///
+/// The `lucene-core` jar lists a single doc-values format in
+/// `META-INF/services/org.apache.lucene.codecs.DocValuesFormat`,
+/// `org.apache.lucene.codecs.lucene90.Lucene90DocValuesFormat`, which the Java
+/// service loader makes resolvable by name without anyone registering it. Rust
+/// has no run-time service discovery, so that entry is registered here when the
+/// registry is first touched; see [`GLOBAL_POSTINGS_REGISTRY`] for the full
+/// reasoning.
+///
+/// [`GLOBAL_POSTINGS_REGISTRY`]: crate::codecs::postings_for_name
+static GLOBAL_DOC_VALUES_REGISTRY: LazyLock<DocValuesFormatRegistry> = LazyLock::new(|| {
+    let registry = DocValuesFormatRegistry::new();
+    registry
+        .register_arc(Arc::new(crate::codecs::Lucene90DocValuesFormat::new()))
+        .expect("built-in doc-values formats have valid, distinct SPI names");
+    registry
+});
 
 /// Looks up a doc-values format by name from the global registry.
 ///

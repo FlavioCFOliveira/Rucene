@@ -218,7 +218,7 @@ mod tests {
 
     /// Writes an additional segment and commits, producing a newer version.
     fn add_second_commit(directory: &Arc<dyn Directory>, extra_doc: i32) {
-        let latest = SegmentInfos::read_latest_commit(directory.as_ref()).unwrap();
+        let latest = SegmentInfos::read_latest_commit(Arc::clone(&directory)).unwrap();
         let mut sis = latest.clone();
         sis.set_next_write_generation(latest.generation() + 1)
             .unwrap();
