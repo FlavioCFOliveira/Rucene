@@ -21,7 +21,7 @@ use crate::index::directory_reader::{
 };
 use crate::index::doc_values_field_updates::DocValuesFieldUpdates;
 use crate::index::doc_values_update::{DocValuesUpdate, DocValuesUpdateValue};
-use crate::index::documents_writer::Query;
+
 use crate::index::documents_writer::{DeleteNode, DocumentsWriter, FlushNotifications, MAX_DOCS};
 use crate::index::field_infos::FieldNumbers;
 use crate::index::index_file_deleter::{IndexFileDeleter, WRITE_LOCK_NAME};
@@ -876,8 +876,16 @@ impl IndexWriter {
 
     /// Deletes every document matching any of `queries`.
     ///
-    /// Equivalent to `IndexWriter.deleteDocuments(Query...)`.
-    pub fn delete_documents_by_queries(&self, queries: Vec<Box<dyn Query>>) -> Result<i64> {
+    /// Equivalent to `IndexWriter.deleteDocuments(Query...)`. The queries are
+    /// buffered and resolved against each segment when the deletes are applied,
+    /// which is what [`FrozenBufferedUpdates`](crate::index::FrozenBufferedUpdates)
+    /// does; a query is never evaluated against documents still buffered in
+    /// RAM, so the returned sequence number orders the delete but does not mean
+    /// it has already run.
+    pub fn delete_documents_by_queries(
+        &self,
+        queries: Vec<Arc<dyn crate::search::Query>>,
+    ) -> Result<i64> {
         self.ensure_open()?;
         self.documents_writer.delete_queries(queries)
     }
@@ -1175,38 +1183,63 @@ impl IndexWriter {
         processed
     }
 
-    /// Moves every flushed segment from the ticket queue into `segment_infos`.
+    /// Moves every flushed segment and every frozen delete packet from the
+    /// ticket queue into the index.
     ///
-    /// Equivalent to `IndexWriter.publishFlushedSegments`.
+    /// Equivalent to `IndexWriter.publishFlushedSegments(boolean)`. A ticket
+    /// carries a flushed segment, a packet of frozen global deletes, or both,
+    /// and both halves have to be published: a ticket with no segment is a
+    /// pure delete packet, which goes straight to the buffered-updates stream,
+    /// while a ticket with a segment publishes the segment together with its
+    /// own segment-private deletes and the global packet that preceded it.
+    /// Dropping either half is what makes a delete a silent no-op.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever purging the tickets or publishing a segment raises.
     fn publish_flushed_segments(&self) -> Result<()> {
-        let mut flushed: Vec<SegmentCommitInfo> = Vec::new();
+        // The closure borrows `self` immutably and each publication takes the
+        // writer state on its own, exactly as Java's per-ticket
+        // `publishFlushedSegment` does; nothing is batched, so a ticket is
+        // fully published before the next one is looked at.
         self.documents_writer.purge_flush_tickets(true, |ticket| {
-            if let Some(segment) = ticket.take_flushed_segment() {
-                flushed.push(segment.segment_info);
-            }
+            let new_segment = ticket.take_flushed_segment();
+            let buffered_updates = ticket.take_frozen_updates();
             ticket.mark_published();
-            Ok(())
-        })?;
-
-        if flushed.is_empty() {
-            return Ok(());
-        }
-
-        let mut state = self.state()?;
-        for info in flushed {
-            state.segment_infos.add(info)?;
-        }
-        // Java's `publishFlushedSegment` ends with `checkpoint()`
-        // (`IndexWriter.java:2961-2963`), which bumps `changeCount` as well as
-        // marking the `SegmentInfos` changed. Without the bump the writer
-        // cannot tell a flushed segment from no change at all, and
-        // `startCommit` would skip the very commit that publishes it. This port
-        // publishes the batch in one go, so it checkpoints once for the batch
-        // rather than once per segment; the two differ only in the absolute
-        // value of `changeCount`, which is never read, only compared with
-        // `lastCommitChangeCount`.
-        self.checkpoint(&mut state)?;
-        Ok(())
+            match new_segment {
+                // A flushed global deletes package, not a segment.
+                None => {
+                    if let Some(buffered_updates) = buffered_updates {
+                        if !buffered_updates.is_empty() {
+                            if self.info_stream.is_enabled(IW) {
+                                self.info_stream.message(
+                                    IW,
+                                    &format!("flush: push buffered updates: {buffered_updates:?}"),
+                                );
+                            }
+                            self.publish_frozen_updates(buffered_updates)?;
+                        }
+                    }
+                    Ok(())
+                }
+                Some(new_segment) => {
+                    if self.info_stream.is_enabled(IW) {
+                        self.info_stream.message(
+                            IW,
+                            &format!(
+                                "publishFlushedSegment seg-private updates={:?}",
+                                new_segment.segment_updates
+                            ),
+                        );
+                    }
+                    self.publish_flushed_segment(
+                        new_segment.segment_info,
+                        new_segment.segment_updates,
+                        buffered_updates,
+                    )
+                }
+            }
+        })
     }
 
     /// Sets the user data written into the next commit.
@@ -1262,6 +1295,14 @@ impl IndexWriter {
         self.flush_count.fetch_add(1, Ordering::AcqRel);
         self.apply_all_deletes_and_updates()?;
         self.do_after_flush()?;
+
+        // Java's `prepareCommitInternal` runs `writeReaderPool(true)` under the
+        // writer monitor right after applying the deletes
+        // (`IndexWriter.java:3803-3805`). Resolving a packet only marks
+        // documents deleted in the pooled `ReadersAndUpdates`; without this the
+        // new live docs are never written to a `.liv` and the commit records a
+        // segment that still has every document.
+        self.write_reader_pool(true)?;
 
         let mut state = self.state()?;
         if self.change_count.load(Ordering::Acquire)
@@ -4004,6 +4045,12 @@ impl IndexWriter {
         if apply_all_deletes {
             self.apply_all_deletes_and_updates()?;
         }
+        // Java's `doFlush` runs `writeReaderPool(applyAllDeletes)` under the
+        // writer monitor right after applying the deletes: resolving a packet
+        // only marks documents deleted in the pooled `ReadersAndUpdates`, so
+        // the new live docs and doc-values updates still have to be written out
+        // before `doAfterFlush`.
+        self.write_reader_pool(apply_all_deletes)?;
         self.do_after_flush()?;
         Ok(true)
     }
@@ -4027,16 +4074,28 @@ impl IndexWriter {
 
     /// Applies every buffered delete and doc-values update.
     ///
-    /// Equivalent to `IndexWriter.applyAllDeletesAndUpdates()`.
+    /// Equivalent to `IndexWriter.applyAllDeletesAndUpdates()`, whose whole
+    /// body is `bufferedUpdatesStream.waitApplyAll(this)`: it is what carries
+    /// the frozen packets to the segments they name and resolves them there.
+    /// Java asserts the caller does *not* hold the writer monitor, which is why
+    /// [`do_flush_internal`](Self::do_flush_internal) calls this only after the
+    /// full-flush lock of [`do_flush`](Self::do_flush) has been released.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever resolving a packet raises.
     fn apply_all_deletes_and_updates(&self) -> Result<()> {
         self.flush_deletes_count.fetch_add(1, Ordering::AcqRel);
         if self.info_stream.is_enabled(IW) {
             self.info_stream.message(
                 IW,
-                "now apply all deletes for all segments buffered updates bytesUsed",
+                &format!(
+                    "now apply all deletes for all segments buffered updates bytesUsed={}",
+                    self.buffered_updates_stream.ram_bytes_used()
+                ),
             );
         }
-        self.write_reader_pool(true)
+        self.buffered_updates_stream.wait_apply_all(self)
     }
 
     /// Writes every pending live-docs and doc-values update the reader pool
@@ -4052,6 +4111,18 @@ impl IndexWriter {
             };
             if self.reader_pool.commit(&infos)? {
                 let mut state = self.state()?;
+                // Java's `rld.info` is the very `SegmentCommitInfo` the
+                // writer's `SegmentInfos` holds, so writing a pooled reader's
+                // live docs updates the writer's copy through reference
+                // identity. This port keeps a clone in the pool, so the new
+                // deletion generation and count are copied back here; without
+                // it the commit would record a segment that still has every
+                // document and would not reference the `.liv` just written.
+                for info in state.segment_infos.iter_mut() {
+                    if let Some(rld) = self.reader_pool.peek(&info.info.name) {
+                        *info = rld.info();
+                    }
+                }
                 self.checkpoint_no_sis(&mut state)?;
             }
         }
@@ -5133,9 +5204,16 @@ impl IndexWriter {
     /// the packet will retry it, so nothing is lost by declining.
     pub fn try_apply(
         &self,
-        updates: &crate::index::documents_writer::FrozenBufferedUpdates,
+        updates: &Arc<crate::index::documents_writer::FrozenBufferedUpdates>,
     ) -> Result<bool> {
-        self.force_apply(updates)?;
+        // Java: `if (updates.tryLock()) { try { forceApply(updates); return true; }
+        // finally { updates.unlock(); } } return false;`
+        let Some(guard) = updates.try_lock_apply() else {
+            return Ok(false);
+        };
+        let outcome = self.apply_locked(updates);
+        drop(guard);
+        outcome?;
         Ok(true)
     }
 
@@ -5148,6 +5226,61 @@ impl IndexWriter {
     /// on the next pass, because `already_seen_segments` remembers the ones
     /// already covered.
     pub fn force_apply(
+        &self,
+        updates: &Arc<crate::index::documents_writer::FrozenBufferedUpdates>,
+    ) -> Result<()> {
+        let guard = updates.lock_apply()?;
+        let outcome = self.apply_locked(updates);
+        drop(guard);
+        outcome
+    }
+
+    /// Resolves a packet whose apply lock this thread already holds.
+    ///
+    /// Equivalent to the body of `IndexWriter.forceApply(FrozenBufferedUpdates)`
+    /// after it has taken `updates.lock()`. A packet that has already been
+    /// resolved returns immediately, which is Java's
+    /// `if (updates.isApplied()) return;`, and one that this call resolves is
+    /// recorded as finished with the stream — Java's
+    /// `bufferedUpdatesStream.finished(updates)` — so that it stops being
+    /// carried, and re-applied, by every later flush.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the segment states or resolving the packet
+    /// against them raises.
+    fn apply_locked(
+        &self,
+        updates: &Arc<crate::index::documents_writer::FrozenBufferedUpdates>,
+    ) -> Result<()> {
+        if updates.is_applied() {
+            // already done
+            return Ok(());
+        }
+        let outcome = self.apply_to_segments(updates);
+        if outcome.is_ok() {
+            self.buffered_updates_stream.finished(updates)?;
+            updates.mark_applied();
+        }
+        outcome
+    }
+
+    /// Resolves a packet against every segment it reaches.
+    ///
+    /// Equivalent to the optimistic loop inside
+    /// `IndexWriter.forceApply(FrozenBufferedUpdates)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java retries the whole resolution
+    /// when a merge finished while it was running, so that the newly merged
+    /// segment also receives the packet. This port resolves once: a segment
+    /// that appeared meanwhile is picked up on the next pass, because
+    /// `already_seen_segments` remembers the ones already covered.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the segment states or resolving the packet
+    /// against them raises.
+    fn apply_to_segments(
         &self,
         updates: &crate::index::documents_writer::FrozenBufferedUpdates,
     ) -> Result<()> {

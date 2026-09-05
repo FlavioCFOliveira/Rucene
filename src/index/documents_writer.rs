@@ -96,6 +96,7 @@ use crate::index::terms::{SeekStatus, TermsEnum};
 use crate::index::DocValuesType;
 use crate::index::{FieldInfos, SegmentCommitInfo, SegmentInfo, Term};
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
+use crate::search::query::{query_to_string, Query, QueryKey};
 use crate::store::{
     flush_io_context, BufferedChecksumIndexInput, Directory, FlushInfo, IOContext, IndexInput,
     IndexOutput, Lock, TrackingDirectoryWrapper,
@@ -212,26 +213,6 @@ impl Directory for SharedDirectory {
 }
 
 // ---------------------------------------------------------------------------
-// Query placeholder
-// ---------------------------------------------------------------------------
-
-/// Opaque predicate used for delete-by-query.
-///
-/// Placeholder for `org.apache.lucene.search.Query`, which has not been ported
-/// yet. Delete-by-query entries are recorded and propagated exactly like in
-/// Lucene, but nothing in this module evaluates them.
-///
-/// Java keys `BufferedUpdates.deleteQueries` by `Query` identity, relying on
-/// `Query.equals`/`hashCode`. Until the search layer supplies those, this port
-/// de-duplicates by [`to_query_string`](Self::to_query_string), so an
-/// implementation must return a representation that distinguishes queries that
-/// are not equal.
-pub trait Query: Send + Sync + Debug {
-    /// Canonical textual representation of this query.
-    fn to_query_string(&self) -> String;
-}
-
-// ---------------------------------------------------------------------------
 // BufferedUpdates
 // ---------------------------------------------------------------------------
 
@@ -271,8 +252,13 @@ pub struct BufferedUpdates {
     delete_terms: HashMap<String, HashMap<Vec<u8>, i32>>,
     /// Number of distinct delete terms across all fields.
     terms_size: usize,
-    /// Delete queries keyed by their canonical string form.
-    delete_queries: HashMap<String, (Box<dyn Query>, i32)>,
+    /// Delete queries mapped to their `docIDUpto`.
+    ///
+    /// Equivalent to `BufferedUpdates.deleteQueries`, a `Map<Query, Integer>`.
+    /// Rust cannot implement `Hash`/`Eq` for `Arc<dyn Query>` from this crate,
+    /// so the key is [`QueryKey`], which forwards to the very methods Java's
+    /// `Query.equals`/`hashCode` are.
+    delete_queries: HashMap<QueryKey, i32>,
     /// Number of buffered doc-values field updates.
     num_field_updates: i32,
     /// Doc-values field updates, one buffer per field.
@@ -344,11 +330,15 @@ impl BufferedUpdates {
     }
 
     /// Records a delete-by-query applying to documents below `doc_id_upto`.
-    pub fn add_query(&mut self, query: Box<dyn Query>, doc_id_upto: i32) {
-        let key = query.to_query_string();
+    ///
+    /// Equivalent to `BufferedUpdates.addQuery(Query, int)`. Repeating a query
+    /// keeps the *latest* `doc_id_upto` — Java writes `deleteQueries.put`, which
+    /// overwrites — and only a query that was not already buffered is charged
+    /// for.
+    pub fn add_query(&mut self, query: Arc<dyn Query>, doc_id_upto: i32) {
         if self
             .delete_queries
-            .insert(key, (query, doc_id_upto))
+            .insert(QueryKey::new(query), doc_id_upto)
             .is_none()
         {
             self.bytes_used += BYTES_PER_DEL_QUERY;
@@ -467,9 +457,28 @@ impl BufferedUpdates {
 
     /// Returns the canonical strings of every buffered delete query.
     pub fn delete_query_strings(&self) -> Vec<String> {
-        let mut out: Vec<String> = self.delete_queries.keys().cloned().collect();
+        let mut out: Vec<String> = self
+            .delete_queries
+            .keys()
+            .map(|key| query_to_string(&**key.query()))
+            .collect();
         out.sort();
         out
+    }
+
+    /// Returns every buffered delete query with its `docIDUpto`.
+    ///
+    /// Equivalent to the `deleteQueries`/`deleteQueryLimits` parallel arrays
+    /// `FrozenBufferedUpdates` builds from `BufferedUpdates.deleteQueries`.
+    /// Java fills them by walking the map's entry set, so this port hands out
+    /// the same pairs in the same kind of unspecified order; applying a set of
+    /// deletes is order-independent, because a document is deleted at most
+    /// once and `ReadersAndUpdates::delete` reports only the transition.
+    pub fn delete_queries(&self) -> Vec<(Arc<dyn Query>, i32)> {
+        self.delete_queries
+            .iter()
+            .map(|(key, upto)| (Arc::clone(key.query()), *upto))
+            .collect()
     }
 
     /// Drops only the buffered delete terms.
@@ -547,6 +556,20 @@ pub struct FrozenBufferedUpdates {
     /// `IndexWriter.forceApply` only ever holds a shared one in this port, so
     /// the counter is atomic.
     total_del_count: AtomicI64,
+    /// Held while this packet is being resolved against the index.
+    ///
+    /// Equivalent to `FrozenBufferedUpdates.applyLock`, a `ReentrantLock`.
+    /// `IndexWriter.tryApply` takes it with `tryLock` so that it can decline
+    /// when another thread is already resolving the packet, and
+    /// `IndexWriter.forceApply` blocks on it.
+    apply_lock: Mutex<()>,
+    /// Set once this packet has been fully resolved.
+    ///
+    /// Equivalent to `FrozenBufferedUpdates.applied`, a `CountDownLatch(1)`
+    /// that Java counts down after `tryApply` returns and reads back through
+    /// `isApplied()`. A boolean is enough here because nothing waits on it;
+    /// its purpose in both languages is to stop a packet being resolved twice.
+    applied: AtomicBool,
 }
 
 impl FrozenBufferedUpdates {
@@ -565,7 +588,45 @@ impl FrozenBufferedUpdates {
             delete_queue_generation,
             del_gen: AtomicI64::new(-1),
             total_del_count: AtomicI64::new(0),
+            apply_lock: Mutex::new(()),
+            applied: AtomicBool::new(false),
         }
+    }
+
+    /// Takes the apply lock without blocking.
+    ///
+    /// Equivalent to `FrozenBufferedUpdates.tryLock()`. `None` means another
+    /// thread is already resolving this packet.
+    pub fn try_lock_apply(&self) -> Option<MutexGuard<'_, ()>> {
+        self.apply_lock.try_lock().ok()
+    }
+
+    /// Takes the apply lock, blocking until it is free.
+    ///
+    /// Equivalent to `FrozenBufferedUpdates.lock()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the lock is poisoned.
+    pub fn lock_apply(&self) -> Result<MutexGuard<'_, ()>> {
+        self.apply_lock.lock().map_err(|_| {
+            LuceneError::IllegalState("frozen buffered updates apply lock poisoned".to_string())
+        })
+    }
+
+    /// Returns whether this packet has already been resolved.
+    ///
+    /// Equivalent to `FrozenBufferedUpdates.isApplied()`, which Java asserts is
+    /// only read while the apply lock is held.
+    pub fn is_applied(&self) -> bool {
+        self.applied.load(Ordering::Acquire)
+    }
+
+    /// Records that this packet has been fully resolved.
+    ///
+    /// Equivalent to Java's `packet.applied.countDown()`.
+    pub fn mark_applied(&self) {
+        self.applied.store(true, Ordering::Release);
     }
 
     /// Returns the frozen updates.
@@ -628,24 +689,13 @@ impl FrozenBufferedUpdates {
         self.total_del_count.load(Ordering::Acquire)
     }
 
-    /// Applies the pending delete-by-term and doc-values updates to every
-    /// segment in `seg_states`, and returns the running total of new deleted or
-    /// updated documents.
+    /// Applies the pending delete-by-term, delete-by-query and doc-values
+    /// updates to every segment in `seg_states`, and returns the running total
+    /// of new deleted or updated documents.
     ///
     /// Equivalent to `FrozenBufferedUpdates.apply(
-    /// BufferedUpdatesStream.SegmentState[])`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java's `apply` runs three passes:
-    /// `applyTermDeletes`, `applyQueryDeletes` and `applyDocValuesUpdates`.
-    /// The delete-by-query pass is absent here, because
-    /// [`Query`](crate::index::documents_writer::Query) is still a placeholder
-    /// in this module: a delete-by-query entry survives freezing only as its
-    /// canonical string, so there is no query left to rewrite into a `Weight`
-    /// and score against the segment's reader. Porting that pass requires
-    /// replacing the placeholder with `crate::search::Query` throughout the
-    /// delete pipeline, which is a change to the whole pipeline rather than to
-    /// this method. Delete-by-term and doc-values updates are applied in full,
-    /// in the order Java applies them.
+    /// BufferedUpdatesStream.SegmentState[])`, which runs the three passes in
+    /// this order: terms, queries, doc-values updates.
     ///
     /// # Errors
     ///
@@ -666,6 +716,7 @@ impl FrozenBufferedUpdates {
 
         let mut total = self.total_del_count.load(Ordering::Acquire);
         total += self.apply_term_deletes(seg_states)?;
+        total += self.apply_query_deletes(seg_states)?;
         total += self.apply_doc_values_updates(seg_states)?;
         self.total_del_count.store(total, Ordering::Release);
         Ok(total)
@@ -737,6 +788,123 @@ impl FrozenBufferedUpdates {
                     // by Term (unlike by Query) because on flush we apply all
                     // Term deletes to each segment. So all Term deleting here is
                     // against prior segments.
+                    if seg_state.rld.delete(doc_id)? {
+                        del_count += 1;
+                    }
+                }
+            }
+        }
+        Ok(del_count)
+    }
+
+    /// Deletes, in every segment this packet reaches, the documents that match
+    /// one of its delete queries.
+    ///
+    /// Equivalent to `FrozenBufferedUpdates.applyQueryDeletes(
+    /// BufferedUpdatesStream.SegmentState[])`.
+    ///
+    /// Each query is rewritten and scored against the segment's own reader,
+    /// through a throwaway [`IndexSearcher`](crate::search::IndexSearcher)
+    /// whose query cache is disabled — Java builds one per query and per
+    /// segment and calls `setQueryCache(null)`, because the reader is pinned
+    /// only for this pass and caching its bitsets could never pay off.
+    ///
+    /// A segment-private packet — one frozen for the segment currently being
+    /// flushed, recognised by `del_gen == seg_state.del_gen` — carries a
+    /// `docIDUpto` per query, and only documents strictly below it are deleted.
+    /// That limit is what spares the documents added *after* the delete was
+    /// issued. For every other segment the limit is [`i32::MAX`], because a
+    /// packet pushed to the stream applies to whole prior segments.
+    ///
+    /// Unlike
+    /// [`apply_doc_values_updates_to_segment`](Self::apply_doc_values_updates_to_segment),
+    /// this pass does not consult the segment's live documents: Java does not
+    /// either, because `ReadersAndUpdates::delete` reports only the transition
+    /// from live to deleted, so a document that is already deleted is simply
+    /// not counted again.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java has a second loop for a segment
+    /// that was sorted on flush, which maps each matching document back through
+    /// `segState.rld.sortMap` before comparing it with the segment-private
+    /// limit. `ReadersAndUpdates` carries no sort map in this port — the flush
+    /// path does not produce one yet — so that branch has nothing to switch on
+    /// and only the unsorted loop is reproduced. It becomes reachable, and must
+    /// be restored, as soon as a flush can sort a segment. This is the same
+    /// declared divergence as in the doc-values pass.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever rewriting a query, building its weight, scoring it
+    /// against the segment or recording a deletion raises.
+    fn apply_query_deletes(&self, seg_states: &[SegmentState]) -> Result<i64> {
+        let delete_queries = self.updates.delete_queries();
+        if delete_queries.is_empty() {
+            return Ok(0);
+        }
+        let del_gen = self.del_gen();
+
+        let mut del_count = 0i64;
+        for seg_state in seg_states {
+            if del_gen < seg_state.del_gen {
+                // segment is newer than this deletes packet
+                continue;
+            }
+            if seg_state.rld.ref_count() == 1 {
+                // This means we are the only remaining reference to this
+                // segment, meaning it was merged away while we were running, so
+                // we can safely skip running because we will run on the newly
+                // merged segment next.
+                continue;
+            }
+
+            // Java writes `segState.reader.getContext()`, which for a leaf is a
+            // top-level `LeafReaderContext` with ordinal and doc base zero, and
+            // then builds the searcher over `readerContext.reader()` — the same
+            // reader — so the context handed to the weight is the searcher's
+            // own. Rust cannot widen `Arc<SegmentReader>` into
+            // `Arc<dyn IndexReader>` and `Arc<dyn LeafReader>` at once, so the
+            // context carries one handle per view.
+            let index_reader: Arc<dyn crate::index::IndexReader> =
+                Arc::clone(&seg_state.reader) as _;
+            let leaf_reader: Arc<dyn LeafReader> = Arc::clone(&seg_state.reader) as _;
+            let context = crate::index::reader_context::LeafReaderContext::new(
+                Arc::clone(&index_reader),
+                leaf_reader,
+                None,
+                0,
+                0,
+                0,
+                0,
+            );
+
+            for (query, query_limit) in &delete_queries {
+                let limit = if del_gen == seg_state.del_gen {
+                    debug_assert!(self.private_segment_name.is_some());
+                    *query_limit
+                } else {
+                    i32::MAX
+                };
+                let mut searcher = crate::search::IndexSearcher::new(Arc::clone(&index_reader))?;
+                searcher.set_query_cache(None);
+                let rewritten = searcher.rewrite(Arc::clone(query))?;
+                let weight = searcher.create_weight(
+                    rewritten,
+                    crate::search::score_mode::ScoreMode::COMPLETE_NO_SCORES,
+                    1.0,
+                )?;
+                let Some(mut scorer) = weight.scorer(&context)? else {
+                    continue;
+                };
+                let iterator = scorer.iterator();
+                loop {
+                    // Java writes `while ((docID = it.nextDoc()) < limit)`;
+                    // exhaustion is `NO_MORE_DOCS`, which is `i32::MAX` and so
+                    // never below a limit of at most `i32::MAX`.
+                    let doc_id = iterator.next_doc()?;
+                    if doc_id >= limit {
+                        break;
+                    }
+                    debug_assert_ne!(doc_id, NO_MORE_DOCS);
                     if seg_state.rld.delete(doc_id)? {
                         del_count += 1;
                     }
@@ -1282,9 +1450,9 @@ enum DeleteItem {
     /// A batch of delete-by-terms issued in one call.
     Terms(Vec<Term>),
     /// A single delete-by-query.
-    Query(Box<dyn Query>),
+    Query(Arc<dyn Query>),
     /// A batch of delete-by-queries issued in one call.
-    Queries(Vec<Box<dyn Query>>),
+    Queries(Vec<Arc<dyn Query>>),
     /// A batch of doc-values updates applied atomically.
     ///
     /// Equivalent to `DocumentsWriterDeleteQueue.DocValuesUpdatesNode`. Unlike
@@ -1300,9 +1468,9 @@ impl Debug for DeleteItem {
             Self::Sentinel => write!(f, "sentinel"),
             Self::Term(term) => write!(f, "del={term:?}"),
             Self::Terms(terms) => write!(f, "dels={terms:?}"),
-            Self::Query(query) => write!(f, "del={}", query.to_query_string()),
+            Self::Query(query) => write!(f, "del={}", query_to_string(&**query)),
             Self::Queries(queries) => {
-                let rendered: Vec<String> = queries.iter().map(|q| q.to_query_string()).collect();
+                let rendered: Vec<String> = queries.iter().map(|q| query_to_string(&**q)).collect();
                 write!(f, "dels={rendered:?}")
             }
             Self::DocValuesUpdates(updates) => {
@@ -1358,7 +1526,7 @@ impl DeleteNode {
     /// Creates a delete-by-query node.
     ///
     /// Equivalent to `DocumentsWriterDeleteQueue.newNode(Query)`.
-    pub fn new_query(query: Box<dyn Query>) -> Arc<Self> {
+    pub fn new_query(query: Arc<dyn Query>) -> Arc<Self> {
         Self::new(DeleteItem::Query(query))
     }
 
@@ -1405,11 +1573,11 @@ impl DeleteNode {
                 }
             }
             DeleteItem::Query(query) => {
-                updates.add_query(Box::new(ClonedQuery::of(query.as_ref())), doc_id_upto);
+                updates.add_query(Arc::clone(query), doc_id_upto);
             }
             DeleteItem::Queries(queries) => {
                 for query in queries {
-                    updates.add_query(Box::new(ClonedQuery::of(query.as_ref())), doc_id_upto);
+                    updates.add_query(Arc::clone(query), doc_id_upto);
                 }
             }
             DeleteItem::DocValuesUpdates(dv_updates) => {
@@ -1431,27 +1599,6 @@ impl DeleteNode {
             }
         }
         Ok(())
-    }
-}
-
-/// A by-value copy of a [`Query`] identified only by its canonical string.
-///
-/// A delete node is shared by every slice that observes it, so applying it must
-/// not move the query out. Until `org.apache.lucene.search.Query` is ported
-/// there is nothing to clone structurally, so the buffered copy keeps the
-/// canonical string, which is exactly what [`BufferedUpdates`] keys on.
-#[derive(Debug)]
-struct ClonedQuery(String);
-
-impl ClonedQuery {
-    fn of(query: &dyn Query) -> Self {
-        Self(query.to_query_string())
-    }
-}
-
-impl Query for ClonedQuery {
-    fn to_query_string(&self) -> String {
-        self.0.clone()
     }
 }
 
@@ -1614,7 +1761,7 @@ impl DocumentsWriterDeleteQueue {
     /// # Errors
     ///
     /// Returns [`LuceneError::AlreadyClosed`] if the queue is closed.
-    pub fn add_delete_queries(&self, queries: Vec<Box<dyn Query>>) -> Result<i64> {
+    pub fn add_delete_queries(&self, queries: Vec<Arc<dyn Query>>) -> Result<i64> {
         let seq_no = self.add(DeleteNode::new(DeleteItem::Queries(queries)))?;
         self.try_apply_global_slice()?;
         Ok(seq_no)
@@ -2014,6 +2161,8 @@ impl Accountable for DocumentsWriterDeleteQueue {
 /// Mutable part of a [`FlushTicket`].
 #[derive(Debug, Default)]
 struct FlushTicketState {
+    /// The frozen global deletes this ticket carries, until it is published.
+    frozen_updates: Option<FrozenBufferedUpdates>,
     segment: Option<FlushedSegment>,
     failed: bool,
     published: bool,
@@ -2027,7 +2176,6 @@ struct FlushTicketState {
 /// exactly the segments they were issued against.
 #[derive(Debug)]
 pub struct FlushTicket {
-    frozen_updates: Option<FrozenBufferedUpdates>,
     has_segment: bool,
     state: Mutex<FlushTicketState>,
 }
@@ -2038,9 +2186,11 @@ impl FlushTicket {
     /// `has_segment` is `true` when a [`FlushedSegment`] will be attached later.
     pub fn new(frozen_updates: Option<FrozenBufferedUpdates>, has_segment: bool) -> Self {
         Self {
-            frozen_updates,
             has_segment,
-            state: Mutex::new(FlushTicketState::default()),
+            state: Mutex::new(FlushTicketState {
+                frozen_updates,
+                ..FlushTicketState::default()
+            }),
         }
     }
 
@@ -2049,9 +2199,15 @@ impl FlushTicket {
         self.has_segment
     }
 
-    /// Returns the frozen deletes carried by this ticket.
-    pub fn frozen_updates(&self) -> Option<&FrozenBufferedUpdates> {
-        self.frozen_updates.as_ref()
+    /// Takes the frozen deletes out of this ticket.
+    ///
+    /// Equivalent to `DocumentsWriterFlushQueue.FlushTicket.getFrozenUpdates()`.
+    /// Java hands out the reference and lets `IndexWriter.publishFrozenUpdates`
+    /// take ownership of it; a Rust caller cannot move out of a shared
+    /// reference, so the packet is taken from the ticket instead — it is
+    /// consumed exactly once, when the ticket is published.
+    pub fn take_frozen_updates(&self) -> Option<FrozenBufferedUpdates> {
+        self.lock().frozen_updates.take()
     }
 
     /// Returns `true` when the ticket may be handed to the `IndexWriter`.
@@ -5194,7 +5350,7 @@ impl DocumentsWriter {
     /// # Errors
     ///
     /// Propagates delete-queue and flush errors.
-    pub fn delete_queries(&self, queries: Vec<Box<dyn Query>>) -> Result<i64> {
+    pub fn delete_queries(&self, queries: Vec<Arc<dyn Query>>) -> Result<i64> {
         self.apply_delete_or_update(|queue| queue.add_delete_queries(queries))
     }
 
@@ -5842,14 +5998,14 @@ mod tests {
         Term::new(field, BytesRef::new(text.as_bytes().to_vec()))
     }
 
-    /// A [`Query`] whose canonical form is its label.
-    #[derive(Debug)]
-    struct LabelQuery(&'static str);
-
-    impl Query for LabelQuery {
-        fn to_query_string(&self) -> String {
-            self.0.to_string()
-        }
+    /// A real [`Query`] identified by `label`, on the field `q`.
+    ///
+    /// [`BufferedUpdates`] keys delete-by-query entries the way Java does, on
+    /// `Query.equals`/`hashCode`, so a test query must supply both;
+    /// [`TermQuery`](crate::search::TermQuery) does. Its canonical form is
+    /// `q:<label>`.
+    fn label_query(label: &str) -> Arc<dyn Query> {
+        Arc::new(crate::search::TermQuery::new(term("q", label)))
     }
 
     /// Indexing chain whose RAM usage is a fixed cost per document, so that the
@@ -5977,7 +6133,7 @@ mod tests {
         let queries = Mutex::new(Vec::new());
         writer
             .purge_flush_tickets(true, |ticket| {
-                if let Some(frozen) = ticket.frozen_updates() {
+                if let Some(frozen) = ticket.take_frozen_updates() {
                     terms.lock().unwrap().push(frozen.updates().delete_terms());
                     queries
                         .lock()
@@ -6038,8 +6194,8 @@ mod tests {
         let mut updates = BufferedUpdates::new("_0");
         assert!(!updates.any());
 
-        updates.add_query(Box::new(LabelQuery("q1")), BufferedUpdates::MAX_INT);
-        updates.add_query(Box::new(LabelQuery("q1")), BufferedUpdates::MAX_INT);
+        updates.add_query(label_query("q1"), BufferedUpdates::MAX_INT);
+        updates.add_query(label_query("q1"), BufferedUpdates::MAX_INT);
         assert_eq!(updates.queries_size(), 1, "queries are de-duplicated");
         assert!(updates.any());
 
@@ -6106,9 +6262,7 @@ mod tests {
     fn delete_queue_freezes_the_global_buffer_once() {
         let queue = new_delete_queue();
         queue.add_delete_terms(vec![term("id", "a")]).unwrap();
-        queue
-            .add_delete_queries(vec![Box::new(LabelQuery("q1"))])
-            .unwrap();
+        queue.add_delete_queries(vec![label_query("q1")]).unwrap();
         assert!(queue.any_changes());
 
         let frozen = queue
@@ -6811,7 +6965,7 @@ mod tests {
             .unwrap();
         fixture
             .writer
-            .delete_queries(vec![Box::new(LabelQuery("stale"))])
+            .delete_queries(vec![label_query("stale")])
             .unwrap();
         fixture
             .writer
@@ -6832,7 +6986,7 @@ mod tests {
             "the buffered delete term must be replayed, got {replayed:?}"
         );
         assert!(
-            queries.iter().flatten().any(|query| query == "stale"),
+            queries.iter().flatten().any(|query| query == "q:stale"),
             "the buffered delete query must be replayed, got {queries:?}"
         );
         assert!(

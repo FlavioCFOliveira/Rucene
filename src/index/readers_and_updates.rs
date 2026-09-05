@@ -2482,7 +2482,18 @@ impl ReaderPool {
         self.ensure_open()?;
         let mut map = self.reader_map.lock().expect("reader_map mutex poisoned");
         if let Some(rld) = map.get(&info.info.name) {
-            return Ok(Some(Arc::clone(rld)));
+            let rld = Arc::clone(rld);
+            if create {
+                // Return ref to caller, which `release` matches with its
+                // `dec_ref`. Without it every pooled instance stays at the
+                // single reference the pool itself holds, and every caller that
+                // tests `refCount() == 1` — which is how
+                // `FrozenBufferedUpdates` recognises a segment that was merged
+                // away underneath it — would wrongly conclude the segment is
+                // gone and skip applying its deletes.
+                rld.inc_ref();
+            }
+            return Ok(Some(rld));
         }
         if !create {
             return Ok(None);
@@ -2492,7 +2503,10 @@ impl ReaderPool {
             info.clone(),
             self.new_pending_deletes(info),
         ));
+        // Steal initial reference: the pool holds the one the constructor set.
         map.insert(info.info.name.clone(), Arc::clone(&rld));
+        // Return ref to caller.
+        rld.inc_ref();
         debug_assert!(Self::no_dups(&map));
         Ok(Some(rld))
     }
@@ -2603,18 +2617,51 @@ impl ReaderPool {
     /// Commits all pending deletes and DV updates for segments in `infos`.
     ///
     /// Equivalent to `ReaderPool.commit(SegmentInfos)`.
-    pub fn commit(&self, _infos: &[SegmentCommitInfo]) -> Result<bool> {
+    pub fn commit(&self, infos: &[SegmentCommitInfo]) -> Result<bool> {
         // Java walks the pooled readers, writes each one's live docs and field
         // updates, and returns whether any of them changed
-        // (`ReaderPool.java:345-370`).
+        // (`ReaderPool.java:345-370`). Reporting that boolean — rather than
+        // merely "the call succeeded" — is what stops
+        // `IndexWriter.writeReaderPool` from checkpointing, and therefore from
+        // burning a commit generation, when nothing was written.
         //
-        // **Divergence from Lucene 10.5.0.** This port does not write them yet,
-        // so no pooled reader can report a change and the answer is always
-        // `false`. Reporting that boolean — rather than merely "the call
-        // succeeded" — is what stops `IndexWriter.writeReaderPool` from
-        // checkpointing, and therefore from burning a commit generation, when
-        // nothing was written.
-        Ok(false)
+        // **Divergence from Lucene 10.5.0.** Java also folds
+        // `rld.writeFieldUpdates(...)` into the same loop and into the same
+        // boolean. This port leaves the doc-values updates to
+        // [`write_all_doc_values_updates`](Self::write_all_doc_values_updates),
+        // which `IndexWriter.writeReaderPool` already calls immediately after
+        // this method, so they are still written on exactly the same call; only
+        // the `changed` flag they contribute is not observed here.
+        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let mut at_least_one_change = false;
+        for info in infos {
+            if let Some(rld) = map.get(&info.info.name) {
+                if rld.write_live_docs(&*self.directory)? {
+                    // Must checkpoint because a new `_X_N.liv` was just
+                    // created; the caller does it, and deliberately not through
+                    // `IndexWriter.checkpoint`, because that would also
+                    // increment the `SegmentInfos` version, which was already
+                    // done when the deletes were applied. All that happened
+                    // here is that the state moved to disk.
+                    at_least_one_change = true;
+                }
+            }
+        }
+        Ok(at_least_one_change)
+    }
+
+    /// Returns the pooled reader for `segment_name`, without creating one and
+    /// without taking a reference for the caller.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java has no such method because it
+    /// does not need one: `rld.info` *is* the `SegmentCommitInfo` instance the
+    /// writer's `SegmentInfos` holds, so writing a pooled reader's live docs
+    /// updates the writer's own copy through reference identity. This port
+    /// keeps a clone in the pool, so the writer has to read the updated
+    /// generation and deletion count back out; this is how it reaches them.
+    pub fn peek(&self, segment_name: &str) -> Option<Arc<ReadersAndUpdates>> {
+        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        map.get(segment_name).map(Arc::clone)
     }
 
     /// Drops all entries from the pool.
