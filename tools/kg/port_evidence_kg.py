@@ -17,6 +17,22 @@ It is deliberately conservative (`CLAUDE.md` 7): only the explicit lead-ins belo
 count as a claim. A bare `/// `org.apache.lucene.Foo`` mention is a cross
 reference, not a statement that this item is Foo, and is ignored.
 
+Two forms beyond the original lead-ins are read, both because the crate uses them
+and both without loosening what counts as an assertion:
+
+* **`<subject>, ported from `org.apache.lucene.Foo`.`** -- the crate's usual
+  module-doc phrasing (121 types at 82c5b19). It asserts identity exactly as
+  `Port of` does, only with the subject stated first, so `MODULE_ASSERTIONS`
+  accepts it. Module docs are read a *paragraph* at a time rather than a line at
+  a time, because the assertion and the name it asserts are routinely split
+  across two `//!` lines.
+* **a module claim resolved to a declared item** -- see `load`, which states the
+  resolution rule. Before this, a `//!` claim produced no edge at all, so a file
+  whose module doc named its Lucene type while its items did not was invisible
+  to coverage; the type sat in `candidate` and was left out of the depth
+  measurement, understating the port and misdirecting the work `CLAUDE.md` 6.2
+  says the graph must direct.
+
 Usage:
     python3 tools/kg/port_evidence_kg.py rucene --source-root . \
         --commit "$COMMIT" --date "$DATE" [--phase extract|load|all]
@@ -49,6 +65,60 @@ CLAIM_PATTERNS = [
 PARTIAL_PATTERNS = [
     re.compile(r"^Placeholder for " + FQN, re.I),
 ]
+# A module doc states its subject in prose rather than with a lead-in: "Block-max
+# conjunction scoring, ported from `org.apache.lucene.search.BlockMaxConjunctionScorer`."
+# The assertion is as explicit as `Port of`, so it counts -- but only as a claim
+# about the *file*; which type inside it the claim lands on is decided in `load`
+# by the resolution rule documented there, never by this regex.
+# The same assertion read on an item doc. An item doc states its own target --
+# the declaration it precedes -- so the paragraph is admitted only when the name
+# it asserts is *that* declaration's name. That guard is what keeps a sentence
+# like "Equivalent to the inherited `Enum#toString` of `pkg.CompressionAlgorithm`"
+# on a method from being read as a claim about the enum.
+ITEM_ASSERTIONS = [
+    re.compile(r"\b(?:ported from|equivalent to|port of|ports)\b", re.I),
+    re.compile(r"^\s*Lucene Core equivalent:", re.I),
+]
+# A paragraph that *denies* an equivalence uses the same words as one that
+# asserts it -- "not declared as the port of `org.apache.lucene.store.IOContext`"
+# -- so reading the words alone would turn a denial into evidence. A paragraph
+# carrying a negation is therefore refused outright rather than parsed: refusing
+# a real claim costs a type its evidence, while accepting a denial puts a
+# falsehood in the graph, and `CLAUDE.md` 7 does not trade those off.
+NEGATION = re.compile(
+    r"\b(?:not|never|no longer|neither|nor|rather than|instead of|unlike|"
+    r"isn't|aren't|doesn't)\b", re.I)
+
+
+def _clause_before(text: str, idx: int) -> str:
+    """The sentence in which the name at `idx` is introduced.
+
+    Both the assertion and the negation are judged on this clause and not on the
+    whole paragraph, because a paragraph that legitimately asserts a port
+    routinely goes on to say what the port does *not* do -- `src/util/selector.rs`
+    states its claim in the first sentence and qualifies it three sentences
+    later. Judging the paragraph would throw that evidence away.
+    """
+    masked, inside = [], False
+    for ch in text[:idx]:
+        if ch == "`":
+            inside = not inside
+        masked.append("_" if (inside and ch == ".") else ch)
+    masked = "".join(masked)
+    start = 0
+    # `:` does not end the clause: the crate's own canonical form is
+    # "Lucene Core equivalent: `pkg.Foo`.", where the assertion sits before the
+    # colon and the name after it.
+    for m in re.finditer(r"[.;]\s", masked):
+        start = m.end()
+    return text[start:idx]
+# The same set serves module docs. A module doc asserts in the same words as an
+# item doc -- "This module ports `pkg.FieldInfo` and `pkg.FieldInfos`" -- and the
+# guard that keeps a module claim honest is not the wording but the resolution
+# rule in `load`: it lands only on an item of that exact name declared by that
+# same file, or on nothing at all.
+MODULE_ASSERTIONS = ITEM_ASSERTIONS
+RE_FQN = re.compile(FQN)
 
 RE_DOC_OUTER = re.compile(r"^\s*///!?(.*)$")
 RE_DOC_INNER = re.compile(r"^\s*//!(.*)$")
@@ -77,17 +147,50 @@ def scan_file(root: Path, rel: str):
     out = []
     lines = (root / rel).read_text(encoding="utf-8", errors="ignore").split("\n")
 
-    # Module-level `//!` claims describe the file itself.
-    for i, line in enumerate(lines):
+    # Module-level `//!` claims describe the file itself. They are read a
+    # paragraph at a time, not a line at a time, because the assertion and the
+    # name it asserts are routinely split across two lines:
+    #
+    #     //! Boosting a wrapped query, ported from
+    #     //! `org.apache.lucene.search.BoostQuery`.
+    #
+    # A paragraph that asserts a port names every Lucene type that file ports,
+    # so each name in it becomes a claim about the file.
+    para, para_line = [], None
+    for i, line in enumerate(lines + [""]):
         m = RE_DOC_INNER.match(line)
-        if not m:
-            if line.strip() and not RE_ATTR.match(line):
-                break
-            continue
-        fqn, note = claim_in(m.group(1))
-        if fqn:
-            out.append({"file": rel, "line": i + 1, "target": None,
-                        "lucene": fqn, "scope": "module", "note": note})
+        if m:
+            text = m.group(1).strip()
+            if text:
+                para.append(text)
+                if para_line is None:
+                    para_line = i + 1
+                continue
+        joined = " ".join(para)
+        if joined:
+            note = None
+            for pat in PARTIAL_PATTERNS:
+                if pat.match(joined):
+                    note = "declared a placeholder, not a complete port"
+            asserted, seen = False, set()
+            for m in RE_FQN.finditer(joined):
+                clause = _clause_before(joined, m.start())
+                if any(a.search(clause) for a in MODULE_ASSERTIONS):
+                    if NEGATION.search(clause):
+                        continue
+                    asserted = True
+                elif not asserted:
+                    # A name listed before any assertion is a cross reference.
+                    continue
+                if m.group(1) in seen:
+                    continue
+                seen.add(m.group(1))
+                out.append({"file": rel, "line": para_line, "target": None,
+                            "lucene": m.group(1), "scope": "module",
+                            "note": note})
+        para, para_line = [], None
+        if not m and line.strip() and not RE_ATTR.match(line):
+            break
 
     # Item-level `///` claims describe the declaration that follows the block.
     block = []
@@ -103,15 +206,58 @@ def scan_file(root: Path, rel: str):
         if block:
             item = RE_ITEM.match(line)
             if item:
+                seen = set()
                 for ln, text in block:
                     fqn, note = claim_in(text)
                     if fqn:
+                        seen.add(fqn)
                         out.append({"file": rel, "line": ln,
                                     "target": item.group(2),
                                     "targetKind": item.group(1),
                                     "lucene": fqn, "scope": "item",
                                     "note": note})
+                for ln, fqn in _item_paragraph_claims(block, item.group(2)):
+                    if fqn not in seen:
+                        seen.add(fqn)
+                        out.append({"file": rel, "line": ln,
+                                    "target": item.group(2),
+                                    "targetKind": item.group(1),
+                                    "lucene": fqn, "scope": "item",
+                                    "note": None})
             block = []
+    return out
+
+
+def _item_paragraph_claims(block, item_name):
+    """Claims an item's doc makes across line breaks.
+
+    `claim_in` reads one line, but the crate routinely states the assertion on
+    one line and the name on the next -- "Builds [`TokenStream`]s that analyze
+    text, equivalent to" / "`org.apache.lucene.analysis.Analyzer`." -- and just
+    as routinely states the subject before the assertion. Reading the paragraph
+    recovers both. What keeps this from becoming a guess is the name guard: only
+    an FQN whose simple name is the documented declaration's own name counts.
+    """
+    out, para, para_line = [], [], None
+    for ln, text in list(block) + [(None, "")]:
+        t = text.strip()
+        if t:
+            para.append(t)
+            if para_line is None:
+                para_line = ln
+            continue
+        joined = " ".join(para)
+        if joined:
+            for m in RE_FQN.finditer(joined):
+                fqn = m.group(1)
+                if re.split(r"[.$]", fqn)[-1] != item_name:
+                    continue
+                clause = _clause_before(joined, m.start())
+                if (any(a.search(clause) for a in ITEM_ASSERTIONS)
+                        and not NEGATION.search(clause)):
+                    out.append((para_line, fqn))
+                    break
+        para, para_line = [], None
     return out
 
 
@@ -137,11 +283,18 @@ def run_unwind(roadmap, kind, rows, cypher, label, batch=200):
 def load(roadmap, claims, commit, date):
     """Write the declared equivalences as `PORTS` edges.
 
-    Only item-level claims become an edge: a `//!` module claim describes a file,
-    not a type, and attributing it to a type would be the kind of guess this
-    graph must not contain. The Rust end is matched on `(name, file)`, the
-    identity the model gives a Rust type, so a claim can never attach to a
-    same-named type in another module.
+    An item-level `///` claim states its own target: the declaration it
+    documents. A `//!` module claim describes a file, so it names a type only
+    indirectly, and attributing it by guess is exactly what this graph must not
+    contain. It is therefore resolved by a rule that admits one reading and no
+    other: **a module claim naming `pkg.Foo` lands on the item named `Foo`
+    declared by that same file, and is dropped when the file declares no such
+    item.** That is not an inference about which type was meant -- the file says
+    it ports `Foo` and declares `Foo` -- and it never reaches outside the file,
+    so it cannot attach to a same-named type in another module.
+
+    The Rust end is matched on `(name, file)`, the identity the model gives a
+    Rust type, for both kinds of claim.
     """
     # A nested Lucene type is keyed `pkg.Outer$Inner` in the graph, but a doc
     # comment naturally writes `pkg.Outer.Inner`. Accept both spellings.
@@ -165,8 +318,16 @@ def load(roadmap, claims, commit, date):
     types |= {k for k, n in fn_counts.items() if n == 1}
 
     rows, unresolved_lucene, unresolved_rust = [], set(), set()
+    module_resolved = 0
     for c in claims:
-        if c["scope"] != "item" or not c.get("target"):
+        target = c.get("target")
+        if c["scope"] == "module" and not target:
+            simple = c["lucene"].replace("$", ".").rsplit(".", 1)[-1]
+            if (simple, c["file"]) not in types:
+                continue
+            target, c = simple, dict(c, target=simple)
+            module_resolved += 1
+        if not target:
             continue
         target_class = classes.get(c["lucene"])
         if target_class is None:
@@ -187,6 +348,8 @@ def load(roadmap, claims, commit, date):
             seen.add(k)
             uniq.append(r)
 
+    print(f"  module claims resolved to a declared item: {module_resolved}",
+          file=sys.stderr)
     print(f"  resolvable item claims: {len(uniq)} "
           f"(lucene unresolved {len(unresolved_lucene)}, "
           f"rust unresolved {len(unresolved_rust)})", file=sys.stderr)
