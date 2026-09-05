@@ -3316,6 +3316,36 @@ pub trait IOContext: std::fmt::Debug + Send + Sync {
     fn with_hints(&self, hints: &[Arc<dyn FileOpenHint>]) -> Box<dyn IOContext>;
 }
 
+/// Returns the hints of `context` whose concrete type is `T`.
+///
+/// Equivalent to the default method `IOContext#hints(Class)`
+/// (`lucene/core/src/java/org/apache/lucene/store/IOContext.java:136-138`,
+/// tag `releases/lucene/10.5.0`), which filters `hints()` by class and casts.
+/// Nothing in Lucene 10.5.0 calls it — `grep -rn "hints(.*\.class"` over the
+/// whole tree at that tag finds no caller — but it is part of the interface's
+/// published contract, so the port carries it.
+///
+/// # Divergence: a free function, not a trait method
+///
+/// Java can declare `<T extends FileOpenHint> Stream<T> hints(Class<T>)` on the
+/// interface and still call it through an interface reference, because the type
+/// argument is erased. A Rust trait method with its own type parameter is not
+/// dispatchable through `dyn Trait`: it would need `where Self: Sized`, which
+/// makes it uncallable on the `&dyn IOContext` that every [`Directory`] method
+/// takes. The filter is therefore a free function over `&dyn IOContext`. It
+/// returns a `Vec` rather than an iterator because the borrow it yields is tied
+/// to `context`, which is what a `Stream` over `hints()` is in Java too.
+pub fn hints_of<T: FileOpenHint>(context: &dyn IOContext) -> Vec<&T> {
+    context
+        .hints()
+        .iter()
+        // `(**hint)` reaches the hint itself. `hint.as_any()` would compile but
+        // resolve to the blanket `AsAny` impl on `Arc<dyn FileOpenHint>`, which
+        // answers with the `Arc`'s own type and never downcasts to a hint.
+        .filter_map(|hint| (**hint).as_any().downcast_ref::<T>())
+        .collect()
+}
+
 /// Default [`IOContext`] used for ordinary reads and writes.
 ///
 /// Equivalent to `org.apache.lucene.store.DefaultIOContext`.
@@ -3375,106 +3405,6 @@ impl IOContext for DefaultIOContext {
     }
 }
 
-/// [`IOContext`] describing a flush.
-///
-/// This struct is this crate's representation of the flush context. It carries
-/// no equivalence declaration, because Lucene 10.5.0 has **no** named type for
-/// the flush context: `IOContext` is an interface (`IOContext.java:31`), and
-/// its static factory `IOContext.flush(FlushInfo)` (`IOContext.java:95`) returns an
-/// anonymous implementation of that interface. A class named `FlushIOContext`
-/// does not exist in the `org.apache.lucene.store` package.
-///
-/// **Divergence from Lucene 10.5.0.** Lucene models every context with the one
-/// `IOContext` interface and distinguishes them by the `context()` value; this
-/// crate gives the flush context its own struct. Reconciling that structural
-/// difference is open work, tracked outside this item's documentation.
-#[derive(Clone, Debug)]
-pub struct FlushIOContext {
-    flush_info: FlushInfo,
-}
-
-impl FlushIOContext {
-    /// Creates a flush context describing `flush_info`.
-    ///
-    /// Equivalent to `IOContext.flush(FlushInfo)`.
-    pub fn new(flush_info: FlushInfo) -> Self {
-        Self { flush_info }
-    }
-}
-
-impl IOContext for FlushIOContext {
-    fn context(&self) -> Context {
-        Context::Flush
-    }
-
-    fn merge_info(&self) -> Option<MergeInfo> {
-        None
-    }
-
-    fn flush_info(&self) -> Option<FlushInfo> {
-        Some(self.flush_info)
-    }
-
-    fn hints(&self) -> &[Arc<dyn FileOpenHint>] {
-        // A flush context carries no hints, as Lucene's record does.
-        &[]
-    }
-
-    fn with_hints(&self, _hints: &[Arc<dyn FileOpenHint>]) -> Box<dyn IOContext> {
-        // Merge and flush contexts ignore hints and return themselves.
-        Box::new(self.clone())
-    }
-}
-
-/// [`IOContext`] describing a merge.
-///
-/// This struct is this crate's representation of the merge context. It carries
-/// no equivalence declaration, because Lucene 10.5.0 has **no** named type for
-/// the merge context: `IOContext` is an interface (`IOContext.java:31`), and
-/// its static factory `IOContext.merge(MergeInfo)` (`IOContext.java:64`) returns an
-/// anonymous implementation of that interface. A class named `MergeIOContext`
-/// does not exist in the `org.apache.lucene.store` package.
-///
-/// **Divergence from Lucene 10.5.0.** Lucene models every context with the one
-/// `IOContext` interface and distinguishes them by the `context()` value; this
-/// crate gives the merge context its own struct. Reconciling that structural
-/// difference is open work, tracked outside this item's documentation.
-#[derive(Clone, Debug)]
-pub struct MergeIOContext {
-    merge_info: MergeInfo,
-}
-
-impl MergeIOContext {
-    /// Creates a merge context describing `merge_info`.
-    ///
-    /// Equivalent to `IOContext.merge(MergeInfo)`.
-    pub fn new(merge_info: MergeInfo) -> Self {
-        Self { merge_info }
-    }
-}
-
-impl IOContext for MergeIOContext {
-    fn context(&self) -> Context {
-        Context::Merge
-    }
-
-    fn merge_info(&self) -> Option<MergeInfo> {
-        Some(self.merge_info)
-    }
-
-    fn flush_info(&self) -> Option<FlushInfo> {
-        None
-    }
-
-    fn hints(&self) -> &[Arc<dyn FileOpenHint>] {
-        &[]
-    }
-
-    fn with_hints(&self, _hints: &[Arc<dyn FileOpenHint>]) -> Box<dyn IOContext> {
-        Box::new(self.clone())
-    }
-}
-
 /// Default context for ordinary reads and writes.
 ///
 /// Equivalent to `IOContext.DEFAULT` in Lucene 10.5.0.
@@ -3495,13 +3425,47 @@ pub static READONCE_IO_CONTEXT: std::sync::LazyLock<DefaultIOContext> =
 
 /// Returns an [`IOContext`] for merging with the supplied metadata.
 ///
-/// Equivalent to `IOContext.merge(MergeInfo)` in Lucene 10.5.0.
+/// The returned context reports [`Context::Merge`], carries `merge_info`, has
+/// no flush metadata and no hints, and ignores
+/// [`with_hints`](IOContext::with_hints).
+///
+/// Equivalent to `IOContext.merge(MergeInfo)`
+/// (`lucene/core/src/java/org/apache/lucene/store/IOContext.java:64-90`,
+/// tag `releases/lucene/10.5.0`).
+///
+/// # Divergence: the implementation type is named
+///
+/// Lucene 10.5.0 has **no** named class for the merge context. `IOContext` is
+/// an interface (`IOContext.java:31`) and this factory returns an *anonymous*
+/// implementation of it (`IOContext.java:66`). Rust has no anonymous `impl`,
+/// so a `struct` has to be declared for the trait to be implemented on. It is
+/// declared inside this function body and is therefore unnameable and
+/// unconstructible from anywhere else, which is the closest Rust gets to
+/// Java's anonymous class: the only way to obtain the merge context remains
+/// this factory, exactly as in Lucene.
+///
+/// `Objects.requireNonNull(mergeInfo)` (`IOContext.java:65`) has no
+/// counterpart because [`MergeInfo`] is a value type that cannot be null.
+///
+/// # Divergence: `with_hints` returns an equal context, not the same one
+///
+/// Java's `withHints` returns `this` (`IOContext.java:87`). `with_hints` takes
+/// `&self` and returns an owned `Box`, so it cannot hand back the receiver;
+/// it returns a context with the same [`Context`], the same
+/// [`merge_info`](IOContext::merge_info), the same
+/// [`flush_info`](IOContext::flush_info) and the same (empty)
+/// [`hints`](IOContext::hints). Every observation through the trait is
+/// therefore identical; only reference identity differs, and the trait exposes
+/// no way to observe it.
 pub fn merge_io_context(merge_info: MergeInfo) -> Box<dyn IOContext> {
+    // Named only because Rust has no anonymous `impl`; declared inside the
+    // function body so it is unnameable and unconstructible from outside, the
+    // way Lucene's anonymous class at `IOContext.java:66` is.
     #[derive(Debug)]
-    struct MergeIOContext {
+    struct AnonymousMergeContext {
         info: MergeInfo,
     }
-    impl IOContext for MergeIOContext {
+    impl IOContext for AnonymousMergeContext {
         fn context(&self) -> Context {
             Context::Merge
         }
@@ -3518,18 +3482,32 @@ pub fn merge_io_context(merge_info: MergeInfo) -> Box<dyn IOContext> {
             Box::new(Self { info: self.info })
         }
     }
-    Box::new(MergeIOContext { info: merge_info })
+    Box::new(AnonymousMergeContext { info: merge_info })
 }
 
 /// Returns an [`IOContext`] for flushing with the supplied metadata.
 ///
-/// Equivalent to `IOContext.flush(FlushInfo)` in Lucene 10.5.0.
+/// The returned context reports [`Context::Flush`], carries `flush_info`, has
+/// no merge metadata and no hints, and ignores
+/// [`with_hints`](IOContext::with_hints).
+///
+/// Equivalent to `IOContext.flush(FlushInfo)`
+/// (`lucene/core/src/java/org/apache/lucene/store/IOContext.java:95-121`,
+/// tag `releases/lucene/10.5.0`).
+///
+/// The two divergences documented on [`merge_io_context`] — the implementation
+/// type has to be named because Rust has no anonymous `impl`, and `with_hints`
+/// returns an equal context rather than the receiver itself — apply here
+/// unchanged, for the same reasons.
 pub fn flush_io_context(flush_info: FlushInfo) -> Box<dyn IOContext> {
+    // Named only because Rust has no anonymous `impl`; declared inside the
+    // function body so it is unnameable and unconstructible from outside, the
+    // way Lucene's anonymous class at `IOContext.java:97` is.
     #[derive(Debug)]
-    struct FlushIOContext {
+    struct AnonymousFlushContext {
         info: FlushInfo,
     }
-    impl IOContext for FlushIOContext {
+    impl IOContext for AnonymousFlushContext {
         fn context(&self) -> Context {
             Context::Flush
         }
@@ -3546,7 +3524,7 @@ pub fn flush_io_context(flush_info: FlushInfo) -> Box<dyn IOContext> {
             Box::new(Self { info: self.info })
         }
     }
-    Box::new(FlushIOContext { info: flush_info })
+    Box::new(AnonymousFlushContext { info: flush_info })
 }
 
 /// Interprocess mutex lock acquired from a [`Directory`].

@@ -199,3 +199,11 @@ path = "tests/search_on_disk.rs"
 [[test]]
 name = "portability_object_contract_search"
 path = "tests/portability/object_contract_search.rs"
+
+[[test]]
+name = "portability_io_context_contracts"
+path = "tests/portability/io_context_contracts.rs"
+
+[[test]]
+name = "portability_fst_arcs_buffer"
+path = "tests/portability/fst_arcs_buffer.rs"

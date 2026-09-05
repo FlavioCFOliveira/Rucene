@@ -12,7 +12,7 @@
 //! | [`NullFSTReader`] | `FSTCompiler.NullFSTReader` |
 
 use crate::error::{LuceneError, Result};
-use crate::store::DataOutput;
+use crate::store::{ByteArrayDataOutput, DataOutput};
 use crate::util::{Accountable, ArrayUtil, IntsRef, IntsRefBuilder};
 
 use super::fst::{
@@ -320,9 +320,26 @@ impl<T: Clone + Default> UnCompiledNode<T> {
 /// Reusable buffer for building nodes with fixed length arcs, that is, with
 /// binary search or direct addressing.
 ///
-/// Equivalent to `FSTCompiler.FixedLengthArcsBuffer`, which wraps a
-/// `ByteArrayDataOutput`; this port writes into the array directly and gets the
-/// `writeVInt` encoding from the [`DataOutput`] trait.
+/// Equivalent to `FSTCompiler.FixedLengthArcsBuffer`
+/// (`lucene/core/src/java/org/apache/lucene/util/fst/FSTCompiler.java:1164-1207`,
+/// tag `releases/lucene/10.5.0`). Java holds two fields, a `byte[]` and a
+/// `ByteArrayDataOutput` over it, and forwards every write to the output; this
+/// port forwards to the same ported [`ByteArrayDataOutput`], so the encoding —
+/// `write_v_int` above all — has one implementation and not two.
+///
+/// # Divergence: the output is built per write, not held as a field
+///
+/// Java's `bado` field is a second reference to the `bytes` field of the same
+/// object (`FSTCompiler.java:1168-1169`). A Rust struct cannot hold a
+/// `ByteArrayDataOutput<'a>` over its own `Vec`: that is a self-referential
+/// struct, which safe Rust has no way to express — the borrow would have to
+/// name the lifetime of the struct itself, and moving the struct would leave
+/// the borrow pointing at the old address. The two values the Java field
+/// actually carries, the array and the position, are the two fields here, and
+/// the output is constructed around them for each write and dropped again.
+/// Its state is fully described by those two values plus the limit, which is
+/// always `bytes.len()` — exactly what `bado.reset(bytes)` sets — so nothing
+/// is lost by not keeping the object alive.
 #[derive(Debug)]
 pub struct FixedLengthArcsBuffer {
     bytes: Vec<u8>,
@@ -341,24 +358,53 @@ impl FixedLengthArcsBuffer {
         }
     }
 
-    /// Ensures the internal array can hold `capacity` bytes, enlarging and
-    /// clearing it when it cannot.
+    /// Ensures the internal array can hold `capacity` bytes, enlarging it when
+    /// it cannot.
     ///
-    /// Equivalent to `FixedLengthArcsBuffer.ensureCapacity`, which also
-    /// discards the previous content.
+    /// A growth **replaces** the array with a fresh, zeroed one of
+    /// `ArrayUtil::oversize(capacity, 1)` bytes, so the bytes written so far
+    /// are discarded, and reseats the output over it, so the position goes back
+    /// to `0`. A call that does not grow changes nothing.
+    ///
+    /// Equivalent to `FixedLengthArcsBuffer.ensureCapacity`
+    /// (`FSTCompiler.java:1172-1178`), whose `bado.reset(bytes)` on the new
+    /// array is what puts the position back to zero.
     pub fn ensure_capacity(&mut self, capacity: usize) -> &mut Self {
         if self.bytes.len() < capacity {
-            self.bytes = vec![0u8; ArrayUtil::oversize(capacity, 1).max(capacity)];
+            self.bytes = vec![0u8; ArrayUtil::oversize(capacity, 1)];
+            // `bado.reset(bytes)`, `FSTCompiler.java:1175`.
+            self.position = 0;
         }
         self
     }
 
     /// Rewinds the write position to `0`.
     ///
-    /// Equivalent to `FixedLengthArcsBuffer.resetPosition`.
+    /// Equivalent to `FixedLengthArcsBuffer.resetPosition`
+    /// (`FSTCompiler.java:1180-1183`), which calls `bado.reset(bytes)`: that
+    /// sets the position to `0` and the limit to the array's length, and the
+    /// limit here is always the array's length, so only the position moves.
     pub fn reset_position(&mut self) -> &mut Self {
         self.position = 0;
         self
+    }
+
+    /// Writes through a [`ByteArrayDataOutput`] over the internal array,
+    /// positioned where the last write left off and limited by the array's
+    /// length, and records the position it reached.
+    ///
+    /// This is Java's `bado` field. See the type's documentation for why the
+    /// output is built here rather than held.
+    fn buffered<F>(&mut self, write: F) -> Result<()>
+    where
+        F: FnOnce(&mut ByteArrayDataOutput<'_>) -> Result<()>,
+    {
+        let limit = self.bytes.len();
+        let mut output =
+            ByteArrayDataOutput::with_range(&mut self.bytes, self.position, limit - self.position);
+        write(&mut output)?;
+        self.position = output.position();
+        Ok(())
     }
 
     /// Returns the current write position.
@@ -376,6 +422,13 @@ impl FixedLengthArcsBuffer {
     }
 
     /// Returns the internal array for mutation.
+    ///
+    /// The other half of `FixedLengthArcsBuffer.getBytes`
+    /// (`FSTCompiler.java:1203-1206`): Java returns the `byte[]` itself, which
+    /// the caller both reads and writes —
+    /// `writeNodeForDirectAddressingOrContinuous` copies arcs into it
+    /// (`FSTCompiler.java:1105-1130`). Rust separates the shared borrow from
+    /// the unique one, so the one Java accessor becomes two.
     pub fn bytes_mut(&mut self) -> &mut [u8] {
         &mut self.bytes
     }
@@ -388,26 +441,27 @@ impl Default for FixedLengthArcsBuffer {
 }
 
 impl DataOutput for FixedLengthArcsBuffer {
+    /// Equivalent to `FixedLengthArcsBuffer.writeByte`
+    /// (`FSTCompiler.java:1185-1188`), which forwards to `bado.writeByte`.
     fn write_byte(&mut self, b: u8) -> Result<()> {
-        if self.position >= self.bytes.len() {
-            return Err(LuceneError::IllegalState(
-                "FixedLengthArcsBuffer overflow".to_string(),
-            ));
-        }
-        self.bytes[self.position] = b;
-        self.position += 1;
-        Ok(())
+        self.buffered(|output| output.write_byte(b))
     }
 
+    /// Java's `FixedLengthArcsBuffer` has no `writeBytes`; this one exists
+    /// because [`DataOutput`] requires it, and forwards to the same output that
+    /// Java's `writeByte` and `writeVInt` forward to.
     fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
-        if self.position + len > self.bytes.len() {
-            return Err(LuceneError::IllegalState(
-                "FixedLengthArcsBuffer overflow".to_string(),
-            ));
-        }
-        self.bytes[self.position..self.position + len].copy_from_slice(&b[offset..offset + len]);
-        self.position += len;
-        Ok(())
+        self.buffered(|output| output.write_bytes(b, offset, len))
+    }
+
+    /// Equivalent to `FixedLengthArcsBuffer.writeVInt`
+    /// (`FSTCompiler.java:1190-1197`), which forwards to `bado.writeVInt` —
+    /// one output for the whole value, which is why this overrides the
+    /// byte-at-a-time default rather than inheriting it. The `IOException` Java
+    /// catches and rethrows as a `RuntimeException` there is never thrown,
+    /// because a `ByteArrayDataOutput` does no I/O.
+    fn write_v_int(&mut self, i: i32) -> Result<()> {
+        self.buffered(|output| output.write_v_int(i))
     }
 }
 
