@@ -648,6 +648,12 @@ over a `macro_rules!` expansion, or under an idiomatic rename therefore reads as
 far less complete than it is. Measured on `41051f8` it scored `Tessellator` at 4
 of 42 when every one of the 42 is present.
 
+The floor is left as it is, deliberately: it is cheap, it is reproducible, and
+it never claims more than it can see. What was missing was a layer above it that
+says which of its misses are real. `memberAbsent` is that layer — see *Where the
+remaining work is, by package* — and it is the property to plan from.
+`memberMatched` remains the property to audit with.
+
 `tools/kg/port_gaps.py` re-derives the gap from the two sources of truth
 instead: the Java members the graph records, against **every** Rust function
 declared by the files that port the type — its own, its supertypes', and the
@@ -682,7 +688,18 @@ python3 tools/kg/port_gaps.py /tmp/gaps.json
 ```
 
 which prints the total and the worst types, and writes the per-type detail —
-including the exact Java method names still absent — as JSON.
+including the exact Java method names it believes absent — as JSON.
+
+**Its total is an under-count, not a floor.** Measured on `edfea04` it reports 87
+missing methods where the triage — the same question, decided per member against
+both sources and hand-checked on 60 items — reports 370. The two disagree in both
+directions: `port_gaps.py` calls 343 of the 370 present, and reports 60 the triage
+settles. The cause is that it searches a whole porting file with no check on which
+type owns the function it finds, and applies the `toString`→`fmt`,
+`equals`→`eq` mapping unconditionally: `src/geo/geometry.rs` contains exactly one
+`impl Display`, and every geo type's `toString` is credited to it. Use it to list
+candidate names for one type; do not quote its total. `memberAbsent` is the
+number, and *Where the remaining work is, by package* is where it is explained.
 
 Where the unverified share still sits:
 
@@ -720,6 +737,160 @@ RETURN m.inScope AS inScope, count(m) AS modules, sum(m.javaFiles) AS javaFiles
 
 35 modules, 4,035 Java files; `lucene/core` alone — 1,213 files, 30.1% — is the
 port target. Every excluded module carries `scopeRule` and `role`.
+
+### Where the remaining work is, by package
+
+Type-level coverage no longer discriminates: once every ported type declares what
+it ports, the answer is "almost all of them", and the question that decides the
+work becomes *how much of each ported type is actually there*. `memberMatched`
+answers that as a **floor** — it counts as missing every method the port renamed
+— so the figure it leaves behind is a ceiling on the work, not a list of it.
+Task #161 classified all 1,816 of those names against the Java and the Rust
+source; `memberAbsent` is what survived. **That is the number to plan from:**
+
+```cypher
+MATCH (c:Class)
+WHERE c.portScope = 'in' AND c.memberTriage IS NOT NULL
+WITH split(c.package, '.') AS p, c
+WITH CASE WHEN size(p) >= 4
+          THEN p[0]+'.'+p[1]+'.'+p[2]+'.'+p[3]
+          ELSE c.package END AS pkg, c
+RETURN pkg,
+       count(c)                                   AS types,
+       sum(c.memberTotal)                         AS members,
+       sum(c.memberTotal) - sum(c.memberMatched)  AS unmatched,
+       sum(c.memberAbsent)                        AS absent,
+       sum(c.memberRenamed)                       AS renamed,
+       sum(c.memberNa)                            AS notApplicable
+ORDER BY absent DESC
+```
+
+At `edfea04` it returns 8,558 method names over 1,096 measured types, 1,816
+unmatched by the floor — of which **370 are real absences**, 1,306 are present
+under another name and 140 do not apply:
+
+| package | members | unmatched | **absent** | renamed | n/a |
+|---|---:|---:|---:|---:|---:|
+| `org.apache.lucene.index` | 1,814 | 289 | **91** | 190 | 8 |
+| `org.apache.lucene.document` | 765 | 258 | **75** | 169 | 14 |
+| `org.apache.lucene.util` | 1,754 | 297 | **62** | 214 | 21 |
+| `org.apache.lucene.codecs` | 879 | 164 | **56** | 97 | 11 |
+| `org.apache.lucene.search` | 1,608 | 462 | **44** | 389 | 29 |
+| `org.apache.lucene.internal` | 691 | 127 | **14** | 89 | 24 |
+| `org.apache.lucene.store` | 429 | 49 | **12** | 37 | 0 |
+| `org.apache.lucene.geo` | 282 | 94 | **9** | 74 | 11 |
+| `org.apache.lucene.analysis` | 336 | 76 | **7** | 47 | 22 |
+
+The ordering is not the one the floor gave. `search` was the largest hole at 462
+and is the second smallest at 44: almost the whole of it was the port spelling
+`Query.equals` as `Query::query_eq` and `Query.toString` as
+`Query::to_query_string`. `index` and `document` are where the work actually is.
+
+**What `absent` is and is not.** It is: a Java method name on an in-scope type
+for which no rule could find a Rust item that discharges it, checked against the
+crate's source rather than against the graph's node set. It is **not** a count of
+methods to write one for one — 866 of the 1,096 measured types have none at all,
+230 types carry all 370, and only 25 carry more than two. Nor is it uniform work:
+177 of the 370 are Java's `Object`/`Iterable` contract on a type that has neither
+the trait impl nor the `#[derive]` — `toString` alone is 132 — which is one
+mechanical pattern, while the other 193 are domain methods that each need
+reading. Rank types, not packages:
+
+```cypher
+MATCH (c:Class) WHERE c.portScope = 'in' AND c.memberAbsent > 0
+RETURN c.qualifiedName AS type, c.memberTotal AS members,
+       c.memberAbsent AS absent, c.memberRenamed AS renamed
+ORDER BY absent DESC, type LIMIT 25
+```
+
+and read the individual verdicts, each of which names the rule that produced it:
+
+```cypher
+MATCH (c:Class {qualifiedName:'org.apache.lucene.index.TieredMergePolicy'})
+      -[:DECLARES]->(m:Method)
+WHERE m.portTriage IS NOT NULL
+RETURN m.name, m.portTriage, m.portTriageRule, m.portTriageEvidence
+```
+
+#### How the triage decides, and what it is worth
+
+`tools/kg/triage_members.py` reproduces `measure_depth` exactly — it asserts its
+own per-type counts against the `memberMatched` the graph holds and fails if any
+differ — then applies rules to the pairs the floor left over, strongest first,
+recording which rule fired. The rules are tiered by how tightly the Rust item is
+bound to the type:
+
+| tier | evidence | share of `renamed` |
+|---|---|---:|
+| `own` | the Rust type that declares it ports this Lucene type, a trait it implements, or that trait's supertraits | 795 |
+| `super` | the same, for the port of a Java supertype — Java re-declares inherited methods as overrides, the port declares them once | 180 |
+| `file` | elsewhere in the files that port the type, its `X/` submodule, or the sibling `macros.rs` that stands in for Lucene's code generator | 331 |
+
+Within a tier the rules run `exact` → `accessor-prefix` → `separator` →
+`doc-comment` → `name-extension`. Three of them are worth stating because they
+are what a name comparison alone cannot see:
+
+* **`doc-comment`** reads the crate's own `Equivalent to \`Type.member(...)\``
+  claim (`CLAUDE.md` §14.1) and requires the type it names to be this type or one
+  of its Java supertypes. It is the port asserting the correspondence itself, so
+  it outranks every heuristic — and the type check is what stops one type's
+  evidence being credited to another.
+* **`name-extension`** accepts a longer Rust name (`decode` →
+  `decode_long_blocks_to_longs`) only where Java overloads the method or the port
+  declares two or more functions extending it. Java overloads on argument type
+  and Rust cannot, so a split is expected there and nowhere else; ungated, the
+  rule let `getCalibrateSizeByDeletes` be answered by its own setter.
+* **`contract-trait` / `derive`** answer `equals`, `hashCode`, `toString`,
+  `clone`, `compareTo` and `iterator` from the Rust trait that carries them, and
+  only from the type's **own** impls. Rust has no inheritance: `impl Display for
+  FilterDirectory` says nothing about `NRTCachingDirectory`, which overrides
+  `toString` in Java and has no `Display` here.
+
+`na` has exactly three grounds, 140 in all: a `#[derive]` that discharges a Java
+`Object` contract (43); a `private` Java method on a type whose reachable surface
+carries no absence, so the difference is one of decomposition and not of
+function (54); and a member `port_gaps_exclusions.json` marks
+`"triageClass": "na"` because the Java construct that creates it does not exist
+here — the Panama lane kernels and the JFlex scanner protocol (43). The other two
+exclusions in that file are marked `"absent"`: work deferred is still work.
+
+Anything no rule settles is `absent`. That direction is deliberate — a wrong
+`absent` costs a check, a wrong `renamed` hides work — and it is why the count
+should be read as an upper bound on real absence and a lower bound on what is
+done.
+
+**Verification.** 60 classifications were checked by hand against
+`/tmp/lucene1050` and the crate, spread over all nine packages, all three
+classes and every rule. All 60 verdicts hold. Getting there cost eight rule
+defects, each found by a sample item and each now covered by a comment at the
+rule: a whole supertype file admitted as evidence (`BytesRefHash.grow` answering
+`BinaryDocValuesFieldUpdates.grow`); a trait resolved to a homonym
+(`src/index/documents_writer.rs` also declares `Query`, and taking the first
+match hid every query type's real members); a macro fallback that fired for any
+type with no `impl` under its own name, which is true of every trait; a
+supertype's `#[derive]` read as the subtype's; a supertype's trait *declaration*
+read as proof the subtype implements it; one declaration site per name per file,
+which hid `StandardTokenizer`'s `set_max_token_length` behind
+`StandardTokenizerImpl`'s; a one-word name matched anywhere in a shared module
+(`InputStreamDataInput.close` answering to `RandomAccessInputAdapter::close`);
+and a module scope that stopped at `X.rs` and never looked in `X/`, which is the
+same Rust module (`PackedInts.getDecoder` lives in
+`src/util/packed/bulk_operation.rs`).
+
+Re-derive it after any change to the crate:
+
+```bash
+python3 tools/kg/triage_dump.py rucene /tmp/triage          # snapshot the graph
+python3 tools/kg/triage_repro.py /tmp/triage /tmp/triage/unmatched.json
+python3 tools/kg/triage_members.py /tmp/triage /tmp/triage/triaged.json --root .
+python3 tools/kg/triage_load.py rucene /tmp/triage/triaged.json \
+    --commit "$(git rev-parse HEAD)" --date "$(git show -s --format=%cs HEAD)"
+```
+
+`triage_repro.py` exits non-zero if it cannot reproduce the graph's
+`memberMatched` type for type, which is the guard that keeps the triage attached
+to the floor it is classifying.
+
 
 ### What to do next
 
@@ -796,6 +967,12 @@ RETURN u.name AS type, count(DISTINCT t) AS openTasks
 ```
 
 That form gives 50 covered and 6 orphaned, which matches the task texts.
+
+**An alias that collides with a pattern variable silently returns the node id.**
+`MATCH (t)-[:PORTS]->(c) RETURN c.memberTotal AS t` returns `t`'s node id, not the
+member count, because the alias rebinds the pattern variable. The query neither
+fails nor warns. Name result aliases so they cannot collide with anything bound in
+the pattern. Verified 2026-09-05.
 
 **`REQUIRES_PORT` misses ambiguous simple names.** The edge is derived from unambiguous simple
 names of at least four characters, so a type whose name collides across packages — `Sorter`,
