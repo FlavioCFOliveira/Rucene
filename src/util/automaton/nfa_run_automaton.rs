@@ -147,6 +147,18 @@ impl PartialEq for NFARunAutomaton {
 
 impl Eq for NFARunAutomaton {}
 
+impl std::hash::Hash for NFARunAutomaton {
+    /// Hashes exactly the two fields [`PartialEq`] compares, so the two agree.
+    ///
+    /// Java's `NFARunAutomaton` overrides neither `equals` nor `hashCode`, so
+    /// its Java hash is the JVM identity hash; this port already gives it
+    /// value equality, and this keeps the hash consistent with it.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.alphabet_size.hash(state);
+        self.points.hash(state);
+    }
+}
+
 impl NFARunAutomaton {
     /// Constructor, assuming the alphabet size is the whole Unicode code point space.
     ///

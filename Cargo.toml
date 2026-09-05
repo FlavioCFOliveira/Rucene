@@ -74,6 +74,10 @@ name = "delete_by_query"
 path = "tests/delete_by_query.rs"
 
 [[test]]
+name = "portability_object_contract_core"
+path = "tests/portability/object_contract_core.rs"
+
+[[test]]
 name = "portability_delete_by_query"
 path = "tests/portability/delete_by_query.rs"
 
@@ -189,5 +193,5 @@ name = "search_on_disk"
 path = "tests/search_on_disk.rs"
 
 [[test]]
-name = "portability_object_contract"
-path = "tests/portability/object_contract.rs"
+name = "portability_object_contract_search"
+path = "tests/portability/object_contract_search.rs"

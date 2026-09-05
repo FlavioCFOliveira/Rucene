@@ -791,3 +791,10 @@ pub fn reload_sort_field_providers(provider: Arc<dyn SortFieldProvider>) {
         .expect("INVARIANT: the sort-field provider lock is never poisoned")
         .register(provider);
 }
+
+impl std::fmt::Display for Sorter {
+    /// Port of `Sorter.toString()`, which is `getID()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.get_id())
+    }
+}

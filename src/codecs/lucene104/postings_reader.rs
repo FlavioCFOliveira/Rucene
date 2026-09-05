@@ -1892,3 +1892,17 @@ mod tests {
         reader.close().expect("close succeeds");
     }
 }
+
+impl std::fmt::Display for Lucene104PostingsReader {
+    /// Port of `Lucene104PostingsReader.toString()`, which reports whether the
+    /// `.pos` and `.pay` files were opened as Java's `boolean` literals `true`
+    /// and `false`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Lucene104PostingsReader(positions={},payloads={})",
+            self.pos_in.is_some(),
+            self.pay_in.is_some()
+        )
+    }
+}

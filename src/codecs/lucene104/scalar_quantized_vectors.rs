@@ -2220,10 +2220,27 @@ impl Lucene104ScalarQuantizedVectorsFormat {
 }
 
 impl std::fmt::Display for Lucene104ScalarQuantizedVectorsFormat {
+    /// Port of `Lucene104ScalarQuantizedVectorsFormat.toString()`.
+    ///
+    /// `scorer` and `rawVectorFormat` are `static final` fields in Java
+    /// (`Lucene104ScalarQuantizedVectorsFormat.java:48-51`), so they are the
+    /// same two values for every instance; this port builds them where they are
+    /// needed rather than holding them in the struct, and renders the same two
+    /// here.
+    ///
+    /// `encoding` goes through the enum's own `toString()`, which for a Java
+    /// enum is the constant name — `UNSIGNED_BYTE`, not the Rust variant
+    /// spelling.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let scorer = Lucene104ScalarQuantizedVectorScorer::new(std::sync::Arc::new(
+            crate::codecs::hnsw::flat_vectors::DefaultFlatVectorScorer::INSTANCE,
+        ));
+        let raw = crate::codecs::lucene99::flat_vectors_format::Lucene99FlatVectorsFormat::new(
+            crate::codecs::hnsw::flat_vectors::DefaultFlatVectorScorer::INSTANCE,
+        );
         write!(
             f,
-            "Lucene104ScalarQuantizedVectorsFormat(name={NAME}, encoding={:?})",
+            "Lucene104ScalarQuantizedVectorsFormat(name={NAME}, encoding={}, flatVectorScorer={scorer}, rawVectorFormat={raw})",
             self.encoding
         )
     }
@@ -3775,4 +3792,37 @@ fn new_docs_with_field(old_doc_ids: &[i32], sort_map: &SorterDocMap) -> Result<D
         set.add(doc)?;
     }
     Ok(set)
+}
+
+impl std::fmt::Display for Lucene104ScalarQuantizedVectorScorer {
+    /// Port of `Lucene104ScalarQuantizedVectorScorer.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Lucene104ScalarQuantizedVectorScorer(nonQuantizedDelegate={})",
+            self.non_quantized_delegate
+        )
+    }
+}
+
+impl std::fmt::Display for Lucene104HnswScalarQuantizedVectorsFormat {
+    /// Port of `Lucene104HnswScalarQuantizedVectorsFormat.toString()`.
+    ///
+    /// The `name=` is a literal in Java, not `getName()`, and the flat format
+    /// is rendered by its own `toString()`.
+    ///
+    /// Java keeps `tinySegmentsThreshold` in a field; this port models only the
+    /// constructors that leave it at `HNSW_GRAPH_THRESHOLD` — which is every
+    /// public constructor except the six-argument one — so the constant is
+    /// printed directly.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Lucene104HnswScalarQuantizedVectorsFormat(name=Lucene104HnswScalarQuantizedVectorsFormat, maxConn={}, beamWidth={}, tinySegmentsThreshold={}, flatVectorFormat={})",
+            self.max_conn,
+            self.beam_width,
+            crate::codecs::lucene99::hnsw_vectors_format::HNSW_GRAPH_THRESHOLD,
+            self.flat
+        )
+    }
 }

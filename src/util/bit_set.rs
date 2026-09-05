@@ -29,7 +29,13 @@ use crate::util::{Accountable, Bits, FixedBitSet, RamUsageEstimator};
 /// Base implementation for a bit set.
 ///
 /// Port of `org.apache.lucene.util.BitSet`.
-pub trait BitSet: Bits + Accountable {
+///
+/// [`std::fmt::Display`] is a supertrait because Lucene's `BitDocIdSet.toString()`
+/// concatenates the set it wraps, so every `BitSet` has to be renderable. In Java
+/// that comes free from `Object.toString()`; here each implementation supplies it,
+/// and the one Lucene class that overrides `toString()` — `SparseFixedBitSet` —
+/// reproduces its text exactly.
+pub trait BitSet: Bits + Accountable + std::fmt::Display {
     /// Clears every bit of the set.
     ///
     /// Depending on the implementation this may be significantly faster than

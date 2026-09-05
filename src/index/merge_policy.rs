@@ -882,7 +882,10 @@ impl CfsSettings {
 /// Decides which segments to merge and when.
 ///
 /// Equivalent to `org.apache.lucene.index.MergePolicy`.
-pub trait MergePolicy: Send + Sync {
+/// [`std::fmt::Display`] is a supertrait because `FilterMergePolicy.toString()`
+/// concatenates the policy it wraps, and `LiveIndexWriterConfig.toString()`
+/// concatenates the configured policy.
+pub trait MergePolicy: Send + Sync + std::fmt::Display {
     /// Returns the merges to run for `merge_trigger`, or `None` when there are
     /// none.
     ///
@@ -4150,5 +4153,133 @@ mod merge_policy_setting_tests {
         assert_eq!(p.get_max_threshold(), 16);
         assert_eq!(p.get_compaction_ratio(), 2.5);
         assert_eq!(p.get_max_age_seconds(), 86_400);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Object contracts: the `toString()` bodies of the merge policies
+// -----------------------------------------------------------------------------
+
+impl std::fmt::Display for NoMergePolicy {
+    /// Port of `NoMergePolicy.toString()`, which is the bare class name with no
+    /// parentheses and no fields.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NoMergePolicy")
+    }
+}
+
+impl std::fmt::Display for FilterMergePolicy {
+    /// Port of `FilterMergePolicy.toString()`, which is
+    /// `getClass().getSimpleName() + "(" + in + ")"`.
+    ///
+    /// Java's `getSimpleName()` is the *runtime* class, so a subclass of
+    /// `FilterMergePolicy` names itself; this port has no subclasses of it, so
+    /// the name is fixed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FilterMergePolicy({})", self.inner)
+    }
+}
+
+impl std::fmt::Display for LogMergePolicy {
+    /// Port of `LogMergePolicy.toString()`.
+    ///
+    /// Java's `getClass().getSimpleName()` resolves to the concrete subclass,
+    /// `LogByteSizeMergePolicy` or `LogDocMergePolicy`. This port models the two
+    /// as one struct discriminated by [`LogSizeKind`], so the name is taken from
+    /// that field.
+    ///
+    /// `maxCFSSegmentSizeMB` and `noCFSRatio` are Java `double`s, rendered by
+    /// `Double.toString`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::util::java_fmt::double_to_string;
+        let simple_name = match self.size_kind {
+            LogSizeKind::Bytes => "LogByteSizeMergePolicy",
+            LogSizeKind::Docs => "LogDocMergePolicy",
+        };
+        write!(
+            f,
+            "[{simple_name}: minMergeSize={}, mergeFactor={}, maxMergeSize={}, \
+             maxMergeSizeForForcedMerge={}, calibrateSizeByDeletes={}, maxMergeDocs={}, \
+             maxCFSSegmentSizeMB={}, noCFSRatio={}]",
+            self.min_merge_size,
+            self.merge_factor,
+            self.max_merge_size,
+            self.max_merge_size_for_forced_merge,
+            self.calibrate_size_by_deletes,
+            self.max_merge_docs,
+            double_to_string(self.cfs.get_max_cfs_segment_size_mb()),
+            double_to_string(self.cfs.get_no_cfs_ratio()),
+        )
+    }
+}
+
+impl std::fmt::Display for TieredMergePolicy {
+    /// Port of `TieredMergePolicy.toString()`.
+    ///
+    /// Note the missing `]`: Java opens with `"[" + getClass().getSimpleName() +
+    /// ": "` and never closes the bracket, and this port reproduces the string
+    /// as Lucene emits it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::util::java_fmt::double_to_string;
+        write!(
+            f,
+            "[TieredMergePolicy: maxMergeAtOnce={}, maxMergedSegmentMB={}, floorSegmentMB={}, \
+             forceMergeDeletesPctAllowed={}, segmentsPerTier={}, maxCFSSegmentSizeMB={}, \
+             noCFSRatio={}, deletesPctAllowed={}, targetSearchConcurrency={}",
+            self.max_merge_at_once,
+            double_to_string(self.max_merged_segment_bytes as f64 / 1024. / 1024.),
+            double_to_string(self.floor_segment_bytes as f64 / 1024. / 1024.),
+            double_to_string(self.force_merge_deletes_pct_allowed),
+            double_to_string(self.segs_per_tier),
+            double_to_string(self.cfs.get_max_cfs_segment_size_mb()),
+            double_to_string(self.cfs.get_no_cfs_ratio()),
+            double_to_string(self.deletes_pct_allowed),
+            self.target_search_concurrency,
+        )
+    }
+}
+
+impl std::fmt::Display for TemporalMergePolicy {
+    /// Port of `TemporalMergePolicy.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::util::java_fmt::double_to_string;
+        write!(
+            f,
+            "[TemporalMergePolicy: temporalField={}, baseTimeSeconds={}, minThreshold={}, \
+             maxThreshold={}, useExponentialBuckets={}, maxWindowSizeSeconds={}, \
+             maxAgeSeconds={}, compactionRatio={}, forceMergeDeletesPctAllowed={}]",
+            self.temporal_field,
+            self.base_time_seconds,
+            self.min_threshold,
+            self.max_threshold,
+            self.use_exponential_buckets,
+            self.max_window_size_seconds,
+            self.max_age_seconds,
+            double_to_string(self.compaction_ratio),
+            double_to_string(self.force_merge_deletes_pct_allowed),
+        )
+    }
+}
+
+impl std::fmt::Display for OneMergeWrappingMergePolicy {
+    /// Java's `OneMergeWrappingMergePolicy extends FilterMergePolicy` and does
+    /// not override `toString()`, so it prints
+    /// `getClass().getSimpleName() + "(" + in + ")"` with its own name.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OneMergeWrappingMergePolicy({})", self.inner)
+    }
+}
+
+impl std::fmt::Display for UpgradeIndexMergePolicy {
+    /// Inherited from `FilterMergePolicy.toString()`, with this class's name.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "UpgradeIndexMergePolicy({})", self.inner)
+    }
+}
+
+impl std::fmt::Display for SoftDeletesRetentionMergePolicy {
+    /// Inherited from `FilterMergePolicy.toString()`, with this class's name.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SoftDeletesRetentionMergePolicy({})", self.inner)
     }
 }

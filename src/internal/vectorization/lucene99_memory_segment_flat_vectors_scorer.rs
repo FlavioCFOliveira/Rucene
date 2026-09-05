@@ -321,3 +321,10 @@ impl FlatVectorsScorer for Lucene99MemorySegmentFlatVectorsScorer {
             .get_random_vector_scorer_byte(similarity_function, vector_values, target)
     }
 }
+
+impl std::fmt::Display for Lucene99MemorySegmentFlatVectorsScorer {
+    /// Port of `Lucene99MemorySegmentFlatVectorsScorer.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Lucene99MemorySegmentFlatVectorsScorer()")
+    }
+}

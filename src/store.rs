@@ -648,6 +648,10 @@ pub trait IndexInput: DataInput + Send + Sync {
     fn clone_input(&self) -> Result<Box<dyn IndexInput>>;
 
     /// Returns the opaque resource description for this input.
+    ///
+    /// This is also the whole of Java's `IndexInput.toString()`, whose body is
+    /// `return resourceDescription;`, so an input's Java string is exactly what
+    /// this returns.
     fn resource_description(&self) -> &str;
 
     /// Hints that bytes in `[offset, offset + length)` will be read soon.
@@ -1912,6 +1916,10 @@ pub trait IndexOutput: DataOutput + Send + Sync {
     fn checksum(&self) -> Result<i64>;
 
     /// Returns the opaque resource description for this output.
+    ///
+    /// This is also the whole of Java's `IndexOutput.toString()`, whose body is
+    /// `return resourceDescription;`, so an output's Java string is exactly
+    /// what this returns.
     fn resource_description(&self) -> &str;
 
     /// Returns the name used to create this output.
@@ -4435,6 +4443,31 @@ pub trait Directory: Send + Sync {
     /// `std::any::type_name::<Self>()`.
     fn directory_type_name(&self) -> &'static str {
         std::any::type_name::<Self>()
+    }
+
+    /// Port of the concrete `Directory.toString()`, which every subclass that
+    /// does not override it inherits: the simple class name, `@`, and the
+    /// identity hash in hexadecimal.
+    ///
+    /// Rust cannot express "a default body for `Display::fmt`", so the body of
+    /// Java's base-class method lives here as a provided trait method, next to
+    /// [`Directory::directory_type_name`], which follows the same pattern. The
+    /// subclasses that *do* override `toString()` — `FSDirectory`,
+    /// `MMapDirectory`, `ByteBuffersDirectory`, `FilterDirectory`,
+    /// `NRTCachingDirectory` — implement [`std::fmt::Display`] instead, exactly
+    /// as Java overrides the method.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Rust has no identity hash; the
+    /// address of the value stands in for it, the convention this port already
+    /// uses for `Object.hashCode()` (see `IndexCommit`). The digits therefore
+    /// differ from a JVM's, exactly as two JVM runs differ from each other.
+    fn directory_to_string(&self) -> String {
+        let path = self.directory_type_name();
+        let simple_name = path.rsplit("::").next().unwrap_or(path);
+        format!(
+            "{simple_name}@{}",
+            crate::util::java_fmt::to_hex_string(self as *const Self as *const () as usize as i32)
+        )
     }
 
     /// Default validation that this directory is still open.
@@ -11895,5 +11928,90 @@ mod tests {
         input.set_position(99);
         assert_eq!(input.position(), 99);
         assert!(input.read_byte().is_err());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Object contracts: the `toString()` bodies of this module's store types
+// ---------------------------------------------------------------------------
+
+impl std::fmt::Display for ByteBuffersDataInput {
+    /// Port of `ByteBuffersDataInput.toString()`, which is
+    /// `String.format(Locale.ROOT, "%,d bytes, block size: %,d, blocks: %,d,
+    /// position: %,d%s", length(), blockSize(), blocks.length, position(),
+    /// offset == 0 ? "" : ...)`.
+    ///
+    /// Two details of Java's arithmetic survive here:
+    ///
+    /// * `blockSize()` is `1 << blockBits`, and a single-block input sets
+    ///   `blockBits = 32` (`ByteBuffersDataInput.java:66`). Java's shift on an
+    ///   `int` takes the count modulo 32, so `1 << 32` is `1`, and a one-block
+    ///   input reports `block size: 1`.
+    /// * `%,d` groups the digits in threes under `Locale.ROOT`.
+    ///
+    /// The `offset` suffix is never emitted, because this port's `slice()`
+    /// joins the sliced views into one block whose offset is zero — the
+    /// divergence already documented on [`ByteBuffersDataInput::slice`].
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::util::java_fmt::format_grouped;
+        let block_size: i64 = if self.blocks.len() == 1 {
+            // Java: blockBits == 32, and `1 << 32` on an `int` is 1.
+            1
+        } else {
+            1i64 << self.block_bits
+        };
+        write!(
+            f,
+            "{} bytes, block size: {}, blocks: {}, position: {}",
+            format_grouped(self.length as i64),
+            format_grouped(block_size),
+            format_grouped(self.blocks.len() as i64),
+            format_grouped(self.pos as i64),
+        )
+    }
+}
+
+impl std::fmt::Display for ByteBuffersDataOutput {
+    /// Port of `ByteBuffersDataOutput.toString()`, which is
+    /// `String.format(Locale.ROOT, "%,d bytes, block size: %,d, blocks: %,d",
+    /// size(), blockSize(), blocks.size())`.
+    ///
+    /// Java's `blocks` deque holds every allocated block, the one being filled
+    /// included, and is empty until the first write; here the filled blocks are
+    /// `completed` and the one being filled is `current`, a zero-capacity vector
+    /// until the first allocation — the same accounting
+    /// [`ByteBuffersDataOutput::ram_bytes_used`] uses.
+    ///
+    /// [`ByteBuffersDataOutput::ram_bytes_used`]: crate::util::Accountable::ram_bytes_used
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::util::java_fmt::format_grouped;
+        let mut blocks = self.completed.len();
+        if self.current.capacity() > 0 {
+            blocks += 1;
+        }
+        write!(
+            f,
+            "{} bytes, block size: {}, blocks: {}",
+            format_grouped(self.size() as i64),
+            format_grouped(self.block_size() as i64),
+            format_grouped(blocks as i64),
+        )
+    }
+}
+
+impl std::fmt::Display for NRTCachingDirectory {
+    /// Port of `NRTCachingDirectory.toString()`.
+    ///
+    /// The two megabyte figures are Java `double` divisions rendered by
+    /// `Double.toString`, so `48` prints as `48.0` rather than `48`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::util::java_fmt::double_to_string;
+        write!(
+            f,
+            "NRTCachingDirectory({}; maxCacheMB={} maxMergeSizeMB={})",
+            self.get_delegate().directory_to_string(),
+            double_to_string(self.max_cached_bytes as f64 / 1024.0 / 1024.0),
+            double_to_string(self.max_merge_size_bytes as f64 / 1024.0 / 1024.0),
+        )
     }
 }

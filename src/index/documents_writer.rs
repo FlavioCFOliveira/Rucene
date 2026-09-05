@@ -7392,3 +7392,22 @@ mod tests {
         assert_eq!(fixture.writer.num_docs(), 0);
     }
 }
+
+impl std::fmt::Display for DocumentsWriterDeleteQueue {
+    /// Port of `DocumentsWriterDeleteQueue.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DWDQ: [ generation: {} ]", self.generation)
+    }
+}
+
+impl std::fmt::Display for DocumentsWriterFlushControl {
+    /// Port of `DocumentsWriterFlushControl.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "DocumentsWriterFlushControl [activeBytes={}, flushBytes={}]",
+            self.active_bytes(),
+            self.flushing_bytes()
+        )
+    }
+}

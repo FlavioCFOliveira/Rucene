@@ -1408,3 +1408,24 @@ mod tests {
         assert_eq!(Silent.reflect_as_string(true), "");
     }
 }
+
+impl std::fmt::Display for AttributeSource {
+    /// Port of `AttributeSource.toString()`, which is
+    /// `getClass().getSimpleName() + '@' + Integer.toHexString(System.identityHashCode(this))
+    /// + " " + reflectAsString(false)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Rust has no identity hash; the
+    /// address of the value stands in for it, the convention this port already
+    /// uses for `Object.hashCode()` (see `IndexCommit`). The digits differ from
+    /// a JVM's, exactly as two JVM runs differ from each other. Everything after
+    /// the space — the reflected attribute rendering, which is what the string
+    /// is read for — is reproduced exactly.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "AttributeSource@{} {}",
+            crate::util::java_fmt::to_hex_string(self as *const Self as usize as i32),
+            self.reflect_as_string(false)
+        )
+    }
+}

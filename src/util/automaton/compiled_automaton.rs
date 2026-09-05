@@ -20,7 +20,7 @@ use super::utf32_to_utf8::UTF32ToUTF8;
 /// execution depending upon the language they accept.
 ///
 /// Equivalent to `CompiledAutomaton.AUTOMATON_TYPE`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AutomatonType {
     /// Automaton that accepts no strings.
     None,
@@ -540,6 +540,34 @@ impl PartialEq for CompiledAutomaton {
 }
 
 impl Eq for CompiledAutomaton {}
+
+impl std::hash::Hash for CompiledAutomaton {
+    /// Hashes exactly the fields [`PartialEq`] compares, so the two agree.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `CompiledAutomaton.hashCode()`
+    /// (`CompiledAutomaton.java:508`) is a 31-chain over
+    /// `runAutomaton.hashCode()`, `nfaRunAutomaton.hashCode()`,
+    /// `term.hashCode()` and `type.hashCode()`. Three of those four are not
+    /// reproducible: `NFARunAutomaton` does not override `hashCode()`, and
+    /// neither does the `AUTOMATON_TYPE` enum, so both answer the JVM identity
+    /// hash; and `BytesRef.hashCode()` is seeded from
+    /// `StringHelper.GOOD_FAST_HASH_SEED`, which is drawn per process. The Java
+    /// `int` therefore differs between two JVM runs over the very same
+    /// automaton, and no port can reproduce it. What *is* portable is the
+    /// contract the number serves — that equal values hash equally — so this
+    /// implementation hashes the fields `eq` inspects, in the same order.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.automaton_type.hash(state);
+        match self.automaton_type {
+            AutomatonType::Single => self.term.hash(state),
+            AutomatonType::Normal => {
+                self.run_automaton.hash(state);
+                self.nfa_run_automaton.hash(state);
+            }
+            _ => {}
+        }
+    }
+}
 
 impl CompiledAutomaton {
     /// Shallow size of the Java class, the fixed part of

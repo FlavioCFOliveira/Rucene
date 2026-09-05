@@ -3614,3 +3614,27 @@ mod tests {
         .is_ok());
     }
 }
+
+impl fmt::Display for Lucene90CompressingStoredFieldsFormat {
+    /// Port of `Lucene90CompressingStoredFieldsFormat.toString()`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Lucene90CompressingStoredFieldsFormat(compressionMode={}, chunkSize={}, maxDocsPerChunk={}, blockShift={})",
+            self.compression_mode, self.chunk_size, self.max_docs_per_chunk, self.block_shift
+        )
+    }
+}
+
+impl fmt::Display for Lucene90CompressingStoredFieldsReader {
+    /// Port of `Lucene90CompressingStoredFieldsReader.toString()`, which uses
+    /// `chunksize` in lower case and no space after the comma, unlike the
+    /// format's own string.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Lucene90CompressingStoredFieldsReader(mode={},chunksize={})",
+            self.compression_mode, self.chunk_size
+        )
+    }
+}

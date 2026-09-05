@@ -3898,3 +3898,28 @@ mod tests {
         assert_reads_hello(reader.get_merge_instance().as_ref());
     }
 }
+
+impl fmt::Display for Lucene90CompressingTermVectorsFormat {
+    /// Port of `Lucene90CompressingTermVectorsFormat.toString()`, whose last
+    /// field is called `blockSize` although the value is the block *shift* —
+    /// Java prints the `blockSize` constructor parameter, which it stores in
+    /// `blockShift`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Lucene90CompressingTermVectorsFormat(compressionMode={}, chunkSize={}, maxDocsPerChunk={}, blockSize={})",
+            self.compression_mode, self.chunk_size, self.max_docs_per_chunk, self.block_shift
+        )
+    }
+}
+
+impl fmt::Display for Lucene90CompressingTermVectorsReader {
+    /// Port of `Lucene90CompressingTermVectorsReader.toString()`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Lucene90CompressingTermVectorsReader(mode={},chunksize={})",
+            self.compression_mode, self.chunk_size
+        )
+    }
+}

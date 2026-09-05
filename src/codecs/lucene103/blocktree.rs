@@ -2808,3 +2808,15 @@ mod tests {
         );
     }
 }
+
+impl std::fmt::Display for Lucene103BlockTreeTermsReader {
+    /// Port of `Lucene103BlockTreeTermsReader.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Lucene103BlockTreeTermsReader(fields={},delegate={})",
+            self.fields.len(),
+            self.postings_reader
+        )
+    }
+}

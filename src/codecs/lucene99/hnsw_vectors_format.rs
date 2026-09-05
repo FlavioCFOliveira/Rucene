@@ -2595,3 +2595,22 @@ mod tests {
         Ok(())
     }
 }
+
+impl std::fmt::Display for Lucene99HnswVectorsFormat {
+    /// Port of `Lucene99HnswVectorsFormat.toString()`.
+    ///
+    /// The `name=` is a literal in Java, not `getName()`. `flatVectorFormat` is
+    /// the `Lucene99FlatVectorsFormat` the writer and reader are built from,
+    /// which this port creates on demand in `flat_format()` rather than keeping
+    /// in a field.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Lucene99HnswVectorsFormat(name=Lucene99HnswVectorsFormat, maxConn={}, beamWidth={}, tinySegmentsThreshold={}, flatVectorFormat={})",
+            self.max_conn,
+            self.beam_width,
+            self.tiny_segments_threshold,
+            self.flat_format()
+        )
+    }
+}

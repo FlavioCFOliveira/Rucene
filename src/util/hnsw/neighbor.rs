@@ -612,3 +612,23 @@ mod tests {
         assert_eq!(arr.nodes(), &[1, 2, 3]);
     }
 }
+
+// -----------------------------------------------------------------------------
+// Object contracts: the `toString()` bodies of the two neighbour containers
+// -----------------------------------------------------------------------------
+
+impl std::fmt::Display for NeighborArray {
+    /// Port of `NeighborArray.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NeighborArray[{}]", self.size)
+    }
+}
+
+impl std::fmt::Display for NeighborQueue {
+    /// Port of `NeighborQueue.toString()`, which names itself `Neighbors`
+    /// rather than after its own class and reports the size of the backing
+    /// heap.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Neighbors[{}]", self.heap.len())
+    }
+}

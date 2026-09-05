@@ -211,12 +211,21 @@ pub struct Lucene90CompoundReader {
     segment_name: String,
     entries: std::collections::HashMap<String, CompoundFileEntry>,
     data: Arc<[u8]>,
+    /// How the directory this reader was opened from renders itself.
+    ///
+    /// Java keeps the `Directory` in a field and concatenates it in
+    /// `toString()`. This port reads the whole compound file into `data` at
+    /// open time and keeps no handle on the outer directory, so the rendering
+    /// is captured instead of the directory — which is all `toString()` ever
+    /// asked of it.
+    directory_description: String,
 }
 
 impl Lucene90CompoundReader {
     /// Opens the compound reader for the given segment.
     pub fn new(dir: &dyn Directory, segment_info: &SegmentInfo) -> Result<Self> {
         let segment_name = segment_info.name.clone();
+        let directory_description = dir.directory_to_string();
         let data_file = segment_file_name(&segment_name, "", COMPOUND_FILE_EXTENSION);
         let entries_file = segment_file_name(&segment_name, "", COMPOUND_FILE_ENTRIES_EXTENSION);
 
@@ -256,6 +265,7 @@ impl Lucene90CompoundReader {
             segment_name,
             entries,
             data: Arc::from(bytes),
+            directory_description,
         })
     }
 
@@ -468,5 +478,18 @@ mod tests {
         original.read_bytes(&mut orig_bytes, 0, orig_len).unwrap();
 
         assert_eq!(bytes, orig_bytes);
+    }
+}
+
+impl std::fmt::Display for Lucene90CompoundReader {
+    /// Port of `Lucene90CompoundReader.toString()`, which names itself
+    /// `CompoundFileDirectory` rather than after its own class and puts the
+    /// segment name in double quotes.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "CompoundFileDirectory(segment=\"{}\" in dir={})",
+            self.segment_name, self.directory_description
+        )
     }
 }

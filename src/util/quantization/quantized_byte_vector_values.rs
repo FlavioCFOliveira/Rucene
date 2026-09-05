@@ -42,6 +42,20 @@ pub enum ScalarEncoding {
     SevenBit,
 }
 
+impl std::fmt::Display for ScalarEncoding {
+    /// A Java enum's `toString()` returns its constant name, and Lucene relies
+    /// on that in `Lucene104ScalarQuantizedVectorsFormat.toString()`, so the
+    /// constant names are reproduced here rather than the Rust variant names
+    /// (`UNSIGNED_BYTE`, not `UnsignedByte`).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::UnsignedByte => "UNSIGNED_BYTE",
+            Self::PackedNibble => "PACKED_NIBBLE",
+            Self::SevenBit => "SEVEN_BIT",
+        })
+    }
+}
+
 impl ScalarEncoding {
     /// Returns how many bits one component occupies.
     ///

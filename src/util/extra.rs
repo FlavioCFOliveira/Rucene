@@ -486,6 +486,35 @@ impl PartialEq for LongBitSet {
 
 impl Eq for LongBitSet {}
 
+impl LongBitSet {
+    /// Java's `LongBitSet.hashCode()`, reproduced exactly.
+    ///
+    /// The loop walks the words from the last to the first, folding each into a
+    /// 64-bit accumulator rotated left by one bit, then folds the two halves
+    /// together and adds `0x98761234` so that an empty set does not hash to
+    /// zero. It depends on the ghost bits above `num_bits` being clear, which is
+    /// the invariant the setters maintain.
+    pub fn hash_code(&self) -> i32 {
+        let mut h: i64 = 0;
+        for i in (0..self.num_words as usize).rev() {
+            h ^= self.bits[i];
+            h = (h << 1) | ((h as u64) >> 63) as i64; // rotate left
+        }
+        // `0x98761234` is an `int` literal in Java, so it is the negative value
+        // that bit pattern denotes, and the addition wraps.
+        (((h >> 32) ^ h) as i32).wrapping_add(0x9876_1234_u32 as i32)
+    }
+}
+
+impl std::hash::Hash for LongBitSet {
+    /// Feeds the exact `i32` that [`LongBitSet::hash_code`] computes, so this is
+    /// consistent with [`PartialEq`]: two sets that compare equal have equal
+    /// `num_bits` and equal words, hence the same `hash_code`.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_i32(self.hash_code());
+    }
+}
+
 impl Accountable for LongBitSet {
     fn ram_bytes_used(&self) -> i64 {
         // Base object estimate (8-byte header + 3 refs) plus the long array.

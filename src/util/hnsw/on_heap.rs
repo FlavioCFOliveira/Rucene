@@ -450,3 +450,24 @@ impl HnswGraph for EmptyHnswGraph {
         0
     }
 }
+
+// -----------------------------------------------------------------------------
+// Object contract: `OnHeapHnswGraph.toString()`
+// -----------------------------------------------------------------------------
+
+impl std::fmt::Display for OnHeapHnswGraph {
+    /// Port of `OnHeapHnswGraph.toString()`.
+    ///
+    /// Java calls `numLevels()` and `entryNode()`, whose `OnHeapHnswGraph`
+    /// overrides cannot fail; this reads the same two values through the
+    /// infallible internals so that `Display` needs no fallback.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "OnHeapHnswGraph(size={}, numLevels={}, entryNode={})",
+            self.size,
+            self.num_levels_internal(),
+            self.entry_node.get().node
+        )
+    }
+}

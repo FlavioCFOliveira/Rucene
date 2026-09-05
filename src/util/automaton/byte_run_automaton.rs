@@ -11,7 +11,7 @@ use super::utf32_to_utf8::UTF32ToUTF8;
 /// Automaton representation for matching UTF-8 bytes.
 ///
 /// Equivalent to `org.apache.lucene.util.automaton.ByteRunAutomaton`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ByteRunAutomaton {
     inner: RunAutomaton,
 }

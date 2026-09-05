@@ -270,3 +270,19 @@ impl Terms for FieldReader {
         Ok(Some(self.max_term.clone()))
     }
 }
+
+impl std::fmt::Display for FieldReader {
+    /// Port of `FieldReader.toString()`, which names itself `BlockTreeTerms`
+    /// rather than after its own class.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "BlockTreeTerms(seg={} terms={},postings={},positions={},docs={})",
+            self.shared.segment,
+            self.num_terms,
+            self.sum_doc_freq,
+            self.sum_total_term_freq,
+            self.doc_count
+        )
+    }
+}

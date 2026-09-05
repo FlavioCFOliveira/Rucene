@@ -247,6 +247,18 @@ pub trait PostingsFormat: Send + Sync + fmt::Debug {
     fn fields_producer<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn FieldsProducer>>;
 }
 
+impl fmt::Display for dyn PostingsFormat + '_ {
+    /// Port of the concrete `PostingsFormat.toString()`, which every
+    /// implementation inherits: `"PostingsFormat(name=" + name + ")"`.
+    ///
+    /// It hangs off the trait object for the same reason `Codec`'s does: Rust
+    /// cannot give [`fmt::Display`] a default body, but Java's method is
+    /// concrete on the abstract class.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PostingsFormat(name={})", self.name())
+    }
+}
+
 /// A registry mapping postings-format short names to [`PostingsFormat`]
 /// implementations.
 ///
@@ -398,7 +410,9 @@ pub fn available_postings_formats() -> Vec<String> {
 /// Low-level postings reader used by term dictionaries.
 ///
 /// Equivalent to `org.apache.lucene.codecs.PostingsReaderBase`.
-pub trait PostingsReaderBase: Send + Sync {
+/// Java's `Lucene103BlockTreeTermsReader.toString()` concatenates the postings
+/// reader it delegates to, so [`fmt::Display`] is a supertrait here.
+pub trait PostingsReaderBase: Send + Sync + fmt::Display {
     /// Performs initialization, such as reading and verifying the header from
     /// the terms dictionary input.
     fn init(&mut self, terms_in: &mut dyn IndexInput, state: &SegmentReadState) -> Result<()>;
@@ -1040,6 +1054,12 @@ mod tests {
     // Stub PostingsReaderBase ----------------------------------------------
     #[derive(Debug, Default, Clone)]
     struct StubPostingsReader;
+
+    impl fmt::Display for StubPostingsReader {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("StubPostingsReader()")
+        }
+    }
 
     impl PostingsReaderBase for StubPostingsReader {
         fn init(

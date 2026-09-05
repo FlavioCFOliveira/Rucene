@@ -1963,3 +1963,14 @@ fn new_docs_with_field(old_doc_ids: &[i32], sort_map: &SorterDocMap) -> Result<D
     }
     Ok(set)
 }
+
+impl std::fmt::Display for Lucene99FlatVectorsFormat {
+    /// Port of `Lucene99FlatVectorsFormat.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Lucene99FlatVectorsFormat(vectorsScorer={})",
+            self.vectors_scorer
+        )
+    }
+}

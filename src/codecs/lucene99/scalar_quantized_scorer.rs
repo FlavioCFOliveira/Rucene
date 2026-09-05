@@ -492,3 +492,16 @@ impl FlatVectorsScorer for Lucene99ScalarQuantizedVectorScorer {
         )
     }
 }
+
+impl std::fmt::Display for Lucene99ScalarQuantizedVectorScorer {
+    /// Port of `Lucene99ScalarQuantizedVectorScorer.toString()`, which names
+    /// itself `ScalarQuantizedVectorScorer` — the same text the
+    /// `org.apache.lucene.codecs.hnsw` class of that name produces.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ScalarQuantizedVectorScorer(nonQuantizedDelegate={})",
+            self.non_quantized_delegate
+        )
+    }
+}

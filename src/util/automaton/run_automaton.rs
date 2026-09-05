@@ -263,6 +263,33 @@ impl PartialEq for RunAutomaton {
 
 impl Eq for RunAutomaton {}
 
+impl RunAutomaton {
+    /// Java's `RunAutomaton.hashCode()`, reproduced exactly.
+    ///
+    /// Java hashes only three of the five fields [`PartialEq`] compares —
+    /// `alphabetSize`, `points.length` and `size` — which keeps the contract
+    /// (equal automata agree on all five, hence on these three) while staying
+    /// cheap.
+    pub fn hash_code(&self) -> i32 {
+        const PRIME: i32 = 31;
+        let mut result: i32 = 1;
+        result = PRIME.wrapping_mul(result).wrapping_add(self.alphabet_size);
+        result = PRIME
+            .wrapping_mul(result)
+            .wrapping_add(self.points.len() as i32);
+        result = PRIME.wrapping_mul(result).wrapping_add(self.size);
+        result
+    }
+}
+
+impl std::hash::Hash for RunAutomaton {
+    /// Feeds the exact `i32` that [`RunAutomaton::hash_code`] computes, so this
+    /// is consistent with [`PartialEq`].
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_i32(self.hash_code());
+    }
+}
+
 impl ByteRunnable for RunAutomaton {
     fn step(&self, state: i32, c: i32) -> i32 {
         RunAutomaton::step(self, state, c)

@@ -223,6 +223,19 @@ pub trait DocValuesFormat: Send + Sync + fmt::Debug {
     ) -> Result<Box<dyn DocValuesProducer>>;
 }
 
+impl fmt::Display for dyn DocValuesFormat + '_ {
+    /// Port of the concrete `DocValuesFormat.toString()`, which every
+    /// implementation inherits: `"DocValuesFormat(name=" + name + ")"`.
+    ///
+    /// It hangs off the trait object rather than off each implementation for
+    /// the same reason `Codec`'s does: Rust cannot give [`fmt::Display`] a
+    /// default body, but Java's method is concrete on the abstract class, so
+    /// one implementation for `dyn DocValuesFormat` reproduces it for all.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DocValuesFormat(name={})", self.name())
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Doc-values format registry
 // -----------------------------------------------------------------------------

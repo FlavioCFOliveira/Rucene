@@ -1877,3 +1877,10 @@ mod tests {
         );
     }
 }
+
+impl fmt::Display for Lucene90NormsProducer {
+    /// Port of `Lucene90NormsProducer.toString()`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Lucene90NormsProducer(fields={})", self.norms.len())
+    }
+}

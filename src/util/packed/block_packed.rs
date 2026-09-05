@@ -564,3 +564,29 @@ impl std::fmt::Debug for MonotonicBlockPackedReader {
         )
     }
 }
+
+// -----------------------------------------------------------------------------
+// Object contract: `MonotonicBlockPackedReader.toString()`
+// -----------------------------------------------------------------------------
+
+impl std::fmt::Display for MonotonicBlockPackedReader {
+    /// Port of `MonotonicBlockPackedReader.toString()`.
+    ///
+    /// `avgBPV` is Java's integer division of `sumBPV` by the number of
+    /// sub-readers, guarded against an empty reader, so it truncates rather than
+    /// rounds.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let avg_bpv = if self.sub_readers.is_empty() {
+            0
+        } else {
+            self.sum_bpv / self.sub_readers.len() as i64
+        };
+        write!(
+            f,
+            "MonotonicBlockPackedReader(blocksize={},size={},avgBPV={})",
+            1i64 << self.block_shift,
+            self.value_count,
+            avg_bpv
+        )
+    }
+}

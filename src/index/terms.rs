@@ -166,7 +166,10 @@ impl fmt::Display for Term {
 /// the term dictionary.
 ///
 /// Equivalent to `org.apache.lucene.index.TermState`.
-pub trait TermState: Send + Sync + std::fmt::Debug {
+/// [`std::fmt::Display`] is a supertrait because Java's `TermState.toString()`
+/// is a concrete method on the abstract class — every term state renders — and
+/// `OrdTermState` and `BlockTermState` override it.
+pub trait TermState: Send + Sync + std::fmt::Debug + std::fmt::Display {
     /// Copies the content of `other` into `self`.
     fn copy_from(&mut self, other: &dyn TermState);
 
@@ -1676,5 +1679,59 @@ mod tests {
         });
         let mut it = FilteredTermsEnum::new(inner, filter);
         assert!(it.seek_exact(&BytesRef::new(vec![0])).is_err());
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Object contracts of this module's term states and of PrefixCodedTerms
+// -----------------------------------------------------------------------------
+
+impl std::fmt::Display for OrdTermState {
+    /// Port of `OrdTermState.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OrdTermState ord={}", self.ord)
+    }
+}
+
+impl std::fmt::Display for EmptyTermState {
+    /// `EmptyTermState` has no Lucene counterpart; it stands for a term state
+    /// that carries nothing, so it renders with the base
+    /// `TermState.toString()`, which is the bare string `TermState`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TermState")
+    }
+}
+
+impl PartialEq for PrefixCodedTerms {
+    /// Port of `PrefixCodedTerms.equals(Object)`: same `delGen`, same term
+    /// count, same content.
+    ///
+    /// Java's `content` is a `List<ByteBuffer>` and `List.equals` compares it
+    /// buffer by buffer, so two lists holding the same bytes in different
+    /// chunkings are unequal there. This port stores the content as one flat
+    /// buffer, so it compares the bytes themselves — which is what the chunking
+    /// stands for, and cannot disagree for two instances the builder produced
+    /// from the same terms.
+    fn eq(&self, other: &Self) -> bool {
+        self.del_gen == other.del_gen && self.size == other.size && self.content == other.content
+    }
+}
+
+impl Eq for PrefixCodedTerms {}
+
+impl std::hash::Hash for PrefixCodedTerms {
+    /// Hashes exactly what [`PartialEq`] compares, so the two agree.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `hashCode()`
+    /// (`PrefixCodedTerms.java:52`) folds `bb.hashCode()` of every `ByteBuffer`
+    /// in the content list into a 31-chain, then mixes `delGen`. Its value
+    /// depends on where the `ByteBuffersDataOutput` happened to split the
+    /// content into blocks, which this port does not model — it keeps one flat
+    /// buffer — so that particular `int` is not reproducible. What the number
+    /// is *for* is reproduced: equal values hash equally.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.del_gen.hash(state);
+        self.size.hash(state);
+        self.content.hash(state);
     }
 }

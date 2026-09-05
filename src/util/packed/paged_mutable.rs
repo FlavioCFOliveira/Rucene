@@ -652,3 +652,41 @@ impl std::fmt::Debug for PagedGrowableWriter {
         )
     }
 }
+
+// -----------------------------------------------------------------------------
+// Object contract: `AbstractPagedMutable.toString()`
+// -----------------------------------------------------------------------------
+
+impl AbstractPagedMutable {
+    /// The body of Java's `final AbstractPagedMutable.toString()`, parameterised
+    /// on the name the runtime class reports.
+    ///
+    /// Java writes `getClass().getSimpleName()`, which resolves to the concrete
+    /// subclass — `PagedMutable` or `PagedGrowableWriter`. This port models the
+    /// abstract class as shared state rather than as a base class, so the name
+    /// has to be supplied by the subclass that owns the state; the two
+    /// [`std::fmt::Display`] implementations below pass their own.
+    fn fmt_as(&self, class_name: &str, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}(size={},pageSize={})",
+            class_name,
+            self.size(),
+            self.page_size()
+        )
+    }
+}
+
+impl std::fmt::Display for PagedMutable {
+    /// Port of `AbstractPagedMutable.toString()` for `PagedMutable`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.base.fmt_as("PagedMutable", f)
+    }
+}
+
+impl std::fmt::Display for PagedGrowableWriter {
+    /// Port of `AbstractPagedMutable.toString()` for `PagedGrowableWriter`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.base.fmt_as("PagedGrowableWriter", f)
+    }
+}

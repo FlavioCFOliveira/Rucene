@@ -896,8 +896,18 @@ impl OfflinePointWriter {
         temp_file_name_prefix: &str,
         desc: &str,
     ) -> Result<Self> {
-        let name = format!("{}_bkd_{}.tmp", temp_file_name_prefix, desc);
-        let out = temp_dir.create_output(&name, &*DEFAULT_IO_CONTEXT)?;
+        // Lucene calls `tempDir.createTempOutput(tempFileNamePrefix, "bkd_" + desc,
+        // IOContext.DEFAULT)` and takes the name the directory chose
+        // (`OfflinePointWriter.java:49`). That name carries the directory's own
+        // counter — `<prefix>_bkd_<desc>_<n>.tmp` — which is what keeps two
+        // writers created with the same prefix and description from opening the
+        // same file. Building the name here instead would drop the counter.
+        let out = temp_dir.create_temp_output(
+            temp_file_name_prefix,
+            &format!("bkd_{desc}"),
+            &*DEFAULT_IO_CONTEXT,
+        )?;
+        let name = out.name().to_string();
         Ok(Self {
             config,
             temp_dir,
@@ -7489,5 +7499,31 @@ mod tests {
                 right.node_id, n.split_dim, n.node_id
             );
         }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Object contracts: the `toString()` bodies of the two point writers
+// -----------------------------------------------------------------------------
+
+impl std::fmt::Display for HeapPointWriter {
+    /// Port of `HeapPointWriter.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "HeapPointWriter(count={} size={})",
+            self.next_write, self.size
+        )
+    }
+}
+
+impl std::fmt::Display for OfflinePointWriter {
+    /// Port of `OfflinePointWriter.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "OfflinePointWriter(count={} tempFileName={})",
+            self.count, self.name
+        )
     }
 }

@@ -88,3 +88,11 @@ impl FlatVectorsScorer for PrefetchableFlatVectorScorer {
             .get_random_vector_scorer_byte(similarity_function, vector_values, target)
     }
 }
+
+impl std::fmt::Display for PrefetchableFlatVectorScorer {
+    /// Port of `PrefetchableFlatVectorScorer.toString()`, which names only
+    /// itself and does not render the scorer it wraps.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PrefetchableFlatVectorScorer()")
+    }
+}

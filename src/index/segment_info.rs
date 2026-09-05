@@ -6,7 +6,7 @@
 #![deny(unsafe_code)]
 
 use std::collections::{HashMap, HashSet};
-use std::fmt::{self, Debug, Formatter};
+use std::fmt::{self, Debug, Display, Formatter};
 use std::sync::{Arc, RwLock};
 
 use crate::codecs::Codec;
@@ -1406,5 +1406,27 @@ mod tests {
         let s = info.to_string_with_del_count(4);
         assert!(s.starts_with("_a("));
         assert!(s.contains("):C45/4"));
+    }
+}
+
+impl SegmentCommitInfo {
+    /// Port of `SegmentCommitInfo.toString(int pendingDelCount)`, which is
+    /// `info.toString(delCount + pendingDelCount)`.
+    ///
+    /// Unlike [`Display`](std::fmt::Display), this *does* fold in this commit's
+    /// own deletion count.
+    pub fn to_string_with_pending_del_count(&self, pending_del_count: i32) -> String {
+        self.info
+            .to_string_with_del_count(self.del_count + pending_del_count)
+    }
+}
+
+impl Display for SegmentCommitInfo {
+    /// Port of `SegmentCommitInfo.toString()`, which is `info.toString()` — so
+    /// the deletion count is **not** included, unlike
+    /// [`SegmentCommitInfo::to_string_with_pending_del_count`], which is the
+    /// overload `SegmentInfos.toString()` calls with zero.
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.info.to_string_with_del_count(0))
     }
 }

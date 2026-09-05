@@ -3313,3 +3313,27 @@ impl CodecReader for SegmentReader {
         SegmentReader::get_vector_reader(self)
     }
 }
+
+impl std::fmt::Display for SegmentCoreReaders {
+    /// Port of `SegmentCoreReaders.toString()`, which names itself
+    /// `SegmentCoreReader`, in the singular.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SegmentCoreReader({})", self.segment)
+    }
+}
+
+impl std::fmt::Display for SegmentDocValuesProducer {
+    /// Port of `SegmentDocValuesProducer.toString()`.
+    ///
+    /// Java counts `dvProducers`, the list of *distinct* producers, one per
+    /// doc-values generation; this port keys them by field, so the distinct
+    /// producers are counted through the generation list, which has the same
+    /// length.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SegmentDocValuesProducer(producers={})",
+            self.dv_gens.len()
+        )
+    }
+}

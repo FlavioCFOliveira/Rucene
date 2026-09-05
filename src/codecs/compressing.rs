@@ -135,6 +135,15 @@ pub trait Decompressor: Send + Sync + std::fmt::Debug {
         length: usize,
         bytes: &mut BytesRef,
     ) -> Result<()>;
+
+    /// Returns an independent decompressor over the same algorithm, so that a
+    /// cloned reader gets its own decompression state.
+    ///
+    /// Equivalent to the abstract `Decompressor.clone()`. Rust's [`Clone`] is
+    /// not object safe, so the contract is expressed as a boxed factory method,
+    /// exactly as [`IndexInput::clone_input`](crate::store::IndexInput::clone_input)
+    /// expresses `IndexInput.clone()`.
+    fn clone_decompressor(&self) -> Box<dyn Decompressor>;
 }
 
 // -----------------------------------------------------------------------------
@@ -195,6 +204,13 @@ impl Compressor for Lz4HighCompressor {
 struct Lz4Decompressor;
 
 impl Decompressor for Lz4Decompressor {
+    /// Java's LZ4 decompressor is stateless, and its `clone()` returns `this`
+    /// (`CompressionMode.java:145`); this returns an equal copy of the unit
+    /// struct, which is the same thing without shared ownership.
+    fn clone_decompressor(&self) -> Box<dyn Decompressor> {
+        Box::new(*self)
+    }
+
     fn decompress(
         &mut self,
         input: &mut dyn DataInput,
@@ -380,6 +396,13 @@ impl Lz4WithPresetDictDecompressor {
 }
 
 impl Decompressor for Lz4WithPresetDictDecompressor {
+    /// Equivalent to `LZ4WithPresetDictDecompressor.clone()`, which is
+    /// `new LZ4WithPresetDictDecompressor()` — a fresh instance with empty
+    /// scratch buffers, not a copy of this one's.
+    fn clone_decompressor(&self) -> Box<dyn Decompressor> {
+        Box::new(Self::new())
+    }
+
     fn decompress(
         &mut self,
         input: &mut dyn DataInput,
@@ -661,6 +684,12 @@ impl DeflateDecompressor {
 }
 
 impl Decompressor for DeflateDecompressor {
+    /// Equivalent to `DeflateDecompressor.clone()`, which is
+    /// `new DeflateDecompressor()`.
+    fn clone_decompressor(&self) -> Box<dyn Decompressor> {
+        Box::new(Self::new())
+    }
+
     fn decompress(
         &mut self,
         input: &mut dyn DataInput,
@@ -803,6 +832,12 @@ impl DeflateWithPresetDictDecompressor {
 }
 
 impl Decompressor for DeflateWithPresetDictDecompressor {
+    /// Equivalent to `DeflateWithPresetDictDecompressor.clone()`, which is
+    /// `new DeflateWithPresetDictDecompressor()`.
+    fn clone_decompressor(&self) -> Box<dyn Decompressor> {
+        Box::new(Self::new())
+    }
+
     fn decompress(
         &mut self,
         input: &mut dyn DataInput,

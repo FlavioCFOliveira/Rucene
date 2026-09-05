@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::util::bit_set::{BitSet, BitSetIterator, LiveDocs};
+use crate::util::java_fmt;
 use crate::util::{Accountable, FixedBitSet, RamUsageEstimator};
 
 use super::Bits;
@@ -2618,5 +2619,64 @@ mod tests {
         set.set(5);
         set.set(9000);
         assert_eq!(set.ram_bytes_used(), 160);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Object contracts: the `toString()` bodies of this module's four types
+// -----------------------------------------------------------------------------
+
+impl fmt::Display for SparseFixedBitSet {
+    /// Port of `SparseFixedBitSet.toString()`.
+    ///
+    /// Java builds `"SparseFixedBitSet(size=" + length + ",cardinality=~" +
+    /// approximateCardinality()` — the closing parenthesis is missing in
+    /// `SparseFixedBitSet.java:369` of Lucene 10.5.0, and this port reproduces
+    /// the string as Lucene emits it rather than repairing it, because the text
+    /// is the observable contract.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "SparseFixedBitSet(size={},cardinality=~{}",
+            self.length,
+            self.approximate_cardinality()
+        )
+    }
+}
+
+impl fmt::Display for RoaringDocIdSet {
+    /// Port of `RoaringDocIdSet.toString()`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RoaringDocIdSet(cardinality={})", self.cardinality)
+    }
+}
+
+impl fmt::Display for DenseLiveDocs {
+    /// Port of `DenseLiveDocs.toString()`.
+    ///
+    /// The deletion rate goes through `String.format(Locale.ROOT, "%.2f%%",
+    /// ...)`, whose ties round away from zero; see
+    /// [`java_fmt::format_fixed`].
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "DenseLiveDocs(maxDoc={}, deleted={}, deletionRate={}%)",
+            self.max_doc,
+            self.deleted_count,
+            java_fmt::format_fixed(100.0 * self.deleted_count as f64 / self.max_doc as f64, 2)
+        )
+    }
+}
+
+impl fmt::Display for SparseLiveDocs {
+    /// Port of `SparseLiveDocs.toString()`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "SparseLiveDocs(maxDoc={}, deleted={}, deletionRate={}%)",
+            self.max_doc,
+            self.deleted_count,
+            java_fmt::format_fixed(100.0 * self.deleted_count as f64 / self.max_doc as f64, 2)
+        )
     }
 }

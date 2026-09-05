@@ -1467,3 +1467,29 @@ mod tests {
         assert_eq!(sis.size(), 1);
     }
 }
+
+impl std::fmt::Display for SegmentInfos {
+    /// Port of `SegmentInfos.toString()`, which is `toString(false)`: the
+    /// segments file name, `": "`, then each segment separated by a space.
+    ///
+    /// Each segment is rendered by `SegmentCommitInfo.toString(0)` — the
+    /// *overload*, which folds in that commit's own deletion count — not by its
+    /// no-argument `toString()`, which does not.
+    ///
+    /// `getSegmentsFileName()` returns `null` before the first commit; Java's
+    /// `StringBuilder.append` then writes the four characters `null`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.segments_file_name() {
+            Some(name) => f.write_str(&name)?,
+            None => f.write_str("null")?,
+        }
+        f.write_str(": ")?;
+        for (i, info) in self.segments.iter().enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            f.write_str(&info.to_string_with_pending_del_count(0))?;
+        }
+        Ok(())
+    }
+}
