@@ -72,7 +72,7 @@ fn xy_polygon_array_hash_code(values: &[XYPolygon]) -> i32 {
 /// A single point on the globe.
 ///
 /// Equivalent to `org.apache.lucene.geo.Point`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct Point {
     lat: f64,
     lon: f64,
@@ -206,7 +206,7 @@ impl Rectangle {
 /// A connected sequence of points on the globe.
 ///
 /// Equivalent to `org.apache.lucene.geo.Line`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Line {
     lats: Vec<f64>,
     lons: Vec<f64>,
@@ -330,7 +330,7 @@ impl Line {
 /// A closed ring on the globe, optionally with holes.
 ///
 /// Equivalent to `org.apache.lucene.geo.Polygon`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Polygon {
     lats: Vec<f64>,
     lons: Vec<f64>,
@@ -577,7 +577,7 @@ impl Polygon {
 /// A circle on the globe, given by a centre and a radius in metres.
 ///
 /// Equivalent to `org.apache.lucene.geo.Circle`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct Circle {
     lat: f64,
     lon: f64,
@@ -633,7 +633,7 @@ impl Circle {
 /// A single point in the cartesian plane.
 ///
 /// Equivalent to `org.apache.lucene.geo.XYPoint`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct XYPoint {
     x: f32,
     y: f32,
@@ -672,7 +672,7 @@ impl XYPoint {
 /// An axis-aligned box in the cartesian plane.
 ///
 /// Equivalent to `org.apache.lucene.geo.XYRectangle`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct XYRectangle {
     min_x: f32,
     max_x: f32,
@@ -757,7 +757,7 @@ impl XYRectangle {
 /// A connected sequence of points in the cartesian plane.
 ///
 /// Equivalent to `org.apache.lucene.geo.XYLine`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct XYLine {
     xs: Vec<f32>,
     ys: Vec<f32>,
@@ -872,7 +872,7 @@ impl XYLine {
 /// A closed ring in the cartesian plane, optionally with holes.
 ///
 /// Equivalent to `org.apache.lucene.geo.XYPolygon`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct XYPolygon {
     xs: Vec<f32>,
     ys: Vec<f32>,
@@ -1071,7 +1071,7 @@ impl XYPolygon {
 /// A circle in the cartesian plane.
 ///
 /// Equivalent to `org.apache.lucene.geo.XYCircle`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct XYCircle {
     x: f32,
     y: f32,
@@ -1671,6 +1671,18 @@ pub(crate) fn java_double_to_long_bits(value: f64) -> u64 {
     }
 }
 
+/// The bits `java.lang.Float.floatToIntBits(float)` produces, the `f32`
+/// counterpart of [`java_double_to_long_bits`]: `Float.compare` and
+/// `Arrays.equals(float[], float[])` both decide equality on them, so the XY
+/// geometries below must too.
+pub(crate) fn java_float_to_int_bits(value: f32) -> u32 {
+    if value.is_nan() {
+        0x7fc0_0000
+    } else {
+        value.to_bits()
+    }
+}
+
 impl PartialEq for Rectangle {
     /// Equivalent to `Rectangle.equals(Object)`, which compares each coordinate
     /// with `Double.compare` rather than with `==`.
@@ -1692,5 +1704,350 @@ impl std::hash::Hash for Rectangle {
         java_double_to_long_bits(self.min_lon).hash(state);
         java_double_to_long_bits(self.max_lat).hash(state);
         java_double_to_long_bits(self.max_lon).hash(state);
+    }
+}
+
+impl PartialEq for Point {
+    /// Equivalent to `Point.equals(Object)`: Point.equals compares each coordinate with `Double.compare`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        java_double_to_long_bits(self.lat) == java_double_to_long_bits(other.lat)
+            && java_double_to_long_bits(self.lon) == java_double_to_long_bits(other.lon)
+    }
+}
+
+impl Eq for Point {}
+
+impl std::hash::Hash for Point {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `Point.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        java_double_to_long_bits(self.lat).hash(state);
+        java_double_to_long_bits(self.lon).hash(state);
+    }
+}
+
+impl PartialEq for Circle {
+    /// Equivalent to `Circle.equals(Object)`: Circle.equals compares lat, lon and radiusMeters with `Double.compare`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        java_double_to_long_bits(self.lat) == java_double_to_long_bits(other.lat)
+            && java_double_to_long_bits(self.lon) == java_double_to_long_bits(other.lon)
+            && java_double_to_long_bits(self.radius_meters)
+                == java_double_to_long_bits(other.radius_meters)
+    }
+}
+
+impl Eq for Circle {}
+
+impl std::hash::Hash for Circle {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `Circle.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        java_double_to_long_bits(self.lat).hash(state);
+        java_double_to_long_bits(self.lon).hash(state);
+        java_double_to_long_bits(self.radius_meters).hash(state);
+    }
+}
+
+impl PartialEq for XYPoint {
+    /// Equivalent to `XYPoint.equals(Object)`: XYPoint.equals compares x and y with `Float.compare`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        java_float_to_int_bits(self.x) == java_float_to_int_bits(other.x)
+            && java_float_to_int_bits(self.y) == java_float_to_int_bits(other.y)
+    }
+}
+
+impl Eq for XYPoint {}
+
+impl std::hash::Hash for XYPoint {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `XYPoint.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        java_float_to_int_bits(self.x).hash(state);
+        java_float_to_int_bits(self.y).hash(state);
+    }
+}
+
+impl PartialEq for XYCircle {
+    /// Equivalent to `XYCircle.equals(Object)`: XYCircle.equals compares x, y and radius with `Float.compare`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        java_float_to_int_bits(self.x) == java_float_to_int_bits(other.x)
+            && java_float_to_int_bits(self.y) == java_float_to_int_bits(other.y)
+            && java_float_to_int_bits(self.radius) == java_float_to_int_bits(other.radius)
+    }
+}
+
+impl Eq for XYCircle {}
+
+impl std::hash::Hash for XYCircle {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `XYCircle.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        java_float_to_int_bits(self.x).hash(state);
+        java_float_to_int_bits(self.y).hash(state);
+        java_float_to_int_bits(self.radius).hash(state);
+    }
+}
+
+impl PartialEq for XYRectangle {
+    /// Equivalent to `XYRectangle.equals(Object)`: XYRectangle.equals compares its four bounds with `Float.compare`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        java_float_to_int_bits(self.min_x) == java_float_to_int_bits(other.min_x)
+            && java_float_to_int_bits(self.max_x) == java_float_to_int_bits(other.max_x)
+            && java_float_to_int_bits(self.min_y) == java_float_to_int_bits(other.min_y)
+            && java_float_to_int_bits(self.max_y) == java_float_to_int_bits(other.max_y)
+    }
+}
+
+impl Eq for XYRectangle {}
+
+impl std::hash::Hash for XYRectangle {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `XYRectangle.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        java_float_to_int_bits(self.min_x).hash(state);
+        java_float_to_int_bits(self.max_x).hash(state);
+        java_float_to_int_bits(self.min_y).hash(state);
+        java_float_to_int_bits(self.max_y).hash(state);
+    }
+}
+
+impl PartialEq for Line {
+    /// Equivalent to `Line.equals(Object)`: Line.equals compares its coordinate arrays with `Arrays.equals(double[], double[])`, which decides on `doubleToLongBits`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        self.lats
+            .iter()
+            .map(|v| java_double_to_long_bits(*v))
+            .eq(other.lats.iter().map(|v| java_double_to_long_bits(*v)))
+            && self
+                .lons
+                .iter()
+                .map(|v| java_double_to_long_bits(*v))
+                .eq(other.lons.iter().map(|v| java_double_to_long_bits(*v)))
+    }
+}
+
+impl Eq for Line {}
+
+impl std::hash::Hash for Line {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `Line.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for v in &self.lats {
+            java_double_to_long_bits(*v).hash(state);
+        }
+        for v in &self.lons {
+            java_double_to_long_bits(*v).hash(state);
+        }
+    }
+}
+
+impl PartialEq for XYLine {
+    /// Equivalent to `XYLine.equals(Object)`: XYLine.equals compares its coordinate arrays with `Arrays.equals(float[], float[])`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        self.xs
+            .iter()
+            .map(|v| java_float_to_int_bits(*v))
+            .eq(other.xs.iter().map(|v| java_float_to_int_bits(*v)))
+            && self
+                .ys
+                .iter()
+                .map(|v| java_float_to_int_bits(*v))
+                .eq(other.ys.iter().map(|v| java_float_to_int_bits(*v)))
+    }
+}
+
+impl Eq for XYLine {}
+
+impl std::hash::Hash for XYLine {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `XYLine.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for v in &self.xs {
+            java_float_to_int_bits(*v).hash(state);
+        }
+        for v in &self.ys {
+            java_float_to_int_bits(*v).hash(state);
+        }
+    }
+}
+
+impl PartialEq for Polygon {
+    /// Equivalent to `Polygon.equals(Object)`: Polygon.equals compares the holes and the coordinate arrays, the latter with `Arrays.equals(double[], double[])`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        self.holes == other.holes
+            && self
+                .lats
+                .iter()
+                .map(|v| java_double_to_long_bits(*v))
+                .eq(other.lats.iter().map(|v| java_double_to_long_bits(*v)))
+            && self
+                .lons
+                .iter()
+                .map(|v| java_double_to_long_bits(*v))
+                .eq(other.lons.iter().map(|v| java_double_to_long_bits(*v)))
+    }
+}
+
+impl Eq for Polygon {}
+
+impl std::hash::Hash for Polygon {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `Polygon.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.holes.hash(state);
+        for v in &self.lats {
+            java_double_to_long_bits(*v).hash(state);
+        }
+        for v in &self.lons {
+            java_double_to_long_bits(*v).hash(state);
+        }
+    }
+}
+
+impl PartialEq for XYPolygon {
+    /// Equivalent to `XYPolygon.equals(Object)`: XYPolygon.equals compares the holes and the coordinate arrays with `Arrays.equals(float[], float[])`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        self.holes == other.holes
+            && self
+                .xs
+                .iter()
+                .map(|v| java_float_to_int_bits(*v))
+                .eq(other.xs.iter().map(|v| java_float_to_int_bits(*v)))
+            && self
+                .ys
+                .iter()
+                .map(|v| java_float_to_int_bits(*v))
+                .eq(other.ys.iter().map(|v| java_float_to_int_bits(*v)))
+    }
+}
+
+impl Eq for XYPolygon {}
+
+impl std::hash::Hash for XYPolygon {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `XYPolygon.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.holes.hash(state);
+        for v in &self.xs {
+            java_float_to_int_bits(*v).hash(state);
+        }
+        for v in &self.ys {
+            java_float_to_int_bits(*v).hash(state);
+        }
+    }
+}
+
+#[cfg(test)]
+mod signed_zero_equality_tests {
+    use super::*;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn hash_of<T: Hash>(value: &T) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Lucene decides these types' equality with `Double.compare`,
+    /// `Float.compare` or `Arrays.equals`, all of which compare the *bits*.
+    /// Rust's derived `PartialEq` is IEEE 754, and the two disagree on signed
+    /// zero: `-0.0 == 0.0` is true for IEEE and false for `Double.compare`.
+    /// These geometries reach `LRUQueryCache` through the spatial queries, where
+    /// equality and hashing decide whether a cached entry may be served, so the
+    /// difference is observable rather than academic.
+    ///
+    /// Each case fails if a type goes back to deriving `PartialEq`.
+    #[test]
+    fn negative_zero_is_not_equal_to_positive_zero() {
+        assert_ne!(
+            Point::new(-0.0, 1.0).unwrap(),
+            Point::new(0.0, 1.0).unwrap(),
+            "Point compares coordinates with Double.compare"
+        );
+        assert_ne!(
+            Circle::new(-0.0, 1.0, 5.0).unwrap(),
+            Circle::new(0.0, 1.0, 5.0).unwrap(),
+            "Circle compares lat, lon and radiusMeters with Double.compare"
+        );
+        assert_ne!(
+            XYPoint::new(-0.0, 1.0).unwrap(),
+            XYPoint::new(0.0, 1.0).unwrap(),
+            "XYPoint compares x and y with Float.compare"
+        );
+        assert_ne!(
+            XYCircle::new(-0.0, 1.0, 5.0).unwrap(),
+            XYCircle::new(0.0, 1.0, 5.0).unwrap(),
+            "XYCircle compares x, y and radius with Float.compare"
+        );
+        assert_ne!(
+            XYRectangle::new(-0.0, 1.0, 2.0, 3.0).unwrap(),
+            XYRectangle::new(0.0, 1.0, 2.0, 3.0).unwrap(),
+            "XYRectangle compares its four bounds with Float.compare"
+        );
+        assert_ne!(
+            Rectangle::new(-0.0, 1.0, 2.0, 3.0).unwrap(),
+            Rectangle::new(0.0, 1.0, 2.0, 3.0).unwrap(),
+            "Rectangle compares its four bounds with Double.compare"
+        );
+    }
+
+    /// The array-valued geometries decide on `Arrays.equals`, which compares
+    /// `doubleToLongBits`/`floatToIntBits` element by element.
+    #[test]
+    fn negative_zero_is_not_equal_inside_a_coordinate_array() {
+        let a = Line::new(vec![-0.0, 1.0], vec![2.0, 3.0]).unwrap();
+        let b = Line::new(vec![0.0, 1.0], vec![2.0, 3.0]).unwrap();
+        assert_ne!(a, b, "Line compares its arrays with Arrays.equals");
+
+        let a = XYLine::new(vec![-0.0, 1.0], vec![2.0, 3.0]).unwrap();
+        let b = XYLine::new(vec![0.0, 1.0], vec![2.0, 3.0]).unwrap();
+        assert_ne!(a, b, "XYLine compares its arrays with Arrays.equals");
+
+        let a = Polygon::new(vec![-0.0, 1.0, 1.0, -0.0], vec![0.0, 0.0, 1.0, 0.0], vec![]).unwrap();
+        let b = Polygon::new(vec![0.0, 1.0, 1.0, 0.0], vec![0.0, 0.0, 1.0, 0.0], vec![]).unwrap();
+        assert_ne!(a, b, "Polygon compares its arrays with Arrays.equals");
+
+        let a =
+            XYPolygon::new(vec![-0.0, 1.0, 1.0, -0.0], vec![0.0, 0.0, 1.0, 0.0], vec![]).unwrap();
+        let b = XYPolygon::new(vec![0.0, 1.0, 1.0, 0.0], vec![0.0, 0.0, 1.0, 0.0], vec![]).unwrap();
+        assert_ne!(a, b, "XYPolygon compares its arrays with Arrays.equals");
+    }
+
+    /// `Hash` must agree with `Eq`: two values that compare equal must hash
+    /// alike, and the signed-zero pair above must not be forced to.
+    #[test]
+    fn hashing_agrees_with_equality() {
+        let a = Point::new(1.5, 2.5).unwrap();
+        let b = Point::new(1.5, 2.5).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(hash_of(&a), hash_of(&b), "equal points must hash alike");
+
+        let neg = Point::new(-0.0, 2.5).unwrap();
+        let pos = Point::new(0.0, 2.5).unwrap();
+        assert_ne!(neg, pos);
+        assert_ne!(
+            hash_of(&neg),
+            hash_of(&pos),
+            "Java hashes these from doubleToLongBits, which differ"
+        );
     }
 }
