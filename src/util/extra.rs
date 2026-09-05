@@ -732,8 +732,9 @@ impl<T> Iterator for IntoIter<T> {
 // MergedIterator
 // ---------------------------------------------------------------------------
 
-/// Provides a merged sorted view from several sorted iterators, equivalent to
-/// Lucene's `MergedIterator`.
+/// Port of `org.apache.lucene.util.MergedIterator`.
+///
+/// Provides a merged sorted view from several sorted iterators.
 ///
 /// With `remove_duplicates` enabled, equal elements from different iterators
 /// are deduplicated; with it disabled, all elements are returned. The input

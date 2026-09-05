@@ -142,7 +142,7 @@ impl fmt::Display for CompressionAlgorithm {
 
 /// BlockTree statistics for a single field.
 ///
-/// Lucene Core equivalent: `Stats`.
+/// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.Stats`.
 #[derive(Debug, Default, Clone)]
 pub struct Stats {
     /// Byte size of the index.
