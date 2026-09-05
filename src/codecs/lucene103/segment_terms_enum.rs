@@ -14,6 +14,7 @@ use crate::index::ImpactsEnum;
 use crate::index::{IndexOptions, PostingsEnum};
 use crate::store::{ByteArrayDataInput, DataInput, IndexInput};
 use crate::util::{AttributeSource, BytesRef, IOBooleanSupplier};
+use std::sync::Arc;
 
 /// One decoded block of the terms dictionary.
 ///
@@ -761,7 +762,7 @@ impl SegmentTermsEnumFrame {
     pub fn decode_meta_data(
         &mut self,
         field_info: &crate::index::FieldInfo,
-        postings_reader: &mut dyn crate::codecs::postings::PostingsReaderBase,
+        postings_reader: &dyn crate::codecs::postings::PostingsReaderBase,
     ) -> Result<()> {
         let limit = self.get_term_block_ord();
         let mut absolute = self.meta_data_upto == 0;
@@ -1557,12 +1558,24 @@ impl SegmentTermsEnum {
     /// frame's state.
     pub fn block_term_state(
         &mut self,
-        postings_reader: &mut dyn crate::codecs::postings::PostingsReaderBase,
+        postings_reader: &dyn crate::codecs::postings::PostingsReaderBase,
     ) -> Result<BlockTermState> {
         let field_info = self.field.field_info().clone();
         let frame = &mut self.stack[self.current];
         frame.decode_meta_data(&field_info, postings_reader)?;
         Ok(frame.state.clone())
+    }
+
+    /// Catches the current frame up on the metadata decode it defers.
+    ///
+    /// Equivalent to `SegmentTermsEnum.decodeMetaData`, which every accessor of
+    /// the current term's statistics and postings calls before reading `state`.
+    /// The decode is lazy in Lucene and lazy here: a scan that never asks for a
+    /// term's statistics never pays for them.
+    fn decode_meta_data(&mut self) -> Result<()> {
+        let field_info = self.field.field_info().clone();
+        let reader = Arc::clone(&self.field.shared().postings_reader);
+        self.stack[self.current].decode_meta_data(&field_info, reader.as_ref())
     }
 }
 
@@ -1775,31 +1788,43 @@ impl TermsEnum for SegmentTermsEnum {
         ))
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
+        // Java asserts `!eof` and calls `currentFrame.decodeMetaData()` before
+        // reading `state`; without it the frame still holds the zero it was
+        // built with, which is what made every term look absent.
+        debug_assert!(!self.eof);
+        self.decode_meta_data()?;
         Ok(self.stack[self.current].state.doc_freq)
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
+        debug_assert!(!self.eof);
+        self.decode_meta_data()?;
         Ok(self.stack[self.current].state.total_term_freq)
     }
 
-    fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
-            "impacts need the postings reader, which the field's producer supplies".to_string(),
-        ))
+    fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+        self.decode_meta_data()?;
+        let field_info = self.field.field_info().clone();
+        let state = self.stack[self.current].state;
+        let reader = Arc::clone(&self.field.shared().postings_reader);
+        reader.impacts(&field_info, &state, flags)
     }
 
     fn postings(
         &mut self,
-        _reuse: Option<Box<dyn PostingsEnum>>,
-        _flags: i32,
+        reuse: Option<Box<dyn PostingsEnum>>,
+        flags: i32,
     ) -> Result<Box<dyn PostingsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
-            "postings need the postings reader, which the field's producer supplies".to_string(),
-        ))
+        self.decode_meta_data()?;
+        let field_info = self.field.field_info().clone();
+        let state = self.stack[self.current].state;
+        let reader = Arc::clone(&self.field.shared().postings_reader);
+        reader.postings(&field_info, &state, reuse, flags)
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        self.decode_meta_data()?;
         Ok(Box::new(self.stack[self.current].state.clone()))
     }
 }

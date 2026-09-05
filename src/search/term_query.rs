@@ -323,7 +323,7 @@ impl TermWeight {
             return Ok(None);
         };
         let reader = context.leaf_reader();
-        let Some(terms_enum) = Self::seek(&reader, self.term(), &*state)? else {
+        let Some(mut terms_enum) = Self::seek(&reader, self.term(), &*state)? else {
             return Ok(None);
         };
         let doc_freq = terms_enum.doc_freq()?;
@@ -436,10 +436,10 @@ impl Weight for TermWeight {
         if reader.max_doc() == reader.num_docs() {
             // `LeafReader.hasDeletions()` is `numDeletedDocs() > 0`, which is
             // `maxDoc() - numDocs() > 0`.
-            let terms_enum = self.get_terms_enum(context)?;
+            let mut terms_enum = self.get_terms_enum(context)?;
             match terms_enum {
                 // `termsEnum` is not null if the term state is available.
-                Some(terms_enum) => terms_enum.doc_freq(),
+                Some(ref mut terms_enum) => terms_enum.doc_freq(),
                 // The term cannot be found in the dictionary so the count is 0.
                 None => Ok(0),
             }

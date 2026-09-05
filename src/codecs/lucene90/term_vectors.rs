@@ -2798,11 +2798,11 @@ impl TermsEnum for TVTermsEnum {
         ))
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         Ok(1)
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         if self.ord < 0 || self.ord >= self.num_terms {
             return Err(LuceneError::IllegalState(
                 "total_term_freq called before first term".to_string(),

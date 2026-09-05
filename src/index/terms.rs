@@ -296,10 +296,10 @@ pub trait TermsEnum {
     fn ord(&self) -> Result<i64>;
 
     /// Returns the number of documents containing the current term.
-    fn doc_freq(&self) -> Result<i32>;
+    fn doc_freq(&mut self) -> Result<i32>;
 
     /// Returns the total number of occurrences of the current term.
-    fn total_term_freq(&self) -> Result<i64>;
+    fn total_term_freq(&mut self) -> Result<i64>;
 
     /// Returns a postings enum for the current term with the given flags.
     fn postings(
@@ -412,11 +412,11 @@ impl TermsEnum for FilteredTermsEnum {
         self.tenum.term()
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         self.tenum.doc_freq()
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         self.tenum.total_term_freq()
     }
 
@@ -1263,13 +1263,13 @@ impl TermsEnum for EmptyTermsEnum {
         ))
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         Err(LuceneError::IllegalState(
             "doc_freq should never be called on EmptyTermsEnum".to_string(),
         ))
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         Err(LuceneError::IllegalState(
             "total_term_freq should never be called on EmptyTermsEnum".to_string(),
         ))
@@ -1591,11 +1591,11 @@ mod tests {
             Ok(self.pos as i64)
         }
 
-        fn doc_freq(&self) -> Result<i32> {
+        fn doc_freq(&mut self) -> Result<i32> {
             Ok(1)
         }
 
-        fn total_term_freq(&self) -> Result<i64> {
+        fn total_term_freq(&mut self) -> Result<i64> {
             Ok(1)
         }
 

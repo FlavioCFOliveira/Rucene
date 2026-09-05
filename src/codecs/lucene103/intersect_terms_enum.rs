@@ -382,7 +382,7 @@ impl IntersectTermsEnumFrame {
     pub fn decode_meta_data(
         &mut self,
         field_info: &crate::index::FieldInfo,
-        postings_reader: &mut dyn crate::codecs::postings::PostingsReaderBase,
+        postings_reader: &dyn crate::codecs::postings::PostingsReaderBase,
     ) -> Result<()> {
         let limit = self.get_term_block_ord();
         let mut absolute = self.meta_data_upto == 0;
@@ -807,6 +807,22 @@ impl IntersectTermsEnum {
     }
 }
 
+impl IntersectTermsEnum {
+    /// Catches the current frame up on the metadata decode it defers.
+    ///
+    /// Equivalent to the `currentFrame.decodeMetaData()` call every statistics
+    /// and postings accessor of `IntersectTermsEnum` makes before reading
+    /// `state`.
+    fn decode_current_meta_data(&mut self) -> Result<()> {
+        let Some(cur) = self.current else {
+            return Ok(());
+        };
+        let field_info = self.field.field_info().clone();
+        let reader = std::sync::Arc::clone(&self.field.shared().postings_reader);
+        self.stack[cur].decode_meta_data(&field_info, reader.as_ref())
+    }
+}
+
 impl TermsEnum for IntersectTermsEnum {
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.attributes
@@ -961,34 +977,49 @@ impl TermsEnum for IntersectTermsEnum {
         ))
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
+        // As in `SegmentTermsEnum`, Java decodes the frame's metadata before
+        // reading `state`; without it the frame still holds the zero it was
+        // built with.
+        self.decode_current_meta_data()?;
         let cur = self
             .current
             .ok_or_else(|| LuceneError::IllegalState("no current term".to_string()))?;
         Ok(self.stack[cur].state_data.doc_freq)
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
+        self.decode_current_meta_data()?;
         let cur = self
             .current
             .ok_or_else(|| LuceneError::IllegalState("no current term".to_string()))?;
         Ok(self.stack[cur].state_data.total_term_freq)
     }
 
-    fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
-            "impacts need the postings reader, which the field's producer supplies".to_string(),
-        ))
+    fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+        self.decode_current_meta_data()?;
+        let cur = self
+            .current
+            .ok_or_else(|| LuceneError::IllegalState("no current term".to_string()))?;
+        let field_info = self.field.field_info().clone();
+        let state = self.stack[cur].state_data;
+        let reader = std::sync::Arc::clone(&self.field.shared().postings_reader);
+        reader.impacts(&field_info, &state, flags)
     }
 
     fn postings(
         &mut self,
-        _reuse: Option<Box<dyn PostingsEnum>>,
-        _flags: i32,
+        reuse: Option<Box<dyn PostingsEnum>>,
+        flags: i32,
     ) -> Result<Box<dyn PostingsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
-            "postings need the postings reader, which the field's producer supplies".to_string(),
-        ))
+        self.decode_current_meta_data()?;
+        let cur = self
+            .current
+            .ok_or_else(|| LuceneError::IllegalState("no current term".to_string()))?;
+        let field_info = self.field.field_info().clone();
+        let state = self.stack[cur].state_data;
+        let reader = std::sync::Arc::clone(&self.field.shared().postings_reader);
+        reader.postings(&field_info, &state, reuse, flags)
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {

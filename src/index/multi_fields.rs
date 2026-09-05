@@ -1149,7 +1149,7 @@ impl TermsEnum for MultiTermsEnum {
         ))
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         let mut sum: i32 = 0;
         for &idx in &self.top {
             sum = sum.wrapping_add(self.subs[idx].tenum.doc_freq()?);
@@ -1157,7 +1157,7 @@ impl TermsEnum for MultiTermsEnum {
         Ok(sum)
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         let mut sum: i64 = 0;
         for &idx in &self.top {
             sum += self.subs[idx].tenum.total_term_freq()?;
@@ -1691,11 +1691,11 @@ mod tests {
             Ok(self.pos as i64)
         }
 
-        fn doc_freq(&self) -> Result<i32> {
+        fn doc_freq(&mut self) -> Result<i32> {
             Ok(self.entries[self.pos as usize].1)
         }
 
-        fn total_term_freq(&self) -> Result<i64> {
+        fn total_term_freq(&mut self) -> Result<i64> {
             Ok(self.entries[self.pos as usize].2)
         }
 

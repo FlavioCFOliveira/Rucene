@@ -276,11 +276,11 @@ impl TermsEnum for MappedMultiTermsEnum {
         self.inner.ord()
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         Err(self.unsupported("doc_freq"))
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         Err(self.unsupported("total_term_freq"))
     }
 
@@ -465,11 +465,11 @@ mod tests {
             Ok(self.pos as i64)
         }
 
-        fn doc_freq(&self) -> Result<i32> {
+        fn doc_freq(&mut self) -> Result<i32> {
             Ok(self.entries[self.pos as usize].1)
         }
 
-        fn total_term_freq(&self) -> Result<i64> {
+        fn total_term_freq(&mut self) -> Result<i64> {
             Ok(self.entries[self.pos as usize].2)
         }
 

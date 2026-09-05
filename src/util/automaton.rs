@@ -263,11 +263,11 @@ mod tests {
             Ok(self.pos as i64)
         }
 
-        fn doc_freq(&self) -> crate::error::Result<i32> {
+        fn doc_freq(&mut self) -> crate::error::Result<i32> {
             Ok(0)
         }
 
-        fn total_term_freq(&self) -> crate::error::Result<i64> {
+        fn total_term_freq(&mut self) -> crate::error::Result<i64> {
             Ok(0)
         }
 
@@ -354,11 +354,11 @@ mod tests {
             Ok(-1)
         }
 
-        fn doc_freq(&self) -> crate::error::Result<i32> {
+        fn doc_freq(&mut self) -> crate::error::Result<i32> {
             Ok(0)
         }
 
-        fn total_term_freq(&self) -> crate::error::Result<i64> {
+        fn total_term_freq(&mut self) -> crate::error::Result<i64> {
             Ok(0)
         }
 

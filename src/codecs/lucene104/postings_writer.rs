@@ -1111,11 +1111,11 @@ mod tests {
             Ok(self.idx as i64)
         }
 
-        fn doc_freq(&self) -> crate::error::Result<i32> {
+        fn doc_freq(&mut self) -> crate::error::Result<i32> {
             Ok(self.postings[self.idx as usize].docs.len() as i32)
         }
 
-        fn total_term_freq(&self) -> crate::error::Result<i64> {
+        fn total_term_freq(&mut self) -> crate::error::Result<i64> {
             Ok(self.postings[self.idx as usize]
                 .freqs
                 .iter()

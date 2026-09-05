@@ -30,6 +30,14 @@ pub struct BlockTreeShared {
     pub segment: String,
     /// Format version of the three files.
     pub version: i32,
+    /// The one postings reader every enum of every field decodes through.
+    ///
+    /// Java reaches it as `ste.fr.parent.postingsReader`: a single reader held
+    /// by the terms dictionary and shared by every `SegmentTermsEnum` it hands
+    /// out. `BlockTreeShared` is this port's `parent`, so it is held here, and
+    /// shared rather than cloned — a per-enum copy would duplicate the `.doc`,
+    /// `.pos` and `.pay` handles Lucene opens once.
+    pub postings_reader: Arc<dyn crate::codecs::postings::PostingsReaderBase>,
 }
 
 impl std::fmt::Debug for BlockTreeShared {

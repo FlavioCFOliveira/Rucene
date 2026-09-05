@@ -514,7 +514,7 @@ impl PhraseWeightImpl for MultiPhraseWeightImpl {
                         POSTINGS_ENUM_POSITIONS
                     };
                     postings.push(terms_enum.postings(None, flags)?);
-                    total_match_cost += term_positions_cost(&*terms_enum)?;
+                    total_match_cost += term_positions_cost(&mut *terms_enum)?;
                 }
             }
 

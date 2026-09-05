@@ -184,3 +184,6 @@ path = "tests/fuzz/vectors.rs"
 [profile.release]
 lto = true
 codegen-units = 1
+[[test]]
+name = "search_on_disk"
+path = "tests/search_on_disk.rs"

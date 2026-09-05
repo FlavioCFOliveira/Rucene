@@ -2142,13 +2142,13 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
         Ok(self.current_ord)
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         Err(LuceneError::UnsupportedOperation(
             "docFreq not supported by SortedDocValuesTermsEnum".to_string(),
         ))
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         Err(LuceneError::UnsupportedOperation(
             "totalTermFreq not supported by SortedDocValuesTermsEnum".to_string(),
         ))
@@ -2282,13 +2282,13 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
         Ok(self.current_ord)
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         Err(LuceneError::UnsupportedOperation(
             "docFreq not supported by SortedSetDocValuesTermsEnum".to_string(),
         ))
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         Err(LuceneError::UnsupportedOperation(
             "totalTermFreq not supported by SortedSetDocValuesTermsEnum".to_string(),
         ))

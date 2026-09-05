@@ -1671,14 +1671,14 @@ impl TermsEnum for FreqProxTermsEnum {
     /// Equivalent to `FreqProxTermsEnum.docFreq()`, which throws
     /// `UnsupportedOperationException` for the same reason — computing it would
     /// need an extra pass over the postings.
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         Err(LuceneError::UnsupportedOperation(
             "buffered postings do not record docFreq".to_string(),
         ))
     }
 
     /// Always fails; see [`TermsEnum::doc_freq`] on this type.
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         Err(LuceneError::UnsupportedOperation(
             "buffered postings do not record totalTermFreq".to_string(),
         ))

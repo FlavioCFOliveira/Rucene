@@ -2069,7 +2069,7 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
 ///
 /// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.Lucene103BlockTreeTermsReader`.
 pub struct Lucene103BlockTreeTermsReader {
-    postings_reader: Box<dyn PostingsReaderBase>,
+    postings_reader: Arc<dyn PostingsReaderBase>,
     shared: Arc<BlockTreeShared>,
     /// One reader per field that has terms, keyed by field name.
     fields: BTreeMap<String, FieldReader>,
@@ -2127,13 +2127,6 @@ impl Lucene103BlockTreeTermsReader {
             &segment_suffix,
         )?;
 
-        let shared = Arc::new(BlockTreeShared {
-            terms_in: Arc::from(terms_in),
-            index_in: Arc::from(index_in),
-            segment: segment.clone(),
-            version,
-        });
-
         let meta_name = segment_file_name(&segment, &segment_suffix, TERMS_META_EXTENSION);
         let mut meta_in = state.directory.open_checksum_input(&meta_name)?;
         codec_util::check_index_header(
@@ -2145,6 +2138,18 @@ impl Lucene103BlockTreeTermsReader {
             &segment_suffix,
         )?;
         postings_reader.init(meta_in.as_mut(), state)?;
+        // `init` is the only method that mutates the reader, and it runs once,
+        // here. From this point it is shared, as Java shares its single
+        // `postingsReader` across every field's terms enum.
+        let postings_reader: Arc<dyn PostingsReaderBase> = Arc::from(postings_reader);
+
+        let shared = Arc::new(BlockTreeShared {
+            terms_in: Arc::from(terms_in),
+            index_in: Arc::from(index_in),
+            segment: segment.clone(),
+            version,
+            postings_reader: Arc::clone(&postings_reader),
+        });
 
         let num_fields = meta_in.read_v_int()?;
         if num_fields < 0 {
@@ -2294,8 +2299,11 @@ impl Lucene103BlockTreeTermsReader {
     }
 
     /// Returns the postings reader that decodes each term's metadata.
-    pub fn postings_reader(&mut self) -> &mut dyn PostingsReaderBase {
-        self.postings_reader.as_mut()
+    ///
+    /// Shared, not exclusive: Java holds one `postingsReader` and hands it to
+    /// every `SegmentTermsEnum` it creates.
+    pub fn postings_reader(&self) -> &Arc<dyn PostingsReaderBase> {
+        &self.postings_reader
     }
 }
 
@@ -2371,7 +2379,24 @@ impl FieldsProducer for Lucene103BlockTreeTermsReader {
     }
 
     fn close(&mut self) -> Result<()> {
-        self.postings_reader.close()
+        // **Divergence from Lucene 10.5.0.** Java's `close` is
+        // `IOUtils.close(postingsReader)` (`Lucene103BlockTreeTermsReader.java`),
+        // closing the one postings reader outright. Here that reader is shared
+        // behind an `Arc` — the same sharing Java has, only made explicit — and
+        // `PostingsReaderBase::close` needs `&mut`, which no holder of a shared
+        // reference can give. Lucene's approach cannot be used unchanged, so
+        // this releases the references this object holds and closes the reader
+        // only when it is the last one; otherwise the `.doc`, `.pos` and `.pay`
+        // inputs are released by `Drop` when the last enum goes away. The
+        // observable effect — the files are closed once nothing is reading them
+        // — is the same, and unlike Java it cannot pull a file out from under a
+        // live `TermsEnum`.
+        self.fields.clear();
+        self.field_list.clear();
+        if let Some(reader) = Arc::get_mut(&mut self.postings_reader) {
+            reader.close()?;
+        }
+        Ok(())
     }
 }
 
@@ -2665,11 +2690,11 @@ mod tests {
             Ok(self.pos as i64)
         }
 
-        fn doc_freq(&self) -> Result<i32> {
+        fn doc_freq(&mut self) -> Result<i32> {
             Ok(1)
         }
 
-        fn total_term_freq(&self) -> Result<i64> {
+        fn total_term_freq(&mut self) -> Result<i64> {
             Ok(1)
         }
 

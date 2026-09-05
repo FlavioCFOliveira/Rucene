@@ -274,7 +274,7 @@ impl PostingsReaderBase for Lucene104PostingsReader {
     }
 
     fn decode_term(
-        &mut self,
+        &self,
         input: &mut dyn DataInput,
         field_info: &FieldInfo,
         state: &mut BlockTermState,
@@ -322,7 +322,7 @@ impl PostingsReaderBase for Lucene104PostingsReader {
     }
 
     fn postings(
-        &mut self,
+        &self,
         field_info: &FieldInfo,
         state: &BlockTermState,
         _reuse: Option<Box<dyn PostingsEnum>>,
@@ -345,7 +345,7 @@ impl PostingsReaderBase for Lucene104PostingsReader {
     }
 
     fn impacts(
-        &mut self,
+        &self,
         field_info: &FieldInfo,
         state: &BlockTermState,
         flags: i32,

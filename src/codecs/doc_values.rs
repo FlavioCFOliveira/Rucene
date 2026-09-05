@@ -1526,11 +1526,11 @@ impl TermsEnum for BitsFilteredTermsEnum {
         self.inner.ord()
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         self.inner.doc_freq()
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         self.inner.total_term_freq()
     }
 

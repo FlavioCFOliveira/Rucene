@@ -888,7 +888,7 @@ impl Weight for FeatureWeight {
         &self,
         context: &LeafReaderContext,
     ) -> Result<Option<Box<dyn ScorerSupplier>>> {
-        let Some(terms_enum) = self.seek(context)? else {
+        let Some(mut terms_enum) = self.seek(context)? else {
             return Ok(None);
         };
         let doc_freq = terms_enum.doc_freq()?;

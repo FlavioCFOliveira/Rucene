@@ -162,13 +162,13 @@ impl TermsEnum for SingleTermsEnum {
         ))
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         Err(LuceneError::UnsupportedOperation(
             "doc_freq not supported by SingleTermsEnum".to_string(),
         ))
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         Err(LuceneError::UnsupportedOperation(
             "total_term_freq not supported by SingleTermsEnum".to_string(),
         ))
@@ -407,8 +407,17 @@ pub trait PostingsReaderBase: Send + Sync {
     fn new_term_state(&self) -> Result<BlockTermState>;
 
     /// Decodes metadata for the next term.
+    ///
+    /// Takes `&self`: Java's `decodeTerm` writes into the `state` it is handed
+    /// and never touches the reader, and the same is true of `postings` and
+    /// `impacts` below, which only read the reader's inputs to clone them. The
+    /// `&mut` this port used instead was not Lucene's shape, and it was what
+    /// made the reader unshareable — `SegmentTermsEnum` could not hold it while
+    /// `Lucene103BlockTreeTermsReader` owned it behind `&mut self`, so the
+    /// terms dictionary had no way to decode a term's metadata and every term
+    /// query over an on-disk segment silently found nothing.
     fn decode_term(
-        &mut self,
+        &self,
         input: &mut dyn DataInput,
         field_info: &FieldInfo,
         state: &mut BlockTermState,
@@ -417,7 +426,7 @@ pub trait PostingsReaderBase: Send + Sync {
 
     /// Returns a postings iterator for the given term state.
     fn postings(
-        &mut self,
+        &self,
         field_info: &FieldInfo,
         state: &BlockTermState,
         reuse: Option<Box<dyn PostingsEnum>>,
@@ -426,7 +435,7 @@ pub trait PostingsReaderBase: Send + Sync {
 
     /// Returns an impacts iterator for the given term state.
     fn impacts(
-        &mut self,
+        &self,
         field_info: &FieldInfo,
         state: &BlockTermState,
         flags: i32,
@@ -789,11 +798,11 @@ mod tests {
             Ok(-1)
         }
 
-        fn doc_freq(&self) -> Result<i32> {
+        fn doc_freq(&mut self) -> Result<i32> {
             Ok(0)
         }
 
-        fn total_term_freq(&self) -> Result<i64> {
+        fn total_term_freq(&mut self) -> Result<i64> {
             Ok(0)
         }
 
@@ -1046,7 +1055,7 @@ mod tests {
         }
 
         fn decode_term(
-            &mut self,
+            &self,
             _input: &mut dyn DataInput,
             _field_info: &FieldInfo,
             _state: &mut BlockTermState,
@@ -1056,7 +1065,7 @@ mod tests {
         }
 
         fn postings(
-            &mut self,
+            &self,
             _field_info: &FieldInfo,
             _state: &BlockTermState,
             _reuse: Option<Box<dyn PostingsEnum>>,
@@ -1066,7 +1075,7 @@ mod tests {
         }
 
         fn impacts(
-            &mut self,
+            &self,
             _field_info: &FieldInfo,
             _state: &BlockTermState,
             _flags: i32,
