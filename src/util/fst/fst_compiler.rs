@@ -1010,6 +1010,25 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
     /// identity, and this port compares outputs by value throughout — see the
     /// divergence recorded on [`Outputs`] — so both disjuncts collapse onto the
     /// same test and the invariant Java asserts holds for every output here.
+    ///
+    /// The shape is kept rather than reduced to `true`, so that the port and
+    /// the Java original can still be read side by side. Restoring the first
+    /// disjunct as `std::ptr::eq(output, &self.no_output)` is *not* an option:
+    /// Java's `add` first de-dups the incoming output onto the `NO_OUTPUT`
+    /// singleton (`FSTCompiler.java:848-850`), which is what makes reference
+    /// equality hold there, and this port has no singleton to de-dup onto
+    /// because it stores outputs by value. Every call site here passes a local,
+    /// a clone or a freshly computed output, so reference identity is always
+    /// false and the check would become *stricter* than Java's, rejecting the
+    /// empty output that `add` legitimately receives. Measured: with that form,
+    /// `empty_and_non_empty_outputs_round_trip` fails on the `debug_assert!` at
+    /// the head of [`FSTCompiler::add`] while building the four-term FST.
+    // `clippy::overly_complex_bool_expr` (deny-by-default) fires on the
+    // `a || !a` shape. The tautology is the faithful transcription of an
+    // assertion whose first disjunct has no counterpart under value semantics;
+    // it is allowed here, on the item, rather than removed, so that the
+    // divergence stays visible at the point where it occurs.
+    #[allow(clippy::overly_complex_bool_expr)]
     fn valid_output(&self, output: &O::Output) -> bool {
         let is_no_output = self.fst.metadata.outputs.equals(output, &self.no_output);
         is_no_output || !is_no_output
@@ -1522,4 +1541,86 @@ pub(crate) fn ints_ref_compare(a: &IntsRef, b: &IntsRef) -> i64 {
         }
     }
     a_slice.len() as i64 - b_slice.len() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use super::super::positive_int_outputs::PositiveIntOutputs;
+    use super::super::util::Util;
+    use crate::util::BytesRef;
+
+    /// The terms and outputs used by the round-trip test: `"a"` and `"b"` map
+    /// to the empty output, `"ab"` and `"bc"` to a non-empty one, so that both
+    /// arms of the `BIT_ARC_HAS_OUTPUT` decision in [`FSTCompiler::add_node`]
+    /// are exercised.
+    const TERMS: [(&[u8], i64); 4] = [(b"a", 0), (b"ab", 5), (b"b", 0), (b"bc", 7)];
+
+    fn new_compiler<'a>() -> Result<FSTCompiler<'a, PositiveIntOutputs>> {
+        Builder::new(InputType::Byte1, PositiveIntOutputs::get_singleton()).build()
+    }
+
+    /// `valid_output` must accept an output that *equals* the empty output but
+    /// is a distinct value, because that is what every call site inside
+    /// [`FSTCompiler::add`] passes: a local, a clone or a freshly computed
+    /// output, never the `no_output` field itself.
+    ///
+    /// This pins the divergence documented on [`FSTCompiler::valid_output`].
+    /// Java's first disjunct is reference equality against the `NO_OUTPUT`
+    /// singleton, and `FSTCompiler.add` de-dups the incoming output onto that
+    /// singleton (`FSTCompiler.java:848-850`) so the disjunct holds. This port
+    /// stores outputs by value and has no singleton to de-dup onto, so
+    /// transcribing the disjunct as `std::ptr::eq` would make this assertion
+    /// fail and fire the `debug_assert!`s in `add`.
+    #[test]
+    fn valid_output_accepts_an_empty_output_that_is_not_the_no_output_field() -> Result<()> {
+        let compiler = new_compiler()?;
+        let empty = PositiveIntOutputs::get_singleton().no_output();
+
+        assert!(compiler
+            .fst
+            .metadata
+            .outputs
+            .equals(&empty, &compiler.no_output));
+        assert!(!std::ptr::eq(&empty, &compiler.no_output));
+        assert!(compiler.valid_output(&empty));
+        Ok(())
+    }
+
+    /// The second disjunct: an output that is not equal to the empty output is
+    /// always well-formed.
+    #[test]
+    fn valid_output_accepts_a_non_empty_output() -> Result<()> {
+        let compiler = new_compiler()?;
+        assert!(compiler.valid_output(&42));
+        Ok(())
+    }
+
+    /// Locks the observable behaviour of the compiler: terms carrying the empty
+    /// output and terms carrying a real output are both read back exactly.
+    #[test]
+    fn empty_and_non_empty_outputs_round_trip() -> Result<()> {
+        let mut compiler = new_compiler()?;
+        let mut scratch = IntsRefBuilder::new();
+
+        for (term, output) in TERMS {
+            let input = Util::to_ints_ref(&BytesRef::new(term.to_vec()), &mut scratch);
+            compiler.add(&input, output)?;
+        }
+
+        let metadata = compiler.compile()?;
+        let fst = FST::from_fst_reader(metadata, compiler.into_fst_reader()?)
+            .expect("INVARIANT: four terms were added, so the FST accepts something");
+
+        for (term, output) in TERMS {
+            assert_eq!(
+                Util::get_bytes(&fst, &BytesRef::new(term.to_vec()))?,
+                Some(output),
+                "term {term:?} did not round-trip"
+            );
+        }
+        assert_eq!(Util::get_bytes(&fst, &BytesRef::new(b"c".to_vec()))?, None);
+        Ok(())
+    }
 }
