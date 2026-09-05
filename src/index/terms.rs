@@ -724,6 +724,24 @@ impl PrefixCodedTerms {
     }
 }
 
+impl crate::util::Accountable for PrefixCodedTerms {
+    /// Equivalent to `PrefixCodedTerms.ramBytesUsed()`, which sums the
+    /// *capacities* of the buffers holding the payload and adds `2 * Long.BYTES`
+    /// for the `size` and `delGen` fields.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java holds the payload in the
+    /// `List<ByteBuffer>` of a `ByteBuffersDataOutput`, whose blocks are 1024
+    /// bytes by default, so `new PrefixCodedTerms.Builder()` with three short
+    /// terms reports 1040 bytes in `lucene-core-10.5.0.jar` (1024 + 16) and an
+    /// empty one reports 16. This port stores the payload in a single
+    /// contiguous `Vec<u8>`, so the first term counts that vector's capacity
+    /// rather than a sum of fixed-size blocks; the `2 * Long.BYTES` term and the
+    /// choice of *capacity* over *length* are Java's.
+    fn ram_bytes_used(&self) -> i64 {
+        self.content.capacity() as i64 + 2 * 8
+    }
+}
+
 /// Builder for [`PrefixCodedTerms`].
 ///
 /// Equivalent to `org.apache.lucene.index.PrefixCodedTerms.Builder`.
@@ -1361,6 +1379,44 @@ impl Fields for EmptyFields {
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod prefix_coded_terms_accounting_tests {
+    use super::*;
+    use crate::util::Accountable;
+
+    /// `PrefixCodedTerms.ramBytesUsed()` is the payload's allocated size plus
+    /// `2 * Long.BYTES` for `size` and `delGen`. Running
+    /// `new PrefixCodedTerms.Builder().finish().ramBytesUsed()` against
+    /// `lucene-core-10.5.0.jar` prints 16, because an empty payload allocates no
+    /// buffer; this port allocates none either, so it prints 16 too.
+    #[test]
+    fn an_empty_packet_costs_only_its_two_long_fields() {
+        let empty = PrefixCodedTermsBuilder::new().finish();
+        assert_eq!(empty.size(), 0);
+        assert_eq!(empty.ram_bytes_used(), 16);
+    }
+
+    /// The payload term grows with the encoded bytes and is never below them.
+    #[test]
+    fn a_populated_packet_costs_its_payload_plus_its_two_long_fields() {
+        let mut builder = PrefixCodedTermsBuilder::new();
+        for term in [("f", &b"aaa"[..]), ("f", &b"aab"[..]), ("g", &b"z"[..])] {
+            builder
+                .add_bytes(term.0, &BytesRef::new(term.1.to_vec()))
+                .unwrap();
+        }
+        let packet = builder.finish();
+        assert_eq!(packet.size(), 3);
+        let encoded = packet.content.len() as i64;
+        assert!(encoded > 0);
+        assert!(
+            packet.ram_bytes_used() >= encoded + 16,
+            "{} should cover the {encoded} encoded bytes plus 16",
+            packet.ram_bytes_used()
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {

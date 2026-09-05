@@ -1184,7 +1184,7 @@ impl Debug for IndexingChainFlushState<'_> {
 /// An implementation is owned by exactly one [`DocumentsWriterPerThread`] and
 /// is therefore never used concurrently; `Send` is required only so the DWPT
 /// can move between indexing threads.
-pub trait IndexingChain: Send + Debug {
+pub trait IndexingChain: Accountable + Send + Debug {
     /// Indexes one document under the per-segment `doc_id`.
     ///
     /// `is_last_doc` is `false` for every document of a block except the last,
@@ -1246,9 +1246,6 @@ pub trait IndexingChain: Send + Debug {
 
     /// Discards every buffered document.
     fn abort(&mut self);
-
-    /// Returns the approximate heap usage of the buffered documents.
-    fn ram_bytes_used(&self) -> i64;
 
     /// Writes the buffered documents into the segment described by `state`.
     ///
@@ -3159,6 +3156,19 @@ impl DwptGuard {
         (state.delete_doc_ids.capacity() as i64) * 4
             + state.pending_updates.ram_bytes_used()
             + state.indexing_chain.ram_bytes_used()
+    }
+
+    /// Returns the two resources whose bytes
+    /// [`ram_bytes_used`](Self::ram_bytes_used) adds to the deleted-docID array.
+    ///
+    /// Equivalent to `DocumentsWriterPerThread.getChildResources()`, which
+    /// returns `List.of(pendingUpdates, indexingChain)` and asserts that the
+    /// caller holds the DWPT's lock. Reaching this method through a
+    /// [`DwptGuard`] *is* holding that lock, so the assertion has no counterpart
+    /// here.
+    pub fn child_resources(&self) -> Vec<&dyn Accountable> {
+        let state = self.state();
+        vec![&state.pending_updates, state.indexing_chain.as_ref()]
     }
 
     /// Returns how much RAM has been used since the last report to the flush
@@ -5867,6 +5877,12 @@ mod tests {
         }
     }
 
+    impl Accountable for ScriptedChain {
+        fn ram_bytes_used(&self) -> i64 {
+            self.num_docs * self.bytes_per_doc
+        }
+    }
+
     impl IndexingChain for ScriptedChain {
         fn process_document(
             &mut self,
@@ -5888,10 +5904,6 @@ mod tests {
 
         fn abort(&mut self) {
             self.num_docs = 0;
-        }
-
-        fn ram_bytes_used(&self) -> i64 {
-            self.num_docs * self.bytes_per_doc
         }
 
         fn flush(
@@ -6375,6 +6387,31 @@ mod tests {
     }
 
     // -- DocumentsWriterPerThread ------------------------------------------
+
+    /// `DocumentsWriterPerThread.getChildResources()` reports exactly the two
+    /// resources its `ramBytesUsed()` adds to the deleted-docID array: the
+    /// buffered updates and the indexing chain.
+    #[test]
+    fn dwpt_child_resources_are_the_pending_updates_and_the_indexing_chain() {
+        let fixture = new_writer(config(1_000_000, 16.0));
+        let mut guard = fixture.writer.flush_control().obtain_and_lock().unwrap();
+        guard
+            .update_documents(&[doc("hello world")], None, &NoOpFlushNotifications, || {})
+            .unwrap();
+
+        let children = guard.child_resources();
+        assert_eq!(children.len(), 2);
+        let chain_bytes = children[1].ram_bytes_used();
+        assert!(chain_bytes > 0, "the chain must account RAM");
+        // The two children plus the deleted-docID array are the whole of
+        // `ramBytesUsed`.
+        let deleted_doc_ids = guard.deleted_doc_ids().len() as i64;
+        assert!(deleted_doc_ids == 0);
+        assert_eq!(
+            guard.ram_bytes_used(),
+            children[0].ram_bytes_used() + chain_bytes
+        );
+    }
 
     #[test]
     fn dwpt_flush_produces_a_segment_info_with_max_doc_and_field_infos() {

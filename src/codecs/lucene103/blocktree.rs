@@ -2186,10 +2186,19 @@ impl Lucene103BlockTreeTermsReader {
             };
             let doc_count = meta_in.read_v_int()?;
             let min_term = read_bytes_ref(meta_in.as_mut(), &meta_name)?;
+            // The writer always emits both terms
+            // (`Lucene103BlockTreeTermsWriter.java:1091-1092`), so both must
+            // always be read. Java's `numTerms == 1` branch only *aliases*
+            // `maxTerm` to `minTerm` afterwards, to save one object on the heap;
+            // it does not skip the read. Skipping it left the max term's length
+            // and bytes in the stream, which threw off every field decoded after
+            // it and made the `.tmd` footer land in the wrong place.
+            let max_term_read = read_bytes_ref(meta_in.as_mut(), &meta_name)?;
             let max_term = if num_terms == 1 {
+                debug_assert_eq!(max_term_read, min_term);
                 min_term.clone()
             } else {
-                read_bytes_ref(meta_in.as_mut(), &meta_name)?
+                max_term_read
             };
 
             if doc_count < 0 || doc_count > max_doc {

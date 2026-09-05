@@ -35,7 +35,7 @@ use crate::util::automaton::{AutomatonType, CompiledAutomaton};
 use crate::util::extra::{
     IdentityLongValues, LongValues, PriorityQueue, PriorityQueueComparator, ZeroesLongValues,
 };
-use crate::util::{BytesRef, BytesRefBuilder, FixedBitSet};
+use crate::util::{Accountable, BytesRef, BytesRefBuilder, FixedBitSet, RamUsageEstimator};
 
 // -----------------------------------------------------------------------------
 // Doc-values iterator base trait
@@ -1721,6 +1721,9 @@ pub struct OrdinalMap {
     first_segments: Box<dyn LongValues + Send + Sync>,
     segment_to_global_ords: Vec<Box<dyn LongValues + Send + Sync>>,
     segment_map: SegmentMap,
+    /// Heap cost accumulated while building, the way Java accumulates it into
+    /// its `final long ramBytesUsed` field (`OrdinalMap.java:334-397`).
+    ram_bytes_used: i64,
 }
 
 impl Debug for OrdinalMap {
@@ -1849,6 +1852,11 @@ impl OrdinalMap {
 
         let value_count = global_ord;
 
+        // Java accumulates the heap cost as it builds, starting from the
+        // instance's own shallow size and the segment map
+        // (`OrdinalMap.java:334`).
+        let mut ram_bytes_used = ORDINAL_MAP_BASE_RAM_BYTES_USED + segment_map.ram_bytes_used();
+
         let (global_ord_deltas, first_segments) =
             if num_subs > 0 && ord_delta_bits[0] == 0 && first_segments.iter().all(|&x| x == 0) {
                 (
@@ -1856,6 +1864,8 @@ impl OrdinalMap {
                     Box::new(ZeroesLongValues) as Box<dyn LongValues + Send + Sync>,
                 )
             } else {
+                ram_bytes_used += RamUsageEstimator::size_of_long(&first_segments)
+                    + RamUsageEstimator::size_of_long(&global_ord_deltas);
                 (
                     Box::new(ArrayLongValues(global_ord_deltas))
                         as Box<dyn LongValues + Send + Sync>,
@@ -1865,10 +1875,16 @@ impl OrdinalMap {
 
         let mut segment_to_global_ords: Vec<Box<dyn LongValues + Send + Sync>> =
             Vec::with_capacity(num_subs);
+        ram_bytes_used += RamUsageEstimator::align_object_size(
+            RamUsageEstimator::NUM_BYTES_ARRAY_HEADER
+                + RamUsageEstimator::NUM_BYTES_OBJECT_REF * num_subs as i64,
+        );
         for i in 0..num_subs {
             if ord_delta_bits[i] == 0 {
                 segment_to_global_ords.push(Box::new(IdentityLongValues));
             } else {
+                ram_bytes_used += RamUsageEstimator::size_of_long(&ord_deltas[i])
+                    + DELTA_LONG_VALUES_SHALLOW_RAM_BYTES_USED;
                 segment_to_global_ords.push(Box::new(DeltaLongValues(ord_deltas[i].clone())));
             }
         }
@@ -1879,6 +1895,7 @@ impl OrdinalMap {
             first_segments,
             segment_to_global_ords,
             segment_map,
+            ram_bytes_used,
         })
     }
 
@@ -1913,6 +1930,74 @@ impl OrdinalMap {
 struct SegmentMap {
     new_to_old: Vec<usize>,
     old_to_new: Vec<usize>,
+}
+
+/// Shallow size of an `OrdinalMap` instance.
+///
+/// Equivalent to `OrdinalMap.BASE_RAM_BYTES_USED`, which is
+/// `RamUsageEstimator.shallowSizeOfInstance(OrdinalMap.class)`. Running that
+/// expression against `lucene-core-10.5.0.jar` prints 48, so 48 is the value
+/// Java starts its accumulation from.
+const ORDINAL_MAP_BASE_RAM_BYTES_USED: i64 = 48;
+
+/// Shallow size of a `SegmentMap` instance.
+///
+/// Equivalent to `OrdinalMap.SegmentMap.BASE_RAM_BYTES_USED`;
+/// `RamUsageEstimator.shallowSizeOfInstance(OrdinalMap$SegmentMap.class)` prints
+/// 24 against `lucene-core-10.5.0.jar`.
+const SEGMENT_MAP_BASE_RAM_BYTES_USED: i64 = 24;
+
+/// Shallow size of the per-segment ordinal mapper.
+///
+/// Java adds `RamUsageEstimator.shallowSizeOf(segmentToGlobalOrds[i])` for each
+/// segment whose ordinals are not the identity (`OrdinalMap.java:393`); the
+/// instance it sizes is an anonymous `LongValues` holding one reference. This
+/// port's [`DeltaLongValues`] holds one `Vec<i64>`, whose own buffer is counted
+/// separately, so the shallow term is the object header plus that one field.
+const DELTA_LONG_VALUES_SHALLOW_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
+    RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+);
+
+impl Accountable for SegmentMap {
+    /// Equivalent to `OrdinalMap.SegmentMap.ramBytesUsed()`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `newToOld`/`oldToNew` are
+    /// `int[]`; this port stores segment indices as `usize`, so each entry costs
+    /// eight bytes here where it costs four in Java. The shape of the sum — the
+    /// shallow size plus both arrays — is Java's.
+    fn ram_bytes_used(&self) -> i64 {
+        SEGMENT_MAP_BASE_RAM_BYTES_USED
+            + RamUsageEstimator::align_object_size(
+                RamUsageEstimator::NUM_BYTES_ARRAY_HEADER
+                    + std::mem::size_of::<usize>() as i64 * self.new_to_old.len() as i64,
+            )
+            + RamUsageEstimator::align_object_size(
+                RamUsageEstimator::NUM_BYTES_ARRAY_HEADER
+                    + std::mem::size_of::<usize>() as i64 * self.old_to_new.len() as i64,
+            )
+    }
+}
+
+impl Accountable for OrdinalMap {
+    /// Equivalent to `OrdinalMap.ramBytesUsed()`, which returns the total
+    /// accumulated while the map was built.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java packs the ordinal deltas into
+    /// `PackedLongValues`/`PackedInts.Mutable` and picks between monotonic and
+    /// plain packing by comparing their costs; this port stores them as plain
+    /// `Vec<i64>`. The terms of the sum are the same ones Java adds, but the
+    /// sizes are those of the containers this port actually allocates, so the
+    /// two totals are not expected to be equal.
+    fn ram_bytes_used(&self) -> i64 {
+        self.ram_bytes_used
+    }
+
+    /// Equivalent to `OrdinalMap.getChildResources()`, which reports the segment
+    /// map and, as its own comment notes, deliberately leaves the ordinal maps
+    /// out because the build-time optimisations make them hard to describe.
+    fn child_resources(&self) -> Vec<&dyn Accountable> {
+        vec![&self.segment_map]
+    }
 }
 
 impl SegmentMap {
@@ -3070,6 +3155,57 @@ mod tests {
             .seek_term_state(&BytesRef::new(Vec::new()), state.as_ref())
             .unwrap();
         assert_eq!(terms.ord().unwrap(), 2);
+    }
+
+    /// `OrdinalMap.ramBytesUsed()` returns the total accumulated at build time,
+    /// which always carries the instance's own shallow size and its segment
+    /// map's, and grows with the ordinal deltas it had to store.
+    #[test]
+    fn ordinal_map_accounts_for_its_base_its_segment_map_and_its_deltas() {
+        let seg0 = Box::new(VecSortedDocValues::new(
+            vec![b"a".to_vec(), b"c".to_vec()],
+            vec![0, 1],
+        )) as Box<dyn SortedDocValues>;
+        let seg1 = Box::new(VecSortedDocValues::new(
+            vec![b"b".to_vec(), b"d".to_vec()],
+            vec![0, 1],
+        )) as Box<dyn SortedDocValues>;
+        let map = OrdinalMap::build_sorted(vec![seg0, seg1], 0.0).unwrap();
+
+        let floor = ORDINAL_MAP_BASE_RAM_BYTES_USED + SEGMENT_MAP_BASE_RAM_BYTES_USED;
+        assert!(
+            map.ram_bytes_used() > floor,
+            "{} should exceed the two shallow sizes {floor}",
+            map.ram_bytes_used()
+        );
+
+        // Java reports the segment map and, by its own comment, nothing else.
+        let children = map.child_resources();
+        assert_eq!(children.len(), 1);
+        assert_eq!(
+            children[0].ram_bytes_used(),
+            map.segment_map.ram_bytes_used()
+        );
+        assert!(children[0].ram_bytes_used() > SEGMENT_MAP_BASE_RAM_BYTES_USED);
+    }
+
+    /// A single segment maps every ordinal to itself, so Java stores no deltas
+    /// at all: the `ordDeltaBits[0] == 0` branch installs `LongValues.ZEROES`
+    /// and `LongValues.IDENTITY` and adds nothing beyond the array of
+    /// references.
+    #[test]
+    fn ordinal_map_over_one_segment_stores_no_deltas() {
+        let only = Box::new(VecSortedDocValues::new(
+            vec![b"a".to_vec(), b"b".to_vec()],
+            vec![0, 1],
+        )) as Box<dyn SortedDocValues>;
+        let map = OrdinalMap::build_sorted(vec![only], 0.0).unwrap();
+        let expected = ORDINAL_MAP_BASE_RAM_BYTES_USED
+            + map.segment_map.ram_bytes_used()
+            + RamUsageEstimator::align_object_size(
+                RamUsageEstimator::NUM_BYTES_ARRAY_HEADER + RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+            );
+        assert_eq!(map.ram_bytes_used(), expected);
     }
 
     #[test]

@@ -111,7 +111,7 @@ use crate::search::NO_MORE_DOCS;
 use crate::store::TrackingDirectoryWrapper;
 use crate::util::byte_block_pool::MAX_TERM_LENGTH;
 use crate::util::NumericUtils;
-use crate::util::{AttributeSource, BytesRef, InfoStream};
+use crate::util::{Accountable, AttributeSource, BytesRef, InfoStream};
 
 /// Highest position a token may occupy.
 ///
@@ -2882,6 +2882,56 @@ impl DefaultIndexingChain {
     }
 }
 
+impl Accountable for DefaultIndexingChain {
+    /// Equivalent to `IndexingChain.ramBytesUsed()`.
+    fn ram_bytes_used(&self) -> i64 {
+        self.bytes_used.load(Ordering::Acquire)
+            + self
+                .stored_fields_consumer
+                .as_ref()
+                .map_or(0, StoredFieldsConsumer::ram_bytes_used)
+            + self
+                .term_vectors_consumer
+                .as_ref()
+                .map_or(0, TermVectorsConsumer::ram_bytes_used)
+            // `IndexingChain.ramBytesUsed` ends with
+            // `vectorValuesConsumer.getAccountable().ramBytesUsed()`
+            // (`IndexingChain.java:1720-1724`).
+            + self
+                .vector_values_consumer
+                .as_ref()
+                .map_or(0, VectorValuesConsumer::ram_bytes_used)
+    }
+
+    /// Returns the three consumers whose bytes
+    /// [`ram_bytes_used`](Self::ram_bytes_used) adds to `bytes_used`.
+    ///
+    /// Equivalent to `IndexingChain.getChildResources()`, which returns
+    /// `List.of(storedFieldsConsumer.accountable, termVectorsWriter.accountable,
+    /// vectorValuesConsumer.getAccountable())`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's three fields exist from the
+    /// moment the chain is constructed and default to
+    /// `Accountable.NULL_ACCOUNTABLE`, so the list always has three entries; in
+    /// this port the three consumers are bound when the chain is bound to a
+    /// segment, so before that this returns fewer entries. Every entry reports
+    /// the same bytes Java's counterpart would, and a consumer without a writer
+    /// reports zero either way.
+    fn child_resources(&self) -> Vec<&dyn Accountable> {
+        let mut resources: Vec<&dyn Accountable> = Vec::with_capacity(3);
+        if let Some(consumer) = self.stored_fields_consumer.as_ref() {
+            resources.push(consumer);
+        }
+        if let Some(consumer) = self.term_vectors_consumer.as_ref() {
+            resources.push(consumer);
+        }
+        if let Some(consumer) = self.vector_values_consumer.as_ref() {
+            resources.push(consumer);
+        }
+        resources
+    }
+}
+
 impl IndexingChain for DefaultIndexingChain {
     /// Indexes a column-oriented batch of documents.
     ///
@@ -3446,25 +3496,6 @@ impl IndexingChain for DefaultIndexingChain {
         self.bytes_used.store(0, Ordering::Release);
     }
 
-    fn ram_bytes_used(&self) -> i64 {
-        self.bytes_used.load(Ordering::Acquire)
-            + self
-                .stored_fields_consumer
-                .as_ref()
-                .map_or(0, StoredFieldsConsumer::ram_bytes_used)
-            + self
-                .term_vectors_consumer
-                .as_ref()
-                .map_or(0, TermVectorsConsumer::ram_bytes_used)
-            // `IndexingChain.ramBytesUsed` ends with
-            // `vectorValuesConsumer.getAccountable().ramBytesUsed()`
-            // (`IndexingChain.java:1720-1724`).
-            + self
-                .vector_values_consumer
-                .as_ref()
-                .map_or(0, VectorValuesConsumer::ram_bytes_used)
-    }
-
     fn flush(&mut self, state: &IndexingChainFlushState<'_>) -> Result<IndexingChainFlushResult> {
         let seg_updates = crate::codecs::stub::BufferedUpdates;
         let mut write_state = SegmentWriteState::new(
@@ -3974,6 +4005,29 @@ mod tests {
         assert_eq!(
             field_infos.field_info("beta").unwrap().get_field_number(),
             1
+        );
+    }
+
+    #[test]
+    fn indexing_chain_child_resources_are_its_three_consumers() {
+        let unbound = DefaultIndexingChain::new(config());
+        assert!(
+            unbound.child_resources().is_empty(),
+            "before a segment is bound there is no consumer to report"
+        );
+
+        let (chain, _tracking, _info) = bound_chain(1);
+        let children = chain.child_resources();
+        assert_eq!(
+            children.len(),
+            3,
+            "stored fields, term vectors and vectors, in Java's order"
+        );
+        let children_bytes: i64 = children.iter().map(|c| c.ram_bytes_used()).sum();
+        // `ramBytesUsed` is `bytesUsed` plus exactly these three.
+        assert_eq!(
+            chain.ram_bytes_used(),
+            chain.bytes_used.load(Ordering::Acquire) + children_bytes
         );
     }
 

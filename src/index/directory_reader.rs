@@ -525,9 +525,19 @@ impl IndexReader for StandardDirectoryReader {
     }
 
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
-        Err(LuceneError::UnsupportedOperation(
-            "DirectoryReader does not support termVectors".to_string(),
-        ))
+        let mut sub_vectors = Vec::with_capacity(self.segment_readers.len());
+        let mut starts = Vec::with_capacity(self.segment_readers.len());
+        let mut doc_base = 0;
+        for reader in &self.segment_readers {
+            sub_vectors.push(None);
+            starts.push(doc_base);
+            doc_base += LeafReader::max_doc(reader.as_ref());
+        }
+        Ok(Box::new(CompositeTermVectors {
+            sub_readers: self.segment_readers.clone(),
+            starts,
+            sub_vectors: Mutex::new(sub_vectors),
+        }))
     }
 
     fn num_docs(&self) -> i32 {
@@ -644,6 +654,78 @@ impl IndexReader for StandardDirectoryReader {
 /// `Send + Sync` bound the [`StoredFields`] trait carries, and the trait's
 /// methods take `&self`, so the cache sits behind a [`Mutex`]. Every handle is
 /// otherwise the same object Java's is: a per-call view over the sub-readers.
+/// Term vectors over the leaves of a [`StandardDirectoryReader`].
+///
+/// Equivalent to the anonymous `TermVectors` that
+/// `BaseCompositeReader.termVectors()` returns
+/// (`BaseCompositeReader.java:115-139`): it finds the sub-reader owning the
+/// document, opens that sub-reader's `TermVectors` on first use and keeps it in
+/// the `subVectors` array, and passes the sub-reader-local document id down.
+///
+/// `DirectoryReader` extends `BaseCompositeReader<LeafReader>` in Java, so it
+/// inherits that `final` method; this port previously answered
+/// `UnsupportedOperation` here, which left term vectors unreadable through a
+/// directory reader even when the segments carried them.
+#[derive(Debug)]
+struct CompositeTermVectors {
+    sub_readers: Vec<Arc<SegmentReader>>,
+    /// First document id of each sub-reader, i.e. Java's `starts`.
+    starts: Vec<i32>,
+    sub_vectors: Mutex<Vec<Option<Box<dyn TermVectors>>>>,
+}
+
+impl CompositeTermVectors {
+    /// Returns the index of the sub-reader holding `doc_id`.
+    ///
+    /// Equivalent to `BaseCompositeReader.readerIndex(int)`.
+    fn reader_index(&self, doc_id: i32) -> Result<usize> {
+        if doc_id < 0 || self.starts.is_empty() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "docID must be >= 0 and < maxDoc; got {doc_id}"
+            )));
+        }
+        Ok(match self.starts.binary_search(&doc_id) {
+            Ok(index) => index,
+            Err(insertion) => insertion - 1,
+        })
+    }
+
+    /// Runs `body` against the [`TermVectors`] of the sub-reader owning
+    /// `doc_id`, opening it on first use, and hands it the sub-reader-local id.
+    fn with_sub<T>(
+        &self,
+        doc_id: i32,
+        body: impl FnOnce(&mut dyn TermVectors, i32) -> Result<T>,
+    ) -> Result<T> {
+        let index = self.reader_index(doc_id)?;
+        let mut cache = self
+            .sub_vectors
+            .lock()
+            .map_err(|_| LuceneError::IllegalState("term vectors lock was poisoned".to_string()))?;
+        if cache[index].is_none() {
+            cache[index] = Some(LeafReader::term_vectors(self.sub_readers[index].as_ref())?);
+        }
+        let sub = cache[index]
+            .as_mut()
+            .expect("INVARIANT: the entry was just filled");
+        body(sub.as_mut(), doc_id - self.starts[index])
+    }
+}
+
+impl TermVectors for CompositeTermVectors {
+    fn prefetch(&mut self, doc_id: i32) -> Result<()> {
+        self.with_sub(doc_id, |sub, local| sub.prefetch(local))
+    }
+
+    fn get(&self, doc_id: i32) -> Result<Option<Box<dyn crate::index::Fields>>> {
+        self.with_sub(doc_id, |sub, local| sub.get(local))
+    }
+
+    fn get_field(&self, doc_id: i32, field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
+        self.with_sub(doc_id, |sub, local| sub.get_field(local, field))
+    }
+}
+
 #[derive(Debug)]
 struct CompositeStoredFields {
     sub_readers: Vec<Arc<SegmentReader>>,

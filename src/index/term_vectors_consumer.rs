@@ -1464,3 +1464,16 @@ mod tests {
         assert!(!field.finish(), "the field did not ask for vectors");
     }
 }
+
+impl crate::util::Accountable for TermVectorsConsumer {
+    /// Equivalent to the `Accountable` view Lucene exposes for this consumer:
+    /// `StoredFieldsConsumer.accountable` / `TermVectorsConsumer.accountable` /
+    /// `VectorValuesConsumer.getAccountable()`, each of which holds the segment
+    /// writer when there is one and `Accountable.NULL_ACCOUNTABLE` when there is
+    /// not. Implementing the trait on the consumer itself lets
+    /// `IndexingChain.getChildResources()` borrow it, which a `Box<dyn
+    /// Accountable>` view could not offer.
+    fn ram_bytes_used(&self) -> i64 {
+        TermVectorsConsumer::ram_bytes_used(self)
+    }
+}

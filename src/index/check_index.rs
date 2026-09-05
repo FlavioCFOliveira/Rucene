@@ -4183,6 +4183,26 @@ pub struct IndexUpgrader {
 }
 
 impl IndexUpgrader {
+    /// Parses `args` and runs the upgrade.
+    ///
+    /// Equivalent to the whole body of `IndexUpgrader.main(String[])`, which is
+    /// `parseArgs(args).upgrade()`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's entry point is a
+    /// `public static void main`, which the JVM invokes for a process and which
+    /// lets an `IOException` escape to terminate it. A library crate has no
+    /// process entry point, so this is a plain function returning the failure
+    /// instead; a `[[bin]]` target wanting Lucene's command line calls it and
+    /// maps the error onto its own exit code.
+    ///
+    /// # Errors
+    ///
+    /// Propagates an invalid command line, a directory that cannot be opened,
+    /// and whatever [`IndexUpgrader::upgrade`] raises.
+    pub fn do_main<S: AsRef<str>>(args: &[S]) -> Result<()> {
+        Self::parse_args(args)?.upgrade()
+    }
+
     /// Writes to standard error how the tool is invoked.
     ///
     /// Equivalent to `IndexUpgrader.printUsage()`.
