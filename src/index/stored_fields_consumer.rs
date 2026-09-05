@@ -290,7 +290,7 @@ impl StoredFieldsConsumer {
                         info.name, value.length
                     ))
                 })?;
-                let mut input = ByteArrayDataInput::new(value.slice().to_vec());
+                let mut input = ByteArrayDataInput::new(value.slice());
                 let mut data_input = StoredFieldDataInput::new(&mut input, length);
                 writer.write_field_data_input(info, &mut data_input)
             }

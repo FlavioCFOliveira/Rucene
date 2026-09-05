@@ -539,8 +539,8 @@ mod tests {
         let positions = position_stream(&[(0, Some(b"one")), (3, None), (9, Some(b"two"))]);
         let offsets = offset_stream(&[(0, 5), (10, 14), (20, 30)]);
         let mut writer = RecordingWriter::default();
-        let mut positions = crate::store::ByteArrayDataInput::new(positions);
-        let mut offsets = crate::store::ByteArrayDataInput::new(offsets);
+        let mut positions = crate::store::ByteArrayDataInput::new(&positions);
+        let mut offsets = crate::store::ByteArrayDataInput::new(&offsets);
         writer
             .add_prox(3, Some(&mut positions), Some(&mut offsets))
             .expect("add prox");
@@ -557,8 +557,8 @@ mod tests {
     #[test]
     fn add_prox_reports_minus_one_for_the_stream_it_was_not_given() {
         let mut writer = RecordingWriter::default();
-        let mut positions =
-            crate::store::ByteArrayDataInput::new(position_stream(&[(0, None), (4, None)]));
+        let positions_src = position_stream(&[(0, None), (4, None)]);
+        let mut positions = crate::store::ByteArrayDataInput::new(&positions_src);
         writer
             .add_prox(2, Some(&mut positions), None)
             .expect("positions only");
@@ -569,7 +569,8 @@ mod tests {
         );
 
         let mut writer = RecordingWriter::default();
-        let mut offsets = crate::store::ByteArrayDataInput::new(offset_stream(&[(0, 5), (7, 11)]));
+        let offsets_src = offset_stream(&[(0, 5), (7, 11)]);
+        let mut offsets = crate::store::ByteArrayDataInput::new(&offsets_src);
         writer
             .add_prox(2, None, Some(&mut offsets))
             .expect("offsets only");
@@ -587,7 +588,8 @@ mod tests {
         // unsigned.
         let far = i32::MAX - 128;
         let mut writer = RecordingWriter::default();
-        let mut positions = crate::store::ByteArrayDataInput::new(position_stream(&[(far, None)]));
+        let positions_src = position_stream(&[(far, None)]);
+        let mut positions = crate::store::ByteArrayDataInput::new(&positions_src);
         writer
             .add_prox(1, Some(&mut positions), None)
             .expect("add prox");
@@ -601,7 +603,7 @@ mod tests {
         write_v_int(&mut bytes, 1); // (0 << 1) | 1: a payload follows
         write_v_int(&mut bytes, -1); // its length
         let mut writer = RecordingWriter::default();
-        let mut positions = crate::store::ByteArrayDataInput::new(bytes);
+        let mut positions = crate::store::ByteArrayDataInput::new(&bytes);
         let error = writer
             .add_prox(1, Some(&mut positions), None)
             .expect_err("a negative length is not a length");

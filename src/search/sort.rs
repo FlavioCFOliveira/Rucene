@@ -1604,7 +1604,7 @@ mod tests {
 
         for original in originals {
             let bytes = serialize_sort_field(&original);
-            let mut input = ByteArrayDataInput::new(bytes);
+            let mut input = ByteArrayDataInput::new(&bytes);
             let provider = input.read_string().unwrap();
             assert_eq!(provider, "SortField");
             let round_tripped = SortField::deserialize(&mut input).unwrap();
@@ -1639,7 +1639,7 @@ mod tests {
         .unwrap();
 
         let bytes = serialize_sort(&sort);
-        let mut input = ByteArrayDataInput::new(bytes);
+        let mut input = ByteArrayDataInput::new(&bytes);
         let round_tripped = read_sort(&mut input).unwrap().unwrap();
         assert_eq!(sort, round_tripped);
     }

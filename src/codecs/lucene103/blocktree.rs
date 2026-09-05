@@ -217,9 +217,9 @@ impl Stats {
         self.block_count_by_prefix_len[frame.prefix_length] += 1;
         self.start_block_count += 1;
         self.total_block_suffix_bytes += frame.total_suffix_bytes;
-        self.total_uncompressed_block_suffix_bytes += frame.suffixes_reader.length() as i64;
-        self.total_uncompressed_block_suffix_bytes += frame.suffix_lengths_reader.length() as i64;
-        self.total_block_stats_bytes += frame.stats_reader.length() as i64;
+        self.total_uncompressed_block_suffix_bytes += frame.suffixes_limit as i64;
+        self.total_uncompressed_block_suffix_bytes += frame.suffix_lengths_limit as i64;
+        self.total_block_stats_bytes += frame.stats_limit as i64;
         self.compression_algorithms[frame.compression_alg.code() as usize] += 1;
     }
 
@@ -245,7 +245,7 @@ impl Stats {
         }
         self.end_block_count += 1;
         let other_bytes =
-            frame.fp_end - frame.fp - frame.total_suffix_bytes - frame.stats_reader.length() as i64;
+            frame.fp_end - frame.fp - frame.total_suffix_bytes - frame.stats_limit as i64;
         debug_assert!(
             other_bytes > 0,
             "otherBytes={other_bytes} frame.fp={} frame.fpEnd={}",

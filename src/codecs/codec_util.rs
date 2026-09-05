@@ -741,7 +741,7 @@ mod tests {
         write_header(&mut out, "TestCodec", 5).unwrap();
         let bytes = out.into_inner();
 
-        let mut input = ByteArrayDataInput::new(bytes);
+        let mut input = ByteArrayDataInput::new(&bytes);
         let version = check_header(&mut input, "TestCodec", 4, 6).unwrap();
         assert_eq!(version, 5);
     }
@@ -750,7 +750,7 @@ mod tests {
     fn header_rejects_bad_magic() {
         let mut bytes = vec![0u8; 4];
         bytes.copy_from_slice(&0i32.to_be_bytes());
-        let mut input = ByteArrayDataInput::new(bytes);
+        let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "TestCodec", 1, 1).unwrap_err();
         assert!(matches!(err, LuceneError::CorruptIndex(_)));
         assert!(err.to_string().contains("codec header mismatch"));
@@ -762,7 +762,7 @@ mod tests {
         write_header(&mut out, "RightCodec", 5).unwrap();
         let bytes = out.into_inner();
 
-        let mut input = ByteArrayDataInput::new(bytes);
+        let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "WrongCodec", 1, 10).unwrap_err();
         assert!(matches!(err, LuceneError::CorruptIndex(_)));
         assert!(err.to_string().contains("codec mismatch"));
@@ -774,12 +774,12 @@ mod tests {
         write_header(&mut out, "TestCodec", 5).unwrap();
         let bytes = out.into_inner();
 
-        let mut input = ByteArrayDataInput::new(bytes.clone());
+        let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "TestCodec", 6, 10).unwrap_err();
         assert!(matches!(err, LuceneError::IndexFormatNotSupported(_)));
         assert!(err.to_string().contains("too old"));
 
-        let mut input = ByteArrayDataInput::new(bytes);
+        let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "TestCodec", 1, 4).unwrap_err();
         assert!(matches!(err, LuceneError::IndexFormatNotSupported(_)));
         assert!(err.to_string().contains("too new"));
@@ -880,7 +880,7 @@ mod tests {
             "P9dsFwlSdWNlbmVJZHgAAAAHAAECAwQFBgcICQoLDA0ODwJfMJnAKJPoAAAAAAAAAAA7uEXh";
         assert_eq!(base64::encode(&bytes), expected_b64);
 
-        let mut input = ByteArrayDataInput::new(bytes);
+        let mut input = ByteArrayDataInput::new(&bytes);
         let version = check_index_header(&mut input, "RuceneIdx", 7, 7, &id, "_0").unwrap();
         assert_eq!(version, 7);
         assert_eq!(input.read_byte().unwrap(), 0x99);
@@ -893,7 +893,7 @@ mod tests {
         write_be_long(&mut out, 0x123456789ABCDEF0i64).unwrap();
         let bytes = out.into_inner();
 
-        let mut input = ByteArrayDataInput::new(bytes);
+        let mut input = ByteArrayDataInput::new(&bytes);
         assert_eq!(read_be_int(&mut input).unwrap(), 0x12345678);
         assert_eq!(read_be_long(&mut input).unwrap(), 0x123456789ABCDEF0i64);
     }

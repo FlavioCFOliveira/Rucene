@@ -6010,7 +6010,7 @@ mod tests {
 
     #[test]
     fn a_stored_data_input_field_yields_its_bytes_once() {
-        let input = Box::new(crate::store::ByteArrayDataInput::new(vec![9, 8, 7]));
+        let input = Box::new(crate::store::ByteArrayDataInput::new(&[9u8, 8, 7]));
         let field = Field::new_with_stored_input("p", input, 3, stored_type()).unwrap();
         assert_eq!(
             IndexableField::stored_value(&field).unwrap(),

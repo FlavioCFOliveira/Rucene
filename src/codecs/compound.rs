@@ -751,7 +751,7 @@ mod tests {
         CompoundFileDirectory::write_entry_table(&mut output, &entries).unwrap();
         let bytes = output.into_inner();
 
-        let mut input = ByteArrayDataInput::new(bytes);
+        let mut input = ByteArrayDataInput::new(&bytes);
         let read = CompoundFileDirectory::read_entry_table(&mut input).unwrap();
         assert_eq!(read.len(), 2);
         assert_eq!(

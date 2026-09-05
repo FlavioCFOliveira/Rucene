@@ -341,7 +341,8 @@ mod tests {
         writer.write_field_f64(&info, 2.0).unwrap();
         writer.write_field_bytes(&info, b"x").unwrap();
         writer.write_field_string(&info, "s").unwrap();
-        let mut input = crate::store::ByteArrayDataInput::new(vec![1, 2, 3]);
+        let input_src = vec![1, 2, 3];
+        let mut input = crate::store::ByteArrayDataInput::new(&input_src);
         let mut stored_input = StoredFieldDataInput::new(&mut input, 3);
         writer
             .write_field_data_input(&info, &mut stored_input)

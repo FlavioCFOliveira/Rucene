@@ -87,11 +87,14 @@ fn find_next_geq(arr: &[i32], target: i32, start: usize, end: usize) -> usize {
 }
 
 fn read_impacts(serialized: &[u8], buffer: &mut FreqAndNormBuffer) -> Result<()> {
-    let mut input = crate::store::ByteArrayDataInput::new(serialized.to_vec());
+    let mut input = crate::store::ByteArrayDataInput::new(serialized);
     let mut freq = 0i32;
     let mut norm = 0i64;
     buffer.size = 0;
-    while input.remaining() > 0 {
+    // Java's own bound, `while (in.getPosition() < in.length())`
+    // (`Lucene104PostingsReader.java:1453`), which stops even if a read has
+    // carried the position past the limit.
+    while input.position() < input.length() {
         let freq_delta = input.read_v_int()?;
         if (freq_delta & 0x01) != 0 {
             freq += 1 + (freq_delta >> 1);

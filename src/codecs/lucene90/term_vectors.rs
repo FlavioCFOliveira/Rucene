@@ -2535,7 +2535,22 @@ struct TVTermsEnum {
     lengths: Option<Vec<i32>>,
     payload_index: Option<Vec<i32>>,
     payload_bytes: BytesRef,
-    input: ByteArrayDataInput,
+    // Java holds `ByteArrayDataInput in`, constructed over the field's window
+    // inside the whole decompressed block
+    // (`Lucene90CompressingTermVectorsReader.java:1013`, `:1069`). A struct that
+    // holds both a buffer and a view of that buffer is a self-reference Rust
+    // forbids, so the block stays here and the view's fields — position and
+    // limit — sit beside it, with [`ByteArrayDataInput`] rebuilt around them for
+    // each term.
+    /// The whole decompressed suffix block this field's terms live in.
+    term_bytes: BytesRef,
+    /// Read position inside `term_bytes.bytes`.
+    input_pos: usize,
+    /// Where this field's window ends inside `term_bytes.bytes`.
+    input_limit: usize,
+    /// Where this field's window starts. Java's `TVTermsEnum.startPos`
+    /// (`Lucene90CompressingTermVectorsReader.java:1060`, `:1101`).
+    start_pos: usize,
     term: BytesRef,
     ord: i32,
     atts: AttributeSource,
@@ -2559,15 +2574,16 @@ impl TVTermsEnum {
     ) -> Result<Self> {
         // Java constructs the input over the field's own window —
         // `new ByteArrayDataInput(termBytes.bytes, termBytes.offset, termBytes.length)`
-        // (`Lucene90CompressingTermVectorsReader.java:1013`). That window is not
-        // an enforced limit: `ByteArrayDataInput.readBytes` is a bare
+        // (`Lucene90CompressingTermVectorsReader.java:1013`) — which is exactly
+        // what the position and limit kept below describe. That window is not an
+        // enforced limit in Java: `ByteArrayDataInput.readBytes` is a bare
         // `System.arraycopy` (`ByteArrayDataInput.java:141-144`) and `limit` is
-        // consulted only by `eof()`, so a field that over-reads silently takes
-        // the next field's bytes and throws only at the backing array's end.
-        // Slicing here is therefore stricter than Java: an over-read is an
-        // `Err` rather than a neighbouring field's contents. Handing the whole
-        // decompressed block over and merely seeking into it would be looser
-        // than both, and the seek itself can fail on a window the chunk invented.
+        // consulted only by `eof()` and `length()`, so a field that over-reads
+        // silently takes the next field's bytes and throws only at the backing
+        // array's end. This port keeps the window honest in `next()` instead,
+        // where the remaining bytes are checked before the read, so an over-read
+        // is a `CorruptIndexException` rather than a neighbouring field's
+        // contents; the window itself is still validated against the block here.
         let end = term_bytes
             .offset
             .checked_add(term_bytes.length)
@@ -2580,7 +2596,7 @@ impl TVTermsEnum {
                     term_bytes.bytes.len()
                 ))
             })?;
-        let input = ByteArrayDataInput::from_slice(&term_bytes.bytes[term_bytes.offset..end]);
+        let start_pos = term_bytes.offset;
         Ok(Self {
             num_terms,
             prefix_lengths,
@@ -2592,7 +2608,10 @@ impl TVTermsEnum {
             lengths,
             payload_index,
             payload_bytes,
-            input,
+            term_bytes,
+            input_pos: start_pos,
+            input_limit: end,
+            start_pos,
             term: BytesRef::with_capacity(16),
             ord: -1,
             atts: AttributeSource::new(),
@@ -2601,11 +2620,10 @@ impl TVTermsEnum {
 
     fn reset(&mut self) {
         self.term.length = 0;
-        // The input now spans exactly the field's window, so rewinding it is
-        // seeking to zero, which cannot fail.
-        self.input
-            .seek(0)
-            .expect("INVARIANT: position zero is inside every window");
+        // Java's `in.setPosition(startPos)`
+        // (`Lucene90CompressingTermVectorsReader.java:1107`) — the start of the
+        // field's window, not of the block.
+        self.input_pos = self.start_pos;
         self.ord = -1;
     }
 }
@@ -2739,7 +2757,7 @@ impl TermsEnum for TVTermsEnum {
         let new_len = prefix + suffix;
         // The term bytes are a window into the decompressed suffix block, so no
         // term can be longer than what is left of it.
-        let available = self.input.length().saturating_sub(self.input.position());
+        let available = self.input_limit.saturating_sub(self.input_pos);
         if suffix > available {
             return Err(LuceneError::CorruptIndex(format!(
                 "term {} of the field claims a {suffix}-byte suffix, but only {available} bytes \
@@ -2756,8 +2774,18 @@ impl TermsEnum for TVTermsEnum {
         if self.term.bytes.len() < new_len {
             self.term.bytes.resize(new_len, 0);
         }
-        self.input
-            .read_bytes(&mut self.term.bytes, prefix, suffix)?;
+        let Self {
+            term_bytes,
+            input_pos,
+            input_limit,
+            term,
+            ..
+        } = self;
+        let mut input = ByteArrayDataInput::with_range(&term_bytes.bytes, 0, *input_limit);
+        input.set_position(*input_pos);
+        let read = input.read_bytes(&mut term.bytes, prefix, suffix);
+        *input_pos = input.position();
+        read?;
         self.term.offset = 0;
         self.term.length = new_len;
         Ok(Some(self.term.clone()))

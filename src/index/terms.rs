@@ -715,7 +715,7 @@ impl PrefixCodedTerms {
 
     /// Returns an iterator over the encoded terms.
     pub fn iterator(&self) -> PrefixCodedTermsIterator {
-        PrefixCodedTermsIterator::new(self.del_gen, ByteArrayDataInput::new(self.content.clone()))
+        PrefixCodedTermsIterator::new(self.del_gen, self.content.clone())
     }
 
     /// Records the deletion generation for this packet.
@@ -808,7 +808,22 @@ impl PrefixCodedTermsBuilder {
 /// Equivalent to `org.apache.lucene.index.PrefixCodedTerms.TermIterator`.
 #[derive(Debug)]
 pub struct PrefixCodedTermsIterator {
-    input: ByteArrayDataInput,
+    /// The encoded payload this iterator walks.
+    ///
+    /// **Divergence, pre-existing.** Java's `PrefixCodedTerms` keeps its payload
+    /// as a `List<ByteBuffer>` and `iterator()` hands those same buffers to a
+    /// `ByteBuffersDataInput` (`PrefixCodedTerms.java:37`, `:170-172`), so the
+    /// iterator shares the payload rather than copying it. This port keeps the
+    /// payload as one `Vec<u8>` and the iterator takes a copy of it — the same
+    /// copy the crate already made before [`ByteArrayDataInput`] became a
+    /// borrowing view, so nothing about the cost changes here. Borrowing it
+    /// instead would make the iterator hold a reference into a buffer it is
+    /// stored next to, which is a self-reference Rust forbids. Closing this
+    /// belongs to the port of `PrefixCodedTerms` itself.
+    content: Vec<u8>,
+    /// Read position inside `content`, which stands in for the position Java's
+    /// `ByteBuffersDataInput` keeps.
+    pos: usize,
     end: i64,
     del_gen: i64,
     field: String,
@@ -816,10 +831,11 @@ pub struct PrefixCodedTermsIterator {
 }
 
 impl PrefixCodedTermsIterator {
-    fn new(del_gen: i64, input: ByteArrayDataInput) -> Self {
-        let end = input.length() as i64;
+    fn new(del_gen: i64, content: Vec<u8>) -> Self {
+        let end = content.len() as i64;
         Self {
-            input,
+            content,
+            pos: 0,
             end,
             del_gen,
             field: String::new(),
@@ -840,23 +856,39 @@ impl PrefixCodedTermsIterator {
     /// Returns the current term bytes, or `None` when exhausted.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<BytesRef>> {
-        if self.input.position() as i64 >= self.end {
+        if self.pos as i64 >= self.end {
             self.field = String::new();
             return Ok(None);
         }
 
-        let code = self.input.read_v_int()? as usize;
-        let new_field = (code & 1) != 0;
-        let prefix = code >> 1;
+        let Self {
+            content,
+            pos,
+            field,
+            bytes,
+            ..
+        } = self;
+        let mut input = ByteArrayDataInput::new(content);
+        input.set_position(*pos);
+        // The position is written back whether or not the term was read whole,
+        // exactly as Java's shared input leaves it.
+        let read = (|| -> Result<()> {
+            let code = input.read_v_int()? as usize;
+            let new_field = (code & 1) != 0;
+            let prefix = code >> 1;
 
-        if new_field {
-            self.field = self.input.read_string()?;
-        }
+            if new_field {
+                *field = input.read_string()?;
+            }
 
-        let suffix = self.input.read_v_int()? as usize;
-        self.bytes.resize(prefix + suffix, 0);
-        self.input.read_bytes(&mut self.bytes, prefix, suffix)?;
-        self.bytes.truncate(prefix + suffix);
+            let suffix = input.read_v_int()? as usize;
+            bytes.resize(prefix + suffix, 0);
+            input.read_bytes(&mut bytes[..], prefix, suffix)?;
+            bytes.truncate(prefix + suffix);
+            Ok(())
+        })();
+        *pos = input.position();
+        read?;
 
         Ok(Some(BytesRef::new(self.bytes.clone())))
     }

@@ -2081,40 +2081,150 @@ fn check_from_index_size(offset: usize, length: usize, len: usize) -> Result<()>
     Ok(())
 }
 
+/// A [`DataInput`] that reads from a byte buffer owned by the caller.
+///
 /// Port of `org.apache.lucene.store.ByteArrayDataInput`.
 ///
-/// A [`DataInput`] backed by an in-memory byte buffer.
+/// The input is a *window* over the caller's array. A reset fixes a read
+/// position and a limit — `offset + len` of the region it was handed — and
+/// every read advances the position by exactly the number of bytes it
+/// consumed. Lucene warns that this class "omits all low-level checks"
+/// (`ByteArrayDataInput.java:24`); see the divergence note below for how that
+/// warning lands in Rust.
 ///
-/// This is a test and utility implementation equivalent to operating on a
-/// Lucene `ByteArrayDataInput`.
-#[derive(Clone, Debug, Default)]
-pub struct ByteArrayDataInput {
-    bytes: Vec<u8>,
+/// The window is what [`length`](Self::length) and [`eof`](Self::eof) answer
+/// against; it is **not** a bound on the reads. Java's `readByte` is
+/// `bytes[pos++]` and its `readBytes` a bare `System.arraycopy`
+/// (`ByteArrayDataInput.java:135-137`, `:141-144`), and neither consults
+/// `limit`, so a window that over-reads silently takes the bytes that follow
+/// it in the backing array and fails only at the array's own end. This port
+/// reproduces that, because callers that hand out one window per record — the
+/// term-vectors reader is one — use `length()` to know where a record ends
+/// while the reads themselves run against the whole block.
+///
+/// The little-endian `read_short`, `read_int` and `read_long` overrides are not
+/// decoration. Lucene reads the whole width through a `VarHandle` in one move
+/// (`ByteArrayDataInput.java:84-109`) rather than assembling it byte by byte;
+/// the bytes consumed and the value produced are identical either way, which is
+/// what index-file compatibility depends on.
+///
+/// # Ownership
+///
+/// Java keeps a reference to a `byte[]` that belongs to the caller, and the
+/// caller keeps using its own array while the input reads it. Rust spells that
+/// same borrowed, caller-owned buffer `&'a [u8]`, so this type carries a
+/// lifetime parameter the Java class has no need for. Nothing else changes: the
+/// input allocates nothing, copies nothing, and owns nothing.
+///
+/// # Divergence: errors instead of exceptions
+///
+/// Reading past the end of the backing array raises
+/// `ArrayIndexOutOfBoundsException` in Java — the class documents this in as
+/// many words, "NOTE: AIOOBE not EOF if you read too much"
+/// (`ByteArrayDataInput.java:133`, `:139`) — which is an unchecked exception,
+/// so the literal Rust analogue would be a panic on a slice bound. This port
+/// returns [`LuceneError::Io`] with [`io::ErrorKind::UnexpectedEof`] instead.
+/// Both are failures and neither is a value, so no caller can tell the two
+/// apart except by how it catches them; but the index bytes that drive `pos`
+/// are attacker-controlled, and this crate's readers are required to answer
+/// corruption with an error rather than a panic, so the error is the only safe
+/// spelling here (CLAUDE.md §11, correct → safe → fast).
+///
+/// [`skip_bytes`](DataInput::skip_bytes) carries the same divergence and one
+/// more: Java's override is a bare `pos += count` with no check of any kind
+/// (`ByteArrayDataInput.java:79-82`), which accepts a negative count and a
+/// destination past the end of the array alike, leaving a `pos` that only the
+/// next read complains about. `usize` cannot hold Java's negative `pos`, so
+/// this port rejects both up front.
+///
+/// # Examples
+///
+/// ```
+/// use rucene::store::{ByteArrayDataInput, DataInput};
+///
+/// let buffer = [9u8, 9, 1, 0, 0, 0, 9];
+/// let mut input = ByteArrayDataInput::with_range(&buffer, 2, 4);
+/// assert_eq!(input.read_int()?, 1);
+/// assert!(input.eof());
+/// assert_eq!(input.length(), 6);
+/// # Ok::<(), rucene::error::LuceneError>(())
+/// ```
+#[derive(Clone, Debug)]
+pub struct ByteArrayDataInput<'a> {
+    bytes: &'a [u8],
     pos: usize,
+    limit: usize,
 }
 
-impl ByteArrayDataInput {
-    /// Creates an input positioned at the start of `bytes`.
-    pub fn new(bytes: Vec<u8>) -> Self {
-        Self { bytes, pos: 0 }
+impl<'a> ByteArrayDataInput<'a> {
+    /// Creates an input positioned at the start of `bytes`, limited by its
+    /// length.
+    ///
+    /// Equivalent to `ByteArrayDataInput(byte[])`.
+    pub fn new(bytes: &'a [u8]) -> Self {
+        let mut input = Self::empty();
+        input.reset(bytes);
+        input
     }
 
-    /// Creates an input over a copy of `slice`.
-    pub fn from_slice(slice: &[u8]) -> Self {
-        Self::new(slice.to_vec())
+    /// Creates an input over the window `bytes[offset..offset + len]`.
+    ///
+    /// Equivalent to `ByteArrayDataInput(byte[], int, int)`.
+    pub fn with_range(bytes: &'a [u8], offset: usize, len: usize) -> Self {
+        let mut input = Self::empty();
+        input.reset_range(bytes, offset, len);
+        input
     }
 
-    /// Rewinds the read position to the start of the buffer.
+    /// Creates an input over an empty buffer, which reads nothing until it is
+    /// reset.
     ///
-    /// Lucene notes that this is not right if the input was reset with a
-    /// non-zero offset, and the same caveat applies here.
+    /// Equivalent to `ByteArrayDataInput()`, which resets over
+    /// `BytesRef.EMPTY_BYTES`.
+    pub fn empty() -> Self {
+        Self {
+            bytes: <&[u8]>::default(),
+            pos: 0,
+            limit: 0,
+        }
+    }
+
+    /// Points the input at `bytes`, positioned at its start and limited by its
+    /// length.
     ///
-    /// Equivalent to `org.apache.lucene.store.ByteArrayDataInput#rewind`.
+    /// Equivalent to `ByteArrayDataInput#reset(byte[])`.
+    pub fn reset(&mut self, bytes: &'a [u8]) {
+        let len = bytes.len();
+        self.reset_range(bytes, 0, len);
+    }
+
+    /// Points the input at the window `bytes[offset..offset + len]`, positioned
+    /// at `offset`.
+    ///
+    /// Like Lucene, this performs no bounds check of its own: a window outside
+    /// `bytes` is reported only when a read reaches past the end of the buffer.
+    ///
+    /// Equivalent to `ByteArrayDataInput#reset(byte[], int, int)`.
+    pub fn reset_range(&mut self, bytes: &'a [u8], offset: usize, len: usize) {
+        self.bytes = bytes;
+        self.pos = offset;
+        self.limit = offset + len;
+    }
+
+    /// Rewinds the read position to the start of the backing buffer.
+    ///
+    /// Lucene notes that this "is not right if you had called reset w/ non-zero
+    /// offset" (`ByteArrayDataInput.java:51-52`), and the same caveat applies
+    /// here.
+    ///
+    /// Equivalent to `ByteArrayDataInput#rewind`.
     pub fn rewind(&mut self) {
         self.pos = 0;
     }
 
     /// Returns the current read position.
+    ///
+    /// Equivalent to `ByteArrayDataInput#getPosition`.
     pub fn position(&self) -> usize {
         self.pos
     }
@@ -2122,58 +2232,53 @@ impl ByteArrayDataInput {
     /// Sets the read position.
     ///
     /// Like Lucene, this performs no bounds check; a position past the end of
-    /// the buffer is only reported when a later read reaches it.
+    /// the buffer is reported only when a later read reaches it.
     ///
-    /// Equivalent to `org.apache.lucene.store.ByteArrayDataInput#setPosition`.
+    /// Equivalent to `ByteArrayDataInput#setPosition`.
     pub fn set_position(&mut self, pos: usize) {
         self.pos = pos;
     }
 
-    /// Returns the total number of bytes available.
+    /// Returns the window's limit — `offset + len` of the region this input was
+    /// reset over, not the length of the backing buffer.
+    ///
+    /// Equivalent to `ByteArrayDataInput#length`.
     pub fn length(&self) -> usize {
-        self.bytes.len()
+        self.limit
     }
 
-    /// Returns `true` once the read position has reached the end of the
-    /// buffer.
+    /// Returns `true` once the read position has reached the window's limit.
     ///
-    /// Equivalent to `org.apache.lucene.store.ByteArrayDataInput#eof`.
+    /// Equivalent to `ByteArrayDataInput#eof`.
     pub fn eof(&self) -> bool {
-        self.pos == self.bytes.len()
+        self.pos == self.limit
     }
 
-    /// Returns the remaining bytes from the current position to the end.
-    pub fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.pos)
-    }
-
-    /// Returns a reference to the full underlying byte buffer.
-    pub fn as_inner(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    /// Repositions the input.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::Io`] with `UnexpectedEof` if `position` exceeds
-    /// the stream length.
-    pub fn seek(&mut self, position: usize) -> Result<()> {
-        if position > self.bytes.len() {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!(
-                    "seek past EOF: position={position}, length={}",
-                    self.bytes.len()
-                ),
-            )));
-        }
-        self.pos = position;
-        Ok(())
+    /// Reads a little-endian value of `WIDTH` bytes, advancing the position
+    /// only when the whole width was available.
+    fn read_le<const WIDTH: usize>(&mut self) -> Result<[u8; WIDTH]> {
+        let end = self
+            .pos
+            .checked_add(WIDTH)
+            .filter(|end| *end <= self.bytes.len())
+            .ok_or_else(|| {
+                LuceneError::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "unexpected EOF reading {WIDTH} bytes at pos {} (buffer {})",
+                        self.pos,
+                        self.bytes.len()
+                    ),
+                ))
+            })?;
+        let mut value = [0u8; WIDTH];
+        value.copy_from_slice(&self.bytes[self.pos..end]);
+        self.pos = end;
+        Ok(value)
     }
 }
 
-impl DataInput for ByteArrayDataInput {
+impl DataInput for ByteArrayDataInput<'_> {
     fn read_byte(&mut self) -> Result<u8> {
         if self.pos >= self.bytes.len() {
             return Err(LuceneError::Io(io::Error::new(
@@ -2200,7 +2305,7 @@ impl DataInput for ByteArrayDataInput {
             return Err(LuceneError::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!(
-                    "unexpected EOF reading {len} bytes at pos {} (len {})",
+                    "unexpected EOF reading {len} bytes at pos {} (buffer {})",
                     self.pos,
                     self.bytes.len()
                 ),
@@ -2227,6 +2332,32 @@ impl DataInput for ByteArrayDataInput {
         self.pos += num_bytes;
         Ok(())
     }
+
+    /// Equivalent to `ByteArrayDataInput#readShort`, which reads the two bytes
+    /// through `BitUtil.VH_LE_SHORT` (`ByteArrayDataInput.java:84-91`).
+    fn read_short(&mut self) -> Result<i16> {
+        Ok(i16::from_le_bytes(self.read_le::<2>()?))
+    }
+
+    /// Equivalent to `ByteArrayDataInput#readInt`, which reads the four bytes
+    /// through `BitUtil.VH_LE_INT` (`ByteArrayDataInput.java:93-100`).
+    fn read_int(&mut self) -> Result<i32> {
+        Ok(i32::from_le_bytes(self.read_le::<4>()?))
+    }
+
+    /// Equivalent to `ByteArrayDataInput#readLong`, which reads the eight bytes
+    /// through `BitUtil.VH_LE_LONG` (`ByteArrayDataInput.java:102-109`).
+    fn read_long(&mut self) -> Result<i64> {
+        Ok(i64::from_le_bytes(self.read_le::<8>()?))
+    }
+
+    // `readVInt` and `readVLong` are deliberately not overridden. Java's
+    // overrides (`ByteArrayDataInput.java:111-131`) call `super` and do nothing
+    // but convert the `IOException` that `DataInput` declares — and that this
+    // class can never raise — into an `AssertionError`. They exist to strip a
+    // checked exception from the signature, not to decode anything differently.
+    // Rust has no checked exceptions, so the inherited default already is that
+    // override, byte for byte.
 }
 
 /// A [`DataOutput`] backed by an owned, growable [`Vec<u8>`].
@@ -2620,7 +2751,8 @@ impl<W: Write> std::fmt::Debug for OutputStreamDataOutput<W> {
 #[derive(Clone, Debug)]
 pub struct MockIndexInput {
     resource_description: String,
-    data: ByteArrayDataInput,
+    data: Vec<u8>,
+    pos: usize,
     closed: bool,
 }
 
@@ -2629,9 +2761,24 @@ impl MockIndexInput {
     pub fn new(data: Vec<u8>, resource_description: impl Into<String>) -> Self {
         Self {
             resource_description: resource_description.into(),
-            data: ByteArrayDataInput::new(data),
+            data,
+            pos: 0,
             closed: false,
         }
+    }
+
+    /// Borrows the whole buffer as a [`ByteArrayDataInput`] positioned where
+    /// the last read left off.
+    ///
+    /// This mock owns the bytes it serves, which
+    /// [`ByteArrayDataInput`] — a window over a buffer the caller owns — cannot
+    /// do: a struct holding both the buffer and a view of it is a
+    /// self-reference Rust forbids. The read position therefore lives here and
+    /// the view is rebuilt around it for each read, so every read still goes
+    /// through the same code and behaves identically.
+    fn view(&self) -> ByteArrayDataInput<'_> {
+        let len = self.data.len();
+        ByteArrayDataInput::with_range(&self.data, self.pos, len - self.pos)
     }
 
     /// Creates a new input over a copy of `slice`.
@@ -2658,17 +2805,29 @@ impl MockIndexInput {
 impl DataInput for MockIndexInput {
     fn read_byte(&mut self) -> Result<u8> {
         self.ensure_open()?;
-        self.data.read_byte()
+        let mut view = self.view();
+        let b = view.read_byte()?;
+        let pos = view.position();
+        self.pos = pos;
+        Ok(b)
     }
 
     fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
         self.ensure_open()?;
-        self.data.read_bytes(b, offset, len)
+        let mut view = self.view();
+        view.read_bytes(b, offset, len)?;
+        let pos = view.position();
+        self.pos = pos;
+        Ok(())
     }
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
         self.ensure_open()?;
-        self.data.skip_bytes(num_bytes)
+        let mut view = self.view();
+        view.skip_bytes(num_bytes)?;
+        let pos = view.position();
+        self.pos = pos;
+        Ok(())
     }
 }
 
@@ -2679,11 +2838,11 @@ impl IndexInput for MockIndexInput {
     }
 
     fn file_pointer(&self) -> i64 {
-        self.data.position() as i64
+        self.pos as i64
     }
 
     fn length(&self) -> i64 {
-        self.data.length() as i64
+        self.data.len() as i64
     }
 
     fn seek(&mut self, pos: i64) -> Result<()> {
@@ -2694,7 +2853,14 @@ impl IndexInput for MockIndexInput {
             )));
         }
         let pos = pos as usize;
-        self.data.seek(pos)
+        if pos > self.data.len() {
+            return Err(LuceneError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("seek past EOF: position={pos}, length={}", self.data.len()),
+            )));
+        }
+        self.pos = pos;
+        Ok(())
     }
 
     fn slice(
@@ -2713,13 +2879,13 @@ impl IndexInput for MockIndexInput {
         let end = offset.checked_add(length).ok_or_else(|| {
             LuceneError::IllegalArgument("slice offset + length overflowed".to_string())
         })?;
-        if end > self.data.length() {
+        if end > self.data.len() {
             return Err(LuceneError::IllegalArgument(format!(
                 "slice(offset={offset}, length={length}) out of bounds, input length={}",
-                self.data.length()
+                self.data.len()
             )));
         }
-        let bytes = self.data.as_inner()[offset..end].to_vec();
+        let bytes = self.data[offset..end].to_vec();
         let desc = format!("{} [slice={slice_description}]", self.resource_description);
         Ok(Box::new(MockIndexInput::new(bytes, desc)))
     }
@@ -8580,7 +8746,8 @@ mod tests {
         out.write_double(f64::INFINITY).unwrap();
         out.write_double(f64::NEG_INFINITY).unwrap();
 
-        let mut input = ByteArrayDataInput::new(out.into_inner());
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
 
         assert_eq!(input.read_byte().unwrap(), 0x42);
         assert_eq!(input.read_short().unwrap(), i16::MIN);
@@ -8644,7 +8811,8 @@ mod tests {
             out.write_z_int(v).unwrap();
         }
 
-        let mut input = ByteArrayDataInput::new(out.into_inner());
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
         for &v in &values {
             assert_eq!(
                 input.read_v_int().unwrap(),
@@ -8697,7 +8865,8 @@ mod tests {
             out.write_z_long(v).unwrap();
         }
 
-        let mut input = ByteArrayDataInput::new(out.into_inner());
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
         for &v in &values {
             assert_eq!(
                 input.read_v_long().unwrap(),
@@ -8728,7 +8897,8 @@ mod tests {
             out.write_string(s).unwrap();
         }
 
-        let mut input = ByteArrayDataInput::new(out.into_inner());
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
         for &s in &strings {
             assert_eq!(input.read_string().unwrap(), s);
         }
@@ -8744,7 +8914,8 @@ mod tests {
         let mut out = VecDataOutput::new();
         out.write_map_of_strings(&map).unwrap();
 
-        let mut input = ByteArrayDataInput::new(out.into_inner());
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
         let decoded = input.read_map_of_strings().unwrap();
         assert_eq!(decoded, map);
     }
@@ -8759,7 +8930,8 @@ mod tests {
         let mut out = VecDataOutput::new();
         out.write_set_of_strings(&set).unwrap();
 
-        let mut input = ByteArrayDataInput::new(out.into_inner());
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
         let decoded = input.read_set_of_strings().unwrap();
         assert_eq!(decoded, set);
     }
@@ -8770,7 +8942,8 @@ mod tests {
         let mut out = VecDataOutput::new();
         out.write_bytes(&data, 0, data.len()).unwrap();
 
-        let mut input = ByteArrayDataInput::new(out.into_inner());
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
         let mut decoded = vec![0u8; data.len()];
         let len = decoded.len();
         input.read_bytes(&mut decoded, 0, len).unwrap();
@@ -8790,7 +8963,8 @@ mod tests {
         out.write_floats(&floats, 0, floats.len()).unwrap();
         out.write_doubles(&doubles, 0, doubles.len()).unwrap();
 
-        let mut input = ByteArrayDataInput::new(out.into_inner());
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
         let mut decoded_ints = vec![0i32; ints.len()];
         let mut decoded_longs = vec![0i64; longs.len()];
         let mut decoded_floats = vec![0f32; floats.len()];
@@ -8819,7 +8993,8 @@ mod tests {
         out.write_int(0x22222222).unwrap();
         out.write_int(0x33333333).unwrap();
 
-        let mut input = ByteArrayDataInput::new(out.into_inner());
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
         assert_eq!(input.read_int().unwrap(), 0x11111111);
         input.skip_bytes(4).unwrap();
         assert_eq!(input.read_int().unwrap(), 0x33333333);
@@ -8833,7 +9008,7 @@ mod tests {
         out.write_string("copied").unwrap();
 
         let source_bytes = out.into_inner();
-        let mut source = ByteArrayDataInput::new(source_bytes.clone());
+        let mut source = ByteArrayDataInput::new(&source_bytes);
         let mut destination = VecDataOutput::new();
         destination
             .copy_bytes(&mut source, source_bytes.len() as i64)
@@ -8845,19 +9020,20 @@ mod tests {
     #[test]
     fn copy_bytes_rejects_negative() {
         let mut out = VecDataOutput::new();
-        let mut input = ByteArrayDataInput::new(Vec::new());
+        let input_src = Vec::new();
+        let mut input = ByteArrayDataInput::new(&input_src);
         assert!(out.copy_bytes(&mut input, -1).is_err());
     }
 
     #[test]
     fn read_bytes_buffered_ignores_use_buffer_hint() {
         let data = vec![1u8, 2, 3, 4, 5];
-        let mut input = ByteArrayDataInput::new(data.clone());
+        let mut input = ByteArrayDataInput::new(&data);
         let mut buf = vec![0u8; 5];
         input.read_bytes_buffered(&mut buf, 0, 5, false).unwrap();
         assert_eq!(buf, data);
 
-        let mut input2 = ByteArrayDataInput::new(data.clone());
+        let mut input2 = ByteArrayDataInput::new(&data);
         let mut buf2 = vec![0u8; 5];
         input2.read_bytes_buffered(&mut buf2, 0, 5, true).unwrap();
         assert_eq!(buf2, data);
@@ -8865,7 +9041,8 @@ mod tests {
 
     #[test]
     fn unexpected_eof_errors() {
-        let mut input = ByteArrayDataInput::new(vec![0x80; 2]);
+        let input_src = vec![0x80; 2];
+        let mut input = ByteArrayDataInput::new(&input_src);
         assert!(input.read_v_int().is_err());
         assert!(input.read_string().is_err());
         assert!(input.skip_bytes(10).is_err());
@@ -9271,7 +9448,7 @@ mod tests {
         out.write_string("copied").unwrap();
 
         let bytes = out.to_array_copy();
-        let mut input = ByteArrayDataInput::new(bytes.clone());
+        let mut input = ByteArrayDataInput::new(&bytes);
         assert_eq!(input.read_int().unwrap(), 0xAABBCCDDu32 as i32);
         assert_eq!(input.read_long().unwrap(), 0x1122334455667788u64 as i64);
         assert_eq!(input.read_string().unwrap(), "copied");
@@ -9285,7 +9462,7 @@ mod tests {
         out.write_string("copied").unwrap();
 
         let source_bytes = out.to_array_copy();
-        let mut source = ByteArrayDataInput::new(source_bytes.clone());
+        let mut source = ByteArrayDataInput::new(&source_bytes);
         let mut destination = ByteBuffersDataOutput::new();
         destination
             .copy_bytes(&mut source, source_bytes.len() as i64)
@@ -9524,7 +9701,8 @@ mod tests {
         assert!(out.checksum().is_err());
 
         // Verify the bytes round-trip through an independent input.
-        let mut input = ByteArrayDataInput::new(out.into_inner());
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
         assert_eq!(input.read_int().unwrap(), 0xCAFE_BABEu32 as i32);
         assert_eq!(input.read_string().unwrap(), "Rucene");
         assert_eq!(input.read_v_long().unwrap(), 987654321);
@@ -9549,7 +9727,7 @@ mod tests {
         source.write_string("copied").unwrap();
         let source_bytes = source.into_inner();
 
-        let mut input = ByteArrayDataInput::new(source_bytes.clone());
+        let mut input = ByteArrayDataInput::new(&source_bytes);
         let mut out = MockIndexOutput::new("copy target", "copy.bin");
         out.copy_bytes(&mut input, source_bytes.len() as i64)
             .unwrap();
@@ -11146,7 +11324,8 @@ mod tests {
         }
 
         // Target must contain the same bytes.
-        let mut target_input = ByteArrayDataInput::new(target.into_inner());
+        let target_input_src = target.into_inner();
+        let mut target_input = ByteArrayDataInput::new(&target_input_src);
         for i in 0..2000i32 {
             assert_eq!(target_input.read_int().unwrap(), i);
         }
@@ -11166,28 +11345,32 @@ mod tests {
         // well-formed vInt can occupy.
         let mut bytes = vec![0xFFu8; 10];
         bytes.push(0x00);
-        let mut input = ByteArrayDataInput::new(bytes.clone());
+        let mut input = ByteArrayDataInput::new(&bytes);
         let _ = input.read_v_int().expect("a garbage value, not a panic");
-        let mut input = ByteArrayDataInput::new(bytes.clone());
+        let mut input = ByteArrayDataInput::new(&bytes);
         let _ = input.read_v_long().expect("a garbage value, not a panic");
 
         // Unterminated: the loop must end at the end of the input.
-        let mut input = ByteArrayDataInput::new(vec![0xFFu8; 32]);
+        let input_src = vec![0xFFu8; 32];
+        let mut input = ByteArrayDataInput::new(&input_src);
         assert!(input.read_v_int().is_err(), "a truncated vInt must error");
-        let mut input = ByteArrayDataInput::new(vec![0xFFu8; 32]);
+        let input_src = vec![0xFFu8; 32];
+        let mut input = ByteArrayDataInput::new(&input_src);
         assert!(input.read_v_long().is_err(), "a truncated vLong must error");
 
         // And well-formed values still round-trip, including the widest ones.
         for value in [0i32, 1, 127, 128, i32::MAX, -1, i32::MIN] {
             let mut out = VecDataOutput::new();
             out.write_v_int(value).unwrap();
-            let mut input = ByteArrayDataInput::new(out.into_inner());
+            let input_src = out.into_inner();
+            let mut input = ByteArrayDataInput::new(&input_src);
             assert_eq!(input.read_v_int().unwrap(), value, "vInt {value}");
         }
         for value in [0i64, 1, 127, 128, i64::MAX] {
             let mut out = VecDataOutput::new();
             out.write_v_long(value).unwrap();
-            let mut input = ByteArrayDataInput::new(out.into_inner());
+            let input_src = out.into_inner();
+            let mut input = ByteArrayDataInput::new(&input_src);
             assert_eq!(input.read_v_long().unwrap(), value, "vLong {value}");
         }
     }
@@ -11216,7 +11399,8 @@ mod tests {
         // was fixed the cast to `usize` turned -1 into 2^64-1 and the
         // allocation aborted the process.
         for length in [-1i32, -2, i32::MIN] {
-            let mut input = ByteArrayDataInput::new(v_int(length));
+            let input_src = v_int(length);
+            let mut input = ByteArrayDataInput::new(&input_src);
             let error = input
                 .read_string()
                 .expect_err("a negative length is not a string");
@@ -11234,7 +11418,7 @@ mod tests {
         // reserve the length itself.
         let mut bytes = v_int(i32::MAX);
         bytes.extend_from_slice(b"abc");
-        let mut input = ByteArrayDataInput::new(bytes);
+        let mut input = ByteArrayDataInput::new(&bytes);
         assert!(
             input.read_string().is_err(),
             "a length the file cannot back must fail"
@@ -11248,9 +11432,11 @@ mod tests {
         // negative count and returns an empty collection
         // (`DataInput.java:261-296`). Before this was fixed the cast to
         // `usize` turned the count into 2^64-1 and `with_capacity` aborted.
-        let mut input = ByteArrayDataInput::new(v_int(-1));
+        let input_src = v_int(-1);
+        let mut input = ByteArrayDataInput::new(&input_src);
         assert!(input.read_map_of_strings().expect("empty map").is_empty());
-        let mut input = ByteArrayDataInput::new(v_int(-7));
+        let input_src = v_int(-7);
+        let mut input = ByteArrayDataInput::new(&input_src);
         assert!(input.read_set_of_strings().expect("empty set").is_empty());
     }
 
@@ -11261,7 +11447,8 @@ mod tests {
         let text: String = std::iter::repeat_n('a', 40_000).collect();
         let mut out = VecDataOutput::new();
         out.write_string(&text).expect("write");
-        let mut input = ByteArrayDataInput::new(out.into_inner());
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
         assert_eq!(input.read_string().expect("read"), text);
     }
 
@@ -11441,7 +11628,7 @@ mod tests {
 
         // Read the fixed buffer back with the ported reader, to show the bytes
         // are the format and not merely a match between two writers.
-        let mut input = ByteArrayDataInput::from_slice(&buffer);
+        let mut input = ByteArrayDataInput::new(&buffer);
         for value in [i16::MIN, -1, 0, 1, i16::MAX] {
             assert_eq!(input.read_short().expect("read"), value);
         }
@@ -11461,5 +11648,229 @@ mod tests {
         input.read_bytes(&mut tail, 0, 2).expect("read");
         assert_eq!(tail, [2, 3]);
         assert!(input.eof());
+    }
+
+    /// `ByteArrayDataInput(byte[])` starts at 0 and limits at `bytes.length`,
+    /// so `length` is the buffer and `eof` is its end.
+    #[test]
+    fn byte_array_data_input_reads_a_whole_buffer() {
+        let buffer = [0x42u8, 0x02, 0x01, 0x06, 0x05, 0x04, 0x03];
+        let mut input = ByteArrayDataInput::new(&buffer);
+        assert_eq!(input.position(), 0);
+        assert_eq!(input.length(), 7);
+        assert!(!input.eof());
+
+        assert_eq!(input.read_byte().expect("read"), 0x42);
+        assert_eq!(input.position(), 1);
+        assert_eq!(input.read_short().expect("read"), 0x0102);
+        assert_eq!(input.position(), 3);
+        assert_eq!(input.read_int().expect("read"), 0x0304_0506);
+        assert_eq!(input.position(), 7);
+        assert!(input.eof());
+    }
+
+    /// `ByteArrayDataInput(byte[], int, int)` opens a window: the position
+    /// starts at `offset` and the limit is `offset + len`. The buffer is longer
+    /// than the window on both sides, so nothing here can be satisfied by a
+    /// reader that answers against the buffer.
+    #[test]
+    fn byte_array_data_input_opens_a_window_over_the_callers_buffer() {
+        let buffer = [0xAAu8, 0xBB, 0x01, 0x02, 0x03, 0x04, 0xCC, 0xDD];
+        let mut input = ByteArrayDataInput::with_range(&buffer, 2, 4);
+        assert_eq!(input.position(), 2, "the window starts at its offset");
+        assert_eq!(input.length(), 6, "length is offset + len, not the buffer");
+        assert!(!input.eof());
+
+        let mut read = [0u8; 4];
+        input.read_bytes(&mut read, 0, 4).expect("read");
+        assert_eq!(read, [0x01, 0x02, 0x03, 0x04]);
+        assert_eq!(input.position(), 6);
+        assert!(input.eof(), "the window ends before the buffer does");
+    }
+
+    /// **Regression guard.** `length()` and `eof()` must answer against the
+    /// window's limit, never against the backing buffer — that difference is the
+    /// whole reason `ByteArrayDataInput` carries a `limit`. The window is placed
+    /// strictly inside a longer buffer so that a reader answering against
+    /// `bytes.len()` reports 9 rather than 5 and never reaches `eof` where Java
+    /// does.
+    #[test]
+    fn byte_array_data_input_length_and_eof_answer_against_the_limit() {
+        let buffer = [0u8; 9];
+        let mut input = ByteArrayDataInput::with_range(&buffer, 3, 2);
+
+        assert_eq!(
+            input.length(),
+            5,
+            "length must be offset + len (3 + 2), not the 9-byte buffer"
+        );
+        assert!(!input.eof());
+        input.read_short().expect("read");
+        assert_eq!(input.position(), 5);
+        assert!(
+            input.eof(),
+            "eof must fire at the limit, with four bytes of buffer still to come"
+        );
+
+        // `reset` over the same buffer moves both fields back to the whole
+        // array, which is the only state in which they agree.
+        input.reset(&buffer);
+        assert_eq!(input.length(), 9);
+        assert!(!input.eof());
+    }
+
+    /// Both `reset` forms rebase position and limit, and the input may be
+    /// pointed at a different buffer than the one it was built over.
+    #[test]
+    fn byte_array_data_input_reset_forms_rebase_position_and_limit() {
+        let first = [1u8, 2, 3, 4];
+        let second = [9u8, 8, 7, 6, 5];
+
+        let mut input = ByteArrayDataInput::new(&first);
+        assert_eq!(input.read_byte().expect("read"), 1);
+
+        input.reset(&second);
+        assert_eq!(input.position(), 0);
+        assert_eq!(input.length(), 5);
+        assert_eq!(input.read_byte().expect("read"), 9);
+
+        input.reset_range(&second, 3, 2);
+        assert_eq!(input.position(), 3);
+        assert_eq!(input.length(), 5);
+        assert_eq!(input.read_byte().expect("read"), 6);
+        assert_eq!(input.read_byte().expect("read"), 5);
+        assert!(input.eof());
+
+        // `reset_range` back over the first buffer, to show the borrow is not
+        // pinned to the buffer the input was constructed from.
+        input.reset_range(&first, 1, 1);
+        assert_eq!(input.position(), 1);
+        assert_eq!(input.length(), 2);
+        assert_eq!(input.read_byte().expect("read"), 2);
+        assert!(input.eof());
+    }
+
+    /// `ByteArrayDataInput()` resets over `BytesRef.EMPTY_BYTES`: length zero,
+    /// already at the end, and nothing to read until it is reset.
+    #[test]
+    fn byte_array_data_input_empty_reads_nothing() {
+        let mut input = ByteArrayDataInput::empty();
+        assert_eq!(input.position(), 0);
+        assert_eq!(input.length(), 0);
+        assert!(input.eof());
+        assert!(input.read_byte().is_err());
+
+        let bytes = [7u8];
+        input.reset(&bytes);
+        assert_eq!(input.length(), 1);
+        assert_eq!(input.read_byte().expect("read"), 7);
+    }
+
+    /// The window bounds `length`/`eof`, not the reads. Java's `readByte` is
+    /// `bytes[pos++]` and its `readBytes` a bare `System.arraycopy`
+    /// (`ByteArrayDataInput.java:135-137`, `:141-144`), so a window that
+    /// over-reads takes the bytes that follow it and fails only at the end of
+    /// the backing array. That is what the term-vectors reader's per-field
+    /// windows sit on, so it is pinned here.
+    #[test]
+    fn byte_array_data_input_reads_past_the_limit_but_not_past_the_buffer() {
+        let buffer = [0x11u8, 0x22, 0x33, 0x44];
+        let mut input = ByteArrayDataInput::with_range(&buffer, 0, 2);
+
+        assert_eq!(input.read_byte().expect("read"), 0x11);
+        assert_eq!(input.read_byte().expect("read"), 0x22);
+        assert!(input.eof(), "the window is spent");
+
+        // Past the limit, still inside the buffer: Java reads on, and so does
+        // this port.
+        assert_eq!(input.read_byte().expect("read"), 0x33);
+        assert!(
+            !input.eof(),
+            "past the limit, `pos == limit` is false again, exactly as in Java"
+        );
+        assert_eq!(input.read_byte().expect("read"), 0x44);
+
+        // Past the buffer: Java raises `ArrayIndexOutOfBoundsException`, this
+        // port an `UnexpectedEof`.
+        assert!(input.read_byte().is_err());
+        let mut spill = [0u8; 1];
+        assert!(input.read_bytes(&mut spill, 0, 1).is_err());
+        assert!(input.skip_bytes(1).is_err());
+    }
+
+    /// The little-endian overrides must decode exactly what the byte-at-a-time
+    /// [`DataInput`] defaults decode — index-file compatibility with Lucene
+    /// 10.5.0 depends on it — and must leave the position untouched when the
+    /// whole width is not there, rather than consuming a partial value.
+    #[test]
+    fn byte_array_data_input_little_endian_overrides_match_the_defaults() {
+        let mut out = VecDataOutput::new();
+        for value in [i16::MIN, -1, 0, 1, i16::MAX] {
+            out.write_short(value).expect("write");
+        }
+        for value in [i32::MIN, -1, 0, 1, i32::MAX] {
+            out.write_int(value).expect("write");
+        }
+        for value in [i64::MIN, -1, 0, 1, i64::MAX] {
+            out.write_long(value).expect("write");
+        }
+        let bytes = out.into_inner();
+
+        // The control decodes with the default methods, because `MockIndexInput`
+        // overrides none of them.
+        let mut control = MockIndexInput::new(bytes.clone(), "control");
+        let mut input = ByteArrayDataInput::new(&bytes);
+        for _ in 0..5 {
+            assert_eq!(
+                input.read_short().expect("r"),
+                control.read_short().expect("r")
+            );
+        }
+        for _ in 0..5 {
+            assert_eq!(input.read_int().expect("r"), control.read_int().expect("r"));
+        }
+        for _ in 0..5 {
+            assert_eq!(
+                input.read_long().expect("r"),
+                control.read_long().expect("r")
+            );
+        }
+        assert!(input.eof());
+        assert_eq!(input.position(), bytes.len());
+
+        // A width that does not fit is refused whole: the position must not move.
+        let short_buffer = [1u8, 2, 3];
+        let mut input = ByteArrayDataInput::new(&short_buffer);
+        assert_eq!(input.read_short().expect("read"), 0x0201);
+        assert!(input.read_int().is_err());
+        assert_eq!(input.position(), 2, "a refused width consumes nothing");
+        assert!(input.read_long().is_err());
+        assert_eq!(input.position(), 2);
+        assert_eq!(input.read_byte().expect("read"), 3);
+    }
+
+    /// `rewind` sets the position to zero, not to the window's offset — Lucene
+    /// documents the trap in as many words, "not right if you had called reset
+    /// w/ non-zero offset" (`ByteArrayDataInput.java:51-52`) — while
+    /// `set_position` moves anywhere, unchecked, as Java's does.
+    #[test]
+    fn byte_array_data_input_rewind_ignores_the_window_offset() {
+        let buffer = [0xAAu8, 0xBB, 0x01, 0x02];
+        let mut input = ByteArrayDataInput::with_range(&buffer, 2, 2);
+        assert_eq!(input.read_byte().expect("read"), 0x01);
+
+        input.rewind();
+        assert_eq!(input.position(), 0, "rewind goes to zero, not to offset 2");
+        assert_eq!(input.read_byte().expect("read"), 0xAA);
+
+        input.set_position(3);
+        assert_eq!(input.position(), 3);
+        assert_eq!(input.read_byte().expect("read"), 0x02);
+
+        // Unchecked, like Java: a position past the buffer is taken now and
+        // reported only when a read reaches it.
+        input.set_position(99);
+        assert_eq!(input.position(), 99);
+        assert!(input.read_byte().is_err());
     }
 }

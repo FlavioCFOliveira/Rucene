@@ -1098,10 +1098,11 @@ impl Lucene90CompressingStoredFieldsWriter {
         doc_id: i32,
     ) -> Result<()> {
         debug_assert_eq!(reader.version(), DATA_VERSION_CURRENT);
-        let mut doc = reader.serialized_document(doc_id)?;
+        let doc = reader.serialized_document(doc_id)?;
         self.start_document()?;
+        let mut input = ByteArrayDataInput::new(&doc.bytes);
         self.buffered_docs
-            .copy_bytes(doc.input.as_mut(), doc.length as i64)?;
+            .copy_bytes(&mut input, doc.length as i64)?;
         self.num_stored_fields_in_doc = doc.num_stored_fields;
         self.finish_document()?;
         Ok(())
@@ -1682,7 +1683,7 @@ impl BlockState {
 
         if length == 0 {
             return Ok(SerializedDocument {
-                input: Box::new(ByteArrayDataInput::new(Vec::new())),
+                bytes: Vec::new(),
                 length: 0,
                 num_stored_fields,
             });
@@ -1741,7 +1742,7 @@ impl BlockState {
         };
 
         Ok(SerializedDocument {
-            input: Box::new(ByteArrayDataInput::new(data)),
+            bytes: data,
             length,
             num_stored_fields,
         })
@@ -1749,8 +1750,14 @@ impl BlockState {
 }
 
 /// A document as it appears inside a decompressed chunk.
+///
+/// Java holds a `DataInput` here
+/// (`Lucene90CompressingStoredFieldsReader.java:396-406`); this port holds the
+/// bytes the input would read and each consumer
+/// wraps them in a [`ByteArrayDataInput`] of its own, because a struct holding
+/// both a buffer and a view of that buffer is a self-reference Rust forbids.
 struct SerializedDocument {
-    input: Box<dyn DataInput>,
+    bytes: Vec<u8>,
     length: usize,
     num_stored_fields: i32,
 }
@@ -1868,7 +1875,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
     fn document(&self, doc_id: i32, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
         let doc = self.serialized_document(doc_id)?;
 
-        let mut input = doc.input;
+        let mut input = ByteArrayDataInput::new(&doc.bytes);
         for field_idx in 0..doc.num_stored_fields {
             let info_and_bits = input.read_v_long()? as u64;
             let field_number = (info_and_bits >> (TYPE_BITS as u32)) as i32;
@@ -1883,13 +1890,13 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
 
             match visitor.needs_field(field_info)? {
                 StoredFieldVisitorStatus::Yes => {
-                    Self::read_field(input.as_mut(), visitor, field_info, bits)?;
+                    Self::read_field(&mut input, visitor, field_info, bits)?;
                 }
                 StoredFieldVisitorStatus::No => {
                     if field_idx == doc.num_stored_fields - 1 {
                         return Ok(());
                     }
-                    Self::skip_field(input.as_mut(), bits)?;
+                    Self::skip_field(&mut input, bits)?;
                 }
                 StoredFieldVisitorStatus::Stop => return Ok(()),
             }
@@ -2784,7 +2791,7 @@ mod tests {
                     .unwrap();
                 writer.start_document().unwrap();
                 if streamed {
-                    let mut input = ByteArrayDataInput::new(payload.clone());
+                    let mut input = ByteArrayDataInput::new(&payload);
                     let mut value = StoredFieldDataInput::new(&mut input, payload.len() as i32);
                     writer
                         .write_field_data_input(text_field, &mut value)
@@ -2929,7 +2936,7 @@ mod tests {
         // And every one of them still reads back to the value written.
         for value in [f32::MAX, f32::MIN, -1.5f32, 0.0f32, -0.0f32, 1.0f32] {
             let bytes = write_float(value);
-            let mut input = ByteArrayDataInput::new(bytes);
+            let mut input = ByteArrayDataInput::new(&bytes);
             let read = Lucene90CompressingStoredFieldsReader::read_z_float(&mut input).unwrap();
             assert_eq!(read.to_bits(), value.to_bits(), "float {value}");
         }
@@ -2943,7 +2950,7 @@ mod tests {
             -1.5f64,
         ] {
             let bytes = write_double(value);
-            let mut input = ByteArrayDataInput::new(bytes);
+            let mut input = ByteArrayDataInput::new(&bytes);
             let read = Lucene90CompressingStoredFieldsReader::read_z_double(&mut input).unwrap();
             assert_eq!(read.to_bits(), value.to_bits(), "double {value}");
         }
@@ -2971,7 +2978,7 @@ mod tests {
             "the first byte written must be values[112]"
         );
 
-        let mut input = ByteArrayDataInput::new(bytes);
+        let mut input = ByteArrayDataInput::new(&bytes);
         let mut read = vec![0i64; 128];
         StoredFieldsInts::read_ints(&mut input, 128, &mut read, 0).unwrap();
         let expected: Vec<i64> = (0..128).collect();
@@ -3329,7 +3336,7 @@ mod tests {
             if (-1.0..=125.0).contains(&value) && value.fract() == 0.0 {
                 assert_eq!(encoded.len(), 1, "{value} must use the one-byte form");
             }
-            let mut input = ByteArrayDataInput::new(encoded);
+            let mut input = ByteArrayDataInput::new(&encoded);
             let read = Lucene90CompressingStoredFieldsReader::read_z_float(&mut input).unwrap();
             assert_eq!(read.to_bits(), value.to_bits(), "float {value}");
         }
@@ -3340,7 +3347,7 @@ mod tests {
             if (-1.0..=124.0).contains(&value) && value.fract() == 0.0 {
                 assert_eq!(encoded.len(), 1, "{value} must use the one-byte form");
             }
-            let mut input = ByteArrayDataInput::new(encoded);
+            let mut input = ByteArrayDataInput::new(&encoded);
             let read = Lucene90CompressingStoredFieldsReader::read_z_double(&mut input).unwrap();
             assert_eq!(read.to_bits(), value.to_bits(), "double {value}");
         }
@@ -3446,7 +3453,8 @@ mod tests {
         ] {
             for value in [i64::MAX / 3, i64::MIN / 3, 1 << 60, -(1 << 60)] {
                 let zigzag = BitUtil::zig_zag_encode_long(value);
-                let mut input = ByteArrayDataInput::new(encode(encoding, zigzag));
+                let input_src = encode(encoding, zigzag);
+                let mut input = ByteArrayDataInput::new(&input_src);
                 let read = Lucene90CompressingStoredFieldsReader::read_t_long(&mut input)
                     .expect("a corrupt magnitude is a value, not an error");
                 assert_eq!(
@@ -3461,7 +3469,8 @@ mod tests {
         for value in [0i64, 1, -1, 1_000, 3_600_000, 86_400_000, -86_400_000] {
             let mut out = crate::store::VecDataOutput::new();
             Lucene90CompressingStoredFieldsWriter::write_t_long(&mut out, value).unwrap();
-            let mut input = ByteArrayDataInput::new(out.into_inner());
+            let input_src = out.into_inner();
+            let mut input = ByteArrayDataInput::new(&input_src);
             assert_eq!(
                 Lucene90CompressingStoredFieldsReader::read_t_long(&mut input).unwrap(),
                 value

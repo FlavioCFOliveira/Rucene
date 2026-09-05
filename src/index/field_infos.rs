@@ -2179,7 +2179,8 @@ mod tests {
         fi.vector_similarity_function = VectorSimilarityFunction::COSINE;
         fi.write(&mut out).unwrap();
 
-        let mut input = ByteArrayDataInput::new(out.into_inner());
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
         let read = FieldInfo::read(&mut input).unwrap();
         assert_eq!(read.name, "body");
         assert_eq!(read.number, 0);
@@ -2273,7 +2274,8 @@ mod tests {
         let mut out = VecDataOutput::new();
         fis.write(&mut out).unwrap();
 
-        let mut input = ByteArrayDataInput::new(out.into_inner());
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
         let read = FieldInfos::read(&mut input).unwrap();
         assert_eq!(read.size(), 3);
         assert!(read.has_postings());

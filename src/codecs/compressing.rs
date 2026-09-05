@@ -956,7 +956,7 @@ mod tests {
         compressor.close().unwrap();
 
         let compressed = output.into_inner();
-        let mut input = ByteArrayDataInput::new(compressed);
+        let mut input = ByteArrayDataInput::new(&compressed);
         let mut decompressor = mode.new_decompressor();
         let mut bytes = BytesRef::default();
         decompressor

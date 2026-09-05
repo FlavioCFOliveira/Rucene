@@ -699,7 +699,8 @@ mod tests {
 
     #[test]
     fn stored_field_data_input_wraps_byte_array_input() {
-        let mut input = ByteArrayDataInput::new(vec![0x01, 0x02, 0x03]);
+        let input_src = vec![0x01, 0x02, 0x03];
+        let mut input = ByteArrayDataInput::new(&input_src);
         let mut stored = StoredFieldDataInput::from_byte_array_input(&mut input);
         assert_eq!(stored.length(), 3);
         assert_eq!(stored.data_input().read_byte().unwrap(), 0x01);

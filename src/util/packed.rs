@@ -2011,7 +2011,7 @@ mod tests {
                 let meta_bytes = meta_out.to_array_copy().unwrap();
                 let data_bytes = data_out.to_array_copy().unwrap();
 
-                let mut meta_input = ByteArrayDataInput::new(meta_bytes);
+                let mut meta_input = ByteArrayDataInput::new(&meta_bytes);
                 let meta =
                     DirectMonotonicMeta::load(&mut meta_input, count as i64, block_shift).unwrap();
                 let reader = DirectMonotonicReader::new(meta, data_bytes).unwrap();
@@ -2062,7 +2062,7 @@ mod tests {
             let meta_bytes = meta_out.to_array_copy().unwrap();
             let data_bytes = data_out.to_array_copy().unwrap();
 
-            let mut meta_input = ByteArrayDataInput::new(meta_bytes);
+            let mut meta_input = ByteArrayDataInput::new(&meta_bytes);
             let meta =
                 DirectMonotonicMeta::load(&mut meta_input, count as i64, block_shift).unwrap();
             let reader = DirectMonotonicReader::new(meta, data_bytes).unwrap();
@@ -2090,7 +2090,7 @@ mod tests {
                 }
 
                 let bytes = out.into_inner();
-                let mut input = ByteArrayDataInput::new(bytes);
+                let mut input = ByteArrayDataInput::new(&bytes);
                 let mut iter = BlockPackedReaderIterator::new(
                     &mut input,
                     PackedInts::VERSION_CURRENT,
@@ -2126,7 +2126,7 @@ mod tests {
         }
 
         let bytes = out.into_inner();
-        let mut input = ByteArrayDataInput::new(bytes);
+        let mut input = ByteArrayDataInput::new(&bytes);
         let mut iter = BlockPackedReaderIterator::new(
             &mut input,
             PackedInts::VERSION_CURRENT,
@@ -2172,7 +2172,7 @@ mod tests {
         }
 
         let bytes = out.into_inner();
-        let mut input = ByteArrayDataInput::new(bytes);
+        let mut input = ByteArrayDataInput::new(&bytes);
         let mut iter = BlockPackedReaderIterator::new(
             &mut input,
             PackedInts::VERSION_CURRENT,
@@ -2212,7 +2212,7 @@ mod tests {
         }
 
         let bytes = out.into_inner();
-        let mut input = ByteArrayDataInput::new(bytes);
+        let mut input = ByteArrayDataInput::new(&bytes);
         let mut iter = BlockPackedReaderIterator::new(
             &mut input,
             PackedInts::VERSION_CURRENT,
@@ -2251,7 +2251,8 @@ mod tests {
         // bits and then one final byte at bit 56. A stream of continuation
         // bytes must stop there rather than shifting past the width of the
         // type, which Java leaves undefined and Rust aborts on.
-        let mut input = ByteArrayDataInput::new(vec![0xFF; 64]);
+        let input_src = vec![0xFF; 64];
+        let mut input = ByteArrayDataInput::new(&input_src);
         let value = read_block_packed_v_long(&mut input).expect("nine bytes are always available");
         assert_eq!(
             input.position(),
@@ -2282,7 +2283,7 @@ mod tests {
             write_block_packed_v_long(&mut out, value).expect("write");
             let bytes = out.to_array_copy();
             assert!(bytes.len() <= 9, "{value} took {} bytes", bytes.len());
-            let mut input = ByteArrayDataInput::new(bytes);
+            let mut input = ByteArrayDataInput::new(&bytes);
             assert_eq!(
                 read_block_packed_v_long(&mut input).expect("read"),
                 value,

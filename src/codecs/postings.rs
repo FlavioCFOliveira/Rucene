@@ -1258,7 +1258,7 @@ mod tests {
         assert_eq!(state.doc_freq, 0);
         reader
             .decode_term(
-                &mut crate::store::ByteArrayDataInput::new(vec![]),
+                &mut crate::store::ByteArrayDataInput::empty(),
                 &FieldInfo::new("field", 0).with_postings_options(IndexOptions::DOCS, false, false),
                 &mut BlockTermState::default(),
                 true,
