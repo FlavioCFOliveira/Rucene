@@ -2898,12 +2898,12 @@ mod tests {
     #[test]
     fn z_float_and_z_double_use_lucenes_little_endian_byte_order() {
         fn write_float(value: f32) -> Vec<u8> {
-            let mut out = crate::store::ByteArrayDataOutput::new();
+            let mut out = crate::store::VecDataOutput::new();
             Lucene90CompressingStoredFieldsWriter::write_z_float(&mut out, value).unwrap();
             out.into_inner()
         }
         fn write_double(value: f64) -> Vec<u8> {
-            let mut out = crate::store::ByteArrayDataOutput::new();
+            let mut out = crate::store::VecDataOutput::new();
             Lucene90CompressingStoredFieldsWriter::write_z_double(&mut out, value).unwrap();
             out.into_inner()
         }
@@ -2958,7 +2958,7 @@ mod tests {
     #[test]
     fn stored_fields_ints_writes_full_blocks_little_endian() {
         let values: Vec<i32> = (0..128).collect();
-        let mut out = crate::store::ByteArrayDataOutput::new();
+        let mut out = crate::store::VecDataOutput::new();
         StoredFieldsInts::write_ints(&values, 0, values.len(), &mut out).unwrap();
         let bytes = out.into_inner();
 
@@ -3323,7 +3323,7 @@ mod tests {
         // -1 is the boundary; the rest of the range and the wide forms are
         // checked alongside it so the fix cannot narrow the encoding.
         for value in [-1.0f32, 0.0f32, 1.0f32, 125.0f32, 126.0f32, -2.0f32] {
-            let mut out = crate::store::ByteArrayDataOutput::new();
+            let mut out = crate::store::VecDataOutput::new();
             Lucene90CompressingStoredFieldsWriter::write_z_float(&mut out, value).unwrap();
             let encoded = out.into_inner();
             if (-1.0..=125.0).contains(&value) && value.fract() == 0.0 {
@@ -3334,7 +3334,7 @@ mod tests {
             assert_eq!(read.to_bits(), value.to_bits(), "float {value}");
         }
         for value in [-1.0f64, 0.0f64, 1.0f64, 124.0f64, 125.0f64, -2.0f64] {
-            let mut out = crate::store::ByteArrayDataOutput::new();
+            let mut out = crate::store::VecDataOutput::new();
             Lucene90CompressingStoredFieldsWriter::write_z_double(&mut out, value).unwrap();
             let encoded = out.into_inner();
             if (-1.0..=124.0).contains(&value) && value.fract() == 0.0 {
@@ -3345,7 +3345,7 @@ mod tests {
             assert_eq!(read.to_bits(), value.to_bits(), "double {value}");
         }
         // The one-byte encoding of -1 really is 0x80, which is what underflows.
-        let mut out = crate::store::ByteArrayDataOutput::new();
+        let mut out = crate::store::VecDataOutput::new();
         Lucene90CompressingStoredFieldsWriter::write_z_float(&mut out, -1.0).unwrap();
         assert_eq!(out.into_inner(), vec![0x80]);
     }
@@ -3426,7 +3426,7 @@ mod tests {
     fn the_t_long_scaling_step_wraps_like_java() {
         /// Encodes the header and zig-zag payload `readTLong` expects.
         fn encode(encoding: i32, zigzag: i64) -> Vec<u8> {
-            let mut out = crate::store::ByteArrayDataOutput::new();
+            let mut out = crate::store::VecDataOutput::new();
             let upper = ((zigzag as u64) >> 5) as i64;
             let mut header = (encoding as u8) | ((zigzag & 0x1F) as u8);
             if upper != 0 {
@@ -3459,7 +3459,7 @@ mod tests {
 
         // And the ordinary values still round-trip through the writer.
         for value in [0i64, 1, -1, 1_000, 3_600_000, 86_400_000, -86_400_000] {
-            let mut out = crate::store::ByteArrayDataOutput::new();
+            let mut out = crate::store::VecDataOutput::new();
             Lucene90CompressingStoredFieldsWriter::write_t_long(&mut out, value).unwrap();
             let mut input = ByteArrayDataInput::new(out.into_inner());
             assert_eq!(

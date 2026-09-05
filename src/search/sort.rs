@@ -1348,12 +1348,12 @@ pub fn read_sort(input: &mut dyn DataInput) -> Result<Option<Sort>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{ByteArrayDataInput, ByteArrayDataOutput};
+    use crate::store::{ByteArrayDataInput, VecDataOutput};
 
     /// Helper to serialize a single `SortField` to bytes, including the
     /// "SortField" provider name used by `Lucene99SegmentInfoFormat`.
     fn serialize_sort_field(field: &SortField) -> Vec<u8> {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_string("SortField").unwrap();
         field.serialize(&mut out).unwrap();
         out.into_inner()
@@ -1361,7 +1361,7 @@ mod tests {
 
     /// Helper to serialize a full `Sort` using the segment-info count prefix.
     fn serialize_sort(sort: &Sort) -> Vec<u8> {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         write_sort(&mut out, sort).unwrap();
         out.into_inner()
     }
@@ -1451,7 +1451,7 @@ mod tests {
         reverse: bool,
         missing: Option<MissingValue>,
     ) -> Vec<u8> {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_string("SortField").unwrap();
         out.write_string(field).unwrap();
         out.write_string("STRING").unwrap();
@@ -1523,7 +1523,7 @@ mod tests {
         reverse: bool,
         value: i64,
     ) -> Vec<u8> {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_string("SortField").unwrap();
         out.write_string(field).unwrap();
         out.write_string(field_type.java_name()).unwrap();
@@ -1538,7 +1538,7 @@ mod tests {
     }
 
     fn bytes_for_float_sort_field(field: &str, reverse: bool, value: f32) -> Vec<u8> {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_string("SortField").unwrap();
         out.write_string(field).unwrap();
         out.write_string("FLOAT").unwrap();
@@ -1549,7 +1549,7 @@ mod tests {
     }
 
     fn bytes_for_double_sort_field(field: &str, reverse: bool, value: f64) -> Vec<u8> {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_string("SortField").unwrap();
         out.write_string(field).unwrap();
         out.write_string("DOUBLE").unwrap();
@@ -1672,10 +1672,10 @@ mod tests {
     #[test]
     fn sortfield_score_and_doc_do_not_serialize() {
         assert!(SortField::FIELD_SCORE
-            .serialize(&mut ByteArrayDataOutput::new())
+            .serialize(&mut VecDataOutput::new())
             .is_err());
         assert!(SortField::FIELD_DOC
-            .serialize(&mut ByteArrayDataOutput::new())
+            .serialize(&mut VecDataOutput::new())
             .is_err());
     }
 }

@@ -152,7 +152,7 @@ fn all_equal(l: &[i32; BLOCK_SIZE]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{ByteArrayDataOutput, IndexInput, MockIndexInput};
+    use crate::store::{IndexInput, MockIndexInput, VecDataOutput};
 
     #[test]
     fn round_trip_random_values() {
@@ -168,7 +168,7 @@ mod tests {
         original[200] = 0;
 
         let mut ints = original;
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         pfor.encode(&mut ints, &mut out).unwrap();
 
         let data = out.into_inner();
@@ -188,7 +188,7 @@ mod tests {
     fn round_trip_all_equal() {
         let mut pfor = PForUtil::new();
         let mut original = [42i32; BLOCK_SIZE];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         pfor.encode(&mut original, &mut out).unwrap();
 
         let data = out.into_inner();
@@ -207,7 +207,7 @@ mod tests {
         for (i, v) in original.iter_mut().enumerate() {
             *v = (i % 100) as i32;
         }
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         pfor.encode(&mut original, &mut out).unwrap();
 
         // append some trailing bytes

@@ -16,7 +16,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
 use crate::index::reader_context::{IndexReaderContext, LeafReaderContext};
 use crate::search::index_searcher::IndexSearcher;
-use crate::store::{ByteArrayDataInput, ByteArrayDataOutput, DataInput, DataOutput};
+use crate::store::{ByteArrayDataInput, DataInput, DataOutput, VecDataOutput};
 use crate::util::attribute::AttributeSource;
 use crate::util::automaton::CompiledAutomaton;
 use crate::util::string_helper::StringHelper;
@@ -729,7 +729,7 @@ impl PrefixCodedTerms {
 /// Equivalent to `org.apache.lucene.index.PrefixCodedTerms.Builder`.
 #[derive(Debug)]
 pub struct PrefixCodedTermsBuilder {
-    output: ByteArrayDataOutput,
+    output: VecDataOutput,
     last_term: Term,
     last_term_bytes: Vec<u8>,
     size: i64,
@@ -745,7 +745,7 @@ impl PrefixCodedTermsBuilder {
     /// Creates a new builder.
     pub fn new() -> Self {
         Self {
-            output: ByteArrayDataOutput::new(),
+            output: VecDataOutput::new(),
             last_term: Term::empty(""),
             last_term_bytes: Vec::new(),
             size: 0,

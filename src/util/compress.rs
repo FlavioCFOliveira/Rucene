@@ -861,10 +861,10 @@ impl LowercaseAsciiCompression {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{ByteArrayDataInput, ByteArrayDataOutput};
+    use crate::store::{ByteArrayDataInput, VecDataOutput};
 
     fn lz4_round_trip(input: &[u8], ht: &mut dyn Lz4HashTable) {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         Lz4::compress(input, 0, input.len(), &mut out, ht).unwrap();
         let compressed = out.into_inner();
 
@@ -881,7 +881,7 @@ mod tests {
 
     fn lower_round_trip(input: &[u8]) {
         let mut tmp = vec![0u8; input.len()];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         let ok =
             LowercaseAsciiCompression::compress(input, input.len(), &mut tmp, &mut out).unwrap();
         if !ok {
@@ -961,7 +961,7 @@ mod tests {
         let expected = &[
             0xA0u8, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61,
         ];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         let mut ht = FastCompressionHashTable::new();
         Lz4::compress(&input, 0, input.len(), &mut out, &mut ht).unwrap();
         let compressed = out.into_inner();
@@ -982,7 +982,7 @@ mod tests {
         let expected = &[
             0xC0u8, 0x61, 0x62, 0x63, 0x61, 0x62, 0x63, 0x61, 0x62, 0x63, 0x61, 0x62, 0x63,
         ];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         let mut ht = FastCompressionHashTable::new();
         Lz4::compress(input, 0, input.len(), &mut out, &mut ht).unwrap();
         let compressed = out.into_inner();
@@ -1021,7 +1021,7 @@ mod tests {
     #[test]
     fn lz4_compress_bounds_checks() {
         let input = b"hello";
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         let mut ht = FastCompressionHashTable::new();
         assert!(Lz4::compress(input, 0, 10, &mut out, &mut ht).is_err());
         assert!(Lz4::compress(input, 10, 1, &mut out, &mut ht).is_err());
@@ -1034,7 +1034,7 @@ mod tests {
     #[test]
     fn lower_empty_and_short() {
         let mut tmp = vec![0u8; 8];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         assert!(!LowercaseAsciiCompression::compress(b"", 0, &mut tmp, &mut out).unwrap());
         assert!(!LowercaseAsciiCompression::compress(b"hello", 5, &mut tmp, &mut out).unwrap());
     }
@@ -1053,7 +1053,7 @@ mod tests {
     fn lower_rejects_too_many_exceptions() {
         let input = b"hello World"; // uppercase 'W' is the only exception, len=11 -> max=0
         let mut tmp = vec![0u8; input.len()];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         assert!(
             !LowercaseAsciiCompression::compress(input, input.len(), &mut tmp, &mut out).unwrap()
         );
@@ -1068,7 +1068,7 @@ mod tests {
             0x69u8, 0xA6, 0x6D, 0x2D, 0x30, 0x0F, 0xB8, 0x30, 0xF3, 0x2D, 0x25, 0x0E, 0x00,
         ];
         let mut tmp = vec![0u8; input.len()];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         assert!(
             LowercaseAsciiCompression::compress(input, input.len(), &mut tmp, &mut out).unwrap()
         );
@@ -1140,7 +1140,7 @@ mod tests {
     fn the_corruption_checks_do_not_reject_valid_streams() {
         for length in [0usize, 1, 7, 64, 1000, 40_000] {
             let data: Vec<u8> = (0..length).map(|i| ((i * 13) % 61) as u8).collect();
-            let mut out = ByteArrayDataOutput::new();
+            let mut out = VecDataOutput::new();
             let mut table = FastCompressionHashTable::new();
             Lz4::compress(&data, 0, data.len(), &mut out, &mut table).unwrap();
             let mut input = ByteArrayDataInput::new(out.into_inner());
@@ -1176,7 +1176,7 @@ mod tests {
         second.extend((0..200u32).map(|i| ((i * 53 + 7) % 251) as u8));
 
         let mut table = HighCompressionHashTable::new();
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         Lz4::compress(&first, 0, first.len(), &mut out, &mut table).unwrap();
         // The marker's hash slot now holds offset 500; this span hashes it
         // again at offset 0.
@@ -1199,7 +1199,7 @@ mod tests {
         for length in [4usize, 64, 4096, 70_000] {
             let data: Vec<u8> = (0..length).map(|i| ((i / 7) % 251) as u8).collect();
             let mut table = HighCompressionHashTable::new();
-            let mut out = ByteArrayDataOutput::new();
+            let mut out = VecDataOutput::new();
             Lz4::compress(&data, 0, data.len(), &mut out, &mut table).unwrap();
             let mut input = ByteArrayDataInput::new(out.into_inner());
             let mut dest = vec![0u8; data.len() + 7];

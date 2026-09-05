@@ -945,11 +945,11 @@ mod tests {
     use crate::codecs::stub::{FieldInfo, FieldInfos};
     use crate::codecs::MergeState;
     use crate::store::ByteArrayDataInput;
-    use crate::store::ByteArrayDataOutput;
+    use crate::store::VecDataOutput;
 
     fn round_trip(mode: CompressionMode, data: &[u8], offset: usize, length: usize) {
         let mut compressor = mode.new_compressor();
-        let mut output = ByteArrayDataOutput::new();
+        let mut output = VecDataOutput::new();
         let mut bbo = ByteBuffersDataOutput::with_expected_size(data.len());
         bbo.write_bytes(data, 0, data.len()).unwrap();
         compressor.compress(&bbo, &mut output).unwrap();
@@ -1059,7 +1059,7 @@ mod tests {
         let data: Vec<u8> = (0..4_000).map(|i| (i % 97) as u8).collect();
         let compress = |mode: CompressionMode| {
             let mut compressor = mode.new_compressor();
-            let mut output = ByteArrayDataOutput::new();
+            let mut output = VecDataOutput::new();
             let mut buffered = ByteBuffersDataOutput::with_expected_size(data.len());
             buffered.write_bytes(&data, 0, data.len()).unwrap();
             compressor.compress(&buffered, &mut output).unwrap();
@@ -1130,7 +1130,7 @@ mod tests {
             CompressionMode::DEFLATE_WITH_PRESET_DICT,
         ] {
             let mut compressor = mode.new_compressor();
-            let mut output = ByteArrayDataOutput::new();
+            let mut output = VecDataOutput::new();
             let mut buffered = ByteBuffersDataOutput::with_expected_size(data.len());
             buffered.write_bytes(&data, 0, data.len()).unwrap();
             compressor.compress(&buffered, &mut output).unwrap();
@@ -1147,7 +1147,7 @@ mod tests {
         let data: Vec<u8> = (0..9_000).map(|i| (i % 97) as u8).collect();
         let compress = |mode: CompressionMode| {
             let mut compressor = mode.new_compressor();
-            let mut output = ByteArrayDataOutput::new();
+            let mut output = VecDataOutput::new();
             let mut buffered = ByteBuffersDataOutput::with_expected_size(data.len());
             buffered.write_bytes(&data, 0, data.len()).unwrap();
             compressor.compress(&buffered, &mut output).unwrap();

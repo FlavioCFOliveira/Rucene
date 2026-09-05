@@ -1912,7 +1912,7 @@ impl<'a> BlockPackedReaderIterator<'a> {
 mod tests {
     use super::*;
     use crate::store::{
-        ByteArrayDataInput, ByteArrayDataOutput, ByteBuffersDataOutput, ByteBuffersIndexOutput,
+        ByteArrayDataInput, ByteBuffersDataOutput, ByteBuffersIndexOutput, VecDataOutput,
     };
 
     fn lcg_next(state: &mut u64) -> u64 {
@@ -1957,7 +1957,7 @@ mod tests {
             let max_value = PackedInts::max_value(bpv);
             for &count in &[0usize, 1, 64, 100, 1000] {
                 let values = random_values(max_value, count, bpv as u64 * 31 + count as u64);
-                let mut out = ByteArrayDataOutput::new();
+                let mut out = VecDataOutput::new();
                 let mut writer = DirectWriter::new(&mut out, count as i64, bpv).unwrap();
                 for &v in &values {
                     writer.add(v).unwrap();
@@ -2080,7 +2080,7 @@ mod tests {
                 let seed = block_size as u64 * 7 + count as u64;
                 let values = random_values(i64::MAX, count, seed);
 
-                let mut out = ByteArrayDataOutput::new();
+                let mut out = VecDataOutput::new();
                 {
                     let mut writer = BlockPackedWriter::new(&mut out, block_size).unwrap();
                     for &v in &values {
@@ -2116,7 +2116,7 @@ mod tests {
         let count = 1000usize;
         let values = random_values(i64::MAX, count, 12345);
 
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         {
             let mut writer = BlockPackedWriter::new(&mut out, block_size).unwrap();
             for &v in &values {
@@ -2162,7 +2162,7 @@ mod tests {
         let base = 1_000_000i64;
         let values: Vec<i64> = (0..count).map(|i| base + (i % 17) as i64).collect();
 
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         {
             let mut writer = BlockPackedWriter::new(&mut out, block_size).unwrap();
             for &v in &values {
@@ -2202,7 +2202,7 @@ mod tests {
             i64::MAX,
         ];
 
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         {
             let mut writer = BlockPackedWriter::new(&mut out, block_size).unwrap();
             for &v in &values {

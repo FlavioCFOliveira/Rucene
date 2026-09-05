@@ -713,11 +713,11 @@ fn decode16(pdu: &mut PostingDecodingUtil, ints: &mut [i32; BLOCK_SIZE]) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{ByteArrayDataOutput, MockIndexInput};
+    use crate::store::{MockIndexInput, VecDataOutput};
 
     fn round_trip_bits(bits_per_value: i32) {
         let mut for_util = ForUtil::new();
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
 
         let max_value: i32 = ((1i64 << bits_per_value) - 1) as i32;
         let mut original = [0i32; BLOCK_SIZE];

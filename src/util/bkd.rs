@@ -73,7 +73,7 @@ use crate::{
     error::{LuceneError, Result},
     search::{DocIdSetIterator, NO_MORE_DOCS},
     store::{
-        ByteArrayDataOutput, DataOutput, Directory, IndexInput, IndexOutput, DEFAULT_IO_CONTEXT,
+        DataOutput, Directory, IndexInput, IndexOutput, VecDataOutput, DEFAULT_IO_CONTEXT,
         READONCE_IO_CONTEXT,
     },
     util::{
@@ -5433,18 +5433,18 @@ struct BKDTreeLeafNodes {
 /// growing in-memory file, and returns how many bytes that block holds.
 ///
 /// Equivalent to `org.apache.lucene.util.bkd.BKDWriter#appendBlock`.
-fn append_block(write_buffer: &mut ByteArrayDataOutput, blocks: &mut Vec<Vec<u8>>) -> usize {
+fn append_block(write_buffer: &mut VecDataOutput, blocks: &mut Vec<Vec<u8>>) -> usize {
     let block = write_buffer.as_inner().to_vec();
     let len = block.len();
     blocks.push(block);
     // `ByteBuffersDataOutput.reset()`: the buffer is reused for the next block.
-    *write_buffer = ByteArrayDataOutput::new();
+    *write_buffer = VecDataOutput::new();
     len
 }
 
 fn pack_index(config: &BKDConfig, leaf_nodes: &BKDTreeLeafNodes) -> Result<Vec<u8>> {
     // Reused while packing the index.
-    let mut write_buffer = ByteArrayDataOutput::new();
+    let mut write_buffer = VecDataOutput::new();
     let mut blocks: Vec<Vec<u8>> = Vec::new();
     let mut last_split_values = vec![0u8; config.packed_index_bytes_length() as usize];
     let mut negative_deltas = vec![false; config.num_index_dims as usize];
@@ -5475,7 +5475,7 @@ fn recurse_pack_index(
     config: &BKDConfig,
     leaf_nodes: &BKDTreeLeafNodes,
     min_block_fp: i64,
-    write_buffer: &mut ByteArrayDataOutput,
+    write_buffer: &mut VecDataOutput,
     blocks: &mut Vec<Vec<u8>>,
     last_split_values: &mut [u8],
     negative_deltas: &mut [bool],
@@ -5583,7 +5583,7 @@ fn recurse_pack_index(
     // Java copies the buffer out and *replaces* the placeholder rather than
     // appending, which is why this cannot go through `append_block`.
     let bytes2 = write_buffer.as_inner().to_vec();
-    *write_buffer = ByteArrayDataOutput::new();
+    *write_buffer = VecDataOutput::new();
     let bytes2_len = bytes2.len();
     blocks[idx_sav] = bytes2;
 

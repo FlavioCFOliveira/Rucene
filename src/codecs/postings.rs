@@ -1342,7 +1342,7 @@ mod tests {
 
         PostingsWriterBase::encode_term(
             &mut writer,
-            &mut crate::store::ByteArrayDataOutput::new(),
+            &mut crate::store::VecDataOutput::new(),
             &field_info,
             &BlockTermState::default(),
             true,
@@ -1405,7 +1405,7 @@ mod tests {
         assert!(result.is_none());
         writer
             .encode_term(
-                &mut crate::store::ByteArrayDataOutput::new(),
+                &mut crate::store::VecDataOutput::new(),
                 &field_info,
                 &BlockTermState::default(),
                 true,

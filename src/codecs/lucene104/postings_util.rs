@@ -172,12 +172,12 @@ fn num_bytes(v: i32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{ByteArrayDataOutput, MockIndexInput};
+    use crate::store::{MockIndexInput, VecDataOutput};
 
     #[test]
     fn group_v_int_round_trip() {
         let values = [0, 1, 128, 0x1000, 0x1_0000, 0x100_0000, 0x7FFF_FFFF, 42];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         write_group_vints(&mut out, &values, values.len()).unwrap();
 
         let data = out.into_inner();
@@ -191,7 +191,7 @@ mod tests {
     fn v_int_block_round_trip_with_freqs() {
         let mut docs = [10i32, 20, 30, 40, 50];
         let freqs = [1i32, 3, 1, 1, 7];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         write_v_int_block(&mut out, &mut docs, &freqs, 5, true).unwrap();
 
         let data = out.into_inner();
@@ -208,7 +208,7 @@ mod tests {
     fn v_int_block_skip_freqs() {
         let mut docs = [10i32, 20, 30, 40, 50];
         let freqs = [1i32, 3, 1, 1, 7];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         write_v_int_block(&mut out, &mut docs, &freqs, 5, true).unwrap();
 
         let data = out.into_inner();

@@ -1484,7 +1484,7 @@ mod tests {
 
     #[test]
     fn write_impacts_round_trip() {
-        let mut out = crate::store::ByteArrayDataOutput::new();
+        let mut out = crate::store::VecDataOutput::new();
         let impacts = vec![Impact::new(1, 1), Impact::new(3, 2), Impact::new(5, 3)];
         write_impacts(&impacts, &mut out).unwrap();
         // The exact bytes are tested against the format expectations indirectly

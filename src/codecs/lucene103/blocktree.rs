@@ -1604,7 +1604,7 @@ impl<'a> TermsWriter<'a> {
         // Suffix lengths
         let num_suffix_bytes = self.suffix_lengths_writer.size();
         self.spare_bytes.resize(num_suffix_bytes, 0);
-        let mut suffix_lengths_out = crate::store::ByteArrayDataOutput::new();
+        let mut suffix_lengths_out = crate::store::VecDataOutput::new();
         self.suffix_lengths_writer
             .copy_to(&mut suffix_lengths_out)?;
         self.suffix_lengths_writer.reset();

@@ -2004,7 +2004,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::store::{ByteArrayDataInput, ByteArrayDataOutput, IndexInput, RamDirectory};
+    use crate::store::{ByteArrayDataInput, IndexInput, RamDirectory, VecDataOutput};
 
     #[test]
     fn field_info_default_is_empty() {
@@ -2166,7 +2166,7 @@ mod tests {
 
     #[test]
     fn field_info_write_read_round_trip() {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         let mut fi = FieldInfo::new("body", 0);
         fi.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
         fi.store_term_vector = true;
@@ -2270,7 +2270,7 @@ mod tests {
         vector.vector_similarity_function = VectorSimilarityFunction::DOT_PRODUCT;
         let fis = FieldInfos::new(vec![body, title, vector]).unwrap();
 
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         fis.write(&mut out).unwrap();
 
         let mut input = ByteArrayDataInput::new(out.into_inner());

@@ -2229,16 +2229,27 @@ impl DataInput for ByteArrayDataInput {
     }
 }
 
-/// A [`DataOutput`] backed by an in-memory byte buffer.
+/// A [`DataOutput`] backed by an owned, growable [`Vec<u8>`].
 ///
-/// This is a test and utility implementation equivalent to writing into a
-/// growable byte array.
+/// This type is **not** a port of any Lucene class: it has no counterpart in
+/// Apache Lucene Core 10.5.0. It is a crate-local test and utility sink that
+/// appends to a buffer it owns and never runs out of room, and it takes every
+/// encoding (`writeVInt`, `writeString`, ...) from the [`DataOutput`] default
+/// methods, so the bytes it produces are the ones Lucene's `DataOutput`
+/// produces.
+///
+/// Do not mistake it for [`ByteArrayDataOutput`], which is the port of
+/// `org.apache.lucene.store.ByteArrayDataOutput` and writes into a
+/// caller-supplied buffer of fixed size; nor for [`ByteBuffersDataOutput`],
+/// which is the port of `org.apache.lucene.store.ByteBuffersDataOutput`,
+/// Lucene's own growable in-memory `DataOutput`, and carries the paged blocks,
+/// the reuse pool and the random-access API that this type does not have.
 #[derive(Clone, Debug, Default)]
-pub struct ByteArrayDataOutput {
+pub struct VecDataOutput {
     bytes: Vec<u8>,
 }
 
-impl ByteArrayDataOutput {
+impl VecDataOutput {
     /// Creates an empty output.
     pub fn new() -> Self {
         Self { bytes: Vec::new() }
@@ -2272,7 +2283,7 @@ impl ByteArrayDataOutput {
     }
 }
 
-impl DataOutput for ByteArrayDataOutput {
+impl DataOutput for VecDataOutput {
     fn write_byte(&mut self, b: u8) -> Result<()> {
         self.bytes.push(b);
         Ok(())
@@ -2289,6 +2300,195 @@ impl DataOutput for ByteArrayDataOutput {
             )));
         }
         self.bytes.extend_from_slice(&b[offset..end]);
+        Ok(())
+    }
+}
+
+/// A [`DataOutput`] that writes into a byte buffer owned by the caller.
+///
+/// Port of `org.apache.lucene.store.ByteArrayDataOutput`.
+///
+/// The buffer never grows. The output tracks a write position and a limit —
+/// `offset + len` of the region it was handed — and every write advances the
+/// position by exactly the number of bytes it wrote. Lucene warns that this
+/// class "omits most low-level checks, so be sure to test heavily with
+/// assertions enabled" (`ByteArrayDataOutput.java:23-24`); the warning applies
+/// here unchanged, and the checks sit in the same places.
+///
+/// The little-endian `write_short`, `write_int` and `write_long` overrides are
+/// not decoration. Beyond writing the four or eight bytes in one move, they
+/// check the whole width against the limit *before* writing anything
+/// (`ByteArrayDataOutput.java:74-92`), so a write that does not fit leaves both
+/// the buffer and the position untouched — whereas the byte-at-a-time defaults
+/// of [`DataOutput`] would have written part of the value first. The bytes
+/// produced are identical either way, which is what index-file compatibility
+/// depends on.
+///
+/// # Ownership
+///
+/// Java keeps a reference to a `byte[]` that belongs to the caller, and the
+/// caller reads its own array back once writing is done. Rust spells that same
+/// borrowed, caller-owned buffer `&'a mut [u8]`, so this type carries a
+/// lifetime parameter the Java class has no need for. Nothing else changes:
+/// the output allocates nothing, grows nothing, owns nothing, and the bytes
+/// land in the caller's buffer.
+///
+/// # Divergence: `assert` becomes `debug_assert!`
+///
+/// Lucene guards every write with a Java `assert` against the limit
+/// (`ByteArrayDataOutput.java:62`, `:68`, `:75`, `:82`, `:89`), which the JVM
+/// evaluates only when assertions are enabled — as Lucene's own tests run them,
+/// with `-ea` — and skips entirely in a default production JVM.
+/// `debug_assert!` is exactly that conditionally-compiled check: active in
+/// debug and test builds, compiled out in release. The behaviour therefore
+/// matches on both sides of the switch. Past the limit but still inside the
+/// buffer, a release build of either implementation writes silently; past the
+/// end of the buffer itself, Java's array bound raises
+/// `ArrayIndexOutOfBoundsException` and Rust's slice bound panics, in every
+/// build profile. Memory safety is never at stake in either language.
+///
+/// # Examples
+///
+/// ```
+/// use rucene::store::{ByteArrayDataOutput, DataOutput};
+///
+/// let mut buffer = [0u8; 8];
+/// let mut out = ByteArrayDataOutput::new(&mut buffer);
+/// out.write_int(1)?;
+/// out.write_short(2)?;
+/// assert_eq!(out.position(), 6);
+/// assert_eq!(buffer, [1, 0, 0, 0, 2, 0, 0, 0]);
+/// # Ok::<(), rucene::error::LuceneError>(())
+/// ```
+#[derive(Debug)]
+pub struct ByteArrayDataOutput<'a> {
+    bytes: &'a mut [u8],
+    pos: usize,
+    limit: usize,
+}
+
+impl<'a> ByteArrayDataOutput<'a> {
+    /// Creates an output positioned at the start of `bytes`, limited by its
+    /// length.
+    ///
+    /// Equivalent to `ByteArrayDataOutput(byte[])`.
+    pub fn new(bytes: &'a mut [u8]) -> Self {
+        let mut out = Self::empty();
+        out.reset(bytes);
+        out
+    }
+
+    /// Creates an output over `bytes[offset..offset + len]`.
+    ///
+    /// Equivalent to `ByteArrayDataOutput(byte[], int, int)`.
+    pub fn with_range(bytes: &'a mut [u8], offset: usize, len: usize) -> Self {
+        let mut out = Self::empty();
+        out.reset_range(bytes, offset, len);
+        out
+    }
+
+    /// Creates an output over an empty buffer, which cannot be written to
+    /// until it is reset.
+    ///
+    /// Equivalent to `ByteArrayDataOutput()`, which resets over
+    /// `BytesRef.EMPTY_BYTES`.
+    pub fn empty() -> Self {
+        Self {
+            bytes: <&mut [u8]>::default(),
+            pos: 0,
+            limit: 0,
+        }
+    }
+
+    /// Points the output at `bytes`, positioned at its start and limited by
+    /// its length.
+    ///
+    /// Equivalent to `ByteArrayDataOutput#reset(byte[])`.
+    pub fn reset(&mut self, bytes: &'a mut [u8]) {
+        let len = bytes.len();
+        self.reset_range(bytes, 0, len);
+    }
+
+    /// Points the output at `bytes[offset..offset + len]`, positioned at
+    /// `offset`.
+    ///
+    /// Like Lucene, this performs no bounds check of its own: a range outside
+    /// `bytes` is only reported when a write reaches past the end of the
+    /// buffer.
+    ///
+    /// Equivalent to `ByteArrayDataOutput#reset(byte[], int, int)`.
+    pub fn reset_range(&mut self, bytes: &'a mut [u8], offset: usize, len: usize) {
+        self.bytes = bytes;
+        self.pos = offset;
+        self.limit = offset + len;
+    }
+
+    /// Returns the current write position.
+    ///
+    /// Equivalent to `ByteArrayDataOutput#getPosition`.
+    pub fn position(&self) -> usize {
+        self.pos
+    }
+}
+
+impl DataOutput for ByteArrayDataOutput<'_> {
+    fn write_byte(&mut self, b: u8) -> Result<()> {
+        debug_assert!(
+            self.pos < self.limit,
+            "write past limit: pos={}, limit={}",
+            self.pos,
+            self.limit
+        );
+        self.bytes[self.pos] = b;
+        self.pos += 1;
+        Ok(())
+    }
+
+    fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
+        debug_assert!(
+            self.pos + len <= self.limit,
+            "write past limit: pos={}, len={len}, limit={}",
+            self.pos,
+            self.limit
+        );
+        self.bytes[self.pos..self.pos + len].copy_from_slice(&b[offset..offset + len]);
+        self.pos += len;
+        Ok(())
+    }
+
+    fn write_short(&mut self, i: i16) -> Result<()> {
+        debug_assert!(
+            self.pos + 2 <= self.limit,
+            "write past limit: pos={}, limit={}",
+            self.pos,
+            self.limit
+        );
+        self.bytes[self.pos..self.pos + 2].copy_from_slice(&i.to_le_bytes());
+        self.pos += 2;
+        Ok(())
+    }
+
+    fn write_int(&mut self, i: i32) -> Result<()> {
+        debug_assert!(
+            self.pos + 4 <= self.limit,
+            "write past limit: pos={}, limit={}",
+            self.pos,
+            self.limit
+        );
+        self.bytes[self.pos..self.pos + 4].copy_from_slice(&i.to_le_bytes());
+        self.pos += 4;
+        Ok(())
+    }
+
+    fn write_long(&mut self, i: i64) -> Result<()> {
+        debug_assert!(
+            self.pos + 8 <= self.limit,
+            "write past limit: pos={}, limit={}",
+            self.pos,
+            self.limit
+        );
+        self.bytes[self.pos..self.pos + 8].copy_from_slice(&i.to_le_bytes());
+        self.pos += 8;
         Ok(())
     }
 }
@@ -2542,7 +2742,7 @@ impl IndexInput for MockIndexInput {
 pub struct MockIndexOutput {
     resource_description: String,
     name: String,
-    data: ByteArrayDataOutput,
+    data: VecDataOutput,
     closed: bool,
 }
 
@@ -2552,7 +2752,7 @@ impl MockIndexOutput {
         Self {
             resource_description: resource_description.into(),
             name: name.into(),
-            data: ByteArrayDataOutput::new(),
+            data: VecDataOutput::new(),
             closed: false,
         }
     }
@@ -2566,7 +2766,7 @@ impl MockIndexOutput {
         Self {
             resource_description: resource_description.into(),
             name: name.into(),
-            data: ByteArrayDataOutput::with_capacity(capacity),
+            data: VecDataOutput::with_capacity(capacity),
             closed: false,
         }
     }
@@ -5194,7 +5394,7 @@ impl Directory for RamDirectory {
 #[derive(Debug)]
 struct RamIndexOutput {
     name: String,
-    data: ByteArrayDataOutput,
+    data: VecDataOutput,
     closed: bool,
     files: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
 }
@@ -5203,7 +5403,7 @@ impl RamIndexOutput {
     fn new(name: String, files: Arc<Mutex<BTreeMap<String, Vec<u8>>>>) -> Self {
         Self {
             name,
-            data: ByteArrayDataOutput::new(),
+            data: VecDataOutput::new(),
             closed: false,
             files,
         }
@@ -8339,11 +8539,11 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// Writes all primitive encodings to a [`ByteArrayDataOutput`] and reads
+    /// Writes all primitive encodings to a [`VecDataOutput`] and reads
     /// them back from a [`ByteArrayDataInput`], asserting exact round-trip.
     #[test]
     fn byte_array_round_trip_primitives() {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
 
         out.write_byte(0x42).unwrap();
         out.write_short(i16::MIN).unwrap();
@@ -8436,7 +8636,7 @@ mod tests {
             -123456789,
         ];
 
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         for &v in &values {
             out.write_v_int(v).unwrap();
         }
@@ -8489,7 +8689,7 @@ mod tests {
             -1234567890123456789,
         ];
 
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         for &v in &values {
             out.write_v_long(v).unwrap();
         }
@@ -8516,14 +8716,14 @@ mod tests {
 
     #[test]
     fn v_long_rejects_negative() {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         assert!(out.write_v_long(-1).is_err());
     }
 
     #[test]
     fn strings_round_trip() {
         let strings = ["", "hello", "Hello, 世界!", "\u{0000}\u{00FF}", "αβγδε"];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         for &s in &strings {
             out.write_string(s).unwrap();
         }
@@ -8541,7 +8741,7 @@ mod tests {
         map.insert("key2".to_string(), "value2".to_string());
         map.insert("empty".to_string(), "".to_string());
 
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_map_of_strings(&map).unwrap();
 
         let mut input = ByteArrayDataInput::new(out.into_inner());
@@ -8556,7 +8756,7 @@ mod tests {
         set.insert("beta".to_string());
         set.insert("gamma".to_string());
 
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_set_of_strings(&set).unwrap();
 
         let mut input = ByteArrayDataInput::new(out.into_inner());
@@ -8567,7 +8767,7 @@ mod tests {
     #[test]
     fn bulk_byte_array_round_trip() {
         let data: Vec<u8> = (0..=255).collect();
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_bytes(&data, 0, data.len()).unwrap();
 
         let mut input = ByteArrayDataInput::new(out.into_inner());
@@ -8584,7 +8784,7 @@ mod tests {
         let floats: Vec<f32> = (0..100).map(|i| i as f32 * 0.5).collect();
         let doubles: Vec<f64> = (0..100).map(|i| i as f64 * 0.25).collect();
 
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_ints(&ints, 0, ints.len()).unwrap();
         out.write_longs(&longs, 0, longs.len()).unwrap();
         out.write_floats(&floats, 0, floats.len()).unwrap();
@@ -8614,7 +8814,7 @@ mod tests {
 
     #[test]
     fn skip_bytes_advances_position() {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_int(0x11111111).unwrap();
         out.write_int(0x22222222).unwrap();
         out.write_int(0x33333333).unwrap();
@@ -8627,14 +8827,14 @@ mod tests {
 
     #[test]
     fn copy_bytes_transfers_data() {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_int(0xAABBCCDDu32 as i32).unwrap();
         out.write_long(0x1122334455667788u64 as i64).unwrap();
         out.write_string("copied").unwrap();
 
         let source_bytes = out.into_inner();
         let mut source = ByteArrayDataInput::new(source_bytes.clone());
-        let mut destination = ByteArrayDataOutput::new();
+        let mut destination = VecDataOutput::new();
         destination
             .copy_bytes(&mut source, source_bytes.len() as i64)
             .unwrap();
@@ -8644,7 +8844,7 @@ mod tests {
 
     #[test]
     fn copy_bytes_rejects_negative() {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         let mut input = ByteArrayDataInput::new(Vec::new());
         assert!(out.copy_bytes(&mut input, -1).is_err());
     }
@@ -8674,14 +8874,14 @@ mod tests {
     #[test]
     fn write_bytes_full_helper() {
         let data = vec![0xABu8, 0xCD, 0xEF];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_bytes_full(&data, 2).unwrap();
         assert_eq!(out.into_inner(), vec![0xAB, 0xCD]);
     }
 
     #[test]
     fn byte_order_is_little_endian() {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_short(0x1234).unwrap();
         out.write_int(0x12345678).unwrap();
         out.write_long(0x123456789ABCDEF0i64).unwrap();
@@ -8709,7 +8909,7 @@ mod tests {
         ];
 
         for &(value, expected) in cases {
-            let mut out = ByteArrayDataOutput::new();
+            let mut out = VecDataOutput::new();
             out.write_v_int(value).unwrap();
             assert_eq!(
                 out.into_inner(),
@@ -8730,7 +8930,7 @@ mod tests {
         ];
 
         for &(value, expected) in cases {
-            let mut out = ByteArrayDataOutput::new();
+            let mut out = VecDataOutput::new();
             out.write_z_int(value).unwrap();
             assert_eq!(
                 out.into_inner(),
@@ -9195,14 +9395,14 @@ mod tests {
     // MockIndexInput / MockIndexOutput tests
     // -------------------------------------------------------------------------
 
-    /// Builds a `MockIndexInput` over the bytes written by `ByteArrayDataOutput`.
-    fn input_from_output(out: ByteArrayDataOutput, desc: &str) -> MockIndexInput {
+    /// Builds a `MockIndexInput` over the bytes written by `VecDataOutput`.
+    fn input_from_output(out: VecDataOutput, desc: &str) -> MockIndexInput {
         MockIndexInput::new(out.into_inner(), desc)
     }
 
     #[test]
     fn mock_index_input_round_trips_bytes() {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_int(0xDEAD_BEEFu32 as i32).unwrap();
         out.write_string("Rucene").unwrap();
         out.write_v_long(123456789).unwrap();
@@ -9223,7 +9423,7 @@ mod tests {
 
     #[test]
     fn mock_index_input_seek_and_skip() {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_int(0x11111111).unwrap();
         out.write_int(0x22222222).unwrap();
         out.write_int(0x33333333).unwrap();
@@ -9244,7 +9444,7 @@ mod tests {
 
     #[test]
     fn mock_index_input_slice_is_independent() {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_int(0xAABB_CCDDu32 as i32).unwrap();
         out.write_int(0x1122_3344u32 as i32).unwrap();
         out.write_int(0x5566_7788u32 as i32).unwrap();
@@ -9268,7 +9468,7 @@ mod tests {
 
     #[test]
     fn mock_index_input_clone_is_independent() {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_int(0x0102_0304u32 as i32).unwrap();
         out.write_int(0x0506_0708u32 as i32).unwrap();
 
@@ -9344,7 +9544,7 @@ mod tests {
 
     #[test]
     fn mock_index_output_copy_bytes_from_data_input() {
-        let mut source = ByteArrayDataOutput::new();
+        let mut source = VecDataOutput::new();
         source.write_int(0xAABB_CCDDu32 as i32).unwrap();
         source.write_string("copied").unwrap();
         let source_bytes = source.into_inner();
@@ -9366,7 +9566,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     fn build_test_bytes() -> Vec<u8> {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         for i in 0i32..=255 {
             out.write_int(i).unwrap();
         }
@@ -9394,7 +9594,7 @@ mod tests {
 
     #[test]
     fn buffered_index_input_buffered_short_int_long() {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_short(0x1234).unwrap();
         out.write_int(0x12345678).unwrap();
         out.write_long(0x123456789ABCDEF0i64).unwrap();
@@ -10935,7 +11135,7 @@ mod tests {
             source.write_int(i).unwrap();
         }
 
-        let mut target = ByteArrayDataOutput::new();
+        let mut target = VecDataOutput::new();
         source.copy_to(&mut target).unwrap();
         assert_eq!(target.len(), source.size());
 
@@ -10979,13 +11179,13 @@ mod tests {
 
         // And well-formed values still round-trip, including the widest ones.
         for value in [0i32, 1, 127, 128, i32::MAX, -1, i32::MIN] {
-            let mut out = ByteArrayDataOutput::new();
+            let mut out = VecDataOutput::new();
             out.write_v_int(value).unwrap();
             let mut input = ByteArrayDataInput::new(out.into_inner());
             assert_eq!(input.read_v_int().unwrap(), value, "vInt {value}");
         }
         for value in [0i64, 1, 127, 128, i64::MAX] {
-            let mut out = ByteArrayDataOutput::new();
+            let mut out = VecDataOutput::new();
             out.write_v_long(value).unwrap();
             let mut input = ByteArrayDataInput::new(out.into_inner());
             assert_eq!(input.read_v_long().unwrap(), value, "vLong {value}");
@@ -11059,9 +11259,207 @@ mod tests {
         // The chunked read must reassemble a string that spans several chunks
         // exactly, or every long field name in a `.fnm` would come back cut.
         let text: String = std::iter::repeat_n('a', 40_000).collect();
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_string(&text).expect("write");
         let mut input = ByteArrayDataInput::new(out.into_inner());
         assert_eq!(input.read_string().expect("read"), text);
+    }
+
+    /// `ByteArrayDataOutput(byte[])` starts at 0, limits at `bytes.length`,
+    /// and `getPosition` reports exactly what has been written. The expected
+    /// bytes are Lucene's little-endian layout, byte for byte.
+    #[test]
+    fn byte_array_data_output_tracks_position_over_a_whole_buffer() {
+        let mut buffer = [0u8; 16];
+        let mut out = ByteArrayDataOutput::new(&mut buffer);
+        assert_eq!(out.position(), 0);
+        out.write_byte(0x42).expect("write");
+        assert_eq!(out.position(), 1);
+        out.write_short(0x0102).expect("write");
+        assert_eq!(out.position(), 3);
+        out.write_int(0x0304_0506).expect("write");
+        assert_eq!(out.position(), 7);
+        out.write_long(0x0708_090a_0b0c_0d0e).expect("write");
+        assert_eq!(out.position(), 15);
+        out.write_bytes(&[0x00, 0xff], 1, 1).expect("write");
+        assert_eq!(out.position(), 16);
+
+        assert_eq!(
+            buffer,
+            [
+                0x42, // writeByte
+                0x02, 0x01, // writeShort, little-endian
+                0x06, 0x05, 0x04, 0x03, // writeInt, little-endian
+                0x0e, 0x0d, 0x0c, 0x0b, 0x0a, 0x09, 0x08, 0x07, // writeLong
+                0xff, // writeBytes
+            ]
+        );
+    }
+
+    /// `reset(byte[])` rebases at 0 over the whole array;
+    /// `reset(byte[], int, int)` rebases at `offset` with a limit of
+    /// `offset + len`, leaving everything outside that window alone.
+    #[test]
+    fn byte_array_data_output_reset_forms_rebase_position_and_limit() {
+        let mut first = [0u8; 4];
+        let mut second = [0xaau8; 8];
+
+        let mut out = ByteArrayDataOutput::empty();
+        assert_eq!(out.position(), 0);
+
+        out.reset(&mut first);
+        assert_eq!(out.position(), 0);
+        out.write_int(1).expect("write");
+        assert_eq!(out.position(), 4);
+
+        out.reset_range(&mut second, 2, 4);
+        assert_eq!(out.position(), 2);
+        out.write_int(1).expect("write");
+        assert_eq!(out.position(), 6);
+
+        assert_eq!(first, [1, 0, 0, 0]);
+        assert_eq!(second, [0xaa, 0xaa, 1, 0, 0, 0, 0xaa, 0xaa]);
+    }
+
+    /// The no-argument constructor resets over an empty buffer, like Lucene's
+    /// `reset(BytesRef.EMPTY_BYTES)`: position 0, limit 0, no room at all.
+    #[test]
+    fn byte_array_data_output_empty_has_no_room() {
+        let out = ByteArrayDataOutput::empty();
+        assert_eq!(out.position(), 0);
+
+        // Both the limit check and the buffer bound reject this write, so it
+        // fails in every build profile.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut out = ByteArrayDataOutput::empty();
+            out.write_byte(0).expect("write");
+        }));
+        assert!(result.is_err(), "an empty output must accept no write");
+    }
+
+    /// Regression guard for the limit check of every write method.
+    ///
+    /// The limit is 4 while the buffer is 16 bytes long, so a write that runs
+    /// past the limit still lands well inside the buffer: nothing but the
+    /// limit check can stop it. Removing any of those checks makes this test
+    /// fail. The buffer is inspected afterwards to prove the check happens
+    /// *before* the write, as Lucene's `assert pos + N <= limit` does — a
+    /// rejected write leaves the buffer and the position untouched, which the
+    /// byte-at-a-time `DataOutput` defaults would not guarantee.
+    ///
+    /// Lucene guards these writes with Java `assert`, which a default JVM does
+    /// not evaluate; this port uses `debug_assert!`, which is likewise absent
+    /// from a release build. The test therefore states the same precondition
+    /// the Java tests do when they run with `-ea`.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn byte_array_data_output_rejects_writes_past_the_limit() {
+        fn overflow(write: impl FnOnce(&mut dyn DataOutput) -> Result<()>) -> [u8; 16] {
+            let mut buffer = [0u8; 16];
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut out = ByteArrayDataOutput::with_range(&mut buffer, 0, 4);
+                out.write_int(0x0102_0304).expect("write");
+                assert_eq!(out.position(), 4, "the limit must be reachable");
+                write(&mut out).expect("write");
+            }));
+            assert!(result.is_err(), "a write past the limit must panic");
+            buffer
+        }
+
+        let buffers = [
+            overflow(|out: &mut dyn DataOutput| out.write_byte(0xff)),
+            overflow(|out: &mut dyn DataOutput| out.write_bytes(&[0xff; 4], 0, 4)),
+            overflow(|out: &mut dyn DataOutput| out.write_short(-1)),
+            overflow(|out: &mut dyn DataOutput| out.write_int(-1)),
+            overflow(|out: &mut dyn DataOutput| out.write_long(-1)),
+        ];
+        for buffer in buffers {
+            assert_eq!(
+                &buffer[..4],
+                &[0x04, 0x03, 0x02, 0x01],
+                "the write that fitted must still be there"
+            );
+            assert_eq!(
+                &buffer[4..],
+                &[0u8; 12],
+                "a rejected write must not touch the buffer"
+            );
+        }
+    }
+
+    /// Lucene performs no bounds check in `reset`, so a limit past the end of
+    /// the array is accepted and only reported when a write reaches it: there
+    /// the JVM's array bound raises `ArrayIndexOutOfBoundsException`. The slice
+    /// bound plays that part here, in every build profile.
+    #[test]
+    fn byte_array_data_output_cannot_write_past_the_buffer() {
+        let mut buffer = [0u8; 4];
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut out = ByteArrayDataOutput::with_range(&mut buffer, 0, 8);
+            out.write_int(0).expect("write");
+            out.write_int(0).expect("write");
+        }));
+        assert!(result.is_err(), "a write past the buffer must panic");
+    }
+
+    /// The little-endian overrides must produce exactly the bytes the
+    /// [`DataOutput`] defaults produce, and the inherited variable-length and
+    /// string encodings must reach the fixed buffer unchanged: index-file
+    /// compatibility with Lucene 10.5.0 depends on both.
+    #[test]
+    fn byte_array_data_output_matches_the_data_output_defaults() {
+        fn write_all(out: &mut dyn DataOutput) -> Result<()> {
+            for value in [i16::MIN, -1, 0, 1, i16::MAX] {
+                out.write_short(value)?;
+            }
+            for value in [i32::MIN, -1, 0, 1, i32::MAX] {
+                out.write_int(value)?;
+            }
+            for value in [i64::MIN, -1, 0, 1, i64::MAX] {
+                out.write_long(value)?;
+            }
+            out.write_v_int(300)?;
+            out.write_z_int(-5)?;
+            out.write_v_long(1 << 40)?;
+            out.write_z_long(-1 << 40)?;
+            out.write_string("rucene")?;
+            out.write_byte(0x7f)?;
+            out.write_bytes(&[1, 2, 3, 4], 1, 2)
+        }
+
+        let mut expected = VecDataOutput::new();
+        write_all(&mut expected).expect("write");
+        let length = expected.len();
+
+        let mut buffer = vec![0u8; length];
+        let mut out = ByteArrayDataOutput::new(&mut buffer);
+        write_all(&mut out).expect("write");
+        let written = out.position();
+
+        assert_eq!(written, length);
+        assert_eq!(buffer, *expected.as_inner());
+
+        // Read the fixed buffer back with the ported reader, to show the bytes
+        // are the format and not merely a match between two writers.
+        let mut input = ByteArrayDataInput::from_slice(&buffer);
+        for value in [i16::MIN, -1, 0, 1, i16::MAX] {
+            assert_eq!(input.read_short().expect("read"), value);
+        }
+        for value in [i32::MIN, -1, 0, 1, i32::MAX] {
+            assert_eq!(input.read_int().expect("read"), value);
+        }
+        for value in [i64::MIN, -1, 0, 1, i64::MAX] {
+            assert_eq!(input.read_long().expect("read"), value);
+        }
+        assert_eq!(input.read_v_int().expect("read"), 300);
+        assert_eq!(input.read_z_int().expect("read"), -5);
+        assert_eq!(input.read_v_long().expect("read"), 1 << 40);
+        assert_eq!(input.read_z_long().expect("read"), -1 << 40);
+        assert_eq!(input.read_string().expect("read"), "rucene");
+        assert_eq!(input.read_byte().expect("read"), 0x7f);
+        let mut tail = [0u8; 2];
+        input.read_bytes(&mut tail, 0, 2).expect("read");
+        assert_eq!(tail, [2, 3]);
+        assert!(input.eof());
     }
 }
