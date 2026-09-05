@@ -143,13 +143,42 @@ impl TermVectors for EmptyTermVectors {
 // LeafReader
 // ---------------------------------------------------------------------------
 
+/// Hands out an [`IndexReader`] handle onto a leaf reader.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `LeafReader extends IndexReader`,
+/// so a `LeafReader` reference *is* an `IndexReader` reference and
+/// `BaseCompositeReader` can hold the wrapped leaves as sub-readers with no
+/// conversion at all. This port relates the two by the blanket
+/// `impl<T: LeafReader> IndexReader for T` below instead, and Rust cannot
+/// unsize `Arc<dyn LeafReader>` into `Arc<dyn IndexReader>` across a blanket
+/// impl — only across a supertrait. This trait restores the missing step: the
+/// coercion is legal inside the blanket impl, where `Self` is a concrete sized
+/// type, and reaches `dyn LeafReader` through the vtable because
+/// [`LeafReader`] has it as a supertrait. No implementor writes anything.
+///
+/// The handle is the very same allocation, so the reader's identity — which
+/// [`IndexReaderCore::identity_hash_code`] takes from the core's address, and
+/// on which `IndexReader`'s `PartialEq` and `Hash` rest — is preserved, as it
+/// is in Java.
+pub trait AsIndexReader {
+    /// Returns this leaf as an [`IndexReader`], without copying it.
+    fn as_index_reader(self: Arc<Self>) -> Arc<dyn IndexReader>;
+}
+
+impl<T: LeafReader> AsIndexReader for T {
+    fn as_index_reader(self: Arc<Self>) -> Arc<dyn IndexReader> {
+        self
+    }
+}
+
 /// Atomic reader providing direct access to terms, postings, doc values,
 /// stored fields, term vectors, points, and vectors.
 ///
 /// Equivalent to `org.apache.lucene.index.LeafReader`. Concrete leaf readers
 /// implement this trait; a blanket implementation makes them usable as
-/// `dyn IndexReader`.
-pub trait LeafReader: Send + Sync + Debug + Display + 'static {
+/// `dyn IndexReader`, and [`AsIndexReader`] carries that view onto
+/// `Arc<dyn LeafReader>`.
+pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
     /// Returns the shared core state for this reader.
     fn core(&self) -> &IndexReaderCore;
 

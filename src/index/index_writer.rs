@@ -4545,7 +4545,7 @@ impl IndexWriter {
                         );
                     }
                     let mut copy = info.clone();
-                    let context = crate::store::FlushIOContext::new(crate::store::FlushInfo::new(
+                    let context = crate::store::flush_io_context(crate::store::FlushInfo::new(
                         info.info.max_doc()?,
                         copy.size_in_bytes()?,
                     ));
@@ -4555,7 +4555,7 @@ impl IndexWriter {
                         // schema change.
                         self.global_field_numbers.add_or_get(fi)?;
                     }
-                    infos.push(self.copy_segment_as_is(info, &new_seg_name, &context)?);
+                    infos.push(self.copy_segment_as_is(info, &new_seg_name, context.as_ref())?);
                 }
             }
             Ok(())

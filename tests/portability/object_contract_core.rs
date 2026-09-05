@@ -1100,13 +1100,22 @@ fn readers(m: &Measured, index_dir: &std::path::Path) {
         m.get("ExitableDirectoryReader.toString/two-segments"),
         "the subclass renders its *delegate*, not the wrapped leaves"
     );
-    // The wrapped leaf is taken straight off the `SubReaderWrapper` rather than
-    // off `exitable.leaves()`. That is deliberate: this port's
-    // `FilterDirectoryReader::get_sequential_sub_readers` currently answers with
-    // the *delegate's* leaves instead of the wrapped ones, so `leaves()` hands
-    // back bare `SegmentReader`s — a defect reported alongside this task, whose
-    // fix changes observable behaviour and therefore needs a decision. What is
-    // pinned here is the rendering of the wrapped leaf itself.
+    // `leaves()` must hand back the *wrapped* leaves, as
+    // `FilterDirectoryReader`'s constructor arranges by passing
+    // `wrapper.wrap(in.getSequentialSubReaders())` to `super`
+    // (`FilterDirectoryReader.java:91-93`). Both routes to the wrapped leaf are
+    // pinned here: through the reader, and straight off the `SubReaderWrapper`.
+    let exitable_leaves = Arc::clone(&exitable).leaves();
+    assert_eq!(
+        exitable_leaves.len(),
+        2,
+        "the wrapping preserves the leaves"
+    );
+    assert_eq!(
+        exitable_leaves[0].leaf_reader().to_string(),
+        m.get("ExitableFilterAtomicReader.toString/leaf-0"),
+        "a leaf reached through the exitable reader is the wrapped one"
+    );
     let wrapped_leaf = ExitableSubReaderWrapper::new(Arc::new(NeverTimesOut))
         .wrap(Arc::clone(&leaf0))
         .expect("wrap the leaf");

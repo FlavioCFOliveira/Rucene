@@ -1504,6 +1504,25 @@ pub trait IndexingChain: Accountable + Send + Debug {
         ))
     }
 
+    /// Returns an iterator over the documents that have a doc-values value for
+    /// `field`, or `None` when the chain buffered none.
+    ///
+    /// Equivalent to `IndexingChain.getHasDocValues(String)`, which
+    /// `DocumentsWriterPerThread.flush` calls before the flush to count the
+    /// segment's soft deletes. The default answers `None`, which is what a
+    /// chain that buffers no doc values — or a test double — contributes.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the buffered doc-values view raises.
+    fn get_has_doc_values(
+        &self,
+        field: &str,
+    ) -> Result<Option<Box<dyn crate::search::DocIdSetIterator>>> {
+        let _ = field;
+        Ok(None)
+    }
+
     /// Binds the chain to the segment it will write.
     ///
     /// Lucene passes the directory and the `SegmentInfo` to the
@@ -3933,6 +3952,19 @@ impl DwptGuard {
         let field_infos = self.state_mut().field_infos.finish()?;
         let context = flush_io_context(FlushInfo::new(max_doc, last_committed_bytes_used));
         let delete_terms = self.state().pending_updates.delete_terms();
+        // Lucene takes the soft-deletes iterator off the chain *before* the
+        // flush, because the flush drops the buffered doc values
+        // (`DocumentsWriterPerThread.java:486-491`); it is counted afterwards,
+        // against the post-flush live docs.
+        let soft_deleted_docs = match self.dwpt.index_writer_config.soft_deletes_field() {
+            Some(field) => self
+                .state
+                .as_ref()
+                .expect("INVARIANT: state is only taken in Drop")
+                .indexing_chain
+                .get_has_doc_values(field)?,
+            None => None,
+        };
         let flush_result = {
             let state = self
                 .state
@@ -3965,9 +3997,40 @@ impl DwptGuard {
         segment_info.set_files(self.dwpt.directory.get_created_files());
         set_flush_diagnostics(&mut segment_info);
 
+        // `flushState.softDelCountOnFlush` (`DocumentsWriterPerThread.java:493-500`):
+        // how many of this segment's own documents the soft-deletes field marks,
+        // ignoring the ones that are hard-deleted as well. Without it the
+        // committed `SegmentCommitInfo` claims zero soft deletes, which throws
+        // off `IndexWriter.numDocs`, the merge policy's reclaim estimates and
+        // `SoftDeletesDirectoryReaderWrapper`'s own doc-count check.
+        let soft_del_count = match soft_deleted_docs {
+            Some(mut iterator) => {
+                crate::index::readers_and_updates::PendingSoftDeletes::count_soft_deletes(
+                    Some(iterator.as_mut()),
+                    live_docs
+                        .as_ref()
+                        .map(|bits| bits as &dyn crate::util::Bits),
+                )?
+            }
+            None => 0,
+        };
+        let segment_max_doc = segment_info.max_doc()?;
+        debug_assert!(
+            segment_max_doc >= soft_del_count + del_count,
+            "segment {} has maxDoc={segment_max_doc} but {soft_del_count} soft and {del_count} hard deletes",
+            segment_info.name
+        );
+
         let segment_name = segment_info.name.clone();
-        let segment_commit_info =
-            SegmentCommitInfo::new(segment_info, 0, 0, -1, -1, -1, StringHelper::random_id())?;
+        let segment_commit_info = SegmentCommitInfo::new(
+            segment_info,
+            0,
+            soft_del_count,
+            -1,
+            -1,
+            -1,
+            StringHelper::random_id(),
+        )?;
 
         let segment_updates = {
             let updates = &mut self.state_mut().pending_updates;

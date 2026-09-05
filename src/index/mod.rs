@@ -109,7 +109,7 @@ pub use index_utilities::{
     LockableConcurrentApproximatePriorityQueue, QueryTimeout, QueryTimeoutImpl,
     TrackingTmpOutputDirectoryWrapper, TryLockable,
 };
-pub use leaf_reader::{EmptyTermVectors, LeafMetaData, LeafReader, TermVectors};
+pub use leaf_reader::{AsIndexReader, EmptyTermVectors, LeafMetaData, LeafReader, TermVectors};
 pub use merge::{
     deletion_doc_map, identity_doc_map, DocIDMerger, DocIDMergerSub, DocMap, MergeState,
 };

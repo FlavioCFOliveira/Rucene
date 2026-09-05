@@ -106,8 +106,12 @@ use crate::index::{
     DocValuesType, FieldInfo, IndexOptions, IndexableField, IndexableFieldType, SegmentInfo,
 };
 use crate::index::{NumericValue, StoredValue};
+use crate::search::doc_values_iteration::{
+    binary_as_iterator, numeric_as_iterator, sorted_as_iterator, sorted_numeric_as_iterator,
+    sorted_set_as_iterator,
+};
 use crate::search::Similarity;
-use crate::search::NO_MORE_DOCS;
+use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::TrackingDirectoryWrapper;
 use crate::util::byte_block_pool::MAX_TERM_LENGTH;
 use crate::util::NumericUtils;
@@ -2944,6 +2948,43 @@ impl Accountable for DefaultIndexingChain {
 }
 
 impl IndexingChain for DefaultIndexingChain {
+    /// Returns an iterator over the documents of this segment that have a
+    /// doc-values value for `field`, or `None` when the field has no doc values
+    /// buffered.
+    ///
+    /// Equivalent to `IndexingChain.getHasDocValues(String)`, which
+    /// `DocumentsWriterPerThread.flush` calls **before** flushing so it can
+    /// count how many documents the soft-deletes field marks
+    /// (`DocumentsWriterPerThread.java:486-499`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the buffered doc-values view raises.
+    fn get_has_doc_values(&self, field: &str) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        let Some(index) = self.per_field_index.get(field) else {
+            return Ok(None);
+        };
+        let per_field = &self.per_fields[*index];
+        let Some(writer) = per_field.doc_values.as_ref() else {
+            return Ok(None);
+        };
+        let info = &per_field.field_info;
+        if info.doc_values_type == DocValuesType::NONE {
+            return Ok(None);
+        }
+        let producer = writer.get_doc_values()?;
+        Ok(Some(match info.doc_values_type {
+            DocValuesType::NONE => return Ok(None),
+            DocValuesType::NUMERIC => numeric_as_iterator(producer.get_numeric(info)?),
+            DocValuesType::BINARY => binary_as_iterator(producer.get_binary(info)?),
+            DocValuesType::SORTED => sorted_as_iterator(producer.get_sorted(info)?),
+            DocValuesType::SORTED_NUMERIC => {
+                sorted_numeric_as_iterator(producer.get_sorted_numeric(info)?)
+            }
+            DocValuesType::SORTED_SET => sorted_set_as_iterator(producer.get_sorted_set(info)?),
+        }))
+    }
+
     /// Indexes a column-oriented batch of documents.
     ///
     /// Equivalent to `IndexingChain.processBatch(int, ColumnBatch)`: the

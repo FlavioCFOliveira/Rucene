@@ -14,6 +14,7 @@ use crate::codecs::postings::FieldsProducer;
 use crate::codecs::stored_fields::StoredFieldsReader;
 use crate::codecs::term_vectors::TermVectorsReader;
 use crate::error::{LuceneError, Result};
+use crate::index::base_composite_reader::BaseCompositeReader;
 use crate::index::codec_reader::CodecReader;
 use crate::index::directory_reader::DirectoryReader;
 use crate::index::doc_values::{
@@ -109,6 +110,19 @@ pub struct FilterDirectoryReader {
     wrapper: Arc<dyn SubReaderWrapper>,
     directory_wrapper: Arc<dyn DirectoryReaderWrapper>,
     wrapped_leaves: Vec<Arc<dyn LeafReader>>,
+    /// The composite state over the **wrapped** leaves.
+    ///
+    /// Java reaches it by inheritance: `FilterDirectoryReader extends
+    /// DirectoryReader extends BaseCompositeReader`, and the constructor passes
+    /// `wrapper.wrap(in.getSequentialSubReaders())` up to it
+    /// (`FilterDirectoryReader.java:91-93`). Every method `BaseCompositeReader`
+    /// declares `final` — `getSequentialSubReaders`, `numDocs`, `maxDoc`,
+    /// `termVectors`, `storedFields`, `docFreq`, `totalTermFreq`,
+    /// `getSumDocFreq`, `getDocCount`, `getSumTotalTermFreq` — is therefore
+    /// answered from the wrapped leaves and *cannot* be delegated to `in`.
+    /// Rust has no implementation inheritance, so the base is held here and
+    /// those methods forward to it.
+    base: BaseCompositeReader,
 }
 
 impl std::fmt::Debug for FilterDirectoryReader {
@@ -148,11 +162,23 @@ impl FilterDirectoryReader {
         directory_wrapper: Arc<dyn DirectoryReaderWrapper>,
     ) -> Result<Self> {
         let wrapped_leaves = wrapper.wrap_all(leaves)?;
+        // `super(in.directory(), wrapper.wrap(in.getSequentialSubReaders()), null)`:
+        // the composite is built over the **wrapped** leaves, never the
+        // delegate's. `true` selects the `CorruptIndexException` a
+        // `DirectoryReader` raises when the leaves hold too many documents,
+        // rather than the `IllegalArgumentException` a hand-assembled
+        // `MultiReader` gets (`BaseCompositeReader.java:88-101`).
+        let sub_readers: Vec<Arc<dyn IndexReader>> = wrapped_leaves
+            .iter()
+            .map(|leaf| Arc::clone(leaf).as_index_reader())
+            .collect();
+        let base = BaseCompositeReader::new(sub_readers, true)?;
         Ok(Self {
             inner,
             wrapper,
             directory_wrapper,
             wrapped_leaves,
+            base,
         })
     }
 
@@ -237,26 +263,36 @@ impl FilterDirectoryReader {
 }
 
 impl IndexReader for FilterDirectoryReader {
+    /// **Divergence from Lucene 10.5.0.** Java's `FilterDirectoryReader` is an
+    /// `IndexReader` in its own right, with its own reference count and its own
+    /// identity; this port shares the delegate's [`IndexReaderCore`], so the
+    /// two readers count references together and compare equal. That is
+    /// pre-existing and orthogonal to the leaves; it is recorded here because
+    /// it is the reason `BaseCompositeReader`'s `registerParentReader` call
+    /// (`BaseCompositeReader.java:86`) is not reproduced — there is no separate
+    /// core for the wrapped leaves to register against.
     fn core(&self) -> &IndexReaderCore {
         self.inner.core()
     }
 
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
-        self.inner.term_vectors()
+        self.base.term_vectors()
     }
 
     fn num_docs(&self) -> i32 {
-        self.inner.num_docs()
+        self.base.num_docs()
     }
 
     fn max_doc(&self) -> i32 {
-        self.inner.max_doc()
+        self.base.max_doc()
     }
 
     fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
-        self.inner.stored_fields()
+        self.base.stored_fields()
     }
 
+    /// Equivalent to `FilterDirectoryReader.doClose()`, the one close method
+    /// the class overrides: it closes the delegate.
     fn do_close(&self) -> Result<()> {
         self.inner.do_close()
     }
@@ -266,23 +302,23 @@ impl IndexReader for FilterDirectoryReader {
     }
 
     fn doc_freq(&self, term: &Term) -> Result<i32> {
-        self.inner.doc_freq(term)
+        self.base.doc_freq(term)
     }
 
     fn total_term_freq(&self, term: &Term) -> Result<i64> {
-        self.inner.total_term_freq(term)
+        self.base.total_term_freq(term)
     }
 
     fn get_sum_doc_freq(&self, field: &str) -> Result<i64> {
-        self.inner.get_sum_doc_freq(field)
+        self.base.get_sum_doc_freq(field)
     }
 
     fn get_doc_count(&self, field: &str) -> Result<i32> {
-        self.inner.get_doc_count(field)
+        self.base.get_doc_count(field)
     }
 
     fn get_sum_total_term_freq(&self, field: &str) -> Result<i64> {
-        self.inner.get_sum_total_term_freq(field)
+        self.base.get_sum_total_term_freq(field)
     }
 
     fn build_context(
@@ -305,8 +341,16 @@ impl IndexReader for FilterDirectoryReader {
 }
 
 impl CompositeReader for FilterDirectoryReader {
+    /// Returns the **wrapped** leaves.
+    ///
+    /// Equivalent to `BaseCompositeReader.getSequentialSubReaders()` — `final`
+    /// in Java — over the array `FilterDirectoryReader`'s constructor built
+    /// with `wrapper.wrap(in.getSequentialSubReaders())`
+    /// (`FilterDirectoryReader.java:91-93`). Answering with the delegate's own
+    /// leaves instead makes every wrapping a silent no-op through
+    /// [`IndexReader::leaves`], which is the normal path into a reader.
     fn get_sequential_sub_readers(&self) -> Vec<Arc<dyn IndexReader>> {
-        self.inner.get_sequential_sub_readers()
+        self.base.get_sequential_sub_readers()
     }
 }
 
