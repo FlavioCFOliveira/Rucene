@@ -20,6 +20,7 @@ the `rmp` binary on `PATH`.
 | `load_rucene_kg.py` | Loads that survey into the graph in `UNWIND` batches, and keeps the Rucene side of the graph honest: collapses legacy labels, merges duplicate nodes, stamps provenance, and audits the result against the survey. |
 | `port_coverage_kg.py` | The coverage layer: marks the in-scope Lucene surface, derives Lucene type→type dependencies, links open `rmp` tasks to the types they need, records `Component.status`, and writes the scope `Decision`. |
 | `port_evidence_kg.py` | Reads the `Equivalent to `org.apache.lucene…`` claims the crate's own doc comments make (`CLAUDE.md` §14.1) and turns them into `PORTS` edges with `evidence: "doc-comment"`, then measures how much of each ported type is actually present. |
+| `expanded_evidence_kg.py` | The port evidence that only exists after macro expansion: reads the doc comment the compiler prints above each macro-generated type (`#[doc = concat!(…)]` is only text once expanded) and turns its `Equivalent to \`org.apache.lucene…\`` claim into a `PORTS` edge carrying `evidence: "doc-comment"` and `declarationSource: "macro-expansion"`. |
 | `lucene_modules_kg.py` | Registers all 35 modules of the Lucene distribution with their size and an explicit `inScope` flag, so port coverage is quoted against a stated denominator (`CLAUDE.md` §6.1). |
 | `lucene_tests_kg.py` | Loads the Lucene test surface (`TestClass`, `TestMethod`) and its correspondence with the crate. |
 | `lucene_structure_kg.py` | Loads the Lucene nested types and members in `UNWIND` batches, calling `enrich_lucene_kg.py`'s extractors directly. Replaces feeding its generated Cypher through `run_kg_batches.py`, which cost one process launch per statement — about 19,000 for the member surface. `--prune` removes nested types the reference tree no longer declares. |
@@ -74,8 +75,17 @@ python3 tools/kg/load_rucene_kg.py rucene --survey /tmp/rucene_kg/survey.json
 python3 tools/kg/port_coverage_kg.py rucene --survey /tmp/rucene_kg/survey.json \
     --lucene-root /tmp/lucene1050 --commit "$COMMIT" --date "$DATE"
 
-# 5. The port evidence the crate states about itself, and the depth of each port
-python3 tools/kg/port_evidence_kg.py rucene --source-root . --phase all \
+# 5. The port evidence the crate states about itself
+python3 tools/kg/port_evidence_kg.py rucene --source-root . --phase extract
+python3 tools/kg/port_evidence_kg.py rucene --source-root . --phase load \
+    --commit "$COMMIT" --date "$DATE"
+
+# 5b. The same evidence for the types that exist only after macro expansion
+python3 tools/kg/expanded_evidence_kg.py rucene --source-root . \
+    --commit "$COMMIT" --date "$DATE"
+
+# 5c. The depth of each port, now that every declared edge is in place
+python3 tools/kg/port_evidence_kg.py rucene --source-root . --phase depth \
     --commit "$COMMIT" --date "$DATE"
 
 # 6. The commit history
@@ -91,18 +101,33 @@ python3 tools/kg/audit_kg.py rucene --survey /tmp/rucene_kg/survey.json
 
 Step 5 must run after step 4: it supersedes `PORTS_CANDIDATE` edges with the
 declared `PORTS` edges, and the depth measurement reads the `portScope` the
-coverage phase assigns. Re-run `port_coverage_kg.py --phase scope,candidates`
-afterwards so `portState` reflects the edges step 5 wrote.
+coverage phase assigns. Step 5b must run between the load and the depth
+measurement, because `measure_depth` resolves a ported type's Rust functions
+through the `(name, file)` of a `PORTS` edge: without the edges 5b writes, the
+macro-generated types are never measured and their Lucene members stay outside
+the denominator. Re-run `port_coverage_kg.py --phase scope,candidates`
+afterwards so `portState` reflects the edges steps 5 and 5b wrote.
 
 ### `--expand`: the macro-generated types
 
 `extract_rucene_kg.py --expand` runs `cargo +nightly rustc --lib --
 -Zunpretty=expanded` and records the types and inherent methods that only exist
-after macro expansion. Without it the survey misses 67 real types — the 24
+after macro expansion. Without it the survey misses 118 real types — the 24
 `BulkOperationPackedN`, the `internal::hppc` containers, the range fields and the
 doc-values iterators — and `load_rucene_kg.py --phase audit` reports them as
 stale nodes to delete, which would silently drop their `PORTS` edges. The flag
 needs the nightly toolchain; `--expanded-file` reuses a captured dump instead.
+
+`expanded_evidence_kg.py` reads the same dump for the second thing only the
+compiler can show: the *doc comment* printed above each of those types, which is
+where their `Equivalent to \`org.apache.lucene…\`` claim lives — a claim written
+`#[doc = concat!(…)]` is not text until it is expanded. It takes the same
+`--expanded-file`, so one captured dump serves the survey, the evidence pass and
+`audit_kg.py` alike:
+
+```bash
+cargo +nightly rustc --lib -- -Zunpretty=expanded > /tmp/rucene_kg/expanded.rs
+```
 
 Step 4 must run after step 3: the candidate detection reads the crate survey, and
 `portState` is derived from the `PORTS` edges the Rucene load has repaired.

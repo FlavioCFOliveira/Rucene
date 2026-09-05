@@ -288,13 +288,30 @@ def load(roadmap, claims, commit, date):
     indirectly, and attributing it by guess is exactly what this graph must not
     contain. It is therefore resolved by a rule that admits one reading and no
     other: **a module claim naming `pkg.Foo` lands on the item named `Foo`
-    declared by that same file, and is dropped when the file declares no such
-    item.** That is not an inference about which type was meant -- the file says
-    it ports `Foo` and declares `Foo` -- and it never reaches outside the file,
-    so it cannot attach to a same-named type in another module.
+    declared by that same file.** That is not an inference about which type was
+    meant -- the file says it ports `Foo` and declares `Foo` -- and it never
+    reaches outside the file, so it cannot attach to a same-named type in
+    another module.
 
-    The Rust end is matched on `(name, file)`, the identity the model gives a
-    Rust type, for both kinds of claim.
+    One case remains, and the model already has a node for it. Lucene's static
+    utility classes are ported as a Rust *module* of free functions, so the file
+    declares no type at all and there is nothing named `Foo` for the claim to
+    land on: `src/util/collection_util.rs` says it ports
+    `org.apache.lucene.util.CollectionUtil` and declares six functions and no
+    type. `knowledge-model.md` models such a unit as a `Component` -- "a crate
+    unit that declares no Rust type: a module of free functions, the port of one
+    of Lucene's static utility classes" -- so **a module claim whose file
+    declares no Rust type at all lands on that file's `Component`**, which is
+    then the only thing the claim can be about. The rule is not a new judgement:
+    run over the crate it reproduces six of the eight `Component` ports curated
+    by hand -- every one whose module doc states the claim at all -- and finds
+    exactly the two that were missing, `CollectionUtil` and `HashContainers`. An
+    existing `Component` for the file is reused whatever it is named, so the rule
+    cannot mint a second node for a module that already has one.
+
+    The Rust end is matched on `(name, file)` -- the identity the model gives a
+    Rust type and a `Component` alike -- for every kind of claim, which is also
+    what lets `measure_depth` reach a module port's free functions.
     """
     # A nested Lucene type is keyed `pkg.Outer$Inner` in the graph, but a doc
     # comment naturally writes `pkg.Outer.Inner`. Accept both spellings.
@@ -308,6 +325,13 @@ def load(roadmap, claims, commit, date):
         roadmap,
         "MATCH (t) WHERE t:RustStruct OR t:RustTrait OR t:RustEnum OR t:RustAlias "
         "RETURN t.name, t.file")}
+    # Which files declare a type at all, and which already have a `Component`.
+    # Both are read before the function names are folded in below, because the
+    # module-as-`Component` rule turns on the absence of a *type*, not of a
+    # function: a module of free functions is exactly the case it serves.
+    files_with_types = {f for _n, f in types}
+    component_of_file = {r[1]: r[0] for r in q(
+        roadmap, "MATCH (co:Component) RETURN co.name, co.file") if r[1]}
     # A free function can be the port of a Lucene class in its own right --
     # `by_byte_size` is `LogByteSizeMergePolicy` -- so accept a RustFn target too,
     # but only where `(name, file)` identifies exactly one, since RustFn identity
@@ -318,27 +342,34 @@ def load(roadmap, claims, commit, date):
     types |= {k for k, n in fn_counts.items() if n == 1}
 
     rows, unresolved_lucene, unresolved_rust = [], set(), set()
-    module_resolved = 0
+    module_resolved = module_as_component = 0
     for c in claims:
-        target = c.get("target")
+        target, component = c.get("target"), False
         if c["scope"] == "module" and not target:
             simple = c["lucene"].replace("$", ".").rsplit(".", 1)[-1]
-            if (simple, c["file"]) not in types:
+            if (simple, c["file"]) in types:
+                target = simple
+                module_resolved += 1
+            elif c["file"] in files_with_types:
                 continue
-            target, c = simple, dict(c, target=simple)
-            module_resolved += 1
+            else:
+                target = component_of_file.get(c["file"], simple)
+                component = True
+                module_as_component += 1
+            c = dict(c, target=target)
         if not target:
             continue
         target_class = classes.get(c["lucene"])
         if target_class is None:
             unresolved_lucene.add(c["lucene"])
             continue
-        if (c["target"], c["file"]) not in types:
+        if not component and (c["target"], c["file"]) not in types:
             unresolved_rust.add((c["target"], c["file"]))
             continue
         rows.append({"name": c["target"], "file": c["file"],
                      "lucene": target_class, "line": c["line"],
-                     "note": c.get("note"), "commit": commit, "date": date})
+                     "note": c.get("note"), "commit": commit, "date": date,
+                     "component": component})
 
     # De-duplicate: one edge per (rust item, lucene type).
     seen, uniq = set(), []
@@ -350,14 +381,38 @@ def load(roadmap, claims, commit, date):
 
     print(f"  module claims resolved to a declared item: {module_resolved}",
           file=sys.stderr)
+    print(f"  module claims resolved to a Component: {module_as_component}",
+          file=sys.stderr)
     print(f"  resolvable item claims: {len(uniq)} "
           f"(lucene unresolved {len(unresolved_lucene)}, "
           f"rust unresolved {len(unresolved_rust)})", file=sys.stderr)
+
+    # The `Component` nodes the rule above needs. Creating one here is safe
+    # because it is created only for a file the survey confirms and that
+    # declares no type, and `MERGE` on the name reuses the node when it already
+    # exists; a file that already has a `Component` under another name keeps it,
+    # since `component_of_file` supplied that name as the target.
+    comps = [{k: r[k] for k in ("name", "file", "commit", "date")}
+             for r in uniq if r["component"]]
+    seen_c, comp_rows = set(), []
+    for r in comps:
+        if r["name"] not in seen_c:
+            seen_c.add(r["name"])
+            comp_rows.append(r)
+    run_unwind(roadmap, "create", comp_rows,
+               "MERGE (co:Component {name:row.name})", "Component nodes")
+    run_unwind(roadmap, "update", comp_rows,
+               "MATCH (co:Component {name:row.name}) "
+               "SET co.file = row.file, co.kind = 'module', "
+               "co.language = 'Rust', co.gitCommit = row.commit, "
+               "co.gitDate = row.date",
+               "Component provenance")
 
     # `MERGE (a)-[:PORTS]->(b)` silently matches a relationship of a *different*
     # type between the same ordered pair (see knowledge-model.md), so a pair
     # already joined by PORTS_CANDIDATE would never gain its PORTS edge. Drop
     # the candidate edge first: a declared equivalence supersedes a name guess.
+    uniq = [{k: v for k, v in r.items() if k != "component"} for r in uniq]
     run_unwind(roadmap, "delete", uniq,
                "MATCH (t {name:row.name, file:row.file})-[e:PORTS_CANDIDATE]->"
                "(c:Class {qualifiedName:row.lucene}) DELETE e",
