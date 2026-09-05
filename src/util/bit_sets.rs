@@ -11,6 +11,8 @@
 //! * [`DenseLiveDocs`] – traditional live docs backed by a [`FixedBitSet`].
 //! * [`SparseLiveDocs`] – live docs optimized for sparse deletions by storing
 //!   the deleted docs in a [`SparseFixedBitSet`] with inverted semantics.
+//! * `FilteredDocIdSetIterator` – the package-private `O(max_doc)` predicate
+//!   scan that Lucene's two live-docs classes iterate with.
 
 #![deny(unsafe_code)]
 
@@ -1447,6 +1449,104 @@ impl DocIdSetIterator for RoaringDocIdSetIterator {
 }
 
 // -----------------------------------------------------------------------------
+// FilteredDocIdSetIterator
+// -----------------------------------------------------------------------------
+
+/// Port of `org.apache.lucene.util.FilteredDocIdSetIterator`.
+///
+/// A [`DocIdSetIterator`] that returns the documents matching a predicate by
+/// scanning every document position. It wraps no inner iterator, so iteration
+/// has `O(max_doc)` complexity, and it can walk either the live or the deleted
+/// documents depending on the predicate it is given.
+///
+/// Not to be confused with `org.apache.lucene.search.FilteredDocIdSetIterator`,
+/// an unrelated class of the same simple name: that one is a public abstract
+/// decorator over an *inner* iterator, with `getDelegate()`/`match(int)` and a
+/// delegated `cost()`, and is ported separately in
+/// [`crate::search::doc_id_set_iterator`].
+///
+/// Lucene declares the Java class package-private within
+/// `org.apache.lucene.util` and marks it `@lucene.internal`. `pub(in
+/// crate::util)` is the closest Rust equivalent, confining it to the port of
+/// that same package.
+#[allow(dead_code)] // Not yet reachable; see the note on `new`.
+pub(in crate::util) struct FilteredDocIdSetIterator {
+    max_doc: i32,
+    cost: i32,
+    predicate: Box<dyn Fn(i32) -> bool>,
+    doc: i32,
+}
+
+#[allow(dead_code)] // Not yet reachable; see the note on `new`.
+impl FilteredDocIdSetIterator {
+    /// Creates a filtered iterator over the documents in `[0, max_doc)`.
+    ///
+    /// `cost` is the expected number of documents to return, reported verbatim
+    /// by [`DocIdSetIterator::cost`], and `predicate` returns `true` for the
+    /// documents to include in the iteration.
+    ///
+    /// Equivalent to
+    /// `FilteredDocIdSetIterator(int maxDoc, int cost, IntPredicate predicate)`.
+    ///
+    /// In Lucene 10.5.0 this type has exactly two callers, both in the same
+    /// package: `DenseLiveDocs.deletedDocsIterator()` (`DenseLiveDocs.java:139`,
+    /// predicate `doc -> !liveDocs.get(doc)`) and
+    /// `SparseLiveDocs.liveDocsIterator()` (`SparseLiveDocs.java:133`,
+    /// predicate `doc -> !deletedDocs.get(doc)`). Neither is reachable from the
+    /// crate's [`DenseLiveDocs`] and [`SparseLiveDocs`] yet, because the ported
+    /// [`crate::util::bit_set::LiveDocs`] trait returns
+    /// `Box<dyn DocIdSetIterator>`, whose implicit `'static` bound forbids the
+    /// returned iterator from borrowing the bit set out of `&self` the way
+    /// Java's lambda captures the field reference. That gap belongs to the
+    /// `LiveDocs` port, not to this type, and closing it here would mean either
+    /// deep-copying the bit set per call — a cost Lucene does not pay — or
+    /// changing an already-ported trait contract.
+    pub(in crate::util) fn new(
+        max_doc: i32,
+        cost: i32,
+        predicate: Box<dyn Fn(i32) -> bool>,
+    ) -> Self {
+        Self {
+            max_doc,
+            cost,
+            predicate,
+            doc: -1,
+        }
+    }
+}
+
+impl DocIdSetIterator for FilteredDocIdSetIterator {
+    fn doc_id(&self) -> i32 {
+        self.doc
+    }
+
+    fn next_doc(&mut self) -> crate::error::Result<i32> {
+        self.advance(self.doc + 1)
+    }
+
+    fn advance(&mut self, target: i32) -> crate::error::Result<i32> {
+        if target >= self.max_doc {
+            self.doc = NO_MORE_DOCS;
+            return Ok(self.doc);
+        }
+
+        self.doc = target;
+        while self.doc < self.max_doc {
+            if (self.predicate)(self.doc) {
+                return Ok(self.doc);
+            }
+            self.doc += 1;
+        }
+        self.doc = NO_MORE_DOCS;
+        Ok(self.doc)
+    }
+
+    fn cost(&self) -> i64 {
+        i64::from(self.cost)
+    }
+}
+
+// -----------------------------------------------------------------------------
 // DenseLiveDocs
 // -----------------------------------------------------------------------------
 
@@ -1972,5 +2072,172 @@ mod tests {
                 "sparse mismatch at {d}"
             );
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // FilteredDocIdSetIterator (org.apache.lucene.util)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn filtered_doc_id_set_iterator_next_doc_and_terminal_values() {
+        let mut it = FilteredDocIdSetIterator::new(8, 4, Box::new(|doc| doc % 2 == 0));
+        assert_eq!(it.doc_id(), -1, "docID must be -1 before the first call");
+
+        let mut seen = Vec::new();
+        loop {
+            let doc = it.next_doc().unwrap();
+            if doc == NO_MORE_DOCS {
+                break;
+            }
+            seen.push(doc);
+        }
+
+        assert_eq!(seen, vec![0, 2, 4, 6]);
+        assert_eq!(
+            it.doc_id(),
+            NO_MORE_DOCS,
+            "docID must stick at NO_MORE_DOCS"
+        );
+    }
+
+    #[test]
+    fn filtered_doc_id_set_iterator_advance() {
+        let matches = |doc: i32| matches!(doc, 2 | 5 | 6);
+
+        // advance() is inclusive: it lands on the target when the target matches.
+        let mut on_target = FilteredDocIdSetIterator::new(10, 3, Box::new(matches));
+        assert_eq!(on_target.advance(2).unwrap(), 2);
+        assert_eq!(on_target.doc_id(), 2);
+        // ... and otherwise scans forward to the next matching document.
+        assert_eq!(on_target.advance(3).unwrap(), 5);
+        assert_eq!(on_target.next_doc().unwrap(), 6);
+
+        let mut from_zero = FilteredDocIdSetIterator::new(10, 3, Box::new(matches));
+        assert_eq!(from_zero.advance(0).unwrap(), 2);
+
+        // A target at or beyond max_doc exhausts the iterator immediately.
+        let mut past_end = FilteredDocIdSetIterator::new(10, 3, Box::new(matches));
+        assert_eq!(past_end.advance(10).unwrap(), NO_MORE_DOCS);
+        assert_eq!(past_end.doc_id(), NO_MORE_DOCS);
+
+        // So does a target with no match at or after it.
+        let mut no_match_after = FilteredDocIdSetIterator::new(10, 3, Box::new(matches));
+        assert_eq!(no_match_after.advance(7).unwrap(), NO_MORE_DOCS);
+    }
+
+    #[test]
+    fn filtered_doc_id_set_iterator_rejects_ignoring_the_predicate() {
+        // Regression guard (CLAUDE.md §9): every assertion here fails if the
+        // predicate is dropped and the iterator degenerates into a plain scan
+        // of [0, max_doc).
+        let max_doc = 9;
+
+        // Doc 0 deliberately does not match, so an unfiltered scan would answer
+        // 0 where Lucene answers 1.
+        let mut it = FilteredDocIdSetIterator::new(max_doc, 3, Box::new(|doc| doc % 3 == 1));
+        assert_eq!(it.next_doc().unwrap(), 1);
+        assert_eq!(it.next_doc().unwrap(), 4);
+        assert_eq!(it.advance(5).unwrap(), 7);
+        assert_eq!(it.next_doc().unwrap(), NO_MORE_DOCS);
+
+        // The sharpest case: a predicate that never matches must consume the
+        // whole range and report NO_MORE_DOCS, not return doc 0.
+        let mut never = FilteredDocIdSetIterator::new(max_doc, 0, Box::new(|_| false));
+        assert_eq!(never.next_doc().unwrap(), NO_MORE_DOCS);
+        assert_eq!(never.doc_id(), NO_MORE_DOCS);
+        let mut never_advance = FilteredDocIdSetIterator::new(max_doc, 0, Box::new(|_| false));
+        assert_eq!(never_advance.advance(0).unwrap(), NO_MORE_DOCS);
+    }
+
+    #[test]
+    fn filtered_doc_id_set_iterator_cost_is_reported_verbatim() {
+        // Java stores `cost` and widens it to long; it is an estimate supplied
+        // by the caller and is never recomputed from the predicate.
+        let generous = FilteredDocIdSetIterator::new(1_000, 7, Box::new(|_| true));
+        assert_eq!(generous.cost(), 7);
+
+        let empty = FilteredDocIdSetIterator::new(0, 0, Box::new(|_| true));
+        assert_eq!(empty.cost(), 0);
+    }
+
+    #[test]
+    fn filtered_doc_id_set_iterator_range_edges() {
+        // An empty range is exhausted straight away.
+        let mut empty = FilteredDocIdSetIterator::new(0, 0, Box::new(|_| true));
+        assert_eq!(empty.doc_id(), -1);
+        assert_eq!(empty.next_doc().unwrap(), NO_MORE_DOCS);
+
+        // The last document in range is reachable; max_doc itself is not.
+        let mut last = FilteredDocIdSetIterator::new(4, 1, Box::new(|doc| doc == 3));
+        assert_eq!(last.next_doc().unwrap(), 3);
+        assert_eq!(last.next_doc().unwrap(), NO_MORE_DOCS);
+    }
+
+    #[test]
+    fn filtered_doc_id_set_iterator_reproduces_the_two_lucene_call_sites() {
+        // Portability test (CLAUDE.md §14.3) for the only two callers in
+        // Lucene 10.5.0:
+        //   DenseLiveDocs.java:139
+        //     new FilteredDocIdSetIterator(maxDoc, deletedCount, doc -> !liveDocs.get(doc))
+        //   SparseLiveDocs.java:133
+        //     new FilteredDocIdSetIterator(maxDoc, maxDoc - deletedCount, doc -> !deletedDocs.get(doc))
+        let max_doc = 10usize;
+        let deleted = [1usize, 3, 7];
+        let deleted_count = deleted.len();
+
+        let mut live_bits = FixedBitSet::new(max_doc);
+        for d in 0..max_doc {
+            if !deleted.contains(&d) {
+                live_bits.set(d);
+            }
+        }
+
+        // Dense side: the bit set stores LIVE docs, so the scan yields the
+        // deleted ones.
+        let dense_probe = live_bits.clone();
+        let mut deleted_iter = FilteredDocIdSetIterator::new(
+            max_doc as i32,
+            deleted_count as i32,
+            Box::new(move |doc| !dense_probe.get(doc as usize)),
+        );
+        assert_eq!(deleted_iter.cost(), deleted_count as i64);
+        let mut got_deleted = Vec::new();
+        loop {
+            let doc = deleted_iter.next_doc().unwrap();
+            if doc == NO_MORE_DOCS {
+                break;
+            }
+            got_deleted.push(doc as usize);
+        }
+        assert_eq!(got_deleted, deleted.to_vec());
+
+        // Sparse side: the bit set stores DELETED docs, so the scan yields the
+        // live ones.
+        let mut deleted_bits = SparseFixedBitSet::new(max_doc);
+        for &d in deleted.iter() {
+            deleted_bits.set(d);
+        }
+        let mut live_iter = FilteredDocIdSetIterator::new(
+            max_doc as i32,
+            (max_doc - deleted_count) as i32,
+            Box::new(move |doc| !deleted_bits.get(doc as usize)),
+        );
+        assert_eq!(live_iter.cost(), (max_doc - deleted_count) as i64);
+        let mut got_live = Vec::new();
+        loop {
+            let doc = live_iter.next_doc().unwrap();
+            if doc == NO_MORE_DOCS {
+                break;
+            }
+            got_live.push(doc as usize);
+        }
+        let expected_live: Vec<usize> = (0..max_doc).filter(|d| !deleted.contains(d)).collect();
+        assert_eq!(got_live, expected_live);
+
+        // The two iterators partition [0, max_doc) exactly.
+        let mut union = got_deleted;
+        union.extend(got_live);
+        union.sort_unstable();
+        assert_eq!(union, (0..max_doc).collect::<Vec<_>>());
     }
 }
