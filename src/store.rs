@@ -6311,6 +6311,29 @@ pub struct ByteBuffersDataOutput {
     recycler: Option<ByteBufferRecycler>,
 }
 
+/// Accounts for the blocks this output has allocated.
+///
+/// Equivalent to `ByteBuffersDataOutput implements Accountable`, whose
+/// `ramBytesUsed()` is kept incrementally as `Sum(block.capacity()) +
+/// blocks.size() * NUM_BYTES_OBJECT_REF`. Java's `blocks` holds every allocated
+/// block, the one being filled included, and is empty until the first write;
+/// here the filled blocks are `completed` and the one being filled is
+/// `current`, a zero-capacity vector until the first allocation.
+///
+/// Measured against `lucene-core-10.5.0.jar`: 0 bytes written answers 0, and
+/// 1, 100 and 1024 bytes all answer 1028 (one 1 KiB block plus its reference).
+impl crate::util::Accountable for ByteBuffersDataOutput {
+    fn ram_bytes_used(&self) -> i64 {
+        let mut blocks = self.completed.len();
+        let mut capacity: usize = self.completed.iter().map(Vec::capacity).sum();
+        if self.current.capacity() > 0 {
+            blocks += 1;
+            capacity += self.current.capacity();
+        }
+        capacity as i64 + blocks as i64 * crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF
+    }
+}
+
 impl ByteBuffersDataOutput {
     /// Creates a new output with default parameters.
     pub fn new() -> Self {

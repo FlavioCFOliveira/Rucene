@@ -148,12 +148,23 @@ impl<W: SkipDataWriter> MultiLevelSkipListWriter<W> {
         self.number_of_skip_levels
     }
 
-    /// Resets (or allocates) the internal skip buffers.
+    /// Allocates the internal skip buffers, one per skip level.
+    ///
+    /// Equivalent to `MultiLevelSkipListWriter.init()`.
+    pub fn init(&mut self) {
+        self.skip_buffer = (0..self.number_of_skip_levels)
+            .map(|_| SkipBuffer::new())
+            .collect();
+    }
+
+    /// Creates new buffers or empties the existing ones.
+    ///
+    /// Equivalent to `MultiLevelSkipListWriter.resetSkip()`. Java tests
+    /// `skipBuffer == null`; this port holds the buffers in a `Vec`, so the
+    /// not-yet-allocated state is the empty vector.
     pub fn reset_skip(&mut self) {
         if self.skip_buffer.is_empty() {
-            self.skip_buffer = (0..self.number_of_skip_levels)
-                .map(|_| SkipBuffer::new())
-                .collect();
+            self.init();
         } else {
             for buf in &mut self.skip_buffer {
                 buf.clear();

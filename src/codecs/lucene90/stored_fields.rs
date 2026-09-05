@@ -1474,6 +1474,10 @@ pub struct Lucene90CompressingStoredFieldsReader {
     fields_stream: Box<dyn IndexInput>,
     merging: bool,
     state: Mutex<BlockState>,
+    /// Whether [`close`](StoredFieldsReader::close) has already run.
+    ///
+    /// Equivalent to Lucene's `private boolean closed`.
+    closed: bool,
 }
 
 #[derive(Debug)]
@@ -1854,6 +1858,7 @@ impl Lucene90CompressingStoredFieldsReader {
             fields_stream,
             merging: false,
             state: Mutex::new(BlockState::new()),
+            closed: false,
         })
     }
 }
@@ -1913,6 +1918,12 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
     }
 
     fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
+        // Java guards this with `ensureOpen()`, which throws the *unchecked*
+        // `AlreadyClosedException`. The trait's return type cannot carry an
+        // error, and the `clone_input` below already panics once the stream is
+        // closed, so the same condition is reported here with Java's message
+        // instead of as an opaque clone failure.
+        self.ensure_open().expect("this FieldsReader is closed");
         Box::new(Self {
             version: self.version,
             field_infos: FieldInfos::new(self.field_infos.iter().map(|fi| fi.clone()).collect())
@@ -1929,10 +1940,14 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             fields_stream: self.fields_stream.clone_input().expect("clone failed"),
             merging: false,
             state: Mutex::new(BlockState::new()),
+            closed: false,
         })
     }
 
     fn get_merge_instance(&self) -> Box<dyn StoredFieldsReader> {
+        // See the note on `clone_reader`: Java guards this with the same
+        // unchecked `ensureOpen()`.
+        self.ensure_open().expect("this FieldsReader is closed");
         Box::new(Self {
             version: self.version,
             field_infos: FieldInfos::new(self.field_infos.iter().map(|fi| fi.clone()).collect())
@@ -1949,7 +1964,25 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             fields_stream: self.fields_stream.clone_input().expect("clone failed"),
             merging: true,
             state: Mutex::new(BlockState::new()),
+            closed: false,
         })
+    }
+
+    /// Closes the fields index and the `.fdt` stream, once.
+    ///
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.close()`: both are
+    /// closed even when the first fails, the first failure is the one reported,
+    /// and the reader is only marked closed once the close succeeded — so a
+    /// failed close can be retried, exactly as Java's `if (!closed)` allows.
+    fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        let index = self.index_reader.close();
+        let stream = self.fields_stream.close();
+        index.and(stream)?;
+        self.closed = true;
+        Ok(())
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -1958,6 +1991,20 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
 }
 
 impl Lucene90CompressingStoredFieldsReader {
+    /// Fails when this reader has already been closed.
+    ///
+    /// Equivalent to the private
+    /// `Lucene90CompressingStoredFieldsReader.ensureOpen()`, including its
+    /// message.
+    fn ensure_open(&self) -> Result<()> {
+        if self.closed {
+            return Err(LuceneError::AlreadyClosed(
+                "this FieldsReader is closed".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Returns the format version this segment was written with.
     ///
     /// Equivalent to `Lucene90CompressingStoredFieldsReader.getVersion`.

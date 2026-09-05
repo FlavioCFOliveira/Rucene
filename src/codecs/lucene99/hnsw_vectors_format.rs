@@ -22,6 +22,7 @@ use crate::codecs::hnsw::flat_vectors::{
     FlatFieldVectorsWriter, FlatVectorsFormat, FlatVectorsReader, FlatVectorsScorer,
     FlatVectorsWriter,
 };
+use crate::codecs::hnsw::graph_provider::HnswGraphProvider;
 use crate::codecs::knn_vectors::{
     FieldVectorWriter, KnnFieldVectorsWriter, KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
     SorterDocMap,
@@ -40,7 +41,7 @@ use crate::search::{AcceptDocs, DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{DataInput, IndexInput, IndexOutput};
 use crate::util::hnsw::{
     ArrayNodesIterator, CloseableRandomVectorScorerSupplier, ConcurrentHnswMerger,
-    DenseNodesIterator, HnswBuilder, HnswGraph, HnswGraphBuilder, HnswGraphMerger,
+    DenseNodesIterator, EmptyHnswGraph, HnswBuilder, HnswGraph, HnswGraphBuilder, HnswGraphMerger,
     HnswGraphSearcher, IncrementalHnswGraphMerger, NeighborArray, NeighborQueue, NodesIterator,
     OnHeapHnswGraph, RandomVectorScorer,
 };
@@ -59,14 +60,14 @@ const META_EXTENSION: &str = "vem";
 const VECTOR_INDEX_EXTENSION: &str = "vex";
 const VERSION_START: i32 = 0;
 const VERSION_GROUPVARINT: i32 = 1;
-const VERSION_CURRENT: i32 = VERSION_GROUPVARINT;
+pub(crate) const VERSION_CURRENT: i32 = VERSION_GROUPVARINT;
 
 const MAXIMUM_MAX_CONN: i32 = 512;
 const MAXIMUM_BEAM_WIDTH: i32 = 3200;
 const DEFAULT_MAX_CONN: i32 = crate::util::hnsw::DEFAULT_M;
 const DEFAULT_BEAM_WIDTH: i32 = crate::util::hnsw::DEFAULT_BEAM_WIDTH;
-const DEFAULT_NUM_MERGE_WORKER: i32 = 1;
-const HNSW_GRAPH_THRESHOLD: i32 = 100;
+pub(crate) const DEFAULT_NUM_MERGE_WORKER: i32 = 1;
+pub(crate) const HNSW_GRAPH_THRESHOLD: i32 = 100;
 const DIRECT_MONOTONIC_BLOCK_SHIFT: i32 = 16;
 const EXHAUSTIVE_BULK_SCORE_ORDS: usize = 64;
 
@@ -205,7 +206,13 @@ pub struct Lucene99HnswVectorsWriter {
     /// The format the flat vectors were written with, reopened for reading by
     /// [`Lucene99HnswVectorsWriter::ensure_flat_reader_open`] once the merge
     /// needs to score them.
-    flat_vectors_format: Lucene99FlatVectorsFormat,
+    ///
+    /// Equivalent to Lucene's `final FlatVectorsFormat flatVectorsFormat`
+    /// constructor parameter: the graph writer does not choose the flat format,
+    /// its caller does — which is how
+    /// `Lucene104HnswScalarQuantizedVectorsFormat` puts the scalar-quantized
+    /// format underneath the same graph writer.
+    flat_vectors_format: Box<dyn FlatVectorsFormat>,
     /// The reader over the flat vectors this writer just wrote, opened lazily.
     flat_vectors_reader: Option<Box<dyn FlatVectorsReader>>,
     /// Whether [`Lucene99HnswVectorsWriter::ensure_flat_reader_open`] already
@@ -276,7 +283,8 @@ impl<T: Clone + Send + Sync + 'static> KnnFieldVectorsWriter<T> for SharedFieldW
 }
 
 impl Lucene99HnswVectorsWriter {
-    /// Creates a new HNSW vector writer for the given segment.
+    /// Creates a new HNSW vector writer that stores its vectors with the
+    /// default Lucene 9.9 flat format.
     pub fn new(
         state: &SegmentWriteState<'_>,
         m: i32,
@@ -285,9 +293,38 @@ impl Lucene99HnswVectorsWriter {
         tiny_segments_threshold: i32,
         version: i32,
     ) -> Result<Self> {
-        let flat_vector_writer = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE)
-            .fields_writer_flat(state)?;
+        let flat_vectors_format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
+        let flat_vector_writer = flat_vectors_format.fields_writer_flat(state)?;
+        Self::with_flat_format(
+            state,
+            m,
+            beam_width,
+            num_merge_workers,
+            tiny_segments_threshold,
+            version,
+            Box::new(flat_vectors_format),
+            flat_vector_writer,
+        )
+    }
 
+    /// Creates a new HNSW vector writer over a caller-supplied flat format and
+    /// its writer.
+    ///
+    /// Equivalent to Lucene's sole constructor
+    /// `Lucene99HnswVectorsWriter(SegmentWriteState, int, int, FlatVectorsFormat,
+    /// FlatVectorsWriter, int, TaskExecutor, int)`, which is what lets a
+    /// quantized flat format share this graph writer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_flat_format(
+        state: &SegmentWriteState<'_>,
+        m: i32,
+        beam_width: i32,
+        num_merge_workers: i32,
+        tiny_segments_threshold: i32,
+        version: i32,
+        flat_vectors_format: Box<dyn FlatVectorsFormat>,
+        flat_vector_writer: Box<dyn FlatVectorsWriter>,
+    ) -> Result<Self> {
         let meta_file_name = segment_file_name(
             &state.segment_info.name,
             &state.segment_suffix,
@@ -335,9 +372,7 @@ impl Lucene99HnswVectorsWriter {
                 meta: meta_opt.take(),
                 vector_index: vector_index_opt.take(),
                 flat_vector_writer,
-                flat_vectors_format: Lucene99FlatVectorsFormat::new(
-                    DefaultFlatVectorScorer::INSTANCE,
-                ),
+                flat_vectors_format,
                 flat_vectors_reader: None,
                 flat_writer_closed: false,
                 m,
@@ -1410,13 +1445,13 @@ fn build_ord_to_doc(docs_with_field_set: &DocsWithFieldSet) -> Result<Vec<i32>> 
     Ok(ord_to_doc)
 }
 
-struct VecDocIndexIterator {
+pub(crate) struct VecDocIndexIterator {
     docs: Vec<i32>,
     index: i32,
 }
 
 impl VecDocIndexIterator {
-    fn new(docs: Vec<i32>) -> Self {
+    pub(crate) fn new(docs: Vec<i32>) -> Self {
         Self { docs, index: -1 }
     }
 }
@@ -1689,6 +1724,22 @@ impl Lucene99HnswVectorsReader {
         Ok(entry)
     }
 
+    /// Returns the graph stored for `entry`, or the empty graph when the field
+    /// stored no graph at all.
+    ///
+    /// Equivalent to the private
+    /// `Lucene99HnswVectorsReader.getGraph(FieldEntry)`.
+    fn get_graph_for_entry(&self, entry: &FieldEntry) -> Result<Box<dyn HnswGraph>> {
+        if entry.vector_index_length == 0 {
+            return Ok(Box::new(EmptyHnswGraph));
+        }
+        Ok(Box::new(OffHeapHnswGraph::new(
+            entry,
+            self.vector_index.as_ref(),
+            self.version,
+        )?))
+    }
+
     fn search_with_scorer(
         &self,
         entry: &FieldEntry,
@@ -1712,12 +1763,12 @@ impl Lucene99HnswVectorsReader {
             && expected_visited_nodes(k, graph_size) < num_vectors;
         let mut internal = TopKnnCollector::new(k, visit_limit);
         if use_graph {
-            let mut graph = OffHeapHnswGraph::new(entry, self.vector_index.as_ref(), self.version)?;
+            let mut graph = self.get_graph_for_entry(entry)?;
             let mut searcher = HnswGraphSearcher::new(
                 NeighborQueue::new(k, true),
                 Box::new(FixedBitSet::new(graph.max_node_id().max(0) as usize + 1)),
             );
-            searcher.search_graph(&mut internal, scorer.as_mut(), &mut graph, None)?;
+            searcher.search_graph(&mut internal, scorer.as_mut(), graph.as_mut(), None)?;
         } else {
             let mut ords = Vec::with_capacity(EXHAUSTIVE_BULK_SCORE_ORDS);
             let mut scores = vec![0.0f32; EXHAUSTIVE_BULK_SCORE_ORDS];
@@ -1736,6 +1787,23 @@ impl Lucene99HnswVectorsReader {
             knn_collector.collect(scorer.ord_to_doc(ord), score);
         }
         Ok(())
+    }
+}
+
+/// Hands out the HNSW graph a field stored, so that a merge can reuse it
+/// instead of rebuilding one.
+///
+/// Equivalent to `Lucene99HnswVectorsReader implements HnswGraphProvider`.
+impl HnswGraphProvider for Lucene99HnswVectorsReader {
+    /// Returns the graph stored for `field`.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsReader.getGraph(String)`: an unknown
+    /// field, or a known field with no vector values, is an
+    /// `IllegalArgumentException`, while a known field that stored no graph
+    /// answers `HnswGraph.EMPTY`.
+    fn get_graph(&self, field: &str) -> Result<Box<dyn HnswGraph>> {
+        let entry = self.get_field_entry_or_throw(field)?;
+        self.get_graph_for_entry(entry)
     }
 }
 

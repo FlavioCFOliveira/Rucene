@@ -7,7 +7,7 @@ use std::fmt;
 
 use crate::error::{LuceneError, Result};
 use crate::store::{DataInput, Directory, IOContext};
-use crate::util::BytesRef;
+use crate::util::{Accountable, BytesRef};
 
 use std::sync::Arc;
 
@@ -92,7 +92,7 @@ pub trait TermVectorsReader: Send + Sync + fmt::Debug {
 /// Codec API for writing term vectors.
 ///
 /// Lucene Core equivalent: `org.apache.lucene.codecs.TermVectorsWriter`.
-pub trait TermVectorsWriter: Send + Sync + fmt::Debug {
+pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
     /// Called before writing the term vectors of a document.
     fn start_document(&mut self, num_vector_fields: i32) -> Result<()>;
 
@@ -395,6 +395,16 @@ impl TermVectorsReader for EmptyTermVectorsReader {
 #[derive(Debug, Copy, Clone, Default)]
 pub struct EmptyTermVectorsWriter;
 
+/// Holds nothing, so it accounts for nothing.
+///
+/// Java's `TermVectorsWriter` is `Accountable`, so every writer answers
+/// `ramBytesUsed()`.
+impl Accountable for EmptyTermVectorsWriter {
+    fn ram_bytes_used(&self) -> i64 {
+        0
+    }
+}
+
 impl TermVectorsWriter for EmptyTermVectorsWriter {
     fn start_document(&mut self, _num_vector_fields: i32) -> Result<()> {
         Ok(())
@@ -445,6 +455,12 @@ mod tests {
     #[derive(Debug, Default)]
     struct RecordingWriter {
         positions: Vec<(i32, i32, i32, Option<Vec<u8>>)>,
+    }
+
+    impl Accountable for RecordingWriter {
+        fn ram_bytes_used(&self) -> i64 {
+            0
+        }
     }
 
     impl TermVectorsWriter for RecordingWriter {

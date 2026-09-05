@@ -8,20 +8,38 @@ use crate::index::vector_values::DocIndexIterator;
 use crate::search::VectorScorer;
 use crate::store::IndexInput;
 use crate::util::hnsw::CloseableRandomVectorScorerSupplier;
-use crate::util::quantization::optimized_scalar_quantizer::QuantizationResult;
+use crate::util::quantization::optimized_scalar_quantizer::{
+    OptimizedScalarQuantizer, QuantizationResult,
+};
 use crate::util::quantization::scalar_quantizer::ScalarQuantizer;
 
 /// How many bits each quantized component occupies, and how they are packed.
 ///
 /// Equivalent to `QuantizedByteVectorValues.ScalarEncoding`.
+///
+/// **Divergence from Lucene 10.5.0.** Java declares five encodings; this port
+/// models the three symmetric ones. The two missing ones,
+/// `SINGLE_BIT_QUERY_NIBBLE` (wire number 3) and `DIBIT_QUERY_NIBBLE` (wire
+/// number 4), quantize a query to four bits while quantizing a document to one
+/// or two, so they need the asymmetric query path
+/// (`OptimizedScalarQuantizer.packAsBinary` / `transposeDibit` and the
+/// query-packed off-heap values) that this port does not have. A segment
+/// written by Lucene with either of them is therefore rejected by
+/// [`from_wire_number`](Self::from_wire_number) rather than misread. See
+/// `QuantizedByteVectorValues.java:60-112` in Lucene 10.5.0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScalarEncoding {
-    /// One signed byte per component.
+    /// Each dimension is quantized to 8 bits and treated as an unsigned value.
     UnsignedByte,
-    /// Four bits per component, one component per byte.
-    SevenBit,
-    /// Four bits per component, two components packed per byte.
+    /// Each dimension is quantized to 4 bits and two values are packed into
+    /// each output byte.
     PackedNibble,
+    /// Each dimension is quantized to 7 bits and treated as a signed value.
+    ///
+    /// This exists for backwards compatibility with older iterations of scalar
+    /// quantization: it produces an index the same size as
+    /// [`UnsignedByte`](Self::UnsignedByte) but less accurate comparisons.
+    SevenBit,
 }
 
 impl ScalarEncoding {
@@ -46,22 +64,35 @@ impl ScalarEncoding {
         }
     }
 
-    /// Returns the encoding a code names, as written into the segment metadata.
-    pub fn from_code(code: i32) -> Option<Self> {
-        match code {
+    /// Returns the encoding a wire number names, or `None` when no encoding
+    /// carries it.
+    ///
+    /// The wire number is the value the codec writes into the segment metadata;
+    /// it is deliberately not the variant's ordinal, so that the order of the
+    /// variants can change without changing the file format.
+    ///
+    /// Equivalent to `QuantizedByteVectorValues.ScalarEncoding.fromWireNumber(int)`.
+    pub fn from_wire_number(wire_number: i32) -> Option<Self> {
+        match wire_number {
             0 => Some(Self::UnsignedByte),
-            1 => Some(Self::SevenBit),
-            2 => Some(Self::PackedNibble),
+            1 => Some(Self::PackedNibble),
+            2 => Some(Self::SevenBit),
             _ => None,
         }
     }
 
-    /// Returns the code this encoding is written as.
-    pub fn code(self) -> i32 {
+    /// Returns the number used to identify this encoding on the wire.
+    ///
+    /// The values are Lucene's own and were measured from
+    /// `lucene-core-10.5.0.jar`: `UNSIGNED_BYTE` is 0, `PACKED_NIBBLE` is 1 and
+    /// `SEVEN_BIT` is 2.
+    ///
+    /// Equivalent to `QuantizedByteVectorValues.ScalarEncoding.getWireNumber()`.
+    pub fn get_wire_number(self) -> i32 {
         match self {
             Self::UnsignedByte => 0,
-            Self::SevenBit => 1,
-            Self::PackedNibble => 2,
+            Self::PackedNibble => 1,
+            Self::SevenBit => 2,
         }
     }
 
@@ -143,7 +174,7 @@ impl ScalarEncoding {
 /// A sequence of quantized vectors, each with its corrective offset.
 ///
 /// Equivalent to `org.apache.lucene.util.quantization.QuantizedByteVectorValues`.
-pub trait QuantizedByteVectorValues {
+pub trait QuantizedByteVectorValues: Send + Sync {
     /// Returns the quantized vector at `ord`.
     ///
     /// Equivalent to `QuantizedByteVectorValues.vectorValue(int)`.
@@ -182,6 +213,34 @@ pub trait QuantizedByteVectorValues {
     ///
     /// Equivalent to `QuantizedByteVectorValues.getScalarQuantizer()`.
     fn get_scalar_quantizer(&self) -> Option<&ScalarQuantizer> {
+        None
+    }
+
+    /// Returns a second view of the same vectors, so that two ordinals can be
+    /// held at once without one read clobbering the other's scratch buffer.
+    ///
+    /// Equivalent to the abstract `QuantizedByteVectorValues.copy()`.
+    ///
+    /// # Errors
+    ///
+    /// The default reports [`LuceneError::UnsupportedOperation`], which is what
+    /// an implementation that cannot be duplicated should keep; every
+    /// file-backed implementation overrides it.
+    fn copy(&self) -> Result<Box<dyn QuantizedByteVectorValues>> {
+        Err(LuceneError::UnsupportedOperation(
+            "these quantized vector values cannot be copied".to_string(),
+        ))
+    }
+
+    /// Returns the quantizer these vectors were compressed with, or `None`
+    /// when the implementation does not hold one.
+    ///
+    /// Equivalent to the abstract
+    /// `QuantizedByteVectorValues.getQuantizer()`, which every real
+    /// implementation answers. The `Option` is the provided-method form Rust
+    /// needs for a trait with no implementation inheritance; a value-holding
+    /// implementation must override it.
+    fn get_quantizer(&self) -> Option<&OptimizedScalarQuantizer> {
         None
     }
 

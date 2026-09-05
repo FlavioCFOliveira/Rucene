@@ -47,7 +47,7 @@ use crate::util::packed::{
     BlockPackedWriter, DirectReader, DirectWriter, PackedInts,
 };
 use crate::util::string_helper::StringHelper;
-use crate::util::BytesRef;
+use crate::util::{Accountable, ArrayUtil, BytesRef};
 
 // -----------------------------------------------------------------------------
 // Format constants
@@ -408,6 +408,15 @@ pub struct Lucene90CompressingTermVectorsWriter {
     cur_field: Option<usize>,
     term_suffixes: ByteBuffersDataOutput,
     payload_bytes: ByteBuffersDataOutput,
+    /// The buffer every packed block is assembled in before being copied to the
+    /// `.tvd` stream.
+    ///
+    /// Equivalent to Lucene's `private final ByteBuffersDataOutput
+    /// scratchBuffer = ByteBuffersDataOutput.newResettableInstance()`: one
+    /// instance, reset before each use, so its blocks are recycled instead of
+    /// reallocated. It is also one of the terms of
+    /// [`ram_bytes_used`](Accountable::ram_bytes_used).
+    scratch_buffer: ByteBuffersDataOutput,
     last_term: BytesRef,
     positions_buf: Vec<i32>,
     start_offsets_buf: Vec<i32>,
@@ -534,7 +543,16 @@ impl Lucene90CompressingTermVectorsWriter {
             cur_field: None,
             term_suffixes: ByteBuffersDataOutput::new_resettable_instance(),
             payload_bytes: ByteBuffersDataOutput::new_resettable_instance(),
-            last_term: BytesRef::with_capacity(30),
+            scratch_buffer: ByteBuffersDataOutput::new_resettable_instance(),
+            // Java is `new BytesRef(ArrayUtil.oversize(30, 1))`: a buffer of
+            // that many bytes with `length` zero, not a capacity hint. The
+            // buffer length is what `ramBytesUsed` reports, so it has to be a
+            // real allocation of the same size.
+            last_term: BytesRef {
+                bytes: vec![0u8; ArrayUtil::oversize(30, 1)],
+                offset: 0,
+                length: 0,
+            },
             positions_buf: vec![0; 1024],
             start_offsets_buf: vec![0; 1024],
             lengths_buf: vec![0; 1024],
@@ -868,9 +886,10 @@ impl Lucene90CompressingTermVectorsWriter {
     }
 
     fn flush_fields(&mut self, total_fields: i32, field_nums: &[i32]) -> Result<()> {
-        let mut scratch = ByteBuffersDataOutput::new();
+        self.scratch_buffer.reset();
         let bits_per_off = DirectWriter::bits_required((field_nums.len() - 1) as i64);
-        let mut writer = DirectWriter::new(&mut scratch, total_fields as i64, bits_per_off)?;
+        let mut writer =
+            DirectWriter::new(&mut self.scratch_buffer, total_fields as i64, bits_per_off)?;
         for doc in &self.pending_docs {
             for field in &doc.fields {
                 let idx = field_nums.binary_search(&field.field_num).unwrap();
@@ -878,7 +897,7 @@ impl Lucene90CompressingTermVectorsWriter {
             }
         }
         writer.finish()?;
-        let bytes = scratch.to_array_copy();
+        let bytes = self.scratch_buffer.to_array_copy();
         self.vectors_stream.write_v_long(bytes.len() as i64)?;
         self.vectors_stream.write_bytes(&bytes, 0, bytes.len())?;
         Ok(())
@@ -901,26 +920,31 @@ impl Lucene90CompressingTermVectorsWriter {
 
         if non_changing_flags {
             self.vectors_stream.write_v_int(0)?;
-            let mut scratch = ByteBuffersDataOutput::new();
-            let mut writer = DirectWriter::new(&mut scratch, field_flags.len() as i64, FLAGS_BITS)?;
+            self.scratch_buffer.reset();
+            let mut writer = DirectWriter::new(
+                &mut self.scratch_buffer,
+                field_flags.len() as i64,
+                FLAGS_BITS,
+            )?;
             for flags in &field_flags {
                 writer.add(*flags as i64)?;
             }
             writer.finish()?;
-            let bytes = scratch.to_array_copy();
+            let bytes = self.scratch_buffer.to_array_copy();
             self.vectors_stream.write_v_int(bytes.len() as i32)?;
             self.vectors_stream.write_bytes(&bytes, 0, bytes.len())?;
         } else {
             self.vectors_stream.write_v_int(1)?;
-            let mut scratch = ByteBuffersDataOutput::new();
-            let mut writer = DirectWriter::new(&mut scratch, total_fields as i64, FLAGS_BITS)?;
+            self.scratch_buffer.reset();
+            let mut writer =
+                DirectWriter::new(&mut self.scratch_buffer, total_fields as i64, FLAGS_BITS)?;
             for doc in &self.pending_docs {
                 for field in &doc.fields {
                     writer.add(field.flags as i64)?;
                 }
             }
             writer.finish()?;
-            let bytes = scratch.to_array_copy();
+            let bytes = self.scratch_buffer.to_array_copy();
             self.vectors_stream.write_v_int(bytes.len() as i32)?;
             self.vectors_stream.write_bytes(&bytes, 0, bytes.len())?;
         }
@@ -937,15 +961,16 @@ impl Lucene90CompressingTermVectorsWriter {
         let bits_required = DirectWriter::bits_required(max_num_terms as i64);
         self.vectors_stream.write_v_int(bits_required)?;
 
-        let mut scratch = ByteBuffersDataOutput::new();
-        let mut writer = DirectWriter::new(&mut scratch, total_fields as i64, bits_required)?;
+        self.scratch_buffer.reset();
+        let mut writer =
+            DirectWriter::new(&mut self.scratch_buffer, total_fields as i64, bits_required)?;
         for doc in &self.pending_docs {
             for field in &doc.fields {
                 writer.add(field.num_terms as i64)?;
             }
         }
         writer.finish()?;
-        let bytes = scratch.to_array_copy();
+        let bytes = self.scratch_buffer.to_array_copy();
         self.vectors_stream.write_v_int(bytes.len() as i32)?;
         self.vectors_stream.write_bytes(&bytes, 0, bytes.len())?;
         Ok(())
@@ -1144,6 +1169,32 @@ impl fmt::Debug for Lucene90CompressingTermVectorsWriter {
     }
 }
 
+/// Accounts for the buffers this writer holds between flushes.
+///
+/// Equivalent to `Lucene90CompressingTermVectorsWriter.ramBytesUsed()` and
+/// `getChildResources()`. Note that Java adds the four `int[]` buffers by their
+/// **element count**, not their byte size — `positionsBuf.length` and friends —
+/// so a fresh writer reports `4 * 1024 + lastTerm.bytes.length`. Measured
+/// against `lucene-core-10.5.0.jar`: a freshly created
+/// `Lucene90CompressingTermVectorsWriter` answers 4136, which is
+/// `4 * 1024 + ArrayUtil.oversize(30, 1)`.
+impl Accountable for Lucene90CompressingTermVectorsWriter {
+    fn ram_bytes_used(&self) -> i64 {
+        self.positions_buf.len() as i64
+            + self.start_offsets_buf.len() as i64
+            + self.lengths_buf.len() as i64
+            + self.payload_lengths_buf.len() as i64
+            + self.term_suffixes.ram_bytes_used()
+            + self.payload_bytes.ram_bytes_used()
+            + self.last_term.bytes.len() as i64
+            + self.scratch_buffer.ram_bytes_used()
+    }
+
+    fn child_resources(&self) -> Vec<&dyn Accountable> {
+        vec![&self.term_suffixes, &self.payload_bytes]
+    }
+}
+
 impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
     fn start_document(&mut self, num_vector_fields: i32) -> Result<()> {
         self.cur_doc = None;
@@ -1222,7 +1273,10 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
             .write_bytes(&term.bytes, term.offset + prefix_usize, suffix_length)?;
 
         if self.last_term.bytes.len() < term.length {
-            self.last_term.bytes.resize(term.length * 2, 0);
+            // Java replaces the array with `new byte[ArrayUtil.oversize(term.length, 1)]`,
+            // whose length is what `ramBytesUsed` reports; `len * 2` would
+            // report a different number for the same input.
+            self.last_term.bytes = vec![0u8; ArrayUtil::oversize(term.length, 1)];
         }
         self.last_term.offset = 0;
         self.last_term.length = term.length;
@@ -1382,6 +1436,17 @@ fn checked_count(what: &str, count: i64, available: i64) -> Result<usize> {
 
 /// Reads `length` bytes into a fresh buffer, refusing a length the stream
 /// cannot satisfy.
+/// Reads `length` bytes out of `input` into an owned buffer, which the packed
+/// readers then index at random.
+///
+/// Equivalent to the private
+/// `Lucene90CompressingTermVectorsReader.slice(IndexInput)`, minus the length:
+/// Java's helper reads the block length itself with `readVInt()` and wraps the
+/// bytes in a `ByteBuffersDataInput`, whereas the callers here read the length
+/// (the first of them as a `vLong`, which is what the writer emits at
+/// `Lucene90CompressingTermVectorsWriter.java:497`) and hand it in, because
+/// `DirectReader::new` takes the bytes by value rather than a
+/// `RandomAccessInput`.
 fn read_block(what: &str, input: &mut dyn IndexInput, length: i64) -> Result<Vec<u8>> {
     let length = checked_block_len(what, length, input)?;
     let mut bytes = vec![0u8; length];
@@ -1433,6 +1498,11 @@ pub struct Lucene90CompressingTermVectorsReader {
     /// read inside the same chunk skips the index lookup and a bulk merge can
     /// tell whether a document's chunk is already in flight.
     block_state: Mutex<BlockState>,
+    /// Whether [`close`](TermVectorsReader::close) has already run, so that a
+    /// later read reports `AlreadyClosed` instead of touching a closed file.
+    ///
+    /// Equivalent to Lucene's `private boolean closed`.
+    closed: bool,
 }
 
 /// Which chunk the reader last decoded, and where it starts.
@@ -1549,6 +1619,7 @@ impl Lucene90CompressingTermVectorsReader {
             max_pointer,
             vectors_stream,
             block_state: Mutex::new(BlockState::new()),
+            closed: false,
         })
     }
 }
@@ -1587,6 +1658,7 @@ impl Clone for Lucene90CompressingTermVectorsReader {
                 .clone_input()
                 .expect("INVARIANT: cloning an open IndexInput never fails"),
             block_state: Mutex::new(BlockState::new()),
+            closed: false,
         }
     }
 }
@@ -1598,6 +1670,8 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
 
     #[allow(clippy::needless_range_loop)]
     fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
+        self.ensure_open()?;
+
         // seek to the right place
         let start_pointer = if self.is_loaded(doc) {
             // avoid searching the start pointer
@@ -1839,15 +1913,11 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
                 all_prefix_lengths[off as usize..off as usize + term_count].to_vec();
             suffix_lengths[i] =
                 all_suffix_lengths[off as usize..off as usize + term_count].to_vec();
-            field_lengths[i] = suffix_lengths[i]
-                .iter()
-                .fold(0i32, |sum, value| sum.wrapping_add(*value));
+            field_lengths[i] = Self::sum(&suffix_lengths[i]);
             doc_len = doc_len.wrapping_add(field_lengths[i]);
             off = off.wrapping_add(term_count as i32);
         }
-        let chunk_total_len: i32 = all_suffix_lengths
-            .iter()
-            .fold(0i32, |sum, value| sum.wrapping_add(*value));
+        let chunk_total_len: i32 = Self::sum(&all_suffix_lengths);
 
         // Term freqs.
         let mut term_freqs = vec![0i32; total_terms as usize];
@@ -2192,9 +2262,51 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
     fn get_merge_instance(&self) -> Box<dyn TermVectorsReader> {
         Box::new(self.clone())
     }
+
+    /// Closes the fields index and the `.tvd` stream, once.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.close()`: both are
+    /// closed even when the first fails, the first failure is the one reported,
+    /// and the reader is only marked closed when the close succeeded — so a
+    /// failed close can be retried, exactly as Java's `if (!closed)` allows.
+    fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        let index = self.index_reader.close();
+        let stream = self.vectors_stream.close();
+        index.and(stream)?;
+        self.closed = true;
+        Ok(())
+    }
 }
 
 impl Lucene90CompressingTermVectorsReader {
+    /// Adds up the entries of `arr`.
+    ///
+    /// Equivalent to the private
+    /// `Lucene90CompressingTermVectorsReader.sum(int[])`. Java's `int`
+    /// arithmetic wraps on overflow, so this wraps too: the values come off
+    /// disk and a corrupt chunk must fail the length checks that follow rather
+    /// than panic here.
+    fn sum(arr: &[i32]) -> i32 {
+        arr.iter().fold(0i32, |sum, value| sum.wrapping_add(*value))
+    }
+
+    /// Fails when this reader has already been closed.
+    ///
+    /// Equivalent to the private
+    /// `Lucene90CompressingTermVectorsReader.ensureOpen()`, including its
+    /// message.
+    fn ensure_open(&self) -> Result<()> {
+        if self.closed {
+            return Err(LuceneError::AlreadyClosed(
+                "this FieldsReader is closed".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::needless_range_loop)]
     /// Builds, per field of the document, the running offset at which each of

@@ -482,16 +482,25 @@ pub fn reload_knn_vectors_format(format: Arc<dyn KnnVectorsFormat>) -> Result<()
 /// run-time service discovery, so those entries are registered here when the
 /// registry is first touched; see the postings registry for the full reasoning.
 ///
-/// Only the first is seeded today: the two `Lucene104` quantized formats exist
-/// in this crate as types but do not yet implement [`KnnVectorsFormat`], so
-/// there is nothing to register under their names. Registering them belongs to
-/// the task that finishes porting them, and until then a segment whose fields
-/// name those formats cannot be read back — exactly as it cannot be written.
+/// All three are seeded. Note that the third registers under
+/// `Lucene104HnswBinaryQuantizedVectorsFormat`, which is the string Lucene's
+/// `Lucene104HnswScalarQuantizedVectorsFormat.NAME` holds and therefore the one
+/// a segment written by Lucene carries — not the class name.
 static GLOBAL_KNN_VECTORS_REGISTRY: LazyLock<KnnVectorsFormatRegistry> = LazyLock::new(|| {
     let registry = KnnVectorsFormatRegistry::new();
-    registry
-        .register_arc(Arc::new(crate::codecs::Lucene99HnswVectorsFormat::new()))
-        .expect("built-in KNN-vectors formats have valid, distinct SPI names");
+    for format in [
+        Arc::new(crate::codecs::Lucene99HnswVectorsFormat::new()) as Arc<dyn KnnVectorsFormat>,
+        Arc::new(
+            crate::codecs::lucene104::scalar_quantized_vectors::Lucene104ScalarQuantizedVectorsFormat::new(),
+        ),
+        Arc::new(
+            crate::codecs::lucene104::scalar_quantized_vectors::Lucene104HnswScalarQuantizedVectorsFormat::new(),
+        ),
+    ] {
+        registry
+            .register_arc(format)
+            .expect("built-in KNN-vectors formats have valid, distinct SPI names");
+    }
     registry
 });
 

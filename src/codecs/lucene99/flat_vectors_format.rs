@@ -715,7 +715,7 @@ impl BufferingKnnVectorsWriter for Lucene99FlatVectorsWriter {
 }
 
 impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
-    fn vectors_scorer(&self) -> &dyn FlatVectorsScorer {
+    fn get_flat_vector_scorer(&self) -> &dyn FlatVectorsScorer {
         &self.vector_scorer
     }
 
@@ -1114,6 +1114,40 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
     /// writes; see [`KnnVectorsReader::as_flat_vectors_reader`].
     fn as_flat_vectors_reader(&self) -> Option<&dyn FlatVectorsReader> {
         Some(self)
+    }
+}
+
+/// The shallow size Lucene charges for this reader.
+///
+/// Lucene computes it from `Lucene99FlatVectorsFormat.class`, not from the
+/// reader's own class (`Lucene99FlatVectorsReader.java:61-62`) — an oddity of
+/// the original that is nonetheless the contract. Measured against
+/// `lucene-core-10.5.0.jar`: `shallowSizeOfInstance(Lucene99FlatVectorsFormat.class)`
+/// is 24.
+const FLAT_VECTORS_READER_SHALLOW_SIZE: i64 = 24;
+
+/// The shallow size of the reader's `FieldEntry` on the JVM, measured against
+/// `lucene-core-10.5.0.jar`: 56.
+const FLAT_VECTORS_FIELD_ENTRY_SHALLOW_SIZE: i64 = 56;
+
+/// Accounts for the field map this reader holds.
+///
+/// Equivalent to `Lucene99FlatVectorsReader.ramBytesUsed()`, which is
+/// `SHALLOW_SIZE + fields.ramBytesUsed()`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `fields` is an
+/// `IntObjectHashMap`, whose `ramBytesUsed()` reports its *table* capacity and
+/// so steps in powers of two; this port charges the crate's
+/// [`RamUsageEstimator::size_of_map`] model instead, which is linear in the
+/// entry count. Both are estimates of the same object; neither is read back
+/// from a file, so no index bytes depend on the difference.
+impl crate::util::Accountable for Lucene99FlatVectorsReader {
+    fn ram_bytes_used(&self) -> i64 {
+        FLAT_VECTORS_READER_SHALLOW_SIZE
+            + crate::util::RamUsageEstimator::size_of_map(
+                self.fields.len(),
+                FLAT_VECTORS_FIELD_ENTRY_SHALLOW_SIZE,
+            )
     }
 }
 
@@ -1608,7 +1642,14 @@ impl ByteVectorValues for OffHeapByteVectorValues {
     }
 }
 
-fn read_ord_to_doc_data(
+/// Reads the ordinal-to-document addresses of a sparse field into memory.
+///
+/// Java holds a `DirectMonotonicReader` over a `RandomAccessInput` slice
+/// (`OrdToDocDISIReaderConfiguration.getDirectMonotonicReader`); that reader is
+/// built on `Rc<RefCell<..>>` here and so is neither `Send` nor `Sync`, while
+/// vector values are shared across threads, so the addresses are copied once at
+/// load time and the reader is built per call from the copy.
+pub(crate) fn read_ord_to_doc_data(
     vector_data: &dyn IndexInput,
     config: &OrdToDocDISIReaderConfiguration,
 ) -> Result<Vec<u8>> {

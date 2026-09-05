@@ -70,6 +70,14 @@ tempfile = "3"
 base64 = "0.22"
 
 [[test]]
+name = "delete_by_query"
+path = "tests/delete_by_query.rs"
+
+[[test]]
+name = "portability_delete_by_query"
+path = "tests/portability/delete_by_query.rs"
+
+[[test]]
 name = "portability_codecs"
 path = "tests/portability/codecs.rs"
 
@@ -128,6 +136,18 @@ path = "tests/portability/points.rs"
 [[test]]
 name = "portability_vectors"
 path = "tests/portability/vectors.rs"
+
+[[test]]
+name = "portability_scalar_quantized_vectors"
+path = "tests/portability/scalar_quantized_vectors.rs"
+
+[[test]]
+name = "portability_compressing_accounting"
+path = "tests/portability/compressing_accounting.rs"
+
+[[test]]
+name = "portability_hnsw_graph"
+path = "tests/portability/hnsw_graph.rs"
 
 [[test]]
 name = "fuzz_codec_headers"

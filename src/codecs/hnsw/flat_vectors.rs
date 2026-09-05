@@ -857,7 +857,7 @@ pub trait FlatVectorsFormat: KnnVectorsFormat {
 /// Reads flat vectors from an index.
 ///
 /// Equivalent to `org.apache.lucene.codecs.hnsw.FlatVectorsReader`.
-pub trait FlatVectorsReader: KnnVectorsReader {
+pub trait FlatVectorsReader: KnnVectorsReader + crate::util::Accountable {
     /// Returns the flat vector scorer for the given field.
     fn get_flat_vector_scorer(&self, field: &str) -> Result<Box<dyn FlatVectorsScorer>>;
 
@@ -902,8 +902,11 @@ pub trait FlatVectorsReader: KnnVectorsReader {
 ///
 /// Equivalent to `org.apache.lucene.codecs.hnsw.FlatVectorsWriter`.
 pub trait FlatVectorsWriter: BufferingKnnVectorsWriter {
-    /// Returns the scorer used to score vectors while writing.
-    fn vectors_scorer(&self) -> &dyn FlatVectorsScorer;
+    /// Returns the scorer this writer scores vectors with.
+    ///
+    /// Equivalent to `FlatVectorsWriter.getFlatVectorScorer()`, which reads the
+    /// `protected final vectorsScorer` field the sole constructor sets.
+    fn get_flat_vector_scorer(&self) -> &dyn FlatVectorsScorer;
 
     /// Merges vectors for a single field.
     fn merge_one_flat_vector_field(
