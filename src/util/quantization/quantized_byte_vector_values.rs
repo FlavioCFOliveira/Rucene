@@ -431,6 +431,28 @@ pub trait LegacyQuantizedByteVectorValues: QuantizedByteVectorValues {
     /// which the base class refuses; a legacy reader always has one.
     fn scalar_quantizer(&self) -> &ScalarQuantizer;
 
+    /// Returns a second view of the same vectors, keeping the legacy accessors.
+    ///
+    /// Equivalent to `LegacyQuantizedByteVectorValues.copy()`, whose covariant
+    /// return type Rust cannot express on
+    /// [`QuantizedByteVectorValues::copy`] — the same reason
+    /// [`FloatVectorValues::copy_float`](crate::index::FloatVectorValues::copy_float)
+    /// exists beside `KnnVectorValues.copy()`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's body is `return this`
+    /// (`LegacyQuantizedByteVectorValues.java:35-38`), so a subclass that needs
+    /// no second reader inherits a working `copy()`. A Rust `&self` cannot hand
+    /// out a second owning handle to itself, so this method has no default and
+    /// every implementation states how it duplicates itself. An implementation
+    /// that would have inherited Java's body returns a clone of itself; one
+    /// that reads from a file returns a fresh reader, as its
+    /// [`QuantizedByteVectorValues::copy`] does.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever duplicating the underlying input raises.
+    fn copy_legacy(&self) -> Result<Box<dyn LegacyQuantizedByteVectorValues>>;
+
     /// Returns how many bytes one stored vector occupies, which is smaller
     /// than the dimension when four-bit components are packed two to a byte.
     ///

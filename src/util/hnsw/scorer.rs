@@ -22,7 +22,7 @@ use super::Result;
 /// The semantics are the same as the `java_math_max` helper in
 /// `internal::vectorization`, which exists for exactly this reason.
 #[inline]
-fn java_math_max(a: f32, b: f32) -> f32 {
+pub(crate) fn java_math_max(a: f32, b: f32) -> f32 {
     if a.is_nan() {
         return a;
     }
