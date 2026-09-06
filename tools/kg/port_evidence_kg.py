@@ -47,23 +47,67 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from kgio import read as kg_read, unwind
 
-FQN = r"`(org\.apache\.lucene\.[A-Za-z0-9_.$]+)`"
+# A Lucene type named in full, and the short Java spelling the crate uses for a
+# *nested* one. `CLAUDE.md` 14.1 asks each item to name its Lucene equivalent; it
+# does not prescribe the spelling, and for an inner class the crate writes what a
+# Java reader writes -- ``Equivalent to `FreqProxFields.FreqProxDocsEnum``` --
+# because the package is already established by the file around it. Requiring the
+# `org.apache.lucene.` prefix therefore did not make the evidence stricter, it
+# made 319 declared ports of nested types unreadable, which is precisely the
+# assumption `CLAUDE.md` 6.1 forbids a denominator to rest on.
+#
+# The short form is admitted without loosening what counts as a claim. It must be
+# a chain of two or more segments each beginning with a capital -- Lucene packages
+# are lower-case, so such a chain can only name `Outer.Inner`, never `pkg.Type`
+# and never `Type.member` -- and `resolve_lucene` then accepts it *only* when
+# exactly one type in the graph carries that dotted suffix. Measured over
+# lucene/core 10.5.0 that rule is not merely usually unambiguous: of every
+# two-or-more-segment capitalised suffix in the module, **zero** are ambiguous,
+# and **zero** nested types share a name with a member of their own enclosing
+# type. So the short spelling denotes one type or no type, never a guess between
+# two, and never a member mistaken for a type (`CLAUDE.md` 7).
+FQN_FULL = r"org\.apache\.lucene\.[A-Za-z0-9_.$]+"
+NESTED_SHORT = r"[A-Z][A-Za-z0-9_]*(?:[.$][A-Z][A-Za-z0-9_]*)+"
+# The crate often quotes the Java declaration rather than just the name --
+# ``Equivalent to the `final class MultiTermQuery.TopTermsScoringBooleanQueryRewrite`.``
+# or ``the record `BayesianScoreEstimator.Parameters(float alpha, ...)``` -- so the
+# modifiers and the declaring keyword sit *inside* the backticks. That is the same
+# assertion with more of Java quoted, not a weaker one, so the span is allowed to
+# carry them. Only Java's own modifier and declaration keywords are tolerated; any
+# other word before the name still refuses the match.
+_QUOTED_MODS = (r"(?:(?:abstract|final|sealed|non-sealed|static|public|protected|"
+                r"private|package-private|strictfp)\s+)*"
+                r"(?:(?:class|interface|enum|record|annotation)\s+)?")
+# A trailing type-parameter list or parameter list inside the span is part of the
+# Java declaration being quoted, not part of the name: ``Equivalent to
+# `PairOutputs.Pair<A, B>``` and ``the `FST.FSTMetadata` constructor`` name the
+# same types as the bare spellings do.
+FQN = (r"`" + _QUOTED_MODS + r"(" + FQN_FULL + r"|" + NESTED_SHORT + r")"
+       r"(?:<[^`]*>)?(?:\([^`]*\))?`")
+
+# The lead-in is matched case-insensitively; the *name* never is, because the
+# short form's whole guard is that every segment begins with a capital. `re.I` on
+# the whole pattern would have silently voided it and let `ArrayUtil.copyArray`
+# through as a type. Scoped `(?i:...)` keeps the two apart.
+_CI = lambda pat: "(?i:" + pat + ")"
 
 # Lead-ins that assert "this item is the port of that Lucene type". Ordered
 # most specific first; each is anchored at the start of the doc text.
 CLAIM_PATTERNS = [
-    re.compile(r"^Equivalent to (?:the )?(?:abstract |final |sealed |package-private |static |nested )*"
-               r"(?:class |interface |enum |record |annotation )?" + FQN, re.I),
-    re.compile(r"^Port of (?:the )?(?:abstract |final |sealed |package-private |static |nested )*"
-               r"(?:class |interface |enum |record |annotation )?" + FQN, re.I),
-    re.compile(r"^Ported from " + FQN, re.I),
-    re.compile(r"^Lucene Core equivalent:\s*" + FQN, re.I),
+    re.compile("^" + _CI(r"Equivalent to (?:the )?"
+               r"(?:abstract |final |sealed |package-private |private |static |nested |inner )*"
+               r"(?:class |interface |enum |record |annotation )?") + FQN),
+    re.compile("^" + _CI(r"Port of (?:the )?"
+               r"(?:abstract |final |sealed |package-private |private |static |nested |inner )*"
+               r"(?:class |interface |enum |record |annotation )?") + FQN),
+    re.compile("^" + _CI(r"Ported from ") + FQN),
+    re.compile("^" + _CI(r"Lucene Core equivalent:\s*") + FQN),
     re.compile(r"^(?:This module )?[Pp]orts " + FQN),
 ]
 # An explicit statement that the port is NOT complete. Recorded as a note on the
 # edge rather than silently promoting the type to `ported`.
 PARTIAL_PATTERNS = [
-    re.compile(r"^Placeholder for " + FQN, re.I),
+    re.compile("^" + _CI(r"Placeholder for ") + FQN),
 ]
 # A module doc states its subject in prose rather than with a lead-in: "Block-max
 # conjunction scoring, ported from `org.apache.lucene.search.BlockMaxConjunctionScorer`."
@@ -123,11 +167,48 @@ RE_FQN = re.compile(FQN)
 RE_DOC_OUTER = re.compile(r"^\s*///!?(.*)$")
 RE_DOC_INNER = re.compile(r"^\s*//!(.*)$")
 RE_ATTR = re.compile(r"^\s*#\[")
+# `const` and `static` are items too, and the crate uses them to port Lucene's
+# constants -- ``Equivalent to `TokenizerFactory.Holder.LOADER``` on
+# `static TOKENIZER_LOADER`. Such a claim names a *member*, which `load` already
+# knows how to resolve to the type that declares it, so admitting these items
+# adds no new kind of inference; leaving them out simply threw the claim away.
 RE_ITEM = re.compile(
     r"^\s*(?:pub(?:\([^)]*\))?\s+)?"
-    r"(?:default\s+|const\s+|async\s+|unsafe\s+|extern\s+\"[^\"]*\"\s+)*"
-    r"(struct|enum|trait|union|type|fn)\s+([A-Za-z_]\w*)"
+    r"(?:default\s+|async\s+|unsafe\s+|extern\s+\"[^\"]*\"\s+)*"
+    r"(struct|enum|trait|union|type|fn|const|static)\s+([A-Za-z_]\w*)"
 )
+
+
+def build_class_index(all_classes):
+    """`(exact, short)` name indexes for resolving a claim to a Lucene type.
+
+    `exact` accepts the graph's own `pkg.Outer$Inner` key and the `pkg.Outer.Inner`
+    spelling a doc comment writes. `short` accepts the bare `Outer.Inner` the crate
+    uses for a nested type, and holds only the dotted suffixes that identify
+    exactly one type -- so a short name resolves positively or not at all
+    (`CLAUDE.md` 7). See `NESTED_SHORT` for why that is not a name-match guess.
+    """
+    exact = {c: c for c in all_classes}
+    for c in all_classes:
+        if "$" in c:
+            exact.setdefault(c.replace("$", "."), c)
+    suffixes = {}
+    for c in all_classes:
+        segs = re.split(r"[.$]", c)
+        for k in range(2, len(segs) + 1):
+            suffixes.setdefault(".".join(segs[-k:]), set()).add(c)
+    short = {k: next(iter(v)) for k, v in suffixes.items() if len(v) == 1}
+    return exact, short
+
+
+def resolve_type(name, exact, short):
+    """The Lucene type a claim names, or `None`. Never a guess."""
+    hit = exact.get(name)
+    if hit is not None:
+        return hit
+    if re.fullmatch(NESTED_SHORT, name):
+        return short.get(name.replace("$", "."))
+    return None
 
 
 def claim_in(text: str):
@@ -142,10 +223,51 @@ def claim_in(text: str):
     return None, None
 
 
+# The crate's canonical mapping table, written in a module doc:
+#
+#     //! | Rucene | Apache Lucene Core 10.5.0 |
+#     //! | --- | --- |
+#     //! | [`PagedBytesReader`] | `PagedBytes.Reader` |
+#
+# The header names both sides, so a row *is* the equivalence statement -- the
+# most explicit form the crate has, and the one it uses where a whole family of
+# nested types is renamed at once. Reading it needs no new judgement: the header
+# is matched literally, the Rust side must be an item that file declares (the
+# rule module claims already run under), and the Lucene side is admitted only in
+# the same two spellings every other claim is -- a full `org.apache.lucene…` name
+# or a capitalised `Outer.Inner` chain. A bare simple name in a table row is
+# still refused, so the table can never resolve a name by coincidence.
+RE_TABLE_HEADER = re.compile(r"^\s*\|\s*Rucene\s*\|\s*Apache Lucene Core 10\.5\.0\s*\|\s*$")
+RE_TABLE_ROW = re.compile(r"^\s*\|\s*\[`([^`\]]+)`\](?:\([^)]*\))?\s*\|\s*`([^`]+)`\s*\|\s*$")
+
+
+def _table_claims(rel, doc_lines):
+    """Claims stated by the module doc's canonical mapping table."""
+    out, inside = [], False
+    for ln, text in doc_lines:
+        if RE_TABLE_HEADER.match(text):
+            inside = True
+            continue
+        if not inside:
+            continue
+        m = RE_TABLE_ROW.match(text)
+        if m:
+            java = re.sub(r"<[^>]*>", "", m.group(2)).split("(")[0].split("#")[0].strip()
+            if re.fullmatch(FQN_FULL, java) or re.fullmatch(NESTED_SHORT, java):
+                out.append({"file": rel, "line": ln, "target": m.group(1),
+                            "lucene": java, "scope": "table", "note": None})
+        elif not text.strip().startswith("|"):
+            inside = False
+    return out
+
+
 def scan_file(root: Path, rel: str):
     """Equivalence claims of one file, attributed to the item they document."""
     out = []
     lines = (root / rel).read_text(encoding="utf-8", errors="ignore").split("\n")
+    out.extend(_table_claims(rel, [(i + 1, m.group(1).strip())
+                                   for i, line in enumerate(lines)
+                                   if (m := RE_DOC_INNER.match(line))]))
 
     # Module-level `//!` claims describe the file itself. They are read a
     # paragraph at a time, not a line at a time, because the assertion and the
@@ -332,10 +454,7 @@ def load(roadmap, claims, commit, date):
     # comment naturally writes `pkg.Outer.Inner`. Accept both spellings.
     all_classes = [r[0] for r in q(roadmap, "MATCH (c:Class) RETURN c.qualifiedName")
                    if r[0]]
-    classes = {c: c for c in all_classes}
-    for c in all_classes:
-        if "$" in c:
-            classes.setdefault(c.replace("$", "."), c)
+    classes, short_classes = build_class_index(all_classes)
     # `CLAUDE.md` 14.1 asks each *item* to name its Lucene equivalent, and the
     # crate obliges at member granularity: `src/index/index_commit.rs:313` says
     # the free function `execute` is
@@ -378,7 +497,7 @@ def load(roadmap, claims, commit, date):
     types |= {k for k, n in fn_counts.items() if n == 1}
 
     rows, unresolved_lucene, unresolved_rust = [], set(), set()
-    module_resolved = module_as_component = member_resolved = 0
+    module_resolved = module_as_component = member_resolved = short_resolved = 0
     for c in claims:
         target, component = c.get("target"), False
         if c["scope"] == "module" and not target:
@@ -397,8 +516,12 @@ def load(roadmap, claims, commit, date):
             continue
         target_class, member = classes.get(c["lucene"]), None
         if target_class is None:
+            target_class = resolve_type(c["lucene"], classes, short_classes)
+            if target_class is not None:
+                short_resolved += 1
+        if target_class is None:
             enclosing, _, last = c["lucene"].rpartition(".")
-            owner = classes.get(enclosing)
+            owner = resolve_type(enclosing, classes, short_classes)
             if owner and last in members_of.get(owner, ()):
                 target_class, member = owner, last
                 member_resolved += 1
@@ -433,6 +556,8 @@ def load(roadmap, claims, commit, date):
           file=sys.stderr)
     print(f"  member-level claims resolved to their enclosing type: "
           f"{member_resolved}", file=sys.stderr)
+    print(f"  short `Outer.Inner` claims resolved to one type: {short_resolved}",
+          file=sys.stderr)
     print(f"  resolvable item claims: {len(uniq)} "
           f"(lucene unresolved {len(unresolved_lucene)}, "
           f"rust unresolved {len(unresolved_rust)})", file=sys.stderr)

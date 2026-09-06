@@ -168,6 +168,25 @@ def main():
         print(f"   portState {str(r[0]):<12} {r[1]}")
     noscope = q("MATCH (c:Class) WHERE c.portScope IS NULL RETURN count(c)")[0][0]
     check("Class nodes without a portScope", noscope, 0)
+    # The nested half of the module. `portScope='nested'` keeps these out of the
+    # coverage denominator; what makes that defensible rather than assumed is
+    # that each one carries a measured state and the evidence for it
+    # (`nested_port_kg.py`). A nested type with no state is the assumption
+    # coming back, so it is a failure.
+    for r in q("MATCH (c:Class) WHERE c.portScope='nested' "
+               "RETURN c.portState AS s, count(c) AS n ORDER BY n DESC"):
+        print(f"   nested portState {str(r[0]):<12} {r[1]}")
+    for r in q("MATCH (c:Class) WHERE c.portScope='nested' "
+               "RETURN coalesce(c.portStateEvidence,'UNSTATED') AS e, count(c) AS n "
+               "ORDER BY n DESC"):
+        print(f"     nested evidence {str(r[0]):<22} {r[1]}")
+    unstated_nested = q("MATCH (c:Class) WHERE c.portScope='nested' AND "
+                        "(c.portState IS NULL OR c.portStateEvidence IS NULL) "
+                        "RETURN count(c)")[0][0]
+    check("nested types without a measured port state", unstated_nested, 0)
+    orphan = q("MATCH (c:Class) WHERE c.portScope='nested' AND c.portState='unported' "
+               "AND c.portDestination IS NULL RETURN count(c)")[0][0]
+    check("unported nested types without a destination", orphan, 0)
     for r in q("MATCH ()-[e:PORTS]->(:Class) RETURN coalesce(e.evidence,'UNSTATED') AS ev, "
                "count(*) AS n ORDER BY n DESC"):
         print(f"   PORTS evidence {str(r[0]):<12} {r[1]}")

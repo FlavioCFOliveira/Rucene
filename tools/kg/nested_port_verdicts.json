@@ -1,0 +1,538 @@
+{
+ "absorbed": {
+  "org.apache.lucene.analysis.CharArrayMap$EntryIterator": {
+   "host": "CharArrayMap::iter / Iter",
+   "where": "src/analysis/char_array_map.rs:264,333",
+   "why": "the same traversal; `Iter` is the iterator."
+  },
+  "org.apache.lucene.analysis.CharArrayMap$EntrySet": {
+   "host": "CharArrayMap::iter / Iter",
+   "where": "src/analysis/char_array_map.rs:264,333",
+   "why": "Java needs a Set view and an Iterator class to expose entry traversal; Rust's `iter()` and `IntoIterator for &CharArrayMap` give the same traversal with no view object."
+  },
+  "org.apache.lucene.analysis.CharArrayMap$UnmodifiableCharArrayMap": {
+   "host": "CharArrayMap.unmodifiable",
+   "where": "src/analysis/char_array_map.rs:19-30",
+   "why": "Java expresses write-protection with a subclass; the port carries it in a field and `is_unmodifiable()` stands in for the `instanceof` test. Declared at the field."
+  },
+  "org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat$IntBlockTermState": {
+   "host": "BlockTermState",
+   "where": "src/codecs/term_state.rs:222-240",
+   "why": "the format-specific term state becomes named fields on the port's single BlockTermState, declared at both the type and the fields."
+  },
+  "org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorScorer$AsymmetricQuantizedRandomVectorScorerSupplier": {
+   "host": "ScalarQuantizedVectorScorerSupplier",
+   "where": "src/codecs/lucene104/scalar_quantized_vectors.rs:919-924,1759",
+   "why": "one supplier covers both encodings; the asymmetric case is selected from `ScalarEncoding::is_asymmetric`, which the port declares equivalent, rather than by a second supplier class."
+  },
+  "org.apache.lucene.codecs.lucene104.OffHeapScalarQuantizedVectorValues$DenseOffHeapVectorValues": {
+   "host": "OffHeapScalarQuantizedVectorValues",
+   "where": "src/codecs/lucene104/scalar_quantized_vectors.rs:475,1762",
+   "why": "Java splits dense, sparse and empty into three subclasses; the port is one type whose OrdToDocDISIReaderConfiguration discriminates. Declared."
+  },
+  "org.apache.lucene.codecs.lucene95.OffHeapByteVectorValues$DenseOffHeapVectorValues": {
+   "host": "OffHeapByteVectorValues",
+   "where": "src/codecs/lucene99/flat_vectors_format.rs",
+   "why": "the same collapse."
+  },
+  "org.apache.lucene.codecs.lucene95.OffHeapFloatVectorValues$DenseOffHeapVectorValues": {
+   "host": "OffHeapFloatVectorValues",
+   "where": "src/codecs/lucene99/flat_vectors_format.rs:1274-1284",
+   "why": "the same three-way split collapsed into one struct carrying an optional OrdToDocDISIReaderConfiguration, which is exactly what tells dense from sparse."
+  },
+  "org.apache.lucene.index.BufferedUpdates$DeletedTerms": {
+   "host": "BufferedUpdates",
+   "where": "src/index/documents_writer.rs:273,851",
+   "why": "the nested map and its byte accounting are fields and methods of the port of `BufferedUpdates`; the traversal order of `forEachOrdered` is declared preserved."
+  },
+  "org.apache.lucene.index.ConcurrentMergeScheduler$MergeThread": {
+   "host": "MergeThreadState",
+   "where": "src/index/merge_scheduler.rs:242-248",
+   "why": "MergeThread is a Thread subclass; Rust has no counterpart, and the scheduler needs the state, not the thread object. Declared."
+  },
+  "org.apache.lucene.index.DocValuesFieldUpdates$AbstractIterator": {
+   "host": "DocValuesFieldUpdatesIterator",
+   "where": "src/index/doc_values_field_updates.rs:344-350",
+   "why": "Java splits the nested `Iterator` interface from its `AbstractIterator` base; the port is one struct that carries the base's cursor state and declares itself the port of `DocValuesFieldUpdates.Iterator`."
+  },
+  "org.apache.lucene.index.DocValuesUpdate$BinaryDocValuesUpdate": {
+   "host": "DocValuesUpdateValue",
+   "where": "src/index/doc_values_update.rs:17-33",
+   "why": "same enum."
+  },
+  "org.apache.lucene.index.DocValuesUpdate$NumericDocValuesUpdate": {
+   "host": "DocValuesUpdateValue",
+   "where": "src/index/doc_values_update.rs:17-33",
+   "why": "the two subclasses differ only by value kind; the port is one enum, which also makes 'value present without a kind' unrepresentable. Declared divergence."
+  },
+  "org.apache.lucene.index.FieldUpdatesBuffer$BufferedUpdateIterator": {
+   "host": "FieldUpdatesBuffer iterator",
+   "where": "src/index/field_updates_buffer.rs:54,251",
+   "why": "the port stores a record per update rather than Lucene's parallel arrays, so the iterator's state is the buffer's own cursor. Declared."
+  },
+  "org.apache.lucene.index.FreqProxTermsWriterPerField$FreqProxPostingsArray": {
+   "host": "FreqProxPosting",
+   "where": "src/index/freq_prox_terms_writer.rs:12,476",
+   "why": "the module's mapping table states `FreqProxPosting` = `ParallelPostingsArray` + `FreqProxPostingsArray`: the parallel int[] columns become one record per term id."
+  },
+  "org.apache.lucene.index.MergePolicy$OneMergeProgress": {
+   "host": "MergeRateLimiter",
+   "where": "src/index/merge_scheduler.rs:1018-1031",
+   "why": "Java's pause lock, condition and per-reason totals live in OneMergeProgress, which MergeRateLimiter holds; this port puts them on the limiter itself. Declared divergence, mechanism unchanged."
+  },
+  "org.apache.lucene.index.SegmentInfos$FindSegmentsFile": {
+   "host": "SegmentInfos::read_commit / read_latest_commit",
+   "where": "src/index/directory_reader.rs:985-992",
+   "why": "the abstract class exists to retry 'this commit, or whatever is latest'; the port's two constructors give that directly. Declared."
+  },
+  "org.apache.lucene.index.Sorter$DocValueSorter": {
+   "host": "Sorter::sort",
+   "where": "src/index/index_sorter.rs:415-421",
+   "why": "Java's DocValueSorter is the TimSorter subclass that carries the comparator; the port declares the divergence and sorts with the standard library's stable sort, which is also an adaptive stable merge sort and yields the same permutation."
+  },
+  "org.apache.lucene.index.Sorter$PackableDocMap": {
+   "host": "SorterDocMap",
+   "where": "src/index/documents_writer.rs:1446",
+   "why": "the concrete doc map Lucene's IndexingChain returns; the port's `SorterDocMap` is that value, declared at the field that carries it."
+  },
+  "org.apache.lucene.index.TermsHashPerField$DuplicateTermException": {
+   "host": "LuceneError::IllegalState",
+   "where": "src/index/freq_prox_terms_writer.rs:1225,1414",
+   "why": "a signalling exception with no state; the port raises the same condition as an error variant."
+  },
+  "org.apache.lucene.internal.hppc.IntIntHashMap$IntContainer": {
+   "host": "KeysContainer / ValuesContainer",
+   "where": "src/internal/hppc/macros.rs:928-950",
+   "why": "an abstract base giving size() and toArray() to both views; the macro emits both methods on each generated view."
+  },
+  "org.apache.lucene.search.BinarySortField$Provider": {
+   "host": "BinarySortField::NAME + serialisation",
+   "where": "src/search/binary_sort_field.rs",
+   "why": "same shape as SortField.Provider."
+  },
+  "org.apache.lucene.search.FuzzyTermsEnum$FuzzyTermsException": {
+   "host": "LuceneError",
+   "where": "src/search/fuzzy_automaton_builder.rs:122-126",
+   "why": "a wrapper exception; the port returns the same condition as an error, declared at the wrapping site."
+  },
+  "org.apache.lucene.search.KnnCollector$Decorator": {
+   "host": "KnnCollector trait",
+   "where": "src/search/hnsw_queue_saturation_collector.rs:84 and 3 more",
+   "why": "Decorator exists to inherit forwarding; Rust has no implementation inheritance, so each collector forwards explicitly. Declared at every site that would have extended it."
+  },
+  "org.apache.lucene.search.SortField$Provider": {
+   "host": "SortField::NAME + read/write_sort_field",
+   "where": "src/search/sort.rs:433-436",
+   "why": "the provider is an SPI object with a NAME and two serialisation methods; the port keeps the name as an associated const and the two methods on the sort-field type itself."
+  },
+  "org.apache.lucene.search.SortedNumericSortField$Provider": {
+   "host": "SortedNumericSortField::NAME + serialisation",
+   "where": "src/search/sorted_numeric_sort_field.rs:34,270",
+   "why": "same shape; both methods declared."
+  },
+  "org.apache.lucene.search.SortedSetSortField$Provider": {
+   "host": "SortedSetSortField::NAME + serialisation",
+   "where": "src/search/sorted_set_sort_field.rs:31",
+   "why": "same shape."
+  },
+  "org.apache.lucene.search.TopFieldCollector$PagingFieldCollector": {
+   "host": "TopFieldCollector",
+   "where": "src/search/top_field_collector.rs:76-89",
+   "why": "same; `collected_hits` is declared equivalent to `PagingFieldCollector.collectedHits`."
+  },
+  "org.apache.lucene.search.TopFieldCollector$SimpleFieldCollector": {
+   "host": "TopFieldCollector",
+   "where": "src/search/top_field_collector.rs:76-82",
+   "why": "the two subclasses differ only by whether an `after` hit is set; the port carries `after` as an Option and branches. Declared divergence, hits identical."
+  },
+  "org.apache.lucene.search.comparators.DoubleComparator$DoubleLeafComparator": {
+   "host": "DoubleComparator methods",
+   "where": "src/search/comparators/double_comparator.rs:104,118,123",
+   "why": "each leaf method is declared equivalent, member by member, on the comparator struct."
+  },
+  "org.apache.lucene.search.comparators.FloatComparator$FloatLeafComparator": {
+   "host": "FloatComparator methods",
+   "where": "src/search/comparators/float_comparator.rs:104,118,123",
+   "why": "same, member by member."
+  },
+  "org.apache.lucene.search.comparators.IntComparator$IntLeafComparator": {
+   "host": "IntComparator methods",
+   "where": "src/search/comparators/int_comparator.rs:103,117,122",
+   "why": "same, member by member."
+  },
+  "org.apache.lucene.search.comparators.LongComparator$LongLeafComparator": {
+   "host": "LongComparator methods",
+   "where": "src/search/comparators/long_comparator.rs:103,117,122",
+   "why": "same, member by member."
+  },
+  "org.apache.lucene.search.comparators.NumericComparator$NumericLeafComparator": {
+   "host": "NumericLeafState",
+   "where": "src/search/comparators/numeric_comparator.rs:109-112",
+   "why": "declared equivalent to the fields of the abstract inner class; the methods live on the comparator."
+  },
+  "org.apache.lucene.store.MMapDirectory$MMapIndexInputProvider": {
+   "host": "MemorySegmentIndexInputProvider",
+   "where": "src/store/memory_segment_index_input_provider.rs:3-5, src/store/mmap.rs:296-308",
+   "why": "the interface exists so Java can pick a provider reflectively per JDK; the port has one provider and reaches it directly. Declared."
+  },
+  "org.apache.lucene.util.ByteBlockPool$DirectAllocator": {
+   "host": "ByteBlockPool",
+   "where": "src/util/byte_block_pool.rs:29-35",
+   "why": "the Allocator hierarchy exists to recycle byte[] across writers and charge a Counter; only the tracking allocator is used, so the port folds allocation into the pool. Declared."
+  },
+  "org.apache.lucene.util.ByteBlockPool$DirectTrackingAllocator": {
+   "host": "ByteBlockPool",
+   "where": "src/util/byte_block_pool.rs:29-35",
+   "why": "the same fold; charging goes to the shared AtomicI64 that already accounts indexing RAM."
+  },
+  "org.apache.lucene.util.BytesRefHash$BytesStartArray": {
+   "host": "BytesRefHash's own Vec",
+   "where": "src/util/bytes_ref_hash.rs:18-22",
+   "why": "the callback exists so a subclass can grow parallel int[] arrays in lockstep; term ids are dense and increasing, so the port pushes onto a Vec and callers push onto theirs. Declared."
+  },
+  "org.apache.lucene.util.BytesRefHash$DirectBytesStartArray": {
+   "host": "BytesRefHash's own Vec",
+   "where": "src/util/bytes_ref_hash.rs:18-22",
+   "why": "the default implementation of the callback that is gone."
+  },
+  "org.apache.lucene.util.BytesRefHash$MaxBytesLengthExceededException": {
+   "host": "LuceneError",
+   "where": "src/util/byte_block_pool.rs:270, src/index/indexing_chain.rs:1603",
+   "why": "a signalling exception; the port raises the same condition and the catch sites are declared equivalent."
+  },
+  "org.apache.lucene.util.GroupVIntUtil$IntReader": {
+   "host": "GroupVIntUtil read functions",
+   "where": "src/util.rs:979-1012",
+   "why": "a one-method functional interface (`int read(long)`) used to parameterise the group readers; the port's readers do the read inline, with each Java overload declared."
+  },
+  "org.apache.lucene.util.SetOnce$AlreadySetException": {
+   "host": "LuceneError::IllegalState + ALREADY_SET_MESSAGE",
+   "where": "src/util/concurrent.rs:101-110",
+   "why": "Java's nested exception extends IllegalStateException and carries a fixed message; the port uses that error variant with the same message. Declared."
+  },
+  "org.apache.lucene.util.hnsw.HnswGraph$CollectionNodesIterator": {
+   "host": "ArrayNodesIterator",
+   "where": "src/util/hnsw/on_heap.rs:403",
+   "why": "the two nested iterators differ only by whether the nodes arrive as an IntArrayList or an array; the port's ArrayNodesIterator takes an owned Vec and covers both call sites."
+  },
+  "org.apache.lucene.util.hnsw.RandomVectorScorer$AbstractRandomVectorScorer": {
+   "host": "RandomVectorScorer trait defaults",
+   "where": "src/util/hnsw/scorer.rs:71-89",
+   "why": "the abstract class exists to supply ordToDoc and getAcceptOrds to every scorer; the trait's default methods supply them. The boxing divergence is declared there."
+  },
+  "org.apache.lucene.util.hnsw.UpdateableRandomVectorScorer$AbstractUpdateableRandomVectorScorer": {
+   "host": "UpdateableRandomVectorScorer trait defaults",
+   "where": "src/util/hnsw/scorer.rs",
+   "why": "the same shape for the updateable scorer."
+  },
+  "org.apache.lucene.util.packed.DeltaPackedLongValues$Builder": {
+   "host": "PackedLongValuesBuilder",
+   "where": "src/util/packed/packed_long_values.rs:92",
+   "why": "Java gives each PackedLongValues subclass its own Builder subclass; the port has one builder selected by `delta_packed_builder`, declared equivalent to Lucene's factory."
+  },
+  "org.apache.lucene.util.packed.PackedInts$MutableImpl": {
+   "host": "PackedIntsMutable trait",
+   "where": "src/util/packed/reader.rs:68",
+   "why": "a package-private abstract base holding the shared implementation of the public abstract class; in Rust that is the trait's default methods."
+  },
+  "org.apache.lucene.util.packed.PackedInts$ReaderImpl": {
+   "host": "PackedIntsReader trait",
+   "where": "src/util/packed/reader.rs:19",
+   "why": "same shape."
+  },
+  "org.apache.lucene.util.packed.PackedInts$ReaderIteratorImpl": {
+   "host": "PackedIntsReaderIterator trait",
+   "where": "src/util/packed/reader.rs:249",
+   "why": "same shape."
+  },
+  "org.apache.lucene.util.quantization.ScalarQuantizedVectorSimilarity$ByteVectorComparator": {
+   "host": "ScalarQuantizedVectorSimilarity",
+   "where": "src/util/quantization/scalar_quantized_vector_similarity.rs:13-18",
+   "why": "the comparator only chooses four-bit or eight-bit reading, which the enum carries as a field."
+  },
+  "org.apache.lucene.util.quantization.ScalarQuantizedVectorSimilarity$DotProduct": {
+   "host": "ScalarQuantizedVectorSimilarity",
+   "where": "src/util/quantization/scalar_quantized_vector_similarity.rs:13-18",
+   "why": "same enum."
+  },
+  "org.apache.lucene.util.quantization.ScalarQuantizedVectorSimilarity$Euclidean": {
+   "host": "ScalarQuantizedVectorSimilarity",
+   "where": "src/util/quantization/scalar_quantized_vector_similarity.rs:13-18",
+   "why": "the three implementations differ only in the final arithmetic; the port is one enum. Declared divergence, scores identical."
+  },
+  "org.apache.lucene.util.quantization.ScalarQuantizedVectorSimilarity$MaximumInnerProduct": {
+   "host": "ScalarQuantizedVectorSimilarity",
+   "where": "src/util/quantization/scalar_quantized_vector_similarity.rs:13-18",
+   "why": "same enum."
+  }
+ },
+ "curated": {
+  "org.apache.lucene.codecs.lucene104.Lucene104Codec$Mode": {
+   "evidence": "src/codecs/lucene104/codec.rs:27 says `Mirrors `Lucene104Codec.Mode` in Java`; `Mirrors` is not an admitted lead-in.",
+   "rustFile": "src/codecs/lucene104/codec.rs",
+   "rustName": "Mode"
+  },
+  "org.apache.lucene.codecs.lucene90.Lucene90StoredFieldsFormat$Mode": {
+   "evidence": "src/codecs/lucene90/stored_fields.rs:2358, in the file's `Lucene90StoredFieldsFormat` section; the two variants are Lucene's BEST_SPEED/BEST_COMPRESSION.",
+   "rustFile": "src/codecs/lucene90/stored_fields.rs",
+   "rustName": "Mode"
+  },
+  "org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingStoredFieldsReader$SerializedDocument": {
+   "evidence": "src/codecs/lucene90/stored_fields.rs:1763, whose doc cites `Lucene90CompressingStoredFieldsReader.java:396-406`.",
+   "rustFile": "src/codecs/lucene90/stored_fields.rs",
+   "rustName": "SerializedDocument"
+  },
+  "org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat$FieldsReader": {
+   "evidence": "src/codecs/per_field.rs:1152; `PerFieldKnnVectorsFormat::fields_reader` (:1020) constructs it, as Java's `fieldsReader` returns a `FieldsReader`.",
+   "rustFile": "src/codecs/per_field.rs",
+   "rustName": "KnnFieldsReader"
+  },
+  "org.apache.lucene.index.FieldUpdatesBuffer$BufferedUpdate": {
+   "evidence": "src/index/field_updates_buffer.rs:25, the record the buffer stores, in the file that ports `FieldUpdatesBuffer`.",
+   "rustFile": "src/index/field_updates_buffer.rs",
+   "rustName": "BufferedUpdate"
+  },
+  "org.apache.lucene.index.IndexSorter$DoubleSorter": {
+   "evidence": "same paragraph.",
+   "rustFile": "src/index/index_sorter.rs",
+   "rustName": "NumericSorter"
+  },
+  "org.apache.lucene.index.IndexSorter$FloatSorter": {
+   "evidence": "same paragraph.",
+   "rustFile": "src/index/index_sorter.rs",
+   "rustName": "NumericSorter"
+  },
+  "org.apache.lucene.index.IndexSorter$LongSorter": {
+   "evidence": "src/index/index_sorter.rs:186-196 declares one type equivalent to IntSorter, LongSorter, FloatSorter and DoubleSorter; only the first name is fully spelled.",
+   "rustFile": "src/index/index_sorter.rs",
+   "rustName": "NumericSorter"
+  },
+  "org.apache.lucene.index.MergePolicy$MergeAbortedException": {
+   "evidence": "src/error.rs:118 declares the `MergeAborted` variant `Equivalent to `org.apache.lucene.index.MergePolicy.MergeAbortedException``; the claim sits on an enum variant, which the item reader does not attribute.",
+   "rustFile": "src/error.rs",
+   "rustName": "LuceneError"
+  },
+  "org.apache.lucene.index.MergePolicy$MergeException": {
+   "evidence": "src/error.rs:126, the `Merge` variant, same variant-level claim.",
+   "rustFile": "src/error.rs",
+   "rustName": "LuceneError"
+  },
+  "org.apache.lucene.index.TwoPhaseCommitTool$CommitFailException": {
+   "evidence": "src/index/index_commit.rs:258, the `CommitFail` variant.",
+   "rustFile": "src/index/index_commit.rs",
+   "rustName": "TwoPhaseCommitError"
+  },
+  "org.apache.lucene.index.TwoPhaseCommitTool$PrepareCommitFailException": {
+   "evidence": "src/index/index_commit.rs:245, the `PrepareCommitFail` variant; the enum's own doc at :236 names both nested exceptions.",
+   "rustFile": "src/index/index_commit.rs",
+   "rustName": "TwoPhaseCommitError"
+  },
+  "org.apache.lucene.search.LateInteractionFloatValuesSource$ScoreFunction": {
+   "evidence": "declared at :246-251 with the reason for the rename; the item reader refuses a claim whose simple name differs from the item's.",
+   "rustFile": "src/search/late_interaction_float_values_source.rs",
+   "rustName": "LateInteractionScoreFunction"
+  },
+  "org.apache.lucene.search.comparators.NumericComparator$CompetitiveDISIBuilder": {
+   "evidence": "src/search/comparators/numeric_comparator.rs:171, with the shared fields in `CompetitiveCommon` (:133, declared equivalent to the class's fields). The Rust name differs only in the casing of DISI.",
+   "rustFile": "src/search/comparators/numeric_comparator.rs",
+   "rustName": "CompetitiveDisiBuilder"
+  },
+  "org.apache.lucene.store.ByteBuffersDataOutput$ByteBufferRecycler": {
+   "evidence": "src/store.rs:6391; the claim splits the name across two backticked spans.",
+   "rustFile": "src/store.rs",
+   "rustName": "ByteBufferRecycler"
+  },
+  "org.apache.lucene.util.AttributeSource$State": {
+   "evidence": "src/util/attribute.rs:399, the linked-list node `AttributeSource` captures and restores.",
+   "rustFile": "src/util/attribute.rs",
+   "rustName": "State"
+  },
+  "org.apache.lucene.util.Bits$MatchAllBits": {
+   "evidence": "src/util.rs:2985.",
+   "rustFile": "src/util.rs",
+   "rustName": "MatchAllBits"
+  },
+  "org.apache.lucene.util.Bits$MatchNoBits": {
+   "evidence": "src/util.rs:3008.",
+   "rustFile": "src/util.rs",
+   "rustName": "MatchNoBits"
+  },
+  "org.apache.lucene.util.DenseLiveDocs$Builder": {
+   "evidence": "src/util/bit_sets.rs:1729; `DenseLiveDocs::builder` returns it.",
+   "rustFile": "src/util/bit_sets.rs",
+   "rustName": "DenseLiveDocsBuilder"
+  },
+  "org.apache.lucene.util.RoaringDocIdSet$Builder": {
+   "evidence": "src/util/bit_sets.rs:1221; `RoaringDocIdSet::builder` returns it.",
+   "rustFile": "src/util/bit_sets.rs",
+   "rustName": "RoaringDocIdSetBuilder"
+  },
+  "org.apache.lucene.util.SparseLiveDocs$Builder": {
+   "evidence": "src/util/bit_sets.rs:1870; `SparseLiveDocs::builder` returns it.",
+   "rustFile": "src/util/bit_sets.rs",
+   "rustName": "SparseLiveDocsBuilder"
+  },
+  "org.apache.lucene.util.StringSorter$MSBStringRadixSorter": {
+   "evidence": "src/util/sorter.rs:2068-2072, which names the nested class it stands for.",
+   "rustFile": "src/util/sorter.rs",
+   "rustName": "StringRadixOps"
+  },
+  "org.apache.lucene.util.packed.PackedInts$Mutable": {
+   "evidence": "src/util/packed/reader.rs:68.",
+   "rustFile": "src/util/packed/reader.rs",
+   "rustName": "PackedIntsMutable"
+  },
+  "org.apache.lucene.util.packed.PackedInts$Reader": {
+   "evidence": "src/util/packed/reader.rs:19; the module doc at :1-7 states it ports the nested types of `PackedInts` with the name prefixed, which the item reader's name guard refuses.",
+   "rustFile": "src/util/packed/reader.rs",
+   "rustName": "PackedIntsReader"
+  },
+  "org.apache.lucene.util.packed.PackedInts$ReaderIterator": {
+   "evidence": "src/util/packed/reader.rs:249.",
+   "rustFile": "src/util/packed/reader.rs",
+   "rustName": "PackedIntsReaderIterator"
+  },
+  "org.apache.lucene.util.packed.PackedInts$Writer": {
+   "evidence": "src/util/packed/reader.rs:208.",
+   "rustFile": "src/util/packed/reader.rs",
+   "rustName": "PackedIntsWriter"
+  }
+ },
+ "unported": {
+  "org.apache.lucene.codecs.KnnVectorsWriter$MergedVectorValues": {
+   "destination": "src/codecs/knn_vectors.rs",
+   "javaLoc": 274,
+   "reason": "declared not ported at src/codecs/lucene104/scalar_quantized_vectors.rs:3403: each writer walks the segments itself instead of building Lucene's merged view."
+  },
+  "org.apache.lucene.codecs.KnnVectorsWriter$MergedVectorValues$MergedByteVectorValues": {
+   "destination": "src/codecs/knn_vectors.rs",
+   "javaLoc": 96,
+   "reason": "nested inside MergedVectorValues, which is not ported."
+  },
+  "org.apache.lucene.codecs.KnnVectorsWriter$MergedVectorValues$MergedFloat32VectorValues": {
+   "destination": "src/codecs/knn_vectors.rs",
+   "javaLoc": 98,
+   "reason": "nested inside MergedVectorValues, which is not ported."
+  },
+  "org.apache.lucene.codecs.hnsw.PrefetchableFlatVectorScorer$PrefetchableRandomVectorScorer": {
+   "destination": "src/codecs/hnsw/graph_provider.rs",
+   "javaLoc": 44,
+   "reason": "every `FlatVectorsScorer` method of `PrefetchableFlatVectorScorer` (src/codecs/hnsw/graph_provider.rs:52-89) forwards to `inner` unwrapped, so no scorer prefetches; the wrapper is the whole point of the class."
+  },
+  "org.apache.lucene.codecs.hnsw.PrefetchableFlatVectorScorer$PrefetchableRandomVectorScorerSupplier": {
+   "destination": "src/codecs/hnsw/graph_provider.rs",
+   "javaLoc": 40,
+   "reason": "the supplier that would hand out the missing prefetching scorers."
+  },
+  "org.apache.lucene.codecs.hnsw.PrefetchableFlatVectorScorer$PrefetchableUpdatableRandomVectorScorer": {
+   "destination": "src/codecs/hnsw/graph_provider.rs",
+   "javaLoc": 49,
+   "reason": "the updateable half of the same missing wrapper."
+  },
+  "org.apache.lucene.codecs.hnsw.ScalarQuantizedVectorScorer$ScalarQuantizedRandomVectorScorerSupplier": {
+   "destination": "src/codecs/hnsw/scalar_quantized_scorer.rs",
+   "javaLoc": 64,
+   "reason": "`ScalarQuantizedVectorScorer::get_random_vector_scorer_supplier_{float,byte}` (src/codecs/hnsw/scalar_quantized_scorer.rs:124-141) delegate to the non-quantized scorer, so no quantized supplier exists; Java returns this class."
+  },
+  "org.apache.lucene.document.FeatureSortField$FeatureComparator": {
+   "destination": "src/document/feature_field.rs",
+   "javaLoc": 73,
+   "reason": "`FeatureSortField` (src/document/feature_field.rs:635) exposes field, feature and reverse and no comparator, so `FeatureSortField.getComparator` has no counterpart and a sort by a feature value cannot be executed."
+  },
+  "org.apache.lucene.index.ExitableDirectoryReader$ExitableFilterAtomicReader$ExitableAcceptDocs": {
+   "destination": "src/index/filter_directory_reader.rs",
+   "javaLoc": 71,
+   "reason": "`ExitableFilterLeafReader` (src/index/filter_directory_reader.rs:550-650) checks the timeout once in the accessor and returns the wrapped value unwrapped, so the per-DOCS_BETWEEN_TIMEOUT_CHECK check this wrapper exists to perform never happens."
+  },
+  "org.apache.lucene.index.ExitableDirectoryReader$ExitableFilterAtomicReader$ExitableByteVectorValues": {
+   "destination": "src/index/filter_directory_reader.rs",
+   "javaLoc": 42,
+   "reason": "`ExitableFilterLeafReader` (src/index/filter_directory_reader.rs:550-650) checks the timeout once in the accessor and returns the wrapped value unwrapped, so the per-DOCS_BETWEEN_TIMEOUT_CHECK check this wrapper exists to perform never happens."
+  },
+  "org.apache.lucene.index.ExitableDirectoryReader$ExitableFilterAtomicReader$ExitableFloatVectorValues": {
+   "destination": "src/index/filter_directory_reader.rs",
+   "javaLoc": 42,
+   "reason": "`ExitableFilterLeafReader` (src/index/filter_directory_reader.rs:550-650) checks the timeout once in the accessor and returns the wrapped value unwrapped, so the per-DOCS_BETWEEN_TIMEOUT_CHECK check this wrapper exists to perform never happens."
+  },
+  "org.apache.lucene.index.ExitableDirectoryReader$ExitableIntersectVisitor": {
+   "destination": "src/index/filter_directory_reader.rs",
+   "javaLoc": 60,
+   "reason": "`ExitableFilterLeafReader` (src/index/filter_directory_reader.rs:550-650) checks the timeout once in the accessor and returns the wrapped value unwrapped, so the per-DOCS_BETWEEN_TIMEOUT_CHECK check this wrapper exists to perform never happens."
+  },
+  "org.apache.lucene.index.ExitableDirectoryReader$ExitablePointTree": {
+   "destination": "src/index/filter_directory_reader.rs",
+   "javaLoc": 93,
+   "reason": "`ExitableFilterLeafReader` (src/index/filter_directory_reader.rs:550-650) checks the timeout once in the accessor and returns the wrapped value unwrapped, so the per-DOCS_BETWEEN_TIMEOUT_CHECK check this wrapper exists to perform never happens."
+  },
+  "org.apache.lucene.index.ExitableDirectoryReader$ExitablePointValues": {
+   "destination": "src/index/filter_directory_reader.rs",
+   "javaLoc": 73,
+   "reason": "`ExitableFilterLeafReader` (src/index/filter_directory_reader.rs:550-650) checks the timeout once in the accessor and returns the wrapped value unwrapped, so the per-DOCS_BETWEEN_TIMEOUT_CHECK check this wrapper exists to perform never happens."
+  },
+  "org.apache.lucene.index.ExitableDirectoryReader$ExitableTerms": {
+   "destination": "src/index/filter_directory_reader.rs",
+   "javaLoc": 30,
+   "reason": "`ExitableFilterLeafReader::terms` (:584) checks the timeout once and returns the wrapped Terms unwrapped, so nothing checks the timeout during term iteration."
+  },
+  "org.apache.lucene.index.ExitableDirectoryReader$ExitableTermsEnum": {
+   "destination": "src/index/filter_directory_reader.rs",
+   "javaLoc": 36,
+   "reason": "the enum that performs the per-DOCS_BETWEEN_TIMEOUT_CHECK check; without it a long term scan is not interruptible."
+  },
+  "org.apache.lucene.index.FilterDirectoryReader$DelegatingCacheHelper": {
+   "destination": "src/index/filter_directory_reader.rs",
+   "javaLoc": 22,
+   "reason": "declared not ported at src/index/filter_directory_reader.rs:1591: the wrapper does not keep a distinct cache identity."
+  },
+  "org.apache.lucene.index.FilterLeafReader$FilterFields": {
+   "destination": "src/index/filter_reader.rs",
+   "javaLoc": 27,
+   "reason": "declared not reproduced at src/index/filter_reader.rs:38-40, because the port makes FilterLeafReader concrete and nothing in the crate subclasses these bases."
+  },
+  "org.apache.lucene.index.FilterLeafReader$FilterPostingsEnum": {
+   "destination": "src/index/filter_reader.rs",
+   "javaLoc": 63,
+   "reason": "same declaration."
+  },
+  "org.apache.lucene.index.FilterLeafReader$FilterTerms": {
+   "destination": "src/index/filter_reader.rs",
+   "javaLoc": 62,
+   "reason": "same declaration."
+  },
+  "org.apache.lucene.index.FilterLeafReader$FilterTermsEnum": {
+   "destination": "src/index/filter_reader.rs",
+   "javaLoc": 83,
+   "reason": "same declaration."
+  },
+  "org.apache.lucene.index.FreqProxTermsWriter$SortingTerms": {
+   "destination": "src/index/freq_prox_terms_writer.rs",
+   "javaLoc": 21,
+   "reason": "declared not ported at src/index/freq_prox_terms_writer.rs:80: flush-time index sorting of the in-memory terms is absent."
+  },
+  "org.apache.lucene.index.IndexSorter$BinaryDocValuesProvider": {
+   "destination": "src/index/index_sorter.rs",
+   "javaLoc": 4,
+   "reason": "the provider BinarySorter takes; the file declares only the numeric and sorted providers."
+  },
+  "org.apache.lucene.index.IndexSorter$BinarySorter": {
+   "destination": "src/index/index_sorter.rs",
+   "javaLoc": 108,
+   "reason": "src/index/index_sorter.rs has NumericSorter and StringSorter and no binary sorter, so an index sort on a BinaryDocValues field cannot be built."
+  },
+  "org.apache.lucene.index.MergePolicy$MergeObserver": {
+   "destination": "src/index/merge_policy.rs",
+   "javaLoc": 52,
+   "reason": "declared absent at src/index/index_writer.rs:4710-4713: `force_merge_with` takes a `do_wait` flag instead of returning an observer the caller can await."
+  },
+  "org.apache.lucene.index.NumericDocValuesFieldUpdates$SingleValueNumericDocValuesFieldUpdates": {
+   "destination": "src/index/doc_values_field_updates.rs",
+   "javaLoc": 100,
+   "reason": "Lucene's specialisation for an update that writes one value to every matched document; the port has only the general packed form."
+  },
+  "org.apache.lucene.index.TieredMergePolicy$MergeScore": {
+   "destination": "src/index/merge_policy.rs",
+   "javaLoc": 10,
+   "reason": "`TieredMergePolicy::score` (:1702) returns the bare f64; Lucene's abstract class also carries `getExplanation()`, which nothing in the port produces."
+  }
+ }
+}

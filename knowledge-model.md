@@ -93,7 +93,11 @@ Identity is `qualifiedName`.
 | `implementsExternal` | List of external interfaces not modelled as nodes. |
 | `portScope` | **The port scope marker.** `"in"`, `"nested"` — see below. |
 | `portScopeRule` | The mechanical rule that assigned `portScope`. |
-| `portState` | `"ported"`, `"candidate"`, `"unported"` — see below. |
+| `portState` | For a top-level type: `"ported"`, `"candidate"`, `"unported"`. For a nested one: `"ported"`, `"absorbed"`, `"unported"` — see below. |
+| `portStateEvidence` | On a nested type, on what basis its `portState` was decided: `"doc-comment"`, `"curated"`, `"not-nameable"`, `"verified-absorption"`, `"verified-absent"`. Never absent. |
+| `javaVisibility` / `javaPublished` / `javaUsedAcrossFiles` | On a nested type, the Java facts the classification turns on: its effective visibility, whether it and every enclosing type are `public`/`protected`, and whether another `lucene/core` file names it as `Outer.Inner`. |
+| `nestedHost` / `nestedHostFiles` | On a nested type, the nearest enclosing type that has a port, and the crate file(s) that port it. |
+| `portDestination` | On an `unported` nested type, the crate file its port belongs in. |
 | `portStateNote` | Why the mechanical `portState` was overridden by hand. Present only on the types where the heuristic was verified wrong. **A type carrying this note is skipped by the mechanical pass**, so a hand verification survives the next sync — see below. |
 | `memberTotal` / `memberMatched` / `memberCoverage` | How much of the type is actually there — see *Depth* below. |
 | `memberEvidence` | Always `"name-mapping"`: the basis of the coverage figure, never omitted, because the figure is evidence and not a fact. |
@@ -107,7 +111,7 @@ leaving it implied, so a coverage query is defensible rather than a guess.
 | Value | `portScopeRule` | Meaning |
 |---|---|---|
 | `in` | `lucene-core-top-level` | A **top-level** type declared by a file of the `lucene/core` module (`src/java` and `src/java21`). 1,196 types. This is the port target. |
-| `nested` | `nested-in-enclosing-type` | An inner type. Excluded from the denominator: it is ported together with the type that encloses it, not independently. 908 types. |
+| `nested` | `nested-in-enclosing-type` | An inner type. Excluded from the denominator, because a nested type is not an independent port unit. 908 types. **The exclusion is measured, not assumed**: every one of the 908 carries a `portState` of its own — see *The 908 nested types* below. |
 | `out` | `not-a-lucene-core-type` | Anything else carrying a Java label. 5 types: Rucene's own Java test fixtures under `tests/fixtures/java-codec-harness/`. |
 
 **The rule keys on the declaring file, not on the package name.** Those five
@@ -124,12 +128,72 @@ and §16.1 names `lucene/core` as the canonical source tree, so the whole module
 the target. The decision is recorded as the `Decision` node *"Port scope is every
 top-level type of lucene/core 10.5.0"*, with its alternatives and evidence.
 
+#### The 908 nested types
+
+Keeping the nested types out of the denominator is a statement about the *unit of
+porting*, not a claim that they are all there. For a while the model made both at
+once, and only the first was checked: the rule read "it is ported together with the
+type that encloses it", nothing verified that, and 814 of the 908 carried no `PORTS`
+edge at all. `CLAUDE.md` §6.1 does not allow that — an exclusion resting on an
+unverified rule is exactly the implicit denominator it forbids — and the model
+already knew of counter-examples, `TotalHits.Relation` and `Sorter.DocMap` among the
+nested types that needed a declared port of their own.
+
+`tools/kg/nested_port_kg.py` measures it. Every nested type carries a `portState`
+and the `portStateEvidence` that produced it.
+
+| `portState` | Count | Meaning |
+|---|---|---|
+| `ported` | 527 | A Rucene item is asserted to be this type, by a `PORTS` edge. |
+| `absorbed` | 354 | No independent Rust item, and none is owed — on evidence, not assumption. |
+| `unported` | 27 | Neither. Real work; each carries a `portDestination`. |
+
+| `portStateEvidence` | Count | What it rests on |
+|---|---|---|
+| `doc-comment` | 482 | The crate's own claim, read by `port_evidence_kg.py` — the same ladder the top-level surface uses. |
+| `curated` | 45 | A hand-verified edge, with the file and line that show it, carried in `tools/kg/nested_port_verdicts.json`. |
+| `not-nameable` | 301 | No client can name the type, so nothing can depend on it except through the type that encloses it. See below. |
+| `verified-absorption` | 53 | Nameable, but reading the crate shows where its work went and why that is faithful. Each names the host, the file and the line. |
+| `verified-absent` | 27 | Read and found missing, with the reason and the destination. |
+
+**What `not-nameable` measures, and what it does not.** A nested type is *nameable*
+when it is `public` or `protected` with every enclosing type likewise — so a
+downstream caller can write `Outer.Inner`; JLS 9.5 makes a member type of an
+interface implicitly `public` whatever the source says — **or** when another
+`lucene/core` file names it as `Outer.Inner`, which is what a package-private inner
+type used by its own package looks like. 357 of the 908 are nameable; 551 are not.
+
+For the 551 the measurement establishes something precise and something limited. It
+establishes that no contract of Lucene 10.5.0 mentions the type, so no caller can
+depend on it and its absence can break nothing directly. It does **not** establish
+that its behaviour is present: that is measured one level up, by the enclosing
+type's `memberCoverage`, and nowhere per nested type. The residual is stated here
+rather than hidden, and it is not hypothetical — reading the not-nameable types whose
+enclosing port measures under 50% member coverage is how ten of the 27 gaps were found,
+the `ExitableDirectoryReader` wrappers among them. Every nameable type the widened
+recogniser still left without a declared claim — 95 of the 357 — was read
+individually; the not-nameable ones were read where that signal pointed.
+
+**Reading the crate's own claims first.** Before any of this was curated, the
+recogniser was widened to read four spellings the crate already used and
+`port_evidence_kg.py` could not see — the short `Outer.Inner` form, Java modifiers
+quoted *inside* the backticks, `const` and `static` items, and the canonical
+`| Rucene | Apache Lucene Core 10.5.0 |` mapping table. That took the nested types
+with a declared port from 94 to 482 **without admitting any new kind of inference**:
+a short name resolves only when exactly one type in `lucene/core` carries that dotted
+suffix, and over the module no such suffix is ambiguous and no nested type shares a
+name with a member of its own enclosing type. Curation was the last resort, not the
+first, which is why it accounts for 45 and not 400.
+
+The decision, its alternatives and its evidence are the `Decision` node *"Nested
+types are excluded from the denominator by measurement, not by assumption"*.
+
 #### `portState` — what is ported and what is missing
 
-| Value | Count at `a5c1556` | Meaning |
+| Value | Count at `1fa3e92` | Meaning |
 |---|---|---|
 | `ported` | 1,196 | Something *asserts* that a Rucene item is the port of this type: a `PORTS` edge, whose `evidence` says on what basis. |
-| `candidate` | 0 | No assertion, but exactly one Rucene type carries the same simple name, recorded as a `PORTS_CANDIDATE` edge. Probable, **unverified**, and the graph's own to-do list. **Empty at `a5c1556`**: every in-scope type now carries an asserted edge, so no coverage claim rests on a name match. The value stays in the model because the candidate rule still runs at every sync and will use it again the moment a new Lucene type appears without a declared port. |
+| `candidate` | 0 | No assertion, but exactly one Rucene type carries the same simple name, recorded as a `PORTS_CANDIDATE` edge. Probable, **unverified**, and the graph's own to-do list. **Empty at `1fa3e92`**: every in-scope type now carries an asserted edge, so no coverage claim rests on a name match. The value stays in the model because the candidate rule still runs at every sync and will use it again the moment a new Lucene type appears without a declared port. |
 | `unported` | 0 | Neither. |
 
 ##### The evidence ladder
@@ -139,25 +203,60 @@ back to the thing that justifies it. Every edge carries one; none is unstated.
 
 | `evidence` | Edges | What it rests on |
 |---|---|---|
-| `doc-comment` | 1,208 | The Rust item's own doc comment says `Equivalent to \`org.apache.lucene.X\`` (or `Port of`, `Ported from`, `Lucene Core equivalent:`). `CLAUDE.md` §14.1 requires that line, so this is **the port declaring what it is**, attached to one specific item. `declaredAt` gives the `file:line`. Where the item is macro-generated the same claim exists only after expansion, and the edge says so with `declarationSource: "macro-expansion"` — see `origin` under `RustStruct`. |
-| `curated` | 137 | A hand-verified edge, including the cases the mechanical rules provably get wrong. |
+| `doc-comment` | 1,625 | The Rust item's own doc comment says `Equivalent to \`org.apache.lucene.X\`` (or `Port of`, `Ported from`, `Lucene Core equivalent:`), or the module's canonical `| Rucene | Apache Lucene Core 10.5.0 |` table names it. `CLAUDE.md` §14.1 requires that line, so this is **the port declaring what it is**, attached to one specific item. `declaredAt` gives the `file:line`. Where the item is macro-generated the same claim exists only after expansion, and the edge says so with `declarationSource: "macro-expansion"` — see `origin` under `RustStruct`. |
+| `curated` | 163 | A hand-verified edge, including the cases the mechanical rules provably get wrong. |
+
+##### What counts as a declared claim
+
+The lead-ins are deliberately few, but the *spellings* they accept are whatever the
+crate actually writes, because refusing a spelling does not make the evidence
+stricter — it makes it invisible, and an invisible claim becomes an assumption
+somewhere else. Five forms are read, and each is admitted only where it cannot
+resolve to more than one type:
+
+| Form | Example |
+|---|---|
+| the fully-qualified name | ``Equivalent to `org.apache.lucene.search.TotalHits`.`` |
+| the short `Outer.Inner` name of a nested type | ``Equivalent to `FreqProxFields.FreqProxDocsEnum`.`` |
+| the Java declaration quoted whole | ``Equivalent to the `final class MultiTermQuery.TopTermsScoringBooleanQueryRewrite`.`` |
+| a claim on a `const` or `static`, which names a member | ``Equivalent to `SortField.Provider.NAME`.`` |
+| a row of the module's mapping table | `| [`PagedBytesReader`] | `PagedBytes.Reader` |` |
+
+`NESTED_SHORT` — two or more segments, each beginning with a capital — is what keeps
+the short form honest. Lucene's packages are lower-case, so such a chain can only
+name `Outer.Inner`, never `pkg.Type` and never `Type.member`; and the name is
+accepted only when exactly one type in `lucene/core` carries that dotted suffix.
+Measured over the module, **no** two-or-more-segment capitalised suffix is ambiguous
+and **no** nested type shares a name with a member of its own enclosing type, so the
+short spelling denotes one type or none, never a guess between two (`CLAUDE.md` §7).
+A bare simple name is still refused everywhere, table rows included.
+
+Two forms remain unreadable and are closed by curation rather than by loosening the
+rule: a claim written on an **enum variant** (`LuceneError::MergeAborted` states its
+equivalence to `MergePolicy.MergeAbortedException`, and the item reader attributes a
+doc block only to a declaration it precedes), and a claim whose Lucene simple name
+**differs** from the Rust item's, which the paragraph reader refuses by design since
+that guard is what stops a cross-reference being read as a claim.
 
 **Why the declared evidence changed the picture.** When the graph first measured the
 port it read *381 ported, 815 candidate*: two thirds of the coverage claim rested on
 a bare simple-name coincidence, which the model already warned had to be quoted as
-unverified. The crate, however, states what it ports. At `a5c1556` it makes 1,747
-equivalence claims across 585 files — 1,118 attached to a single item, 629 to a whole
-module — naming 1,244 distinct Lucene targets, and they resolve to 1,208 `PORTS`
-edges carrying `evidence: "doc-comment"` over 1,195 distinct Lucene types, 1,155 of
-them declared by a literal source line and 53 legible only after macro expansion.
-That is not an inference the graph makes; it is a statement the code makes, which
-`CLAUDE.md` §7 admits as verified knowledge where a name match never could be.
+unverified. The crate, however, states what it ports. At `1fa3e92` it makes 2,576
+equivalence claims across 584 files — 1,901 attached to a single item, 629 to a whole
+module, 46 in a mapping table — naming 1,953 distinct Lucene targets, and they
+resolve to 1,625 `PORTS` edges carrying `evidence: "doc-comment"` over 1,605 distinct
+Lucene types, 1,516 of them declared by a literal source line and 109 legible only
+after macro expansion. That is not an inference the graph makes; it is a statement
+the code makes, which `CLAUDE.md` §7 admits as verified knowledge where a name match
+never could be.
 
-32 of those edges map a Rust item to a Lucene type of a **different** name —
-`TotalHitsRelation` → `TotalHits.Relation`, `NoOpLock` → `NoLock`,
-`DefaultIndexingChain` → `IndexingChain`, `SorterDocMap` → `Sorter.DocMap`. A
-name-match heuristic could never have produced any of them, and would never have
-been right to guess them.
+172 of those edges map a Rust item to a Lucene type of a **different** name, over 151
+distinct types — `TotalHitsRelation` → `TotalHits.Relation`, `NoOpLock` → `NoLock`,
+`DefaultIndexingChain` → `IndexingChain`, `SorterDocMap` → `Sorter.DocMap`,
+`AutomatonType` → `CompiledAutomaton.AUTOMATON_TYPE`. A name-match heuristic could
+never have produced any of them, and would never have been right to guess them.
+
+`absorbed` exists only on the nested half of the module, and is defined there.
 
 ##### Depth — `ported` does not mean complete
 
@@ -168,16 +267,16 @@ whose name maps to a function the port provides, counting the type's inherent
 methods, the free functions of its file, and the methods of every trait it
 implements.
 
-At `a5c1556`, over the 1,098 ported types that declare methods: **mean coverage
-78.2%**, distributed
+At `1fa3e92`, over the 1,160 ported types that declare methods: **mean coverage
+79.5%**, distributed
 
 | Coverage | Types |
 |---|---|
-| 100% | 473 |
-| 75–99% | 288 |
-| 50–74% | 190 |
-| 1–49% | 80 |
-| 0% | 67 |
+| 100% | 518 |
+| 75–99% | 303 |
+| 50–74% | 200 |
+| 1–49% | 79 |
+| 0% | 60 |
 
 **This is a lower bound, and `memberEvidence: "name-mapping"` says so.** One Rust
 method can discharge several Java ones; a faithful port may rename deliberately;
@@ -276,8 +375,8 @@ node; that label is gone, and `File` is the only file label.)
 | `role` / `moduleName` | For `module-info.java`, the JPMS module name. |
 | `gitCommit` / `gitDate` | Provenance stamp. |
 
-Every `.rs` file under `src/` and `tests/` has exactly one `File` node — 641 at
-`a5c1556`, verified by `tools/kg/load_rucene_kg.py --phase audit`.
+Every `.rs` file under `src/` and `tests/` has exactly one `File` node — 644 at
+`1fa3e92`, verified by `tools/kg/load_rucene_kg.py --phase audit`.
 
 ### `RustStruct`, `RustTrait`, `RustEnum`, `RustAlias`
 A type declared by the Rucene crate. Identity is `{name, file}`, so two types with
@@ -435,7 +534,7 @@ A commit of the local repository. Identity is `hash` (full 40-char).
 | `task_id` | `rmp` task the commit closes, when there is one. |
 | `gitCommit` / `gitDate` | Same provenance stamp carried by every other node. |
 
-**Every commit of the repository is mirrored** — 269 at `a5c1556`, reproduced by
+**Every commit of the repository is mirrored** — 276 at `1fa3e92`, reproduced by
 `tools/kg/commits_kg.py`, which also derives `CLOSES_TASK` from the conventions
 the history actually uses (`Task #N`, `Tasks #N and #M`, `Closes rmp task #N`).
 Until this pass only 23 existed, so most `gitCommit` stamps pointed at a commit
@@ -560,7 +659,7 @@ is visible and correctable rather than an unauditable guess.
 |---|---|---|
 | `covered` | 206 | The Lucene type this test exercises is ported, and the Rust file declaring the port also declares at least one `#[test]`. A `COVERED_BY` edge names that file. |
 | `uncovered` | 238 | The type is ported but its Rust file declares no test. |
-| `subject-unported` | 0 | The type this test exercises is not ported. Empty at `a5c1556`, since every in-scope type is ported; the value is kept because a newly surveyed Lucene type can bring it back. |
+| `subject-unported` | 0 | The type this test exercises is not ported. Empty at `1fa3e92`, since every in-scope type is ported; the value is kept because a newly surveyed Lucene type can bring it back. |
 | `no-subject-resolved` | 527 | The class name follows none of Lucene's test-naming conventions, so no subject could be derived. The framework types are nearly all here. |
 
 This is a *file-level* correspondence, and it is the strongest one available: a
@@ -600,8 +699,8 @@ and conservative for the rest.
 | `DEPENDS_ON` | `Package` → `Package` and `Class` → `Class` on the Lucene side, both derived from `import` declarations plus same-package references; `File` → `File` on the Rucene side, derived from `use` declarations; Rucene type → Rucene type for curated dependencies, optionally carrying a `note`. Also `Task` → `Task`, mirroring the dependency `rmp` records, and `Decision` → `Task`, which a `kind: "gap"` decision uses to name the task that will close it. |
 | `EXTENDS` | `Class` → `Class` / `Class` → `Interface`; also `TestClass` → `TestClass`, which is how the 562 core tests reach `LuceneTestCase` and how a codec test reaches the `Base…TestCase` suite whose cases it inherits. 799 edges. |
 | `IMPLEMENTS` | `Class` → `Interface` on the Lucene side; Rucene type → `RustTrait` (an `impl Trait for Type` block, restricted to traits the crate itself declares). Also used as `Feature` → `File`/`Class`: the file or type that realises the feature — a few early syncs (including `b0e1a75`) wrote that one the other way round, as `File` → `Feature`, and those edges are still present. |
-| `PORTS` | Rucene node (`RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn`/`Component`) → Lucene `Class`. The Rust item is the port of that Lucene type. **`evidence` is mandatory** and is `"doc-comment"` or `"curated"` — see the evidence ladder above; `declaredAt` gives the `file:line` of a declared one, or the file alone when the declaration exists only after macro expansion, in which case `declarationSource` is `"macro-expansion"`. Optional `note` records that the port is partial, a placeholder, or a deliberate adaptation. Always points at the **type**, never at the Java file. 1,345 edges at `a5c1556`. |
-| `PORTS_CANDIDATE` | Rucene type → Lucene `Class`. There is exactly one Rucene type with the same simple name, so this is very probably a port that the graph has not confirmed. `evidence` says how it was derived (`"exact-name-match"`). Promote to `PORTS` once verified. **None survives at `a5c1556`**: the candidate phase proposed one, and the declared evidence superseded it. |
+| `PORTS` | Rucene node (`RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn`/`Component`) → Lucene `Class`. The Rust item is the port of that Lucene type. **`evidence` is mandatory** and is `"doc-comment"` or `"curated"` — see the evidence ladder above; `declaredAt` gives the `file:line` of a declared one, or the file alone when the declaration exists only after macro expansion, in which case `declarationSource` is `"macro-expansion"`. Optional `note` records that the port is partial, a placeholder, or a deliberate adaptation. Always points at the **type**, never at the Java file. 1,788 edges at `1fa3e92`. |
+| `PORTS_CANDIDATE` | Rucene type → Lucene `Class`. There is exactly one Rucene type with the same simple name, so this is very probably a port that the graph has not confirmed. `evidence` says how it was derived (`"exact-name-match"`). Promote to `PORTS` once verified. **None survives at `1fa3e92`**: the candidate phase proposed one, and the declared evidence superseded it. |
 | `REQUIRES_PORT` | `Task` → `Class`. The task's statement names that Lucene type, so an unported type on the other end blocks the task. Derived mechanically from the task's title and its functional/technical/acceptance text, restricted to unambiguous simple names of at least four characters. |
 | `EXPORTS` / `OPENS` / `REQUIRES` / `USES` / `PROVIDES` | `Feature` (`module-info`) → `Package` / `Feature` / `Class` (JPMS and SPI declarations). |
 | `PROVIDED_BY` | `Class` (SPI interface) → `Class` (implementation). |
@@ -1070,7 +1169,7 @@ Unstamped at `a5c1556`, by edge type — 10,787 edges in all:
 | `COMMITTED_IN` | 32 | written before the convention existed |
 | the remainder | 39 | `REFERENCES` 11, `CLOSES_TASK` 8, `SPECIFIED_IN` 8, `IMPLEMENTED_IN` 3, `DELIVERS` 1, and the 8 legacy `IMPLEMENTED_BY`/`TESTED_BY`/`MODIFIES`/`FULFILLS` edges |
 
-Every edge the `a5c1556` sync wrote — the 1,345 `PORTS` (no `PORTS_CANDIDATE`
+Every edge the `1fa3e92` sync wrote — the 1,788 `PORTS` (no `PORTS_CANDIDATE`
 survives it), the 908 `NESTED_IN`, the crate's
 `DECLARES`/`IMPLEMENTS`/`DEPENDS_ON`, the `Task` and `Commit` mirrors — carries
 `gitCommit` and `gitDate`. **Nodes** are fully stamped: the audit's *nodes without a
@@ -1105,6 +1204,10 @@ The loaders under `tools/kg/` rebuild the whole graph from a clean store; see
    Re-run step 4's `scope` and `candidates` phases afterwards so `portState`
    reflects them — as two separate invocations, since `--phase` takes a single
    value and rejects a comma-separated list.
+5b. `nested_port_kg.py` — the `portState` of each of the 908 nested types, the
+   curated `PORTS` edges its verdict file carries, and the `Decision` that records
+   why the exclusion is now a measurement. It must run **after** step 5, since a
+   nested type is `ported` on the strength of the edges step 5 writes.
 6. `commits_kg.py` — the full commit history and `CLOSES_TASK`.
 7. `lucene_tests_kg.py` — the Lucene test surface and its correspondence with the crate.
 
@@ -1122,6 +1225,8 @@ each is now covered by a check that would catch it again.
 | The Java declaration regex admitted no `record` component list and no `permits` clause | 54 nested Lucene types missing, `BooleanClause.Occur` and `TotalHits.Relation` among them | `enrich_lucene_kg.py`, all three declaration regexes |
 | The crate extractor could not see macro-generated types | 67 real types absent; the audit proposed deleting four that carried `PORTS` edges | `--expand`, via the compiler's own expansion |
 | The crate extractor read `macro_rules!` bodies as declarations | 12 types and 231 functions invented in `macros.rs` | `blank_macro_bodies` |
+| The claim recogniser required the `org.apache.lucene.` prefix, refused Java modifiers quoted inside the backticks, ignored `const`/`static` items and did not read the module mapping table | 388 nested types the crate *declares* it ports were invisible, and their absence was then read as evidence that the `nested-in-enclosing-type` rule held | `NESTED_SHORT` plus the unique-dotted-suffix resolution, the quoted-modifier span, `const`/`static` in `RE_ITEM`, and `_table_claims` |
+| The nested exclusion asserted that every inner type is ported with its enclosing type, and nothing checked it | 814 of the 908 carried no `PORTS` edge; the certified 1,196/1,196 answered a narrower question than the one it appeared to answer, and 27 real gaps were invisible | `nested_port_kg.py`, plus two audit checks that fail on an unclassified nested type |
 | Nothing could read a macro-generated type's **doc comment** | 32 in-scope types `ported` with no `PORTS` edge to anchor, so `measure_depth` never measured them and their Lucene members stayed outside the depth denominator | `expanded_evidence_kg.py`, reading the doc from the same expansion |
 | A module claim on a file that declares no type produced no edge | `CollectionUtil` and `HashContainers` — ported, and unmeasurable — while six identical cases had been curated by hand one at a time | the module-as-`Component` rule in `port_evidence_kg.load` |
 | `#[cfg(test)]` was read on the enclosing module only | test-only types recorded as production code | item-level attribute check |
@@ -1132,7 +1237,7 @@ each is now covered by a check that would catch it again.
 
 ## Materialization status
 
-Counts measured at commit `a5c1556` (authored 2026-09-05, surveyed 2026-09-06),
+Counts measured at commit `1fa3e92` (surveyed 2026-09-06),
 verified against the two real code trees by an audit that reads the Apache Lucene
 10.5.0 clone and the crate directly rather than trusting the loaders.
 
@@ -1141,33 +1246,33 @@ verified against the two real code trees by an audit that reads the Apache Lucen
 | `Project` | populated (2: Rucene, Apache Lucene Core 10.5.0) |
 | `Module` | populated (36: the `rucene` crate and all 35 Lucene modules with Java sources, each with `inScope`) |
 | `Package` | populated (39: 37 with Java files, plus `codecs.lucene103` and `internal`, which hold only subpackages) |
-| `Class` | populated (2,109 Java types: 1,196 top-level `portScope='in'`, 908 `portScope='nested'`, 5 `portScope='out'` — Rucene's own Java test fixtures) |
+| `Class` | populated (2,109 Java types: 1,196 top-level `portScope='in'`, 908 `portScope='nested'`, 5 `portScope='out'` — Rucene's own Java test fixtures). Every one carries a `portState`: 1,196 in-scope `ported`, and on the nested half 527 `ported`, 354 `absorbed`, 27 `unported` |
 | `Interface` / `Enum` / `Exception` / `Annotation` | declared but not materialised; Java types all carry `Class` with a `kind` |
-| `Method` | populated (18,020 Lucene members: 12,045 methods, 1,552 constructors, 4,423 fields) |
-| `File` | populated (1,939: 1,232 Lucene sources, 641 crate `.rs` files, 43 Java test fixtures, and 23 build, documentation, specification and KG-tooling files) |
-| `RustStruct` / `RustTrait` / `RustEnum` / `RustAlias` | populated from the full crate survey (2,240 / 367 / 146 / 72 = 2,825), 118 of them `origin: "macro"` |
-| `RustFn` | populated (15,075), 896 of them `origin: "macro"` |
+| `Method` | populated (22,542 Lucene members: 13,228 methods, 2,103 constructors, 7,003 fields, 208 enum constants) |
+| `File` | populated (1,946: 1,232 Lucene sources, 644 crate `.rs` files, 46 Java test fixtures, and 24 build, documentation, specification and KG-tooling files) |
+| `RustStruct` / `RustTrait` / `RustEnum` / `RustAlias` | populated from the full crate survey (2,245 / 368 / 148 / 73 = 2,834), 118 of them `origin: "macro"` |
+| `RustFn` | populated (15,174), 896 of them `origin: "macro"` |
 | `Component` | populated (10), all with a non-null `status` |
 | `Task` | populated (183): the 144 tasks `rmp` reported at `a5c1556`, with their live status, plus 39 nodes whose `rmp` task has since been deleted — see `Task` above |
-| `Commit` | populated (269) — **the complete history**, matching `git rev-list --count HEAD` |
-| `Decision` | populated (16), including `kind: "gap"` declared gaps, the port-scope principle, and the evidence rule that governs `portState` |
+| `Commit` | populated (276) — **the complete history**, matching `git rev-list --count HEAD` |
+| `Decision` | populated (17), including `kind: "gap"` declared gaps, the port-scope principle, the measurement that replaced the nested-type assumption, and the evidence rule that governs `portState` |
 | `Defect` | populated (9) |
 | `Feature` | populated (40) |
-| `CONTAINS` | populated (1,959: project→module, module→package, module→crate file, package→file/type) |
-| `DECLARES` | populated (53,893: Java file→type, Java class→member, crate file→type/function, crate type→method, test class→test method) |
-| `DEPENDS_ON` | populated (13,101: Lucene type→type and package→package, crate file→file, curated type→type, task→task) |
-| `EXTENDS` / `IMPLEMENTS` | populated (1,395 / 2,150) |
+| `CONTAINS` | populated (1,962: project→module, module→package, module→crate file, package→file/type) |
+| `DECLARES` | populated (58,579: Java file→type, Java class→member, crate file→type/function, crate type→method, test class→test method) |
+| `DEPENDS_ON` | populated (13,116: Lucene type→type and package→package, crate file→file, curated type→type, task→task) |
+| `EXTENDS` / `IMPLEMENTS` | populated (1,395 / 2,194) |
 | `NESTED_IN` | populated (908), one per nested Lucene type |
-| `PORTS` | populated (1,345), **every edge carrying `evidence`**: 1,208 `doc-comment`, 137 `curated` |
+| `PORTS` | populated (1,788), **every edge carrying `evidence`**: 1,625 `doc-comment`, 163 `curated` |
 | `PORTS_CANDIDATE` | **empty** (0): every candidate was superseded by a declared edge, and no type carries both |
 | `REQUIRES_PORT` | populated (209 edges from tasks to the Lucene types their statements name) |
 | `TESTS` / `SPECIFIED_IN` | populated (594 / 16) |
 | `TestClass` | populated (971: 759 from `lucene/core/src/test`, 212 from `lucene/test-framework/src/java`), every one carrying a `role` and a `ruceneCoverage` |
 | `TestMethod` | populated (5,746) |
 | `COVERED_BY` | populated (208 edges from a `TestClass` to the Rust file that tests its subject) |
-| `CLOSES_TASK` | populated (117 edges over 102 commits, reaching 99 distinct tasks), derived from the commit messages; the `a5c1556` sync re-derived 99 of them and left the rest, written by earlier syncs, in place |
+| `CLOSES_TASK` | populated (122 edges over 107 commits), derived from the commit messages; the `1fa3e92` sync re-derived 109 of them and left the rest, written by earlier syncs, in place |
 | `REFERENCES` | populated (13) |
-| `IMPLEMENTED_IN` / `COMMITTED_IN` / `DELIVERS` | populated (138 / 200 / 4) |
+| `IMPLEMENTED_IN` / `COMMITTED_IN` / `DELIVERS` | populated (139 / 200 / 4) |
 
 ### What the audit checks, and what it found
 
@@ -1177,7 +1282,7 @@ independently of `extract_lucene_kg.py` (the two agreed on all 908 nested types 
 both directions), and takes the crate's type census from the compiler's own
 expansion. Run it after every sync; `problems: 0` is the pass condition.
 
-At `a5c1556` it passes on every check, and ends in `problems: 0`:
+At `1fa3e92` it passes on every check, and ends in `problems: 0`:
 
 | Check | Graph | Reality |
 |---|---|---|
@@ -1185,16 +1290,22 @@ At `a5c1556` it passes on every check, and ends in `problems: 0`:
 | top-level types (`portScope='in'`) | 1,196 | 1,196 |
 | nested types (`portScope='nested'`) | 908 | 908 |
 | Lucene modules registered | 35 | 35 |
-| crate `.rs` files | 641 | 641 |
-| crate types | 2,825 | 2,825 |
-| crate functions | 15,075 | 15,075 |
+| crate `.rs` files | 644 | 644 |
+| crate types | 2,834 | 2,834 |
+| crate functions | 15,174 | 15,174 |
 | types the compiler sees that the graph lacks | 0 | — |
 | `Class` without a `portScope` | 0 | — |
+| nested types without a measured port state | 0 | — |
+| `unported` nested types without a destination | 0 | — |
 | `PORTS` edges without `evidence` | 0 | — |
 | types with both `PORTS` and `PORTS_CANDIDATE` | 0 | — |
 | `PORTS` edges from a node no survey confirms | 0 | — |
-| commits | 269 | 269 |
+| commits | 276 | 276 |
 | nodes without a provenance stamp | 0 | — |
+
+The two nested checks are what keeps the exclusion from sliding back into an
+assumption: a nested type with no `portState`, or an `unported` one with no
+`portDestination`, fails the audit.
 
 **Deleting is as much of the audit's job as counting.** At `a5c1556` the prune pass
 of `load_rucene_kg.py` removed 5 type nodes and 41 `RustFn` that the commit itself

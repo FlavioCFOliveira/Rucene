@@ -165,17 +165,16 @@ def load(roadmap, claims, commit, date):
     """Write the claims as `PORTS` edges, on nodes with the model's identity."""
     all_classes = [r[0] for r in kg_read(roadmap, "MATCH (c:Class) RETURN c.qualifiedName")
                    if r[0]]
-    classes = {c: c for c in all_classes}
-    for c in all_classes:
-        if "$" in c:
-            # A nested Lucene type is keyed `pkg.Outer$Inner`, a doc comment
-            # writes `pkg.Outer.Inner`. Accept both spellings, as
-            # `port_evidence_kg.py` does.
-            classes.setdefault(c.replace("$", "."), c)
+    # The same index `port_evidence_kg.py` resolves against, for the same reason:
+    # a macro writes the nested name exactly as a hand-written doc does. The hppc
+    # templates say `Port of `IntObjectHashMap.KeysContainer``, with the package
+    # left to the module around them, so an exact-name index alone dropped every
+    # one of those claims on the floor.
+    classes, short_classes = pe.build_class_index(all_classes)
 
     rows, unresolved = [], set()
     for c in claims:
-        target = classes.get(c["lucene"])
+        target = pe.resolve_type(c["lucene"], classes, short_classes)
         if target is None:
             unresolved.add(c["lucene"])
             continue
