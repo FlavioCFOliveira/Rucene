@@ -22,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import extract_lucene_kg as e
+from javatext import strip_java
 
 # The reference clone and the provenance stamp are settable from the command
 # line (see `main`). The defaults are the path `CLAUDE.md` 16.1 names and the
@@ -47,6 +48,22 @@ def configure(lucene_root: str, commit: str, date: str):
     GDATE = date
     # The imported extractor makes its file paths relative to this root.
     e.LUCENE_ROOT = BASE_ROOT
+
+
+# The declaration head, shared by the member regex and by the field branch that
+# has to take it off again. `non-sealed` precedes `sealed` so the longer keyword
+# wins the alternation; the trailing `\s+` each alternative is used with is what
+# makes these whole words, so `finalize` never reads as `final`.
+MODIFIERS = (r'public|protected|private|static|final|abstract|synchronized|'
+             r'native|default|strictfp|non-sealed|sealed|volatile|transient')
+# Lucene core writes no annotation whose arguments nest parentheses, so one
+# level is enough; the braces of `@SuppressWarnings({"a", "b"})` are balanced
+# and so leave the brace-depth accounting alone.
+ANNOTATION = r'@[A-Za-z_$][A-Za-z0-9_$.]*(?:\s*\([^()]*\))?'
+ANNOTATION_RE = re.compile(ANNOTATION + r'\s*')
+# JLS 10.2: the brackets of an array may follow the *declarator* rather than the
+# type, and each declarator carries its own.
+DECLARATOR_DIMS = r'((?:\s*\[\s*\])*)'
 
 
 def escape(s):
@@ -428,17 +445,6 @@ def extract_inner_classes():
         re.MULTILINE,
     )
 
-    def clean_text(text):
-        # Order matters: remove text blocks/strings first (they can contain comment-like
-        # tokens), then comments, then char literals (so an apostrophe inside a removed
-        # comment does not start a multi-line char match).
-        t = re.sub(r'"""\s*\n[\s\S]*?\n\s*"""', '""', text)
-        t = re.sub(r'"(?:\\.|[^"\\])*"', '""', t)
-        t = re.sub(r'//.*?$', '', t, flags=re.M)
-        t = re.sub(r'/\*.*?\*/', '', t, flags=re.S)
-        t = re.sub(r"'(?:\\.|[^'\\\n])*'", "''", t)
-        return t
-
     def parent_qualified(pkg, stack):
         return pkg + '.' + '$'.join(stack)
 
@@ -455,7 +461,7 @@ def extract_inner_classes():
                 if not m_pkg:
                     continue
                 pkg = m_pkg.group(1)
-                clean = clean_text(text)
+                clean = strip_java(text)
 
                 stack = []  # stack of simple type names currently open
                 for m in decl_re.finditer(clean):
@@ -525,8 +531,9 @@ def extract_members():
     signature, kind, file, package, parentQualifiedName, modifiers, returnType
     (for methods/fields/enum constants).
 
-    Two shapes used to escape this extractor entirely, and both are members the
-    crate makes claims about:
+    Five shapes used to escape this extractor entirely. Each shrank the
+    denominator every depth and triage figure is quoted against, and
+    `CLAUDE.md` 6.1 asks that denominator to be defensible:
 
     * **Enum constants.** `PreloadHint.INSTANCE` and `ReadOnceHint.INSTANCE`
       (`store/PreloadHint.java`, `store/ReadOnceHint.java`) are the whole body
@@ -545,9 +552,28 @@ def extract_members():
       bracket depth zero, so an initialiser may contain braces, parentheses and
       semicolons of its own.
 
-    Both gaps were invisible because nothing audits the member surface; they
-    surfaced as three port claims the resolver in `port_evidence_kg.py`
-    correctly refused, having no member of that name to confirm.
+    * **Members with no modifier at all.** The member regex required at least
+      one, so an interface's abstract methods (`Accountable.ramBytesUsed()`),
+      every package-private member and every constructor written without one
+      were invisible: 949 methods -- 10.1% of the method denominator -- plus
+      338 constructors and 438 fields, measured against `javalang` over the
+      1,037 top-level types it can parse.
+    * **An annotation written before the modifiers.** The annotation group sat
+      *after* the modifier group, so `@Deprecated public static final` matched
+      nothing, which is how 32 of the 33 `Version.LUCENE_*` constants were
+      missing (`util/Version.java:194`).
+    * **C-style array declarators.** JLS 10.2 allows `int from[], to[];`
+      (`util/automaton/RegExp.java:518`), and the regex, which lands on the
+      *last* declarator, then matched nothing at all.
+
+    A sixth was not the regex but the lexer: `clean_text` stripped strings
+    before comments, so a comment holding an unpaired `"` opened a phantom
+    string that swallowed the code after it -- `Automaton#toDot` and
+    `RegExp#parseCharExp` among it. `javatext.strip_java` does the one
+    left-to-right pass that is right.
+
+    All six were invisible because nothing audits the member surface;
+    `member_extraction_check.py` now fixes each in a test.
     """
     decl_re = re.compile(
         r'^\s*(?:(?:public|protected|private|abstract|final|static|strictfp|sealed|non-sealed)\s+)*'
@@ -565,30 +591,33 @@ def extract_members():
         re.MULTILINE,
     )
 
-    # Method/constructor/field regex
-    # Group 1: modifiers, Group 2: return type (optional), Group 3: name, Group 4: params
+    # One regex for methods, constructors and fields alike, matched at a
+    # statement boundary (see `member_starts`) rather than at a line start.
+    #
+    # The head is a run of modifiers and annotations in *any* order, and it may
+    # be empty. JLS 8.1.1/8.3.1/8.4.3 let an annotation precede, follow or sit
+    # between the modifiers, and Lucene writes `@Deprecated public static
+    # final` (`util/Version.java:194`); requiring the modifiers first cost 32
+    # of the 33 `Version.LUCENE_*` constants. Requiring a modifier at all cost
+    # 949 methods, 338 constructors and 438 fields -- every interface method,
+    # every package-private member and every constructor that declares none.
     member_re = re.compile(
-        r'^\s*(?P<mods>(?:public\s+|protected\s+|private\s+|static\s+|final\s+|abstract\s+|synchronized\s+|native\s+|default\s+|volatile\s+|transient\s+)+)'
-        r'(?:(?P<annots>@[A-Za-z_$][A-Za-z0-9_$\.]*(?:\([^\)]*\))?\s+)*)'
+        r'\s*'
+        rf'(?P<head>(?:(?:{ANNOTATION}|{MODIFIERS})\s+)*)'
         r'(?P<type>[<>\?\[\]A-Za-z0-9_.,\s]*?)?\s*'
         r'(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*'
+        # JLS 10.2: the brackets of an array may follow the declarator rather
+        # than the type, and the *last* declarator of the statement is the one
+        # this regex lands on, so without them `int from[], to[];` matched
+        # nothing at all.
+        r'(?P<dims>(?:\[\s*\]\s*)*)'
         r'(?P<params>\([^\)]*\))?\s*'
         r'(?P<throws>throws\s+[^{;]+)?\s*'
         # `=` ends a *field* declaration whose initialiser follows. Without it
         # the regex failed on every initialised field, and the branch below
         # that strips initialisers was unreachable.
         r'(?P<end>[;{=])',
-        re.MULTILINE,
     )
-
-    def clean_text(text):
-        # Order matters: remove text blocks/strings first, then comments, then chars.
-        t = re.sub(r'"""\s*\n[\s\S]*?\n\s*"""', '""', text)
-        t = re.sub(r'"(?:\\.|[^"\\])*"', '""', t)
-        t = re.sub(r'//.*?$', '', t, flags=re.M)
-        t = re.sub(r'/\*.*?\*/', '', t, flags=re.S)
-        t = re.sub(r"'(?:\\.|[^'\\\n])*'", "''", t)
-        return t
 
     methods = []
     constructors = []
@@ -736,7 +765,7 @@ def extract_members():
             i += 1
         return ''.join(out)
 
-    def extract_enum_constants(body, parent_qualified):
+    def extract_enum_constants(body, raw_body):
         """The constant list at the head of an enum body.
 
         JLS 8.9.1: an enum body opens with a comma-separated list of constants,
@@ -764,7 +793,11 @@ def extract_members():
                 end = match_bracket(body, j)
                 if end is None:
                     break
-                args = normalize_ws(body[j:end])
+                # The argument list is read from the *unblanked* source:
+                # `strip_java` preserves length, so the same slice of the raw
+                # text is exact, and `POINT("POINT")` says more than the
+                # `POINT( )` the blanked literal would leave behind.
+                args = normalize_ws(raw_body[j:end])
                 j = end
                 while j < n and body[j].isspace():
                     j += 1
@@ -786,16 +819,50 @@ def extract_members():
             i = skip_ws_and_annotations(body, j + 1)
         return found
 
-    def extract_from_body(clean, body_start, body_end, parent_qualified,
+    def member_starts(body):
+        """Offsets in a type body where a member declaration may begin.
+
+        A member starts at the top of the body, or right after the `;` or `}`
+        that closed the previous one, both at brace depth zero. Searching from
+        every *line* start instead -- what an `^`-anchored `finditer` does --
+        is wrong in both directions once the modifier is no longer mandatory:
+
+        * it offers the *continuation* line of a declaration as a declaration
+          of its own, so `M =` followed by `Map.of(a, b);` reads as a method
+          `of` returning `Map.`, with nothing in the text to say otherwise;
+        * and it lets a match start in the blanked Javadoc above a member, from
+          where the return-type group swallows the modifiers -- `public int` is
+          not a type, so the member is dropped. That alone hid 4,316 methods.
+
+        Depth is counted the way the old per-match prefix count did, so a
+        declaration inside a method body, an initialiser block or an anonymous
+        class is never reached rather than being found and then discarded.
+        """
+        yield 0
+        depth = 0
+        for i, c in enumerate(body):
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    yield i + 1
+            elif c == ';' and depth == 0:
+                yield i + 1
+
+    def extract_from_body(clean, raw, body_start, body_end, parent_qualified,
                           parent_kind=None):
-        # body_start/body_end are indices in the already-cleaned text, so slice
-        # from clean directly; using original text indices would be misaligned.
+        # body_start/body_end are indices into the cleaned text. `strip_java`
+        # blanks in place, so the two texts are the same length and the same
+        # slice of `raw` is the original source of this body -- which is what
+        # an enum constant's argument list is read from.
         clean_body = clean[body_start:body_end]
+        raw_body = raw[body_start:body_end]
 
         if parent_kind == 'enum':
             enum_name = parent_qualified.split('$')[-1].split('.')[-1]
             for const_name, args in extract_enum_constants(clean_body,
-                                                           parent_qualified):
+                                                           raw_body):
                 enum_constants.append({
                     'qualifiedName': f"{parent_qualified}#{const_name}",
                     'name': const_name,
@@ -808,19 +875,21 @@ def extract_members():
                     'parentQualifiedName': parent_qualified,
                 })
 
-        for m in member_re.finditer(clean_body):
-            # Only keep members declared directly in this type body. Declarations
-            # nested inside methods/blocks (local variables, anonymous classes, etc.)
-            # are at a positive brace depth and must be ignored.
-            prefix = clean_body[:m.start()]
-            member_depth = prefix.count('{') - prefix.count('}')
-            if member_depth != 0:
+        for start in member_starts(clean_body):
+            m = member_re.match(clean_body, start)
+            if not m:
+                continue
+            # An enum constant list is the one depth-zero construct that is not
+            # a member: `TOP_SCORES(false) { ... },` closes its brace at depth
+            # zero and so offers the constant after the comma as a declaration.
+            # `extract_enum_constants` reads that list instead.
+            if clean_body[start:m.end('head')].lstrip()[:1] == ',':
                 continue
 
             name = m.group('name')
             if name in ('if', 'while', 'for', 'switch', 'catch', 'synchronized', 'try', 'finally'):
                 continue
-            mods = normalize_ws(m.group('mods'))
+            mods = normalize_ws(ANNOTATION_RE.sub(' ', m.group('head') or ''))
             params = m.group('params')
             end = m.group('end')
             type_str = normalize_ws(m.group('type')) if m.group('type') else ''
@@ -867,12 +936,12 @@ def extract_members():
                 decl_start = m.start()
                 decl_end = statement_end(clean_body, decl_start)
                 full_decl = clean_body[decl_start:decl_end]
-                # strip leading modifiers/annotations portion is already captured; keep it
-                # Remove annotations so the type part is easier to parse.
-                decl_no_annot = re.sub(r'@[A-Za-z_$][A-Za-z0-9_$\.]*(?:\([^)]*\))?\s*', '', full_decl)
-                # Drop the modifier keywords to leave "Type var1, var2, ..."
+                # Remove the annotations so the type part is easier to parse.
+                decl_no_annot = ANNOTATION_RE.sub('', full_decl)
+                # Drop the modifier keywords to leave "Type var1, var2, ...".
+                # The run may be empty: a package-private field has no modifier.
                 decl_no_mods = re.sub(
-                    r'^\s*(?:public\s+|protected\s+|private\s+|static\s+|final\s+|abstract\s+|synchronized\s+|native\s+|default\s+|volatile\s+|transient\s+)+',
+                    rf'^\s*(?:(?:{MODIFIERS})\s+)*',
                     '',
                     decl_no_annot,
                 )
@@ -882,29 +951,40 @@ def extract_members():
                 if not parts:
                     continue
                 # First part contains the type plus the first variable name.
+                # JLS 10.2 lets the brackets sit after the *declarator*, and
+                # each declarator carries its own: `public final int from[],
+                # to[];` (`util/automaton/RegExp.java:518`) declares two
+                # `int[]`. Reading the name as ending at the identifier lost
+                # those two and the three `zz`-prefixed arrays JFlex generates
+                # in `StandardTokenizerImpl`.
                 first = parts[0].strip()
-                m_first = re.match(r'^(.*?)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*$', first)
+                m_first = re.match(
+                    rf'^(.*?)\s+([A-Za-z_$][A-Za-z0-9_$]*){DECLARATOR_DIMS}\s*$', first)
                 if not m_first:
                     continue
                 base_type = normalize_ws(m_first.group(1))
                 if not is_type_like(base_type):
                     continue
-                var_names = [normalize_ws(m_first.group(2))]
+                declarators = [(normalize_ws(m_first.group(2)),
+                                m_first.group(3).count('['))]
                 for part in parts[1:]:
                     part = part.strip().rstrip(';').strip()
                     if not part:
                         continue
-                    m_var = re.match(r'^([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:=.*)?$', part)
+                    m_var = re.match(
+                        rf'^([A-Za-z_$][A-Za-z0-9_$]*){DECLARATOR_DIMS}\s*(?:=.*)?$', part)
                     if m_var:
-                        var_names.append(m_var.group(1))
-                for var_name in var_names:
+                        declarators.append((m_var.group(1),
+                                            m_var.group(2).count('[')))
+                for var_name, dims in declarators:
+                    var_type = base_type + '[]' * dims
                     fields.append({
                         'qualifiedName': f"{parent_qualified}#{var_name}",
                         'name': var_name,
-                        'signature': f"{base_type} {var_name}",
+                        'signature': f"{var_type} {var_name}",
                         'kind': 'field',
                         'modifiers': mods,
-                        'returnType': base_type,
+                        'returnType': var_type,
                         'parentQualifiedName': parent_qualified,
                     })
 
@@ -920,7 +1000,7 @@ def extract_members():
                 if not m_pkg:
                     continue
                 pkg = m_pkg.group(1)
-                clean = clean_text(text)
+                clean = strip_java(text)
 
                 # Track type bodies so we can extract members within each.
                 # We find each type declaration start and the matching closing brace.
@@ -963,7 +1043,7 @@ def extract_members():
                                     d -= 1
                                 i += 1
                             prev_body_end = i
-                            extract_from_body(clean, prev_body_start, prev_body_end,
+                            extract_from_body(clean, text, prev_body_start, prev_body_end,
                                               prev_qualified, prev_kind)
 
                     if depth == 0:
@@ -987,7 +1067,7 @@ def extract_members():
                                 d -= 1
                             i += 1
                         prev_body_end = i
-                        extract_from_body(clean, prev_body_start, prev_body_end,
+                        extract_from_body(clean, text, prev_body_start, prev_body_end,
                                           prev_qualified, prev_kind)
 
     def dedupe_by_qn(items):

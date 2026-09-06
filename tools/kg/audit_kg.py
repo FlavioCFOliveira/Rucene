@@ -8,7 +8,9 @@ therefore re-derives both sides from primary sources --
 
 * the Apache Lucene 10.5.0 clone, parsed here by a brace-depth scanner written
   independently of `extract_lucene_kg.py`/`enrich_lucene_kg.py`, so the two can
-  disagree;
+  disagree. Only the lexical pass is shared, `javatext.strip_java`: agreeing on
+  what a comment, a string and a char literal are is not what this audit is
+  adversarial about, and one correct implementation of it beats two that drift;
 * the crate as the **compiler** sees it, from
   `cargo +nightly rustc --lib -- -Zunpretty=expanded`, which is the only way to
   see the 118 macro-generated types no source line declares;
@@ -29,50 +31,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from kgio import read
+from javatext import strip_java
 import extract_rucene_kg as ex
 
 JAVA_DECL = re.compile(
     r"[{}]|\b(?:class|interface|enum|record)\s+[A-Za-z_$][\w$]*"
     r"|@interface\s+[A-Za-z_$][\w$]*")
-
-
-def strip_java(src: str) -> str:
-    """Blank comments, strings and char literals, preserving length."""
-    out, i, n = [], 0, len(src)
-    while i < n:
-        c = src[i]
-        if c == "/" and i + 1 < n and src[i + 1] == "/":
-            j = src.find("\n", i)
-            j = n if j < 0 else j
-            out.append(" " * (j - i))
-            i = j
-        elif c == "/" and i + 1 < n and src[i + 1] == "*":
-            j = src.find("*/", i + 2)
-            j = n if j < 0 else j + 2
-            out.append(" " * (j - i))
-            i = j
-        elif c == '"':
-            if src.startswith('""""', i) or src.startswith('"""', i):
-                j = src.find('"""', i + 3)
-                j = n if j < 0 else j + 3
-            else:
-                j = i + 1
-                while j < n and src[j] != '"':
-                    j += 2 if src[j] == "\\" else 1
-                j += 1
-            out.append(" " * (j - i))
-            i = j
-        elif c == "'":
-            j = i + 1
-            while j < n and src[j] != "'":
-                j += 2 if src[j] == "\\" else 1
-            j += 1
-            out.append(" " * (j - i))
-            i = j
-        else:
-            out.append(c)
-            i += 1
-    return "".join(out)
 
 
 def java_census(lucene_root: Path):

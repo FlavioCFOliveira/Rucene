@@ -3,7 +3,7 @@
 
 `enrich_lucene_kg.py` emits one Cypher statement per element and
 `run_kg_batches.py` runs one statement per `rmp` invocation, so loading the 908
-nested types and the 20,202 members costs ~21,000 process launches -- hours of
+nested types and the 22,542 members costs ~23,000 process launches -- hours of
 wall clock. This tool calls the enricher's extraction functions directly and
 writes the same facts in `UNWIND` batches, which is the same result by a far
 shorter path.
