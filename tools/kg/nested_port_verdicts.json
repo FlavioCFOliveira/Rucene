@@ -439,69 +439,19 @@
    "javaLoc": 73,
    "reason": "`FeatureSortField` (src/document/feature_field.rs:635) exposes field, feature and reverse and no comparator, so `FeatureSortField.getComparator` has no counterpart and a sort by a feature value cannot be executed."
   },
-  "org.apache.lucene.index.ExitableDirectoryReader$ExitableFilterAtomicReader$ExitableAcceptDocs": {
-   "destination": "src/index/filter_directory_reader.rs",
-   "javaLoc": 71,
-   "reason": "`ExitableFilterLeafReader` (src/index/filter_directory_reader.rs:550-650) checks the timeout once in the accessor and returns the wrapped value unwrapped, so the per-DOCS_BETWEEN_TIMEOUT_CHECK check this wrapper exists to perform never happens."
-  },
-  "org.apache.lucene.index.ExitableDirectoryReader$ExitableFilterAtomicReader$ExitableByteVectorValues": {
-   "destination": "src/index/filter_directory_reader.rs",
-   "javaLoc": 42,
-   "reason": "`ExitableFilterLeafReader` (src/index/filter_directory_reader.rs:550-650) checks the timeout once in the accessor and returns the wrapped value unwrapped, so the per-DOCS_BETWEEN_TIMEOUT_CHECK check this wrapper exists to perform never happens."
-  },
-  "org.apache.lucene.index.ExitableDirectoryReader$ExitableFilterAtomicReader$ExitableFloatVectorValues": {
-   "destination": "src/index/filter_directory_reader.rs",
-   "javaLoc": 42,
-   "reason": "`ExitableFilterLeafReader` (src/index/filter_directory_reader.rs:550-650) checks the timeout once in the accessor and returns the wrapped value unwrapped, so the per-DOCS_BETWEEN_TIMEOUT_CHECK check this wrapper exists to perform never happens."
-  },
-  "org.apache.lucene.index.ExitableDirectoryReader$ExitableIntersectVisitor": {
-   "destination": "src/index/filter_directory_reader.rs",
-   "javaLoc": 60,
-   "reason": "`ExitableFilterLeafReader` (src/index/filter_directory_reader.rs:550-650) checks the timeout once in the accessor and returns the wrapped value unwrapped, so the per-DOCS_BETWEEN_TIMEOUT_CHECK check this wrapper exists to perform never happens."
-  },
-  "org.apache.lucene.index.ExitableDirectoryReader$ExitablePointTree": {
-   "destination": "src/index/filter_directory_reader.rs",
-   "javaLoc": 93,
-   "reason": "`ExitableFilterLeafReader` (src/index/filter_directory_reader.rs:550-650) checks the timeout once in the accessor and returns the wrapped value unwrapped, so the per-DOCS_BETWEEN_TIMEOUT_CHECK check this wrapper exists to perform never happens."
-  },
-  "org.apache.lucene.index.ExitableDirectoryReader$ExitablePointValues": {
-   "destination": "src/index/filter_directory_reader.rs",
-   "javaLoc": 73,
-   "reason": "`ExitableFilterLeafReader` (src/index/filter_directory_reader.rs:550-650) checks the timeout once in the accessor and returns the wrapped value unwrapped, so the per-DOCS_BETWEEN_TIMEOUT_CHECK check this wrapper exists to perform never happens."
-  },
-  "org.apache.lucene.index.ExitableDirectoryReader$ExitableTerms": {
-   "destination": "src/index/filter_directory_reader.rs",
-   "javaLoc": 30,
-   "reason": "`ExitableFilterLeafReader::terms` (:584) checks the timeout once and returns the wrapped Terms unwrapped, so nothing checks the timeout during term iteration."
-  },
-  "org.apache.lucene.index.ExitableDirectoryReader$ExitableTermsEnum": {
-   "destination": "src/index/filter_directory_reader.rs",
-   "javaLoc": 36,
-   "reason": "the enum that performs the per-DOCS_BETWEEN_TIMEOUT_CHECK check; without it a long term scan is not interruptible."
-  },
   "org.apache.lucene.index.FilterDirectoryReader$DelegatingCacheHelper": {
    "destination": "src/index/filter_directory_reader.rs",
    "javaLoc": 22,
-   "reason": "declared not ported at src/index/filter_directory_reader.rs:1591: the wrapper does not keep a distinct cache identity."
+   "reason": "declared not ported at src/index/filter_directory_reader.rs:3160-3165: the wrapper does not keep a distinct cache identity."
   },
   "org.apache.lucene.index.FilterLeafReader$FilterFields": {
    "destination": "src/index/filter_reader.rs",
    "javaLoc": 27,
-   "reason": "declared not reproduced at src/index/filter_reader.rs:38-40, because the port makes FilterLeafReader concrete and nothing in the crate subclasses these bases."
+   "reason": "declared not reproduced at src/index/filter_reader.rs:42-44, because the port makes FilterLeafReader concrete and nothing in the crate subclasses these bases. `FilterTerms` and `FilterTermsEnum`, which the same paragraph once covered, were ported at 36b0297."
   },
   "org.apache.lucene.index.FilterLeafReader$FilterPostingsEnum": {
    "destination": "src/index/filter_reader.rs",
    "javaLoc": 63,
-   "reason": "same declaration."
-  },
-  "org.apache.lucene.index.FilterLeafReader$FilterTerms": {
-   "destination": "src/index/filter_reader.rs",
-   "javaLoc": 62,
-   "reason": "same declaration."
-  },
-  "org.apache.lucene.index.FilterLeafReader$FilterTermsEnum": {
-   "destination": "src/index/filter_reader.rs",
-   "javaLoc": 83,
    "reason": "same declaration."
   },
   "org.apache.lucene.index.FreqProxTermsWriter$SortingTerms": {
@@ -522,7 +472,7 @@
   "org.apache.lucene.index.MergePolicy$MergeObserver": {
    "destination": "src/index/merge_policy.rs",
    "javaLoc": 52,
-   "reason": "declared absent at src/index/index_writer.rs:4710-4713: `force_merge_with` takes a `do_wait` flag instead of returning an observer the caller can await."
+   "reason": "declared absent at src/index/index_writer.rs:4711-4714: `force_merge_with` takes a `do_wait` flag instead of returning an observer the caller can await."
   },
   "org.apache.lucene.index.NumericDocValuesFieldUpdates$SingleValueNumericDocValuesFieldUpdates": {
    "destination": "src/index/doc_values_field_updates.rs",
