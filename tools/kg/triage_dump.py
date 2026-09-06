@@ -37,6 +37,18 @@ QUERIES = {
                  "RETURN c.qualifiedName, n.file, n.name, type(r)",
     "supers": "MATCH (a:Class)-[:EXTENDS|IMPLEMENTS]->(b:Class) WHERE a.portScope='in' "
               "RETURN a.qualifiedName, b.qualifiedName",
+    # The same hierarchy without the scope filter, which `triage_members.py`
+    # loads separately for the `doc-comment` and `related` rules: those walk
+    # the hierarchy for *names* and must not stop at the scope boundary, while
+    # `supers` answers "which in-scope supertype declares this member" and may.
+    # Measured on the graph at 2026-09-06 the two return the same 703 rows --
+    # every EXTENDS/IMPLEMENTS edge the graph holds starts at an in-scope type
+    # -- so the distinction currently costs nothing and guards the day a
+    # nested or out-of-scope supertype gains one. This entry was missing
+    # entirely, which made the re-derivation documented in `knowledge-model.md`
+    # abort on a FileNotFoundError before it classified anything.
+    "supers_all": "MATCH (a:Class)-[:EXTENDS|IMPLEMENTS]->(b:Class) "
+                  "RETURN a.qualifiedName, b.qualifiedName",
     "member_kinds": "MATCH (c:Class)-[:DECLARES]->(m:Method) WHERE c.portScope='in' "
                     "RETURN c.qualifiedName, m.name, m.kind, m.modifiers, m.signature, m.qualifiedName, m.returnType",
     "class_meta": "MATCH (c:Class) WHERE c.portScope='in' "

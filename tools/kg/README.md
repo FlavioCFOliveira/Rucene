@@ -26,7 +26,7 @@ the `rmp` binary on `PATH`.
 | `lucene_structure_kg.py` | Loads the Lucene nested types and members in `UNWIND` batches, calling `enrich_lucene_kg.py`'s extractors directly. Replaces feeding its generated Cypher through `run_kg_batches.py`, which cost one process launch per statement — about 19,000 for the member surface. `--prune` removes nested types the reference tree no longer declares. |
 | `commits_kg.py` | Mirrors the full commit history and derives `CLOSES_TASK` from the message conventions the history actually uses. |
 | `rust_surface.py` | Parses the crate's Rust surface the way the member triage needs it: every `impl` and `trait` block with the functions inside it, the doc comment above each one, the `#[derive]`s on each type declaration, and the `macro_rules!` bodies that `extract_rucene_kg.py` deliberately blanks. A scanner, not a compiler — brace depth over masked text. |
-| `triage_dump.py` | Snapshots, once, the graph facts the triage reads, so the classification runs against a fixed graph state instead of a moving one. |
+| `triage_dump.py` | Snapshots, once, the graph facts the triage reads, so the classification runs against a fixed graph state instead of a moving one. Writes one JSON file per query into the output directory, `supers_all.json` among them — the Lucene type hierarchy without the `portScope` filter, which `triage_members.py` loads separately for the `doc-comment` and `related` rules. It is a required input: without it the re-derivation aborts with `FileNotFoundError` before it classifies anything. |
 | `triage_repro.py` | Reproduces `measure_depth` exactly and emits the `(Lucene type, Java method)` pairs it could not match. Fails if its own per-type counts differ from the `memberMatched` the graph holds — the guard that keeps the triage attached to the floor it classifies. |
 | `triage_members.py` | Classifies every unmatched pair as `absent`, `renamed` or `na`, with the rule that decided it and the Rust item or the reason. Rules are tiered by how tightly the item is bound to the type (`own`, `super`, `file`) and run strongest first; anything no rule settles is `absent`. See *Where the remaining work is, by package* in `knowledge-model.md`. |
 | `triage_load.py` | Writes the verdicts to the graph: `portTriage` / `portTriageRule` / `portTriageEvidence` on each `Method`, and `memberAbsent` / `memberRenamed` / `memberNa` on each measured `Class`. |
@@ -98,7 +98,7 @@ python3 tools/kg/commits_kg.py rucene
 
 # 7. The Lucene test surface
 python3 tools/kg/lucene_tests_kg.py rucene --lucene-root /tmp/lucene1050 \
-    --survey /tmp/rucene_kg/survey.json --commit "$COMMIT" --date "$DATE"
+    --repo-root . --commit "$COMMIT" --date "$DATE"
 
 # 8. Prove it: the audit must end in `problems: 0`
 python3 tools/kg/audit_kg.py rucene --survey /tmp/rucene_kg/survey.json
@@ -110,8 +110,16 @@ coverage phase assigns. Step 5b must run between the load and the depth
 measurement, because `measure_depth` resolves a ported type's Rust functions
 through the `(name, file)` of a `PORTS` edge: without the edges 5b writes, the
 macro-generated types are never measured and their Lucene members stay outside
-the denominator. Re-run `port_coverage_kg.py --phase scope,candidates`
-afterwards so `portState` reflects the edges steps 5 and 5b wrote.
+the denominator. Re-run `port_coverage_kg.py` afterwards so `portState` reflects the
+edges steps 5 and 5b wrote — as **two** invocations, because `--phase` is a
+single-choice argument and rejects a comma-separated list:
+
+```bash
+python3 tools/kg/port_coverage_kg.py rucene --survey /tmp/rucene_kg/survey.json \
+    --lucene-root /tmp/lucene1050 --commit "$COMMIT" --date "$DATE" --phase scope
+python3 tools/kg/port_coverage_kg.py rucene --survey /tmp/rucene_kg/survey.json \
+    --lucene-root /tmp/lucene1050 --commit "$COMMIT" --date "$DATE" --phase candidates
+```
 
 ### `--expand`: the macro-generated types
 
