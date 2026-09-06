@@ -5,9 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::codecs::postings::{
-    NormsProducer as PostingsNormsProducer, NumericDocValues as PostingsNumericDocValues,
-};
+use crate::codecs::postings::{PostingsNormsProducer, PostingsNumericDocValues};
 use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState};
 use crate::codecs::stub::{BufferedUpdates, FieldInfo};
 use crate::codecs::Codec;
@@ -23,17 +21,19 @@ use crate::util::InfoStream;
 const SM: &str = "SM";
 
 /// Adapts a [`crate::codecs::norms::NormsProducer`] to the postings module's own
-/// `NormsProducer` trait.
+/// [`PostingsNormsProducer`] trait.
 ///
 /// **Divergence from Lucene 10.5.0.** Java has a single `NormsProducer`
 /// interface that both the norms format and the postings merge use. This port
-/// grew two: `codecs::norms::NormsProducer`, whose `get_norms` returns the
-/// iterator-shaped `NumericDocValues` of the `index` module, and
-/// `codecs::postings::NormsProducer`, whose `get_norms` returns a random-access
-/// `NumericDocValues`. Merging postings needs the second while the codec
-/// supplies the first, so this adapter materialises each field's norms into a
-/// dense vector once and serves random access from it. Unifying the two traits
-/// is the faithful fix and is tracked separately.
+/// grew two: [`crate::codecs::norms::NormsProducer`], the faithful port, whose
+/// `get_norms` returns the iterator-shaped
+/// [`NumericDocValues`](crate::index::NumericDocValues) of the `index` module;
+/// and [`PostingsNormsProducer`], which corresponds to no Lucene type and whose
+/// `get_norms` returns the random-access [`PostingsNumericDocValues`]. Merging
+/// postings needs the second while the codec supplies the first, so this adapter
+/// materialises each field's norms into a dense vector once and serves random
+/// access from it. Unifying the two traits is the faithful fix and is tracked
+/// separately.
 struct PostingsNormsAdapter {
     inner: Mutex<Box<dyn crate::codecs::norms::NormsProducer>>,
     max_doc: i32,

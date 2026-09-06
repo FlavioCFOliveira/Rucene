@@ -148,9 +148,9 @@ fn parse_segment_info(
         doc_count,
         is_compound_file,
         has_blocks,
-        diagnostics,
+        diagnostics.to_std(),
         id,
-        attributes,
+        attributes.to_std(),
         index_sort.unwrap_or_default(),
     )?;
     info.set_files(files);
@@ -216,8 +216,8 @@ fn write_segment_info(output: &mut dyn IndexOutput, info: &SegmentInfo) -> Resul
 
     output.write_map_of_strings(info.get_diagnostics())?;
 
-    let files = info.files()?;
-    for file in &files {
+    let files = info.files_ordered()?;
+    for file in files.iter() {
         if parse_segment_name(file) != info.name {
             return Err(LuceneError::IllegalArgument(format!(
                 "invalid files: expected segment={}, got={file}",
@@ -226,7 +226,7 @@ fn write_segment_info(output: &mut dyn IndexOutput, info: &SegmentInfo) -> Resul
         }
     }
     output.write_set_of_strings(&files)?;
-    output.write_map_of_strings(&info.get_attributes())?;
+    output.write_map_of_strings(&info.get_attributes_ordered())?;
 
     write_segment_sort(output, info.index_sort())?;
     Ok(())

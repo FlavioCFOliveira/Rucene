@@ -7,6 +7,12 @@
 //! | `PerField` (private) | `IndexingChain.PerField` |
 //! | [`EmptyNormsProducer`] | the `NormsProducer` the chain passes to the codec |
 //!
+//! The chain's `EmptyNormsProducer` implements
+//! [`PostingsNormsProducer`](crate::codecs::postings::PostingsNormsProducer),
+//! this port's narrower postings-side stand-in, not the full
+//! [`NormsProducer`](crate::codecs::norms::NormsProducer); see that trait's
+//! documentation for the divergence.
+//!
 //! The chain turns a [`Document`] into buffered postings, a stored-fields
 //! stream and a term-vectors stream: it registers each field in the segment's
 //! [`FieldInfosBuilder`], runs the analysis pipeline, validates positions and
@@ -80,7 +86,7 @@ use crate::analysis::TokenStream;
 use crate::codecs::doc_values::DocValuesConsumer;
 use crate::codecs::knn_vectors::FieldVectorWriter;
 use crate::codecs::points::PointsWriter;
-use crate::codecs::postings::{NormsProducer, NumericDocValues};
+use crate::codecs::postings::{PostingsNormsProducer, PostingsNumericDocValues};
 use crate::codecs::state::SegmentWriteState;
 use crate::document::column::{
     create_column_field_adapter, BinaryColumn, ColumnBatch, ColumnFieldAdapter, ColumnValidation,
@@ -114,6 +120,7 @@ use crate::search::Similarity;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::TrackingDirectoryWrapper;
 use crate::util::byte_block_pool::MAX_TERM_LENGTH;
+use crate::util::java_collections::JavaStringMap;
 use crate::util::NumericUtils;
 use crate::util::{Accountable, AttributeSource, BytesRef, InfoStream};
 
@@ -380,14 +387,14 @@ pub struct EmptyNormsProducer;
 #[derive(Debug, Default, Clone, Copy)]
 struct ConstantNorms;
 
-impl NumericDocValues for ConstantNorms {
+impl PostingsNumericDocValues for ConstantNorms {
     fn get(&self, _doc_id: i32) -> Result<i64> {
         Ok(1)
     }
 }
 
-impl NormsProducer for EmptyNormsProducer {
-    fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+impl PostingsNormsProducer for EmptyNormsProducer {
+    fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn PostingsNumericDocValues>> {
         Ok(Box::new(ConstantNorms))
     }
 }
@@ -1398,7 +1405,7 @@ impl DefaultIndexingChain {
             field_type.doc_values_type(),
             field_type.doc_values_skip_index_type(),
             -1,
-            field_type.attributes().clone(),
+            JavaStringMap::Hash(field_type.attributes().clone()),
             field_type.point_dimension_count(),
             field_type.point_index_dimension_count(),
             field_type.point_num_bytes(),

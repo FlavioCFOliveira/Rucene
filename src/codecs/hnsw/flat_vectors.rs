@@ -1029,7 +1029,7 @@ mod tests {
             crate::index::DocValuesType::NONE,
             crate::index::DocValuesSkipIndexType::NONE,
             -1,
-            std::collections::HashMap::new(),
+            crate::util::java_collections::JavaStringMap::default(),
             0,
             0,
             0,

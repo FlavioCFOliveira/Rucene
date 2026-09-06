@@ -1995,12 +1995,21 @@ impl FieldEntry {
                 }
                 number_of_offsets += i64::from(num_nodes);
                 // Java reads `nodesByLevel[level][0]` unconditionally and hits
-                // an `ArrayIndexOutOfBoundsException` on an empty level.
+                // an `ArrayIndexOutOfBoundsException` on an empty level. That
+                // exception is catchable and a Rust panic is not, so the empty
+                // level is refused here, exactly as `OffHeapHnswGraph::seek`
+                // below refuses a level outside the graph for the same reason.
+                if num_nodes == 0 {
+                    return Err(LuceneError::CorruptIndex(format!(
+                        "level {level} of field \"{}\" declares no nodes",
+                        field_info.name
+                    )));
+                }
 
-                // Again grown, not pre-sized: each node is at least one byte.
-                let mut nodes: Vec<i32> = vec![0i32; num_nodes as usize];
-                nodes[0] = input.read_v_int()?;
-                nodes.truncate(1);
+                // Again grown, not pre-sized: each node is at least one byte,
+                // so a hostile count runs out of file instead of out of memory.
+                let mut nodes: Vec<i32> = Vec::new();
+                nodes.push(input.read_v_int()?);
                 for i in 1..num_nodes as usize {
                     let delta = input.read_v_int()?;
                     // Java accumulates with `int` arithmetic, which wraps.
@@ -2430,7 +2439,7 @@ mod tests {
             DocValuesType::NONE,
             DocValuesSkipIndexType::NONE,
             -1,
-            HashMap::new(),
+            crate::util::java_collections::JavaStringMap::default(),
             0,
             0,
             0,
@@ -2453,7 +2462,7 @@ mod tests {
             DocValuesType::NONE,
             DocValuesSkipIndexType::NONE,
             -1,
-            HashMap::new(),
+            crate::util::java_collections::JavaStringMap::default(),
             0,
             0,
             0,

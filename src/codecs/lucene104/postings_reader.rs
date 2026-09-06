@@ -1594,7 +1594,7 @@ impl Impacts for BlockImpacts {
 mod tests {
     use super::*;
     use crate::codecs::lucene104::Lucene104PostingsWriter;
-    use crate::codecs::postings::{NumericDocValues, PushPostingsWriterBase};
+    use crate::codecs::postings::{PostingsNumericDocValues, PushPostingsWriterBase};
     use crate::codecs::state::SegmentWriteState;
     use crate::index::{FieldInfo, FieldInfos, IndexOptions};
     use crate::search::DocIdSetIterator;
@@ -1604,7 +1604,7 @@ mod tests {
 
     struct TestNorms;
 
-    impl NumericDocValues for TestNorms {
+    impl PostingsNumericDocValues for TestNorms {
         fn get(&self, _doc_id: i32) -> Result<i64> {
             Ok(1)
         }

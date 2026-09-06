@@ -1727,7 +1727,7 @@ mod tests {
             dv,
             DocValuesSkipIndexType::NONE,
             -1,
-            HashMap::new(),
+            crate::util::java_collections::JavaStringMap::default(),
             0,
             0,
             0,

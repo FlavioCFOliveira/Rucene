@@ -16,7 +16,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
 use crate::index::reader_context::{IndexReaderContext, LeafReaderContext};
 use crate::search::index_searcher::IndexSearcher;
-use crate::store::{ByteArrayDataInput, DataInput, DataOutput, VecDataOutput};
+use crate::store::{ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput};
 use crate::util::attribute::AttributeSource;
 use crate::util::automaton::CompiledAutomaton;
 use crate::util::string_helper::StringHelper;
@@ -722,7 +722,18 @@ pub trait Fields {
 /// Equivalent to `org.apache.lucene.index.PrefixCodedTerms`.
 #[derive(Debug, Clone)]
 pub struct PrefixCodedTerms {
-    content: Vec<u8>,
+    /// The encoded payload, as the block list a `ByteBuffersDataOutput`
+    /// produced.
+    ///
+    /// Equivalent to `private final List<ByteBuffer> content`
+    /// (`PrefixCodedTerms.java:37`), which `Builder.finish()` fills with
+    /// `output.toBufferList()` (`:103`). The block structure is not an
+    /// implementation detail that could be flattened into one buffer: Lucene's
+    /// `ramBytesUsed()` sums the *capacity* of each block (`:49-51`) and its
+    /// `hashCode()` folds one `ByteBuffer.hashCode()` per block (`:190-197`),
+    /// so both answers change if the same bytes are held in a different number
+    /// of blocks.
+    content: Vec<Vec<u8>>,
     size: i64,
     del_gen: i64,
 }
@@ -734,8 +745,23 @@ impl PrefixCodedTerms {
     }
 
     /// Returns an iterator over the encoded terms.
+    ///
+    /// Equivalent to `PrefixCodedTerms.iterator()`, which is
+    /// `new TermIterator(delGen, new ByteBuffersDataInput(content))`
+    /// (`PrefixCodedTerms.java:170-172`): a fresh reader with its own position
+    /// over the same blocks.
     pub fn iterator(&self) -> PrefixCodedTermsIterator {
-        PrefixCodedTermsIterator::new(self.del_gen, self.content.clone())
+        let input = ByteBuffersDataInput::new(self.content.clone())
+            .expect("the content is the block list of a ByteBuffersDataOutput");
+        PrefixCodedTermsIterator::new(self.del_gen, input)
+    }
+
+    /// The encoded payload, block by block.
+    ///
+    /// Equivalent to reading the private `content` field, which Lucene's own
+    /// `hashCode`/`equals` do (`PrefixCodedTerms.java:180-197`).
+    pub fn content(&self) -> &[Vec<u8>] {
+        &self.content
     }
 
     /// Records the deletion generation for this packet.
@@ -745,20 +771,18 @@ impl PrefixCodedTerms {
 }
 
 impl crate::util::Accountable for PrefixCodedTerms {
-    /// Equivalent to `PrefixCodedTerms.ramBytesUsed()`, which sums the
-    /// *capacities* of the buffers holding the payload and adds `2 * Long.BYTES`
-    /// for the `size` and `delGen` fields.
+    /// Equivalent to `PrefixCodedTerms.ramBytesUsed()`
+    /// (`PrefixCodedTerms.java:49-51`), which sums the *capacities* of the
+    /// buffers holding the payload and adds `2 * Long.BYTES` for the `size` and
+    /// `delGen` fields.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java holds the payload in the
-    /// `List<ByteBuffer>` of a `ByteBuffersDataOutput`, whose blocks are 1024
-    /// bytes by default, so `new PrefixCodedTerms.Builder()` with three short
-    /// terms reports 1040 bytes in `lucene-core-10.5.0.jar` (1024 + 16) and an
-    /// empty one reports 16. This port stores the payload in a single
-    /// contiguous `Vec<u8>`, so the first term counts that vector's capacity
-    /// rather than a sum of fixed-size blocks; the `2 * Long.BYTES` term and the
-    /// choice of *capacity* over *length* are Java's.
+    /// Both terms are Java's, capacity included: the payload lives in the block
+    /// list of a `ByteBuffersDataOutput`, whose blocks are 1 KiB by default, so
+    /// a builder given three short terms answers 1040 and an empty one answers
+    /// 16 — measured against `lucene-core-10.5.0.jar` by
+    /// `tests/portability/prefix_coded_terms.rs`.
     fn ram_bytes_used(&self) -> i64 {
-        self.content.capacity() as i64 + 2 * 8
+        self.content.iter().map(Vec::capacity).sum::<usize>() as i64 + 2 * 8
     }
 }
 
@@ -767,7 +791,7 @@ impl crate::util::Accountable for PrefixCodedTerms {
 /// Equivalent to `org.apache.lucene.index.PrefixCodedTerms.Builder`.
 #[derive(Debug)]
 pub struct PrefixCodedTermsBuilder {
-    output: VecDataOutput,
+    output: ByteBuffersDataOutput,
     last_term: Term,
     last_term_bytes: Vec<u8>,
     size: i64,
@@ -783,7 +807,7 @@ impl PrefixCodedTermsBuilder {
     /// Creates a new builder.
     pub fn new() -> Self {
         Self {
-            output: VecDataOutput::new(),
+            output: ByteBuffersDataOutput::new(),
             last_term: Term::empty(""),
             last_term_bytes: Vec::new(),
             size: 0,
@@ -834,7 +858,9 @@ impl PrefixCodedTermsBuilder {
     /// Finalizes the builder into a `PrefixCodedTerms`.
     pub fn finish(self) -> PrefixCodedTerms {
         PrefixCodedTerms {
-            content: self.output.into_inner(),
+            // `new PrefixCodedTerms(output.toBufferList(), size)`
+            // (`PrefixCodedTerms.java:103`).
+            content: self.output.into_buffer_list(),
             size: self.size,
             del_gen: -1,
         }
@@ -846,22 +872,21 @@ impl PrefixCodedTermsBuilder {
 /// Equivalent to `org.apache.lucene.index.PrefixCodedTerms.TermIterator`.
 #[derive(Debug)]
 pub struct PrefixCodedTermsIterator {
-    /// The encoded payload this iterator walks.
+    /// The reader over the payload's blocks.
     ///
-    /// **Divergence, pre-existing.** Java's `PrefixCodedTerms` keeps its payload
-    /// as a `List<ByteBuffer>` and `iterator()` hands those same buffers to a
-    /// `ByteBuffersDataInput` (`PrefixCodedTerms.java:37`, `:170-172`), so the
-    /// iterator shares the payload rather than copying it. This port keeps the
-    /// payload as one `Vec<u8>` and the iterator takes a copy of it — the same
-    /// copy the crate already made before [`ByteArrayDataInput`] became a
-    /// borrowing view, so nothing about the cost changes here. Borrowing it
-    /// instead would make the iterator hold a reference into a buffer it is
-    /// stored next to, which is a self-reference Rust forbids. Closing this
-    /// belongs to the port of `PrefixCodedTerms` itself.
-    content: Vec<u8>,
-    /// Read position inside `content`, which stands in for the position Java's
-    /// `ByteBuffersDataInput` keeps.
-    pos: usize,
+    /// Equivalent to `final ByteBuffersDataInput input`
+    /// (`PrefixCodedTerms.java:107`), which `iterator()` opens over the very
+    /// blocks the `PrefixCodedTerms` holds (`:170-172`); it keeps its own
+    /// position, so `next()` simply reads on.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `ByteBuffersDataInput` wraps
+    /// the shared `ByteBuffer` views without copying their bytes, so opening an
+    /// iterator is free. This port's `ByteBuffersDataInput` owns its blocks,
+    /// because a Rust view would borrow from a buffer the iterator is stored
+    /// next to, so each iterator copies the payload. The copy is the same one
+    /// this iterator already made, and it is the input type — not the payload
+    /// layout — that carries it.
+    input: ByteBuffersDataInput,
     end: i64,
     del_gen: i64,
     field: String,
@@ -869,11 +894,10 @@ pub struct PrefixCodedTermsIterator {
 }
 
 impl PrefixCodedTermsIterator {
-    fn new(del_gen: i64, content: Vec<u8>) -> Self {
-        let end = content.len() as i64;
+    fn new(del_gen: i64, input: ByteBuffersDataInput) -> Self {
+        let end = input.length() as i64;
         Self {
-            content,
-            pos: 0,
+            input,
             end,
             del_gen,
             field: String::new(),
@@ -894,39 +918,23 @@ impl PrefixCodedTermsIterator {
     /// Returns the current term bytes, or `None` when exhausted.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<BytesRef>> {
-        if self.pos as i64 >= self.end {
+        if (self.input.position() as i64) >= self.end {
             self.field = String::new();
             return Ok(None);
         }
 
-        let Self {
-            content,
-            pos,
-            field,
-            bytes,
-            ..
-        } = self;
-        let mut input = ByteArrayDataInput::new(content);
-        input.set_position(*pos);
-        // The position is written back whether or not the term was read whole,
-        // exactly as Java's shared input leaves it.
-        let read = (|| -> Result<()> {
-            let code = input.read_v_int()? as usize;
-            let new_field = (code & 1) != 0;
-            let prefix = code >> 1;
+        let code = self.input.read_v_int()? as usize;
+        let new_field = (code & 1) != 0;
+        let prefix = code >> 1;
 
-            if new_field {
-                *field = input.read_string()?;
-            }
+        if new_field {
+            self.field = self.input.read_string()?;
+        }
 
-            let suffix = input.read_v_int()? as usize;
-            bytes.resize(prefix + suffix, 0);
-            input.read_bytes(&mut bytes[..], prefix, suffix)?;
-            bytes.truncate(prefix + suffix);
-            Ok(())
-        })();
-        *pos = input.position();
-        read?;
+        let suffix = self.input.read_v_int()? as usize;
+        self.bytes.resize(prefix + suffix, 0);
+        self.input.read_bytes(&mut self.bytes[..], prefix, suffix)?;
+        self.bytes.truncate(prefix + suffix);
 
         Ok(Some(BytesRef::new(self.bytes.clone())))
     }
@@ -1431,9 +1439,13 @@ mod prefix_coded_terms_accounting_tests {
         assert_eq!(empty.ram_bytes_used(), 16);
     }
 
-    /// The payload term grows with the encoded bytes and is never below them.
+    /// A packet holding anything at all has allocated one 1 KiB block, so it
+    /// costs 1040 whatever the terms are — the block *capacity*, not the bytes
+    /// written into it, is what `ramBytesUsed` sums. Checked against
+    /// `lucene-core-10.5.0.jar` by
+    /// `prefix_coded_terms::ram_bytes_used_matches_lucene`.
     #[test]
-    fn a_populated_packet_costs_its_payload_plus_its_two_long_fields() {
+    fn a_populated_packet_costs_one_whole_block_plus_its_two_long_fields() {
         let mut builder = PrefixCodedTermsBuilder::new();
         for term in [("f", &b"aaa"[..]), ("f", &b"aab"[..]), ("g", &b"z"[..])] {
             builder
@@ -1442,13 +1454,32 @@ mod prefix_coded_terms_accounting_tests {
         }
         let packet = builder.finish();
         assert_eq!(packet.size(), 3);
-        let encoded = packet.content.len() as i64;
-        assert!(encoded > 0);
+        assert_eq!(packet.content().len(), 1, "one block");
+        let written: usize = packet.content().iter().map(Vec::len).sum();
         assert!(
-            packet.ram_bytes_used() >= encoded + 16,
-            "{} should cover the {encoded} encoded bytes plus 16",
-            packet.ram_bytes_used()
+            written < 1024,
+            "{written} bytes should fit inside the single block"
         );
+        assert_eq!(packet.ram_bytes_used(), 1024 + 16);
+    }
+
+    /// The payload spills into a second block once it passes 1 KiB, and both
+    /// blocks are charged.
+    #[test]
+    fn a_packet_larger_than_one_block_costs_every_block_it_allocated() {
+        let mut builder = PrefixCodedTermsBuilder::new();
+        for i in 0..400u32 {
+            builder
+                .add_bytes("f", &BytesRef::new(format!("term{i:08}").into_bytes()))
+                .unwrap();
+        }
+        let packet = builder.finish();
+        assert!(
+            packet.content().len() > 1,
+            "400 terms should not fit in one block"
+        );
+        let capacity: i64 = packet.content().iter().map(Vec::capacity).sum::<usize>() as i64;
+        assert_eq!(packet.ram_bytes_used(), capacity + 16);
     }
 }
 

@@ -29,6 +29,12 @@ use crate::{
 /// [`IdentityLongValues`] and [`ZeroesLongValues`].
 ///
 /// Equivalent to `org.apache.lucene.util.LongValues`.
+///
+/// Not to be confused with `org.apache.lucene.search.LongValues`, an unrelated
+/// abstract class of the same simple name: that one is the per-document view of
+/// a `LongValuesSource`, addressed with `advanceExact(int)` and read with
+/// `longValue()` rather than indexed, and is ported separately as
+/// [`crate::search::LongValues`]. Lucene really does declare both.
 pub trait LongValues {
     /// Returns the value at `index`.
     ///

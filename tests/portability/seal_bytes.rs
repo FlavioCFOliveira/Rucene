@@ -29,15 +29,24 @@
 //! Two implementations therefore cannot agree on the order of a multi-entry map
 //! unless one models the other's hashing.
 //!
-//! The cases below consequently pin every map and set to at most one entry,
-//! which makes the byte comparison exact and about the format itself — the
-//! encoding of names, numbers, option bits, doc-values and skip-index types,
-//! point and vector dimensions, the soft-deletes and parent flags, the index
-//! header and id, the sort encoding, the file list and the footer checksum.
-//! [`fnm_multi_attribute_matches_lucene_except_for_map_order`] and
-//! [`si_multi_file_matches_lucene_except_for_set_order`] then cover the
-//! multi-entry shapes the real flush path produces, and state exactly what they
-//! can still assert.
+//! Task #177 closed that for the two collections whose Java implementation is a
+//! real `java.util` hash collection: `FieldInfo.attributes`, which
+//! `putAttribute` rebuilds as a `HashMap` (`FieldInfo.java:670-679`), and
+//! `SegmentInfo`'s file list, which `setFiles` builds as a `HashSet`
+//! (`SegmentInfo.java:309-320`). Both are reproduced by
+//! [`rucene::util::java_collections`], so
+//! [`fnm_multi_attribute_matches_lucene_byte_for_byte`] and
+//! [`si_multi_file_matches_lucene_byte_for_byte`] are exact byte comparisons of
+//! the shapes a real flush produces, and
+//! [`rucenes_own_fnm_is_byte_stable_across_runs`] shows the order is not
+//! accidental.
+//!
+//! The `.si` diagnostics and attributes are a different matter: Java holds
+//! `Map.copyOf` results there, whose iteration order is drawn per JVM run, so
+//! two runs of *Lucene* disagree with each other —
+//! [`lucenes_own_si_diagnostics_order_is_not_stable_between_jvms`] measures it.
+//! Those two stay at one entry in the cases below, which is all that can be
+//! compared.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -51,6 +60,7 @@ use rucene::index::{
     DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding, VectorSimilarityFunction,
 };
 use rucene::store::{Directory, FSDirectory, TrackingDirectoryWrapper, DEFAULT_IO_CONTEXT};
+use rucene::util::java_collections::{JavaHashMap, JavaHashSet, JavaStringMap};
 use rucene::util::Version;
 
 /// The segment name every case writes; mirrors `SealBytesFixture.SEGMENT`.
@@ -247,10 +257,18 @@ fn field(
         doc_values,
         doc_values_skip_index,
         -1,
-        attributes
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-            .collect(),
+        // `SealBytesFixture.field` hands `new HashMap<>(attributes)` to the
+        // constructor, where `attributes` was itself built by
+        // `new HashMap<>()` plus one `put` per pair. Both steps matter: the
+        // copy constructor pre-sizes its table from the source's size, so it
+        // lands on a different table length — and therefore a different
+        // iteration order — than the map it copied.
+        JavaStringMap::Hash(JavaHashMap::copy_of(
+            &attributes
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect::<JavaHashMap<String>>(),
+        )),
         point_dimension_count,
         point_index_dimension_count,
         point_num_bytes,
@@ -275,6 +293,23 @@ fn field_table(multi_attribute: bool) -> Vec<FieldInfo> {
     const TWO: &[(&str, &str)] = &[
         ("PerFieldPostingsFormat.format", "Lucene104"),
         ("PerFieldPostingsFormat.suffix", "0"),
+    ];
+    /// The six attributes a field handled by all three per-field formats
+    /// carries. Six is the smallest of these shapes for which the copy
+    /// constructor is observable: `new HashMap<>()` plus six puts fills a table
+    /// of 16, while `new HashMap<>(m)` pre-sizes to 8, and these keys iterate
+    /// differently at the two lengths — so this case is what pins
+    /// `putAttribute`'s copy, which the two-attribute one cannot.
+    const SIX: &[(&str, &str)] = &[
+        ("PerFieldPostingsFormat.format", "Lucene104"),
+        ("PerFieldPostingsFormat.suffix", "0"),
+        ("PerFieldDocValuesFormat.format", "Lucene90"),
+        ("PerFieldDocValuesFormat.suffix", "0"),
+        (
+            "PerFieldKnnVectorsFormat.format",
+            "Lucene99HnswVectorsFormat",
+        ),
+        ("PerFieldKnnVectorsFormat.suffix", "0"),
     ];
     const NONE: &[(&str, &str)] = &[];
 
@@ -326,7 +361,7 @@ fn field_table(multi_attribute: bool) -> Vec<FieldInfo> {
             IndexOptions::NONE,
             DocValuesType::SORTED_NUMERIC,
             DocValuesSkipIndexType::RANGE,
-            NONE,
+            if multi_attribute { SIX } else { NONE },
             0,
             0,
             0,
@@ -435,7 +470,14 @@ fn write_field_infos(out_dir: &Path, multi_attribute: bool) {
 
 /// The extra files the multi-file `.si` case lists; mirrors
 /// `SealBytesFixture.SI_EXTRA_FILES`.
-const SI_EXTRA_FILES: [&str; 3] = [".fdt", ".fdx", ".nvd"];
+///
+/// The extensions are chosen so that the names collide in the backing table:
+/// at the default capacity of 16, `_9.fdt` and `_9.tvx` share a bucket, and so
+/// do `_9.dvd` and `_9.tvd`. Only a shared bucket puts the chain order — and
+/// therefore the order the names were added in — into the file; with pairwise
+/// distinct buckets every insertion order yields the same bytes and the case
+/// would prove nothing about the order.
+const SI_EXTRA_FILES: [&str; 5] = [".fdt", ".tvx", ".dvd", ".tvd", ".nvm"];
 
 /// Writes the `.si` of the pinned segment into `out_dir`.
 ///
@@ -448,14 +490,66 @@ fn write_segment_info(out_dir: &Path, multi_file: bool) {
     let codec = ensure_codec();
     let dir = open_dir(out_dir);
     let info = segment_info(&dir, &codec);
-    info.set_files(if multi_file {
+    // `SealBytesFixture.writeSegmentInfo` fills a `new HashSet<>()` in the
+    // order of `SI_EXTRA_FILES` and hands it to `setFiles`, which fills a
+    // second `new HashSet<>()` from the first one's iteration order.
+    let files: JavaHashSet = if multi_file {
         SI_EXTRA_FILES
             .iter()
             .map(|extension| format!("{SEGMENT}{extension}"))
             .collect()
     } else {
-        std::collections::HashSet::new()
-    });
+        JavaHashSet::new()
+    };
+    info.set_files(files);
+    codec
+        .segment_info_format()
+        .write(dir.as_ref(), &info, &*DEFAULT_IO_CONTEXT)
+        .expect("write segment info");
+}
+
+/// The diagnostics of the multi-entry case; mirrors
+/// `SealBytesFixture.writeMultiDiagnosticSegmentInfo`.
+const MULTI_DIAGNOSTICS: [(&str, &str); 8] = [
+    ("source", "flush"),
+    ("lucene.version", "10.5.0"),
+    ("os", "Linux"),
+    ("os.arch", "amd64"),
+    ("os.version", "6.8.0"),
+    ("java.version", "21"),
+    ("java.vendor", "Ubuntu"),
+    ("timestamp", "20260905000000000"),
+];
+
+/// Writes a `.si` whose diagnostics carry several entries.
+fn write_multi_diagnostic_segment_info(out_dir: &Path) {
+    let codec = ensure_codec();
+    let dir = open_dir(out_dir);
+    let diagnostics: HashMap<String, String> = MULTI_DIAGNOSTICS
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect();
+    let mut attributes = HashMap::new();
+    attributes.insert(
+        "Lucene90StoredFieldsFormat.mode".to_string(),
+        "BEST_SPEED".to_string(),
+    );
+    let info = SegmentInfo::new(
+        Arc::clone(&dir),
+        Version::LATEST,
+        Some(Version::LATEST),
+        SEGMENT.to_string(),
+        MAX_DOC,
+        false,
+        false,
+        Arc::clone(&codec),
+        diagnostics,
+        SEGMENT_ID,
+        attributes,
+        Default::default(),
+    )
+    .expect("segment info");
+    info.set_files(JavaHashSet::new());
     codec
         .segment_info_format()
         .write(dir.as_ref(), &info, &*DEFAULT_IO_CONTEXT)
@@ -466,7 +560,7 @@ fn write_segment_info(out_dir: &Path, multi_file: bool) {
 fn write_compound_file(out_dir: &Path) {
     let codec = ensure_codec();
     let dir = open_dir(out_dir);
-    let mut files = std::collections::HashSet::new();
+    let mut files = JavaHashSet::new();
     for sub in &SUB_FILES {
         let name = format!("{SEGMENT}{}", sub.extension);
         let mut output = dir
@@ -563,78 +657,96 @@ fn si_matches_lucene_byte_for_byte() {
     assert_file_bytes_equal(java_dir.path(), rust_dir.path(), "_9.si", "si");
 }
 
-/// Covers the multi-file `.si` a real segment carries.
+/// The `.si` Rucene writes is the same on every run of Rucene, diagnostics
+/// included.
+///
+/// The counterpart of
+/// [`lucenes_own_si_diagnostics_order_is_not_stable_between_jvms`]: Lucene's
+/// multi-entry diagnostics order is drawn per JVM, Rucene's is fixed. The
+/// diagnostics here are the eight entries a real flush writes, and the input is
+/// handed over as a [`std::collections::HashMap`] on purpose — the same
+/// unordered container `IndexWriter` would hand over — so the test fails if
+/// anything downstream of the constructor lets that container's order through.
+#[test]
+fn rucenes_own_si_is_byte_stable_across_runs() {
+    let mut first: Option<Vec<u8>> = None;
+    for run in 0..8 {
+        let dir = tempfile::tempdir().expect("rucene temp dir");
+        write_multi_diagnostic_segment_info(dir.path());
+        let bytes = std::fs::read(dir.path().join("_9.si")).expect("rucene .si");
+        match &first {
+            None => first = Some(bytes),
+            Some(expected) => assert_eq!(
+                &bytes, expected,
+                "run {run} wrote different .si bytes than the first run"
+            ),
+        }
+    }
+}
+
+/// Covers the multi-file `.si` a real segment carries, byte for byte.
 ///
 /// A sealed segment always lists more than one file, and
 /// `Lucene99SegmentInfoFormat.write` serialises that list with
 /// `writeSetOfStrings` (`Lucene99SegmentInfoFormat.java:220`), which walks the
-/// set in iteration order. The set is a `java.util.HashSet` on one side and a
-/// [`std::collections::HashSet`] on the other, so beyond one entry the two
-/// orders are unrelated and the bytes cannot be compared directly — the same
-/// obstacle as in
-/// [`fnm_multi_attribute_matches_lucene_except_for_map_order`].
+/// set in iteration order. That set is a `java.util.HashSet` on the Java side,
+/// and since task #177 it is a [`JavaHashSet`] here, so the order is
+/// reproducible and the comparison is the same exact byte comparison the
+/// single-file case makes.
 ///
-/// What is asserted instead is that the two files have the same size, so both
-/// sides wrote the same number of entries with the same total name length, and
-/// that Rucene's own reader decodes both into the same segment: same versions,
-/// maxDoc, flags, id, diagnostics, attributes, sort and — as a set — the same
-/// files.
+/// The `.si` diagnostics and attributes stay at one entry in this case on
+/// purpose: those two maps are `Map.copyOf` results in Java, whose order is
+/// drawn per JVM run, so a multi-entry version of them could not be compared
+/// with anything — see
+/// [`lucenes_own_si_diagnostics_order_is_not_stable_between_jvms`].
 #[test]
-fn si_multi_file_matches_lucene_except_for_set_order() {
+fn si_multi_file_matches_lucene_byte_for_byte() {
     require_maven();
     let java_dir = tempfile::tempdir().expect("java temp dir");
     let rust_dir = tempfile::tempdir().expect("rucene temp dir");
     run_java_fixture(java_dir.path(), "si_multi_file");
     write_segment_info(rust_dir.path(), true);
+    assert_file_bytes_equal(java_dir.path(), rust_dir.path(), "_9.si", "si_multi_file");
+}
 
-    let java_bytes = std::fs::read(java_dir.path().join("_9.si")).expect("lucene .si");
-    let rust_bytes = std::fs::read(rust_dir.path().join("_9.si")).expect("rucene .si");
+/// Measures why the `.si` diagnostics cannot be compared byte for byte beyond
+/// one entry: Lucene does not agree with *itself* about their order.
+///
+/// `SegmentInfo`'s constructor stores `Map.copyOf(diagnostics)`
+/// (`SegmentInfo.java:137`), and `Map.copyOf` returns a
+/// `java.util.ImmutableCollections.MapN` whose iteration is seeded by a
+/// `SALT32L` drawn once per JVM at class initialisation. This runs the very
+/// same fixture, with every input pinned, in a series of fresh JVMs and shows
+/// that the `.si` files they write differ. There is therefore no order for a
+/// port to reproduce here, which is why
+/// [`JavaStringMap::immutable_copy_of`](rucene::util::java_collections::JavaStringMap::immutable_copy_of)
+/// picks a fixed one instead — Rucene's own output is byte-stable, which
+/// Lucene's is not, and no reader can tell either way.
+#[test]
+fn lucenes_own_si_diagnostics_order_is_not_stable_between_jvms() {
+    require_maven();
+    const RUNS: usize = 10;
+    let mut seen: Vec<Vec<u8>> = Vec::new();
+    for _ in 0..RUNS {
+        let dir = tempfile::tempdir().expect("java temp dir");
+        run_java_fixture(dir.path(), "si_multi_diagnostic");
+        seen.push(std::fs::read(dir.path().join("_9.si")).expect("lucene .si"));
+    }
+    let lengths: std::collections::HashSet<usize> = seen.iter().map(Vec::len).collect();
     assert_eq!(
-        java_bytes.len(),
-        rust_bytes.len(),
-        "the two .si files have different sizes, so they do not list the same files"
+        lengths.len(),
+        1,
+        "the runs did not even write the same number of bytes, so the inputs \
+         were not pinned"
     );
-
-    let codec = ensure_codec();
-    let describe = |dir_path: &Path| -> String {
-        let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(dir_path).expect("open"));
-        let info = codec
-            .segment_info_format()
-            .read(Arc::clone(&dir), SEGMENT, &SEGMENT_ID, &*DEFAULT_IO_CONTEXT)
-            .expect("read segment info");
-        let mut files: Vec<String> = info.files().expect("files").into_iter().collect();
-        files.sort();
-        let mut diagnostics: Vec<String> = info
-            .get_diagnostics()
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect();
-        diagnostics.sort();
-        let mut attributes: Vec<String> = info
-            .get_attributes()
-            .into_iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect();
-        attributes.sort();
-        format!(
-            "name={} maxDoc={} cfs={} hasBlocks={} version={:?} minVersion={:?} id={:02x?}              diagnostics=[{}] attributes=[{}] files=[{}] sort={:?}",
-            info.name,
-            info.max_doc().expect("maxDoc"),
-            info.get_use_compound_file(),
-            info.get_has_blocks(),
-            info.version(),
-            info.min_version(),
-            info.id(),
-            diagnostics.join(","),
-            attributes.join(","),
-            files.join(","),
-            info.index_sort()
-        )
-    };
-    assert_eq!(
-        describe(java_dir.path()),
-        describe(rust_dir.path()),
-        "the two .si files decode to different segments"
+    let distinct: std::collections::HashSet<&Vec<u8>> = seen.iter().collect();
+    assert!(
+        distinct.len() > 1,
+        "{RUNS} JVMs all wrote the same .si bytes for a multi-entry diagnostics \
+         map. Either java.util.ImmutableCollections stopped randomising its \
+         iteration order, in which case this port should reproduce the new one, \
+         or SegmentInfo stopped using Map.copyOf. Re-read both before trusting \
+         the declared divergence."
     );
 }
 
@@ -659,87 +771,52 @@ fn cfs_matches_lucene_byte_for_byte() {
     assert_file_bytes_equal(java_dir.path(), rust_dir.path(), "_9.cfe", "cfe");
 }
 
-/// Covers the two-attribute field shape the real flush path produces.
+/// Covers the two-attribute field shape the real flush path produces, byte for
+/// byte.
 ///
 /// `PerFieldPostingsFormat.FieldsWriter.write` puts two attributes on every
 /// field it handles (`PerFieldPostingsFormat.java:253-254`), so this is the
-/// `.fnm` an actual segment carries. Its bytes cannot be compared with Lucene's
-/// directly: `writeMapOfStrings` walks the map in iteration order, which is a
-/// property of `java.util.HashMap`'s bucket layout on one side and of
-/// [`std::collections::HashMap`]'s per-process random seed on the other, so the
-/// two key/value pairs can come out in either order.
-///
-/// What is still provable, and is what this test asserts, is that the two files
-/// are the same *size* — so both sides encoded both attributes, and encoded
-/// every other field identically — and that Rucene's own reader decodes
-/// Lucene's file and Rucene's file into the same `FieldInfos`. A missing
-/// attribute, a wrong key, a wrong value or any other difference in the file
-/// would break one of the two.
-///
-/// Making this a byte comparison requires Rucene to reproduce
-/// `java.util.HashMap`'s iteration order, which is a separate piece of work: it
-/// affects the `.si` diagnostics, attributes and file list in the same way, and
-/// it is the reason the cases above pin every collection to one entry.
+/// `.fnm` an actual segment carries. `writeMapOfStrings` walks the map in
+/// iteration order, which is `java.util.HashMap`'s bucket order; since task
+/// #177 [`JavaHashMap`] reproduces it, including the effect of the copy
+/// constructor `putAttribute` and the fixture both go through, so the two files
+/// are identical rather than merely the same size.
 #[test]
-fn fnm_multi_attribute_matches_lucene_except_for_map_order() {
+fn fnm_multi_attribute_matches_lucene_byte_for_byte() {
     require_maven();
     let java_dir = tempfile::tempdir().expect("java temp dir");
     let rust_dir = tempfile::tempdir().expect("rucene temp dir");
     run_java_fixture(java_dir.path(), "fnm_multi_attribute");
     write_field_infos(rust_dir.path(), true);
-
-    let java_bytes = std::fs::read(java_dir.path().join("_9.fnm")).expect("lucene .fnm");
-    let rust_bytes = std::fs::read(rust_dir.path().join("_9.fnm")).expect("rucene .fnm");
-    assert_eq!(
-        java_bytes.len(),
-        rust_bytes.len(),
-        "the two .fnm files have different sizes, so they do not hold the same attributes"
+    assert_file_bytes_equal(
+        java_dir.path(),
+        rust_dir.path(),
+        "_9.fnm",
+        "fnm_multi_attribute",
     );
+}
 
-    let codec = ensure_codec();
-    let read_back = |dir_path: &Path| -> Vec<String> {
-        let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(dir_path).expect("open"));
-        let info = segment_info(&dir, &codec);
-        let infos = codec
-            .field_infos_format()
-            .read(dir.as_ref(), &info, "", &*DEFAULT_IO_CONTEXT)
-            .expect("read field infos");
-        infos
-            .iter()
-            .map(|fi| {
-                let mut attributes: Vec<String> = fi
-                    .attributes()
-                    .into_iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect();
-                attributes.sort();
-                format!(
-                    "{}#{} options={:?} dv={:?} skip={:?} points={}/{}/{} vector={}/{:?}/{:?} \
-                     tv={} omitNorms={} payloads={} soft={} parent={} attrs=[{}]",
-                    fi.name,
-                    fi.number,
-                    fi.index_options,
-                    fi.doc_values_type,
-                    fi.doc_values_skip_index_type,
-                    fi.point_dimension_count,
-                    fi.point_index_dimension_count,
-                    fi.point_num_bytes,
-                    fi.vector_dimension,
-                    fi.vector_encoding,
-                    fi.vector_similarity_function,
-                    fi.has_term_vectors(),
-                    fi.omits_norms(),
-                    fi.has_payloads(),
-                    fi.is_soft_deletes_field(),
-                    fi.is_parent_field(),
-                    attributes.join(",")
-                )
-            })
-            .collect()
-    };
-    assert_eq!(
-        read_back(java_dir.path()),
-        read_back(rust_dir.path()),
-        "the two .fnm files decode to different field metadata"
-    );
+/// The `.fnm` Rucene writes is the same on every run of Rucene.
+///
+/// The counterpart of the byte comparison above: that one proves the order
+/// agrees with Lucene's, this one proves it is not accidental. Before task #177
+/// the attributes lived in a [`std::collections::HashMap`], whose iteration
+/// order comes from a per-process random seed, so two runs of Rucene wrote
+/// different bytes. Each iteration here writes from a freshly built
+/// `FieldInfos` in a fresh directory.
+#[test]
+fn rucenes_own_fnm_is_byte_stable_across_runs() {
+    let mut first: Option<Vec<u8>> = None;
+    for run in 0..8 {
+        let dir = tempfile::tempdir().expect("rucene temp dir");
+        write_field_infos(dir.path(), true);
+        let bytes = std::fs::read(dir.path().join("_9.fnm")).expect("rucene .fnm");
+        match &first {
+            None => first = Some(bytes),
+            Some(expected) => assert_eq!(
+                &bytes, expected,
+                "run {run} wrote different .fnm bytes than the first run"
+            ),
+        }
+    }
 }

@@ -207,3 +207,15 @@ path = "tests/portability/io_context_contracts.rs"
 [[test]]
 name = "portability_fst_arcs_buffer"
 path = "tests/portability/fst_arcs_buffer.rs"
+
+[[test]]
+name = "portability_byte_block_pool_accounting"
+path = "tests/portability/byte_block_pool_accounting.rs"
+
+[[test]]
+name = "portability_java_collections"
+path = "tests/portability/java_collections.rs"
+
+[[test]]
+name = "portability_prefix_coded_terms"
+path = "tests/portability/prefix_coded_terms.rs"

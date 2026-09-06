@@ -27,7 +27,9 @@ use crate::codecs::lucene104::{
     postings_util::write_v_int_block,
     BLOCK_SIZE, DOC_CODEC, LEVEL1_MASK, META_CODEC, PAY_CODEC, POS_CODEC, VERSION_CURRENT,
 };
-use crate::codecs::postings::{NumericDocValues, PushPostingsWriterBase, PushPostingsWriterState};
+use crate::codecs::postings::{
+    PostingsNumericDocValues, PushPostingsWriterBase, PushPostingsWriterState,
+};
 use crate::codecs::state::SegmentWriteState;
 use crate::codecs::term_state::{BlockTermState, CompetitiveImpactAccumulator, Impact};
 use crate::error::{LuceneError, Result};
@@ -393,7 +395,7 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         Ok(BlockTermState::default())
     }
 
-    fn start_term(&mut self, _norms: Option<&dyn NumericDocValues>) -> Result<()> {
+    fn start_term(&mut self, _norms: Option<&dyn PostingsNumericDocValues>) -> Result<()> {
         self.doc_start_fp = self.doc_out.file_pointer();
         if self.push_state.write_positions {
             let pos_out = self.pos_out.as_mut().expect("pos output must exist");
@@ -915,7 +917,9 @@ mod tests {
     use crate::codecs::lucene104::{
         Lucene104PostingsFormat, DOC_CODEC, META_CODEC, PAY_CODEC, POS_CODEC,
     };
-    use crate::codecs::postings::{NormsProducer, NumericDocValues, PostingsFormat};
+    use crate::codecs::postings::{
+        PostingsFormat, PostingsNormsProducer, PostingsNumericDocValues,
+    };
     use crate::codecs::state::SegmentWriteState;
     use crate::index::{FieldInfo, FieldInfos, Fields, PostingsEnum, SeekStatus, Terms, TermsEnum};
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
@@ -925,17 +929,17 @@ mod tests {
 
     struct TestNorms;
 
-    impl NumericDocValues for TestNorms {
+    impl PostingsNumericDocValues for TestNorms {
         fn get(&self, _doc_id: i32) -> crate::error::Result<i64> {
             Ok(1)
         }
     }
 
-    impl NormsProducer for TestNorms {
+    impl PostingsNormsProducer for TestNorms {
         fn get_norms(
             &self,
             _field_info: &FieldInfo,
-        ) -> crate::error::Result<Box<dyn NumericDocValues>> {
+        ) -> crate::error::Result<Box<dyn PostingsNumericDocValues>> {
             Ok(Box::new(TestNorms))
         }
     }

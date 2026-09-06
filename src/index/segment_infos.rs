@@ -18,6 +18,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::index_file_names::{file_name_from_generation, PENDING_SEGMENTS, SEGMENTS};
 use crate::index::SegmentCommitInfo;
 use crate::store::{Directory, IndexOutput};
+use crate::util::java_collections::JavaStringMap;
 use crate::util::string_helper::{StringHelper, ID_LENGTH};
 use crate::util::{InfoStream, Version};
 
@@ -90,7 +91,13 @@ pub struct SegmentInfos {
     pub version: i64,
 
     /// Opaque user data attached to this commit.
-    pub user_data: HashMap<String, String>,
+    /// Carries an iteration order because `segments_N` does: it is serialised
+    /// with `DataOutput.writeMapOfStrings`, which walks the map. Java stores
+    /// whatever `Map` `setUserData` was handed — the `HashMap` `IndexWriter`
+    /// builds from the live commit data (`IndexWriter.java:3816-3820`) or the
+    /// map `DataInput.readMapOfStrings` returned on the way in. See
+    /// [`JavaStringMap`].
+    pub user_data: JavaStringMap,
 
     /// Segments in this commit, in order.
     segments: Vec<SegmentCommitInfo>,
@@ -138,7 +145,7 @@ impl SegmentInfos {
             last_generation: -1,
             counter: 0,
             version: 0,
-            user_data: HashMap::new(),
+            user_data: JavaStringMap::default(),
             segments: Vec::new(),
             id: StringHelper::random_id(),
             lucene_version: Version::LATEST,
@@ -337,14 +344,14 @@ impl SegmentInfos {
     }
 
     /// Returns the user data attached to this commit.
-    pub fn user_data(&self) -> &HashMap<String, String> {
+    pub fn user_data(&self) -> &JavaStringMap {
         &self.user_data
     }
 
     /// Sets the commit user data.
     ///
     /// If `do_increment_version` is `true`, `changed()` is called.
-    pub fn set_user_data(&mut self, data: HashMap<String, String>, do_increment_version: bool) {
+    pub fn set_user_data(&mut self, data: JavaStringMap, do_increment_version: bool) {
         self.user_data = data;
         if do_increment_version {
             self.changed();
@@ -770,11 +777,11 @@ impl SegmentInfos {
             si_per_commit.set_field_infos_files(field_infos_files);
 
             let num_dv_fields = codec_util::read_be_int(input)?;
-            let mut dv_updates_files: HashMap<i32, HashSet<String>> = HashMap::new();
+            let mut dv_updates_files: HashMap<i32, Vec<String>> = HashMap::new();
             for _ in 0..num_dv_fields {
                 let field_number = codec_util::read_be_int(input)?;
                 let files = input.read_set_of_strings()?;
-                dv_updates_files.insert(field_number, files);
+                dv_updates_files.insert(field_number, files.into_iter().collect());
             }
             si_per_commit.set_doc_values_updates_files(dv_updates_files);
 
@@ -1386,7 +1393,9 @@ mod tests {
     fn round_trip_empty_segments_file() {
         let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let mut sis = SegmentInfos::new(10).unwrap();
-        sis.user_data = HashMap::from([("foo".to_string(), "bar".to_string())]);
+        sis.user_data = [("foo".to_string(), "bar".to_string())]
+            .into_iter()
+            .collect();
 
         let written = sis.commit(dir.as_ref()).unwrap();
         assert_eq!(written, "segments_1");
@@ -1421,7 +1430,9 @@ mod tests {
         let mut sis = SegmentInfos::new(10).unwrap();
         sis.counter = 1;
         sis.changed();
-        sis.user_data = HashMap::from([("user".to_string(), "data".to_string())]);
+        sis.user_data = [("user".to_string(), "data".to_string())]
+            .into_iter()
+            .collect();
         sis.add(sci).unwrap();
 
         let written = sis.commit(dir.as_ref()).unwrap();

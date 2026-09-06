@@ -66,7 +66,7 @@ import org.apache.lucene.util.Version;
  * </pre>
  *
  * <p>Supported cases: {@code fnm}, {@code fnm_multi_attribute}, {@code si},
- * {@code si_multi_file}, {@code cfs}.
+ * {@code si_multi_file}, {@code si_multi_diagnostic}, {@code cfs}.
  *
  * <p>Every map and set written by these cases holds at most one entry. Both
  * {@code writeMapOfStrings} and {@code writeSetOfStrings} serialise their
@@ -109,6 +109,7 @@ public final class SealBytesFixture {
         case "fnm_multi_attribute" -> writeFieldInfos(dir, true);
         case "si" -> writeSegmentInfo(dir, false);
         case "si_multi_file" -> writeSegmentInfo(dir, true);
+        case "si_multi_diagnostic" -> writeMultiDiagnosticSegmentInfo(dir);
         case "cfs" -> writeCompoundFile(dir);
         default -> throw new IllegalArgumentException("unknown case: " + shape);
       }
@@ -151,6 +152,18 @@ public final class SealBytesFixture {
     Map<String, String> two = new HashMap<>();
     two.put("PerFieldPostingsFormat.format", "Lucene104");
     two.put("PerFieldPostingsFormat.suffix", "0");
+    // The six attributes a field handled by all three per-field formats
+    // carries. Six is the smallest of these shapes for which the copy
+    // constructor in `field` is observable: `new HashMap<>()` plus six puts
+    // fills a table of 16, while `new HashMap<>(m)` pre-sizes to 8, and these
+    // keys iterate differently at the two lengths.
+    Map<String, String> six = new HashMap<>();
+    six.put("PerFieldPostingsFormat.format", "Lucene104");
+    six.put("PerFieldPostingsFormat.suffix", "0");
+    six.put("PerFieldDocValuesFormat.format", "Lucene90");
+    six.put("PerFieldDocValuesFormat.suffix", "0");
+    six.put("PerFieldKnnVectorsFormat.format", "Lucene99HnswVectorsFormat");
+    six.put("PerFieldKnnVectorsFormat.suffix", "0");
 
     List<FieldInfo> infos = new ArrayList<>();
     infos.add(
@@ -204,7 +217,7 @@ public final class SealBytesFixture {
             DocValuesType.SORTED_NUMERIC,
             DocValuesSkipIndexType.RANGE,
             -1,
-            Map.of(),
+            multiAttribute ? six : Map.of(),
             0,
             0,
             0,
@@ -339,8 +352,55 @@ public final class SealBytesFixture {
         isParent);
   }
 
-  /** The extra files the multi-file `.si` case lists. */
-  public static final String[] SI_EXTRA_FILES = {".fdt", ".fdx", ".nvd"};
+  /**
+   * The extra files the multi-file `.si` case lists.
+   *
+   * <p>The extensions are chosen so that the names collide in the backing table: with the default
+   * capacity of 16, {@code _9.fdt} and {@code _9.tvx} share a bucket, and so do {@code _9.dvd} and
+   * {@code _9.tvd}. A colliding bucket is the only way the *chain* order — and therefore the order
+   * the names are added in — reaches the file at all; with pairwise distinct buckets any insertion
+   * order produces the same bytes and the case would prove nothing about the order.
+   */
+  public static final String[] SI_EXTRA_FILES = {".fdt", ".tvx", ".dvd", ".tvd", ".nvm"};
+
+  /**
+   * Writes a `.si` whose diagnostics carry several entries, with every other input pinned.
+   *
+   * <p>The point of this case is to be run repeatedly in fresh JVMs. {@link SegmentInfo}'s
+   * constructor stores {@code Map.copyOf(diagnostics)}, and {@code Map.copyOf} returns a {@code
+   * java.util.ImmutableCollections.MapN} whose iteration order is seeded by a {@code SALT32L} drawn
+   * once per JVM. The bytes this writes therefore differ between runs of Lucene itself, which is
+   * what the Rust side asserts: there is no order here for a port to reproduce.
+   */
+  private static void writeMultiDiagnosticSegmentInfo(FSDirectory dir) throws IOException {
+    Map<String, String> diagnostics = new HashMap<>();
+    diagnostics.put("source", "flush");
+    diagnostics.put("lucene.version", "10.5.0");
+    diagnostics.put("os", "Linux");
+    diagnostics.put("os.arch", "amd64");
+    diagnostics.put("os.version", "6.8.0");
+    diagnostics.put("java.version", "21");
+    diagnostics.put("java.vendor", "Ubuntu");
+    diagnostics.put("timestamp", "20260905000000000");
+    Map<String, String> attributes = new HashMap<>();
+    attributes.put("Lucene90StoredFieldsFormat.mode", "BEST_SPEED");
+    SegmentInfo si =
+        new SegmentInfo(
+            dir,
+            Version.LATEST,
+            Version.LATEST,
+            SEGMENT,
+            7,
+            false,
+            false,
+            new Lucene104Codec(),
+            diagnostics,
+            SEGMENT_ID,
+            attributes,
+            null);
+    si.setFiles(new HashSet<>());
+    new Lucene104Codec().segmentInfoFormat().write(dir, si, IOContext.DEFAULT);
+  }
 
   /**
    * Writes a `.si` with every field of the format pinned.

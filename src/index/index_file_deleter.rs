@@ -151,7 +151,7 @@ impl CommitPoint {
             directory_orig,
             commits_to_delete,
             generation,
-            user_data,
+            user_data: user_data.to_std(),
             segment_count,
             self_ref: self_ref.clone(),
         }))

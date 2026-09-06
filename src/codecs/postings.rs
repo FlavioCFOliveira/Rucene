@@ -61,20 +61,43 @@ pub use crate::index::merge::MergeState;
 // Doc-values / norms abstractions used by postings
 // -----------------------------------------------------------------------------
 
-/// Access to a single numeric doc-values field.
+/// Random-access view of one numeric doc-values field, used by the postings
+/// path to read norms.
 ///
-/// Equivalent to `org.apache.lucene.index.NumericDocValues`.
-pub trait NumericDocValues {
+/// **This is not a port of a Lucene type, and no Lucene type carries this
+/// name.** Java passes `org.apache.lucene.index.NumericDocValues` — a
+/// forward-only iterator, ported as [`crate::index::NumericDocValues`] — down
+/// the postings path, obtaining a fresh one from the `NormsProducer` for every
+/// term so that the iterator contract holds. This port instead grew a
+/// random-access shape for that same job, so the two cannot be the same trait.
+/// The name says so, rather than claiming a Lucene type this does not
+/// implement.
+///
+/// The divergence is described in full at
+/// `crate::index::segment_merger::PostingsNormsAdapter`, which bridges the two;
+/// unifying them is the faithful fix and is tracked separately.
+pub trait PostingsNumericDocValues {
     /// Returns the value for the given document.
     fn get(&self, doc_id: i32) -> Result<i64>;
 }
 
-/// Source of normalization values for a segment.
+/// Source of normalization values for the postings path.
 ///
-/// Equivalent to `org.apache.lucene.codecs.NormsProducer`.
-pub trait NormsProducer: Send + Sync {
+/// **This is not a port of a Lucene type, and no Lucene type carries this
+/// name.** Java has a single `org.apache.lucene.codecs.NormsProducer`, ported
+/// as [`crate::codecs::norms::NormsProducer`], which the norms format and the
+/// postings path share. This port grew a second, narrower trait for the
+/// postings path, whose `get_norms` hands back the random-access
+/// [`PostingsNumericDocValues`] instead of the iterator Java returns, and which
+/// carries none of `check_integrity`, `get_merge_instance` or `close`. The name
+/// says so, rather than claiming a Lucene type this does not implement.
+///
+/// The divergence is described in full at
+/// `crate::index::segment_merger::PostingsNormsAdapter`, which bridges the two;
+/// unifying them is the faithful fix and is tracked separately.
+pub trait PostingsNormsProducer: Send + Sync {
     /// Returns the numeric doc-values for the requested field.
-    fn get_norms(&self, field_info: &FieldInfo) -> Result<Box<dyn NumericDocValues>>;
+    fn get_norms(&self, field_info: &FieldInfo) -> Result<Box<dyn PostingsNumericDocValues>>;
 }
 
 // -----------------------------------------------------------------------------
@@ -214,10 +237,10 @@ impl TermsEnum for SingleTermsEnum {
 /// Equivalent to `org.apache.lucene.codecs.FieldsConsumer`.
 pub trait FieldsConsumer: Send + Sync {
     /// Writes every field/term/posting in `fields`.
-    fn write(&mut self, fields: &dyn Fields, norms: &dyn NormsProducer) -> Result<()>;
+    fn write(&mut self, fields: &dyn Fields, norms: &dyn PostingsNormsProducer) -> Result<()>;
 
     /// Merges the source segments described by `merge_state`.
-    fn merge(&mut self, merge_state: &MergeState, norms: &dyn NormsProducer) -> Result<()>;
+    fn merge(&mut self, merge_state: &MergeState, norms: &dyn PostingsNormsProducer) -> Result<()>;
 
     /// Closes this consumer, releasing all resources.
     fn close(&mut self) -> Result<()>;
@@ -494,7 +517,7 @@ pub trait PostingsWriterBase: Send + Sync {
         term: &BytesRef,
         terms_enum: &mut dyn TermsEnum,
         docs_seen: &mut FixedBitSet,
-        norms: &dyn NormsProducer,
+        norms: &dyn PostingsNormsProducer,
     ) -> Result<Option<BlockTermState>>;
 
     /// Encodes term metadata to the provided output.
@@ -579,7 +602,7 @@ pub trait PushPostingsWriterBase: Send + Sync {
     fn new_term_state(&self) -> Result<BlockTermState>;
 
     /// Starts a new term.
-    fn start_term(&mut self, norms: Option<&dyn NumericDocValues>) -> Result<()>;
+    fn start_term(&mut self, norms: Option<&dyn PostingsNumericDocValues>) -> Result<()>;
 
     /// Finishes the current term.
     fn finish_term(&mut self, state: &mut BlockTermState) -> Result<()>;
@@ -647,7 +670,7 @@ pub trait PushPostingsWriterBase: Send + Sync {
         _term: &BytesRef,
         terms_enum: &mut dyn TermsEnum,
         docs_seen: &mut FixedBitSet,
-        norms: &dyn NormsProducer,
+        norms: &dyn PostingsNormsProducer,
     ) -> Result<Option<BlockTermState>> {
         let field_info = self
             .push_state()
@@ -656,7 +679,7 @@ pub trait PushPostingsWriterBase: Send + Sync {
             .ok_or_else(|| LuceneError::IllegalState("set_field not called".to_string()))?
             .clone();
 
-        let mut norms_values: Option<Box<dyn NumericDocValues>> = None;
+        let mut norms_values: Option<Box<dyn PostingsNumericDocValues>> = None;
         if field_info.has_norms() {
             norms_values = Some(norms.get_norms(&field_info)?);
         }
@@ -746,7 +769,7 @@ impl<T: PushPostingsWriterBase + ?Sized> PostingsWriterBase for T {
         term: &BytesRef,
         terms_enum: &mut dyn TermsEnum,
         docs_seen: &mut FixedBitSet,
-        norms: &dyn NormsProducer,
+        norms: &dyn PostingsNormsProducer,
     ) -> Result<Option<BlockTermState>> {
         PushPostingsWriterBase::write_term(self, term, terms_enum, docs_seen, norms)
     }
@@ -999,11 +1022,11 @@ mod tests {
         }
     }
 
-    // Stub NumericDocValues / NormsProducer ---------------------------------
+    // Stub norms -----------------------------------------------------------
     #[derive(Debug, Default, Clone)]
     struct StubNumericDocValues;
 
-    impl NumericDocValues for StubNumericDocValues {
+    impl PostingsNumericDocValues for StubNumericDocValues {
         fn get(&self, _doc_id: i32) -> Result<i64> {
             Ok(0)
         }
@@ -1012,8 +1035,8 @@ mod tests {
     #[derive(Debug, Default, Clone)]
     struct StubNormsProducer;
 
-    impl NormsProducer for StubNormsProducer {
-        fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+    impl PostingsNormsProducer for StubNormsProducer {
+        fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn PostingsNumericDocValues>> {
             Ok(Box::new(StubNumericDocValues))
         }
     }
@@ -1023,11 +1046,19 @@ mod tests {
     struct StubFieldsConsumer;
 
     impl FieldsConsumer for StubFieldsConsumer {
-        fn write(&mut self, _fields: &dyn Fields, _norms: &dyn NormsProducer) -> Result<()> {
+        fn write(
+            &mut self,
+            _fields: &dyn Fields,
+            _norms: &dyn PostingsNormsProducer,
+        ) -> Result<()> {
             Ok(())
         }
 
-        fn merge(&mut self, _merge_state: &MergeState, _norms: &dyn NormsProducer) -> Result<()> {
+        fn merge(
+            &mut self,
+            _merge_state: &MergeState,
+            _norms: &dyn PostingsNormsProducer,
+        ) -> Result<()> {
             Ok(())
         }
 
@@ -1194,7 +1225,7 @@ mod tests {
             Ok(BlockTermState::default())
         }
 
-        fn start_term(&mut self, _norms: Option<&dyn NumericDocValues>) -> Result<()> {
+        fn start_term(&mut self, _norms: Option<&dyn PostingsNumericDocValues>) -> Result<()> {
             Ok(())
         }
 
@@ -1239,7 +1270,7 @@ mod tests {
             _term: &BytesRef,
             _terms_enum: &mut dyn TermsEnum,
             _docs_seen: &mut FixedBitSet,
-            _norms: &dyn NormsProducer,
+            _norms: &dyn PostingsNormsProducer,
         ) -> Result<Option<BlockTermState>> {
             Ok(None)
         }

@@ -18,7 +18,7 @@ use crate::codecs::lucene103::field_reader::{BlockTreeShared, FieldReader};
 use crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnumFrame;
 use crate::codecs::lucene103::trie_reader::{self, ChildSaveStrategy};
 use crate::codecs::postings::{
-    Fields, FieldsConsumer, FieldsProducer, MergeState, NormsProducer, PostingsReaderBase,
+    Fields, FieldsConsumer, FieldsProducer, MergeState, PostingsNormsProducer, PostingsReaderBase,
     PostingsWriterBase, Terms, TermsEnum,
 };
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
@@ -1312,7 +1312,7 @@ impl<'a> TermsWriter<'a> {
         term: &BytesRef,
         terms_enum: &mut dyn TermsEnum,
         postings_writer: &mut dyn PostingsWriterBase,
-        norms: &dyn NormsProducer,
+        norms: &dyn PostingsNormsProducer,
     ) -> Result<()> {
         if let Some(state) =
             postings_writer.write_term(term, terms_enum, &mut self.docs_seen, norms)?
@@ -1856,7 +1856,7 @@ impl<'a> fmt::Debug for Lucene103BlockTreeTermsWriter<'a> {
 }
 
 impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
-    fn write(&mut self, fields: &dyn Fields, norms: &dyn NormsProducer) -> Result<()> {
+    fn write(&mut self, fields: &dyn Fields, norms: &dyn PostingsNormsProducer) -> Result<()> {
         // Open outputs early so per-field TermsWriter can write blocks directly.
         let terms_name = segment_file_name(
             &self.segment_info.name,
@@ -1970,7 +1970,11 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
         Ok(())
     }
 
-    fn merge(&mut self, _merge_state: &MergeState, _norms: &dyn NormsProducer) -> Result<()> {
+    fn merge(
+        &mut self,
+        _merge_state: &MergeState,
+        _norms: &dyn PostingsNormsProducer,
+    ) -> Result<()> {
         // Merges will be implemented once the write path is complete.
         Ok(())
     }
@@ -2436,7 +2440,7 @@ mod tests {
             _term: &BytesRef,
             _terms_enum: &mut dyn TermsEnum,
             _docs_seen: &mut FixedBitSet,
-            _norms: &dyn NormsProducer,
+            _norms: &dyn PostingsNormsProducer,
         ) -> Result<Option<BlockTermState>> {
             Ok(None)
         }
@@ -2463,11 +2467,11 @@ mod tests {
     /// No-op norms producer.
     struct StubNormsProducer;
 
-    impl NormsProducer for StubNormsProducer {
+    impl PostingsNormsProducer for StubNormsProducer {
         fn get_norms(
             &self,
             _field_info: &FieldInfo,
-        ) -> Result<Box<dyn crate::codecs::postings::NumericDocValues>> {
+        ) -> Result<Box<dyn crate::codecs::postings::PostingsNumericDocValues>> {
             Err(LuceneError::UnsupportedOperation(
                 "stub norms producer".to_string(),
             ))
@@ -2745,7 +2749,7 @@ mod tests {
             _term: &BytesRef,
             _terms_enum: &mut dyn TermsEnum,
             docs_seen: &mut FixedBitSet,
-            _norms: &dyn NormsProducer,
+            _norms: &dyn PostingsNormsProducer,
         ) -> Result<Option<BlockTermState>> {
             docs_seen.set(0);
             let mut state = BlockTermState::default();

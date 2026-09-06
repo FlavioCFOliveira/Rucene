@@ -193,12 +193,15 @@ impl TermInSetQuery {
     /// Computes the cached hash code and encoded size of the packed terms.
     ///
     /// **Divergence from Lucene 10.5.0.** Java's `PrefixCodedTerms.hashCode()`
-    /// and `equals` compare the encoded byte buffer, and `ramBytesUsed()`
-    /// reports its length; this port's [`PrefixCodedTerms`] keeps that buffer
-    /// private and exposes only its iterator, so both are derived from the term
-    /// sequence the iterator yields. The encoding is canonical, so two packed
-    /// term sets have the same bytes exactly when they have the same term
-    /// sequence, and the derived hash agrees with the derived equality.
+    /// folds one `ByteBuffer.hashCode()` per block of the encoded payload and
+    /// its `equals` compares the payload block by block
+    /// (`PrefixCodedTerms.java:180-197`); this port derives both from the term
+    /// sequence the iterator yields instead. The encoding is canonical, so two
+    /// packed term sets have the same bytes exactly when they have the same
+    /// term sequence, and the derived hash agrees with the derived equality.
+    /// The payload is now reachable through `PrefixCodedTerms::content`, so
+    /// this could be made byte-wise; doing so would change the hash these
+    /// queries publish and belongs to a task of its own.
     fn digest(term_data: &PrefixCodedTerms) -> Result<(u64, i64)> {
         let mut hasher = DefaultHasher::new();
         let mut bytes = 0i64;

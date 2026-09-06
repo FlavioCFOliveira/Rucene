@@ -614,7 +614,7 @@ pub(crate) mod tests {
         fn write(
             &mut self,
             _fields: &dyn crate::codecs::postings::Fields,
-            _norms: &dyn crate::codecs::postings::NormsProducer,
+            _norms: &dyn crate::codecs::postings::PostingsNormsProducer,
         ) -> Result<()> {
             Ok(())
         }
@@ -622,7 +622,7 @@ pub(crate) mod tests {
         fn merge(
             &mut self,
             _merge_state: &MergeState,
-            _norms: &dyn crate::codecs::postings::NormsProducer,
+            _norms: &dyn crate::codecs::postings::PostingsNormsProducer,
         ) -> Result<()> {
             Ok(())
         }

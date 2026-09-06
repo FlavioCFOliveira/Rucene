@@ -1770,7 +1770,7 @@ impl ReadersAndUpdates {
         // Merge with existing DV updates files.
         for (k, v) in state.info.get_doc_values_updates_files() {
             if !new_dv_files.contains_key(k) {
-                new_dv_files.insert(*k, v.clone());
+                new_dv_files.insert(*k, v.iter().cloned().collect());
             }
         }
         state.info.set_doc_values_updates_files(new_dv_files);

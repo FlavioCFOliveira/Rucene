@@ -70,7 +70,6 @@ pub mod stored_fields_consumer;
 pub mod term_vectors_consumer;
 pub mod terms;
 pub mod terms_enum_index;
-pub mod two_phase_commit;
 pub mod vector_values;
 pub mod vector_values_consumer;
 
@@ -477,7 +476,7 @@ pub trait IndexableFieldType: std::fmt::Display {
     fn vector_similarity_function(&self) -> VectorSimilarityFunction;
 
     /// Attributes for the field type.
-    fn attributes(&self) -> &HashMap<String, String>;
+    fn attributes(&self) -> &crate::util::java_collections::JavaHashMap<String>;
 }
 
 /// Represents a single field for indexing.

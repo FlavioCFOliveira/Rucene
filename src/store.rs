@@ -61,6 +61,9 @@ use fslock::LockFile;
 
 use crate::{
     error::{LuceneError, Result},
+    util::java_collections::{
+        JavaHashMap, JavaHashSet, JavaOrderedMap, JavaOrderedSet, JavaStringMap, JavaStringSet,
+    },
     util::BitUtil,
 };
 
@@ -266,39 +269,46 @@ pub trait DataInput {
             .map_err(|e| LuceneError::IllegalArgument(format!("invalid UTF-8 reading string: {e}")))
     }
 
-    /// Reads a `HashMap<String, String>` previously written with
+    /// Reads the map previously written with
     /// [`DataOutput::write_map_of_strings`].
     ///
-    /// Equivalent to `DataInput.readMapOfStrings()`, which sizes nothing from
-    /// the count — it builds a plain `HashMap`/`TreeMap` and lets the entries
-    /// grow it (`DataInput.java:261-276`) — and whose loop runs zero times for
-    /// a negative count, returning an empty map. Reserving the count instead
-    /// would allocate whatever a corrupt file names before a single entry has
-    /// been read.
-    fn read_map_of_strings(&mut self) -> Result<HashMap<String, String>> {
+    /// Equivalent to `DataInput.readMapOfStrings()` (`DataInput.java:261-276`).
+    /// The return type carries the iteration order because Java's does: the
+    /// method hands back `Collections.emptyMap()`, `Collections.singletonMap`,
+    /// an unmodifiable `TreeMap` for two to ten entries or an unmodifiable
+    /// `HashMap` beyond that, and whichever it is decides the byte order if the
+    /// map is ever written back out. See [`JavaStringMap`].
+    ///
+    /// It sizes nothing from the count — Java lets the entries grow the map —
+    /// and its loop runs zero times for a negative count, returning an empty
+    /// map. Reserving the count instead would allocate whatever a corrupt file
+    /// names before a single entry has been read.
+    fn read_map_of_strings(&mut self) -> Result<JavaStringMap> {
         let count = self.read_v_int()?;
-        let mut map = HashMap::new();
+        let mut entries = Vec::new();
         for _ in 0..count {
             let key = self.read_string()?;
             let value = self.read_string()?;
-            map.insert(key, value);
+            entries.push((key, value));
         }
-        Ok(map)
+        Ok(JavaStringMap::from_read(entries))
     }
 
-    /// Reads a `HashSet<String>` previously written with
+    /// Reads the set previously written with
     /// [`DataOutput::write_set_of_strings`].
     ///
-    /// Equivalent to `DataInput.readSetOfStrings()`; see
-    /// [`read_map_of_strings`](Self::read_map_of_strings) for why neither the
-    /// capacity nor the loop trusts the count.
-    fn read_set_of_strings(&mut self) -> Result<HashSet<String>> {
+    /// Equivalent to `DataInput.readSetOfStrings()` (`DataInput.java:283-296`),
+    /// which dispatches over the count exactly as `readMapOfStrings` does; see
+    /// [`read_map_of_strings`](Self::read_map_of_strings) for why the return
+    /// type carries the iteration order and why neither the capacity nor the
+    /// loop trusts the count.
+    fn read_set_of_strings(&mut self) -> Result<JavaStringSet> {
         let count = self.read_v_int()?;
-        let mut set = HashSet::new();
+        let mut values = Vec::new();
         for _ in 0..count {
-            set.insert(self.read_string()?);
+            values.push(self.read_string()?);
         }
-        Ok(set)
+        Ok(JavaStringSet::from_read(values))
     }
 
     /// Reads `length` little-endian `i32` values into `dst[offset..]`.
@@ -454,9 +464,17 @@ pub trait DataOutput {
     }
 
     /// Writes a map as a VInt size followed by key-value string pairs.
-    fn write_map_of_strings(&mut self, map: &HashMap<String, String>) -> Result<()> {
-        self.write_v_int(map.len() as i32)?;
-        for (key, value) in map {
+    ///
+    /// Equivalent to `DataOutput.writeMapOfStrings(Map)`
+    /// (`DataOutput.java:304-310`), which walks `map.entrySet()` — so the
+    /// argument's *iteration order* is what lands in the file. That is why the
+    /// parameter is a [`JavaStringMap`] and not a
+    /// [`std::collections::HashMap`], whose order comes from a per-process
+    /// random seed and would make the bytes differ between two runs of this
+    /// crate, let alone from Lucene's.
+    fn write_map_of_strings(&mut self, map: &dyn JavaOrderedMap) -> Result<()> {
+        self.write_v_int(map.entry_count() as i32)?;
+        for (key, value) in map.entries() {
             self.write_string(key)?;
             self.write_string(value)?;
         }
@@ -464,9 +482,14 @@ pub trait DataOutput {
     }
 
     /// Writes a set as a VInt size followed by strings.
-    fn write_set_of_strings(&mut self, set: &HashSet<String>) -> Result<()> {
-        self.write_v_int(set.len() as i32)?;
-        for value in set {
+    ///
+    /// Equivalent to `DataOutput.writeSetOfStrings(Set)`
+    /// (`DataOutput.java:321-326`); see
+    /// [`write_map_of_strings`](Self::write_map_of_strings) for why the
+    /// parameter carries an iteration order.
+    fn write_set_of_strings(&mut self, set: &dyn JavaOrderedSet) -> Result<()> {
+        self.write_v_int(set.value_count() as i32)?;
+        for value in set.values() {
             self.write_string(value)?;
         }
         Ok(())
@@ -6526,6 +6549,32 @@ impl ByteBuffersDataOutput {
     /// versus `duplicate()`; here it is the difference between a shared and a
     /// mutable slice, which is why this one takes `&mut self`.
     ///
+    /// Consumes the output and returns its blocks, keeping each block's
+    /// capacity.
+    ///
+    /// The owning counterpart of [`to_buffer_list`](Self::to_buffer_list), for
+    /// the callers that keep the block list after the output is gone —
+    /// `PrefixCodedTerms.Builder.finish()` is the one Lucene has
+    /// (`PrefixCodedTerms.java:103`).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `toBufferList()` hands out
+    /// read-only `ByteBuffer` views over the very blocks the output still owns,
+    /// so the payload is shared rather than moved; Rust cannot hand out a view
+    /// into a buffer whose owner is about to be dropped, so the blocks are moved
+    /// out instead. Nothing is copied and no capacity is lost, which is what the
+    /// accounting of the receiving object depends on: Java charges
+    /// `ByteBuffer.capacity()`, i.e. the whole allocated block, not the bytes
+    /// written into it.
+    pub fn into_buffer_list(mut self) -> Vec<Vec<u8>> {
+        let mut result = std::mem::take(&mut self.completed);
+        if !self.current.is_empty() {
+            result.push(std::mem::take(&mut self.current));
+        } else if result.is_empty() {
+            result.push(Vec::new());
+        }
+        result
+    }
+
     /// Equivalent to
     /// `org.apache.lucene.store.ByteBuffersDataOutput#toWriteableBufferList`.
     pub fn to_writeable_buffer_list(&mut self) -> Vec<&mut [u8]> {
@@ -7269,11 +7318,11 @@ impl DataInput for ByteBuffersIndexInput {
         self.input_mut()?.read_string()
     }
 
-    fn read_map_of_strings(&mut self) -> Result<HashMap<String, String>> {
+    fn read_map_of_strings(&mut self) -> Result<JavaStringMap> {
         self.input_mut()?.read_map_of_strings()
     }
 
-    fn read_set_of_strings(&mut self) -> Result<HashSet<String>> {
+    fn read_set_of_strings(&mut self) -> Result<JavaStringSet> {
         self.input_mut()?.read_set_of_strings()
     }
 
@@ -7561,11 +7610,11 @@ impl DataOutput for ByteBuffersIndexOutput {
         self.delegate_mut()?.write_string(s)
     }
 
-    fn write_map_of_strings(&mut self, map: &HashMap<String, String>) -> Result<()> {
+    fn write_map_of_strings(&mut self, map: &dyn JavaOrderedMap) -> Result<()> {
         self.delegate_mut()?.write_map_of_strings(map)
     }
 
-    fn write_set_of_strings(&mut self, set: &HashSet<String>) -> Result<()> {
+    fn write_set_of_strings(&mut self, set: &dyn JavaOrderedSet) -> Result<()> {
         self.delegate_mut()?.write_set_of_strings(set)
     }
 
@@ -9026,7 +9075,7 @@ mod tests {
 
     #[test]
     fn map_of_strings_round_trip() {
-        let mut map = HashMap::new();
+        let mut map: JavaHashMap<String> = JavaHashMap::new();
         map.insert("key1".to_string(), "value1".to_string());
         map.insert("key2".to_string(), "value2".to_string());
         map.insert("empty".to_string(), "".to_string());
@@ -9037,12 +9086,12 @@ mod tests {
         let input_src = out.into_inner();
         let mut input = ByteArrayDataInput::new(&input_src);
         let decoded = input.read_map_of_strings().unwrap();
-        assert_eq!(decoded, map);
+        assert_eq!(decoded.to_std(), map.to_std());
     }
 
     #[test]
     fn set_of_strings_round_trip() {
-        let mut set = HashSet::new();
+        let mut set = JavaHashSet::new();
         set.insert("alpha".to_string());
         set.insert("beta".to_string());
         set.insert("gamma".to_string());
@@ -9053,7 +9102,7 @@ mod tests {
         let input_src = out.into_inner();
         let mut input = ByteArrayDataInput::new(&input_src);
         let decoded = input.read_set_of_strings().unwrap();
-        assert_eq!(decoded, set);
+        assert_eq!(decoded.to_std(), set.to_std());
     }
 
     #[test]
@@ -9432,12 +9481,12 @@ mod tests {
 
     #[test]
     fn byte_buffers_map_and_set_of_strings_round_trip() {
-        let mut map = HashMap::new();
+        let mut map: JavaHashMap<String> = JavaHashMap::new();
         map.insert("key1".to_string(), "value1".to_string());
         map.insert("key2".to_string(), "value2".to_string());
         map.insert("empty".to_string(), "".to_string());
 
-        let mut set = HashSet::new();
+        let mut set = JavaHashSet::new();
         set.insert("alpha".to_string());
         set.insert("beta".to_string());
         set.insert("gamma".to_string());
@@ -9447,8 +9496,8 @@ mod tests {
         out.write_set_of_strings(&set).unwrap();
 
         let mut input = out.to_data_input().unwrap();
-        assert_eq!(input.read_map_of_strings().unwrap(), map);
-        assert_eq!(input.read_set_of_strings().unwrap(), set);
+        assert_eq!(input.read_map_of_strings().unwrap().to_std(), map.to_std());
+        assert_eq!(input.read_set_of_strings().unwrap().to_std(), set.to_std());
     }
 
     #[test]

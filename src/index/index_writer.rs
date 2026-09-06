@@ -21,6 +21,7 @@ use crate::index::directory_reader::{
 };
 use crate::index::doc_values_field_updates::DocValuesFieldUpdates;
 use crate::index::doc_values_update::{DocValuesUpdate, DocValuesUpdateValue};
+use crate::util::java_collections::JavaStringMap;
 
 use crate::index::documents_writer::{DeleteNode, DocumentsWriter, FlushNotifications, MAX_DOCS};
 use crate::index::field_infos::FieldNumbers;
@@ -73,7 +74,11 @@ struct WriterState {
     /// Bumped on every merge registration, as Java's `mergeGen` is.
     merge_gen: i64,
     /// User data to attach to the next commit.
-    commit_user_data: HashMap<String, String>,
+    /// Equivalent to `private Iterable<Map.Entry<String, String>> commitUserData`
+    /// (`IndexWriter.java`), which keeps whatever order the caller handed over:
+    /// `prepareCommitInternal` copies it into a `HashMap` in that order, and
+    /// that map's bucket order is what `segments_N` records.
+    commit_user_data: Vec<(String, String)>,
     /// Merges that failed, kept until the next merge generation.
     ///
     /// Equivalent to `IndexWriter.mergeExceptions`.
@@ -397,7 +402,7 @@ impl IndexWriter {
                 pending_merges: Vec::new(),
                 merging_segments: HashSet::new(),
                 merge_gen: 0,
-                commit_user_data: HashMap::new(),
+                commit_user_data: Vec::new(),
                 merge_exceptions: Vec::new(),
                 merge_max_num_segments: -1,
                 stop_merges: false,
@@ -704,7 +709,7 @@ impl IndexWriter {
     /// Returns the user data attached to the next commit.
     ///
     /// Equivalent to `IndexWriter.getLiveCommitData()`.
-    pub fn get_live_commit_data(&self) -> Result<HashMap<String, String>> {
+    pub fn get_live_commit_data(&self) -> Result<Vec<(String, String)>> {
         Ok(self.state()?.commit_user_data.clone())
     }
 
@@ -1245,9 +1250,12 @@ impl IndexWriter {
     /// Sets the user data written into the next commit.
     ///
     /// Equivalent to `IndexWriter.setLiveCommitData`.
-    pub fn set_live_commit_data(&self, data: HashMap<String, String>) -> Result<()> {
+    pub fn set_live_commit_data<I>(&self, data: I) -> Result<()>
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
         let mut state = self.state()?;
-        state.commit_user_data = data;
+        state.commit_user_data = data.into_iter().collect();
         Ok(())
     }
 
@@ -1315,7 +1323,17 @@ impl IndexWriter {
             self.change_count.fetch_add(1, Ordering::AcqRel);
             state.segment_infos.changed();
         }
-        let user_data = state.commit_user_data.clone();
+        // `IndexWriter.prepareCommitInternal` copies the live commit data into
+        // a fresh `HashMap` before handing it to `setUserData`
+        // (`IndexWriter.java:3816-3820`), so the map `segments_N` walks is a
+        // `java.util.HashMap` filled in the live data's iteration order.
+        let user_data: JavaStringMap = JavaStringMap::Hash(
+            state
+                .commit_user_data
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        );
         state.segment_infos.set_user_data(user_data, false);
         self.publish_segment_counter(&mut state.segment_infos);
         let to_sync = clone_infos(&state.segment_infos)?;
@@ -4605,12 +4623,12 @@ impl IndexWriter {
             info.info.codec().ok_or_else(|| {
                 LuceneError::IllegalState(format!("segment {} has no codec", info.info.name))
             })?,
-            info.info.get_diagnostics().clone(),
+            info.info.get_diagnostics().to_std(),
             info.info.id(),
             info.info.get_attributes(),
             info.info.index_sort().clone(),
         )?;
-        new_info.set_files(info.info.files()?);
+        new_info.set_files(info.info.files_ordered()?);
 
         let mut new_info_per_commit = SegmentCommitInfo::new(
             new_info,
@@ -4622,8 +4640,12 @@ impl IndexWriter {
             info.id(),
         )?;
         new_info_per_commit.set_field_infos_files(info.get_field_infos_files().clone());
-        new_info_per_commit
-            .set_doc_values_updates_files(info.get_doc_values_updates_files().clone());
+        new_info_per_commit.set_doc_values_updates_files(
+            info.get_doc_values_updates_files()
+                .iter()
+                .map(|(number, files)| (*number, files.clone()))
+                .collect::<Vec<_>>(),
+        );
 
         let mut copied_files: HashSet<String> = HashSet::new();
         let outcome = (|| -> Result<()> {

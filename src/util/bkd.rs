@@ -1424,6 +1424,22 @@ impl DocIdsWriter {
                 "bit set block declares {long_len} words for {count} doc ids, but at most {max_words} are possible"
             )));
         }
+        // The same boundary drawn from the other side. `writeIdsAsBitSet` sets
+        // exactly one bit per doc id (`DocIdsWriter.java:206-219`), so a block
+        // naming `count` doc ids needs at least `count` bits to put them in.
+        // Below that the set cannot hold what the block claims, and the
+        // iterator walks off its own end: `DocBaseBitSetIterator::advance` is a
+        // line-for-line port of Java's and asks `nextSetBit` for a bit outside
+        // the set, which is where Java's `assert index >= 0 && index < numBits`
+        // sits (`FixedBitSet.java:415`). With assertions off Java reads a stale
+        // word out of the reused `scratchLongs` and answers a doc id that was
+        // never written. Neither a panic nor a fabricated doc id is acceptable,
+        // so the contradiction is refused where it is read.
+        if (count as i64) > (i64::from(long_len)) << 6 {
+            return Err(LuceneError::CorruptIndex(format!(
+                "bit set block declares {count} doc ids but only {long_len} words to hold them"
+            )));
+        }
         // The same writer-shaped boundary, drawn around the doc base:
         // `writeIdsAsBitSet` writes `offsetWords = min >>> 6` for a doc id
         // `min`, so it is never negative and `offsetWords << 6` never leaves
@@ -1848,10 +1864,23 @@ impl BKDReader {
         }
         if self.config.num_dims > 1 {
             // High-dimensional trees in pre-8.6 indices are balanced.
-            debug_assert_eq!(
-                1i32 << MathUtil::log(self.num_leaves as i64, 2)?,
-                self.num_leaves
-            );
+            //
+            // This is where Java's `assert 1 << MathUtil.log(numLeaves, 2) ==
+            // numLeaves` sits (`BKDReader.java:135`). `numLeaves` is a vint off
+            // disk, so with assertions off Java answers `true` for a tree that
+            // is not balanced and then walks it with balanced-tree arithmetic,
+            // reaching an `ArrayIndexOutOfBoundsException` further in. That
+            // exception is catchable and a Rust panic is not, so the count is
+            // refused here, at the boundary where it was read rather than where
+            // it is used -- the same rule the HNSW graph reader applies to the
+            // neighbour ordinals behind `assert friendOrd < size`.
+            if 1i32 << MathUtil::log(self.num_leaves as i64, 2)? != self.num_leaves {
+                return Err(LuceneError::CorruptIndex(format!(
+                    "a pre-8.6 tree over {} dimensions declares {} leaves, which is not a power \
+                     of two, so it cannot be the balanced tree that version writes",
+                    self.config.num_dims, self.num_leaves
+                )));
+            }
             return Ok(true);
         }
         if 1i32 << MathUtil::log(self.num_leaves as i64, 2)? != self.num_leaves {

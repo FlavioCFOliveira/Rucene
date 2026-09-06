@@ -209,7 +209,9 @@ mod tests {
         let mut sis = SegmentInfos::new(Version::LATEST.major as i32).unwrap();
         sis.counter = 1;
         sis.changed();
-        sis.user_data = HashMap::from([("user".to_string(), "data".to_string())]);
+        sis.user_data = [("user".to_string(), "data".to_string())]
+            .into_iter()
+            .collect();
         let sci = make_sci(directory.as_ref(), "_0", 42);
         sis.add(sci).unwrap();
         sis.commit(directory.as_ref()).unwrap();

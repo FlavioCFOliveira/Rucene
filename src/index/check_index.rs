@@ -916,7 +916,7 @@ impl CheckIndex {
         let segments_file_name = last_commit.segments_file_name();
         result.segments_file_name = segments_file_name.clone();
         result.num_segments = num_segments;
-        result.user_data = last_commit.user_data().clone();
+        result.user_data = last_commit.user_data().to_std();
         let user_data_string = if result.user_data.is_empty() {
             String::new()
         } else {
@@ -1263,7 +1263,7 @@ impl CheckIndex {
                 info_stream,
                 &format!("    size (MB)={:.3}", seg_info_stat.size_mb),
             );
-            let diagnostics = info.info.get_diagnostics().clone();
+            let diagnostics = info.info.get_diagnostics().to_std();
             if !diagnostics.is_empty() {
                 msg(info_stream, &format!("    diagnostics = {diagnostics:?}"));
             }
@@ -4377,9 +4377,16 @@ impl IndexUpgrader {
         // `get_live_commit_data`; it reads the same value from the commit the
         // writer is about to open on, which is exactly what Java's writer
         // initialises its `commitUserData` from (`IndexWriter.java:1122`).
-        let commit_user_data = SegmentInfos::read_latest_commit(Arc::clone(&self.dir))
-            .map(|infos| infos.user_data().clone())
-            .unwrap_or_default();
+        let commit_user_data: Vec<(String, String)> =
+            SegmentInfos::read_latest_commit(Arc::clone(&self.dir))
+                .map(|infos| {
+                    infos
+                        .user_data()
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
 
         let inner_policy = self.iwc.merge_policy();
         self.iwc

@@ -30,6 +30,7 @@ pub mod graph;
 pub mod info_stream;
 pub mod int_block_pool;
 pub mod io_function;
+pub mod java_collections;
 pub(crate) mod java_fmt;
 pub mod jvm;
 pub mod long_heap;

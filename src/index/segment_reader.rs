@@ -3080,7 +3080,7 @@ mod tests {
                 DocValuesType::NUMERIC,
                 DocValuesSkipIndexType::NONE,
                 -1, // doc_values_gen
-                HashMap::new(),
+                crate::util::java_collections::JavaStringMap::default(),
                 1, // point_dimension_count
                 1, // point_index_dimension_count
                 4, // point_num_bytes

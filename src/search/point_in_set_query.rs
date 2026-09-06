@@ -766,9 +766,11 @@ impl Query for PointInSetQuery {
         {
             return false;
         }
-        // Java compares the two `PrefixCodedTerms` byte-wise; this crate's
-        // encoding does not expose its bytes, so the decoded points are
-        // compared instead, which is the same comparison.
+        // Java compares the two `PrefixCodedTerms` byte-wise; this port
+        // compares the decoded points instead, which is the same comparison
+        // because the encoding is canonical. The payload is reachable through
+        // `PrefixCodedTerms::content` since the class moved to Lucene's block
+        // list, so this could be made byte-wise in a task of its own.
         let mut a = self.sorted_packed_points.iterator();
         let mut b = other.sorted_packed_points.iterator();
         loop {

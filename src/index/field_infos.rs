@@ -17,6 +17,7 @@ use crate::index::{
     MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
 };
 use crate::store::DataOutput;
+use crate::util::java_collections::JavaStringMap;
 
 // -----------------------------------------------------------------------------
 // FieldInfo
@@ -84,7 +85,14 @@ pub struct FieldInfo {
     store_payloads: bool,
 
     /// Codec-private attributes.
-    attributes: RwLock<HashMap<String, String>>,
+    ///
+    /// The type carries the map's iteration order because `.fnm` does:
+    /// `Lucene94FieldInfosFormat.write` serialises it with
+    /// `DataOutput.writeMapOfStrings`, which walks it. Java stores whatever
+    /// `Map` its caller passed — the `HashMap` `putAttribute` rebuilds, or the
+    /// `TreeMap`/`HashMap` `DataInput.readMapOfStrings` returned — and this
+    /// field stores the same choice. See [`JavaStringMap`].
+    attributes: RwLock<JavaStringMap>,
 }
 
 impl Default for FieldInfo {
@@ -107,7 +115,7 @@ impl Default for FieldInfo {
             store_term_vector: false,
             omit_norms: false,
             store_payloads: false,
-            attributes: RwLock::new(HashMap::new()),
+            attributes: RwLock::new(JavaStringMap::default()),
         }
     }
 }
@@ -229,7 +237,7 @@ impl FieldInfo {
         doc_values_type: DocValuesType,
         doc_values_skip_index_type: DocValuesSkipIndexType,
         doc_values_gen: i64,
-        attributes: HashMap<String, String>,
+        attributes: JavaStringMap,
         point_dimension_count: i32,
         point_index_dimension_count: i32,
         point_num_bytes: i32,
@@ -546,19 +554,46 @@ impl FieldInfo {
     }
 
     /// Stores a codec attribute value, returning the previous value if any.
+    ///
+    /// Equivalent to `FieldInfo.putAttribute` (`FieldInfo.java:670-679`), which
+    /// does **not** mutate the map in place: it builds
+    /// `new HashMap<>(attributes)`, puts into the copy and swaps the copy in,
+    /// so that readers of the old map are never disturbed. The copy is what
+    /// makes the resulting iteration order what it is — the copy constructor
+    /// pre-sizes its table from the source's size, so the same two attributes
+    /// come out in a different order than if they had been put into a map built
+    /// by `new HashMap<>()` — and reproducing it is the point of doing it this
+    /// way here too.
     pub fn put_attribute(
         &self,
         key: impl Into<String>,
         value: impl Into<String>,
     ) -> Option<String> {
-        self.attributes
-            .write()
-            .unwrap()
-            .insert(key.into(), value.into())
+        let mut guard = self.attributes.write().unwrap();
+        let mut new_map = guard.to_java_hash_map();
+        let old_value = new_map.insert(key.into(), value.into());
+        *guard = JavaStringMap::Hash(new_map);
+        old_value
     }
 
-    /// Returns a copy of the internal codec attributes map.
+    /// Returns a copy of the internal codec attributes map, without its
+    /// iteration order.
+    ///
+    /// For the callers that only look attributes up. The order-carrying map is
+    /// [`attributes_ordered`](Self::attributes_ordered), which is what
+    /// `Lucene94FieldInfosFormat.write` needs.
     pub fn attributes(&self) -> HashMap<String, String> {
+        self.attributes.read().unwrap().to_std()
+    }
+
+    /// Returns a copy of the internal codec attributes map, iteration order
+    /// included.
+    ///
+    /// Equivalent to `FieldInfo.attributes()` (`FieldInfo.java:682-685`), which
+    /// returns the internal map itself. This port returns a copy, as
+    /// [`attributes`](Self::attributes) already did, because the map is behind
+    /// a lock.
+    pub fn attributes_ordered(&self) -> JavaStringMap {
         self.attributes.read().unwrap().clone()
     }
 
@@ -748,7 +783,7 @@ impl FieldInfo {
             self.doc_values_skip_index_type,
         ))?;
         output.write_long(self.doc_values_gen)?;
-        output.write_map_of_strings(&self.attributes.read().unwrap())?;
+        output.write_map_of_strings(&*self.attributes.read().unwrap())?;
         output.write_v_int(self.point_dimension_count)?;
         if self.point_dimension_count != 0 {
             output.write_v_int(self.point_index_dimension_count)?;
@@ -1724,7 +1759,7 @@ impl FieldNumbers {
                 dv_type,
                 DocValuesSkipIndexType::NONE,
                 -1,
-                HashMap::new(),
+                JavaStringMap::default(),
                 0,
                 0,
                 0,
@@ -1907,14 +1942,17 @@ impl FieldInfosBuilder {
                 let current = &self.by_name[&name];
                 current.verify_same_schema(info)?;
             }
-            let attributes = info.attributes();
+            // `FieldInfos.Builder.add` walks `fi.attributes().keySet()`, so
+            // the order the attributes are re-put in is the source map's
+            // iteration order and the merged map's own order follows from it.
+            let attributes = info.attributes_ordered();
             let has_payloads = info.has_payloads();
             let current = self
                 .by_name
                 .get_mut(&name)
                 .expect("INVARIANT: presence checked above");
-            for (key, value) in attributes {
-                current.put_attribute(key, value);
+            for (key, value) in attributes.iter() {
+                current.put_attribute(key.clone(), value.clone());
             }
             if has_payloads {
                 current.set_store_payloads();
@@ -1939,7 +1977,7 @@ impl FieldInfosBuilder {
             info.get_doc_values_type(),
             info.doc_values_skip_index_type(),
             dv_gen,
-            info.attributes(),
+            info.attributes_ordered(),
             info.get_point_dimension_count(),
             info.get_point_index_dimension_count(),
             info.get_point_num_bytes(),
@@ -2412,7 +2450,7 @@ mod tests {
             DocValuesType::NONE,
             DocValuesSkipIndexType::NONE,
             -1,
-            HashMap::new(),
+            crate::util::java_collections::JavaStringMap::default(),
             0,
             0,
             0,

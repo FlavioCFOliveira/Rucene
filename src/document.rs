@@ -47,6 +47,7 @@ use crate::search::{
     SortedSetSelectorType, SortedSetSortField, TermInSetQuery, TermQuery,
 };
 use crate::store::DataInput;
+use crate::util::java_collections::JavaHashMap;
 use crate::util::BytesRef;
 
 // -----------------------------------------------------------------------------
@@ -527,7 +528,10 @@ pub struct FieldType {
     vector_dimension: i32,
     vector_encoding: VectorEncoding,
     vector_similarity_function: VectorSimilarityFunction,
-    attributes: HashMap<String, String>,
+    /// A `java.util.HashMap` mutated in place by `putAttribute`
+    /// (`FieldType.java`), whose iteration order the `FieldInfo` built from it
+    /// inherits and a `.fnm` therefore records.
+    attributes: JavaHashMap<String>,
 }
 
 impl FieldType {
@@ -551,7 +555,7 @@ impl FieldType {
             vector_dimension: 0,
             vector_encoding: VectorEncoding::FLOAT32,
             vector_similarity_function: VectorSimilarityFunction::EUCLIDEAN,
-            attributes: HashMap::new(),
+            attributes: JavaHashMap::new(),
         }
     }
 
@@ -843,7 +847,7 @@ impl IndexableFieldType for FieldType {
         self.vector_similarity_function
     }
 
-    fn attributes(&self) -> &HashMap<String, String> {
+    fn attributes(&self) -> &JavaHashMap<String> {
         &self.attributes
     }
 }
@@ -7037,7 +7041,7 @@ mod tests {
             DocValuesType::NONE,
             DocValuesSkipIndexType::NONE,
             -1,
-            HashMap::new(),
+            crate::util::java_collections::JavaStringMap::default(),
             0,
             0,
             0,

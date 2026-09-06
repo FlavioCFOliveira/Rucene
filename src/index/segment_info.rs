@@ -17,6 +17,7 @@ use crate::index::IndexReader;
 use crate::search::sort::{MissingValue, SortFieldKind, SortFieldType};
 use crate::search::Sort;
 use crate::store::Directory;
+use crate::util::java_collections::{JavaHashSet, JavaStringMap};
 use crate::util::string_helper::{StringHelper, ID_LENGTH};
 use crate::util::NumericUtils;
 use crate::util::Version;
@@ -65,10 +66,24 @@ pub struct SegmentInfo {
     codec: Option<Arc<dyn Codec>>,
 
     /// Diagnostics saved when the segment was written.
-    diagnostics: HashMap<String, String>,
+    ///
+    /// Carries an iteration order because `.si` does: it is serialised with
+    /// `DataOutput.writeMapOfStrings`, which walks the map. Java holds the
+    /// result of `Map.copyOf`, whose order is drawn per JVM run — see
+    /// [`JavaStringMap::immutable_copy_of`] for what this port does instead and
+    /// why nothing else is possible.
+    diagnostics: JavaStringMap,
 
     /// Codec-private attributes.
-    attributes: RwLock<HashMap<String, String>>,
+    ///
+    /// Starts as Java's `Map.copyOf` of the constructor argument and becomes a
+    /// real `java.util.HashMap` the moment
+    /// [`put_attribute`](Self::put_attribute) is called, exactly as
+    /// `SegmentInfo.putAttribute` makes it one (`SegmentInfo.java:369-376`).
+    /// The flush path always calls it — `Lucene90StoredFieldsFormat` records
+    /// its mode there — so the map a written `.si` carries is the reproducible
+    /// kind.
+    attributes: RwLock<JavaStringMap>,
 
     /// 16-byte id that uniquely identifies this segment.
     id: [u8; ID_LENGTH],
@@ -77,7 +92,12 @@ pub struct SegmentInfo {
     index_sort: Sort,
 
     /// Files referenced by this segment.
-    files: RwLock<Option<HashSet<String>>>,
+    ///
+    /// A `java.util.HashSet` with Java's iteration order, because
+    /// `Lucene99SegmentInfoFormat.write` serialises it with
+    /// `DataOutput.writeSetOfStrings` and `SegmentInfo.setFiles` builds it with
+    /// `new HashSet<>()` plus one `add` per name (`SegmentInfo.java:309-320`).
+    files: RwLock<Option<JavaHashSet>>,
 }
 
 impl SegmentInfo {
@@ -121,9 +141,9 @@ impl SegmentInfo {
             is_compound_file,
             has_blocks,
             codec: Some(codec),
-            diagnostics,
+            diagnostics: JavaStringMap::immutable_copy_of(diagnostics),
             id,
-            attributes: RwLock::new(attributes),
+            attributes: RwLock::new(JavaStringMap::immutable_copy_of(attributes)),
             index_sort,
             files: RwLock::new(None),
         })
@@ -166,9 +186,9 @@ impl SegmentInfo {
             is_compound_file,
             has_blocks,
             codec: None,
-            diagnostics,
+            diagnostics: JavaStringMap::immutable_copy_of(diagnostics),
             id,
-            attributes: RwLock::new(attributes),
+            attributes: RwLock::new(JavaStringMap::immutable_copy_of(attributes)),
             index_sort,
             files: RwLock::new(None),
         })
@@ -254,21 +274,31 @@ impl SegmentInfo {
         self.codec = Some(codec);
     }
 
-    /// Returns the diagnostics map.
-    pub fn get_diagnostics(&self) -> &HashMap<String, String> {
+    /// Returns the diagnostics map, iteration order included.
+    ///
+    /// Equivalent to `SegmentInfo.getDiagnostics()`, which returns the
+    /// immutable map itself (`SegmentInfo.java:106-108`).
+    pub fn get_diagnostics(&self) -> &JavaStringMap {
         &self.diagnostics
     }
 
     /// Replaces the diagnostics map with a copy of the provided one.
+    ///
+    /// Equivalent to `SegmentInfo.setDiagnostics`, which stores
+    /// `Map.copyOf(diagnostics)` (`SegmentInfo.java:86-88`).
     pub fn set_diagnostics(&mut self, diagnostics: HashMap<String, String>) {
-        self.diagnostics = diagnostics;
+        self.diagnostics = JavaStringMap::immutable_copy_of(diagnostics);
     }
 
     /// Adds or overwrites entries from `diagnostics`.
+    ///
+    /// Equivalent to `SegmentInfo.addDiagnostics`, which copies the current
+    /// diagnostics into a `HashMap`, puts the new entries over it and hands the
+    /// result back to `setDiagnostics` (`SegmentInfo.java:98-103`).
     pub fn add_diagnostics(&mut self, diagnostics: HashMap<String, String>) {
-        for (k, v) in diagnostics {
-            self.diagnostics.insert(k, v);
-        }
+        let mut merged: HashMap<String, String> = self.diagnostics.to_std();
+        merged.extend(diagnostics);
+        self.set_diagnostics(merged);
     }
 
     /// Returns a codec attribute, if present.
@@ -277,13 +307,32 @@ impl SegmentInfo {
     }
 
     /// Stores a codec attribute, returning the previous value if any.
-    pub fn put_attribute(&self, key: String, value: String) -> Option<String> {
-        let mut attrs = self.attributes.write().unwrap();
-        attrs.insert(key, value)
+    pub fn put_attribute(
+        &self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Option<String> {
+        // `SegmentInfo.putAttribute` (`SegmentInfo.java:369-376`) replaces the
+        // map rather than mutating it: `new HashMap<>(attributes)`, put, then
+        // swap in an unmodifiable view of the copy. The copy constructor's
+        // pre-sizing is what fixes the resulting iteration order.
+        let mut guard = self.attributes.write().unwrap();
+        let mut new_map = guard.to_java_hash_map();
+        let old_value = new_map.insert(key.into(), value.into());
+        *guard = JavaStringMap::Hash(new_map);
+        old_value
     }
 
-    /// Returns a copy of the codec attributes map.
+    /// Returns a copy of the codec attributes map, without its iteration order.
     pub fn get_attributes(&self) -> HashMap<String, String> {
+        self.attributes.read().unwrap().to_std()
+    }
+
+    /// Returns a copy of the codec attributes map, iteration order included.
+    ///
+    /// Equivalent to `SegmentInfo.getAttributes()`, which returns the internal
+    /// map itself (`SegmentInfo.java:384-386`).
+    pub fn get_attributes_ordered(&self) -> JavaStringMap {
         self.attributes.read().unwrap().clone()
     }
 
@@ -303,6 +352,21 @@ impl SegmentInfo {
     ///
     /// Returns `LuceneError::IllegalState` if the file set has not been computed.
     pub fn files(&self) -> Result<HashSet<String>> {
+        Ok(self.files_ordered()?.to_std())
+    }
+
+    /// Returns the files referenced by this segment, iteration order included.
+    ///
+    /// Equivalent to `SegmentInfo.files()`, which returns an unmodifiable view
+    /// of the `HashSet` itself (`SegmentInfo.java:205-212`); this is the one
+    /// `Lucene99SegmentInfoFormat.write` needs, because the order reaches the
+    /// file.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LuceneError::IllegalState` if the file set has not been
+    /// computed.
+    pub fn files_ordered(&self) -> Result<JavaHashSet> {
         let files = self.files.read().unwrap();
         match files.as_ref() {
             Some(f) => Ok(f.clone()),
@@ -326,8 +390,20 @@ impl SegmentInfo {
     /// `DocumentsWriterPerThread` calls it without a `Result` to propagate.
     /// Callers that accept names from outside the codec should validate them
     /// with [`check_file_names`](Self::check_file_names) first.
-    pub fn set_files(&self, files: HashSet<String>) {
-        *self.files.write().unwrap() = Some(files);
+    pub fn set_files<I>(&self, files: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        // `new HashSet<>()` then one `add` per name, in the argument's
+        // iteration order (`SegmentInfo.java:309-320`). The argument's order is
+        // therefore what fixes the chain order of any colliding names — in Java
+        // as much as here — so callers that care hand over an ordered
+        // collection.
+        let mut set = JavaHashSet::new();
+        for file in files {
+            set.insert(file);
+        }
+        *self.files.write().unwrap() = Some(set);
     }
 
     /// Rejects any file name that is not a well-formed codec file name.
@@ -378,7 +454,7 @@ impl SegmentInfo {
                 }
             }
             None => {
-                let mut set = HashSet::new();
+                let mut set = JavaHashSet::new();
                 for f in files {
                     set.insert(self.named_for_this_segment(f));
                 }
@@ -448,9 +524,9 @@ impl Clone for SegmentInfo {
             codec: self.codec.clone(),
             diagnostics: self.diagnostics.clone(),
             id: self.id,
-            attributes: RwLock::new(self.get_attributes()),
+            attributes: RwLock::new(self.get_attributes_ordered()),
             index_sort: self.index_sort.clone(),
-            files: RwLock::new(Some(self.files().unwrap_or_default())),
+            files: RwLock::new(Some(self.files_ordered().unwrap_or_default())),
         }
     }
 }
@@ -531,10 +607,21 @@ pub struct SegmentCommitInfo {
     next_write_doc_values_gen: i64,
 
     /// Per-field doc values update files.
-    dv_updates_files: HashMap<i32, HashSet<String>>,
+    /// **Residual, declared.** `SegmentInfos.write` iterates this map's
+    /// `entrySet()` to write one field number and file set per entry, so the
+    /// *outer* map's order reaches `segments_N` as well. Java's is a
+    /// `HashMap<Integer, Set<String>>`, i.e. bucket order over
+    /// `Integer.hashCode()`, which this port does not reproduce:
+    /// [`JavaHashMap`](crate::util::java_collections::JavaHashMap) is
+    /// `String`-keyed. Closing it needs that type generalised over a key hash.
+    /// It only bites on a segment carrying doc-values update files.
+    dv_updates_files: HashMap<i32, JavaHashSet>,
 
     /// Field infos update files.
-    field_infos_files: HashSet<String>,
+    /// A `java.util.HashSet` that is cleared and refilled rather than replaced
+    /// (`SegmentCommitInfo.java:77`, `:143-148`), so it keeps the table it
+    /// first allocated; its order reaches `segments_N`.
+    field_infos_files: JavaHashSet,
 
     /// Cached total size in bytes of all files for this segment; -1 if not computed.
     size_in_bytes: i64,
@@ -596,7 +683,7 @@ impl SegmentCommitInfo {
                 doc_values_gen + 1
             },
             dv_updates_files: HashMap::new(),
-            field_infos_files: HashSet::new(),
+            field_infos_files: JavaHashSet::new(),
             size_in_bytes: -1,
             buffered_deletes_gen: -1,
         })
@@ -751,29 +838,38 @@ impl SegmentCommitInfo {
     }
 
     /// Returns the per-field doc values update files.
-    pub fn get_doc_values_updates_files(&self) -> &HashMap<i32, HashSet<String>> {
+    pub fn get_doc_values_updates_files(&self) -> &HashMap<i32, JavaHashSet> {
         &self.dv_updates_files
     }
 
     /// Sets the per-field doc values update files.
-    pub fn set_doc_values_updates_files(&mut self, files: HashMap<i32, HashSet<String>>) {
+    pub fn set_doc_values_updates_files<M, I>(&mut self, files: M)
+    where
+        M: IntoIterator<Item = (i32, I)>,
+        I: IntoIterator<Item = String>,
+    {
         self.dv_updates_files.clear();
         for (field_number, set) in files {
-            let renamed: HashSet<String> = set
-                .into_iter()
-                .map(|f| self.info.named_for_this_segment(&f))
-                .collect();
+            // `new HashSet<>()` then one renamed `add` per file, in the
+            // argument's order (`SegmentCommitInfo.java:125-135`).
+            let mut renamed = JavaHashSet::new();
+            for f in set {
+                renamed.insert(self.info.named_for_this_segment(&f));
+            }
             self.dv_updates_files.insert(field_number, renamed);
         }
     }
 
     /// Returns the field infos update files.
-    pub fn get_field_infos_files(&self) -> &HashSet<String> {
+    pub fn get_field_infos_files(&self) -> &JavaHashSet {
         &self.field_infos_files
     }
 
     /// Sets the field infos update files.
-    pub fn set_field_infos_files(&mut self, files: HashSet<String>) {
+    pub fn set_field_infos_files<I>(&mut self, files: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
         self.field_infos_files.clear();
         for f in files {
             self.field_infos_files

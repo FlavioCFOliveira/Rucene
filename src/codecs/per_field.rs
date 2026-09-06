@@ -25,8 +25,8 @@ use super::knn_vectors::{
     FloatVectorValues, KnnCollector, KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
 };
 use super::postings::{
-    postings_for_name, Fields, FieldsConsumer, FieldsProducer, MergeState, NormsProducer,
-    PostingsFormat, Terms,
+    postings_for_name, Fields, FieldsConsumer, FieldsProducer, MergeState, PostingsFormat,
+    PostingsNormsProducer, Terms,
 };
 use super::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use super::stub::FieldInfo;
@@ -231,7 +231,7 @@ impl<'a> FieldsWriter<'a> {
 }
 
 impl<'a> FieldsConsumer for FieldsWriter<'a> {
-    fn write(&mut self, fields: &dyn Fields, norms: &dyn NormsProducer) -> Result<()> {
+    fn write(&mut self, fields: &dyn Fields, norms: &dyn PostingsNormsProducer) -> Result<()> {
         let mut groups = self.build_groups(fields.iterator())?;
         for group in groups.values_mut() {
             let masked = MaskedFields::new(fields, &group.fields);
@@ -244,7 +244,7 @@ impl<'a> FieldsConsumer for FieldsWriter<'a> {
         Ok(())
     }
 
-    fn merge(&mut self, merge_state: &MergeState, norms: &dyn NormsProducer) -> Result<()> {
+    fn merge(&mut self, merge_state: &MergeState, norms: &dyn PostingsNormsProducer) -> Result<()> {
         let field_names = merge_state
             .merge_field_infos
             .iter()
@@ -300,11 +300,15 @@ impl Fields for MaskedFields<'_> {
 struct NoOpFieldsConsumer;
 
 impl FieldsConsumer for NoOpFieldsConsumer {
-    fn write(&mut self, _fields: &dyn Fields, _norms: &dyn NormsProducer) -> Result<()> {
+    fn write(&mut self, _fields: &dyn Fields, _norms: &dyn PostingsNormsProducer) -> Result<()> {
         Ok(())
     }
 
-    fn merge(&mut self, _merge_state: &MergeState, _norms: &dyn NormsProducer) -> Result<()> {
+    fn merge(
+        &mut self,
+        _merge_state: &MergeState,
+        _norms: &dyn PostingsNormsProducer,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -1462,7 +1466,7 @@ impl FieldsProducer for FilterFieldsProducer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codecs::postings::NumericDocValues;
+    use crate::codecs::postings::PostingsNumericDocValues;
     use crate::codecs::stub::FieldInfos;
     use crate::index::{IndexOptions, SegmentInfo};
 
@@ -1611,8 +1615,11 @@ mod tests {
 
         #[derive(Debug, Default, Clone)]
         struct NoOpNorms;
-        impl NormsProducer for NoOpNorms {
-            fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+        impl PostingsNormsProducer for NoOpNorms {
+            fn get_norms(
+                &self,
+                _field_info: &FieldInfo,
+            ) -> Result<Box<dyn PostingsNumericDocValues>> {
                 unreachable!("no norms requested in this test")
             }
         }
