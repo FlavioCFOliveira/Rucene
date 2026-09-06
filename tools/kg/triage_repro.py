@@ -54,8 +54,8 @@ for file, owner, name in rust_fns:
     by_owner.setdefault((owner, file), set()).add(name)
 
 ports = {}
-for cls, tname, tfile in pairs:
-    ports.setdefault(cls, []).append((tname, tfile))
+for cls, tname, tfile, level in pairs:
+    ports.setdefault(cls, []).append((tname, tfile, level))
 
 rows, unmatched, bad = [], [], []
 for cls, impls in ports.items():
@@ -63,10 +63,13 @@ for cls, impls in ports.items():
     if not java:
         continue
     rust = set()
-    for tname, tfile in impls:
+    for tname, tfile, level in impls:
         rust |= by_owner.get((tname, tfile), set())
-        rust |= by_owner.get((None, tfile), set())
         rust |= by_impl.get((tname, tfile), set())
+        if level == "member":
+            rust.add(tname)
+            continue
+        rust |= by_owner.get((None, tfile), set())
     miss = sorted(j for j in java if not (rust_candidates(j) & rust))
     matched = len(java) - len(miss)
     rows.append({"cls": cls, "total": len(java), "matched": matched})

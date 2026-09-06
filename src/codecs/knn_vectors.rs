@@ -88,9 +88,6 @@ impl FieldVectorWriter {
     }
 }
 
-/// Writes vectors to an index.
-///
-/// Equivalent to `org.apache.lucene.codecs.KnnVectorsWriter`.
 /// Builds the two ordinal maps a sorted segment needs, from the documents a
 /// field carries and the sort's document map.
 ///
@@ -132,6 +129,9 @@ pub fn map_old_ord_to_new_ord(
     Ok((old_to_new, new_to_old))
 }
 
+/// Writes vectors to an index.
+///
+/// Equivalent to `org.apache.lucene.codecs.KnnVectorsWriter`.
 pub trait KnnVectorsWriter: Send + Sync + fmt::Debug {
     /// Adds a new vector field for indexing.
     ///

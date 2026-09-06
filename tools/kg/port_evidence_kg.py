@@ -312,6 +312,21 @@ def load(roadmap, claims, commit, date):
     The Rust end is matched on `(name, file)` -- the identity the model gives a
     Rust type and a `Component` alike -- for every kind of claim, which is also
     what lets `measure_depth` reach a module port's free functions.
+
+    The Lucene end is a type, but a claim may legitimately name a *member* of
+    one, and `CLAUDE.md` 14.1 asks for the equivalent of the documented item:
+    `Equivalent to `org.apache.lucene.index.TwoPhaseCommitTool.execute`` on a
+    free function is more precise than the bare type name, and the tool has to
+    read it rather than the crate having to blunt it. So the FQN is tried as a
+    type first and, only if that fails, against the enclosing type -- and then
+    only when the graph confirms that type declares a member of that name, so
+    a nested type never travels this path and an unknown name is left
+    unresolved rather than guessed at.
+
+    Such an edge records what it is: `claimLevel: "member"` and
+    `declaredMember`, the Java member named. `measure_depth` reads them and
+    credits the type with the declared item alone, since a claim about one
+    member is not a claim about the file that holds it.
     """
     # A nested Lucene type is keyed `pkg.Outer$Inner` in the graph, but a doc
     # comment naturally writes `pkg.Outer.Inner`. Accept both spellings.
@@ -321,6 +336,27 @@ def load(roadmap, claims, commit, date):
     for c in all_classes:
         if "$" in c:
             classes.setdefault(c.replace("$", "."), c)
+    # `CLAUDE.md` 14.1 asks each *item* to name its Lucene equivalent, and the
+    # crate obliges at member granularity: `src/index/index_commit.rs:313` says
+    # the free function `execute` is
+    # `org.apache.lucene.index.TwoPhaseCommitTool.execute`. That FQN names no
+    # type, so the claim used to be dropped -- eight of them at 9cf23e5, taking
+    # `TwoPhaseCommitTool` with them. The member is nonetheless a statement
+    # about a type the graph holds, so the resolution falls back to the
+    # enclosing type.
+    #
+    # The fallback must never swallow a *nested type* claim: `TotalHits.Relation`
+    # and `Sorter.DocMap` are types and resolve as types above, so the fallback
+    # only ever sees an FQN the class index does not know. That alone is not
+    # enough to call the last segment a member, so the fallback is positive
+    # rather than residual: it fires only when the graph confirms the enclosing
+    # type *declares* a member of that name. A name the graph cannot confirm
+    # either way stays unresolved and is reported, per `CLAUDE.md` 7.
+    members_of = {}
+    for cls, mname in q(roadmap,
+                        "MATCH (c:Class)-[:DECLARES]->(m:Method) "
+                        "RETURN c.qualifiedName, m.name"):
+        members_of.setdefault(cls, set()).add(mname)
     types = {(r[0], r[1]) for r in q(
         roadmap,
         "MATCH (t) WHERE t:RustStruct OR t:RustTrait OR t:RustEnum OR t:RustAlias "
@@ -342,7 +378,7 @@ def load(roadmap, claims, commit, date):
     types |= {k for k, n in fn_counts.items() if n == 1}
 
     rows, unresolved_lucene, unresolved_rust = [], set(), set()
-    module_resolved = module_as_component = 0
+    module_resolved = module_as_component = member_resolved = 0
     for c in claims:
         target, component = c.get("target"), False
         if c["scope"] == "module" and not target:
@@ -359,7 +395,13 @@ def load(roadmap, claims, commit, date):
             c = dict(c, target=target)
         if not target:
             continue
-        target_class = classes.get(c["lucene"])
+        target_class, member = classes.get(c["lucene"]), None
+        if target_class is None:
+            enclosing, _, last = c["lucene"].rpartition(".")
+            owner = classes.get(enclosing)
+            if owner and last in members_of.get(owner, ()):
+                target_class, member = owner, last
+                member_resolved += 1
         if target_class is None:
             unresolved_lucene.add(c["lucene"])
             continue
@@ -369,20 +411,28 @@ def load(roadmap, claims, commit, date):
         rows.append({"name": c["target"], "file": c["file"],
                      "lucene": target_class, "line": c["line"],
                      "note": c.get("note"), "commit": commit, "date": date,
-                     "component": component})
+                     "component": component,
+                     "claimLevel": "member" if member else "type",
+                     "member": member})
 
-    # De-duplicate: one edge per (rust item, lucene type).
-    seen, uniq = set(), []
+    # De-duplicate: one edge per (rust item, lucene type). A claim about the
+    # type wins over one about a member of it, whatever order they were read
+    # in: the type claim is the stronger statement and subsumes the other.
+    seen, uniq = {}, []
     for r in rows:
         k = (r["name"], r["file"], r["lucene"])
         if k not in seen:
-            seen.add(k)
+            seen[k] = len(uniq)
             uniq.append(r)
+        elif r["claimLevel"] == "type" and uniq[seen[k]]["claimLevel"] == "member":
+            uniq[seen[k]] = r
 
     print(f"  module claims resolved to a declared item: {module_resolved}",
           file=sys.stderr)
     print(f"  module claims resolved to a Component: {module_as_component}",
           file=sys.stderr)
+    print(f"  member-level claims resolved to their enclosing type: "
+          f"{member_resolved}", file=sys.stderr)
     print(f"  resolvable item claims: {len(uniq)} "
           f"(lucene unresolved {len(unresolved_lucene)}, "
           f"rust unresolved {len(unresolved_rust)})", file=sys.stderr)
@@ -413,6 +463,40 @@ def load(roadmap, claims, commit, date):
     # already joined by PORTS_CANDIDATE would never gain its PORTS edge. Drop
     # the candidate edge first: a declared equivalence supersedes a name guess.
     uniq = [{k: v for k, v in r.items() if k != "component"} for r in uniq]
+
+    # Retire the edges whose declaration has gone. `load_rucene_kg.py --phase
+    # prune` deletes the *node* the survey no longer confirms, which takes its
+    # edges with it; this closes the other half, where the node survives but
+    # the claim does not -- a doc comment edited, moved, or deleted with its
+    # file before the next survey runs. Without it a `PORTS` edge outlives its
+    # own evidence and `portState` keeps reading `ported` on a claim the crate
+    # no longer makes, which is the coverage inflation `CLAUDE.md` 6.1 forbids.
+    #
+    # Only what this pass is the authority on is retired: an edge whose
+    # `evidence` is `doc-comment` and that carries no `declarationSource`, i.e.
+    # one this same extraction would have produced. A `curated` edge is
+    # asserted by hand and a `macro-expansion` edge is written by
+    # `expanded_evidence_kg.py` from a dump this pass never reads; retiring
+    # either would be deleting a fact on the strength of not having looked for
+    # it. And an extraction that produced nothing retires nothing, for the same
+    # reason `phase_prune` refuses an empty survey: a failed run is not
+    # evidence that the crate declares no ports.
+    if uniq:
+        live = {(r["name"], r["file"], r["lucene"]) for r in uniq}
+        dead = [{"name": n, "file": f, "lucene": l} for n, f, l in q(
+            roadmap,
+            "MATCH (t)-[e:PORTS]->(c:Class) WHERE e.evidence = 'doc-comment' "
+            "AND e.declarationSource IS NULL "
+            "RETURN t.name, t.file, c.qualifiedName")
+            if (n, f, l) not in live]
+        for d in dead:
+            print(f"  RETIRED (no live declaration): {d['name']} @ {d['file']} "
+                  f"-> {d['lucene']}", file=sys.stderr)
+        run_unwind(roadmap, "delete", dead,
+                   "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
+                   "(c:Class {qualifiedName:row.lucene}) DELETE e",
+                   "PORTS edges retired")
+
     run_unwind(roadmap, "delete", uniq,
                "MATCH (t {name:row.name, file:row.file})-[e:PORTS_CANDIDATE]->"
                "(c:Class {qualifiedName:row.lucene}) DELETE e",
@@ -427,6 +511,7 @@ def load(roadmap, claims, commit, date):
                "(c:Class {qualifiedName:row.lucene}) "
                "SET e.evidence = coalesce(e.evidence, 'doc-comment'), "
                "e.declaredAt = row.file + ':' + toString(row.line), "
+               "e.claimLevel = row.claimLevel, e.declaredMember = row.member, "
                "e.gitCommit = row.commit, e.gitDate = row.date",
                "PORTS evidence stamped")
     return uniq
@@ -467,8 +552,8 @@ def rust_candidates(java_name: str):
 def measure_depth(roadmap, commit, date):
     """Member-level coverage of every in-scope Lucene type that has a port."""
     pairs = q(roadmap,
-              "MATCH (t)-[:PORTS]->(c:Class) WHERE c.portScope = 'in' "
-              "RETURN c.qualifiedName, t.name, t.file")
+              "MATCH (t)-[e:PORTS]->(c:Class) WHERE c.portScope = 'in' "
+              "RETURN c.qualifiedName, t.name, t.file, e.claimLevel")
     members = q(roadmap,
                 "MATCH (c:Class)-[:DECLARES]->(m:Method) WHERE c.portScope = 'in' "
                 "AND m.kind = 'method' RETURN c.qualifiedName, m.name")
@@ -497,8 +582,8 @@ def measure_depth(roadmap, commit, date):
         by_owner.setdefault((owner, file), set()).add(name)
 
     ports = {}
-    for cls, tname, tfile in pairs:
-        ports.setdefault(cls, []).append((tname, tfile))
+    for cls, tname, tfile, level in pairs:
+        ports.setdefault(cls, []).append((tname, tfile, level))
 
     rows = []
     for cls, impls in ports.items():
@@ -506,12 +591,20 @@ def measure_depth(roadmap, commit, date):
         if not java:
             continue
         rust = set()
-        for tname, tfile in impls:
+        for tname, tfile, level in impls:
             rust |= by_owner.get((tname, tfile), set())
+            rust |= by_impl.get((tname, tfile), set())
+            if level == "member":
+                # A member-level claim says this one item is the port of one
+                # member -- it says nothing about the rest of the file, so
+                # crediting the file's other free functions to the type would
+                # state more than the crate declared. Credit the declared item
+                # itself and stop.
+                rust.add(tname)
+                continue
             # Free functions of the same file count too: Lucene's static utility
             # methods are ported as module-level functions, with no owner.
             rust |= by_owner.get((None, tfile), set())
-            rust |= by_impl.get((tname, tfile), set())
         matched = sum(1 for j in java if rust_candidates(j) & rust)
         rows.append({"cls": cls, "total": len(java), "matched": matched,
                      "coverage": round(matched / len(java), 3),

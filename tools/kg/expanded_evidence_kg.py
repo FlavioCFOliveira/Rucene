@@ -211,6 +211,33 @@ def load(roadmap, claims, commit, date):
     after = len(kg_read(roadmap, "MATCH (t) WHERE t.origin = 'macro' RETURN t.name"))
     print(f"  macro-origin nodes: {before} -> {after}", file=sys.stderr)
 
+    # Retire the macro-expansion edges this expansion no longer declares. The
+    # other half of the pipeline cannot do it: `load_rucene_kg.py --phase prune`
+    # deliberately spares a `declarationSource: "macro-expansion"` edge, because
+    # a survey taken without `--expand` cannot see the type it starts from, and
+    # `port_evidence_kg.py` never reads the dump. This loader does, so it is the
+    # only place that knows such a claim has gone -- and without this, a
+    # generated type the crate stops generating keeps its port for ever, the
+    # same coverage inflation `CLAUDE.md` 6.1 forbids. An expansion that yielded
+    # no claim at all retires nothing, for the same reason an empty survey
+    # prunes nothing: a failed run is not evidence.
+    if rows:
+        live = {(r["name"], r["file"], r["lucene"]) for r in rows}
+        dead = [{"name": n, "file": f, "lucene": l} for n, f, l in kg_read(
+            roadmap,
+            "MATCH (t)-[e:PORTS]->(c:Class) "
+            "WHERE e.declarationSource = 'macro-expansion' "
+            "AND e.evidence = 'doc-comment' "
+            "RETURN t.name, t.file, c.qualifiedName")
+            if (n, f, l) not in live]
+        for d in dead:
+            print(f"  RETIRED (no live expansion claim): {d['name']} @ "
+                  f"{d['file']} -> {d['lucene']}", file=sys.stderr)
+        unwind(roadmap, "delete", dead,
+               "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
+               "(c:Class {qualifiedName:row.lucene}) DELETE e",
+               "PORTS edges retired")
+
     # `MERGE (a)-[:PORTS]->(b)` silently matches a relationship of a *different*
     # type between the same ordered pair (see `knowledge-model.md`), so a pair
     # already joined by `PORTS_CANDIDATE` would never gain its `PORTS` edge.

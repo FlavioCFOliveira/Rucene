@@ -20,8 +20,8 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 QUERIES = {
     # exactly the four measure_depth issues
-    "pairs": "MATCH (t)-[:PORTS]->(c:Class) WHERE c.portScope = 'in' "
-             "RETURN c.qualifiedName, t.name, t.file",
+    "pairs": "MATCH (t)-[e:PORTS]->(c:Class) WHERE c.portScope = 'in' "
+             "RETURN c.qualifiedName, t.name, t.file, e.claimLevel",
     "members": "MATCH (c:Class)-[:DECLARES]->(m:Method) WHERE c.portScope = 'in' "
                "AND m.kind = 'method' RETURN c.qualifiedName, m.name",
     "rust_fns": "MATCH (f:RustFn) WHERE f.scope = 'crate' "
