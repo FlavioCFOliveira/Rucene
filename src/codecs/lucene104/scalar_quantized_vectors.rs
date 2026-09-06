@@ -1943,24 +1943,17 @@ impl KnnVectorsReader for Lucene104ScalarQuantizedVectorsReader {
         let Some(mut scorer) = self.random_vector_scorer_float(field, target)? else {
             return Ok(());
         };
-        let accepted_ords = {
-            let bits = accept_docs.bits()?;
-            scorer.get_accept_ords(bits).map(|b| {
-                (0..scorer.max_ord())
-                    .map(|i| b.get(i as usize))
-                    .collect::<Vec<bool>>()
-            })
-        };
+        let accepted = accept_docs.bits()?;
+        let accepted_ords = scorer.get_accept_ords(accepted);
         let mut ords = [0i32; EXHAUSTIVE_BULK_SCORE_ORDS];
         let mut scores = [0f32; EXHAUSTIVE_BULK_SCORE_ORDS];
         let mut num_ords = 0usize;
         let num_vectors = scorer.max_ord();
         for i in 0..num_vectors {
-            let accepted = match &accepted_ords {
-                Some(bits) => bits.get(i as usize).copied().unwrap_or(false),
-                None => true,
-            };
-            if !accepted {
+            if accepted_ords
+                .as_deref()
+                .is_some_and(|accepted| !accepted.get(i as usize))
+            {
                 continue;
             }
             if knn_collector.early_terminated() {

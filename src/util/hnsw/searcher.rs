@@ -7,16 +7,18 @@
 
 use std::f32;
 
-use crate::search::knn::{KnnCollector, TopKnnCollector};
+use crate::search::knn::{KnnCollector, KnnSearchStrategy, TopKnnCollector};
 use crate::search::NO_MORE_DOCS;
 use crate::util::bit_set::BitSet;
 use crate::util::{Bits, FixedBitSet, SparseFixedBitSet};
 
 use super::abstract_searcher::{score_entry_points, AbstractHnswGraphSearcher};
+use super::filtered_searcher::FilteredHnswGraphSearcher;
 use super::neighbor::{NeighborArray, NeighborQueue};
 use super::on_heap::OnHeapHnswGraph;
 use super::scorer::RandomVectorScorer;
-use super::{HnswGraph, Result};
+use super::seeded_searcher::SeededHnswGraphSearcher;
+use super::{HnswGraph, Result, UNKNOWN_MAX_CONN};
 
 pub(crate) use super::abstract_searcher::UNK_EP;
 
@@ -58,6 +60,87 @@ impl HnswGraphSearcher {
             bulk_nodes: Vec::new(),
             bulk_scores: Vec::new(),
         }
+    }
+
+    /// Searches an HNSW graph for the nearest neighbours of a query vector,
+    /// picking the searcher that suits the filter and the collector's search
+    /// strategy.
+    ///
+    /// If entry points are provided through the collector's strategy the search
+    /// starts at those points; otherwise it discovers the best entry point the
+    /// usual way. `filtered_doc_count` is the number of documents that pass
+    /// `accept_ords`.
+    ///
+    /// Equivalent to the static `HnswGraphSearcher.search(RandomVectorScorer,
+    /// KnnCollector, HnswGraph, Bits, int)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java also declares the four-argument
+    /// overload, which derives `filteredDocCount` itself by asking
+    /// `acceptOrds instanceof BitSet` for its approximate cardinality. This
+    /// crate's [`Bits`] carries no such narrowing, and nothing here calls that
+    /// overload, so only the five-argument form is ported.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when accessing the vectors or the graph fails, or when
+    /// a seeded strategy cannot supply the entry points it promised.
+    pub fn search(
+        scorer: &mut dyn RandomVectorScorer,
+        knn_collector: &mut dyn KnnCollector,
+        graph: &mut dyn HnswGraph,
+        accept_ords: Option<&dyn Bits>,
+        filtered_doc_count: i32,
+    ) -> Result<()> {
+        debug_assert!(filtered_doc_count >= 0 && filtered_doc_count <= graph.size());
+        // Java reads the strategy off the collector and holds it while it
+        // searches; the collector is borrowed mutably for the search here, so
+        // the strategy is cloned out first.
+        let strategy = knn_collector.get_search_strategy().cloned();
+        // Java's `hnswStrategy`: the collector's strategy when that is an
+        // `Hnsw` — which a `Patience` is — the strategy a `Seeded` wraps when
+        // that is an `Hnsw`, and `Hnsw.DEFAULT` otherwise.
+        let default_strategy = KnnSearchStrategy::hnsw_default();
+        let hnsw_strategy = match strategy.as_ref() {
+            Some(s @ (KnnSearchStrategy::Hnsw(_) | KnnSearchStrategy::Patience(_))) => s,
+            Some(KnnSearchStrategy::Seeded(seeded)) => match seeded.original_strategy() {
+                s @ (KnnSearchStrategy::Hnsw(_) | KnnSearchStrategy::Patience(_)) => s,
+                _ => &default_strategy,
+            },
+            _ => &default_strategy,
+        };
+        // First, check if we should use a filtered searcher.
+        let inner: Box<dyn AbstractHnswGraphSearcher> = if accept_ords.is_some()
+            // We can only use filtered search if we know the maxConn.
+            && graph.max_conn() != UNKNOWN_MAX_CONN
+            && filtered_doc_count > 0
+            && hnsw_strategy
+                .use_filtered_search(filtered_doc_count as f32 / graph.size() as f32)
+        {
+            Box::new(FilteredHnswGraphSearcher::create(
+                knn_collector.k(),
+                &*graph,
+                filtered_doc_count,
+            )?)
+        } else {
+            Box::new(HnswGraphSearcher::new(
+                NeighborQueue::new(knn_collector.k(), true),
+                create_bit_set(knn_collector.k(), get_graph_size(graph)),
+            ))
+        };
+        // Then, check if the search strategy is seeded.
+        let mut graph_searcher: Box<dyn AbstractHnswGraphSearcher> = match strategy.as_ref() {
+            Some(KnnSearchStrategy::Seeded(seeded)) if seeded.number_of_entry_points() > 0 => {
+                let mut entry_points = seeded.entry_points();
+                Box::new(SeededHnswGraphSearcher::from_entry_points(
+                    inner,
+                    seeded.number_of_entry_points(),
+                    &mut **entry_points,
+                    graph.size(),
+                )?)
+            }
+            _ => inner,
+        };
+        graph_searcher.search(knn_collector, scorer, graph, accept_ords)
     }
 
     /// Convenience search over an on-heap graph, returning a collector with

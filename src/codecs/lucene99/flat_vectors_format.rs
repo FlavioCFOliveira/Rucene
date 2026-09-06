@@ -1072,6 +1072,14 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
         )
     }
 
+    /// Collects nothing, whatever the query and whatever the accept docs.
+    ///
+    /// Equivalent to `FlatVectorsReader.search(String, float[], KnnCollector,
+    /// AcceptDocs)`, the empty method every flat reader inherits: "don't scan
+    /// stored field data. If we didn't index it, produce no search results".
+    /// `accept_docs` is unused here for the same reason it is unused in Java —
+    /// nothing is collected, so there is nothing to filter — and not because
+    /// the parameter is being ignored.
     fn search(
         &self,
         _field: &str,
@@ -1082,6 +1090,10 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
         Ok(())
     }
 
+    /// Collects nothing, as [`search`](Self::search) does.
+    ///
+    /// Equivalent to `FlatVectorsReader.search(String, byte[], KnnCollector,
+    /// AcceptDocs)`.
     fn search_byte(
         &self,
         _field: &str,
