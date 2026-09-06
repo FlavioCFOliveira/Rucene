@@ -32,6 +32,13 @@ The loosest name rule -- a Rust name that extends the Java one, which is how
 `BulkOperationPacked.decode` became `decode_long_blocks_to_longs` -- is allowed
 only at `own` and `super`, where the item is bound to the type. At `file` scope
 it would match any name against any of the dozens of types a large module ports.
+
+The `file` tier also refuses an item whose `impl` block ports a different Lucene
+type, for the same reason. That refusal is a proximity argument and it does not
+apply to an explicit claim: a doc comment naming this member of this type is the
+port stating the correspondence, not a name that happens to collide, and it is
+read whatever block encloses it. Only the claim is exempt; the name rules of the
+tier keep their binding.
 """
 import argparse
 import json
@@ -521,6 +528,35 @@ def classify(pair, ctx):
     if hit:
         rule, rname = hit
         return ("renamed", f"{rule}[file]", f"{rname} in {have[rname][0]}")
+
+    # 4b. An explicit claim written on the item itself, read whatever the
+    #     enclosing `impl` block ports. The two guards above are proximity
+    #     arguments: they exist because a bare name at file scope carries no
+    #     binding to the type, so one type's function must not be credited to
+    #     another by coincidence. A doc comment that names *this member of this
+    #     type* is not a coincidence -- it is the port declaring the
+    #     correspondence itself (`CLAUDE.md` 14.1), which is why the ladder
+    #     ranks `doc-comment` above every heuristic. Gating it on the enclosing
+    #     block let the weakest consideration veto the strongest evidence:
+    #     `SegmentTermsEnumFrame#prefetchBlock` is written on a function inside
+    #     `impl SegmentTermsEnum`, so the claim guard dropped the item before
+    #     the rule could read it, and the method was reported absent.
+    #
+    #     Only the explicit claim is admitted this way. `exact`, `accessor-
+    #     prefix` and `separator` at this tier keep their binding, because for
+    #     them the coincidence is exactly the failure mode. The type check is
+    #     kept too: the claim must name this type or one of its Java
+    #     supertypes, which is what stops the credit crossing to another type.
+    #     Every declaration site is read, not just the first the guards accept:
+    #     `have` keeps one site per name, so a claim written on the second
+    #     function of a name was invisible for the same reason.
+    for f in files:
+        for n, sites in S.file_fns.get(f, {}).items():
+            for owner, doc in sites:
+                for dt, dm in sorted(doc_members(doc)):
+                    if dm == java and dt in doc_types:
+                        return ("renamed", "doc-comment[file]",
+                                f"{n} in {f}: {owner}")
 
     # A `private` Java method is not part of any contract a caller can reach:
     # it exists to factor the body of a method that is. When every member of
