@@ -7,6 +7,8 @@ structure that the original regex-based extractor did not capture:
 2. Missing package-level DEPENDS_ON edges from src/java21 sources.
 3. External EXTENDS/IMPLEMENTS targets (java.lang.*, java.io.*, etc.) recorded
    as node properties so they are not lost.
+4. Type members: methods, constructors, fields (initialised or not) and enum
+   constants.
 
 The script emits Cypher files and can optionally feed them to `rmp graph`.
 """
@@ -515,12 +517,37 @@ def generate_inner_class_cypher(inners):
 
 def extract_members():
     """
-    Extract public/protected methods, constructors, and fields from all
-    top-level and inner type declarations in src/java and src/java21.
+    Extract public/protected methods, constructors, fields and enum constants
+    from all top-level and inner type declarations in src/java and src/java21.
 
-    Returns a dict with keys 'methods', 'constructors', 'fields'. Each value is
-    a list of dicts with: qualifiedName, name, signature, kind, file, package,
-    parentQualifiedName, modifiers, returnType (for methods/fields).
+    Returns a dict with keys 'methods', 'constructors', 'fields' and
+    'enumConstants'. Each value is a list of dicts with: qualifiedName, name,
+    signature, kind, file, package, parentQualifiedName, modifiers, returnType
+    (for methods/fields/enum constants).
+
+    Two shapes used to escape this extractor entirely, and both are members the
+    crate makes claims about:
+
+    * **Enum constants.** `PreloadHint.INSTANCE` and `ReadOnceHint.INSTANCE`
+      (`store/PreloadHint.java`, `store/ReadOnceHint.java`) are the whole body
+      of their enum. The member regex below requires at least one explicit
+      modifier, and JLS 8.9.3 gives an enum constant its `public static final`
+      implicitly, so no constant of any Lucene enum was ever recorded. They are
+      recorded here under their own `kind`, `enumConstant`, because that is the
+      category Lucene's own Javadoc puts them in -- a separate *Enum Constant
+      Summary*, not the *Field Summary*.
+    * **Fields with an initialiser.** The member regex demanded `;` or `{`
+      immediately after the declarator, so *every* field written
+      `Type NAME = value;` failed to match -- not only the multi-line ones such
+      as `HnswGraph.EMPTY` (`util/hnsw/HnswGraph.java:106`), whose initialiser
+      is an anonymous class spanning 40 lines. The declaration is now allowed to
+      end at `=`, and its real end is found by scanning for the first `;` at
+      bracket depth zero, so an initialiser may contain braces, parentheses and
+      semicolons of its own.
+
+    Both gaps were invisible because nothing audits the member surface; they
+    surfaced as three port claims the resolver in `port_evidence_kg.py`
+    correctly refused, having no member of that name to confirm.
     """
     decl_re = re.compile(
         r'^\s*(?:(?:public|protected|private|abstract|final|static|strictfp|sealed|non-sealed)\s+)*'
@@ -547,7 +574,10 @@ def extract_members():
         r'(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*'
         r'(?P<params>\([^\)]*\))?\s*'
         r'(?P<throws>throws\s+[^{;]+)?\s*'
-        r'(?P<end>[;{])',
+        # `=` ends a *field* declaration whose initialiser follows. Without it
+        # the regex failed on every initialised field, and the branch below
+        # that strips initialisers was unreachable.
+        r'(?P<end>[;{=])',
         re.MULTILINE,
     )
 
@@ -563,6 +593,7 @@ def extract_members():
     methods = []
     constructors = []
     fields = []
+    enum_constants = []
 
     def is_type_like(s):
         # Heuristic for recognising a Java type token. It covers primitives, known
@@ -607,10 +638,176 @@ def extract_members():
         parts.append(''.join(cur))
         return parts
 
-    def extract_from_body(clean, body_start, body_end, parent_qualified):
+    # The text handed to these three has already had comments, strings and char
+    # literals removed, so every bracket left in it is code. Only `()[]{}` are
+    # tracked: `<` and `>` are ambiguous in Java (generics against comparison
+    # and `->`), and nothing below needs them.
+    OPENERS, CLOSERS = '([{', ')]}'
+
+    def match_bracket(s, i):
+        """Index just past the bracket that closes the one at `i`, or None."""
+        depth = 0
+        n = len(s)
+        while i < n:
+            if s[i] in OPENERS:
+                depth += 1
+            elif s[i] in CLOSERS:
+                depth -= 1
+                if depth == 0:
+                    return i + 1
+            i += 1
+        return None
+
+    def skip_ws_and_annotations(s, i):
+        """Advance past whitespace and any `@Annotation` / `@Annotation(...)`."""
+        n = len(s)
+        while i < n:
+            if s[i].isspace():
+                i += 1
+                continue
+            if s[i] == '@':
+                j = i + 1
+                while j < n and (s[j].isalnum() or s[j] in '_$.'):
+                    j += 1
+                k = j
+                while k < n and s[k].isspace():
+                    k += 1
+                if k < n and s[k] == '(':
+                    k = match_bracket(s, k)
+                    if k is None:
+                        return None
+                    j = k
+                i = j
+                continue
+            break
+        return i
+
+    def statement_end(s, i):
+        """Index of the `;` that ends the declaration starting at `i`.
+
+        Scans at bracket depth zero, so a `;` inside an initialiser's anonymous
+        class body, lambda or `for` header does not end the declaration.
+        Returns `len(s)` when the source is truncated.
+        """
+        depth = 0
+        n = len(s)
+        while i < n:
+            c = s[i]
+            if c in OPENERS:
+                depth += 1
+            elif c in CLOSERS:
+                depth -= 1
+            elif c == ';' and depth <= 0:
+                return i
+            i += 1
+        return n
+
+    def strip_initialisers(decl):
+        """Drop `= value` from each declarator, leaving `Type a, b, c`.
+
+        Depth-aware, so an initialiser may contain commas, braces and
+        semicolons: only a comma at depth zero starts the next declarator.
+        Replaces a regex that assumed the initialiser stopped at the first
+        `,` or `;`, which an anonymous class breaks.
+        """
+        out = []
+        depth = 0
+        skipping = False
+        i, n = 0, len(decl)
+        while i < n:
+            c = decl[i]
+            if c in OPENERS:
+                depth += 1
+            elif c in CLOSERS:
+                depth -= 1
+            if (not skipping and depth == 0 and c == '='
+                    and decl[i - 1:i] not in ('=', '!', '<', '>')
+                    and decl[i + 1:i + 2] != '='):
+                skipping = True
+                i += 1
+                continue
+            if skipping:
+                if depth == 0 and c == ',':
+                    skipping = False
+                    out.append(c)
+                i += 1
+                continue
+            out.append(c)
+            i += 1
+        return ''.join(out)
+
+    def extract_enum_constants(body, parent_qualified):
+        """The constant list at the head of an enum body.
+
+        JLS 8.9.1: an enum body opens with a comma-separated list of constants,
+        each optionally carrying an argument list and a class body, closed by
+        `;` (or by the body's end when nothing follows). Anything that does not
+        fit that shape ends the scan rather than being guessed at, which is what
+        keeps `enum E { ; static int x; }` -- a legal enum with no constants --
+        from reading its first member as one.
+        """
+        found = []
+        i = skip_ws_and_annotations(body, 0)
+        n = len(body)
+        while i is not None and i < n:
+            if body[i] in ';}':
+                break
+            m = re.match(r'[A-Za-z_$][A-Za-z0-9_$]*', body[i:])
+            if not m:
+                break
+            name = m.group(0)
+            j = i + len(name)
+            while j < n and body[j].isspace():
+                j += 1
+            args = ''
+            if j < n and body[j] == '(':
+                end = match_bracket(body, j)
+                if end is None:
+                    break
+                args = normalize_ws(body[j:end])
+                j = end
+                while j < n and body[j].isspace():
+                    j += 1
+            if j < n and body[j] == '{':
+                end = match_bracket(body, j)
+                if end is None:
+                    break
+                j = end
+                while j < n and body[j].isspace():
+                    j += 1
+            sep = body[j] if j < n else ''
+            if sep not in (',', ';', '}', ''):
+                # Not a constant list: an identifier followed by something else
+                # is a member declaration, so this enum declares no constants.
+                break
+            found.append((name, args))
+            if sep != ',':
+                break
+            i = skip_ws_and_annotations(body, j + 1)
+        return found
+
+    def extract_from_body(clean, body_start, body_end, parent_qualified,
+                          parent_kind=None):
         # body_start/body_end are indices in the already-cleaned text, so slice
         # from clean directly; using original text indices would be misaligned.
         clean_body = clean[body_start:body_end]
+
+        if parent_kind == 'enum':
+            enum_name = parent_qualified.split('$')[-1].split('.')[-1]
+            for const_name, args in extract_enum_constants(clean_body,
+                                                           parent_qualified):
+                enum_constants.append({
+                    'qualifiedName': f"{parent_qualified}#{const_name}",
+                    'name': const_name,
+                    'signature': f"{const_name}{args}",
+                    'kind': 'enumConstant',
+                    # Implicit per JLS 8.9.3; stated so the graph does not read
+                    # "no modifiers" as "package-private".
+                    'modifiers': 'public static final',
+                    'returnType': enum_name,
+                    'parentQualifiedName': parent_qualified,
+                })
+
         for m in member_re.finditer(clean_body):
             # Only keep members declared directly in this type body. Declarations
             # nested inside methods/blocks (local variables, anonymous classes, etc.)
@@ -660,14 +857,15 @@ def extract_members():
                         'returnType': type_str,
                         'parentQualifiedName': parent_qualified,
                     })
-            elif end == ';':
+            elif end in (';', '='):
                 # The regex may have matched the LAST variable in a multi-variable
-                # field declaration (e.g. "long a, b, c;"). Reconstruct the full
-                # declaration and split on top-level commas to capture every field.
+                # field declaration (e.g. "long a, b, c;"), and it stops at the
+                # first `=` when the field is initialised. Reconstruct the full
+                # declaration -- up to the `;` that closes it at bracket depth
+                # zero, so an anonymous-class initialiser is spanned whole --
+                # and split on top-level commas to capture every field.
                 decl_start = m.start()
-                decl_end = clean_body.find(';', decl_start)
-                if decl_end == -1:
-                    decl_end = len(clean_body)
+                decl_end = statement_end(clean_body, decl_start)
                 full_decl = clean_body[decl_start:decl_end]
                 # strip leading modifiers/annotations portion is already captured; keep it
                 # Remove annotations so the type part is easier to parse.
@@ -679,7 +877,7 @@ def extract_members():
                     decl_no_annot,
                 )
                 # If there is an initializer (= ...), drop it for naming purposes.
-                decl_no_init = re.sub(r'\s*=\s*[^,;]+', '', decl_no_mods)
+                decl_no_init = strip_initialisers(decl_no_mods)
                 parts = split_top_level_commas(decl_no_init)
                 if not parts:
                     continue
@@ -726,11 +924,17 @@ def extract_members():
 
                 # Track type bodies so we can extract members within each.
                 # We find each type declaration start and the matching closing brace.
-                stack = []  # list of (qualifiedName, brace_start)
+                # list of (qualifiedName, brace_start, kind); the kind is
+                # carried because an enum body is read differently -- its
+                # constant list has no counterpart in a class.
+                stack = []
                 for m in decl_re.finditer(clean):
                     prefix = clean[:m.start()]
                     depth = prefix.count('{') - prefix.count('}')
                     name = m.group(2)
+                    kind = {'class': 'class', 'interface': 'interface',
+                            'enum': 'enum', 'record': 'record',
+                            '@interface': 'annotation'}[m.group(1)]
 
                     # Determine the start of this declaration's body.
                     # The decl_re match ends at the character after the opening '{'
@@ -746,7 +950,7 @@ def extract_members():
 
                     # Close types that have ended before this new declaration
                     while stack and len(stack) > max(depth, 0):
-                        prev_qualified, prev_body_start = stack.pop()
+                        prev_qualified, prev_body_start, prev_kind = stack.pop()
                         if prev_body_start is not None:
                             # find matching close brace starting from prev_body_start
                             i = prev_body_start
@@ -759,18 +963,19 @@ def extract_members():
                                     d -= 1
                                 i += 1
                             prev_body_end = i
-                            extract_from_body(clean, prev_body_start, prev_body_end, prev_qualified)
+                            extract_from_body(clean, prev_body_start, prev_body_end,
+                                              prev_qualified, prev_kind)
 
                     if depth == 0:
-                        stack = [(pkg + '.' + name, body_start)]
+                        stack = [(pkg + '.' + name, body_start, kind)]
                     elif stack:
                         parent = stack[-1][0]
                         qualified = f"{parent}${name}"
-                        stack.append((qualified, body_start))
+                        stack.append((qualified, body_start, kind))
 
                 # Finalise remaining types at end of file
                 while stack:
-                    prev_qualified, prev_body_start = stack.pop()
+                    prev_qualified, prev_body_start, prev_kind = stack.pop()
                     if prev_body_start is not None:
                         i = prev_body_start
                         d = 1
@@ -782,7 +987,8 @@ def extract_members():
                                 d -= 1
                             i += 1
                         prev_body_end = i
-                        extract_from_body(clean, prev_body_start, prev_body_end, prev_qualified)
+                        extract_from_body(clean, prev_body_start, prev_body_end,
+                                          prev_qualified, prev_kind)
 
     def dedupe_by_qn(items):
         seen = set()
@@ -799,6 +1005,7 @@ def extract_members():
         'methods': dedupe_by_qn(methods),
         'constructors': dedupe_by_qn(constructors),
         'fields': dedupe_by_qn(fields),
+        'enumConstants': dedupe_by_qn(enum_constants),
     }
 
 
@@ -886,14 +1093,16 @@ def main():
     inner_create, inner_update = generate_inner_class_cypher(inners)
     print(f"Found {len(inners)} inner/nested type declarations.", file=sys.stderr)
 
-    print('Extracting members (methods, constructors, fields)...', file=sys.stderr)
+    print('Extracting members (methods, constructors, fields, enum constants)...',
+          file=sys.stderr)
     members = extract_members()
     method_create, method_update = generate_member_cypher(members['methods'])
     constructor_create, constructor_update = generate_member_cypher(members['constructors'])
     field_create, field_update = generate_member_cypher(members['fields'])
+    enum_const_create, enum_const_update = generate_member_cypher(members['enumConstants'])
     print(
         f"Found {len(members['methods'])} methods, {len(members['constructors'])} constructors, "
-        f"{len(members['fields'])} fields.",
+        f"{len(members['fields'])} fields, {len(members['enumConstants'])} enum constants.",
         file=sys.stderr,
     )
 
@@ -909,6 +1118,8 @@ def main():
     constructor_update_file = out_dir / 'constructors_update.cypher'
     field_create_file = out_dir / 'fields_create.cypher'
     field_update_file = out_dir / 'fields_update.cypher'
+    enum_const_create_file = out_dir / 'enum_constants_create.cypher'
+    enum_const_update_file = out_dir / 'enum_constants_update.cypher'
 
     module_create_file.write_text('\n'.join(module_create), encoding='utf-8')
     module_update_file.write_text('\n'.join(module_update), encoding='utf-8')
@@ -922,6 +1133,8 @@ def main():
     constructor_update_file.write_text('\n'.join(constructor_update), encoding='utf-8')
     field_create_file.write_text('\n'.join(field_create), encoding='utf-8')
     field_update_file.write_text('\n'.join(field_update), encoding='utf-8')
+    enum_const_create_file.write_text('\n'.join(enum_const_create), encoding='utf-8')
+    enum_const_update_file.write_text('\n'.join(enum_const_update), encoding='utf-8')
 
     print(f"Wrote {module_create_file} ({len(module_create)} statements)", file=sys.stderr)
     print(f"Wrote {module_update_file} ({len(module_update)} statements)", file=sys.stderr)
@@ -935,6 +1148,8 @@ def main():
     print(f"Wrote {constructor_update_file} ({len(constructor_update)} statements)", file=sys.stderr)
     print(f"Wrote {field_create_file} ({len(field_create)} statements)", file=sys.stderr)
     print(f"Wrote {field_update_file} ({len(field_update)} statements)", file=sys.stderr)
+    print(f"Wrote {enum_const_create_file} ({len(enum_const_create)} statements)", file=sys.stderr)
+    print(f"Wrote {enum_const_update_file} ({len(enum_const_update)} statements)", file=sys.stderr)
 
     if args.run:
         print('Running module-info CREATE Cypher...', file=sys.stderr)
@@ -961,6 +1176,10 @@ def main():
         run_rmp('create', str(field_create_file))
         print('Running field UPDATE Cypher...', file=sys.stderr)
         run_rmp('update', str(field_update_file))
+        print('Running enum-constant CREATE Cypher...', file=sys.stderr)
+        run_rmp('create', str(enum_const_create_file))
+        print('Running enum-constant UPDATE Cypher...', file=sys.stderr)
+        run_rmp('update', str(enum_const_update_file))
         print('Enrichment complete.', file=sys.stderr)
 
 
