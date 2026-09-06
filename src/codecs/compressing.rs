@@ -92,14 +92,18 @@ impl CompressionMode {
 }
 
 impl std::fmt::Display for CompressionMode {
+    /// Equivalent to `LZ4WithPresetDictCompressionMode.toString()`, which
+    /// returns `BEST_SPEED`, and to
+    /// `DeflateWithPresetDictCompressionMode.toString()`, which returns
+    /// `BEST_COMPRESSION`. Java declares each on its own subclass of
+    /// `CompressionMode`; the port folds the modes into one enum, so the two
+    /// overrides are two arms of one `Display`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::FAST => write!(f, "FAST"),
             Self::HIGH_COMPRESSION => write!(f, "HIGH_COMPRESSION"),
             Self::FAST_DECOMPRESSION => write!(f, "FAST_DECOMPRESSION"),
-            // `LZ4WithPresetDictCompressionMode.toString()` returns BEST_SPEED.
             Self::LZ4_WITH_PRESET_DICT => write!(f, "BEST_SPEED"),
-            // `DeflateWithPresetDictCompressionMode.toString()`.
             Self::DEFLATE_WITH_PRESET_DICT => write!(f, "BEST_COMPRESSION"),
         }
     }

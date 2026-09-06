@@ -39,6 +39,12 @@ RE_CONST = re.compile(
     r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)", re.M)
 RE_MACRO_RULES = re.compile(r"\bmacro_rules!\s*(?P<name>[A-Za-z_]\w*)\s*\{")
 RE_DERIVE = re.compile(r"#\[\s*derive\s*\(([^)]*)\)\s*\]")
+# A variant sits alone on its line inside the enum body, named like a type and
+# followed by `,`, its payload, a discriminant, or nothing. Every other line in
+# that body is an attribute, a doc comment or a lower-case field of a struct
+# variant, none of which can match.
+RE_VARIANT = re.compile(
+    r"^[ \t]*(?P<name>[A-Z][A-Za-z0-9_]*)[ \t]*(?=[,({=]|$)", re.M)
 
 
 def block_end(masked, open_pos):
@@ -171,8 +177,25 @@ def parse(rel, text):
             for g in RE_DERIVE.findall(lines[i]):
                 ders += [d.strip() for d in g.split(",") if d.strip()]
             i -= 1
+        # An enum variant is a declaration in its own right and carries its own
+        # doc comment, which is where the port states what that one variant is
+        # equivalent to. `LateInteractionRescorer.combine` is written on
+        # `LateInteractionFallback::Zero`, because Java distinguishes the two
+        # behaviours by subclassing and the port distinguishes them by variant.
+        variants = []
+        if m.re is RE_TYPE_DECL and m.group("kind") == "enum":
+            ob = next_brace(masked, m.end())
+            if ob is not None:
+                end = block_end(masked, ob)
+                for v in RE_VARIANT.finditer(masked, ob + 1, end - 1):
+                    vln = lineno(v.start())
+                    variants.append({"name": v.group("name"), "line": vln,
+                                     "doc": doc_before(lines, vln)})
         types[m.group("name")] = {"line": ln, "derives": ders,
-                                  "doc": doc_before(lines, ln)}
+                                  "doc": doc_before(lines, ln),
+                                  "kind": (m.group("kind")
+                                           if m.re is RE_TYPE_DECL else "type"),
+                                  "variants": variants}
 
     consts = {m.group("name") for m in RE_CONST.finditer(masked)}
     return {"file": rel, "impls": impls, "traits": traits, "macros": macros,
@@ -195,6 +218,9 @@ if __name__ == "__main__":
     ni = sum(len(i["fns"]) for f in tree.values() for i in f["impls"])
     nt = sum(len(t["fns"]) for f in tree.values() for t in f["traits"])
     nm = sum(len(m["fns"]) for f in tree.values() for m in f["macros"])
+    nv = sum(len(t["variants"]) for f in tree.values()
+             for t in f["types"].values())
     print(f"files {len(tree)}  free fns {nf}  impl fns {ni}  trait fns {nt}  "
           f"macro fns {nm}  impls {sum(len(f['impls']) for f in tree.values())}  "
-          f"traits {sum(len(f['traits']) for f in tree.values())}")
+          f"traits {sum(len(f['traits']) for f in tree.values())}  "
+          f"enum variants {nv}")

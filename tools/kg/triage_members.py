@@ -39,6 +39,20 @@ apply to an explicit claim: a doc comment naming this member of this type is the
 port stating the correspondence, not a name that happens to collide, and it is
 read whatever block encloses it. Only the claim is exempt; the name rules of the
 tier keep their binding.
+
+A claim is not always written on a function. Where Java returns an anonymous
+class from a factory method, the port declares a *type* and writes the claim
+there -- `KnnVectorValues.fromDISI` is `struct FromDisiDocIndexIterator` -- and
+where Java distinguishes two behaviours by subclassing, the port distinguishes
+them by enum variant and writes it on the variant, as
+`LateInteractionRescorer.combine` is written on `LateInteractionFallback::Zero`.
+Those docs are read too, through a stricter recogniser: a function's doc is
+about that one function, so a member it names is almost always the
+correspondence, while a *type's* doc describes the whole type and routinely
+discusses members the port decided **not** to have -- `BytesRefBuilder` names
+`equals` and `hashCode` precisely to declare that it implements neither. A claim
+read from a declaration must therefore be introduced by an equivalence lead-in,
+where one read from a function need only name the member.
 """
 import argparse
 import json
@@ -131,9 +145,14 @@ def name_candidates(java):
 # `Foo#bar` or `Foo.Bar.baz(...)`. Both the type and the member are captured:
 # crediting `Foo#close` to `Bar.close` would turn one type's evidence into
 # another's, which is precisely the error this triage exists to avoid.
+# `$` is a legal Java identifier character and Lucene uses it in a member name:
+# `GroupVIntUtil` declares `readGroupVInts$Baseline` and `readGroupVInt$Baseline`
+# (`GroupVIntUtil.java:100,111`), the benchmark baselines. Stopping the member
+# name at the `$` produced `readGroupVInts`, which is a *different* member of the
+# same class, so the verbatim claim the port writes matched nothing.
 RE_DOC_MEMBER = re.compile(
-    r"([A-Z][A-Za-z0-9_]*)\s*[#.]\s*([a-z][A-Za-z0-9_]*)\s*[(`]")
-RE_DOC_HASH = re.compile(r"([A-Z][A-Za-z0-9_]*)#([a-z][A-Za-z0-9_]*)")
+    r"([A-Z][A-Za-z0-9_]*)\s*[#.]\s*([a-z][A-Za-z0-9_$]*)\s*[(`]")
+RE_DOC_HASH = re.compile(r"([A-Z][A-Za-z0-9_]*)#([a-z][A-Za-z0-9_$]*)")
 
 
 def _doc_above(rec, trait):
@@ -157,6 +176,32 @@ RE_CLAIM = re.compile(
     r"(?:class |interface |enum |record )?"
     r"`(org\.apache\.lucene\.[A-Za-z0-9_.$]+)`")
 
+# The same claim, naming a *member*, and read from a declaration's doc rather
+# than a function's. It is deliberately stricter than `doc_members`: a
+# function's doc is about that one function, so a member it names is almost
+# always the correspondence, but a *type's* doc is about the whole type and
+# routinely discusses members the port decided not to have. `BytesRefBuilder`'s
+# doc names `BytesRefBuilder.equals(Object)` and `BytesRefBuilder.hashCode()`
+# precisely to declare that neither is implemented, because Lucene's throw
+# `UnsupportedOperationException`; reading that as evidence of a port would be a
+# false `renamed`, which hides real work. So the reference must be introduced by
+# an equivalence lead-in, with nothing between it and the reference but the
+# modifiers Lucene's own vocabulary uses.
+RE_DECL_CLAIM = re.compile(
+    r"(?:Equivalent to|Port of|Ported from|ported from)\s+(?:the\s+)?"
+    r"(?:abstract |final |sealed |package-private |static |nested |private |"
+    r"protected |public |anonymous |inherited |synthetic |generated )*"
+    r"(?:class |interface |enum |record |method |field )?"
+    r"`(?:[A-Za-z0-9_$]+\.)*([A-Z][A-Za-z0-9_$]*)\s*[#.]\s*"
+    r"([a-z][A-Za-z0-9_$]*)")
+
+
+def decl_claim_members(doc):
+    """{(java type simple name, java member name)} a declaration's doc claims."""
+    if not doc:
+        return set()
+    return set(RE_DECL_CLAIM.findall(doc))
+
 
 class Surface:
     """Everything the crate declares, indexed the way the triage asks for it."""
@@ -167,6 +212,7 @@ class Surface:
         self.impls_of = defaultdict(list)   # rust type name -> [(file, impl)]
         self.type_decl = defaultdict(list)  # rust type name -> [(file, record)]
         self.file_fns = {}            # file -> {fn name -> [(where, doc)]}
+        self.file_decls = {}          # file -> [(what it is, its doc)]
         self.type_claims = defaultdict(set)   # (rust type, file) -> {lucene fqn}
         for f, rec in tree.items():
             for t in rec["traits"]:
@@ -202,6 +248,21 @@ class Surface:
             for c in rec["consts"]:
                 got[c.lower()].append(("const", ""))
             self.file_fns[f] = dict(got)
+            # A claim is not always written on a function. Where Java returns an
+            # anonymous class from a factory method, the port declares a *type*
+            # and writes the claim there; where Java distinguishes behaviours by
+            # subclassing, the port distinguishes them by enum variant and
+            # writes it on the variant. Those are declarations under
+            # `CLAUDE.md` 14.1 exactly as a function is, so their docs are
+            # indexed alongside.
+            decls = []
+            for t in rec["traits"]:
+                decls.append((f"trait {t['name']}", t["doc"]))
+            for name, td in rec["types"].items():
+                decls.append((f"{td.get('kind', 'type')} {name}", td["doc"]))
+                for v in td.get("variants", ()):
+                    decls.append((f"variant {name}::{v['name']}", v["doc"]))
+            self.file_decls[f] = decls
 
     def traits_of(self, rtype, rfile=None):
         """Trait names `rtype` implements, plus their supertraits and derives."""
@@ -557,6 +618,37 @@ def classify(pair, ctx):
                     if dm == java and dt in doc_types:
                         return ("renamed", "doc-comment[file]",
                                 f"{n} in {f}: {owner}")
+
+    # 4c. The same claim, written on a *declaration* rather than on a function.
+    #     A Java factory method that returns an anonymous class has no function
+    #     to carry the correspondence in Rust: the port declares the type the
+    #     anonymous class becomes, and the claim goes on that type.
+    #     `KnnVectorValues.fromDISI` is `struct FromDisiDocIndexIterator`;
+    #     `StringSorter.radixSorter` and `StableStringSorter.radixSorter` are
+    #     `struct StringRadixOps` and `struct StableStringRadixOps`. Where Java
+    #     distinguishes two behaviours by subclassing, the port distinguishes
+    #     them by enum variant, and the claim goes on the variant --
+    #     `LateInteractionRescorer.combine` on `LateInteractionFallback::Zero`.
+    #     Nothing is loosened but the *shape of the item* the claim may sit on:
+    #     it is the same rule, with the same type check, reading a declaration's
+    #     doc comment instead of a function's. Both are documentation under
+    #     `CLAUDE.md` 14.1; only one of them was being read.
+    #     The claim this reads must be an equivalence statement, not a mention:
+    #     see `RE_DECL_CLAIM`. And a claim naming *this* type is preferred over
+    #     one naming a supertype, so the evidence points at the declaration that
+    #     answers the override rather than at the one that answers the
+    #     declaration it overrides -- `StableStringSorter.radixSorter` is
+    #     `StableStringRadixOps`, not the `StringRadixOps` that answers
+    #     `StringSorter.radixSorter`.
+    for exact_type in (True, False):
+        for f in files:
+            for what, doc in S.file_decls.get(f, ()):
+                for dt, dm in sorted(decl_claim_members(doc)):
+                    if dm != java or dt not in doc_types:
+                        continue
+                    if exact_type and dt != simple:
+                        continue
+                    return ("renamed", "doc-comment[file]", f"{what} in {f}")
 
     # A `private` Java method is not part of any contract a caller can reach:
     # it exists to factor the body of a method that is. When every member of

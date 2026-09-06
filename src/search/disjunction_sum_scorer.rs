@@ -62,9 +62,9 @@ impl DocIdSetIterator for DisjunctionSumScorer {
 }
 
 impl Scorable for DisjunctionSumScorer {
+    /// Equivalent to `DisjunctionScorer.score()`, which is
+    /// `score(getSubMatches())`, fused with the `score(DisiWrapper)` override.
     fn score(&mut self) -> Result<f32> {
-        // Equivalent to `DisjunctionScorer.score()`, which is
-        // `score(getSubMatches())`, and to the `score(DisiWrapper)` override.
         let mut score = 0.0f64;
         for position in self.base.sub_matches()? {
             score += f64::from(self.base.wrapper(position).scorable().score()?);
