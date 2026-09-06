@@ -310,8 +310,9 @@ impl<'a> MergePointVisitor<'a> {
 }
 
 impl IntersectVisitor for MergePointVisitor<'_> {
-    fn grow(&mut self, count: i32) {
+    fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
+        Ok(())
     }
 
     fn visit(&mut self, doc_id: i32) -> Result<()> {
@@ -348,7 +349,7 @@ impl IntersectVisitor for MergePointVisitor<'_> {
     /// [`Relation::CellCrossesQuery`], the conservative answer that forces the
     /// cell to be evaluated document by document and surfaces the error from
     /// [`matches`](Self::matches).
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
         let mut cursor = self.cursor.borrow_mut();
         loop {
             let Some(next) = cursor.next_query_point.as_ref() else {
@@ -365,7 +366,7 @@ impl IntersectVisitor for MergePointVisitor<'_> {
                 // The query point is before the start of this cell.
                 cursor.next_query_point = match cursor.iterator.next() {
                     Ok(point) => point,
-                    Err(_) => return Relation::CellCrossesQuery,
+                    Err(_) => return Ok(Relation::CellCrossesQuery),
                 };
                 continue;
             }
@@ -378,18 +379,18 @@ impl IntersectVisitor for MergePointVisitor<'_> {
             );
             if cmp_max > 0 {
                 // The query point is after the end of this cell.
-                return Relation::CellOutsideQuery;
+                return Ok(Relation::CellOutsideQuery);
             }
             if cmp_min == 0 && cmp_max == 0 {
                 // This is only reached on a cell whose minimum and maximum
                 // values are exactly equal to the point, which happens easily
                 // when many (more than 512) docs share this one value.
-                return Relation::CellInsideQuery;
+                return Ok(Relation::CellInsideQuery);
             }
-            return Relation::CellCrossesQuery;
+            return Ok(Relation::CellCrossesQuery);
         }
         // All the points in the query were exhausted.
-        Relation::CellOutsideQuery
+        Ok(Relation::CellOutsideQuery)
     }
 }
 
@@ -424,8 +425,9 @@ impl<'a> SinglePointVisitor<'a> {
 }
 
 impl IntersectVisitor for SinglePointVisitor<'_> {
-    fn grow(&mut self, count: i32) {
+    fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
+        Ok(())
     }
 
     fn visit(&mut self, doc_id: i32) -> Result<()> {
@@ -459,7 +461,7 @@ impl IntersectVisitor for SinglePointVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
         let mut crosses = false;
         for dim in 0..self.num_dims as usize {
             let offset = dim * self.bytes_per_dim;
@@ -471,7 +473,7 @@ impl IntersectVisitor for SinglePointVisitor<'_> {
                 self.bytes_per_dim,
             );
             if cmp_min > 0 {
-                return Relation::CellOutsideQuery;
+                return Ok(Relation::CellOutsideQuery);
             }
             let cmp_max = compare_unsigned(
                 max_packed_value,
@@ -481,19 +483,19 @@ impl IntersectVisitor for SinglePointVisitor<'_> {
                 self.bytes_per_dim,
             );
             if cmp_max < 0 {
-                return Relation::CellOutsideQuery;
+                return Ok(Relation::CellOutsideQuery);
             }
             if cmp_min != 0 || cmp_max != 0 {
                 crosses = true;
             }
         }
         if crosses {
-            Relation::CellCrossesQuery
+            Ok(Relation::CellCrossesQuery)
         } else {
             // This is only reached on a cell whose minimum and maximum values
             // are exactly equal to the point, which happens easily when many
             // docs share this one value.
-            Relation::CellInsideQuery
+            Ok(Relation::CellInsideQuery)
         }
     }
 }
@@ -524,7 +526,7 @@ impl std::fmt::Debug for PointInSetScorerSupplier {
 impl PointInSetScorerSupplier {
     /// Builds the matching doc-ID set, which both `get` and `cost` walk.
     fn build(&self, estimate_only: bool) -> Result<(DocIdSetBuilder, i64)> {
-        let mut result = DocIdSetBuilder::from_point_values(self.max_doc, self.values.as_ref());
+        let mut result = DocIdSetBuilder::from_point_values(self.max_doc, self.values.as_ref())?;
         let mut cost = 0i64;
         if self.query.num_dims == 1 {
             // The common case is optimized, effectively doing a merge sort of
@@ -642,7 +644,7 @@ impl ConstantScoreWeightImpl for PointInSetWeight {
                 self.query.bytes_per_dim
             )));
         }
-        if values.doc_count() == 0 {
+        if values.doc_count()? == 0 {
             return Ok(None);
         }
         if let (Some(lower_point), Some(upper_point)) =

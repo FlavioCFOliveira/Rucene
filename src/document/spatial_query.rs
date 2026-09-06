@@ -831,14 +831,14 @@ impl SpatialQuery {
             // No document matches the query.
             return Ok(None);
         }
-        if values.doc_count() == reader.max_doc() && rel == Relation::CellInsideQuery {
+        if values.doc_count()? == reader.max_doc() && rel == Relation::CellInsideQuery {
             // Every document matches the query.
             return Ok(Some(Box::new(crate::search::all(reader.max_doc())?)));
         }
 
         if self.query_relation != QueryRelation::Intersects
             && self.query_relation != QueryRelation::Contains
-            && i64::from(values.doc_count()) != values.size()
+            && i64::from(values.doc_count()?) != values.size()?
             && !has_any_hits(visitor, self.query_relation, values.as_ref())?
         {
             // Check for any hit first, so the adversarial dense case — a shape
@@ -1023,7 +1023,7 @@ impl SpatialQuery {
             QueryRelation::Intersects => self.sparse_iterator(reader, values, visitor),
             QueryRelation::Contains => self.contains_dense_iterator(reader, values, visitor),
             QueryRelation::Within | QueryRelation::Disjoint => {
-                if i64::from(values.doc_count()) == values.size() {
+                if i64::from(values.doc_count()?) == values.size()? {
                     self.sparse_iterator(reader, values, visitor)
                 } else {
                     self.dense_iterator(reader, values, visitor)
@@ -1042,8 +1042,8 @@ impl SpatialQuery {
     ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
         let max_doc = reader.max_doc();
         if self.query_relation == QueryRelation::Disjoint
-            && values.doc_count() == max_doc
-            && i64::from(values.doc_count()) == values.size()
+            && values.doc_count()? == max_doc
+            && i64::from(values.doc_count()?) == values.size()?
             && self.cost(values, visitor)? > i64::from(max_doc) / 2
         {
             // Every document has exactly one value and the cost is more than
@@ -1055,7 +1055,7 @@ impl SpatialQuery {
             values.intersect(&mut inverse)?;
             return Ok(Some(bit_set_iterator(result, cost)?));
         }
-        if i64::from(values.doc_count()) < (values.size() >> 2) {
+        if i64::from(values.doc_count()?) < (values.size()? >> 2) {
             // Use a dense structure, so an already visited document is skipped.
             let mut result = FixedBitSet::new(max_doc as usize);
             let mut cost = 0i64;
@@ -1067,7 +1067,7 @@ impl SpatialQuery {
             }
             return Ok(Some(bit_set_iterator(result, cost)?));
         }
-        let mut builder = DocIdSetBuilder::from_point_values(max_doc, values);
+        let mut builder = DocIdSetBuilder::from_point_values(max_doc, values)?;
         {
             let mut sparse = self.get_sparse_visitor(visitor, &mut builder);
             values.intersect(&mut sparse)?;
@@ -1086,8 +1086,8 @@ impl SpatialQuery {
         let max_doc = reader.max_doc();
         let mut result = FixedBitSet::new(max_doc as usize);
         let mut cost;
-        if values.doc_count() == max_doc {
-            cost = values.size();
+        if values.doc_count()? == max_doc {
+            cost = values.size()?;
             // One visit to the tree can be spared: every document is a
             // potential match.
             result.set_range(0, max_doc as usize);
@@ -1227,10 +1227,11 @@ impl crate::index::point_values::IntersectVisitor for EstimateVisitor<'_> {
         ))
     }
 
-    fn compare(&self, min_triangle: &[u8], max_triangle: &[u8]) -> Relation {
-        self.visitor
+    fn compare(&self, min_triangle: &[u8], max_triangle: &[u8]) -> Result<Relation> {
+        Ok(self
+            .visitor
             .inner_function(self.query_relation, min_triangle, max_triangle)
-            .unwrap_or(Relation::CellCrossesQuery)
+            .unwrap_or(Relation::CellCrossesQuery))
     }
 }
 
@@ -1251,8 +1252,9 @@ struct SparseVisitor<'a> {
 }
 
 impl crate::index::point_values::IntersectVisitor for SparseVisitor<'_> {
-    fn grow(&mut self, count: i32) {
+    fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
+        Ok(())
     }
 
     fn visit(&mut self, doc_id: i32) -> Result<()> {
@@ -1293,10 +1295,11 @@ impl crate::index::point_values::IntersectVisitor for SparseVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_triangle: &[u8], max_triangle: &[u8]) -> Relation {
-        self.visitor
+    fn compare(&self, min_triangle: &[u8], max_triangle: &[u8]) -> Result<Relation> {
+        Ok(self
+            .visitor
             .inner_function(self.query_relation, min_triangle, max_triangle)
-            .unwrap_or(Relation::CellCrossesQuery)
+            .unwrap_or(Relation::CellCrossesQuery))
     }
 }
 
@@ -1358,10 +1361,11 @@ impl crate::index::point_values::IntersectVisitor for IntersectsDenseVisitor<'_>
         Ok(())
     }
 
-    fn compare(&self, min_triangle: &[u8], max_triangle: &[u8]) -> Relation {
-        self.visitor
+    fn compare(&self, min_triangle: &[u8], max_triangle: &[u8]) -> Result<Relation> {
+        Ok(self
+            .visitor
             .inner_function(self.query_relation, min_triangle, max_triangle)
-            .unwrap_or(Relation::CellCrossesQuery)
+            .unwrap_or(Relation::CellCrossesQuery))
     }
 }
 
@@ -1429,10 +1433,11 @@ impl crate::index::point_values::IntersectVisitor for DenseVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_triangle: &[u8], max_triangle: &[u8]) -> Relation {
-        self.visitor
+    fn compare(&self, min_triangle: &[u8], max_triangle: &[u8]) -> Result<Relation> {
+        Ok(self
+            .visitor
             .inner_function(self.query_relation, min_triangle, max_triangle)
-            .unwrap_or(Relation::CellCrossesQuery)
+            .unwrap_or(Relation::CellCrossesQuery))
     }
 }
 
@@ -1501,10 +1506,11 @@ impl crate::index::point_values::IntersectVisitor for ContainsDenseVisitor<'_> {
         }
     }
 
-    fn compare(&self, min_triangle: &[u8], max_triangle: &[u8]) -> Relation {
-        self.visitor
+    fn compare(&self, min_triangle: &[u8], max_triangle: &[u8]) -> Result<Relation> {
+        Ok(self
+            .visitor
             .inner_function(self.query_relation, min_triangle, max_triangle)
-            .unwrap_or(Relation::CellCrossesQuery)
+            .unwrap_or(Relation::CellCrossesQuery))
     }
 }
 
@@ -1565,12 +1571,12 @@ impl crate::index::point_values::IntersectVisitor for InverseDenseVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
-        transpose_relation(
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
+        Ok(transpose_relation(
             self.visitor
                 .inner_function(self.query_relation, min_packed_value, max_packed_value)
                 .unwrap_or(Relation::CellCrossesQuery),
-        )
+        ))
     }
 }
 
@@ -1615,12 +1621,12 @@ impl crate::index::point_values::IntersectVisitor for ShallowInverseDenseVisitor
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
-        transpose_relation(
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
+        Ok(transpose_relation(
             self.visitor
                 .inner_function(self.query_relation, min_packed_value, max_packed_value)
                 .unwrap_or(Relation::CellCrossesQuery),
-        )
+        ))
     }
 }
 
@@ -1676,9 +1682,9 @@ fn has_any_hits(
             Ok(())
         }
 
-        fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
+        fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
             if self.found.get() {
-                return Relation::CellOutsideQuery;
+                return Ok(Relation::CellOutsideQuery);
             }
             let rel = self
                 .visitor
@@ -1686,9 +1692,9 @@ fn has_any_hits(
                 .unwrap_or(Relation::CellCrossesQuery);
             if rel == Relation::CellInsideQuery {
                 self.found.set(true);
-                return Relation::CellOutsideQuery;
+                return Ok(Relation::CellOutsideQuery);
             }
-            rel
+            Ok(rel)
         }
     }
 

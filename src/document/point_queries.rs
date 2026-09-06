@@ -885,8 +885,9 @@ impl XYPointIntersectVisitor<'_> {
 }
 
 impl IntersectVisitor for XYPointIntersectVisitor<'_> {
-    fn grow(&mut self, count: i32) {
+    fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
+        Ok(())
     }
 
     fn visit(&mut self, doc_id: i32) -> Result<()> {
@@ -921,7 +922,7 @@ impl IntersectVisitor for XYPointIntersectVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
         let cell_min_x = f64::from(XYEncodingUtils::decode_bytes(min_packed_value, 0));
         let cell_min_y = f64::from(XYEncodingUtils::decode_bytes(
             min_packed_value,
@@ -932,8 +933,9 @@ impl IntersectVisitor for XYPointIntersectVisitor<'_> {
             max_packed_value,
             COORDINATE_BYTES,
         ));
-        self.tree
-            .relate(cell_min_x, cell_max_x, cell_min_y, cell_max_y)
+        Ok(self
+            .tree
+            .relate(cell_min_x, cell_max_x, cell_min_y, cell_max_y))
     }
 }
 
@@ -1012,7 +1014,7 @@ impl XYPointInGeometryQuery {
         };
         XYPointField::check_compatible(field_info)?;
 
-        let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref());
+        let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref())?;
         {
             let mut visitor = Self::get_intersect_visitor(&mut result, self.tree.as_ref());
             values.intersect(&mut visitor)?;
@@ -1043,7 +1045,7 @@ impl XYPointInGeometryQuery {
         let Some(values) = reader.get_point_values(&self.field)? else {
             return Ok(0);
         };
-        let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref());
+        let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref())?;
         let mut visitor = Self::get_intersect_visitor(&mut result, self.tree.as_ref());
         values.estimate_doc_count(&mut visitor)
     }
@@ -1292,8 +1294,9 @@ struct DistanceIntersectVisitor<'a> {
 }
 
 impl IntersectVisitor for DistanceIntersectVisitor<'_> {
-    fn grow(&mut self, count: i32) {
+    fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
+        Ok(())
     }
 
     fn visit(&mut self, doc_id: i32) -> Result<()> {
@@ -1328,10 +1331,11 @@ impl IntersectVisitor for DistanceIntersectVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
-        self.bounds
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
+        Ok(self
+            .bounds
             .relate(min_packed_value, max_packed_value)
-            .unwrap_or(Relation::CellCrossesQuery)
+            .unwrap_or(Relation::CellCrossesQuery))
     }
 }
 
@@ -1392,18 +1396,20 @@ impl IntersectVisitor for InverseDistanceIntersectVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
-        match self
-            .bounds
-            .relate(min_packed_value, max_packed_value)
-            .unwrap_or(Relation::CellCrossesQuery)
-        {
-            // All points match, so skip this subtree.
-            Relation::CellInsideQuery => Relation::CellOutsideQuery,
-            // No point matches, so clear every document.
-            Relation::CellOutsideQuery => Relation::CellInsideQuery,
-            Relation::CellCrossesQuery => Relation::CellCrossesQuery,
-        }
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
+        Ok(
+            match self
+                .bounds
+                .relate(min_packed_value, max_packed_value)
+                .unwrap_or(Relation::CellCrossesQuery)
+            {
+                // All points match, so skip this subtree.
+                Relation::CellInsideQuery => Relation::CellOutsideQuery,
+                // No point matches, so clear every document.
+                Relation::CellOutsideQuery => Relation::CellInsideQuery,
+                Relation::CellCrossesQuery => Relation::CellCrossesQuery,
+            },
+        )
     }
 }
 
@@ -1508,8 +1514,8 @@ impl LatLonPointDistanceQuery {
         LatLonPoint::check_compatible(field_info)?;
 
         let max_doc = reader.max_doc();
-        if values.doc_count() == max_doc
-            && i64::from(values.doc_count()) == values.size()
+        if values.doc_count()? == max_doc
+            && i64::from(values.doc_count()?) == values.size()?
             && self.cost(reader)? > i64::from(max_doc) / 2
         {
             // Every document has exactly one value and the cost is more than
@@ -1529,7 +1535,7 @@ impl LatLonPointDistanceQuery {
             )?)));
         }
 
-        let mut result = DocIdSetBuilder::from_point_values(max_doc, values.as_ref());
+        let mut result = DocIdSetBuilder::from_point_values(max_doc, values.as_ref())?;
         {
             let mut visitor = DistanceIntersectVisitor {
                 bounds: self.bounds.clone(),
@@ -1552,7 +1558,7 @@ impl LatLonPointDistanceQuery {
         let Some(values) = reader.get_point_values(&self.field)? else {
             return Ok(0);
         };
-        let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref());
+        let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref())?;
         let mut visitor = DistanceIntersectVisitor {
             bounds: self.bounds.clone(),
             result: &mut result,

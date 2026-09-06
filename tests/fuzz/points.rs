@@ -376,8 +376,8 @@ impl IntersectVisitor for CountingVisitor {
         Ok(())
     }
 
-    fn compare(&self, _min: &[u8], _max: &[u8]) -> Relation {
-        Relation::CellCrossesQuery
+    fn compare(&self, _min: &[u8], _max: &[u8]) -> rucene::error::Result<Relation> {
+        Ok(Relation::CellCrossesQuery)
     }
 }
 
@@ -408,8 +408,8 @@ impl IntersectVisitor for InsideVisitor {
         Ok(())
     }
 
-    fn compare(&self, _min: &[u8], _max: &[u8]) -> Relation {
-        Relation::CellInsideQuery
+    fn compare(&self, _min: &[u8], _max: &[u8]) -> rucene::error::Result<Relation> {
+        Ok(Relation::CellInsideQuery)
     }
 }
 
@@ -751,8 +751,8 @@ impl IntersectVisitor for CollectingVisitor {
         Ok(())
     }
 
-    fn compare(&self, _min: &[u8], _max: &[u8]) -> Relation {
-        Relation::CellCrossesQuery
+    fn compare(&self, _min: &[u8], _max: &[u8]) -> rucene::error::Result<Relation> {
+        Ok(Relation::CellCrossesQuery)
     }
 }
 
@@ -773,8 +773,8 @@ impl IntersectVisitor for CollectingInsideVisitor {
         Ok(())
     }
 
-    fn compare(&self, _min: &[u8], _max: &[u8]) -> Relation {
-        Relation::CellInsideQuery
+    fn compare(&self, _min: &[u8], _max: &[u8]) -> rucene::error::Result<Relation> {
+        Ok(Relation::CellInsideQuery)
     }
 }
 
@@ -997,13 +997,13 @@ fn get_values_answers_exactly_as_lucene_does() {
             fixture.name
         )
     });
-    assert_eq!(written.size(), i64::from(fixture.max_doc));
+    assert_eq!(written.size().unwrap(), i64::from(fixture.max_doc));
 
     let absent = reader
         .get_values("two")
         .expect("a field with no metadata entry is Java's null, not a throw");
-    assert_eq!(absent.size(), 0);
-    assert_eq!(absent.doc_count(), 0);
+    assert_eq!(absent.size().unwrap(), 0);
+    assert_eq!(absent.doc_count().unwrap(), 0);
     assert!(absent.min_packed_value().expect("no error").is_none());
 
     assert!(

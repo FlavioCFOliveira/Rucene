@@ -257,9 +257,10 @@ impl ConstantScoreWeightImpl for FieldExistsWeight {
                 // No deletions: points or terms doc counts are a proxy for the
                 // doc-values count.
                 if field_info.get_point_dimension_count() > 0 {
-                    count = reader
-                        .get_point_values(&self.field)?
-                        .map_or(0, |values| values.doc_count());
+                    count = match reader.get_point_values(&self.field)? {
+                        Some(values) => values.doc_count()?,
+                        None => 0,
+                    };
                 } else if field_info.get_index_options() != IndexOptions::NONE {
                     count = reader
                         .terms(&self.field)?
@@ -354,9 +355,10 @@ impl Query for FieldExistsQuery {
                 // possible because a field always uses the same data structures
                 // in every document — all or nothing.
                 let terms_doc_count = leaf.terms(&self.field)?.map(|terms| terms.doc_count());
-                let points_doc_count = leaf
-                    .get_point_values(&self.field)?
-                    .map(|values| values.doc_count());
+                let points_doc_count = match leaf.get_point_values(&self.field)? {
+                    Some(values) => Some(values.doc_count()?),
+                    None => None,
+                };
                 let skipper_doc_count = leaf
                     .get_doc_values_skipper(&self.field)?
                     .map(|skipper| skipper.global_doc_count());

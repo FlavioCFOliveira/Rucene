@@ -481,8 +481,18 @@ impl DocIdSetBuilder {
     /// Creates a builder optimised for accumulating docs matching `values`.
     ///
     /// Equivalent to `new DocIdSetBuilder(int, PointValues)`.
-    pub fn from_point_values(max_doc: i32, values: &dyn PointValues) -> Self {
-        Self::with_stats(max_doc, values.doc_count(), values.size())
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`PointValues::size`] and
+    /// [`PointValues::doc_count`] raise; Java's constructor lets the same
+    /// failure escape as an unchecked `ExitingReaderException`.
+    pub fn from_point_values(max_doc: i32, values: &dyn PointValues) -> Result<Self> {
+        Ok(Self::with_stats(
+            max_doc,
+            values.doc_count()?,
+            values.size()?,
+        ))
     }
 
     /// Creates a builder from raw index statistics.

@@ -113,23 +113,29 @@ fn exitable_directory_reader_times_out_through_its_leaves() {
     assert_eq!(leaves.len(), 1, "the wrapping preserves the leaf count");
 
     let leaf = leaves[0].leaf_reader();
-    let terms = leaf.terms("body");
     println!("exitable leaf = {leaf}");
+    // `ExitableFilterAtomicReader.terms(String)` checks no timeout of its own:
+    // it hands out an `ExitableTerms`, and the enumeration that wrapper builds
+    // is what checks — see `tests/exitable_directory_reader_iteration.rs`.
+    let terms = leaf
+        .terms("body")
+        .expect("the accessor checks no timeout")
+        .expect("the field has terms");
+    let enumeration = terms.iterator();
     println!(
-        "exitable leaf.terms(\"body\") = {}",
-        match &terms {
-            Ok(Some(_)) => "Ok(Some(terms))".to_string(),
-            Ok(None) => "Ok(None)".to_string(),
+        "exitable leaf.terms(\"body\").iterator() = {}",
+        match &enumeration {
+            Ok(_) => "Ok(enumeration)".to_string(),
             Err(error) => format!("Err({error})"),
         }
     );
     assert!(
-        terms.is_err(),
-        "the timeout has fired, so reading terms through a leaf of the exitable \
-         reader must raise; got Ok, which means leaves() handed back the \
-         delegate's unwrapped leaf"
+        enumeration.is_err(),
+        "the timeout has fired, so enumerating the terms of a leaf of the \
+         exitable reader must raise; got Ok, which means leaves() handed back \
+         the delegate's unwrapped leaf"
     );
-    let message = terms.err().expect("an error").to_string();
+    let message = enumeration.err().expect("an error").to_string();
     assert!(
         message.contains("The request took too long to iterate over"),
         "the error must be the ExitingReaderException wording, got: {message}"
@@ -146,7 +152,11 @@ fn exitable_directory_reader_lets_work_through_when_the_timeout_has_not_fired() 
     let leaves = Arc::clone(&exitable).leaves();
     let leaf = leaves[0].leaf_reader();
     assert!(
-        leaf.terms("body").expect("terms").is_some(),
+        leaf.terms("body")
+            .expect("terms")
+            .expect("the field has terms")
+            .iterator()
+            .is_ok(),
         "with no timeout fired the wrapped leaf reads exactly as the bare one"
     );
     assert_eq!(

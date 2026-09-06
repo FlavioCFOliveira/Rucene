@@ -195,8 +195,8 @@ mod tests {
         assert_eq!(values.bytes_per_dimension().unwrap(), 0);
         assert_eq!(values.num_dimensions().unwrap(), 0);
         assert_eq!(values.num_index_dimensions().unwrap(), 0);
-        assert_eq!(values.size(), 0);
-        assert_eq!(values.doc_count(), 0);
+        assert_eq!(values.size().unwrap(), 0);
+        assert_eq!(values.doc_count().unwrap(), 0);
         assert!(values.min_packed_value().unwrap().is_none());
         assert!(values.max_packed_value().unwrap().is_none());
     }
@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn empty_points_reader_returns_empty_values() {
         let mut reader = EmptyPointsReader;
-        assert_eq!(reader.get_values("field").unwrap().size(), 0);
+        assert_eq!(reader.get_values("field").unwrap().size().unwrap(), 0);
         reader.check_integrity().unwrap();
         let _merge = reader.get_merge_instance().unwrap();
         reader.close().unwrap();

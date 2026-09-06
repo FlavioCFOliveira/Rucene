@@ -1273,7 +1273,7 @@ impl NumericFieldReaderContextComparator {
                 return Ok(None);
             };
             let decoded = (self.point_decoder)(&packed);
-            if point_values.doc_count() == reader.max_doc() || self.missing_value.is_none() {
+            if point_values.doc_count()? == reader.max_doc() || self.missing_value.is_none() {
                 return Ok(Some(decoded));
             }
             let missing = self.missing_value.unwrap_or_default();

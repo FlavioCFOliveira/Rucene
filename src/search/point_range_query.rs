@@ -327,7 +327,7 @@ impl PointRangeQuery {
             match leaf.get_point_values(&self.field)? {
                 None => return Ok(false),
                 Some(values) => {
-                    if values.doc_count() != leaf.max_doc() {
+                    if values.doc_count()? != leaf.max_doc() {
                         return Ok(false);
                     }
                 }
@@ -378,9 +378,9 @@ impl PointRangeQuery {
         point_tree: &mut dyn PointTree,
     ) -> Result<()> {
         let relation = {
-            let min = point_tree.min_packed_value().to_vec();
-            let max = point_tree.max_packed_value().to_vec();
-            visitor.compare(&min, &max)
+            let min = point_tree.min_packed_value()?.to_vec();
+            let max = point_tree.max_packed_value()?.to_vec();
+            visitor.compare(&min, &max)?
         };
         match relation {
             // This cell is fully outside the query shape: count none of its
@@ -388,7 +388,7 @@ impl PointRangeQuery {
             Relation::CellOutsideQuery => Ok(()),
             // This cell is fully inside the query shape: count the whole node.
             Relation::CellInsideQuery => {
-                visitor.matching_node_count += point_tree.size();
+                visitor.matching_node_count += point_tree.size()?;
                 Ok(())
             }
             // The cell crosses the shape boundary, or fully contains the query,
@@ -437,8 +437,8 @@ impl IntersectVisitor for CountingVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
-        self.query.relate(min_packed_value, max_packed_value)
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
+        Ok(self.query.relate(min_packed_value, max_packed_value))
     }
 }
 
@@ -457,8 +457,9 @@ struct MatchingVisitor<'a> {
 }
 
 impl IntersectVisitor for MatchingVisitor<'_> {
-    fn grow(&mut self, count: i32) {
+    fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
+        Ok(())
     }
 
     fn visit(&mut self, doc_id: i32) -> Result<()> {
@@ -493,8 +494,8 @@ impl IntersectVisitor for MatchingVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
-        self.query.relate(min_packed_value, max_packed_value)
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
+        Ok(self.query.relate(min_packed_value, max_packed_value))
     }
 }
 
@@ -548,14 +549,16 @@ impl IntersectVisitor for InverseVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
-        match self.query.relate(min_packed_value, max_packed_value) {
-            // All points match, so skip this subtree.
-            Relation::CellInsideQuery => Relation::CellOutsideQuery,
-            // None of the points match, so clear all documents.
-            Relation::CellOutsideQuery => Relation::CellInsideQuery,
-            relation => relation,
-        }
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
+        Ok(
+            match self.query.relate(min_packed_value, max_packed_value) {
+                // All points match, so skip this subtree.
+                Relation::CellInsideQuery => Relation::CellOutsideQuery,
+                // None of the points match, so clear all documents.
+                Relation::CellOutsideQuery => Relation::CellInsideQuery,
+                relation => relation,
+            },
+        )
     }
 }
 
@@ -582,8 +585,8 @@ impl std::fmt::Debug for PointRangeIteratorSupplier {
 
 impl ConstantScoreIteratorSupplier for PointRangeIteratorSupplier {
     fn iterator(&mut self, _lead_cost: i64) -> Result<ScorerIterator> {
-        if self.values.doc_count() == self.max_doc
-            && i64::from(self.values.doc_count()) == self.values.size()
+        if self.values.doc_count()? == self.max_doc
+            && i64::from(self.values.doc_count()?) == self.values.size()?
             && self.cost() > i64::from(self.max_doc / 2)
         {
             // If all docs have exactly one value and the cost is greater than
@@ -606,7 +609,7 @@ impl ConstantScoreIteratorSupplier for PointRangeIteratorSupplier {
             return Ok(ScorerIterator::Simple(Box::new(iterator)));
         }
 
-        let mut result = DocIdSetBuilder::from_point_values(self.max_doc, self.values.as_ref());
+        let mut result = DocIdSetBuilder::from_point_values(self.max_doc, self.values.as_ref())?;
         {
             let mut visitor = MatchingVisitor {
                 query: self.query.as_ref(),
@@ -636,7 +639,7 @@ impl PointRangeIteratorSupplier {
         max_doc: i32,
     ) -> Result<Self> {
         let cost = {
-            let mut builder = DocIdSetBuilder::from_point_values(max_doc, values.as_ref());
+            let mut builder = DocIdSetBuilder::from_point_values(max_doc, values.as_ref())?;
             let mut visitor = MatchingVisitor {
                 query: query.as_ref(),
                 result: &mut builder,
@@ -691,7 +694,7 @@ impl ConstantScoreWeightImpl for PointRangeWeight {
             return Ok(None);
         }
         let values = values.expect("INVARIANT: checkValidPointValues rejected the absent case");
-        if values.doc_count() == 0 {
+        if values.doc_count()? == 0 {
             return Ok(None);
         }
 
@@ -728,7 +731,7 @@ impl ConstantScoreWeightImpl for PointRangeWeight {
             }
         }
 
-        let all_docs_match = if values.doc_count() == reader.max_doc() {
+        let all_docs_match = if values.doc_count()? == reader.max_doc() {
             let mut all = true;
             for i in 0..self.query.num_dims as usize {
                 let offset = i * bytes_per_dim;
@@ -792,14 +795,14 @@ impl ConstantScoreWeightImpl for PointRangeWeight {
             let max = values.max_packed_value()?;
             if let (Some(min), Some(max)) = (min, max) {
                 if self.query.relate(&min, &max) == Relation::CellInsideQuery {
-                    return Ok(values.doc_count());
+                    return values.doc_count();
                 }
             }
             // Only 1D: there is a guarantee that this runs fast, because there
             // are at most two crossing leaves. `docCount == size` means the
             // field is single-valued, so counting the points in the leaf nodes
             // counts documents.
-            if self.query.num_dims == 1 && i64::from(values.doc_count()) == values.size() {
+            if self.query.num_dims == 1 && i64::from(values.doc_count()?) == values.size()? {
                 let mut tree = values.point_tree()?;
                 return Ok(self.query.point_count(tree.as_mut())? as i32);
             }

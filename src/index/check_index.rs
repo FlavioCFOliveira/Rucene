@@ -4573,8 +4573,8 @@ impl crate::index::point_values::IntersectVisitor for ConstantRelationIntersectV
         &self,
         _min_packed_value: &[u8],
         _max_packed_value: &[u8],
-    ) -> crate::index::point_values::Relation {
-        self.relation
+    ) -> Result<crate::index::point_values::Relation> {
+        Ok(self.relation)
     }
 }
 
@@ -4627,27 +4627,27 @@ impl VerifyPointsVisitor {
         let global_min_packed_value = values.min_packed_value()?;
         let global_max_packed_value = values.max_packed_value()?;
 
-        if i64::from(values.doc_count()) > values.size() {
+        if i64::from(values.doc_count()?) > values.size()? {
             return Err(check_index_error(format!(
                 "point values for field \"{field_name}\" claims to have size={} points and \
                  inconsistent docCount={}",
-                values.size(),
-                values.doc_count()
+                values.size()?,
+                values.doc_count()?
             )));
         }
-        if values.doc_count() > max_doc {
+        if values.doc_count()? > max_doc {
             return Err(check_index_error(format!(
                 "point values for field \"{field_name}\" claims to have docCount={} but that's \
                  greater than maxDoc={max_doc}",
-                values.doc_count()
+                values.doc_count()?
             )));
         }
         match global_min_packed_value.as_ref() {
             None => {
-                if values.size() != 0 {
+                if values.size()? != 0 {
                     return Err(check_index_error(format!(
                         "getMinPackedValue is null points for field \"{field_name}\" yet size={}",
-                        values.size()
+                        values.size()?
                     )));
                 }
             }
@@ -4662,10 +4662,10 @@ impl VerifyPointsVisitor {
         }
         match global_max_packed_value.as_ref() {
             None => {
-                if values.size() != 0 {
+                if values.size()? != 0 {
                     return Err(check_index_error(format!(
                         "getMaxPackedValue is null points for field \"{field_name}\" yet size={}",
-                        values.size()
+                        values.size()?
                     )));
                 }
             }
@@ -4801,17 +4801,17 @@ impl crate::index::point_values::IntersectVisitor for VerifyPointsVisitor {
         &self,
         _min_packed_value: &[u8],
         _max_packed_value: &[u8],
-    ) -> crate::index::point_values::Relation {
+    ) -> Result<crate::index::point_values::Relation> {
         // The query shape is always claimed to be complex enough to cross every
         // cell, so the codec passes each packed value through `visit_with_value`.
         //
         // **Divergence from Lucene 10.5.0.** Java also records the cell bounds
         // here and checks them against the global minimum and maximum. This
-        // signature returns a `Relation` and takes `&self`, so it cannot do
-        // either; `visit_with_value` performs the per-point bound check, and
-        // the cell-versus-global check is done up front in
-        // [`VerifyPointsVisitor::new`] from the same statistics.
-        crate::index::point_values::Relation::CellCrossesQuery
+        // signature takes `&self`, so it cannot do either; `visit_with_value`
+        // performs the per-point bound check, and the cell-versus-global check
+        // is done up front in [`VerifyPointsVisitor::new`] from the same
+        // statistics.
+        Ok(crate::index::point_values::Relation::CellCrossesQuery)
     }
 }
 
@@ -4846,8 +4846,8 @@ pub fn test_points(
             let values = points_reader.get_values(&field_info.name)?;
             status.total_value_fields += 1;
 
-            let size = values.size();
-            let doc_count = values.doc_count();
+            let size = values.size()?;
+            let doc_count = values.doc_count()?;
 
             let mut crossing = ConstantRelationIntersectVisitor {
                 relation: crate::index::point_values::Relation::CellCrossesQuery,

@@ -245,8 +245,12 @@ impl IntersectVisitor for DocIdCollector {
         Ok(())
     }
 
-    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Relation {
-        Relation::CellCrossesQuery
+    fn compare(
+        &self,
+        _min_packed_value: &[u8],
+        _max_packed_value: &[u8],
+    ) -> rucene::error::Result<Relation> {
+        Ok(Relation::CellCrossesQuery)
     }
 }
 

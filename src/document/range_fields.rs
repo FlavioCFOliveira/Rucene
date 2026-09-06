@@ -1367,8 +1367,9 @@ struct RangeFieldVisitor<'a> {
 }
 
 impl IntersectVisitor for RangeFieldVisitor<'_> {
-    fn grow(&mut self, count: i32) {
+    fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
+        Ok(())
     }
 
     fn visit(&mut self, doc_id: i32) -> Result<()> {
@@ -1403,14 +1404,15 @@ impl IntersectVisitor for RangeFieldVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> PointRelation {
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<PointRelation> {
         // `RangeQueryType::compare` only fails for CROSSES, which it answers
         // before it can fail; the fallback keeps the walk conservative — the
         // cell is visited and every value in it is tested by
         // `visit_with_value`, so no document is ever wrongly matched.
-        self.query
+        Ok(self
+            .query
             .relate(min_packed_value, max_packed_value)
-            .unwrap_or(PointRelation::CellCrossesQuery)
+            .unwrap_or(PointRelation::CellCrossesQuery))
     }
 }
 
@@ -1447,7 +1449,7 @@ impl RangeFieldIteratorSupplier {
     /// [`PointRangeQuery`](crate::search::PointRangeQuery) already does.
     fn new(query: RangeFieldQuery, values: Box<dyn PointValues>, max_doc: i32) -> Result<Self> {
         let cost = {
-            let mut builder = DocIdSetBuilder::from_point_values(max_doc, values.as_ref());
+            let mut builder = DocIdSetBuilder::from_point_values(max_doc, values.as_ref())?;
             let mut visitor = RangeFieldVisitor {
                 query: &query,
                 result: &mut builder,
@@ -1466,7 +1468,7 @@ impl RangeFieldIteratorSupplier {
 
 impl ConstantScoreIteratorSupplier for RangeFieldIteratorSupplier {
     fn iterator(&mut self, _lead_cost: i64) -> Result<ScorerIterator> {
-        let mut result = DocIdSetBuilder::from_point_values(self.max_doc, self.values.as_ref());
+        let mut result = DocIdSetBuilder::from_point_values(self.max_doc, self.values.as_ref())?;
         {
             let mut visitor = RangeFieldVisitor {
                 query: &self.query,
@@ -1512,7 +1514,7 @@ impl ConstantScoreWeightImpl for RangeFieldWeight {
 
         let max_doc = reader.max_doc();
         let mut all_docs_match = false;
-        if values.doc_count() == max_doc {
+        if values.doc_count()? == max_doc {
             if let (Some(min), Some(max)) = (values.min_packed_value()?, values.max_packed_value()?)
             {
                 all_docs_match = self.query.relate(&min, &max)? == PointRelation::CellInsideQuery;
@@ -2031,15 +2033,21 @@ mod tests {
             result: &mut result,
         };
         assert_eq!(
-            visitor.compare(&packed_int_range(0, 5), &packed_int_range(6, 10)),
+            visitor
+                .compare(&packed_int_range(0, 5), &packed_int_range(6, 10))
+                .unwrap(),
             PointRelation::CellOutsideQuery
         );
         assert_eq!(
-            visitor.compare(&packed_int_range(30, 31), &packed_int_range(34, 35)),
+            visitor
+                .compare(&packed_int_range(30, 31), &packed_int_range(34, 35))
+                .unwrap(),
             PointRelation::CellInsideQuery
         );
         assert_eq!(
-            visitor.compare(&packed_int_range(0, 5), &packed_int_range(40, 80)),
+            visitor
+                .compare(&packed_int_range(0, 5), &packed_int_range(40, 80))
+                .unwrap(),
             PointRelation::CellCrossesQuery
         );
     }
@@ -2056,7 +2064,9 @@ mod tests {
             result: &mut result,
         };
         assert_eq!(
-            visitor.compare(&packed_int_range(0, 5), &packed_int_range(6, 10)),
+            visitor
+                .compare(&packed_int_range(0, 5), &packed_int_range(6, 10))
+                .unwrap(),
             PointRelation::CellCrossesQuery
         );
     }

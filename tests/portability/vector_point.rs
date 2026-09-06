@@ -554,7 +554,11 @@ impl IntersectVisitor for TracingVisitor {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
+    fn compare(
+        &self,
+        min_packed_value: &[u8],
+        max_packed_value: &[u8],
+    ) -> rucene::error::Result<Relation> {
         let relation = self.relate(min_packed_value, max_packed_value);
         self.trace.borrow_mut().push(format!(
             "compare {} {} {}",
@@ -562,11 +566,12 @@ impl IntersectVisitor for TracingVisitor {
             STANDARD.encode(max_packed_value),
             relation_name(relation)
         ));
-        relation
+        Ok(relation)
     }
 
-    fn grow(&mut self, count: i32) {
+    fn grow(&mut self, count: i32) -> rucene::error::Result<()> {
         self.trace.borrow_mut().push(format!("grow {count}"));
+        Ok(())
     }
 }
 
@@ -652,8 +657,8 @@ fn bkd_reader_from_java_points(java: &JavaPoints) -> BKDReader {
 }
 
 fn assert_metadata_matches(java: &JavaPoints, values: &InMemoryPointValues) {
-    assert_eq!(values.size(), java.size, "size");
-    assert_eq!(values.doc_count(), java.doc_count, "doc count");
+    assert_eq!(values.size().unwrap(), java.size, "size");
+    assert_eq!(values.doc_count().unwrap(), java.doc_count, "doc count");
     assert_eq!(
         values.num_dimensions().unwrap(),
         java.num_dims,
@@ -831,8 +836,8 @@ fn multi_leaf_aggregates_match_java() {
     // increasing value, ties by increasing doc id. Rucene's reference tree
     // enforces that invariant, so building it is itself the assertion.
     let values = rust_values(&java);
-    assert_eq!(values.size(), java.size);
-    assert_eq!(values.doc_count(), java.doc_count);
+    assert_eq!(values.size().unwrap(), java.size);
+    assert_eq!(values.doc_count().unwrap(), java.doc_count);
 }
 
 // ---------------------------------------------------------------------------
@@ -866,8 +871,12 @@ fn assert_multi_leaf_bkd_cursor_case_matches_java(case: &str, scratch: &str) {
     // trait method ensures we exercise the #119 cursor.
     let values: &dyn PointValues = &bkd_reader;
 
-    assert_eq!(values.size(), java.size, "[{case}] size");
-    assert_eq!(values.doc_count(), java.doc_count, "[{case}] doc_count");
+    assert_eq!(values.size().unwrap(), java.size, "[{case}] size");
+    assert_eq!(
+        values.doc_count().unwrap(),
+        java.doc_count,
+        "[{case}] doc_count"
+    );
     assert_eq!(
         values.min_packed_value().unwrap().unwrap(),
         java.min_packed,

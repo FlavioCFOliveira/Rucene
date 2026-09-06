@@ -1738,7 +1738,7 @@ impl IntersectVisitor for LastLeafDocIdCounter {
         ))
     }
 
-    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Relation {
+    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Result<Relation> {
         unreachable!("BKDReader.isTreeBalanced never compares cells")
     }
 }
@@ -1949,7 +1949,7 @@ impl BKDReader {
             // `visitDocIDs`. `BKDReader.visit` must do the same so the trace
             // carries the tree-level `compare` that precedes the leaf-level
             // refinement `compare` inside `visitDocValuesWithCardinality`.
-            match visitor.compare(&node.min_packed, &node.max_packed) {
+            match visitor.compare(&node.min_packed, &node.max_packed)? {
                 Relation::CellOutsideQuery => return Ok(()),
                 Relation::CellInsideQuery => {
                     return self.visit_all(node, inner, leaf, visitor);
@@ -1965,7 +1965,7 @@ impl BKDReader {
                 }
             }
         }
-        match visitor.compare(&node.min_packed, &node.max_packed) {
+        match visitor.compare(&node.min_packed, &node.max_packed)? {
             Relation::CellOutsideQuery => Ok(()),
             Relation::CellInsideQuery => self.visit_all(node, inner, leaf, visitor),
             Relation::CellCrossesQuery => {
@@ -2055,7 +2055,7 @@ impl BKDReader {
         let count = read_leaf_count(leaf_in.as_mut(), config)?;
         let mut doc_ids = vec![0i32; count];
         DocIdsWriter::read_doc_ids(leaf_in.as_mut(), count, &mut doc_ids, version)?;
-        visitor.grow(count as i32);
+        visitor.grow(count as i32)?;
         let ints_ref = IntsRef::new(doc_ids);
         visitor.visit_ints_ref(&ints_ref)?;
         Ok(())
@@ -2124,7 +2124,7 @@ impl BKDReader {
             //
             // Equivalent to `BKDReader.visitUniqueRawDocValues`: one bulk
             // `visit(DocIdSetIterator, byte[])` call, not N per-doc calls.
-            visitor.grow(doc_ids.len() as i32);
+            visitor.grow(doc_ids.len() as i32)?;
             let mut iter = BkdReaderDocIdSetIterator::new(doc_ids);
             iter.reset(0, doc_ids.len());
             visitor.visit_iterator_with_value(&mut iter, scratch_packed)?;
@@ -2144,7 +2144,7 @@ impl BKDReader {
         } else {
             // Single index dimension: the cell bounds from the index are the
             // bounds of the values, so no refinement is possible.
-            visitor.grow(doc_ids.len() as i32);
+            visitor.grow(doc_ids.len() as i32)?;
         }
         if compressed_dim == -2 {
             visit_sparse_doc_values(
@@ -2194,7 +2194,7 @@ impl BKDReader {
                 return Ok(());
             }
         } else {
-            visitor.grow(doc_ids.len() as i32);
+            visitor.grow(doc_ids.len() as i32)?;
         }
         let compressed_dim = read_compressed_dim(leaf_in.as_mut(), version, config)?;
         if compressed_dim == -1 {
@@ -2263,11 +2263,11 @@ impl BKDReader {
             &mut max_packed,
         )?;
 
-        let relation = visitor.compare(&min_packed, &max_packed);
+        let relation = visitor.compare(&min_packed, &max_packed)?;
         if relation == Relation::CellOutsideQuery {
             return Ok(true);
         }
-        visitor.grow(doc_ids.len() as i32);
+        visitor.grow(doc_ids.len() as i32)?;
         if relation == Relation::CellInsideQuery {
             let ints_ref = IntsRef::new(doc_ids.to_vec());
             visitor.visit_ints_ref(&ints_ref)?;
@@ -2487,12 +2487,12 @@ impl PointValues for BKDReader {
         self.point_tree()
     }
 
-    fn size(&self) -> i64 {
-        self.point_count
+    fn size(&self) -> Result<i64> {
+        Ok(self.point_count)
     }
 
-    fn doc_count(&self) -> i32 {
-        self.doc_count
+    fn doc_count(&self) -> Result<i32> {
+        Ok(self.doc_count)
     }
 
     fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
@@ -2751,9 +2751,9 @@ impl BKDPointTree {
     fn add_all(&mut self, grown: bool, visitor: &mut dyn IntersectVisitor) -> Result<()> {
         let mut grown = grown;
         if !grown {
-            let size = self.size();
+            let size = self.size()?;
             if size <= i32::MAX as i64 {
-                visitor.grow(size as i32);
+                visitor.grow(size as i32)?;
                 grown = true;
             }
         }
@@ -2812,7 +2812,7 @@ impl BKDPointTree {
 }
 
 impl PointTree for BKDPointTree {
-    fn clone_tree(&self) -> Box<dyn PointTree> {
+    fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
         // Re-root at the current node: the clone's stack holds only the current
         // frame, so its `move_to_parent` stops here. Fresh input clones keep
         // the clone independent of the original's stream position.
@@ -2824,7 +2824,7 @@ impl PointTree for BKDPointTree {
             .leaf
             .clone_input()
             .expect("INVARIANT: cloning a readable index input does not fail");
-        Box::new(Self {
+        Ok(Box::new(Self {
             config: self.config.clone(),
             version: self.version,
             num_leaves: self.num_leaves,
@@ -2837,7 +2837,7 @@ impl PointTree for BKDPointTree {
             is_tree_balanced: self.is_tree_balanced,
             scratch_doc_ids: Vec::new(),
             scratch_ints_ref: IntsRef::default(),
-        })
+        }))
     }
 
     fn move_to_child(&mut self) -> Result<bool> {
@@ -2869,15 +2869,15 @@ impl PointTree for BKDPointTree {
         Ok(true)
     }
 
-    fn min_packed_value(&self) -> &[u8] {
-        &self.current().min_packed
+    fn min_packed_value(&self) -> Result<&[u8]> {
+        Ok(&self.current().min_packed)
     }
 
-    fn max_packed_value(&self) -> &[u8] {
-        &self.current().max_packed
+    fn max_packed_value(&self) -> Result<&[u8]> {
+        Ok(&self.current().max_packed)
     }
 
-    fn size(&self) -> i64 {
+    fn size(&self) -> Result<i64> {
         let mut left_most = self.current().node_id;
         while left_most < self.num_leaves {
             left_most *= 2;
@@ -2892,19 +2892,21 @@ impl PointTree for BKDPointTree {
             right_most - left_most + 1 + self.num_leaves
         };
         if self.is_tree_balanced {
-            return size_from_balanced_tree(
+            return Ok(size_from_balanced_tree(
                 left_most,
                 right_most,
                 self.num_leaves,
                 self.point_count,
                 self.config.max_points_in_leaf_node,
-            );
+            ));
         }
         if right_most == self.right_most_leaf_node {
-            (num_leaves as i64 - 1) * self.config.max_points_in_leaf_node as i64
-                + self.last_leaf_node_point_count as i64
+            Ok(
+                (num_leaves as i64 - 1) * self.config.max_points_in_leaf_node as i64
+                    + self.last_leaf_node_point_count as i64,
+            )
         } else {
-            num_leaves as i64 * self.config.max_points_in_leaf_node as i64
+            Ok(num_leaves as i64 * self.config.max_points_in_leaf_node as i64)
         }
     }
 
@@ -3887,7 +3889,7 @@ impl BKDWriter {
             ));
         }
         self.finished = true;
-        self.point_count = tree.size();
+        self.point_count = tree.size()?;
         if self.point_count == 0 {
             return Ok(());
         }
@@ -3964,7 +3966,7 @@ impl BKDWriter {
         data_out: &mut dyn IndexOutput,
         tree: &mut dyn MutablePointTree,
     ) -> Result<()> {
-        let count = tree.size() as usize;
+        let count = tree.size()? as usize;
         {
             let mut points = MutableTreePoints { tree };
             self.sort_by_packed_value(&mut points, 0, count);
@@ -5073,8 +5075,8 @@ impl IntersectVisitor for MergeIntersectsVisitor {
         Ok(())
     }
 
-    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Relation {
-        Relation::CellCrossesQuery
+    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Result<Relation> {
+        Ok(Relation::CellCrossesQuery)
     }
 
     /// # Panics
@@ -5082,7 +5084,7 @@ impl IntersectVisitor for MergeIntersectsVisitor {
     /// Panics when the packed values would not fit one array, which is Java's
     /// `IllegalStateException`; the trait has no error channel here, and Java's
     /// exception is likewise unchecked.
-    fn grow(&mut self, count: i32) {
+    fn grow(&mut self, count: i32) -> Result<()> {
         debug_assert_eq!(self.docs_in_block, 0);
         let count = count as usize;
         if self.doc_ids.len() < count {
@@ -5094,7 +5096,8 @@ impl IntersectVisitor for MergeIntersectsVisitor {
                 ArrayUtil::MAX_ARRAY_LENGTH
             );
             self.packed_values = ArrayUtil::grow_exact(&self.packed_values, packed_values_size);
-        }
+        };
+        Ok(())
     }
 }
 
@@ -6539,16 +6542,16 @@ mod tests {
     }
 
     impl IntersectVisitor for RangeVisitor {
-        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Result<Relation> {
             let min_v = BitUtil::read_be_int(min_packed, 0);
             let max_v = BitUtil::read_be_int(max_packed, 0);
-            if max_v < self.min || min_v > self.max {
+            Ok(if max_v < self.min || min_v > self.max {
                 Relation::CellOutsideQuery
             } else if min_v >= self.min && max_v <= self.max {
                 Relation::CellInsideQuery
             } else {
                 Relation::CellCrossesQuery
-            }
+            })
         }
         fn visit(&mut self, doc_id: i32) -> Result<()> {
             self.found.push(doc_id);
@@ -6569,16 +6572,16 @@ mod tests {
     }
 
     impl IntersectVisitor for ExactVisitor {
-        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Result<Relation> {
             let min_v = BitUtil::read_be_int(min_packed, 0);
             let max_v = BitUtil::read_be_int(max_packed, 0);
-            if self.value < min_v || self.value > max_v {
+            Ok(if self.value < min_v || self.value > max_v {
                 Relation::CellOutsideQuery
             } else if self.value == min_v && self.value == max_v {
                 Relation::CellInsideQuery
             } else {
                 Relation::CellCrossesQuery
-            }
+            })
         }
         fn visit(&mut self, doc_id: i32) -> Result<()> {
             self.found.push(doc_id);
@@ -6601,23 +6604,28 @@ mod tests {
     }
 
     impl IntersectVisitor for Box2DVisitor {
-        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Result<Relation> {
             let min_x = BitUtil::read_le_int(min_packed, 0);
             let max_x = BitUtil::read_le_int(max_packed, 0);
             let min_y = BitUtil::read_le_int(min_packed, 4);
             let max_y = BitUtil::read_le_int(max_packed, 4);
-            if max_x < self.min_x || min_x > self.max_x || max_y < self.min_y || min_y > self.max_y
-            {
-                Relation::CellOutsideQuery
-            } else if min_x >= self.min_x
-                && max_x <= self.max_x
-                && min_y >= self.min_y
-                && max_y <= self.max_y
-            {
-                Relation::CellInsideQuery
-            } else {
-                Relation::CellCrossesQuery
-            }
+            Ok(
+                if max_x < self.min_x
+                    || min_x > self.max_x
+                    || max_y < self.min_y
+                    || min_y > self.max_y
+                {
+                    Relation::CellOutsideQuery
+                } else if min_x >= self.min_x
+                    && max_x <= self.max_x
+                    && min_y >= self.min_y
+                    && max_y <= self.max_y
+                {
+                    Relation::CellInsideQuery
+                } else {
+                    Relation::CellCrossesQuery
+                },
+            )
         }
         fn visit(&mut self, doc_id: i32) -> Result<()> {
             self.found.push(doc_id);
@@ -6756,14 +6764,15 @@ mod tests {
             Ok(())
         }
 
-        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Result<Relation> {
             let r = self.relate(min_packed, max_packed);
             self.trace.borrow_mut().push(format!("compare {r:?}"));
-            r
+            Ok(r)
         }
 
-        fn grow(&mut self, count: i32) {
+        fn grow(&mut self, count: i32) -> Result<()> {
             self.trace.borrow_mut().push(format!("grow {count}"));
+            Ok(())
         }
     }
 

@@ -459,7 +459,7 @@ impl LatLonPoint {
         for leaf in Arc::clone(searcher.get_index_reader()).leaves() {
             let reader = leaf.leaf_reader();
             if let Some(points) = reader.get_point_values(field)? {
-                total_hits += points.doc_count();
+                total_hits += points.doc_count()?;
                 readers.push(points);
                 doc_bases.push(leaf.doc_base());
                 live_docs.push(reader.get_live_docs());

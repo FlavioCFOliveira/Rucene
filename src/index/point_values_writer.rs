@@ -700,12 +700,12 @@ impl PointValues for BufferedPointValues {
         Ok(Box::new(BufferedPointTree::new(Arc::clone(&self.buffer))))
     }
 
-    fn size(&self) -> i64 {
-        i64::from(self.buffer.num_points)
+    fn size(&self) -> Result<i64> {
+        Ok(i64::from(self.buffer.num_points))
     }
 
-    fn doc_count(&self) -> i32 {
-        self.buffer.num_docs
+    fn doc_count(&self) -> Result<i32> {
+        Ok(self.buffer.num_docs)
     }
 
     fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
@@ -776,12 +776,12 @@ impl PointTree for BufferedPointTree {
     /// returns an independent cursor over the same buffer, in the order this
     /// one currently holds. Re-rooting is trivial: a mutable tree is a single
     /// leaf that is also its own root.
-    fn clone_tree(&self) -> Box<dyn PointTree> {
-        Box::new(Self {
+    fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
+        Ok(Box::new(Self {
             buffer: Arc::clone(&self.buffer),
             ords: self.ords.clone(),
             temp: None,
-        })
+        }))
     }
 
     /// Always `false`: a mutable tree is one leaf. Java makes this `final`.
@@ -802,13 +802,13 @@ impl PointTree for BufferedPointTree {
 
     /// Java throws here; see the module documentation. The bounds are the
     /// per-index-dimension minimum over every buffered value, computed once.
-    fn min_packed_value(&self) -> &[u8] {
-        &self.buffer.bounds().0
+    fn min_packed_value(&self) -> Result<&[u8]> {
+        Ok(&self.buffer.bounds().0)
     }
 
     /// Java throws here; see the module documentation.
-    fn max_packed_value(&self) -> &[u8] {
-        &self.buffer.bounds().1
+    fn max_packed_value(&self) -> Result<&[u8]> {
+        Ok(&self.buffer.bounds().1)
     }
 
     /// Java throws here; the flush path visits values, never bare doc IDs.
@@ -816,7 +816,7 @@ impl PointTree for BufferedPointTree {
     /// order the cursor currently holds — the same order
     /// [`visit_doc_values`](PointTree::visit_doc_values) would use.
     fn visit_doc_ids(&mut self, visitor: &mut dyn IntersectVisitor) -> Result<()> {
-        visitor.grow(self.buffer.num_points);
+        visitor.grow(self.buffer.num_points)?;
         for i in 0..self.buffer.num_points {
             visitor.visit(self.buffer.doc_ids[self.slot(i)])?;
         }
@@ -838,8 +838,8 @@ impl PointTree for BufferedPointTree {
         Ok(())
     }
 
-    fn size(&self) -> i64 {
-        i64::from(self.buffer.num_points)
+    fn size(&self) -> Result<i64> {
+        Ok(i64::from(self.buffer.num_points))
     }
 
     fn as_mutable(&mut self) -> Option<&mut dyn MutablePointTree> {
@@ -905,8 +905,8 @@ impl IntersectVisitor for CollectingPointVisitor {
         Ok(())
     }
 
-    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Relation {
-        Relation::CellCrossesQuery
+    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Result<Relation> {
+        Ok(Relation::CellCrossesQuery)
     }
 }
 
@@ -1100,8 +1100,8 @@ mod tests {
             buffer,
         };
         let values = reader.get_values("p").expect("its own field");
-        assert_eq!(values.size(), 1);
-        assert_eq!(values.doc_count(), 1);
+        assert_eq!(values.size().unwrap(), 1);
+        assert_eq!(values.doc_count().unwrap(), 1);
         assert_eq!(values.num_dimensions().unwrap(), 1);
         assert_eq!(values.bytes_per_dimension().unwrap(), 4);
         match reader.get_values("other") {
@@ -1123,7 +1123,7 @@ mod tests {
                 .unwrap();
         }
         let mut tree = tree_of(&writer);
-        assert_eq!(tree.size(), 3);
+        assert_eq!(tree.size().unwrap(), 3);
         let mut visitor = CollectingPointVisitor::default();
         tree.visit_doc_values(&mut visitor).unwrap();
         assert_eq!(
@@ -1284,7 +1284,7 @@ mod tests {
         }
         let mut tree = tree_of(&writer);
         tree.as_mutable().expect("mutable").swap(0, 3);
-        let mut copy = tree.clone_tree();
+        let mut copy = tree.clone_tree().unwrap();
         assert_eq!(copy.as_mutable().expect("mutable").doc_id(0), 3);
         copy.as_mutable().expect("mutable").swap(0, 3);
         assert_eq!(
@@ -1305,8 +1305,8 @@ mod tests {
         writer.add_packed_value(1, &packed(&[7, 2, 1])).unwrap();
         writer.add_packed_value(2, &packed(&[3, 4, 90])).unwrap();
         let tree = tree_of(&writer);
-        assert_eq!(tree.min_packed_value(), &[3, 2]);
-        assert_eq!(tree.max_packed_value(), &[7, 9]);
+        assert_eq!(tree.min_packed_value().unwrap(), &[3, 2]);
+        assert_eq!(tree.max_packed_value().unwrap(), &[7, 9]);
     }
 
     #[test]
@@ -1321,8 +1321,8 @@ mod tests {
             .add_packed_value(1, &packed(&[0x80, 0, 0, 0]))
             .unwrap();
         let tree = tree_of(&writer);
-        assert_eq!(tree.min_packed_value(), &[0x7f, 0, 0, 0]);
-        assert_eq!(tree.max_packed_value(), &[0x80, 0, 0, 0]);
+        assert_eq!(tree.min_packed_value().unwrap(), &[0x7f, 0, 0, 0]);
+        assert_eq!(tree.max_packed_value().unwrap(), &[0x80, 0, 0, 0]);
     }
 
     #[test]
@@ -1330,8 +1330,8 @@ mod tests {
         let bytes_used = counter();
         let writer = writer_1d(&bytes_used);
         let tree = tree_of(&writer);
-        assert!(tree.min_packed_value().is_empty());
-        assert!(tree.max_packed_value().is_empty());
+        assert!(tree.min_packed_value().unwrap().is_empty());
+        assert!(tree.max_packed_value().unwrap().is_empty());
     }
 
     #[test]

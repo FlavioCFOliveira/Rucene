@@ -541,8 +541,8 @@ impl IntersectVisitor for DumpVisitor {
         Ok(())
     }
 
-    fn compare(&self, _min: &[u8], _max: &[u8]) -> Relation {
-        Relation::CellCrossesQuery
+    fn compare(&self, _min: &[u8], _max: &[u8]) -> rucene::error::Result<Relation> {
+        Ok(Relation::CellCrossesQuery)
     }
 }
 
@@ -579,20 +579,20 @@ impl IntersectVisitor for RangeVisitor {
         Ok(())
     }
 
-    fn compare(&self, min: &[u8], max: &[u8]) -> Relation {
+    fn compare(&self, min: &[u8], max: &[u8]) -> rucene::error::Result<Relation> {
         let mut crosses = false;
         for dim in 0..self.num_index_dims {
             let lower = self.dim(&self.lower, dim);
             let upper = self.dim(&self.upper, dim);
             if self.dim(max, dim) < lower || self.dim(min, dim) > upper {
-                return Relation::CellOutsideQuery;
+                return Ok(Relation::CellOutsideQuery);
             }
             crosses |= self.dim(min, dim) < lower || self.dim(max, dim) > upper;
         }
         if crosses {
-            Relation::CellCrossesQuery
+            Ok(Relation::CellCrossesQuery)
         } else {
-            Relation::CellInsideQuery
+            Ok(Relation::CellInsideQuery)
         }
     }
 }
@@ -611,8 +611,8 @@ fn dump(reader: &dyn PointsReader, field_infos: &FieldInfos, case: &str) -> Vec<
         lines.push(format!(
             "pointstats field={} size={} docCount={} numDims={} numIndexDims={} bytesPerDim={} min={} max={}",
             info.name,
-            values.size(),
-            values.doc_count(),
+            values.size().unwrap(),
+            values.doc_count().unwrap(),
             values.num_dimensions().expect("dims"),
             values.num_index_dimensions().expect("index dims"),
             values.bytes_per_dimension().expect("bytes per dim"),
