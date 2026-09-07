@@ -27,6 +27,9 @@ impl BooleanSimilarity {
 }
 
 impl Similarity for BooleanSimilarity {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.similarities.BooleanSimilarity"
+    }
     fn scorer<'a>(
         &'a self,
         boost: f32,

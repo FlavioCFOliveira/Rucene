@@ -196,6 +196,236 @@ fn object_contracts_match_lucene() {
     enumerations(&measured, index_dir.path());
     pending_deletes(&measured, index_dir.path());
     buffered_updates(&measured, index_dir.path());
+    writer_configs(&measured);
+    segment_infos(&measured, index_dir.path());
+    field_updates_buffer(&measured);
+}
+
+/// The four `FieldUpdatesBuffer` accessors that answer a *value*, measured out
+/// of the jar rather than derived from this port's own arithmetic.
+///
+/// The buffer is where the port diverges most from Lucene — Java packs the
+/// updates into parallel primitive arrays that elide a repeated value, this
+/// port keeps one record per update — so what the packed representation
+/// answers, and what the record list answers, have to be shown to agree. The
+/// three shapes are the three the packing distinguishes: every update carrying
+/// the same value (Java's `numericValues` stays one slot long), updates
+/// carrying different values (it grows), and a buffer that only ever received
+/// no-value updates (it keeps its single seeded slot, so `hasSingleValue()` is
+/// still `true` and both extremes are still at their seeds, which Java reports
+/// as `0`).
+fn field_updates_buffer(m: &Measured) {
+    use rucene::index::doc_values_update::DocValuesUpdate;
+    use rucene::index::field_updates_buffer::FieldUpdatesBuffer;
+    use rucene::index::Term;
+
+    let term = |value: &str| Term::new("id", BytesRef::new(value.as_bytes().to_vec()));
+
+    let mut same = FieldUpdatesBuffer::new(DocValuesUpdate::numeric(term("a"), "price", 7), 3)
+        .expect("a numeric buffer");
+    same.add_numeric_update(&term("b"), 7, 5).expect("second");
+    same.add_numeric_update(&term("c"), 7, 9).expect("third");
+
+    let mut mixed = FieldUpdatesBuffer::new(DocValuesUpdate::numeric(term("a"), "price", -4), 3)
+        .expect("a numeric buffer");
+    mixed.add_numeric_update(&term("b"), 11, 5).expect("second");
+    mixed.add_numeric_update(&term("c"), 0, 9).expect("third");
+
+    let mut none = FieldUpdatesBuffer::new(
+        DocValuesUpdate::new(
+            rucene::index::DocValuesType::NUMERIC,
+            term("a"),
+            "price",
+            3,
+            rucene::index::doc_values_update::DocValuesUpdateValue::None,
+        ),
+        3,
+    )
+    .expect("a buffer of resets");
+    none.add_reset("price", &term("b"), 5).expect("second");
+
+    for (name, buffer, count) in [
+        ("same", &same, 3usize),
+        ("mixed", &mixed, 3),
+        ("none", &none, 2),
+    ] {
+        assert_eq!(
+            buffer.has_single_value().to_string(),
+            m.get(&format!("FieldUpdatesBuffer.hasSingleValue/{name}")),
+            "hasSingleValue disagrees for the `{name}` buffer"
+        );
+        // Java answers `0` where this port answers `None`, the divergence
+        // declared on `min_numeric_value`; `unwrap_or(0)` is that mapping and
+        // nothing else, so a wrong value still fails.
+        assert_eq!(
+            buffer.min_numeric_value().unwrap_or(0).to_string(),
+            m.get(&format!("FieldUpdatesBuffer.getMinNumeric/{name}")),
+            "getMinNumeric disagrees for the `{name}` buffer"
+        );
+        assert_eq!(
+            buffer.max_numeric_value().unwrap_or(0).to_string(),
+            m.get(&format!("FieldUpdatesBuffer.getMaxNumeric/{name}")),
+            "getMaxNumeric disagrees for the `{name}` buffer"
+        );
+        for i in 0..count {
+            assert_eq!(
+                buffer.get_numeric_value(i).to_string(),
+                m.get(&format!("FieldUpdatesBuffer.getNumericValue/{name}/{i}")),
+                "getNumericValue({i}) disagrees for the `{name}` buffer"
+            );
+        }
+    }
+}
+
+/// `toStringVerbose()` on the three segment types, read back from the very
+/// commit Lucene wrote.
+///
+/// The strings are not reproducible from an object this crate builds: they
+/// carry the segment ids and the flush timestamps of the run that produced
+/// them, and the diagnostics map renders in `java.util.HashMap` bucket order.
+/// Reading Lucene's own `segments_1` is what makes them comparable — and it is
+/// the map order that makes this an interesting comparison, because it is
+/// answered by
+/// [`JavaHashMap`](rucene::util::java_collections::JavaHashMap) rather than by
+/// insertion order.
+fn segment_infos(m: &Measured, index_dir: &std::path::Path) {
+    let _ = rucene::codecs::register_codec("Lucene104", rucene::codecs::Lucene104Codec::new());
+    let directory: Arc<dyn Directory> =
+        Arc::new(rucene::store::FSDirectory::open(index_dir).expect("open the Java index"));
+    let infos = rucene::index::SegmentInfos::read_latest_commit(directory)
+        .expect("read the commit Lucene wrote");
+
+    /// Sorts the entries inside every `{...}` block.
+    ///
+    /// `SegmentInfo`'s diagnostics and attributes go through `Map.copyOf`,
+    /// whose iteration order is decided by a salt drawn once per JVM — two runs
+    /// of *Lucene itself* disagree, which
+    /// `seal_bytes::lucenes_own_si_diagnostics_order_is_not_stable_between_jvms`
+    /// measures. The entries and the rest of the rendering are compared exactly;
+    /// only the order inside the braces is normalised, because there is no
+    /// order there to be faithful to.
+    fn map_entries_sorted(rendered: &str) -> String {
+        let mut out = String::with_capacity(rendered.len());
+        let mut rest = rendered;
+        while let Some(open) = rest.find('{') {
+            let close = open
+                + rest[open..]
+                    .find('}')
+                    .expect("every `{` a rendering opens is closed");
+            out.push_str(&rest[..=open]);
+            let mut entries: Vec<&str> = rest[open + 1..close].split(", ").collect();
+            entries.sort_unstable();
+            out.push_str(&entries.join(", "));
+            out.push('}');
+            rest = &rest[close + 1..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    assert_eq!(
+        map_entries_sorted(&infos.to_string_verbose()),
+        map_entries_sorted(m.get("SegmentInfos.toStringVerbose/two-segments"))
+    );
+    assert_eq!(
+        infos.to_string(),
+        m.get("SegmentInfos.toString/two-segments"),
+        "the non-verbose rendering shares the body and must not have moved"
+    );
+    for i in 0..infos.size() {
+        let commit = infos.info(i);
+        assert_eq!(
+            map_entries_sorted(&commit.to_string_verbose()),
+            map_entries_sorted(m.get(&format!("SegmentCommitInfo.toStringVerbose/{i}")))
+        );
+        assert_eq!(
+            map_entries_sorted(&commit.info.to_string_verbose()),
+            map_entries_sorted(m.get(&format!("SegmentInfo.toStringVerbose/{i}")))
+        );
+    }
+}
+
+/// `LiveIndexWriterConfig.toString()` and the `IndexWriterConfig` override,
+/// which appends one `writer=` line to it.
+///
+/// Twenty-two of the twenty-three clauses are compared byte for byte. The
+/// twenty-third, `eventListener=`, renders an object with no `toString()` of
+/// its own, so Java prints `name@<identity hash>`; the hash has no Rust
+/// counterpart and the crate substitutes the object's address, so only that
+/// hexadecimal is erased. Erasing it is not a way of avoiding the comparison:
+/// the class name in front of the `@` — the anonymous
+/// `IndexWriterEventListener$1` — is exactly what is being pinned, and it is
+/// the part a port gets wrong.
+fn writer_configs(m: &Measured) {
+    use rucene::index::index_writer_config::{IndexWriterConfig, LiveIndexWriterConfig, OpenMode};
+    use rucene::index::merge_policy::NoMergePolicy;
+    use rucene::search::{Sort, SortField, SortFieldType};
+
+    /// The escaping the Java fixture applies before printing a multi-line
+    /// value, so the two sides are compared in the same shape.
+    fn escape(rendered: &str) -> String {
+        rendered.replace('\\', "\\\\").replace('\n', "\\n")
+    }
+
+    const LISTENER: &str = "IndexWriterEventListener$1@";
+
+    /// Erases the identity hash of the one clause that carries one.
+    fn erase_identity(escaped: &str) -> String {
+        match escaped.find(LISTENER) {
+            Some(at) => {
+                let from = at + LISTENER.len();
+                let end = escaped[from..]
+                    .find("\\n")
+                    .map_or(escaped.len(), |i| from + i);
+                format!("{}<identity>{}", &escaped[..from], &escaped[end..])
+            }
+            None => panic!("no `{LISTENER}` clause in `{escaped}`"),
+        }
+    }
+
+    let defaults = IndexWriterConfig::new();
+    assert_eq!(
+        erase_identity(&escape(&defaults.to_string())),
+        erase_identity(m.get("IndexWriterConfig.toString/default")),
+        "the default IndexWriterConfig renders every clause Lucene renders"
+    );
+
+    let live = LiveIndexWriterConfig::new(IndexWriterConfig::new().analyzer_arc());
+    assert_eq!(
+        erase_identity(&escape(&live.to_string())),
+        erase_identity(m.get("LiveIndexWriterConfig.toString/default")),
+        "LiveIndexWriterConfig.toString() is the same text without `writer=`"
+    );
+
+    let mut tuned = IndexWriterConfig::new();
+    tuned
+        .set_ram_buffer_size_mb(64.0)
+        .expect("a valid RAM buffer size");
+    tuned
+        .set_max_buffered_docs(1000)
+        .expect("a valid doc count");
+    tuned.set_use_compound_file(false);
+    tuned.set_commit_on_close(false);
+    tuned.set_soft_deletes_field(Some("__soft_deletes".to_string()));
+    tuned
+        .set_index_sort(
+            Sort::new_fields(vec![SortField::new(
+                Some("price".to_string()),
+                SortFieldType::Long,
+            )
+            .expect("a long sort field")])
+            .expect("one sort field"),
+        )
+        .expect("a sortable field type");
+    tuned
+        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .expect("a merge policy");
+    tuned.set_open_mode(OpenMode::CREATE).expect("an open mode");
+    assert_eq!(
+        erase_identity(&escape(&tuned.to_string())),
+        erase_identity(m.get("IndexWriterConfig.toString/tuned")),
+        "a tuned config renders the settings that were changed"
+    );
 }
 
 fn util_bit_sets(m: &Measured) {

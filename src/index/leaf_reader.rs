@@ -178,6 +178,16 @@ impl<T: LeafReader> AsIndexReader for T {
 /// implement this trait; a blanket implementation makes them usable as
 /// `dyn IndexReader`, and [`AsIndexReader`] carries that view onto
 /// `Arc<dyn LeafReader>`.
+///
+/// One inherited member is answered by that blanket implementation rather than
+/// declared here. Equivalent to `LeafReader.getContext()` — which Java declares
+/// `final`, returning the `LeafReaderContext` the reader built for itself — is
+/// [`IndexReader::get_context`](crate::index::index_reader::IndexReader::get_context),
+/// whose body is `build_context(...)`; the `build_context` in
+/// `impl<T: LeafReader> IndexReader for T` below is the one that builds a
+/// `LeafReaderContext`, so every leaf answers `getContext()` exactly as Java's
+/// override does. Declaring a second `get_context` on this trait would give
+/// every leaf two methods of that name for no gain.
 pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
     /// Returns the shared core state for this reader.
     fn core(&self) -> &IndexReaderCore;
@@ -210,6 +220,18 @@ pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
 
     /// Implements close logic for this leaf.
     fn do_close(&self) -> Result<()>;
+
+    /// Runs the close listeners registered on this leaf's own cache helper.
+    ///
+    /// The `IndexReader.notifyReaderClosedListeners()` override point, declared
+    /// here as well so that a leaf can take it: the blanket
+    /// `impl<T: LeafReader> IndexReader for T` below is what answers the
+    /// `IndexReader` method, and a leaf that implemented it directly would
+    /// collide with that impl. `SegmentReader` is the leaf that overrides it in
+    /// Lucene. The default is the no-op `IndexReader` declares.
+    fn notify_reader_closed_listeners(&self) -> Result<()> {
+        Ok(())
+    }
 
     /// Returns the reader-level cache helper, if any.
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>>;
@@ -408,6 +430,10 @@ impl<T: LeafReader> IndexReader for T {
 
     fn do_close(&self) -> Result<()> {
         LeafReader::do_close(self)
+    }
+
+    fn notify_reader_closed_listeners(&self) -> Result<()> {
+        LeafReader::notify_reader_closed_listeners(self)
     }
 
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {

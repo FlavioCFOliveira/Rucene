@@ -445,7 +445,11 @@ impl Sorter {
     /// Sorts `max_doc` documents by several comparators applied in order,
     /// returning `None` when they are already in order.
     ///
-    /// Equivalent to `Sorter.sort(int, DocComparator[])`.
+    /// Equivalent to `Sorter.sort(int, DocComparator[])` and to the
+    /// `Sorter.sortAndLeaveUnpacked(int, DocComparator[])` it delegates to.
+    /// Java splits the two because `sort` packs the map afterwards, through
+    /// `PackableDocMap.pack()`; this port's [`SorterDocMap`] is the unpacked
+    /// form and is never packed, so the two collapse into one function.
     pub fn sort_multi(max_doc: i32, comparators: Vec<DocComparator>) -> Option<SorterDocMap> {
         let combined: DocComparator = Box::new(move |a: i32, b: i32| {
             for comparator in &comparators {

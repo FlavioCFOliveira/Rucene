@@ -891,6 +891,27 @@ impl JavaOrderedMap for JavaStringMap {
     }
 }
 
+impl fmt::Display for JavaStringMap {
+    /// Renders the map the way `java.util.AbstractMap.toString()` does:
+    /// `{key=value, key=value}`, in the map's own iteration order, and `{}`
+    /// when it is empty.
+    ///
+    /// Every `java.util.Map` Lucene holds inherits that body — `HashMap`,
+    /// `TreeMap` and the `Collections.unmodifiableMap` wrapper alike — so a
+    /// `toString()` that appends a map, as `SegmentInfo.toStringVerbose()`
+    /// appends its diagnostics and its attributes, prints exactly this.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("{")?;
+        for (i, (key, value)) in self.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{key}={value}")?;
+        }
+        f.write_str("}")
+    }
+}
+
 impl From<JavaHashMap<String>> for JavaStringMap {
     fn from(map: JavaHashMap<String>) -> Self {
         JavaStringMap::Hash(map)

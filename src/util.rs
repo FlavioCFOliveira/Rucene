@@ -2909,6 +2909,17 @@ impl Constants {
 
 /// Debugging logging sink for Lucene classes.
 pub trait InfoStream: Send + Sync {
+    /// Returns the binary name of the Lucene class this stream ports.
+    ///
+    /// Stands in for `getClass().getName()`, which Rust cannot answer: there is
+    /// no runtime class object, and `std::any::type_name` names the Rust type,
+    /// not the Java one. `LiveIndexWriterConfig.toString()` prints this
+    /// stream's class name, so the name has to be carried by the type itself.
+    ///
+    /// There is no default: Java has no instance whose class is unknown, so
+    /// every implementor states its own.
+    fn java_class_name(&self) -> &'static str;
+
     /// Logs a message for the given component.
     fn message(&self, component: &str, message: &str);
 
@@ -2924,6 +2935,10 @@ pub trait InfoStream: Send + Sync {
 pub struct NoOutputInfoStream;
 
 impl InfoStream for NoOutputInfoStream {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.util.InfoStream$NoOutput"
+    }
+
     fn message(&self, _component: &str, _message: &str) {
         // No-op: `message()` should never be called when `is_enabled` is false.
     }

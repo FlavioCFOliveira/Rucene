@@ -430,6 +430,13 @@ pub trait IndexReader: Send + Sync + Debug + Display + 'static {
     }
 
     /// Decrements the reference count, closing the reader when it reaches zero.
+    ///
+    /// Equivalent to `IndexReader.decRef()` (`IndexReader.java:246-264`), whose
+    /// body is `doClose()` inside a try-with-resources declaring
+    /// `reportCloseToParentReaders` and then `notifyReaderClosedListeners` —
+    /// and resources close in *reverse* declaration order, so the listeners run
+    /// before the parents are told. An exception from `doClose()` wins; if it
+    /// succeeded, the first finalizer's exception propagates.
     fn dec_ref(&self) -> Result<()> {
         if self.core().ref_count() <= 0 {
             return Err(LuceneError::AlreadyClosed(
@@ -440,9 +447,9 @@ pub trait IndexReader: Send + Sync + Debug + Display + 'static {
         if rc == 0 {
             self.core().set_closed();
             let close_result = self.do_close();
+            let notify_result = self.notify_reader_closed_listeners();
             self.core().report_close_to_parent_readers();
-            let _ = self.notify_reader_closed_listeners();
-            close_result
+            close_result.and(notify_result)
         } else if rc < 0 {
             Err(LuceneError::IllegalState(format!(
                 "too many decRef calls: refCount is {rc} after decrement"
@@ -496,6 +503,15 @@ pub trait IndexReader: Send + Sync + Debug + Display + 'static {
     ) -> Arc<dyn IndexReaderContext>;
 
     /// Returns the root context for this reader's sub-reader tree.
+    ///
+    /// Equivalent to the abstract `IndexReader.getContext()` and to the two
+    /// implementations of it: `LeafReader.getContext()`, which Java declares
+    /// `final` and answers with the `LeafReaderContext` the reader built for
+    /// itself, and `CompositeReader.getContext()`, which builds a
+    /// `CompositeReaderContext` over the sub-readers and caches it. Both are
+    /// answered here by [`build_context`](Self::build_context), which each
+    /// reader implements — so the split is between the two `build_context`
+    /// bodies rather than between two `getContext` overrides.
     fn get_context(self: Arc<Self>) -> Arc<dyn IndexReaderContext> {
         self.build_context(None, 0, 0, 0, 0)
     }

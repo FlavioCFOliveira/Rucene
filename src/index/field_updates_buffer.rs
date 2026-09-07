@@ -167,8 +167,11 @@ impl FieldUpdatesBuffer {
 
     /// Buffers an update that clears the field.
     ///
-    /// Equivalent to `FieldUpdatesBuffer.add(String, int, int, boolean)` called
-    /// with `hasValue` false.
+    /// Equivalent to `FieldUpdatesBuffer.addNoValue(Term, int)`, which appends
+    /// the term and then calls the private `add(String, int, int, boolean)`
+    /// with `hasValue` false. Java reads the field off `term.field`; this port
+    /// takes it separately because [`Term`] is shared with the query side and
+    /// the caller already has it.
     pub fn add_reset(&mut self, field: &str, term: &Term, doc_up_to: i32) -> Result<()> {
         self.push(
             field.to_string(),
@@ -199,16 +202,69 @@ impl FieldUpdatesBuffer {
         self.updates.len()
     }
 
-    /// Returns the smallest numeric value buffered, or `None` for a binary
-    /// buffer.
+    /// Returns the smallest numeric value buffered, or `None` when none was.
+    ///
+    /// Equivalent to `FieldUpdatesBuffer.getMinNumeric()`, which asserts the
+    /// buffer is numeric and answers `0` when no update carried a value —
+    /// `minNumeric` and `maxNumeric` are still at their `Long.MAX_VALUE` /
+    /// `Long.MIN_VALUE` seeds. `None` is that case, said in the type rather
+    /// than in a magic `0` a caller could mistake for a real minimum; the
+    /// caller that needs Java's literal answer writes `unwrap_or(0)`.
     pub fn min_numeric_value(&self) -> Option<i64> {
         (self.min_numeric != i64::MAX).then_some(self.min_numeric)
     }
 
-    /// Returns the largest numeric value buffered, or `None` for a binary
-    /// buffer.
+    /// Returns the largest numeric value buffered, or `None` when none was.
+    ///
+    /// Equivalent to `FieldUpdatesBuffer.getMaxNumeric()`; see
+    /// [`min_numeric_value`](Self::min_numeric_value) for why `None` stands in
+    /// for Java's `0`.
     pub fn max_numeric_value(&self) -> Option<i64> {
         (self.max_numeric != i64::MIN).then_some(self.max_numeric)
+    }
+
+    /// Returns whether every numeric update in the buffer carries the same
+    /// value.
+    ///
+    /// Equivalent to `FieldUpdatesBuffer.hasSingleValue()`, which answers
+    /// `isNumeric && numericValues.length == 1` — its packed array stays at
+    /// length one for as long as every value written into it equals the first.
+    /// This port keeps one record per update (the divergence declared on the
+    /// type), so the same question is answered by comparing them; a buffer with
+    /// no numeric value at all answers `false`, exactly as Java's does, because
+    /// a binary buffer's `numericValues` is null and `isNumeric` is false.
+    pub fn has_single_value(&self) -> bool {
+        if !self.is_numeric {
+            return false;
+        }
+        let mut values = self.updates.iter().filter_map(|update| match update.value {
+            DocValuesUpdateValue::Numeric(value) => Some(value),
+            _ => None,
+        });
+        match values.next() {
+            Some(first) => values.all(|value| value == first),
+            // Java seeds `numericValues` with one slot from the constructor, so
+            // a buffer that has only ever been given no-value updates still has
+            // length one and answers `true`.
+            None => true,
+        }
+    }
+
+    /// Returns the numeric value of the update at `index`.
+    ///
+    /// Equivalent to `FieldUpdatesBuffer.getNumericValue(int)`, which answers
+    /// `0` for an update that carries no value and otherwise reads the packed
+    /// array through `getArrayIndex`. With one record per update the ordinal is
+    /// the record's own index, which is why `getArrayIndex` has no counterpart
+    /// here.
+    ///
+    /// Out of range, and for a binary buffer, the answer is `0` — the value
+    /// Java's `hasValues` bit yields for an update with none.
+    pub fn get_numeric_value(&self, index: usize) -> i64 {
+        match self.updates.get(index).map(|update| &update.value) {
+            Some(DocValuesUpdateValue::Numeric(value)) => *value,
+            _ => 0,
+        }
     }
 
     /// Iterates the buffered updates in the order they were added.

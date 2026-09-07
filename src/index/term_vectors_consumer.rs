@@ -417,8 +417,12 @@ impl TermVectorsConsumerPerField {
     /// Records one occurrence of the term interned at `text_start`.
     ///
     /// Equivalent to `TermsHashPerField.add(int, int)` followed by
-    /// `TermVectorsConsumerPerField.newTerm` or `.addTerm`. `streams` is this
-    /// consumer's own byte pool; `text_start` addresses the *postings* pool.
+    /// `TermVectorsConsumerPerField.newTerm(int, int)` or
+    /// `TermVectorsConsumerPerField.addTerm(int, int)` — the two halves of
+    /// Java's template method, which this port dispatches on the returned
+    /// [`TermSlot`](crate::index::TermSlot) instead of overriding. `streams` is
+    /// this consumer's own byte pool; `text_start` addresses the *postings*
+    /// pool.
     ///
     /// # Errors
     ///

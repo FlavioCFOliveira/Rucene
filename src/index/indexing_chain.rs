@@ -4773,6 +4773,10 @@ mod tests {
         #[derive(Debug)]
         struct ZeroSimilarity;
         impl Similarity for ZeroSimilarity {
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.search.similarities.Similarity"
+            }
+
             fn compute_norm(&self, _state: &FieldInvertState) -> Result<i64> {
                 Ok(0)
             }

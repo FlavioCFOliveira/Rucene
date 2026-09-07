@@ -198,6 +198,12 @@ impl RecordingCommit {
     }
 }
 
+impl std::fmt::Display for RecordingCommit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RecordingCommit(segments_{})", self.generation)
+    }
+}
+
 impl IndexCommit for RecordingCommit {
     fn get_segments_file_name(&self) -> String {
         format!("segments_{}", self.generation)

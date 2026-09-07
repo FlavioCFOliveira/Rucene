@@ -74,6 +74,10 @@ name = "delete_by_query"
 path = "tests/delete_by_query.rs"
 
 [[test]]
+name = "index_writer_members"
+path = "tests/index_writer_members.rs"
+
+[[test]]
 name = "portability_object_contract_core"
 path = "tests/portability/object_contract_core.rs"
 

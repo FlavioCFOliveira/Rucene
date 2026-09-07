@@ -107,5 +107,98 @@
   ],
   "triageClass": "na",
   "triageReason": "There is no contract to discharge: the Java method exists only to forbid the call, which Rust forbids at compile time by the absence of the trait. A Rust item answering it would have to reintroduce the failure Lucene raises."
+ },
+ "org.apache.lucene.index.CheckIndex": {
+  "reason": "main(String[]) is `System.exit(doMain(args))`. A library crate has no process to exit and no `main`; `doMain` is ported as the public `check_index::do_main`, which returns the exit code Java hands to `System.exit`, and the divergence is declared on that item. This is the same shape `LockVerifyServer::main` and `LockStressTest::main` already take.",
+  "methods": [
+   "main"
+  ],
+  "triageClass": "na",
+  "triageReason": "The method exists only to turn doMain's return value into a process exit code, which a library crate has nothing to do with; doMain itself is ported and returns that code."
+ },
+ "org.apache.lucene.index.CorruptIndexException": {
+  "reason": "The port's CorruptIndex error variant carries the composed message rather than Java's separate `message` and `resourceDescription` fields, because 232 call sites construct it directly with an already-composed string. The divergence, and why the two parts cannot be recovered from the composed one, is declared on `LuceneError::corrupt_index` in src/error.rs.",
+  "methods": [
+   "getOriginalMessage"
+  ],
+  "triageClass": "na",
+  "triageReason": "The field it reads does not exist: the port keeps one composed message, a divergence declared at the constructor. The rendered message is identical to Java's."
+ },
+ "org.apache.lucene.index.DocumentsWriterPerThread": {
+  "reason": "`DocumentsWriterPerThread implements java.util.concurrent.locks.Lock`. `isHeldByCurrentThread()` exists only to be asserted, and the port's `DwptGuard` proves the same thing in the type system \u2014 every operation Java guards with `assert isHeldByCurrentThread()` is a method on the guard. `lockInterruptibly()` rests on JVM thread interruption, which Rust has no equivalent of, and Lucene never calls it on a DWPT. `newCondition()` throws UnsupportedOperationException in Lucene. All three are declared on `DocumentsWriterPerThread::lock`.",
+  "methods": [
+   "isHeldByCurrentThread",
+   "lockInterruptibly",
+   "newCondition"
+  ],
+  "triageClass": "na",
+  "triageReason": "Members of the `Lock` interface the class implements: one is an assertion the RAII guard makes structural, one needs JVM thread interruption, and one throws UnsupportedOperationException in Lucene itself."
+ },
+ "org.apache.lucene.index.FrozenBufferedUpdates": {
+  "reason": "`unlock()` releases the `applyLock` a matching `lock()`/`tryLock()` took. The port returns a `MutexGuard` from `lock_apply`/`try_lock_apply`, so the release is the guard's `Drop` \u2014 there is no separate method to call, and no way to call it twice or forget it.",
+  "methods": [
+   "unlock"
+  ],
+  "triageClass": "na",
+  "triageReason": "An explicit unlock has no counterpart where the lock hands back an RAII guard; releasing is dropping the guard."
+ },
+ "org.apache.lucene.index.FieldUpdatesBuffer": {
+  "reason": "Java packs the updates into parallel primitive arrays plus a BytesRefArray and elides a repeated field name or value; this port keeps one record per update, a divergence declared on the type. `getArrayIndex(int,int)` resolves an ordinal into a possibly-elided array, `sizeOfString(String)` accounts the elided String[], and `assertTermAndDocInOrder()` validates the sort state `finish()` builds for the sorted-terms optimisation this port never takes. All three exist only to serve the packed representation.",
+  "methods": [
+   "getArrayIndex",
+   "sizeOfString",
+   "assertTermAndDocInOrder"
+  ],
+  "triageClass": "na",
+  "triageReason": "Artefacts of the packed parallel-array representation the port replaces with one record per update, declared on the type; the iteration order, docUpTo semantics and numeric/binary split are unchanged."
+ },
+ "org.apache.lucene.index.TermsHash": {
+  "reason": "The bodies of `startDocument()`, `finishDocument(int)` and `flush(Map, SegmentWriteState, Sorter.DocMap, NormsProducer)` on the abstract TermsHash are, in their entirety, `if (nextTermsHash != null) nextTermsHash.<same>()`: they walk the chain Lucene builds from the freq-prox hash to the term-vectors hash. This port gives the term-vectors consumer its own TermsHash and has no `nextTermsHash` link \u2014 declared in the `freq_prox_terms_writer` module notes and again on `TermsHash::abort` \u2014 so the indexing chain calls both consumers directly, in Lucene's order.",
+  "methods": [
+   "startDocument",
+   "finishDocument",
+   "flush"
+  ],
+  "triageClass": "na",
+  "triageReason": "Chain-walking methods whose whole body is a forward to `nextTermsHash`; the port has no chain, and the concrete overrides that do real work are ported on the consumers."
+ },
+ "org.apache.lucene.index.TermsHashPerField": {
+  "reason": "`start(IndexableField, boolean)` and `finish()` on the abstract base forward to `nextPerField`, and `getNextPerField()` returns that link \u2014 the chain this port does not build. `newPostingsArray()` re-takes a downcast of the abstract `ParallelPostingsArray` into the subclass's typed view, and `createPostingsArray(int)` is the factory the subclass supplies; the port stores one concrete `FreqProxPosting` struct per term in a `Vec`, so there is no abstract array to downcast and no factory to call. Both are declared in the `freq_prox_terms_writer` module notes.",
+  "methods": [
+   "start",
+   "finish",
+   "getNextPerField",
+   "newPostingsArray",
+   "createPostingsArray"
+  ],
+  "triageClass": "na",
+  "triageReason": "The chain link and the postings-array factory of a class hierarchy the port replaces with one concrete type and an array of structs."
+ },
+ "org.apache.lucene.index.FreqProxTermsWriterPerField": {
+  "reason": "`start(IndexableField, boolean)` calls `super.start` and then caches the three `TokenStream` attribute objects (`termFreqAtt`, `payloadAttribute`, `offsetAttribute`) off `fieldState`; this port passes the values in each `InvertedToken`, so there is nothing to cache. `newPostingsArray()` and `createPostingsArray(int)` are the downcast and the factory of the `ParallelPostingsArray` hierarchy the port replaces with one struct per term. All three are declared in the `freq_prox_terms_writer` module notes.",
+  "methods": [
+   "start",
+   "newPostingsArray",
+   "createPostingsArray"
+  ],
+  "triageClass": "na",
+  "triageReason": "Attribute caching the port has no attributes for, plus the postings-array factory hooks of a hierarchy replaced by one concrete type."
+ },
+ "org.apache.lucene.index.TermVectorsConsumerPerField": {
+  "reason": "`createPostingsArray(int)` builds the `TermVectorsPostingsArray` that `TermsHashPerField` holds as the abstract `ParallelPostingsArray`. The columns of that subclass are fields of the single `FreqProxPosting` struct this port stores per term, so there is no separate array to construct; the sibling `newPostingsArray()` is ported precisely to declare that there is nothing left to re-take.",
+  "methods": [
+   "createPostingsArray"
+  ],
+  "triageClass": "na",
+  "triageReason": "The postings-array factory of a hierarchy the port replaces with one struct per term."
+ },
+ "org.apache.lucene.index.ParallelPostingsArray": {
+  "reason": "`newInstance(int)` is the abstract factory each subclass overrides, and `copyTo(ParallelPostingsArray, int)` copies the parallel columns into a grown instance of the same subclass. This port stores one `FreqProxPosting` struct per term in a `Vec`, so growth is `Vec`'s own and there is neither a subclass to instantiate nor parallel columns to copy across. Declared in the `freq_prox_terms_writer` module notes.",
+  "methods": [
+   "newInstance",
+   "copyTo"
+  ],
+  "triageClass": "na",
+  "triageReason": "The grow-and-copy protocol of a parallel-array hierarchy the port replaces with a Vec of structs."
  }
 }

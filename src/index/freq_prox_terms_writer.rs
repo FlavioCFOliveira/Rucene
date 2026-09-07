@@ -1188,8 +1188,12 @@ impl FreqProxTermsWriterPerField {
 
     /// Returns `true` when any token of this field carried a payload.
     ///
-    /// Equivalent to `FreqProxTermsWriterPerField.sawPayloads`, which drives
-    /// `FieldInfo.setStorePayloads()`.
+    /// Equivalent to `FreqProxTermsWriterPerField.sawPayloads`, and to the
+    /// `FreqProxTermsWriterPerField.finish()` that reads it: Java's whole
+    /// override is `super.finish(); if (sawPayloads) fieldInfo.setStorePayloads();`,
+    /// and the base call is the chain walk this port does not have. The second
+    /// half runs in the indexing chain, which owns the `FieldInfo` this writer
+    /// only borrows, so the flag is exposed instead of the method.
     pub fn saw_payloads(&self) -> bool {
         self.saw_payloads
     }

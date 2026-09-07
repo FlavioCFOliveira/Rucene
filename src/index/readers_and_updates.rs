@@ -368,6 +368,56 @@ impl PendingDeletes {
             != self.get_del_count(&reader.get_segment_info().clone())
     }
 
+    /// Checks that this tracker, the segment commit and `reader` agree on how
+    /// many documents are live.
+    ///
+    /// Equivalent to `PendingDeletes.verifyDocCounts(CodecReader)`
+    /// (`PendingDeletes.java:256-293`), which Lucene comments "call only from
+    /// assert!" and which returns `true` so that it can be written
+    /// `assert verifyDocCounts(reader)`. This returns `true` for the same
+    /// reason: the call site wraps it in [`debug_assert!`], so the whole check —
+    /// including the scan of the live-docs bits — disappears from a release
+    /// build, exactly as Java's does when assertions are off.
+    ///
+    /// # Panics
+    ///
+    /// In a debug build, when the live-docs bits, the commit's deletion counts
+    /// and the reader disagree.
+    pub fn verify_doc_counts(&mut self, info: &SegmentCommitInfo, reader: &SegmentReader) -> bool {
+        let max_doc = info.info.max_doc().unwrap_or(0);
+        let count = match self.get_live_docs() {
+            Some(live_docs) => (0..max_doc)
+                .filter(|doc| live_docs.get(*doc as usize))
+                .count() as i32,
+            None => max_doc,
+        };
+        debug_assert_eq!(
+            self.num_docs(info),
+            count,
+            "info.maxDoc={max_doc} info.getDelCount()={} info.getSoftDelCount()={} \
+             pendingDeletes={} count={count} numDocs: {}",
+            info.get_del_count(),
+            info.get_soft_del_count(),
+            self.to_string_with_info(info),
+            self.num_docs(info)
+        );
+        debug_assert_eq!(
+            LeafReader::num_docs(reader),
+            self.num_docs(info),
+            "reader.numDocs() = {} numDocs() {}",
+            LeafReader::num_docs(reader),
+            self.num_docs(info)
+        );
+        debug_assert!(
+            IndexReader::num_deleted_docs(reader) <= max_doc,
+            "delCount={} info.maxDoc={max_doc} rld.pendingDeleteCount={} info.getDelCount()={}",
+            IndexReader::num_deleted_docs(reader),
+            self.num_pending_deletes(),
+            info.get_del_count()
+        );
+        true
+    }
+
     /// Returns how many deletions a merge of this segment would reclaim.
     ///
     /// Equivalent to `PendingDeletes.numDeletesToMerge(MergePolicy,
@@ -775,6 +825,55 @@ impl PendingSoftDeletes {
         info.info.max_doc().unwrap_or(0) - self.get_del_count(info)
     }
 
+    /// Checks that this tracker, the segment commit and `reader` agree on how
+    /// many documents are live.
+    ///
+    /// `PendingSoftDeletes` inherits `PendingDeletes.verifyDocCounts(CodecReader)`
+    /// rather than overriding it, and the inherited body calls `getLiveDocs()`,
+    /// `numDocs()`, `numPendingDeletes()` and `toString()` **virtually** — so it
+    /// sees this subclass's soft-delete-aware answers, not the hard ones. Rust
+    /// has no inheritance, so the body is repeated here over this type's own
+    /// accessors rather than delegated to [`PendingDeletes::verify_doc_counts`],
+    /// which would read the hard tracker's counts.
+    ///
+    /// # Panics
+    ///
+    /// In a debug build, when the three disagree.
+    pub fn verify_doc_counts(&mut self, info: &SegmentCommitInfo, reader: &SegmentReader) -> bool {
+        let max_doc = info.info.max_doc().unwrap_or(0);
+        let count = match self.get_live_docs() {
+            Some(live_docs) => (0..max_doc)
+                .filter(|doc| live_docs.get(*doc as usize))
+                .count() as i32,
+            None => max_doc,
+        };
+        debug_assert_eq!(
+            self.num_docs(info),
+            count,
+            "info.maxDoc={max_doc} info.getDelCount()={} info.getSoftDelCount()={} \
+             pendingDeletes={} count={count} numDocs: {}",
+            info.get_del_count(),
+            info.get_soft_del_count(),
+            self.to_string_with_info(info),
+            self.num_docs(info)
+        );
+        debug_assert_eq!(
+            LeafReader::num_docs(reader),
+            self.num_docs(info),
+            "reader.numDocs() = {} numDocs() {}",
+            LeafReader::num_docs(reader),
+            self.num_docs(info)
+        );
+        debug_assert!(
+            IndexReader::num_deleted_docs(reader) <= max_doc,
+            "delCount={} info.maxDoc={max_doc} rld.pendingDeleteCount={} info.getDelCount()={}",
+            IndexReader::num_deleted_docs(reader),
+            self.num_pending_deletes(),
+            info.get_del_count()
+        );
+        true
+    }
+
     /// Returns `true` if the reader's live-doc count is stale.
     ///
     /// Equivalent to `PendingSoftDeletes.needsRefresh()`.
@@ -1044,6 +1143,19 @@ impl PendingDeletesKind {
         match self {
             Self::Hard(deletes) => deletes.to_string_with_info(info),
             Self::Soft(deletes) => deletes.to_string_with_info(info),
+        }
+    }
+
+    /// Dispatches [`PendingDeletes::verify_doc_counts`], which
+    /// `PendingSoftDeletes` inherits rather than overriding.
+    pub(crate) fn verify_doc_counts(
+        &mut self,
+        info: &SegmentCommitInfo,
+        reader: &SegmentReader,
+    ) -> bool {
+        match self {
+            Self::Hard(deletes) => deletes.verify_doc_counts(info, reader),
+            Self::Soft(deletes) => deletes.verify_doc_counts(info, reader),
         }
     }
 }
@@ -1432,6 +1544,26 @@ impl ReadersAndUpdates {
     /// # Errors
     ///
     /// Propagates whatever initialising the soft-delete counts raises.
+    /// Returns whether `policy` wants a fully deleted segment kept anyway.
+    ///
+    /// Equivalent to `ReadersAndUpdates.keepFullyDeletedSegment(MergePolicy)`
+    /// (`ReadersAndUpdates.java:897-899`), which is
+    /// `mergePolicy.keepFullyDeletedSegment(this::getLatestReader)`. The reader
+    /// supplier has no counterpart here for the reason already declared on
+    /// [`MergePolicy::keep_fully_deleted_segment`](crate::index::merge_policy::MergePolicy::keep_fully_deleted_segment):
+    /// no policy in this crate inspects the reader to decide retention, so the
+    /// seam takes none.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the policy raises.
+    pub fn keep_fully_deleted_segment(
+        &self,
+        policy: &dyn crate::index::merge_policy::MergePolicy,
+    ) -> Result<bool> {
+        policy.keep_fully_deleted_segment()
+    }
+
     pub fn is_fully_deleted(&self) -> Result<bool> {
         let mut state = self.state.lock().expect("state mutex poisoned");
         if matches!(state.pending_deletes, PendingDeletesKind::Soft(_)) {
@@ -2122,6 +2254,11 @@ impl ReadersAndUpdates {
         if needs_refresh || del_gen_differs {
             // Beware of zombies.
             reader = Self::create_new_reader_with_latest_live_docs(&mut state, &reader)?;
+        }
+
+        {
+            let info = state.info.clone();
+            debug_assert!(state.pending_deletes.verify_doc_counts(&info, &reader));
         }
 
         let hard_live_docs = match &mut state.pending_deletes {

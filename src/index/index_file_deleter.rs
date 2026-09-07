@@ -41,20 +41,25 @@
 //! `ensureOpen()`/`isClosed()`, which consult the writer's closed state and
 //! tragic exception (`IndexFileDeleter.java:382-403`).
 //!
-//! `IndexWriter` is not ported yet, so this type carries no writer. The two
-//! consequences are recorded honestly rather than papered over:
+//! This type carries no writer field, and the three uses are answered
+//! differently:
 //!
 //! - The `locked()` assertion has no analogue and needs none: Java asserts by
 //!   convention what Rust enforces in the type system, since every mutating
 //!   method here takes `&mut self`.
-//! - `ensure_open()` and `is_closed()` are **not** provided. They are pure
-//!   functions of `IndexWriter` state and cannot be written before it exists.
-//!   They must be added when `IndexWriter` lands; nothing else in this class
-//!   depends on them (in Lucene, `ensureOpen` is reachable only through
-//!   `isClosed`, which only `IndexWriter.isDeleterClosed()` calls).
+//! - [`IndexFileDeleter::ensure_open`] and [`IndexFileDeleter::is_closed`] take
+//!   the writer as an argument instead of reading it from a field.
 //!
-//! Neither affects reference counting or deletion, so the file-lifecycle
-//! behaviour ported here is complete.
+//! **Divergence from Lucene 10.5.0.** Java's deleter holds a back-reference to
+//! the `IndexWriter` that constructed it. Here the writer owns its deleter *by
+//! value*, inside the state its own mutex guards, so a field pointing back at
+//! the writer would be a reference cycle; the writer is handed in per call
+//! instead. The two methods read exactly what Java reads through that field —
+//! `writer.ensureOpen(false)` and `writer.getTragicException()` — and nothing
+//! else in this module needs the writer, so the divergence is confined to their
+//! two signatures. In Lucene `ensureOpen` is reachable only through `isClosed`,
+//! which only `IndexWriter.isDeleterClosed()` calls, so the caller that has to
+//! supply the argument is the one that already holds the writer.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,6 +71,7 @@ use crate::index::index_deletion_policy::IndexDeletionPolicy;
 use crate::index::index_file_names::{
     is_codec_file, parse_generation, parse_segment_name, PENDING_SEGMENTS, SEGMENTS,
 };
+use crate::index::index_writer::IndexWriter;
 use crate::index::segment_infos::SegmentInfos;
 use crate::store::Directory;
 use crate::util::file_deleter::{FileDeleter, Messenger, MsgType};
@@ -161,6 +167,19 @@ impl CommitPoint {
     /// `segments_N`.
     fn files(&self) -> &HashSet<String> {
         &self.files
+    }
+}
+
+impl std::fmt::Display for CommitPoint {
+    /// Equivalent to `IndexFileDeleter.CommitPoint.toString()`
+    /// (`IndexFileDeleter.java:674-677`), which is
+    /// `"IndexFileDeleter.CommitPoint(" + segmentsFileName + ")"`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "IndexFileDeleter.CommitPoint({})",
+            self.segments_file_name
+        )
     }
 }
 
@@ -635,10 +654,7 @@ impl IndexFileDeleter {
         }
 
         if !self.commits.is_empty() {
-            debug_assert!(
-                self.commits.iter().all(|c| !c.is_deleted()),
-                "a commit in the live list was already deleted"
-            );
+            Self::assert_commits_are_not_deleted(&self.commits);
             self.policy.on_commit(&self.commits_as_index_commits())?;
             self.delete_commits()?;
         }
@@ -681,10 +697,7 @@ impl IndexFileDeleter {
             )?;
             self.commits.push(commit_point);
 
-            debug_assert!(
-                self.commits.iter().all(|c| !c.is_deleted()),
-                "a commit in the live list was already deleted"
-            );
+            Self::assert_commits_are_not_deleted(&self.commits);
             self.policy.on_commit(&self.commits_as_index_commits())?;
 
             // Decrement the files of whatever the policy dropped.
@@ -758,6 +771,61 @@ impl IndexFileDeleter {
         debug_assert!(self.locked());
         let files = segment_infos.files(false)?;
         self.file_deleter.dec_ref_files(files)
+    }
+
+    /// Fails once the owning writer has been closed or has hit a tragic error.
+    ///
+    /// Equivalent to `IndexFileDeleter.ensureOpen()`
+    /// (`IndexFileDeleter.java:382-392`), which calls `writer.ensureOpen(false)`
+    /// — so a *closing* writer is still open here — and then refuses separately
+    /// if the writer recorded a tragic exception, because a writer that hit one
+    /// may be closing for exactly that reason.
+    ///
+    /// See the module documentation for why `writer` is an argument rather than
+    /// a field.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneError::AlreadyClosed`] when the writer is closed, and
+    /// [`LuceneError::IllegalState`] carrying the recorded cause when it hit a
+    /// tragic error.
+    pub fn ensure_open(&self, writer: &IndexWriter) -> Result<()> {
+        writer.ensure_open_with(false)?;
+        match writer.get_tragic_exception() {
+            Some(tragedy) => Err(LuceneError::IllegalState(format!(
+                "refusing to delete any files: this IndexWriter hit an unrecoverable exception: \
+                 {tragedy}"
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// Returns whether this deleter will refuse further work.
+    ///
+    /// Equivalent to `IndexFileDeleter.isClosed()`
+    /// (`IndexFileDeleter.java:394-403`), which answers by calling
+    /// [`ensure_open`](Self::ensure_open) and reading whether it threw.
+    pub fn is_closed(&self, writer: &IndexWriter) -> bool {
+        self.ensure_open(writer).is_err()
+    }
+
+    /// Checks that no commit in `commits` has already been deleted.
+    ///
+    /// Equivalent to `IndexFileDeleter.assertCommitsAreNotDeleted(List)`
+    /// (`IndexFileDeleter.java:510-516`), which Java calls from inside an
+    /// `assert` — so it runs only with assertions enabled, exactly as this runs
+    /// only under [`debug_assert!`].
+    ///
+    /// # Panics
+    ///
+    /// In a debug build, when a commit in `commits` is already deleted.
+    fn assert_commits_are_not_deleted(commits: &[Arc<CommitPoint>]) {
+        for commit in commits {
+            debug_assert!(
+                !commit.is_deleted(),
+                "Commit [{commit}] was deleted already"
+            );
+        }
     }
 
     /// Returns whether `file_name` is tracked and currently referenced.
@@ -915,40 +983,40 @@ pub fn inflate_gens(
         };
         let next = gen + 1;
 
-        if info.get_next_del_gen() < next {
+        if info.get_next_write_del_gen() < next {
             if info_stream.is_enabled(IFD) {
                 info_stream.message(
                     IFD,
                     &format!(
                         "init: seg={} set nextWriteDelGen={next} vs current={}",
                         info.info.name,
-                        info.get_next_del_gen()
+                        info.get_next_write_del_gen()
                     ),
                 );
             }
             info.set_next_write_del_gen(next);
         }
-        if info.get_next_field_infos_gen() < next {
+        if info.get_next_write_field_infos_gen() < next {
             if info_stream.is_enabled(IFD) {
                 info_stream.message(
                     IFD,
                     &format!(
                         "init: seg={} set nextWriteFieldInfosGen={next} vs current={}",
                         info.info.name,
-                        info.get_next_field_infos_gen()
+                        info.get_next_write_field_infos_gen()
                     ),
                 );
             }
             info.set_next_write_field_infos_gen(next);
         }
-        if info.get_next_doc_values_gen() < next {
+        if info.get_next_write_doc_values_gen() < next {
             if info_stream.is_enabled(IFD) {
                 info_stream.message(
                     IFD,
                     &format!(
                         "init: seg={} set nextWriteDocValuesGen={next} vs current={}",
                         info.info.name,
-                        info.get_next_doc_values_gen()
+                        info.get_next_write_doc_values_gen()
                     ),
                 );
             }
@@ -1419,16 +1487,16 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let mut sis = SegmentInfos::new(10).unwrap();
         sis.add(make_segment(dir.as_ref(), "_0")).unwrap();
-        assert_eq!(sis.info(0).get_next_del_gen(), 1);
+        assert_eq!(sis.info(0).get_next_write_del_gen(), 1);
 
         // A live-docs file at generation 4 exists on disk for `_0`.
         let files = HashSet::from(["_0.fdt".to_string(), "_0_4.liv".to_string()]);
         inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap();
 
         let info = sis.info(0);
-        assert_eq!(info.get_next_del_gen(), 5);
-        assert_eq!(info.get_next_field_infos_gen(), 5);
-        assert_eq!(info.get_next_doc_values_gen(), 5);
+        assert_eq!(info.get_next_write_del_gen(), 5);
+        assert_eq!(info.get_next_write_field_infos_gen(), 5);
+        assert_eq!(info.get_next_write_doc_values_gen(), 5);
     }
 
     #[test]

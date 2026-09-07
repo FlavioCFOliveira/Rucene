@@ -99,6 +99,9 @@ impl IBSimilarity {
 }
 
 impl Similarity for IBSimilarity {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.similarities.IBSimilarity"
+    }
     fn discount_overlaps(&self) -> bool {
         self.discount_overlaps
     }

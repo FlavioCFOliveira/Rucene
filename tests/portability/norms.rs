@@ -190,6 +190,11 @@ struct ScaledSimilarity {
 }
 
 impl Similarity for ScaledSimilarity {
+    fn java_class_name(&self) -> &'static str {
+        // The Java fixture declares it as a nested class of `NormsFixture`.
+        "org.apache.lucene.rucene.codec.NormsFixture$ScaledSimilarity"
+    }
+
     fn compute_norm(&self, state: &FieldInvertState) -> rucene::error::Result<i64> {
         Ok(state.length() as i64 * self.factor)
     }

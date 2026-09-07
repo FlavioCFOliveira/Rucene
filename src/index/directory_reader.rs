@@ -1086,6 +1086,29 @@ impl ReaderCommit {
     }
 }
 
+impl std::fmt::Display for ReaderCommit {
+    /// Equivalent to `StandardDirectoryReader.ReaderCommit.toString()`
+    /// (`StandardDirectoryReader.java:601-604`), which is
+    /// `"StandardDirectoryReader.ReaderCommit(" + segmentsFileName + " files=" + files + ")"`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** `files` is a `Collection<String>`
+    /// there and renders in the iteration order of whichever collection
+    /// `SegmentInfos.files()` built. This port holds a `HashSet<String>`, whose
+    /// order is randomised per process, so the names are sorted before they are
+    /// printed: an unstable order would make the string unusable for the
+    /// debugging this method exists for.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut files: Vec<&str> = self.files.iter().map(String::as_str).collect();
+        files.sort_unstable();
+        write!(
+            f,
+            "StandardDirectoryReader.ReaderCommit({} files=[{}])",
+            self.segments_file_name,
+            files.join(", ")
+        )
+    }
+}
+
 impl IndexCommit for ReaderCommit {
     fn get_segments_file_name(&self) -> String {
         self.segments_file_name.clone()

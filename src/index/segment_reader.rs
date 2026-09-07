@@ -369,10 +369,22 @@ impl Drop for SegmentCoreReaders {
 }
 
 impl CacheHelper for SegmentCoreReaders {
+    /// Equivalent to `SegmentCoreReaders.getCacheHelper()`
+    /// (`SegmentCoreReaders.java:199-201`) and to the anonymous
+    /// `IndexReader.CacheHelper` it hands back, whose `getKey()` answers
+    /// `coreCacheKey`.
+    ///
+    /// Java keeps that anonymous object in a field and returns it; both of its
+    /// methods read state that lives on `SegmentCoreReaders` itself, so this
+    /// port implements the trait on the type rather than building a second
+    /// object to hold a borrow of it — which is why there is no `get_cache_helper`
+    /// to call.
     fn get_key(&self) -> &CacheKey {
         &self.core_cache_key
     }
 
+    /// The `addClosedListener` of the same anonymous `CacheHelper`, which
+    /// appends to `coreClosedListeners`.
     fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
         if let Ok(mut listeners) = self.core_closed_listeners.lock() {
             listeners.push(listener);
@@ -1577,10 +1589,21 @@ impl LeafReader for SegmentReader {
         } else {
             Ok(())
         };
-        let listener_result = self.reader_cache_helper.notify_closed_listeners();
         core_result?;
-        dv_result?;
-        listener_result
+        dv_result
+    }
+
+    /// Tells everything registered on this reader's own cache helper that the
+    /// reader has closed.
+    ///
+    /// Equivalent to `SegmentReader.notifyReaderClosedListeners()`
+    /// (`SegmentReader.java:323-328`), which `IndexReader.decRef` runs *after*
+    /// `doClose()` and before the parent readers are told — which is why it is
+    /// an override here rather than the tail of
+    /// [`do_close`](Self::do_close): a failure inside `doClose()` must not stop
+    /// the listeners from running.
+    fn notify_reader_closed_listeners(&self) -> Result<()> {
+        self.reader_cache_helper.notify_closed_listeners()
     }
 
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {

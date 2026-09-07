@@ -618,6 +618,13 @@ impl BufferingInfoStream {
 }
 
 impl InfoStream for BufferingInfoStream {
+    fn java_class_name(&self) -> &'static str {
+        // Java has no dedicated class here: `checkIndex` writes into a
+        // `PrintStream` over a `ByteArrayOutputStream`, so that is the class
+        // an instance of this would report.
+        "java.io.PrintStream"
+    }
+
     fn message(&self, _component: &str, message: &str) {
         self.messages
             .lock()

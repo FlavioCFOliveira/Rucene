@@ -482,6 +482,8 @@ impl SegmentInfo {
     }
 
     /// Returns a short debug representation, optionally including a deletion count.
+    ///
+    /// Equivalent to `SegmentInfo.toString(int)`.
     pub fn to_string_with_del_count(&self, del_count: i32) -> String {
         let mut s = String::new();
         s.push_str(&self.name);
@@ -494,6 +496,52 @@ impl SegmentInfo {
         if del_count != 0 {
             s.push('/');
             s.push_str(&del_count.to_string());
+        }
+        s
+    }
+
+    /// Returns the long-form description the info stream logs when a segment is
+    /// first written or read.
+    ///
+    /// Equivalent to `SegmentInfo.toStringVerbose()`, which appends the index
+    /// sort, the diagnostics and the codec attributes to
+    /// [`to_string_with_del_count(0)`](Self::to_string_with_del_count), each in
+    /// `:[name=value]` form and each omitted when it is absent or empty.
+    ///
+    /// The two maps render as `java.util.AbstractMap.toString()` does, in their
+    /// own iteration order — which is why they are held as
+    /// [`JavaStringMap`](crate::util::java_collections::JavaStringMap) rather
+    /// than as a Rust `HashMap`. For a map built by `Map.copyOf`, that order is
+    /// the one already declared on
+    /// [`JavaStringMap::immutable_copy_of`](crate::util::java_collections::JavaStringMap::immutable_copy_of):
+    /// Java's is decided by a per-JVM salt and differs between two runs of
+    /// Lucene itself, so this port sorts. The entries are identical; only their
+    /// order inside the braces differs.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java guards the sort with
+    /// `indexSort != null`. This port has no null `Sort`: a segment with no
+    /// index sort carries `Sort::new()`, the relevance sort, which is the same
+    /// value `write_segment_sort` recognises when it writes a field count of
+    /// zero. The test is therefore against that value rather than against null.
+    /// Lucene rejects `SortField.FIELD_SCORE` as an index sort, so no segment
+    /// can be sorted by the value that stands in for "unsorted" here.
+    pub fn to_string_verbose(&self) -> String {
+        let mut s = self.to_string_with_del_count(0);
+        if self.index_sort != Sort::new() {
+            s.push_str(":[indexSort=");
+            s.push_str(&self.index_sort.to_string());
+            s.push(']');
+        }
+        if !self.diagnostics.is_empty() {
+            s.push_str(":[diagnostics=");
+            s.push_str(&self.diagnostics.to_string());
+            s.push(']');
+        }
+        let attributes = self.attributes.read().unwrap();
+        if !attributes.is_empty() {
+            s.push_str(":[attributes=");
+            s.push_str(&attributes.to_string());
+            s.push(']');
         }
         s
     }
@@ -756,7 +804,9 @@ impl SegmentCommitInfo {
     }
 
     /// Returns the next available live docs file generation.
-    pub fn get_next_del_gen(&self) -> i64 {
+    ///
+    /// Equivalent to `SegmentCommitInfo.getNextWriteDelGen()`.
+    pub fn get_next_write_del_gen(&self) -> i64 {
         self.next_write_del_gen
     }
 
@@ -772,6 +822,17 @@ impl SegmentCommitInfo {
         self.next_write_del_gen += 1;
     }
 
+    /// Returns the next available live docs file generation.
+    ///
+    /// Equivalent to the public `SegmentCommitInfo.getNextDelGen()`, which
+    /// reads the same `nextWriteDelGen` field as the package-private
+    /// [`get_next_write_del_gen`](Self::get_next_write_del_gen). Lucene
+    /// declares both: the public one is what a codec calls, the other is the
+    /// package-private spelling `IndexFileDeleter` uses.
+    pub fn get_next_del_gen(&self) -> i64 {
+        self.next_write_del_gen
+    }
+
     /// Sets the next available live docs file generation.
     ///
     /// Equivalent to `SegmentCommitInfo.setNextWriteDelGen`.
@@ -785,7 +846,9 @@ impl SegmentCommitInfo {
     }
 
     /// Returns the next available field infos update generation.
-    pub fn get_next_field_infos_gen(&self) -> i64 {
+    ///
+    /// Equivalent to `SegmentCommitInfo.getNextWriteFieldInfosGen()`.
+    pub fn get_next_write_field_infos_gen(&self) -> i64 {
         self.next_write_field_infos_gen
     }
 
@@ -801,6 +864,16 @@ impl SegmentCommitInfo {
         self.next_write_field_infos_gen += 1;
     }
 
+    /// Returns the next available field infos update generation.
+    ///
+    /// Equivalent to the public `SegmentCommitInfo.getNextFieldInfosGen()`,
+    /// the counterpart of the package-private
+    /// [`get_next_write_field_infos_gen`](Self::get_next_write_field_infos_gen)
+    /// over the same field.
+    pub fn get_next_field_infos_gen(&self) -> i64 {
+        self.next_write_field_infos_gen
+    }
+
     /// Sets the next available field infos update generation.
     ///
     /// Equivalent to `SegmentCommitInfo.setNextWriteFieldInfosGen`.
@@ -814,7 +887,9 @@ impl SegmentCommitInfo {
     }
 
     /// Returns the next available doc values update generation.
-    pub fn get_next_doc_values_gen(&self) -> i64 {
+    ///
+    /// Equivalent to `SegmentCommitInfo.getNextWriteDocValuesGen()`.
+    pub fn get_next_write_doc_values_gen(&self) -> i64 {
         self.next_write_doc_values_gen
     }
 
@@ -828,6 +903,16 @@ impl SegmentCommitInfo {
     /// Advances the next-write doc values generation after a failed write.
     pub fn advance_next_write_doc_values_gen(&mut self) {
         self.next_write_doc_values_gen += 1;
+    }
+
+    /// Returns the next available doc values update generation.
+    ///
+    /// Equivalent to the public `SegmentCommitInfo.getNextDocValuesGen()`, the
+    /// counterpart of the package-private
+    /// [`get_next_write_doc_values_gen`](Self::get_next_write_doc_values_gen)
+    /// over the same field.
+    pub fn get_next_doc_values_gen(&self) -> i64 {
+        self.next_write_doc_values_gen
     }
 
     /// Sets the next available doc values update generation.
@@ -1432,11 +1517,11 @@ mod tests {
         assert!(sci.has_deletions());
         assert!(!sci.has_field_updates());
         assert_eq!(sci.get_del_gen(), 0);
-        assert_eq!(sci.get_next_del_gen(), 1);
+        assert_eq!(sci.get_next_write_del_gen(), 1);
 
         sci.advance_del_gen();
         assert_eq!(sci.get_del_gen(), 1);
-        assert_eq!(sci.get_next_del_gen(), 2);
+        assert_eq!(sci.get_next_write_del_gen(), 2);
     }
 
     #[test]
@@ -1514,6 +1599,35 @@ impl SegmentCommitInfo {
     pub fn to_string_with_pending_del_count(&self, pending_del_count: i32) -> String {
         self.info
             .to_string_with_del_count(self.del_count + pending_del_count)
+    }
+
+    /// Returns the long-form description the info stream logs for this commit.
+    ///
+    /// Equivalent to `SegmentCommitInfo.toStringVerbose()`, which appends the
+    /// segment id and whichever of the three generations and the soft-delete
+    /// count are set to [`SegmentInfo::to_string_verbose`].
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java guards the id with
+    /// `this.id != null`. This port's [`id`](Self::id) is a `[u8; ID_LENGTH]`
+    /// and is always present — every format the crate reads carries one — so
+    /// the guard has no counterpart and the clause is always emitted.
+    pub fn to_string_verbose(&self) -> String {
+        let mut s = self.info.to_string_verbose();
+        s.push_str(" :id=");
+        s.push_str(&StringHelper::id_to_string(Some(&self.id)));
+        if self.del_gen != -1 {
+            s.push_str(&format!(":delGen={}", self.del_gen));
+        }
+        if self.field_infos_gen != -1 {
+            s.push_str(&format!(":fieldInfosGen={}", self.field_infos_gen));
+        }
+        if self.doc_values_gen != -1 {
+            s.push_str(&format!(":dvGen={}", self.doc_values_gen));
+        }
+        if self.soft_del_count > 0 {
+            s.push_str(&format!(" :softDel={}", self.soft_del_count));
+        }
+        s
     }
 }
 

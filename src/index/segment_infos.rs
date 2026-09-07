@@ -1490,6 +1490,19 @@ impl std::fmt::Display for SegmentInfos {
     /// `getSegmentsFileName()` returns `null` before the first commit; Java's
     /// `StringBuilder.append` then writes the four characters `null`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.write_to_string(f, false)
+    }
+}
+
+impl SegmentInfos {
+    /// Renders the commit, verbosely or not.
+    ///
+    /// Equivalent to the package-private `SegmentInfos.toString(boolean)`, the
+    /// body both `toString()` and
+    /// [`to_string_verbose`](Self::to_string_verbose) share. It writes into the
+    /// formatter rather than building a `StringBuilder`, so that
+    /// [`Display`](std::fmt::Display) does not have to allocate one.
+    fn write_to_string(&self, f: &mut std::fmt::Formatter<'_>, verbose: bool) -> std::fmt::Result {
         match self.segments_file_name() {
             Some(name) => f.write_str(&name)?,
             None => f.write_str("null")?,
@@ -1499,8 +1512,41 @@ impl std::fmt::Display for SegmentInfos {
             if i > 0 {
                 f.write_str(" ")?;
             }
-            f.write_str(&info.to_string_with_pending_del_count(0))?;
+            if verbose {
+                f.write_str(&info.to_string_verbose())?;
+            } else {
+                f.write_str(&info.to_string_with_pending_del_count(0))?;
+            }
         }
         Ok(())
+    }
+
+    /// Returns the long-form description the info stream logs for this commit.
+    ///
+    /// Equivalent to `SegmentInfos.toStringVerbose()`, which is
+    /// `toString(true)`: the same shape as
+    /// [`Display`](std::fmt::Display), with every segment rendered by
+    /// [`SegmentCommitInfo::to_string_verbose`] instead.
+    pub fn to_string_verbose(&self) -> String {
+        struct Verbose<'a>(&'a SegmentInfos);
+        impl std::fmt::Display for Verbose<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.write_to_string(f, true)
+            }
+        }
+        Verbose(self).to_string()
+    }
+
+    /// Returns a deep copy of the segment list, to roll back to.
+    ///
+    /// Equivalent to `SegmentInfos.createBackupSegmentInfos()`, which clones
+    /// every [`SegmentCommitInfo`] — so that a later mutation of the live list
+    /// does not reach the backup — and asserts that each carries a codec.
+    ///
+    /// The codec assertion has no counterpart here: [`SegmentInfo`]'s codec is
+    /// a non-optional `Arc<dyn Codec>`, so a `SegmentCommitInfo` without one
+    /// cannot be built.
+    pub fn create_backup_segment_infos(&self) -> Vec<SegmentCommitInfo> {
+        self.segments.to_vec()
     }
 }

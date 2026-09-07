@@ -582,6 +582,135 @@ impl IndexWriter {
         Ok(self.documents_writer.max_completed_sequence_number())
     }
 
+    /// Returns whether the deleter has been closed.
+    ///
+    /// Equivalent to `IndexWriter.isDeleterClosed()`
+    /// (`IndexWriter.java:5944-5946`), which forwards to
+    /// [`IndexFileDeleter::is_closed`]. In Lucene the only caller is the
+    /// `IndexWriterAccess` accessor the test framework reaches through
+    /// `TestSecrets`; here it is public for the same reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the writer's state lock is
+    /// poisoned.
+    pub fn is_deleter_closed(&self) -> Result<bool> {
+        let state = self.state()?;
+        Ok(state.deleter.is_closed(self))
+    }
+
+    /// Returns whether anything is buffered in RAM that a commit would have to
+    /// write.
+    ///
+    /// Equivalent to `IndexWriter.hasChangesInRam()`
+    /// (`IndexWriter.java:4211-4214`), which is
+    /// `docWriter.anyChanges() || bufferedUpdatesStream.any()` and is the
+    /// second half of [`has_uncommitted_changes`](Self::has_uncommitted_changes).
+    pub fn has_changes_in_ram(&self) -> bool {
+        self.documents_writer.any_changes() || self.buffered_updates_stream.any()
+    }
+
+    /// Returns the writer's buffering half.
+    ///
+    /// Equivalent to the package-private `IndexWriter.getDocsWriter()`
+    /// (`IndexWriter.java:4439-4442`), which Lucene comments "for testing only"
+    /// and reaches from `TestSecrets`.
+    pub fn get_docs_writer(&self) -> &Arc<DocumentsWriter> {
+        &self.documents_writer
+    }
+
+    /// Fills in `estimated_merge_bytes` and `total_merge_bytes` for `merge`.
+    ///
+    /// Equivalent to `IndexWriter.addEstimatedBytesToMerge(MergePolicy.OneMerge)`
+    /// (`IndexWriter.java:4916-4930`): each segment contributes its whole size
+    /// to the total and the live fraction of it to the estimate, and a segment
+    /// with no document contributes nothing at all.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading a segment's size or its deletion count
+    /// raises.
+    ///
+    /// # Panics
+    ///
+    /// In a debug build, when `merge` already carries either figure — Java
+    /// asserts the same, because the method adds rather than assigns.
+    pub fn add_estimated_bytes_to_merge(&self, merge: &mut OneMerge) -> Result<()> {
+        let state = self.state()?;
+        self.add_estimated_bytes_to_merge_with(&state, merge)
+    }
+
+    /// [`add_estimated_bytes_to_merge`](Self::add_estimated_bytes_to_merge) for
+    /// a caller that already holds the writer state.
+    ///
+    /// Java's monitor is reentrant, so `registerMerge` calls this while holding
+    /// it; a Rust `Mutex` is not, which is the same adaptation
+    /// [`num_deleted_docs_with`](Self::num_deleted_docs_with) already makes.
+    fn add_estimated_bytes_to_merge_with(
+        &self,
+        state: &WriterState,
+        merge: &mut OneMerge,
+    ) -> Result<()> {
+        debug_assert_eq!(merge.estimated_merge_bytes, 0);
+        debug_assert_eq!(merge.total_merge_bytes, 0);
+        for info in merge.segments.iter_mut() {
+            let max_doc = info.info.max_doc()?;
+            if max_doc <= 0 {
+                continue;
+            }
+            let del_count = self.num_deleted_docs_with(state, info)?;
+            debug_assert!(del_count <= max_doc);
+            let del_ratio = f64::from(del_count) / f64::from(max_doc);
+            let size = info.size_in_bytes()?;
+            merge.estimated_merge_bytes += (size as f64 * (1.0 - del_ratio)) as i64;
+            merge.total_merge_bytes += size;
+        }
+        Ok(())
+    }
+
+    /// Waits until every merge that had started has finished.
+    ///
+    /// Equivalent to `IndexWriter.waitForMerges()`
+    /// (`IndexWriter.java:2845-2869`), which gives the scheduler one last
+    /// chance to run — outside the writer's lock, because taking it there
+    /// deadlocks — and then waits for the pending and running sets to empty.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java waits on the writer's own
+    /// monitor and is woken by `notifyAll()`; this port has no monitor to wait
+    /// on, so it polls through [`do_wait`](Self::do_wait), which is the
+    /// adaptation that method already declares. Java's own wait carries a
+    /// one-second timeout for exactly the missed-notification case, so the
+    /// worst-case latency is the same.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::AlreadyClosed`] when the writer is closed, and
+    /// propagates whatever the merge scheduler raises.
+    pub fn wait_for_merges(&self) -> Result<()> {
+        // Give the merge scheduler a last chance to run, in case any pending
+        // merge is waiting. The writer's lock must not be held here: going into
+        // a merge while holding it can deadlock.
+        self.execute_merge(MergeTrigger::Closing)?;
+
+        self.ensure_open_with(false)?;
+        if self.info_stream.is_enabled(IW) {
+            self.info_stream.message(IW, "waitForMerges");
+        }
+        loop {
+            {
+                let state = self.state()?;
+                if state.pending_merges.is_empty() && state.merging_segments.is_empty() {
+                    break;
+                }
+            }
+            self.do_wait();
+        }
+        if self.info_stream.is_enabled(IW) {
+            self.info_stream.message(IW, "waitForMerges done");
+        }
+        Ok(())
+    }
+
     /// Returns the deleted-document count for `info`.
     ///
     /// Equivalent to `IndexWriter.numDeletedDocs(SegmentCommitInfo)`, which
@@ -1894,6 +2023,11 @@ impl IndexWriter {
         for segment in &merge.segments {
             state.merging_segments.insert(segment.info.name.clone());
         }
+
+        // `registerMerge` fills the two byte figures in before the merge is
+        // handed to the scheduler (`IndexWriter.java:5022`); they are what
+        // `ConcurrentMergeScheduler` sorts, throttles and paces merges by.
+        self.add_estimated_bytes_to_merge_with(state, &mut merge)?;
 
         if self.info_stream.is_enabled(IW) {
             self.info_stream.message(
@@ -3692,9 +3826,7 @@ impl IndexWriter {
                 IW,
                 &format!(
                     "\ndir={}\nindex={}\nversion={}\n{}",
-                    crate::index::index_writer_config::type_name_of_trait_object(
-                        self.directory.as_ref()
-                    ),
+                    self.directory.directory_to_string(),
                     self.seg_string()?,
                     Version::LATEST,
                     self.config.to_config_string()
@@ -4160,12 +4292,25 @@ impl IndexWriter {
     /// Returns whether every document of `readers_and_updates` is deleted and
     /// the segment may be dropped.
     ///
-    /// Equivalent to `IndexWriter.isFullyDeleted(ReadersAndUpdates)`.
+    /// Equivalent to `IndexWriter.isFullyDeleted(ReadersAndUpdates)`
+    /// (`IndexWriter.java:6230-6236`), which answers `true` only when the merge
+    /// policy does *not* want the emptied segment kept — a
+    /// `SoftDeletesRetentionMergePolicy` keeps it so that its soft-deleted
+    /// documents stay readable.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the segment's delete counts or the merge policy
+    /// raise.
     pub fn is_fully_deleted(
         &self,
         readers_and_updates: &crate::index::readers_and_updates::ReadersAndUpdates,
     ) -> Result<bool> {
-        readers_and_updates.is_fully_deleted()
+        if readers_and_updates.is_fully_deleted()? {
+            return Ok(!readers_and_updates
+                .keep_fully_deleted_segment(self.config.merge_policy().as_ref())?);
+        }
+        Ok(false)
     }
 
     /// Returns a pooled reader to the pool.

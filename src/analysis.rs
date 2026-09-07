@@ -969,6 +969,17 @@ pub trait Analyzer: Debug + Send + Sync {
     /// Returns the shared state for this analyzer.
     fn analyzer_state(&self) -> &AnalyzerState;
 
+    /// Returns the binary name of the Lucene class this analyzer ports.
+    ///
+    /// Stands in for `getClass().getName()`, which Rust cannot answer: there is
+    /// no runtime class object, and `std::any::type_name` names the Rust type,
+    /// not the Java one. `LiveIndexWriterConfig.toString()` prints the
+    /// analyzer's class name, so the name has to be carried by the type itself.
+    ///
+    /// There is no default: Java has no analyzer whose class is unknown, so
+    /// every implementor states its own.
+    fn java_class_name(&self) -> &'static str;
+
     /// Creates a new [`TokenStreamComponents`] instance for `field_name`.
     fn create_components(&self, field_name: &str) -> TokenStreamComponents;
 
@@ -1238,6 +1249,10 @@ impl Analyzer for AnalyzerWrapper {
         &self.state
     }
 
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.analysis.AnalyzerWrapper"
+    }
+
     fn create_components(&self, field_name: &str) -> TokenStreamComponents {
         let wrapped = self.logic.get_wrapped_analyzer(field_name);
         let components = wrapped.create_components(field_name);
@@ -1328,6 +1343,10 @@ impl DelegatingAnalyzerWrapper {
 impl Analyzer for DelegatingAnalyzerWrapper {
     fn analyzer_state(&self) -> &AnalyzerState {
         &self.state
+    }
+
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.analysis.DelegatingAnalyzerWrapper"
     }
 
     fn create_components(&self, field_name: &str) -> TokenStreamComponents {
@@ -1878,6 +1897,10 @@ mod tests {
             &self.state
         }
 
+        fn java_class_name(&self) -> &'static str {
+            "org.apache.lucene.analysis.core.WhitespaceAnalyzer"
+        }
+
         fn create_components(&self, _field_name: &str) -> TokenStreamComponents {
             let tokenizer = Rc::new(RefCell::new(Tokenizer::new(WhitespaceTokenizer::default())));
             TokenStreamComponents::from_tokenizer(tokenizer)
@@ -1957,6 +1980,10 @@ mod tests {
     impl Analyzer for PerFieldAnalyzer {
         fn analyzer_state(&self) -> &AnalyzerState {
             &self.state
+        }
+
+        fn java_class_name(&self) -> &'static str {
+            "org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper"
         }
 
         fn create_components(&self, _field_name: &str) -> TokenStreamComponents {

@@ -83,6 +83,7 @@ public final class RuceneToStringContracts {
     writerConfig(out);
     try (Directory dir = FSDirectory.open(indexDir)) {
       buildIndex(dir);
+      segmentInfos(out, dir);
       readers(out, dir);
       enums(out, dir);
       pendingDeletes(out, dir);
@@ -264,6 +265,27 @@ public final class RuceneToStringContracts {
         writer.flush();
       }
       writer.commit();
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // The verbose renderings the info stream logs
+  // -------------------------------------------------------------------------
+
+  /**
+   * {@code toStringVerbose()} on the three segment types. All three are
+   * package-private, which is why they are measured here, and the outermost one
+   * calls the other two, so what is pinned is also the composition.
+   */
+  private static void segmentInfos(BiConsumer<String, String> out, Directory dir)
+      throws IOException {
+    SegmentInfos infos = SegmentInfos.readLatestCommit(dir);
+    out.accept("SegmentInfos.toStringVerbose/two-segments", infos.toStringVerbose());
+    out.accept("SegmentInfos.toString/two-segments", infos.toString());
+    for (int i = 0; i < infos.size(); i++) {
+      SegmentCommitInfo commit = infos.info(i);
+      out.accept("SegmentCommitInfo.toStringVerbose/" + i, commit.toStringVerbose());
+      out.accept("SegmentInfo.toStringVerbose/" + i, commit.info.toStringVerbose());
     }
   }
 

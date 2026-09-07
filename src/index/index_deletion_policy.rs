@@ -57,6 +57,17 @@ use crate::store::{Directory, DEFAULT_IO_CONTEXT};
 /// `&self`; stateful policies such as [`SnapshotDeletionPolicy`] use interior
 /// mutability, exactly as Java uses `synchronized`.
 pub trait IndexDeletionPolicy: Send + Sync + Debug {
+    /// Returns the binary name of the Lucene class this policy ports.
+    ///
+    /// Stands in for `getClass().getName()`, which Rust cannot answer: there is
+    /// no runtime class object, and `std::any::type_name` names the Rust type,
+    /// not the Java one. `LiveIndexWriterConfig.toString()` prints this
+    /// policy's class name, so the name has to be carried by the type itself.
+    ///
+    /// There is no default: Java has no instance whose class is unknown, so
+    /// every implementor states its own.
+    fn java_class_name(&self) -> &'static str;
+
     /// Called once when a writer is first instantiated, to give the policy a
     /// chance to remove old commit points.
     ///
@@ -118,6 +129,9 @@ impl KeepOnlyLastCommitDeletionPolicy {
 }
 
 impl IndexDeletionPolicy for KeepOnlyLastCommitDeletionPolicy {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.index.KeepOnlyLastCommitDeletionPolicy"
+    }
     /// Deletes all commits except the most recent one.
     fn on_init(&self, commits: &[Arc<dyn IndexCommit>]) -> Result<()> {
         // Note that `commits.len()` should normally be 1.
@@ -176,6 +190,9 @@ impl KeepLastNCommitsDeletionPolicy {
 }
 
 impl IndexDeletionPolicy for KeepLastNCommitsDeletionPolicy {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.index.KeepLastNCommitsDeletionPolicy"
+    }
     fn on_init(&self, commits: &[Arc<dyn IndexCommit>]) -> Result<()> {
         self.on_commit(commits)
     }
@@ -230,6 +247,9 @@ impl NoDeletionPolicy {
 }
 
 impl IndexDeletionPolicy for NoDeletionPolicy {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.index.NoDeletionPolicy"
+    }
     fn on_init(&self, _commits: &[Arc<dyn IndexCommit>]) -> Result<()> {
         Ok(())
     }
@@ -663,6 +683,9 @@ impl SnapshotDeletionPolicy {
 }
 
 impl IndexDeletionPolicy for SnapshotDeletionPolicy {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.index.SnapshotDeletionPolicy"
+    }
     fn on_init(&self, commits: &[Arc<dyn IndexCommit>]) -> Result<()> {
         let _operation = self.lock_operation();
         self.on_init_locked(commits)
@@ -692,6 +715,16 @@ impl Debug for SnapshotCommitPoint {
             "SnapshotDeletionPolicy.SnapshotCommitPoint({:?})",
             self.cp
         )
+    }
+}
+
+impl std::fmt::Display for SnapshotCommitPoint {
+    /// Equivalent to `SnapshotDeletionPolicy.SnapshotCommitPoint.toString()`
+    /// (`SnapshotDeletionPolicy.java:200-203`), which is
+    /// `"SnapshotDeletionPolicy.SnapshotCommitPoint(" + cp + ")"` — so the
+    /// wrapped commit is rendered by *its* `toString()`, not by a debug form.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SnapshotDeletionPolicy.SnapshotCommitPoint({})", self.cp)
     }
 }
 
@@ -1183,6 +1216,9 @@ impl PersistentSnapshotDeletionPolicy {
 }
 
 impl IndexDeletionPolicy for PersistentSnapshotDeletionPolicy {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.index.PersistentSnapshotDeletionPolicy"
+    }
     fn on_init(&self, commits: &[Arc<dyn IndexCommit>]) -> Result<()> {
         // Java inherits the `synchronized` methods, so `onInit` shares one
         // monitor with `snapshot()`/`release()`; taking the wrapped policy's
@@ -1296,6 +1332,12 @@ mod tests {
         struct UndeletableCommit(Arc<dyn Directory>);
 
         impl Debug for UndeletableCommit {
+            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                f.write_str("UndeletableCommit")
+            }
+        }
+
+        impl std::fmt::Display for UndeletableCommit {
             fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
                 f.write_str("UndeletableCommit")
             }
@@ -1751,6 +1793,10 @@ mod tests {
     }
 
     impl IndexDeletionPolicy for BlockingPrimary {
+        fn java_class_name(&self) -> &'static str {
+            self.inner.java_class_name()
+        }
+
         fn on_init(&self, commits: &[Arc<dyn IndexCommit>]) -> Result<()> {
             self.inner.on_init(commits)?;
             self.park(Phase::OnInit);

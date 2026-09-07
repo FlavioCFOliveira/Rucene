@@ -475,6 +475,10 @@ mod tests {
     }
 
     impl crate::util::InfoStream for RecordingInfoStream {
+        fn java_class_name(&self) -> &'static str {
+            "org.apache.lucene.util.PrintStreamInfoStream"
+        }
+
         fn message(&self, component: &str, message: &str) {
             self.messages
                 .lock()

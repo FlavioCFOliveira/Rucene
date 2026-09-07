@@ -49,6 +49,9 @@ impl MultiSimilarity {
 }
 
 impl Similarity for MultiSimilarity {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.similarities.MultiSimilarity"
+    }
     /// Delegates to the first sub-similarity, as
     /// `MultiSimilarity.computeNorm` does (`MultiSimilarity.java:41-44`).
     ///

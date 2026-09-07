@@ -3102,6 +3102,13 @@ impl TemporalMergePolicy {
     }
 
     /// Supplies each segment's temporal range, by segment name.
+    ///
+    /// Equivalent to
+    /// `TemporalMergePolicy.setSegmentDateRangeOverrides(Map<SegmentCommitInfo, SegmentDateRange>)`,
+    /// which Java marks "visible for testing" and this port makes the only
+    /// source of the ranges — the divergence declared on the type. The map is
+    /// keyed by segment name rather than by `SegmentCommitInfo` because a
+    /// `SegmentCommitInfo` is not hashable here.
     pub fn set_segment_date_ranges(
         &mut self,
         ranges: HashMap<String, SegmentDateRange>,
@@ -3420,6 +3427,45 @@ impl TemporalMergePolicy {
         self.extract_segment_date_ranges(segments)
     }
 
+    /// Turns the time-window buckets into a merge specification.
+    ///
+    /// Equivalent to `TemporalMergePolicy.findMergeCandidates(Map, Map)`
+    /// (`TemporalMergePolicy.java:819-855`): every window with at least
+    /// `min_threshold` segments contributes the merges
+    /// [`plan_window_merges`](Self::plan_window_merges) finds for it, the `-1`
+    /// sentinel bucket — data older than `max_age_seconds` — is skipped, and a
+    /// run that plans nothing returns `None` rather than an empty
+    /// specification.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's second argument is the
+    /// segment-to-range map, which `planWindowMerges` sorts by; this port reads
+    /// the ranges from the policy's own
+    /// [`set_segment_date_ranges`](Self::set_segment_date_ranges) map, the
+    /// divergence already declared on the type, so there is no second argument
+    /// to take. Java also passes `windowStart` down to `planWindowMerges`,
+    /// which does not read it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building a [`OneMerge`] raises.
+    fn find_merge_candidates(
+        &self,
+        buckets: std::collections::BTreeMap<i64, Vec<SegmentCommitInfo>>,
+    ) -> Result<Option<MergeSpecification>> {
+        let mut spec: Option<MergeSpecification> = None;
+        for (window_start, segments) in buckets {
+            // The sentinel bucket holds data too old to be worth rewriting.
+            if window_start == -1 || segments.len() < self.min_threshold {
+                continue;
+            }
+            for merge_segments in self.plan_window_merges(segments)? {
+                spec.get_or_insert_with(MergeSpecification::new)
+                    .add(OneMerge::new(merge_segments)?);
+            }
+        }
+        Ok(spec)
+    }
+
     fn plan_window_merges(
         &self,
         mut ordered: Vec<SegmentCommitInfo>,
@@ -3520,18 +3566,7 @@ impl MergePolicy for TemporalMergePolicy {
             buckets.entry(bucket).or_default().push(info.clone());
         }
 
-        let mut spec: Option<MergeSpecification> = None;
-        for (window_start, segments) in buckets {
-            // The sentinel bucket holds data too old to be worth rewriting.
-            if window_start == -1 || segments.len() < self.min_threshold {
-                continue;
-            }
-            for merge_segments in self.plan_window_merges(segments)? {
-                spec.get_or_insert_with(MergeSpecification::new)
-                    .add(OneMerge::new(merge_segments)?);
-            }
-        }
-        Ok(spec)
+        self.find_merge_candidates(buckets)
     }
 
     fn find_forced_merges(

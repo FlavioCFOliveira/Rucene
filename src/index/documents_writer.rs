@@ -761,6 +761,13 @@ impl FrozenBufferedUpdates {
     }
 
     /// Returns `true` when the packet carries no deletes at all.
+    ///
+    /// The negation of `FrozenBufferedUpdates.any()`
+    /// (`FrozenBufferedUpdates.java:533-535`), which answers
+    /// `deleteTerms.size() > 0 || deleteQueries.length > 0 || fieldUpdatesCount > 0`.
+    /// Rust spells the emptiness test `is_empty`, and this crate's own
+    /// `Accountable`-shaped types all read that way, so the sense is inverted
+    /// rather than the name transliterated.
     pub fn is_empty(&self) -> bool {
         !self.updates.any()
     }
@@ -4382,7 +4389,9 @@ impl DocumentsWriterPerThreadPool {
 
     /// Returns `guard`'s DWPT to the free list and releases its lock.
     ///
-    /// Equivalent to `marksAsFreeAndUnlock(DocumentsWriterPerThread)`.
+    /// Equivalent to
+    /// `DocumentsWriterPerThreadPool.marksAsFreeAndUnlock(DocumentsWriterPerThread)`
+    /// (the plural is Lucene's own spelling; this port drops it).
     ///
     /// Lucene adds to the free list and then unlocks; this port unlocks first
     /// so that the free-list mutex is never taken while a DWPT lock is held,
@@ -5100,6 +5109,7 @@ impl DocumentsWriterFlushControl {
 
         let mut inner = self.lock();
         Self::prune_blocked_queue(&flushing_queue, &mut inner);
+        Self::assert_blocked_flushes(&self.shared.delete_queue(), &inner);
         inner.flush_queue.extend(full_flush_buffer);
         self.update_stall_state_locked(&mut inner);
         inner.full_flush_mark_done = true;
@@ -5107,6 +5117,30 @@ impl DocumentsWriterFlushControl {
         debug_assert!(self.assert_active_delete_queue(&self.shared.delete_queue()));
         debug_assert!(flushing_queue.last_sequence_number() <= flushing_queue.max_seq_no());
         Ok(seq_no)
+    }
+
+    /// Checks that every blocked flush belongs to `flushing_queue`.
+    ///
+    /// Equivalent to `DocumentsWriterFlushControl.assertBlockedFlushes(DocumentsWriterDeleteQueue)`
+    /// (`DocumentsWriterFlushControl.java:664-669`), which Java calls only from
+    /// inside an `assert` — so it runs only with assertions enabled, exactly as
+    /// this runs only under [`debug_assert!`]. `inner` is the already-locked
+    /// state, which stands in for Java's `synchronized (this)`.
+    ///
+    /// # Panics
+    ///
+    /// In a debug build, when a blocked flush was queued against a different
+    /// delete queue.
+    fn assert_blocked_flushes(
+        flushing_queue: &Arc<DocumentsWriterDeleteQueue>,
+        inner: &FlushControlInner,
+    ) {
+        for blocked in &inner.blocked_flushes {
+            debug_assert!(
+                Arc::ptr_eq(blocked.delete_queue(), flushing_queue),
+                "a blocked flush belongs to a different delete queue"
+            );
+        }
     }
 
     fn prune_blocked_queue(
@@ -5138,7 +5172,9 @@ impl DocumentsWriterFlushControl {
         debug_assert!(inner.flush_queue.is_empty());
         debug_assert!(inner.flushing_writers.is_empty());
         if !inner.blocked_flushes.is_empty() {
+            Self::assert_blocked_flushes(&current_queue, &inner);
             Self::prune_blocked_queue(&current_queue, &mut inner);
+            debug_assert!(inner.blocked_flushes.is_empty());
         }
         inner.full_flush = false;
         inner.full_flush_mark_done = false;
@@ -5350,6 +5386,14 @@ impl DocumentsWriterFlushControl {
         }
     }
 
+    /// Recomputes whether indexing threads must be stalled, and returns the
+    /// new value.
+    ///
+    /// Equivalent to the private `DocumentsWriterFlushControl.updateStallState()`
+    /// (`DocumentsWriterFlushControl.java:305`). The `_locked` suffix says what
+    /// Java says with `assert Thread.holdsLock(this)`: the caller already holds
+    /// the flush control's state, and hands it in rather than letting this
+    /// method take it a second time.
     fn update_stall_state_locked(&self, inner: &mut FlushControlInner) -> bool {
         let limit = self.stall_limit_bytes();
         let stall = (inner.active_bytes + inner.flush_bytes) > limit

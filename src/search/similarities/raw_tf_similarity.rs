@@ -40,6 +40,9 @@ impl Default for RawTFSimilarity {
 }
 
 impl Similarity for RawTFSimilarity {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.similarities.RawTFSimilarity"
+    }
     fn discount_overlaps(&self) -> bool {
         self.discount_overlaps
     }

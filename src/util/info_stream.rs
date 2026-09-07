@@ -118,6 +118,9 @@ impl PrintStreamInfoStream {
 }
 
 impl InfoStream for PrintStreamInfoStream {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.util.PrintStreamInfoStream"
+    }
     fn message(&self, component: &str, message: &str) {
         let thread = std::thread::current().name().unwrap_or("main").to_string();
         let line = format!(
@@ -213,6 +216,9 @@ impl JavaLoggingInfoStream {
 }
 
 impl InfoStream for JavaLoggingInfoStream {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.util.JavaLoggingInfoStream"
+    }
     fn message(&self, component: &str, message: &str) {
         // Java passes a null class and method name, which prevents the logging
         // framework from inspecting the stack; `log` never inspects it.
