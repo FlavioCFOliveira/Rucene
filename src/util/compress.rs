@@ -861,15 +861,15 @@ impl LowercaseAsciiCompression {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{ByteArrayDataInput, ByteArrayDataOutput};
+    use crate::store::{ByteArrayDataInput, VecDataOutput};
 
     fn lz4_round_trip(input: &[u8], ht: &mut dyn Lz4HashTable) {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         Lz4::compress(input, 0, input.len(), &mut out, ht).unwrap();
         let compressed = out.into_inner();
 
         let mut decompressed = vec![0u8; input.len()];
-        let mut input_stream = ByteArrayDataInput::from_slice(&compressed);
+        let mut input_stream = ByteArrayDataInput::new(&compressed);
         Lz4::decompress(&mut input_stream, input.len(), &mut decompressed, 0).unwrap();
         assert_eq!(
             decompressed,
@@ -881,7 +881,7 @@ mod tests {
 
     fn lower_round_trip(input: &[u8]) {
         let mut tmp = vec![0u8; input.len()];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         let ok =
             LowercaseAsciiCompression::compress(input, input.len(), &mut tmp, &mut out).unwrap();
         if !ok {
@@ -894,7 +894,7 @@ mod tests {
         );
 
         let mut decompressed = vec![0u8; input.len()];
-        let mut input_stream = ByteArrayDataInput::from_slice(&compressed);
+        let mut input_stream = ByteArrayDataInput::new(&compressed);
         LowercaseAsciiCompression::decompress(&mut input_stream, &mut decompressed, input.len())
             .unwrap();
         assert_eq!(decompressed, input);
@@ -961,14 +961,14 @@ mod tests {
         let expected = &[
             0xA0u8, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61,
         ];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         let mut ht = FastCompressionHashTable::new();
         Lz4::compress(&input, 0, input.len(), &mut out, &mut ht).unwrap();
         let compressed = out.into_inner();
         assert_eq!(&compressed, expected);
 
         let mut decompressed = vec![0u8; input.len()];
-        let mut input_stream = ByteArrayDataInput::from_slice(&compressed);
+        let mut input_stream = ByteArrayDataInput::new(&compressed);
         Lz4::decompress(&mut input_stream, input.len(), &mut decompressed, 0).unwrap();
         assert_eq!(decompressed, input);
     }
@@ -982,14 +982,14 @@ mod tests {
         let expected = &[
             0xC0u8, 0x61, 0x62, 0x63, 0x61, 0x62, 0x63, 0x61, 0x62, 0x63, 0x61, 0x62, 0x63,
         ];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         let mut ht = FastCompressionHashTable::new();
         Lz4::compress(input, 0, input.len(), &mut out, &mut ht).unwrap();
         let compressed = out.into_inner();
         assert_eq!(&compressed, expected);
 
         let mut decompressed = vec![0u8; input.len()];
-        let mut input_stream = ByteArrayDataInput::from_slice(&compressed);
+        let mut input_stream = ByteArrayDataInput::new(&compressed);
         Lz4::decompress(&mut input_stream, input.len(), &mut decompressed, 0).unwrap();
         assert_eq!(&decompressed, input);
     }
@@ -999,7 +999,7 @@ mod tests {
         // Token 0x00 (0 literals, 0 match length with no extra), short 0x0000.
         let data = &[0x00u8, 0x00, 0x00];
         let mut dest = vec![0u8; 4];
-        let mut input = ByteArrayDataInput::from_slice(data);
+        let mut input = ByteArrayDataInput::new(data);
         let result = Lz4::decompress(&mut input, 4, &mut dest, 0);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("offset 0"));
@@ -1013,7 +1013,7 @@ mod tests {
         // fast compressor produces for 10 'a's (which is all literals).
         let data = &[0x11u8, 0x61, 0x01, 0x00, 0x40, 0x61, 0x61, 0x61, 0x61];
         let mut dest = vec![0u8; 10];
-        let mut input = ByteArrayDataInput::from_slice(data);
+        let mut input = ByteArrayDataInput::new(data);
         Lz4::decompress(&mut input, 10, &mut dest, 0).unwrap();
         assert_eq!(dest, vec![b'a'; 10]);
     }
@@ -1021,7 +1021,7 @@ mod tests {
     #[test]
     fn lz4_compress_bounds_checks() {
         let input = b"hello";
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         let mut ht = FastCompressionHashTable::new();
         assert!(Lz4::compress(input, 0, 10, &mut out, &mut ht).is_err());
         assert!(Lz4::compress(input, 10, 1, &mut out, &mut ht).is_err());
@@ -1034,7 +1034,7 @@ mod tests {
     #[test]
     fn lower_empty_and_short() {
         let mut tmp = vec![0u8; 8];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         assert!(!LowercaseAsciiCompression::compress(b"", 0, &mut tmp, &mut out).unwrap());
         assert!(!LowercaseAsciiCompression::compress(b"hello", 5, &mut tmp, &mut out).unwrap());
     }
@@ -1053,7 +1053,7 @@ mod tests {
     fn lower_rejects_too_many_exceptions() {
         let input = b"hello World"; // uppercase 'W' is the only exception, len=11 -> max=0
         let mut tmp = vec![0u8; input.len()];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         assert!(
             !LowercaseAsciiCompression::compress(input, input.len(), &mut tmp, &mut out).unwrap()
         );
@@ -1068,7 +1068,7 @@ mod tests {
             0x69u8, 0xA6, 0x6D, 0x2D, 0x30, 0x0F, 0xB8, 0x30, 0xF3, 0x2D, 0x25, 0x0E, 0x00,
         ];
         let mut tmp = vec![0u8; input.len()];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         assert!(
             LowercaseAsciiCompression::compress(input, input.len(), &mut tmp, &mut out).unwrap()
         );
@@ -1076,7 +1076,7 @@ mod tests {
         assert_eq!(&compressed, expected);
 
         let mut decompressed = vec![0u8; input.len()];
-        let mut input_stream = ByteArrayDataInput::from_slice(&compressed);
+        let mut input_stream = ByteArrayDataInput::new(&compressed);
         LowercaseAsciiCompression::decompress(&mut input_stream, &mut decompressed, input.len())
             .unwrap();
         assert_eq!(&decompressed, input);
@@ -1095,7 +1095,7 @@ mod tests {
     fn lower_decompress_bounds_checks() {
         let data = &[0x00u8, 0x00, 0x00]; // 3 bytes of packed data + 0 exceptions
         let mut out = vec![0u8; 4];
-        let mut input = ByteArrayDataInput::from_slice(data);
+        let mut input = ByteArrayDataInput::new(data);
         // len=4 needs compressed_len=3 and saved=1, but input is only 3 bytes.
         assert!(LowercaseAsciiCompression::decompress(&mut input, &mut out, 4).is_err());
     }
@@ -1125,7 +1125,7 @@ mod tests {
             ),
         ];
         for (name, bytes) in cases {
-            let mut input = ByteArrayDataInput::new(bytes);
+            let mut input = ByteArrayDataInput::new(&bytes);
             let mut dest = vec![0u8; 8];
             let outcome = Lz4::decompress(&mut input, 8, &mut dest, 0);
             assert!(
@@ -1140,10 +1140,11 @@ mod tests {
     fn the_corruption_checks_do_not_reject_valid_streams() {
         for length in [0usize, 1, 7, 64, 1000, 40_000] {
             let data: Vec<u8> = (0..length).map(|i| ((i * 13) % 61) as u8).collect();
-            let mut out = ByteArrayDataOutput::new();
+            let mut out = VecDataOutput::new();
             let mut table = FastCompressionHashTable::new();
             Lz4::compress(&data, 0, data.len(), &mut out, &mut table).unwrap();
-            let mut input = ByteArrayDataInput::new(out.into_inner());
+            let input_src = out.into_inner();
+            let mut input = ByteArrayDataInput::new(&input_src);
             let mut dest = vec![0u8; data.len() + 7];
             let produced = Lz4::decompress(&mut input, data.len(), &mut dest, 0).unwrap();
             assert_eq!(produced, data.len());
@@ -1176,14 +1177,15 @@ mod tests {
         second.extend((0..200u32).map(|i| ((i * 53 + 7) % 251) as u8));
 
         let mut table = HighCompressionHashTable::new();
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         Lz4::compress(&first, 0, first.len(), &mut out, &mut table).unwrap();
         // The marker's hash slot now holds offset 500; this span hashes it
         // again at offset 0.
         Lz4::compress(&second, 0, second.len(), &mut out, &mut table).unwrap();
 
         // And everything written must still decode to what went in.
-        let mut input = ByteArrayDataInput::new(out.into_inner());
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
         for expected in [&first[..], &second[..]] {
             let mut dest = vec![0u8; expected.len() + 7];
             let produced = Lz4::decompress(&mut input, expected.len(), &mut dest, 0).unwrap();
@@ -1199,9 +1201,10 @@ mod tests {
         for length in [4usize, 64, 4096, 70_000] {
             let data: Vec<u8> = (0..length).map(|i| ((i / 7) % 251) as u8).collect();
             let mut table = HighCompressionHashTable::new();
-            let mut out = ByteArrayDataOutput::new();
+            let mut out = VecDataOutput::new();
             Lz4::compress(&data, 0, data.len(), &mut out, &mut table).unwrap();
-            let mut input = ByteArrayDataInput::new(out.into_inner());
+            let input_src = out.into_inner();
+            let mut input = ByteArrayDataInput::new(&input_src);
             let mut dest = vec![0u8; data.len() + 7];
             Lz4::decompress(&mut input, data.len(), &mut dest, 0).unwrap();
             assert_eq!(&dest[..data.len()], &data[..], "length {length}");

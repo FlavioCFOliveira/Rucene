@@ -191,7 +191,7 @@ macro_rules! range_doc_values_field {
                         min.len(),
                         $range::BYTES,
                         query_type,
-                    ),
+                    )?,
                     field,
                     min: min.to_vec(),
                     max: max.to_vec(),

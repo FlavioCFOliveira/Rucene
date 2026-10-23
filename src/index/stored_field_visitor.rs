@@ -297,7 +297,8 @@ mod tests {
     #[test]
     fn the_default_data_input_callback_reads_every_byte_and_delegates() {
         let info = FieldInfo::new("payload", 3);
-        let mut input = ByteArrayDataInput::new(vec![1, 2, 3, 4, 5]);
+        let input_src = vec![1, 2, 3, 4, 5];
+        let mut input = ByteArrayDataInput::new(&input_src);
         let mut value = StoredFieldDataInput::new(&mut input, 5);
         let mut visitor = RecordingVisitor::default();
         visitor.binary_field_data_input(&info, &mut value).unwrap();
@@ -309,7 +310,8 @@ mod tests {
         // The reader shares one cursor across the whole document, so the
         // default implementation must consume exactly `length` bytes.
         let info = FieldInfo::new("payload", 3);
-        let mut input = ByteArrayDataInput::new(vec![1, 2, 3, 9, 9]);
+        let input_src = vec![1, 2, 3, 9, 9];
+        let mut input = ByteArrayDataInput::new(&input_src);
         {
             let mut value = StoredFieldDataInput::new(&mut input, 3);
             let mut visitor = RecordingVisitor::default();
@@ -322,7 +324,8 @@ mod tests {
     #[test]
     fn a_negative_length_is_rejected_instead_of_panicking() {
         let info = FieldInfo::new("payload", 3);
-        let mut input = ByteArrayDataInput::new(vec![1, 2, 3]);
+        let input_src = vec![1, 2, 3];
+        let mut input = ByteArrayDataInput::new(&input_src);
         let mut value = StoredFieldDataInput::new(&mut input, -1);
         let mut visitor = RecordingVisitor::default();
         let error = visitor
@@ -334,7 +337,8 @@ mod tests {
     #[test]
     fn overriding_the_data_input_callback_bypasses_the_byte_slice_callback() {
         let info = FieldInfo::new("payload", 3);
-        let mut input = ByteArrayDataInput::new(vec![7, 8]);
+        let input_src = vec![7, 8];
+        let mut input = ByteArrayDataInput::new(&input_src);
         let mut value = StoredFieldDataInput::new(&mut input, 2);
         let mut visitor = StreamingVisitor::default();
         visitor.binary_field_data_input(&info, &mut value).unwrap();

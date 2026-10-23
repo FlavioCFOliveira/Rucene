@@ -25,6 +25,18 @@ pub trait IntSet {
 
     /// The 64-bit hash code of this set, on which equality is also predicated.
     fn long_hash_code(&self) -> i64;
+
+    /// Java's `IntSet.hashCode()`, reproduced exactly: the 32-bit fold of
+    /// [`IntSet::long_hash_code`] that `java.lang.Long.hashCode(long)` performs.
+    ///
+    /// This is the `int` Java hands to a `HashMap`; the Rust
+    /// [`std::hash::Hash`] implementations of the concrete sets feed the wider
+    /// 64-bit value instead, so this method exists for the cases that need the
+    /// Java number itself.
+    fn hash_code(&self) -> i32 {
+        let value = self.long_hash_code();
+        (value ^ ((value as u64) >> 32) as i64) as i32
+    }
 }
 
 /// An immutable snapshot of an [`IntSet`], associated with one determinized state.

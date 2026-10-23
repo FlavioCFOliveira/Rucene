@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::internal::hppc::BitMixer;
+use crate::util::{Accountable, RamUsageEstimator};
 
 use super::automaton::{Automaton, Transition, TransitionAccessor, MAX_CODE_POINT};
 use super::int_set::StateSet;
@@ -57,6 +58,29 @@ impl DState {
     /// registry below is keyed by the (equivalent) NFA state array.
     fn hash_code(&self) -> i32 {
         self.hash_code
+    }
+
+    /// Returns an estimate of the heap this determinized state occupies.
+    ///
+    /// Equivalent to `NFARunAutomaton.DState#ramBytesUsed`
+    /// (`NFARunAutomaton.java:446-454`): a fixed, aligned shallow size — three
+    /// `int` fields, one `boolean`, two whole `Transition`s (`stepTransition`
+    /// and `minimalTransition`, which Java charges unconditionally), an object
+    /// header and four references — plus the `nfaStates` and `transitions`
+    /// arrays. A `null` `transitions` costs nothing, which is what `None` means
+    /// here.
+    fn ram_bytes_used(&self) -> i64 {
+        RamUsageEstimator::align_object_size(
+            3 * 4
+                + 1
+                + Transition::BYTES_USED * 2
+                + RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+                + RamUsageEstimator::NUM_BYTES_OBJECT_REF * 4,
+        ) + RamUsageEstimator::size_of_int(&self.nfa_states)
+            + self
+                .transitions
+                .as_ref()
+                .map_or(0, |t| RamUsageEstimator::size_of_int(t))
     }
 }
 
@@ -122,6 +146,18 @@ impl PartialEq for NFARunAutomaton {
 }
 
 impl Eq for NFARunAutomaton {}
+
+impl std::hash::Hash for NFARunAutomaton {
+    /// Hashes exactly the two fields [`PartialEq`] compares, so the two agree.
+    ///
+    /// Java's `NFARunAutomaton` overrides neither `equals` nor `hashCode`, so
+    /// its Java hash is the JVM identity hash; this port already gives it
+    /// value equality, and this keeps the hash consistent with it.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.alphabet_size.hash(state);
+        self.points.hash(state);
+    }
+}
 
 impl NFARunAutomaton {
     /// Constructor, assuming the alphabet size is the whole Unicode code point space.
@@ -543,5 +579,85 @@ impl TransitionAccessor for NFARunAutomaton {
         debug_assert!(outgoing_transitions == index);
 
         self.set_transition_accordingly(t, &inner);
+    }
+}
+
+impl NFARunAutomaton {
+    /// Shallow size of the Java class, the fixed part of
+    /// [`NFARunAutomaton::ram_bytes_used`].
+    ///
+    /// Equivalent to the private `NFARunAutomaton.BASE_RAM_BYTES`, which Java
+    /// computes as
+    /// `RamUsageEstimator.shallowSizeOfInstance(NFARunAutomaton.class)`: an
+    /// object header, the `int alphabetSize`, and the seven references
+    /// `automaton`, `points`, `dStateToOrd`, `dStates`, `classmap`,
+    /// `transitionSet` and `statesSet`. Measured against
+    /// `lucene-core-10.5.0.jar` on a JVM with compressed references, that is 48
+    /// bytes.
+    const BASE_RAM_BYTES: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + 4
+            + 7 * RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+    );
+}
+
+impl Accountable for NFARunAutomaton {
+    /// Returns an estimate of the heap this NFA run automaton occupies.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.util.automaton.NFARunAutomaton#ramBytesUsed`
+    /// (`NFARunAutomaton.java:238-245`): the shallow size of the class plus the
+    /// source automaton, the `points` array, the memoized-state registry, the
+    /// determinized states and the `classmap` array.
+    ///
+    /// The registry term follows `RamUsageEstimator.sizeOfMap`: an aligned
+    /// object header, then per entry the hash-table overhead
+    /// ([`HASHTABLE_RAM_BYTES_PER_ENTRY`](RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY),
+    /// standing for Java's `shallowSizeOf(Map.Entry)`) plus the key and the
+    /// value, with the whole sum aligned at the end.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java keys `dStateToOrd` by the
+    /// `DState` object itself, so `sizeOfMap` charges each key the full
+    /// `DState.ramBytesUsed()` — the same state that `dStates` already charges.
+    /// This port keys the registry by `(hash_code, nfa_states)`, the pair that
+    /// makes two states equal, so the key term is the cost of that pair and the
+    /// `DState` is charged once, in `d_states`. The map's own arithmetic, and
+    /// every other term, is Java's.
+    fn ram_bytes_used(&self) -> i64 {
+        let inner = self.inner.borrow();
+
+        let mut registry =
+            RamUsageEstimator::align_object_size(RamUsageEstimator::NUM_BYTES_OBJECT_HEADER);
+        for (hash_code_and_states, _ord) in inner.d_state_to_ord.iter() {
+            registry += RamUsageEstimator::HASHTABLE_RAM_BYTES_PER_ENTRY;
+            // The key: an `i32` beside a reference to the NFA-state array.
+            registry += RamUsageEstimator::align_object_size(
+                RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+                    + 4
+                    + RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+            ) + RamUsageEstimator::size_of_int(&hash_code_and_states.1);
+            // The value: Java boxes the ordinal in an `Integer`.
+            registry += RamUsageEstimator::align_object_size(
+                RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + 4,
+            );
+        }
+        registry = RamUsageEstimator::align_object_size(registry);
+
+        // `dStates` is a `DState[]`: an array header, one reference per slot,
+        // and the states themselves.
+        let mut d_states = RamUsageEstimator::align_object_size(
+            RamUsageEstimator::NUM_BYTES_ARRAY_HEADER
+                + inner.d_states.len() as i64 * RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+        );
+        for state in &inner.d_states {
+            d_states += state.ram_bytes_used();
+        }
+
+        Self::BASE_RAM_BYTES
+            + self.automaton.ram_bytes_used()
+            + RamUsageEstimator::size_of_int(&self.points)
+            + registry
+            + d_states
+            + RamUsageEstimator::size_of_int(&self.classmap)
     }
 }

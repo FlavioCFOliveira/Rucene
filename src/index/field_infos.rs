@@ -17,6 +17,7 @@ use crate::index::{
     MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
 };
 use crate::store::DataOutput;
+use crate::util::java_collections::JavaStringMap;
 
 // -----------------------------------------------------------------------------
 // FieldInfo
@@ -84,7 +85,14 @@ pub struct FieldInfo {
     store_payloads: bool,
 
     /// Codec-private attributes.
-    attributes: RwLock<HashMap<String, String>>,
+    ///
+    /// The type carries the map's iteration order because `.fnm` does:
+    /// `Lucene94FieldInfosFormat.write` serialises it with
+    /// `DataOutput.writeMapOfStrings`, which walks it. Java stores whatever
+    /// `Map` its caller passed — the `HashMap` `putAttribute` rebuilds, or the
+    /// `TreeMap`/`HashMap` `DataInput.readMapOfStrings` returned — and this
+    /// field stores the same choice. See [`JavaStringMap`].
+    attributes: RwLock<JavaStringMap>,
 }
 
 impl Default for FieldInfo {
@@ -107,7 +115,7 @@ impl Default for FieldInfo {
             store_term_vector: false,
             omit_norms: false,
             store_payloads: false,
-            attributes: RwLock::new(HashMap::new()),
+            attributes: RwLock::new(JavaStringMap::default()),
         }
     }
 }
@@ -229,7 +237,7 @@ impl FieldInfo {
         doc_values_type: DocValuesType,
         doc_values_skip_index_type: DocValuesSkipIndexType,
         doc_values_gen: i64,
-        attributes: HashMap<String, String>,
+        attributes: JavaStringMap,
         point_dimension_count: i32,
         point_index_dimension_count: i32,
         point_num_bytes: i32,
@@ -546,19 +554,46 @@ impl FieldInfo {
     }
 
     /// Stores a codec attribute value, returning the previous value if any.
+    ///
+    /// Equivalent to `FieldInfo.putAttribute` (`FieldInfo.java:670-679`), which
+    /// does **not** mutate the map in place: it builds
+    /// `new HashMap<>(attributes)`, puts into the copy and swaps the copy in,
+    /// so that readers of the old map are never disturbed. The copy is what
+    /// makes the resulting iteration order what it is — the copy constructor
+    /// pre-sizes its table from the source's size, so the same two attributes
+    /// come out in a different order than if they had been put into a map built
+    /// by `new HashMap<>()` — and reproducing it is the point of doing it this
+    /// way here too.
     pub fn put_attribute(
         &self,
         key: impl Into<String>,
         value: impl Into<String>,
     ) -> Option<String> {
-        self.attributes
-            .write()
-            .unwrap()
-            .insert(key.into(), value.into())
+        let mut guard = self.attributes.write().unwrap();
+        let mut new_map = guard.to_java_hash_map();
+        let old_value = new_map.insert(key.into(), value.into());
+        *guard = JavaStringMap::Hash(new_map);
+        old_value
     }
 
-    /// Returns a copy of the internal codec attributes map.
+    /// Returns a copy of the internal codec attributes map, without its
+    /// iteration order.
+    ///
+    /// For the callers that only look attributes up. The order-carrying map is
+    /// [`attributes_ordered`](Self::attributes_ordered), which is what
+    /// `Lucene94FieldInfosFormat.write` needs.
     pub fn attributes(&self) -> HashMap<String, String> {
+        self.attributes.read().unwrap().to_std()
+    }
+
+    /// Returns a copy of the internal codec attributes map, iteration order
+    /// included.
+    ///
+    /// Equivalent to `FieldInfo.attributes()` (`FieldInfo.java:682-685`), which
+    /// returns the internal map itself. This port returns a copy, as
+    /// [`attributes`](Self::attributes) already did, because the map is behind
+    /// a lock.
+    pub fn attributes_ordered(&self) -> JavaStringMap {
         self.attributes.read().unwrap().clone()
     }
 
@@ -748,7 +783,7 @@ impl FieldInfo {
             self.doc_values_skip_index_type,
         ))?;
         output.write_long(self.doc_values_gen)?;
-        output.write_map_of_strings(&self.attributes.read().unwrap())?;
+        output.write_map_of_strings(&*self.attributes.read().unwrap())?;
         output.write_v_int(self.point_dimension_count)?;
         if self.point_dimension_count != 0 {
             output.write_v_int(self.point_index_dimension_count)?;
@@ -996,9 +1031,29 @@ fn vector_similarity_function_from_byte(b: u8) -> Result<VectorSimilarityFunctio
 /// Equivalent to `org.apache.lucene.index.FieldInfos`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FieldInfos {
-    by_number: Vec<Option<FieldInfo>>,
+    /// Field metadata indexed by field number, with a gap for every number no
+    /// field was assigned.
+    ///
+    /// Java stores `FieldInfo[] byNumber` and `Collection<FieldInfo> values`
+    /// (`FieldInfos.java:64-68`) and fills both from the very same objects —
+    /// `values = Arrays.asList(byNumber)`, or `Arrays.asList(infos)` when the
+    /// numbering is sparse (`FieldInfos.java:157-185`). Every handle onto a
+    /// field is therefore a handle onto *one* object, which is what lets a
+    /// codec mutate a `FieldInfo` through one of them and have the change seen
+    /// through the others. `PerFieldPostingsFormat.FieldsWriter.write` relies
+    /// on exactly that: it looks a field up by name and calls `putAttribute`
+    /// (`PerFieldPostingsFormat.java:253-254`), and `IndexingChain.flush` then
+    /// serialises the very same objects while iterating
+    /// (`IndexingChain.java:382-387`).
+    ///
+    /// The two collections hold `Arc<FieldInfo>` so that they alias one object
+    /// per field, as Java's references do; storing `FieldInfo` by value in each
+    /// would make them independent copies and silently drop such a mutation.
+    by_number: Vec<Option<Arc<FieldInfo>>>,
     by_name: HashMap<String, i32>,
-    values: Vec<FieldInfo>,
+    /// The same objects as [`Self::by_number`], in the order Java's `values`
+    /// collection presents them.
+    values: Vec<Arc<FieldInfo>>,
 
     has_freq: bool,
     has_postings: bool,
@@ -1108,7 +1163,12 @@ impl FieldInfos {
             }
         }
 
-        let mut by_number: Vec<Option<FieldInfo>> = vec![None; (max_field_number + 1) as usize];
+        // One `Arc` per field, shared by `by_number` and `values`, so that the
+        // two collections alias a single object exactly as Java's arrays do.
+        let infos: Vec<Arc<FieldInfo>> = infos.into_iter().map(Arc::new).collect();
+
+        let mut by_number: Vec<Option<Arc<FieldInfo>>> =
+            vec![None; (max_field_number + 1) as usize];
         for info in &infos {
             let slot = &mut by_number[info.number as usize];
             if slot.is_some() {
@@ -1118,7 +1178,7 @@ impl FieldInfos {
                     existing.name, info.name, info.number
                 )));
             }
-            *slot = Some(info.clone());
+            *slot = Some(Arc::clone(info));
         }
 
         let values =
@@ -1183,6 +1243,7 @@ impl FieldInfos {
     pub fn iter(&self) -> impl Iterator<Item = &FieldInfo> {
         self.values
             .iter()
+            .map(Arc::as_ref)
             .filter(move |fi| self.is_visible(&fi.name))
     }
 
@@ -1205,7 +1266,7 @@ impl FieldInfos {
         if !self.is_visible(&fi.name) {
             return None;
         }
-        Some(fi)
+        Some(fi.as_ref())
     }
 
     /// Returns `true` if any visible field has term frequencies.
@@ -1380,6 +1441,7 @@ impl FieldInfos {
         let visible: Vec<&FieldInfo> = result
             .values
             .iter()
+            .map(Arc::as_ref)
             .filter(|fi| result.is_visible(&fi.name))
             .collect();
 
@@ -1697,7 +1759,7 @@ impl FieldNumbers {
                 dv_type,
                 DocValuesSkipIndexType::NONE,
                 -1,
-                HashMap::new(),
+                JavaStringMap::default(),
                 0,
                 0,
                 0,
@@ -1880,14 +1942,17 @@ impl FieldInfosBuilder {
                 let current = &self.by_name[&name];
                 current.verify_same_schema(info)?;
             }
-            let attributes = info.attributes();
+            // `FieldInfos.Builder.add` walks `fi.attributes().keySet()`, so
+            // the order the attributes are re-put in is the source map's
+            // iteration order and the merged map's own order follows from it.
+            let attributes = info.attributes_ordered();
             let has_payloads = info.has_payloads();
             let current = self
                 .by_name
                 .get_mut(&name)
                 .expect("INVARIANT: presence checked above");
-            for (key, value) in attributes {
-                current.put_attribute(key, value);
+            for (key, value) in attributes.iter() {
+                current.put_attribute(key.clone(), value.clone());
             }
             if has_payloads {
                 current.set_store_payloads();
@@ -1912,7 +1977,7 @@ impl FieldInfosBuilder {
             info.get_doc_values_type(),
             info.doc_values_skip_index_type(),
             dv_gen,
-            info.attributes(),
+            info.attributes_ordered(),
             info.get_point_dimension_count(),
             info.get_point_index_dimension_count(),
             info.get_point_num_bytes(),
@@ -2004,7 +2069,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::store::{ByteArrayDataInput, ByteArrayDataOutput, IndexInput, RamDirectory};
+    use crate::store::{ByteArrayDataInput, IndexInput, RamDirectory, VecDataOutput};
 
     #[test]
     fn field_info_default_is_empty() {
@@ -2166,7 +2231,7 @@ mod tests {
 
     #[test]
     fn field_info_write_read_round_trip() {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         let mut fi = FieldInfo::new("body", 0);
         fi.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
         fi.store_term_vector = true;
@@ -2179,7 +2244,8 @@ mod tests {
         fi.vector_similarity_function = VectorSimilarityFunction::COSINE;
         fi.write(&mut out).unwrap();
 
-        let mut input = ByteArrayDataInput::new(out.into_inner());
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
         let read = FieldInfo::read(&mut input).unwrap();
         assert_eq!(read.name, "body");
         assert_eq!(read.number, 0);
@@ -2270,10 +2336,11 @@ mod tests {
         vector.vector_similarity_function = VectorSimilarityFunction::DOT_PRODUCT;
         let fis = FieldInfos::new(vec![body, title, vector]).unwrap();
 
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         fis.write(&mut out).unwrap();
 
-        let mut input = ByteArrayDataInput::new(out.into_inner());
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
         let read = FieldInfos::read(&mut input).unwrap();
         assert_eq!(read.size(), 3);
         assert!(read.has_postings());
@@ -2383,7 +2450,7 @@ mod tests {
             DocValuesType::NONE,
             DocValuesSkipIndexType::NONE,
             -1,
-            HashMap::new(),
+            crate::util::java_collections::JavaStringMap::default(),
             0,
             0,
             0,

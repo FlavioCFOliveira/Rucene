@@ -1,15 +1,16 @@
 //! Queries, ported from `org.apache.lucene.search.Query`.
 //!
-//! # Relationship with [`crate::index::Query`]
-//!
-//! [`crate::index::documents_writer`] declares a placeholder `Query` trait,
-//! carrying only a textual representation, so that delete-by-query entries
-//! could be recorded before the search package existed. This module is the real
-//! `org.apache.lucene.search.Query`: it is what
+//! This is the one `Query` of the crate, exactly as
+//! `org.apache.lucene.search.Query` is the one `Query` of Lucene. It is what
 //! [`IndexSearcher`](crate::search::IndexSearcher) and
-//! [`Weight`](crate::search::Weight) are defined against. The placeholder
-//! should eventually be replaced by this trait; doing so touches the indexing
-//! write path and is left for the task that owns it.
+//! [`Weight`](crate::search::Weight) are defined against, and also what the
+//! indexing write path buffers for delete-by-query: `IndexWriter`'s
+//! [`delete_documents_by_queries`](crate::index::index_writer::IndexWriter::delete_documents_by_queries)
+//! takes it, [`BufferedUpdates`](crate::index::BufferedUpdates) keys on it, and
+//! [`FrozenBufferedUpdates`](crate::index::FrozenBufferedUpdates) rewrites it
+//! into a [`Weight`](crate::search::Weight) to score against each segment —
+//! mirroring `IndexWriter.deleteDocuments(Query...)` and
+//! `FrozenBufferedUpdates.applyQueryDeletes`.
 
 #![deny(unsafe_code)]
 

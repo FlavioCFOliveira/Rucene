@@ -21,7 +21,7 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::codecs::codec_util::{
     check_footer, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
@@ -34,7 +34,7 @@ use crate::codecs::term_vectors::{TermVectorsFormat, TermVectorsReader, TermVect
 use crate::error::{LuceneError, Result};
 use crate::index::postings_enum::{Impacts, ImpactsEnum, ImpactsSource, PostingsEnum};
 use crate::index::terms::{Fields, SeekStatus, TermState, Terms, TermsEnum};
-use crate::index::{segment_file_name, DocIDMergerSub, DocMap, MergeState};
+use crate::index::{segment_file_name, DocIDMerger, DocIDMergerSub, DocMap, MergeState};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{
     ByteArrayDataInput, ByteBuffersDataOutput, DataInput, DataOutput, Directory, IOContext,
@@ -47,7 +47,7 @@ use crate::util::packed::{
     BlockPackedWriter, DirectReader, DirectWriter, PackedInts,
 };
 use crate::util::string_helper::StringHelper;
-use crate::util::BytesRef;
+use crate::util::{Accountable, ArrayUtil, BytesRef};
 
 // -----------------------------------------------------------------------------
 // Format constants
@@ -408,6 +408,15 @@ pub struct Lucene90CompressingTermVectorsWriter {
     cur_field: Option<usize>,
     term_suffixes: ByteBuffersDataOutput,
     payload_bytes: ByteBuffersDataOutput,
+    /// The buffer every packed block is assembled in before being copied to the
+    /// `.tvd` stream.
+    ///
+    /// Equivalent to Lucene's `private final ByteBuffersDataOutput
+    /// scratchBuffer = ByteBuffersDataOutput.newResettableInstance()`: one
+    /// instance, reset before each use, so its blocks are recycled instead of
+    /// reallocated. It is also one of the terms of
+    /// [`ram_bytes_used`](Accountable::ram_bytes_used).
+    scratch_buffer: ByteBuffersDataOutput,
     last_term: BytesRef,
     positions_buf: Vec<i32>,
     start_offsets_buf: Vec<i32>,
@@ -440,7 +449,6 @@ struct CompressingTermVectorsSub {
     doc_map: DocMap,
     max_doc: i32,
     reader_index: usize,
-    #[allow(dead_code)]
     can_perform_bulk_merge: bool,
     doc_id: i32,
     mapped_doc_id: i32,
@@ -467,6 +475,51 @@ impl DocIDMergerSub for CompressingTermVectorsSub {
     fn set_mapped_doc_id(&mut self, doc_id: i32) {
         self.mapped_doc_id = doc_id;
     }
+}
+
+/// What one step of `DocIDMerger` tells the merge loop.
+///
+/// Java holds the `CompressingTermVectorsSub` that `DocIDMerger.next()` returns
+/// and compares consecutive steps with `==`, that is by object identity, to
+/// find the run of documents that one segment contributes in a row
+/// (`Lucene90CompressingTermVectorsWriter.java:918-928`). A `&mut` reference
+/// cannot be held across the next call here, so the loop keeps the sub's
+/// position in the merger — which is exactly its identity — together with the
+/// fields it reads.
+#[derive(Debug, Clone, Copy)]
+struct TermVectorsMergeStep {
+    /// Position of the sub inside the merger; stands in for Java's identity
+    /// comparison of the sub itself.
+    sub_index: usize,
+    reader_index: usize,
+    doc_id: i32,
+    can_perform_bulk_merge: bool,
+    mapped_doc_id: i32,
+}
+
+/// Advances the merger one document and reports what it landed on, or `None`
+/// once every source segment is exhausted.
+///
+/// Equivalent to `DocIDMerger.next()` as
+/// `Lucene90CompressingTermVectorsWriter#merge` uses it
+/// (`Lucene90CompressingTermVectorsWriter.java:915`, `922`, `934`).
+fn next_term_vectors_step(
+    merger: &mut DocIDMerger<CompressingTermVectorsSub>,
+) -> Result<Option<TermVectorsMergeStep>> {
+    if merger.next_sub()?.is_none() {
+        return Ok(None);
+    }
+    let sub_index = merger.current_index().ok_or_else(|| {
+        LuceneError::IllegalState("DocIDMerger returned a sub it cannot locate".to_string())
+    })?;
+    let sub = merger.sub(sub_index);
+    Ok(Some(TermVectorsMergeStep {
+        sub_index,
+        reader_index: sub.reader_index,
+        doc_id: sub.doc_id,
+        can_perform_bulk_merge: sub.can_perform_bulk_merge,
+        mapped_doc_id: sub.mapped_doc_id,
+    }))
 }
 
 impl Lucene90CompressingTermVectorsWriter {
@@ -534,7 +587,16 @@ impl Lucene90CompressingTermVectorsWriter {
             cur_field: None,
             term_suffixes: ByteBuffersDataOutput::new_resettable_instance(),
             payload_bytes: ByteBuffersDataOutput::new_resettable_instance(),
-            last_term: BytesRef::with_capacity(30),
+            scratch_buffer: ByteBuffersDataOutput::new_resettable_instance(),
+            // Java is `new BytesRef(ArrayUtil.oversize(30, 1))`: a buffer of
+            // that many bytes with `length` zero, not a capacity hint. The
+            // buffer length is what `ramBytesUsed` reports, so it has to be a
+            // real allocation of the same size.
+            last_term: BytesRef {
+                bytes: vec![0u8; ArrayUtil::oversize(30, 1)],
+                offset: 0,
+                length: 0,
+            },
             positions_buf: vec![0; 1024],
             start_offsets_buf: vec![0; 1024],
             lengths_buf: vec![0; 1024],
@@ -650,13 +712,24 @@ impl Lucene90CompressingTermVectorsWriter {
     /// the merged segment; the compressed payload is copied verbatim, which is
     /// what makes a bulk merge cheap.
     ///
+    /// The documents are read through the merge state's own reader, never a
+    /// clone, exactly as Java casts `mergeState.termVectorsReaders[readerIndex]`
+    /// (`Lucene90CompressingTermVectorsWriter.java:815-816`): the chunk that
+    /// reader last decoded ([`is_loaded`](Lucene90CompressingTermVectorsReader::is_loaded))
+    /// must survive from one call to the next. An index-sorted merge calls this
+    /// once per run of consecutive documents, and a run that starts inside the
+    /// chunk the previous run ended in must copy those documents one by one; a
+    /// fresh clone has forgotten that chunk, seeks to its start and fails the
+    /// `base != docID` check.
+    ///
     /// # Errors
     ///
     /// Returns [`LuceneError::CorruptIndex`] when a chunk header disagrees with
     /// the term-vectors index, and propagates any I/O error.
     ///
     /// Equivalent to
-    /// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingTermVectorsWriter#copyChunks`.
+    /// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingTermVectorsWriter#copyChunks`
+    /// (`Lucene90CompressingTermVectorsWriter.java:809-896`).
     fn copy_chunks(
         &mut self,
         merge_state: &MergeState,
@@ -664,9 +737,6 @@ impl Lucene90CompressingTermVectorsWriter {
         from_doc_id: i32,
         to_doc_id: i32,
     ) -> Result<()> {
-        // The reader is cloned out of the merge state so that this writer can
-        // be borrowed mutably while its documents are read; a clone shares the
-        // same files and the same metadata.
         let reader = merge_state.term_vectors_readers[sub.reader_index]
             .as_ref()
             .and_then(|reader| reader.as_any())
@@ -675,12 +745,11 @@ impl Lucene90CompressingTermVectorsWriter {
                 LuceneError::IllegalState(
                     "bulk merge needs a Lucene90CompressingTermVectorsReader".to_string(),
                 )
-            })?
-            .clone();
+            })?;
         debug_assert_eq!(reader.version(), VERSION_CURRENT);
         debug_assert_eq!(reader.chunk_size(), self.chunk_size as i32);
         debug_assert_eq!(reader.compression_mode(), self.compression_mode);
-        debug_assert!(!self.too_dirty(&reader));
+        debug_assert!(!self.too_dirty(reader));
         debug_assert!(merge_state.live_docs[sub.reader_index].is_none());
 
         let mut doc_id = from_doc_id;
@@ -868,9 +937,10 @@ impl Lucene90CompressingTermVectorsWriter {
     }
 
     fn flush_fields(&mut self, total_fields: i32, field_nums: &[i32]) -> Result<()> {
-        let mut scratch = ByteBuffersDataOutput::new();
+        self.scratch_buffer.reset();
         let bits_per_off = DirectWriter::bits_required((field_nums.len() - 1) as i64);
-        let mut writer = DirectWriter::new(&mut scratch, total_fields as i64, bits_per_off)?;
+        let mut writer =
+            DirectWriter::new(&mut self.scratch_buffer, total_fields as i64, bits_per_off)?;
         for doc in &self.pending_docs {
             for field in &doc.fields {
                 let idx = field_nums.binary_search(&field.field_num).unwrap();
@@ -878,7 +948,7 @@ impl Lucene90CompressingTermVectorsWriter {
             }
         }
         writer.finish()?;
-        let bytes = scratch.to_array_copy();
+        let bytes = self.scratch_buffer.to_array_copy();
         self.vectors_stream.write_v_long(bytes.len() as i64)?;
         self.vectors_stream.write_bytes(&bytes, 0, bytes.len())?;
         Ok(())
@@ -901,26 +971,31 @@ impl Lucene90CompressingTermVectorsWriter {
 
         if non_changing_flags {
             self.vectors_stream.write_v_int(0)?;
-            let mut scratch = ByteBuffersDataOutput::new();
-            let mut writer = DirectWriter::new(&mut scratch, field_flags.len() as i64, FLAGS_BITS)?;
+            self.scratch_buffer.reset();
+            let mut writer = DirectWriter::new(
+                &mut self.scratch_buffer,
+                field_flags.len() as i64,
+                FLAGS_BITS,
+            )?;
             for flags in &field_flags {
                 writer.add(*flags as i64)?;
             }
             writer.finish()?;
-            let bytes = scratch.to_array_copy();
+            let bytes = self.scratch_buffer.to_array_copy();
             self.vectors_stream.write_v_int(bytes.len() as i32)?;
             self.vectors_stream.write_bytes(&bytes, 0, bytes.len())?;
         } else {
             self.vectors_stream.write_v_int(1)?;
-            let mut scratch = ByteBuffersDataOutput::new();
-            let mut writer = DirectWriter::new(&mut scratch, total_fields as i64, FLAGS_BITS)?;
+            self.scratch_buffer.reset();
+            let mut writer =
+                DirectWriter::new(&mut self.scratch_buffer, total_fields as i64, FLAGS_BITS)?;
             for doc in &self.pending_docs {
                 for field in &doc.fields {
                     writer.add(field.flags as i64)?;
                 }
             }
             writer.finish()?;
-            let bytes = scratch.to_array_copy();
+            let bytes = self.scratch_buffer.to_array_copy();
             self.vectors_stream.write_v_int(bytes.len() as i32)?;
             self.vectors_stream.write_bytes(&bytes, 0, bytes.len())?;
         }
@@ -937,15 +1012,16 @@ impl Lucene90CompressingTermVectorsWriter {
         let bits_required = DirectWriter::bits_required(max_num_terms as i64);
         self.vectors_stream.write_v_int(bits_required)?;
 
-        let mut scratch = ByteBuffersDataOutput::new();
-        let mut writer = DirectWriter::new(&mut scratch, total_fields as i64, bits_required)?;
+        self.scratch_buffer.reset();
+        let mut writer =
+            DirectWriter::new(&mut self.scratch_buffer, total_fields as i64, bits_required)?;
         for doc in &self.pending_docs {
             for field in &doc.fields {
                 writer.add(field.num_terms as i64)?;
             }
         }
         writer.finish()?;
-        let bytes = scratch.to_array_copy();
+        let bytes = self.scratch_buffer.to_array_copy();
         self.vectors_stream.write_v_int(bytes.len() as i32)?;
         self.vectors_stream.write_bytes(&bytes, 0, bytes.len())?;
         Ok(())
@@ -1144,6 +1220,32 @@ impl fmt::Debug for Lucene90CompressingTermVectorsWriter {
     }
 }
 
+/// Accounts for the buffers this writer holds between flushes.
+///
+/// Equivalent to `Lucene90CompressingTermVectorsWriter.ramBytesUsed()` and
+/// `getChildResources()`. Note that Java adds the four `int[]` buffers by their
+/// **element count**, not their byte size — `positionsBuf.length` and friends —
+/// so a fresh writer reports `4 * 1024 + lastTerm.bytes.length`. Measured
+/// against `lucene-core-10.5.0.jar`: a freshly created
+/// `Lucene90CompressingTermVectorsWriter` answers 4136, which is
+/// `4 * 1024 + ArrayUtil.oversize(30, 1)`.
+impl Accountable for Lucene90CompressingTermVectorsWriter {
+    fn ram_bytes_used(&self) -> i64 {
+        self.positions_buf.len() as i64
+            + self.start_offsets_buf.len() as i64
+            + self.lengths_buf.len() as i64
+            + self.payload_lengths_buf.len() as i64
+            + self.term_suffixes.ram_bytes_used()
+            + self.payload_bytes.ram_bytes_used()
+            + self.last_term.bytes.len() as i64
+            + self.scratch_buffer.ram_bytes_used()
+    }
+
+    fn child_resources(&self) -> Vec<&dyn Accountable> {
+        vec![&self.term_suffixes, &self.payload_bytes]
+    }
+}
+
 impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
     fn start_document(&mut self, num_vector_fields: i32) -> Result<()> {
         self.cur_doc = None;
@@ -1222,7 +1324,10 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
             .write_bytes(&term.bytes, term.offset + prefix_usize, suffix_length)?;
 
         if self.last_term.bytes.len() < term.length {
-            self.last_term.bytes.resize(term.length * 2, 0);
+            // Java replaces the array with `new byte[ArrayUtil.oversize(term.length, 1)]`,
+            // whose length is what `ramBytesUsed` reports; `len * 2` would
+            // report a different number for the same input.
+            self.last_term.bytes = vec![0u8; ArrayUtil::oversize(term.length, 1)];
         }
         self.last_term.offset = 0;
         self.last_term.length = term.length;
@@ -1322,6 +1427,97 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
         Ok(())
     }
 
+    /// Copies every document's term vectors from the segments being merged,
+    /// copying whole compressed chunks for the segments that allow it.
+    ///
+    /// [`can_perform_bulk_merge`](Self::can_perform_bulk_merge) makes that
+    /// choice once per segment. When it holds, a run of consecutive documents
+    /// from that segment is gathered first — a chunk can only be copied as a
+    /// whole — and handed to [`copy_chunks`](Self::copy_chunks), which moves
+    /// the compressed bytes verbatim. Otherwise the document's vectors are
+    /// decoded and written again through
+    /// [`add_all_doc_vectors`](TermVectorsWriter::add_all_doc_vectors), which
+    /// is what the trait's own [`TermVectorsWriter::merge`] does for every
+    /// document.
+    ///
+    /// A segment with no term-vectors reader contributes empty vectors, exactly
+    /// as it does in Java.
+    ///
+    /// # Errors
+    ///
+    /// Propagates every I/O and corruption error raised while reading the
+    /// source segments.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingTermVectorsWriter#merge`
+    /// (`Lucene90CompressingTermVectorsWriter.java:898-939`).
+    fn merge(&mut self, merge_state: &MergeState) -> Result<i32> {
+        let num_readers = merge_state.term_vectors_readers.len();
+        let matching_readers = MatchingReaders::new(merge_state);
+        let mut subs: Vec<CompressingTermVectorsSub> = Vec::with_capacity(num_readers);
+        for i in 0..num_readers {
+            if let Some(reader) = merge_state.term_vectors_readers[i].as_ref() {
+                merge_state.check_aborted()?;
+                reader.check_integrity()?;
+            }
+            let can_perform_bulk_merge =
+                self.can_perform_bulk_merge(merge_state, &matching_readers, i);
+            subs.push(CompressingTermVectorsSub {
+                doc_map: Arc::clone(&merge_state.doc_maps[i]),
+                max_doc: merge_state.max_docs[i],
+                reader_index: i,
+                can_perform_bulk_merge,
+                doc_id: -1,
+                mapped_doc_id: -1,
+            });
+        }
+
+        let mut doc_count = 0i32;
+        let mut merger = DocIDMerger::new(subs, merge_state.needs_index_sort)?;
+        let mut step = next_term_vectors_step(&mut merger)?;
+        while let Some(current) = step {
+            debug_assert_eq!(current.mapped_doc_id, doc_count);
+            if current.can_perform_bulk_merge {
+                // Gather the run of documents this segment contributes in a
+                // row: chunks can only be copied whole.
+                let from_doc_id = current.doc_id;
+                let mut to_doc_id = from_doc_id;
+                loop {
+                    step = next_term_vectors_step(&mut merger)?;
+                    match step {
+                        Some(next) if next.sub_index == current.sub_index => {
+                            to_doc_id += 1;
+                            debug_assert_eq!(next.doc_id, to_doc_id);
+                        }
+                        _ => break,
+                    }
+                }
+                to_doc_id += 1; // exclusive bound
+                self.copy_chunks(
+                    merge_state,
+                    merger.sub(current.sub_index),
+                    from_doc_id,
+                    to_doc_id,
+                )?;
+                doc_count += to_doc_id - from_doc_id;
+            } else {
+                // Decode and re-encode one document; a segment without a
+                // term-vectors reader contributes an empty document
+                // (`Lucene90CompressingTermVectorsWriter.java:929-935`).
+                let vectors = match merge_state.term_vectors_readers[current.reader_index].as_ref()
+                {
+                    Some(reader) => reader.get(current.doc_id)?,
+                    None => None,
+                };
+                self.add_all_doc_vectors(vectors.as_deref(), &merge_state.merge_field_infos)?;
+                doc_count += 1;
+                step = next_term_vectors_step(&mut merger)?;
+            }
+        }
+        self.finish(doc_count)?;
+        Ok(doc_count)
+    }
+
     fn close(&mut self) -> Result<()> {
         self.meta_stream.close()?;
         self.vectors_stream.close()?;
@@ -1382,6 +1578,17 @@ fn checked_count(what: &str, count: i64, available: i64) -> Result<usize> {
 
 /// Reads `length` bytes into a fresh buffer, refusing a length the stream
 /// cannot satisfy.
+/// Reads `length` bytes out of `input` into an owned buffer, which the packed
+/// readers then index at random.
+///
+/// Equivalent to the private
+/// `Lucene90CompressingTermVectorsReader.slice(IndexInput)`, minus the length:
+/// Java's helper reads the block length itself with `readVInt()` and wraps the
+/// bytes in a `ByteBuffersDataInput`, whereas the callers here read the length
+/// (the first of them as a `vLong`, which is what the writer emits at
+/// `Lucene90CompressingTermVectorsWriter.java:497`) and hand it in, because
+/// `DirectReader::new` takes the bytes by value rather than a
+/// `RandomAccessInput`.
 fn read_block(what: &str, input: &mut dyn IndexInput, length: i64) -> Result<Vec<u8>> {
     let length = checked_block_len(what, length, input)?;
     let mut bytes = vec![0u8; length];
@@ -1433,6 +1640,11 @@ pub struct Lucene90CompressingTermVectorsReader {
     /// read inside the same chunk skips the index lookup and a bulk merge can
     /// tell whether a document's chunk is already in flight.
     block_state: Mutex<BlockState>,
+    /// Whether [`close`](TermVectorsReader::close) has already run, so that a
+    /// later read reports `AlreadyClosed` instead of touching a closed file.
+    ///
+    /// Equivalent to Lucene's `private boolean closed`.
+    closed: bool,
 }
 
 /// Which chunk the reader last decoded, and where it starts.
@@ -1549,6 +1761,7 @@ impl Lucene90CompressingTermVectorsReader {
             max_pointer,
             vectors_stream,
             block_state: Mutex::new(BlockState::new()),
+            closed: false,
         })
     }
 }
@@ -1587,6 +1800,7 @@ impl Clone for Lucene90CompressingTermVectorsReader {
                 .clone_input()
                 .expect("INVARIANT: cloning an open IndexInput never fails"),
             block_state: Mutex::new(BlockState::new()),
+            closed: false,
         }
     }
 }
@@ -1598,6 +1812,8 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
 
     #[allow(clippy::needless_range_loop)]
     fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
+        self.ensure_open()?;
+
         // seek to the right place
         let start_pointer = if self.is_loaded(doc) {
             // avoid searching the start pointer
@@ -1839,15 +2055,11 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
                 all_prefix_lengths[off as usize..off as usize + term_count].to_vec();
             suffix_lengths[i] =
                 all_suffix_lengths[off as usize..off as usize + term_count].to_vec();
-            field_lengths[i] = suffix_lengths[i]
-                .iter()
-                .fold(0i32, |sum, value| sum.wrapping_add(*value));
+            field_lengths[i] = Self::sum(&suffix_lengths[i]);
             doc_len = doc_len.wrapping_add(field_lengths[i]);
             off = off.wrapping_add(term_count as i32);
         }
-        let chunk_total_len: i32 = all_suffix_lengths
-            .iter()
-            .fold(0i32, |sum, value| sum.wrapping_add(*value));
+        let chunk_total_len: i32 = Self::sum(&all_suffix_lengths);
 
         // Term freqs.
         let mut term_freqs = vec![0i32; total_terms as usize];
@@ -2192,9 +2404,51 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
     fn get_merge_instance(&self) -> Box<dyn TermVectorsReader> {
         Box::new(self.clone())
     }
+
+    /// Closes the fields index and the `.tvd` stream, once.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.close()`: both are
+    /// closed even when the first fails, the first failure is the one reported,
+    /// and the reader is only marked closed when the close succeeded — so a
+    /// failed close can be retried, exactly as Java's `if (!closed)` allows.
+    fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        let index = self.index_reader.close();
+        let stream = self.vectors_stream.close();
+        index.and(stream)?;
+        self.closed = true;
+        Ok(())
+    }
 }
 
 impl Lucene90CompressingTermVectorsReader {
+    /// Adds up the entries of `arr`.
+    ///
+    /// Equivalent to the private
+    /// `Lucene90CompressingTermVectorsReader.sum(int[])`. Java's `int`
+    /// arithmetic wraps on overflow, so this wraps too: the values come off
+    /// disk and a corrupt chunk must fail the length checks that follow rather
+    /// than panic here.
+    fn sum(arr: &[i32]) -> i32 {
+        arr.iter().fold(0i32, |sum, value| sum.wrapping_add(*value))
+    }
+
+    /// Fails when this reader has already been closed.
+    ///
+    /// Equivalent to the private
+    /// `Lucene90CompressingTermVectorsReader.ensureOpen()`, including its
+    /// message.
+    fn ensure_open(&self) -> Result<()> {
+        if self.closed {
+            return Err(LuceneError::AlreadyClosed(
+                "this FieldsReader is closed".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::needless_range_loop)]
     /// Builds, per field of the document, the running offset at which each of
@@ -2535,7 +2789,22 @@ struct TVTermsEnum {
     lengths: Option<Vec<i32>>,
     payload_index: Option<Vec<i32>>,
     payload_bytes: BytesRef,
-    input: ByteArrayDataInput,
+    // Java holds `ByteArrayDataInput in`, constructed over the field's window
+    // inside the whole decompressed block
+    // (`Lucene90CompressingTermVectorsReader.java:1013`, `:1069`). A struct that
+    // holds both a buffer and a view of that buffer is a self-reference Rust
+    // forbids, so the block stays here and the view's fields — position and
+    // limit — sit beside it, with [`ByteArrayDataInput`] rebuilt around them for
+    // each term.
+    /// The whole decompressed suffix block this field's terms live in.
+    term_bytes: BytesRef,
+    /// Read position inside `term_bytes.bytes`.
+    input_pos: usize,
+    /// Where this field's window ends inside `term_bytes.bytes`.
+    input_limit: usize,
+    /// Where this field's window starts. Java's `TVTermsEnum.startPos`
+    /// (`Lucene90CompressingTermVectorsReader.java:1060`, `:1101`).
+    start_pos: usize,
     term: BytesRef,
     ord: i32,
     atts: AttributeSource,
@@ -2559,15 +2828,16 @@ impl TVTermsEnum {
     ) -> Result<Self> {
         // Java constructs the input over the field's own window —
         // `new ByteArrayDataInput(termBytes.bytes, termBytes.offset, termBytes.length)`
-        // (`Lucene90CompressingTermVectorsReader.java:1013`). That window is not
-        // an enforced limit: `ByteArrayDataInput.readBytes` is a bare
+        // (`Lucene90CompressingTermVectorsReader.java:1013`) — which is exactly
+        // what the position and limit kept below describe. That window is not an
+        // enforced limit in Java: `ByteArrayDataInput.readBytes` is a bare
         // `System.arraycopy` (`ByteArrayDataInput.java:141-144`) and `limit` is
-        // consulted only by `eof()`, so a field that over-reads silently takes
-        // the next field's bytes and throws only at the backing array's end.
-        // Slicing here is therefore stricter than Java: an over-read is an
-        // `Err` rather than a neighbouring field's contents. Handing the whole
-        // decompressed block over and merely seeking into it would be looser
-        // than both, and the seek itself can fail on a window the chunk invented.
+        // consulted only by `eof()` and `length()`, so a field that over-reads
+        // silently takes the next field's bytes and throws only at the backing
+        // array's end. This port keeps the window honest in `next()` instead,
+        // where the remaining bytes are checked before the read, so an over-read
+        // is a `CorruptIndexException` rather than a neighbouring field's
+        // contents; the window itself is still validated against the block here.
         let end = term_bytes
             .offset
             .checked_add(term_bytes.length)
@@ -2580,7 +2850,7 @@ impl TVTermsEnum {
                     term_bytes.bytes.len()
                 ))
             })?;
-        let input = ByteArrayDataInput::from_slice(&term_bytes.bytes[term_bytes.offset..end]);
+        let start_pos = term_bytes.offset;
         Ok(Self {
             num_terms,
             prefix_lengths,
@@ -2592,7 +2862,10 @@ impl TVTermsEnum {
             lengths,
             payload_index,
             payload_bytes,
-            input,
+            term_bytes,
+            input_pos: start_pos,
+            input_limit: end,
+            start_pos,
             term: BytesRef::with_capacity(16),
             ord: -1,
             atts: AttributeSource::new(),
@@ -2601,12 +2874,28 @@ impl TVTermsEnum {
 
     fn reset(&mut self) {
         self.term.length = 0;
-        // The input now spans exactly the field's window, so rewinding it is
-        // seeking to zero, which cannot fail.
-        self.input
-            .seek(0)
-            .expect("INVARIANT: position zero is inside every window");
+        // Java's `in.setPosition(startPos)`
+        // (`Lucene90CompressingTermVectorsReader.java:1107`) — the start of the
+        // field's window, not of the block.
+        self.input_pos = self.start_pos;
         self.ord = -1;
+    }
+}
+
+impl std::fmt::Display for TVTermsEnum {
+    /// `TVTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+
+            "org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingTermVectorsReader$TVTermsEnum",
+
+            self,
+
+        ))
     }
 }
 
@@ -2668,11 +2957,11 @@ impl TermsEnum for TVTermsEnum {
         ))
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         Ok(1)
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         if self.ord < 0 || self.ord >= self.num_terms {
             return Err(LuceneError::IllegalState(
                 "total_term_freq called before first term".to_string(),
@@ -2739,7 +3028,7 @@ impl TermsEnum for TVTermsEnum {
         let new_len = prefix + suffix;
         // The term bytes are a window into the decompressed suffix block, so no
         // term can be longer than what is left of it.
-        let available = self.input.length().saturating_sub(self.input.position());
+        let available = self.input_limit.saturating_sub(self.input_pos);
         if suffix > available {
             return Err(LuceneError::CorruptIndex(format!(
                 "term {} of the field claims a {suffix}-byte suffix, but only {available} bytes \
@@ -2756,8 +3045,18 @@ impl TermsEnum for TVTermsEnum {
         if self.term.bytes.len() < new_len {
             self.term.bytes.resize(new_len, 0);
         }
-        self.input
-            .read_bytes(&mut self.term.bytes, prefix, suffix)?;
+        let Self {
+            term_bytes,
+            input_pos,
+            input_limit,
+            term,
+            ..
+        } = self;
+        let mut input = ByteArrayDataInput::with_range(&term_bytes.bytes, 0, *input_limit);
+        input.set_position(*input_pos);
+        let read = input.read_bytes(&mut term.bytes, prefix, suffix);
+        *input_pos = input.position();
+        read?;
         self.term.offset = 0;
         self.term.length = new_len;
         Ok(Some(self.term.clone()))
@@ -2839,6 +3138,23 @@ impl DocIdSetIterator for TVPostingsEnum {
 
     fn cost(&self) -> i64 {
         1
+    }
+}
+
+impl std::fmt::Display for TVPostingsEnum {
+    /// `TVPostingsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+
+            "org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingTermVectorsReader$TVPostingsEnum",
+
+            self,
+
+        ))
     }
 }
 
@@ -2964,6 +3280,20 @@ impl DocIdSetIterator for SlowImpactsEnum {
     }
 }
 
+impl std::fmt::Display for SlowImpactsEnum {
+    /// `org.apache.lucene.index.SlowImpactsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.SlowImpactsEnum",
+            self,
+        ))
+    }
+}
+
 impl PostingsEnum for SlowImpactsEnum {
     fn freq(&self) -> Result<i32> {
         self.postings.freq()
@@ -3036,6 +3366,7 @@ mod tests {
     use crate::store::RamDirectory;
     use crate::store::DEFAULT_IO_CONTEXT;
     use crate::util::string_helper::ID_LENGTH;
+    use crate::util::Bits;
     use crate::util::Version;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -3729,7 +4060,7 @@ mod tests {
             .iter()
             .map(|name| (*name).to_string())
             .collect();
-        segment_info.set_files(loose.iter().cloned().collect());
+        segment_info.set_files(loose.iter().cloned().collect::<Vec<String>>());
         let compound_format = crate::codecs::lucene90::compound::Lucene90CompoundFormat;
         compound_format
             .write(directory.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
@@ -3756,5 +4087,899 @@ mod tests {
         // A clone must keep reading from the same compound stream.
         assert_reads_hello(reader.clone_reader().as_ref());
         assert_reads_hello(reader.get_merge_instance().as_ref());
+    }
+
+    // -----------------------------------------------------------------------
+    // Bulk merge — Lucene90CompressingTermVectorsWriter#merge
+    // -----------------------------------------------------------------------
+
+    /// The format the merge tests use: chunks of four documents, so that a
+    /// handful of tiny documents already makes several chunks and a merge has
+    /// real chunk boundaries to copy. The production format holds 128
+    /// documents per chunk, which would take that many documents to exercise.
+    const MERGE_TEST_CHUNK_SIZE: i32 = 1 << 12;
+    const MERGE_TEST_DOCS_PER_CHUNK: i32 = 4;
+
+    fn merge_test_format() -> Lucene90CompressingTermVectorsFormat {
+        Lucene90CompressingTermVectorsFormat::new(
+            VECTORS_CODEC_NAME,
+            "",
+            CompressionMode::FAST,
+            MERGE_TEST_CHUNK_SIZE,
+            MERGE_TEST_DOCS_PER_CHUNK,
+            10,
+        )
+        .unwrap()
+    }
+
+    /// A writer of the merge-test format with the given compression
+    /// parameters, writing segment `name` into `dir`.
+    fn merge_test_writer(
+        dir: &Arc<dyn Directory>,
+        name: &str,
+        compression_mode: CompressionMode,
+        chunk_size: i32,
+    ) -> Lucene90CompressingTermVectorsWriter {
+        Lucene90CompressingTermVectorsWriter::new(
+            dir.as_ref(),
+            &test_segment_info(Arc::clone(dir), name, 0),
+            "",
+            &*DEFAULT_IO_CONTEXT,
+            VECTORS_CODEC_NAME,
+            compression_mode,
+            chunk_size,
+            MERGE_TEST_DOCS_PER_CHUNK,
+            10,
+        )
+        .unwrap()
+    }
+
+    /// One occurrence of a term: position, start offset, end offset, payload.
+    type TvPosition = (i32, i32, i32, Option<Vec<u8>>);
+
+    /// One term of a field's vector, with every occurrence the field records.
+    #[derive(Debug, Clone, PartialEq)]
+    struct TvTerm {
+        text: Vec<u8>,
+        freq: i64,
+        occurrences: Vec<TvPosition>,
+    }
+
+    /// One field's vector, with the flags its terms were written with.
+    #[derive(Debug, Clone, PartialEq)]
+    struct TvField {
+        name: String,
+        positions: bool,
+        offsets: bool,
+        payloads: bool,
+        terms: Vec<TvTerm>,
+    }
+
+    /// A document's term vectors, `None` when it has none.
+    type TvDoc = Option<Vec<TvField>>;
+
+    /// The term vectors of merge-test document `n`.
+    ///
+    /// Every fifth document has none; the others carry a `body` vector with
+    /// positions and offsets — with payloads on odd documents, one occurrence
+    /// in them left without one — and two documents in three also carry a
+    /// `title` vector of bare term frequencies. So comparing two merged
+    /// segments document by document compares every part a vector can hold.
+    /// The documents stay far below [`MERGE_TEST_CHUNK_SIZE`], so a chunk
+    /// closes on the document count alone.
+    fn tv_merge_doc(n: i32) -> TvDoc {
+        if n.rem_euclid(5) == 0 {
+            return None;
+        }
+        let payloads = n % 2 == 1;
+        let payload = |tag: u8| payloads.then(|| vec![(n & 0xff) as u8, tag]);
+        let mut fields = vec![TvField {
+            name: "body".to_string(),
+            positions: true,
+            offsets: true,
+            payloads,
+            terms: vec![
+                TvTerm {
+                    text: b"alpha".to_vec(),
+                    freq: 1,
+                    occurrences: vec![(0, 0, 5, None)],
+                },
+                TvTerm {
+                    text: format!("t{n:04}").into_bytes(),
+                    freq: 2,
+                    occurrences: vec![(1, 6, 11, payload(1)), (3, 18, 23, payload(2))],
+                },
+            ],
+        }];
+        if n.rem_euclid(3) != 0 {
+            fields.push(TvField {
+                name: "title".to_string(),
+                positions: false,
+                offsets: false,
+                payloads: false,
+                terms: vec![
+                    TvTerm {
+                        text: b"common".to_vec(),
+                        freq: 2,
+                        occurrences: Vec::new(),
+                    },
+                    TvTerm {
+                        text: format!("x{n}").into_bytes(),
+                        freq: 1,
+                        occurrences: Vec::new(),
+                    },
+                ],
+            });
+        }
+        Some(fields)
+    }
+
+    /// The merge-test documents numbered by `numbers`, in that order.
+    fn tv_merge_docs(numbers: impl IntoIterator<Item = i32>) -> Vec<TvDoc> {
+        numbers.into_iter().map(tv_merge_doc).collect()
+    }
+
+    /// Writes one source segment holding merge-test documents
+    /// `first..first + count`, and returns its segment info.
+    fn write_tv_merge_source(
+        dir: &Arc<dyn Directory>,
+        name: &str,
+        first: i32,
+        count: i32,
+    ) -> SegmentInfo {
+        let field_infos = make_field_infos();
+        let segment_info = test_segment_info(Arc::clone(dir), name, count);
+        let mut writer = merge_test_format()
+            .vectors_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+            .unwrap();
+        for n in first..first + count {
+            let fields = tv_merge_doc(n).unwrap_or_default();
+            writer.start_document(fields.len() as i32).unwrap();
+            for field in &fields {
+                writer
+                    .start_field(
+                        field_infos.field_info(&field.name).unwrap(),
+                        field.terms.len() as i32,
+                        field.positions,
+                        field.offsets,
+                        field.payloads,
+                    )
+                    .unwrap();
+                for term in &field.terms {
+                    writer
+                        .start_term(&BytesRef::new(term.text.clone()), term.freq as i32)
+                        .unwrap();
+                    for (position, start, end, payload) in &term.occurrences {
+                        let payload = payload.as_ref().map(|bytes| BytesRef::new(bytes.clone()));
+                        writer
+                            .add_position(*position, *start, *end, payload.as_ref())
+                            .unwrap();
+                    }
+                    writer.finish_term().unwrap();
+                }
+                writer.finish_field().unwrap();
+            }
+            writer.finish_document().unwrap();
+        }
+        writer.finish(count).unwrap();
+        writer.close().unwrap();
+        segment_info
+    }
+
+    /// Reads back every part of document `doc_id`'s term vectors.
+    fn read_tv_doc(reader: &dyn TermVectorsReader, doc_id: i32) -> TvDoc {
+        let fields = reader.get(doc_id).unwrap()?;
+        let mut decoded = Vec::new();
+        for name in fields.iterator() {
+            let terms = fields
+                .terms(&name)
+                .unwrap()
+                .unwrap_or_else(|| panic!("doc {doc_id} lists field {name} without terms"));
+            let (positions, offsets, payloads) = (
+                terms.has_positions(),
+                terms.has_offsets(),
+                terms.has_payloads(),
+            );
+            let mut decoded_terms = Vec::new();
+            let mut it = terms.iterator().unwrap();
+            while let Some(term) = it.next().unwrap() {
+                let freq = it.total_term_freq().unwrap();
+                let mut occurrences = Vec::new();
+                if positions || offsets {
+                    let mut postings = it
+                        .postings(None, crate::index::postings_enum::POSTINGS_ENUM_ALL)
+                        .unwrap();
+                    assert_eq!(postings.next_doc().unwrap(), 0);
+                    for _ in 0..freq {
+                        let position = postings.next_position().unwrap();
+                        occurrences.push((
+                            position,
+                            postings.start_offset(),
+                            postings.end_offset(),
+                            postings.get_payload().unwrap().map(<[u8]>::to_vec),
+                        ));
+                    }
+                }
+                decoded_terms.push(TvTerm {
+                    text: term.slice().to_vec(),
+                    freq,
+                    occurrences,
+                });
+            }
+            decoded.push(TvField {
+                name,
+                positions,
+                offsets,
+                payloads,
+                terms: decoded_terms,
+            });
+        }
+        Some(decoded)
+    }
+
+    /// Opens one source segment for merging.
+    fn open_tv_merge_source(
+        dir: &Arc<dyn Directory>,
+        segment_info: &SegmentInfo,
+    ) -> Box<dyn TermVectorsReader> {
+        merge_test_format()
+            .vectors_reader(
+                dir.as_ref(),
+                segment_info,
+                &make_field_infos(),
+                &*DEFAULT_IO_CONTEXT,
+            )
+            .unwrap()
+    }
+
+    /// Opens one source segment as this format's concrete reader, whose
+    /// recorded metadata a test may then alter.
+    fn concrete_tv_merge_source(
+        dir: &Arc<dyn Directory>,
+        segment_info: &SegmentInfo,
+    ) -> Lucene90CompressingTermVectorsReader {
+        open_tv_merge_source(dir, segment_info)
+            .as_any()
+            .and_then(|any| any.downcast_ref::<Lucene90CompressingTermVectorsReader>())
+            .expect("the segment is written by this format")
+            .clone()
+    }
+
+    /// `(numChunks, numDirtyChunks, numDirtyDocs)` of a term-vectors segment,
+    /// as its own reader reports them.
+    fn tv_chunk_counters(dir: &Arc<dyn Directory>, segment_info: &SegmentInfo) -> (i64, i64, i64) {
+        let reader = concrete_tv_merge_source(dir, segment_info);
+        (
+            reader.num_chunks(),
+            reader.num_dirty_chunks(),
+            reader.num_dirty_docs(),
+        )
+    }
+
+    /// A term-vectors reader that hides the concrete type it wraps.
+    ///
+    /// `can_perform_bulk_merge` recognises this format's own reader through
+    /// [`TermVectorsReader::as_any`], whose default answer is `None`; a reader
+    /// that keeps the default therefore takes the route Java takes for a
+    /// foreign codec's reader, decoding and re-encoding every vector
+    /// (`Lucene90CompressingTermVectorsWriter.java:956-972`). That is what
+    /// makes the merge routes comparable over the very same documents.
+    #[derive(Debug)]
+    struct OpaqueTermVectorsReader(Box<dyn TermVectorsReader>);
+
+    impl TermVectorsReader for OpaqueTermVectorsReader {
+        fn check_integrity(&self) -> Result<()> {
+            self.0.check_integrity()
+        }
+
+        fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
+            Box::new(Self(self.0.clone_reader()))
+        }
+
+        fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
+            self.0.get(doc)
+        }
+
+        fn close(&mut self) -> Result<()> {
+            self.0.close()
+        }
+    }
+
+    /// Hides `reader`'s concrete type, forcing the re-encoding route for it.
+    fn opaque_tv(reader: Box<dyn TermVectorsReader>) -> Box<dyn TermVectorsReader> {
+        Box::new(OpaqueTermVectorsReader(reader))
+    }
+
+    /// The live documents of a `max_doc`-document segment whose `deleted`
+    /// documents are deleted.
+    fn tv_live_docs_without(max_doc: i32, deleted: &[i32]) -> Box<dyn Bits> {
+        let mut live = crate::util::FixedBitSet::new(max_doc as usize);
+        for doc in 0..max_doc {
+            if !deleted.contains(&doc) {
+                live.set(doc as usize);
+            }
+        }
+        Box::new(live)
+    }
+
+    /// The doc map of a `max_doc`-document segment placed at `doc_base` in the
+    /// merged segment, its `deleted` documents dropped and the rest packed.
+    fn tv_doc_map_without(max_doc: i32, doc_base: i32, deleted: &[i32]) -> DocMap {
+        let mut mapping = Vec::with_capacity(max_doc as usize);
+        let mut next = doc_base;
+        for doc in 0..max_doc {
+            if deleted.contains(&doc) {
+                mapping.push(-1);
+            } else {
+                mapping.push(next);
+                next += 1;
+            }
+        }
+        Arc::new(move |doc: i32| mapping[doc as usize])
+    }
+
+    /// The doc map that sends each `(from, to, merged)` run of a segment's
+    /// documents `from..to` to `merged..`, as an index-sorted merge does when
+    /// it interleaves segments.
+    fn tv_interleaving_doc_map(runs: &[(i32, i32, i32)]) -> DocMap {
+        let runs = runs.to_vec();
+        Arc::new(move |doc: i32| {
+            runs.iter()
+                .find(|&&(from, to, _)| from <= doc && doc < to)
+                .map_or(-1, |&(from, _, merged)| merged + doc - from)
+        })
+    }
+
+    /// Builds the merge state for the given source readers.
+    fn term_vectors_merge_state_with(
+        readers: Vec<Box<dyn TermVectorsReader>>,
+        doc_maps: Vec<DocMap>,
+        max_docs: Vec<i32>,
+        live_docs: Vec<Option<Box<dyn Bits>>>,
+        needs_index_sort: bool,
+    ) -> MergeState {
+        let n = readers.len();
+        let field_infos = make_field_infos();
+        let merged_info =
+            test_segment_info(Arc::new(RamDirectory::new()), "_m", max_docs.iter().sum());
+        MergeState::new(
+            doc_maps,
+            merged_info,
+            field_infos.clone(),
+            (0..n).map(|_| None).collect(),
+            readers.into_iter().map(Some).collect(),
+            (0..n).map(|_| None).collect(),
+            (0..n).map(|_| None).collect(),
+            (0..n).map(|_| field_infos.clone()).collect(),
+            live_docs,
+            (0..n).map(|_| None).collect(),
+            (0..n).map(|_| None).collect(),
+            (0..n).map(|_| None).collect(),
+            max_docs,
+            needs_index_sort,
+        )
+    }
+
+    /// Builds the merge state of a plain, unsorted merge of segments without
+    /// deletions, laid end to end.
+    fn term_vectors_merge_state(
+        readers: Vec<Box<dyn TermVectorsReader>>,
+        max_docs: Vec<i32>,
+    ) -> MergeState {
+        let mut doc_maps = Vec::with_capacity(max_docs.len());
+        let mut doc_base = 0;
+        for &max_doc in &max_docs {
+            doc_maps.push(crate::index::identity_doc_map(max_doc, doc_base));
+            doc_base += max_doc;
+        }
+        let live_docs = max_docs.iter().map(|_| None).collect();
+        term_vectors_merge_state_with(readers, doc_maps, max_docs, live_docs, false)
+    }
+
+    /// What one term-vectors merge produced.
+    struct TvMergeOutcome {
+        /// The directory holding the merged segment `_m`.
+        dir: Arc<dyn Directory>,
+        /// The merged segment's info.
+        info: SegmentInfo,
+        /// Every file of the merged segment, by name, sorted.
+        files: Vec<(String, Vec<u8>)>,
+        /// Every part of every merged document's term vectors, in order.
+        documents: Vec<TvDoc>,
+        /// `(numChunks, numDirtyChunks, numDirtyDocs)` as the merged segment
+        /// records them in its `.tvm`.
+        counters: (i64, i64, i64),
+    }
+
+    /// Runs one merge into a fresh directory and reports everything about it.
+    fn run_term_vectors_merge(merge_state: &MergeState) -> TvMergeOutcome {
+        let total_docs: i32 = merge_state
+            .max_docs
+            .iter()
+            .zip(&merge_state.live_docs)
+            .map(|(&max_doc, live)| match live {
+                None => max_doc,
+                Some(live) => (0..max_doc).filter(|&doc| live.get(doc as usize)).count() as i32,
+            })
+            .sum();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let info = test_segment_info(Arc::clone(&dir), "_m", total_docs);
+        {
+            let mut writer = merge_test_format()
+                .vectors_writer(dir.as_ref(), &info, &*DEFAULT_IO_CONTEXT)
+                .unwrap();
+            assert_eq!(
+                writer.merge(merge_state).unwrap(),
+                total_docs,
+                "the merge must write every live document of every source segment"
+            );
+            writer.close().unwrap();
+        }
+
+        let reader = concrete_tv_merge_source(&dir, &info);
+        let documents = (0..total_docs)
+            .map(|doc_id| read_tv_doc(&reader, doc_id))
+            .collect();
+        let counters = (
+            reader.num_chunks(),
+            reader.num_dirty_chunks(),
+            reader.num_dirty_docs(),
+        );
+
+        let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+        for name in dir.list_all().unwrap() {
+            let mut input = dir.open_input(&name, &*DEFAULT_IO_CONTEXT).unwrap();
+            let length = input.length() as usize;
+            let mut bytes = vec![0u8; length];
+            input.read_bytes(&mut bytes, 0, length).unwrap();
+            files.push((name, bytes));
+        }
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+
+        TvMergeOutcome {
+            dir,
+            info,
+            files,
+            documents,
+            counters,
+        }
+    }
+
+    /// `canPerformBulkMerge` allows the copy only for this format's own reader,
+    /// whose fields the merged segment numbers exactly as the source did,
+    /// written with the writer's compression mode and chunk size, at the
+    /// current format and packed-ints versions, carrying no deletions and not
+    /// too dirty (`Lucene90CompressingTermVectorsWriter.java:956-972`,
+    /// `949-954`).
+    #[test]
+    fn the_term_vectors_bulk_merge_conditions_are_lucenes() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let source = write_tv_merge_source(&dir, "_0", 0, 10);
+        let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let writer = merge_test_writer(&out, "_w0", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let bulk_for = |writer: &Lucene90CompressingTermVectorsWriter,
+                        reader: Box<dyn TermVectorsReader>,
+                        live_docs: Option<Box<dyn Bits>>| {
+            let state = term_vectors_merge_state_with(
+                vec![reader],
+                vec![crate::index::identity_doc_map(10, 0)],
+                vec![10],
+                vec![live_docs],
+                false,
+            );
+            writer.can_perform_bulk_merge(&state, &MatchingReaders::new(&state), 0)
+        };
+
+        assert!(
+            bulk_for(&writer, open_tv_merge_source(&dir, &source), None),
+            "a matching, undeleted, clean segment of this very format is bulk merged"
+        );
+
+        assert!(
+            !bulk_for(
+                &writer,
+                open_tv_merge_source(&dir, &source),
+                Some(tv_live_docs_without(10, &[3]))
+            ),
+            "a segment with deletions must be decoded and re-encoded"
+        );
+        let other_mode = merge_test_writer(
+            &out,
+            "_w1",
+            CompressionMode::HIGH_COMPRESSION,
+            MERGE_TEST_CHUNK_SIZE,
+        );
+        assert!(
+            !bulk_for(&other_mode, open_tv_merge_source(&dir, &source), None),
+            "chunks compressed another way cannot be copied"
+        );
+        let other_chunk_size = merge_test_writer(
+            &out,
+            "_w2",
+            CompressionMode::FAST,
+            MERGE_TEST_CHUNK_SIZE * 2,
+        );
+        assert!(
+            !bulk_for(&other_chunk_size, open_tv_merge_source(&dir, &source), None),
+            "chunks of another size cannot be copied"
+        );
+        assert!(
+            !bulk_for(
+                &writer,
+                opaque_tv(open_tv_merge_source(&dir, &source)),
+                None
+            ),
+            "a foreign reader has no chunks this writer may copy"
+        );
+
+        // The only format and packed-ints versions there are today are the
+        // current ones, so those checks are reached by altering what the
+        // reader recorded.
+        let mut old_version = concrete_tv_merge_source(&dir, &source);
+        old_version.version = VERSION_CURRENT - 1;
+        assert!(
+            !bulk_for(&writer, Box::new(old_version), None),
+            "a segment of another format version is re-encoded"
+        );
+        let mut old_packed_ints = concrete_tv_merge_source(&dir, &source);
+        old_packed_ints.packed_ints_version = PackedInts::VERSION_CURRENT - 1;
+        assert!(
+            !bulk_for(&writer, Box::new(old_packed_ints), None),
+            "a segment of another packed-ints version is re-encoded"
+        );
+
+        // tooDirty: more dirty documents than one chunk holds AND more than one
+        // per cent of the chunks dirty; each boundary on its own is not enough.
+        for (dirty_docs, dirty_chunks, chunks, too_dirty) in [
+            (i64::from(MERGE_TEST_DOCS_PER_CHUNK), 100, 100, false),
+            (i64::from(MERGE_TEST_DOCS_PER_CHUNK) + 1, 1, 100, false),
+            (i64::from(MERGE_TEST_DOCS_PER_CHUNK) + 1, 2, 100, true),
+        ] {
+            let mut reader = concrete_tv_merge_source(&dir, &source);
+            reader.num_dirty_docs = dirty_docs;
+            reader.num_dirty_chunks = dirty_chunks;
+            reader.num_chunks = chunks;
+            assert_eq!(writer.too_dirty(&reader), too_dirty);
+            assert_eq!(
+                bulk_for(&writer, Box::new(reader), None),
+                !too_dirty,
+                "dirty docs {dirty_docs}, dirty chunks {dirty_chunks} of {chunks}"
+            );
+        }
+
+        let mut renumbered = RealFieldInfo::new("title", 7);
+        renumbered.index_options = IndexOptions::DOCS_AND_FREQS;
+        let mut state =
+            term_vectors_merge_state(vec![open_tv_merge_source(&dir, &source)], vec![10]);
+        state.field_infos = vec![FieldInfos::new(vec![renumbered]).unwrap()];
+        let matching = MatchingReaders::new(&state);
+        assert!(!matching.matching_readers[0]);
+        assert!(
+            !writer.can_perform_bulk_merge(&state, &matching, 0),
+            "a segment whose fields are numbered differently has to be remapped"
+        );
+    }
+
+    /// The bulk route is the one `merge` actually takes, and it leaves a mark
+    /// in the merged segment's `.tvm` that re-encoding cannot leave.
+    ///
+    /// Copying chunks verbatim preserves the *source* chunk boundaries
+    /// (`Lucene90CompressingTermVectorsWriter.java:845-889`): two segments of
+    /// ten and six documents, chunked four at a time, hold three and two
+    /// chunks, the last of each a partial one the writer had to force out. A
+    /// bulk merge therefore ends with five chunks, two of them dirty.
+    /// Re-encoding the same sixteen documents packs them four at a time with
+    /// nothing left over: four chunks, none dirty.
+    ///
+    /// The two merged segments differ on disk for that reason, yet must hold
+    /// exactly the same vectors.
+    #[test]
+    fn a_bulk_term_vectors_merge_copies_the_source_chunks_verbatim() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let first = write_tv_merge_source(&dir, "_0", 0, 10);
+        let second = write_tv_merge_source(&dir, "_1", 100, 6);
+        assert_eq!(
+            tv_chunk_counters(&dir, &first),
+            (3, 1, 2),
+            "ten documents chunked four at a time make three chunks, the last forced out"
+        );
+        assert_eq!(tv_chunk_counters(&dir, &second), (2, 1, 2));
+
+        let bulk = run_term_vectors_merge(&term_vectors_merge_state(
+            vec![
+                open_tv_merge_source(&dir, &first),
+                open_tv_merge_source(&dir, &second),
+            ],
+            vec![10, 6],
+        ));
+        assert_eq!(
+            bulk.counters,
+            (5, 2, 4),
+            "the bulk merge must carry over both source segments' chunk boundaries"
+        );
+
+        let reencoded = run_term_vectors_merge(&term_vectors_merge_state(
+            vec![
+                opaque_tv(open_tv_merge_source(&dir, &first)),
+                opaque_tv(open_tv_merge_source(&dir, &second)),
+            ],
+            vec![10, 6],
+        ));
+        assert_eq!(
+            reencoded.counters,
+            (4, 0, 0),
+            "re-encoding the vectors repacks them into full chunks"
+        );
+
+        let expected = tv_merge_docs((0..10).chain(100..106));
+        assert_eq!(bulk.documents, expected);
+        assert_eq!(reencoded.documents, expected);
+    }
+
+    /// Where the writer would have drawn the same chunk boundaries anyway, the
+    /// bulk and the re-encoding route must produce the same index, byte for
+    /// byte — the property Lucene's own comment says bulk merge broke in the
+    /// past (`Lucene90CompressingTermVectorsWriter.java:791-793`).
+    #[test]
+    fn bulk_and_reencoded_term_vectors_merges_produce_the_same_index() {
+        for sources in [vec![(0i32, 10i32)], vec![(0i32, 8i32), (100i32, 8i32)]] {
+            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let infos: Vec<SegmentInfo> = sources
+                .iter()
+                .enumerate()
+                .map(|(i, &(first, count))| {
+                    write_tv_merge_source(&dir, &format!("_{i}"), first, count)
+                })
+                .collect();
+            let max_docs: Vec<i32> = sources.iter().map(|&(_, count)| count).collect();
+            let expected = tv_merge_docs(
+                sources
+                    .iter()
+                    .flat_map(|&(first, count)| first..first + count),
+            );
+
+            // The comparison only means something if the first merge really
+            // copies chunks, so every source must be eligible for it.
+            let bulk_state = term_vectors_merge_state(
+                infos
+                    .iter()
+                    .map(|info| open_tv_merge_source(&dir, info))
+                    .collect(),
+                max_docs.clone(),
+            );
+            let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let writer =
+                merge_test_writer(&out, "_w", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+            let matching = MatchingReaders::new(&bulk_state);
+            for i in 0..infos.len() {
+                assert!(
+                    writer.can_perform_bulk_merge(&bulk_state, &matching, i),
+                    "sources {sources:?}: source {i} must be bulk merged"
+                );
+            }
+
+            let bulk = run_term_vectors_merge(&bulk_state);
+            let reencoded = run_term_vectors_merge(&term_vectors_merge_state(
+                infos
+                    .iter()
+                    .map(|info| opaque_tv(open_tv_merge_source(&dir, info)))
+                    .collect(),
+                max_docs.clone(),
+            ));
+
+            assert_eq!(bulk.documents, expected, "sources {sources:?}");
+            assert_eq!(reencoded.documents, expected, "sources {sources:?}");
+            assert_eq!(
+                bulk.counters, reencoded.counters,
+                "sources {sources:?}: both routes must draw the same chunk boundaries here"
+            );
+            assert_eq!(
+                bulk.files.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+                reencoded
+                    .files
+                    .iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+                "sources {sources:?}: both routes must write the same files"
+            );
+            for ((name, bulk_bytes), (_, reencoded_bytes)) in
+                bulk.files.iter().zip(reencoded.files.iter())
+            {
+                assert_eq!(
+                    bulk_bytes, reencoded_bytes,
+                    "sources {sources:?}: {name} differs between the two merge routes"
+                );
+            }
+        }
+    }
+
+    /// `merge` decides per source segment whether its chunks can be copied,
+    /// and mixes both routes in one merge
+    /// (`Lucene90CompressingTermVectorsWriter.java:903-936`).
+    ///
+    /// Four segments: a clean one (copied), one with a deleted document and
+    /// one behind a foreign reader (both re-encoded), and another clean one
+    /// (copied). The first copy keeps its three chunks `[4][4][2]`; the five
+    /// live documents of the second and the six of the third are re-chunked as
+    /// `[4][4]` with three left over, which the last copy forces out as a dirty
+    /// chunk before carrying over its own `[4][2]`
+    /// (`Lucene90CompressingTermVectorsWriter.java:839-842`): eight chunks,
+    /// three of them dirty, holding 2 + 3 + 2 documents.
+    #[test]
+    fn a_term_vectors_merge_decides_the_route_per_segment() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let a = write_tv_merge_source(&dir, "_0", 0, 10);
+        let b = write_tv_merge_source(&dir, "_1", 100, 6);
+        let c = write_tv_merge_source(&dir, "_2", 200, 6);
+        let d = write_tv_merge_source(&dir, "_3", 300, 6);
+        let state = || {
+            term_vectors_merge_state_with(
+                vec![
+                    open_tv_merge_source(&dir, &a),
+                    open_tv_merge_source(&dir, &b),
+                    opaque_tv(open_tv_merge_source(&dir, &c)),
+                    open_tv_merge_source(&dir, &d),
+                ],
+                vec![
+                    crate::index::identity_doc_map(10, 0),
+                    tv_doc_map_without(6, 10, &[2]),
+                    crate::index::identity_doc_map(6, 15),
+                    crate::index::identity_doc_map(6, 21),
+                ],
+                vec![10, 6, 6, 6],
+                vec![None, Some(tv_live_docs_without(6, &[2])), None, None],
+                false,
+            )
+        };
+
+        let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let writer = merge_test_writer(&out, "_w", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let probe = state();
+        let matching = MatchingReaders::new(&probe);
+        assert_eq!(
+            (0..4)
+                .map(|i| writer.can_perform_bulk_merge(&probe, &matching, i))
+                .collect::<Vec<_>>(),
+            vec![true, false, false, true]
+        );
+
+        let merged = run_term_vectors_merge(&state());
+        assert_eq!(merged.counters, (8, 3, 7));
+        assert_eq!(
+            merged.documents,
+            tv_merge_docs(
+                (0..10)
+                    .chain([100, 101, 103, 104, 105])
+                    .chain(200..206)
+                    .chain(300..306)
+            )
+        );
+    }
+
+    /// A segment that is too dirty is re-encoded instead of copied, so that a
+    /// run of tiny flushes cannot degrade the compression ratio for ever
+    /// (`Lucene90CompressingTermVectorsWriter.java:941-954`).
+    ///
+    /// Bulk-merging three segments of two documents each carries over three
+    /// dirty chunks: six dirty documents, more than one chunk holds, in every
+    /// one of the chunks. Merging that segment again must re-encode it, which
+    /// repacks the six documents as `[4][2]`.
+    #[test]
+    fn a_too_dirty_term_vectors_segment_is_recompressed() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let sources: Vec<SegmentInfo> = (0..3)
+            .map(|i| write_tv_merge_source(&dir, &format!("_{i}"), 10 * i + 1, 2))
+            .collect();
+        let expected = tv_merge_docs([1, 2, 11, 12, 21, 22]);
+
+        let dirty = run_term_vectors_merge(&term_vectors_merge_state(
+            sources
+                .iter()
+                .map(|info| open_tv_merge_source(&dir, info))
+                .collect(),
+            vec![2, 2, 2],
+        ));
+        assert_eq!(dirty.counters, (3, 3, 6), "each tiny chunk is carried over");
+        assert_eq!(dirty.documents, expected);
+        let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let writer = merge_test_writer(&out, "_w", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        assert!(writer.too_dirty(&concrete_tv_merge_source(&dirty.dir, &dirty.info)));
+
+        let recompressed = run_term_vectors_merge(&term_vectors_merge_state(
+            vec![open_tv_merge_source(&dirty.dir, &dirty.info)],
+            vec![6],
+        ));
+        assert_eq!(
+            recompressed.counters,
+            (2, 1, 2),
+            "a too dirty segment must be repacked, not copied"
+        );
+        assert_eq!(recompressed.documents, expected);
+    }
+
+    /// An index-sorted merge interleaves the source segments, so the bulk
+    /// route copies each segment in several runs, and a run may start inside
+    /// the chunk the previous run of the same segment ended in. Those documents
+    /// are re-encoded one by one until the next chunk boundary, then whole
+    /// chunks are copied, then the leftovers re-encoded one by one
+    /// (`Lucene90CompressingTermVectorsWriter.java:826-895`); that relies on
+    /// the merge state's reader remembering the chunk it last decoded.
+    ///
+    /// Regression test: `copy_chunks` used to read through a fresh clone of the
+    /// reader, which had forgotten that chunk, sought to the start of the chunk
+    /// holding the run's first document and failed with "invalid state:
+    /// base=0, docID=3".
+    ///
+    /// Segments A and B of ten documents each, chunked `[4][4][2]`, are merged
+    /// as A0-2, B0-2, A3-8, B3-9, A9. The chunks the bulk route writes are
+    /// `[A0 A1 A2 B0]`, `[B1 B2 A3]` (forced), `[A4-A7]` (copied), `[A8 B3]`
+    /// (forced), `[B4-B7]` and `[B8 B9]` (both copied, the latter dirty) and
+    /// `[A9]` (forced at the end): seven chunks, four dirty, eight dirty
+    /// documents. Re-encoding packs the twenty documents into five full
+    /// chunks.
+    #[test]
+    fn an_index_sorted_term_vectors_merge_copies_interleaved_runs() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let a = write_tv_merge_source(&dir, "_0", 1, 10);
+        let b = write_tv_merge_source(&dir, "_1", 101, 10);
+        let state = |wrap: fn(Box<dyn TermVectorsReader>) -> Box<dyn TermVectorsReader>| {
+            term_vectors_merge_state_with(
+                vec![
+                    wrap(open_tv_merge_source(&dir, &a)),
+                    wrap(open_tv_merge_source(&dir, &b)),
+                ],
+                vec![
+                    tv_interleaving_doc_map(&[(0, 3, 0), (3, 9, 6), (9, 10, 19)]),
+                    tv_interleaving_doc_map(&[(0, 3, 3), (3, 10, 12)]),
+                ],
+                vec![10, 10],
+                vec![None, None],
+                true,
+            )
+        };
+        let expected = tv_merge_docs(
+            (1..4)
+                .chain(101..104)
+                .chain(4..10)
+                .chain(104..111)
+                .chain(10..11),
+        );
+
+        let bulk = run_term_vectors_merge(&state(|reader| reader));
+        assert_eq!(bulk.documents, expected);
+        assert_eq!(
+            bulk.counters,
+            (7, 4, 8),
+            "the whole chunks between the runs' ends must be copied verbatim"
+        );
+
+        let reencoded = run_term_vectors_merge(&state(opaque_tv));
+        assert_eq!(reencoded.documents, expected);
+        assert_eq!(reencoded.counters, (5, 0, 0));
+    }
+}
+
+impl fmt::Display for Lucene90CompressingTermVectorsFormat {
+    /// Port of `Lucene90CompressingTermVectorsFormat.toString()`, whose last
+    /// field is called `blockSize` although the value is the block *shift* —
+    /// Java prints the `blockSize` constructor parameter, which it stores in
+    /// `blockShift`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Lucene90CompressingTermVectorsFormat(compressionMode={}, chunkSize={}, maxDocsPerChunk={}, blockSize={})",
+            self.compression_mode, self.chunk_size, self.max_docs_per_chunk, self.block_shift
+        )
+    }
+}
+
+impl fmt::Display for Lucene90CompressingTermVectorsReader {
+    /// Port of `Lucene90CompressingTermVectorsReader.toString()`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Lucene90CompressingTermVectorsReader(mode={},chunksize={})",
+            self.compression_mode, self.chunk_size
+        )
     }
 }

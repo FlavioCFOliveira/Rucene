@@ -24,7 +24,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    fmt::{Debug, Formatter},
+    fmt::{Debug, Display, Formatter},
     sync::{
         atomic::{AtomicI32, Ordering},
         Arc, Weak,
@@ -145,6 +145,32 @@ impl Debug for ParallelLeafReader {
             .field("max_doc", &self.max_doc)
             .field("close_sub_readers", &self.close_sub_readers)
             .finish()
+    }
+}
+
+impl Display for ParallelLeafReader {
+    /// Port of `ParallelLeafReader.toString()`
+    /// (`ParallelLeafReader.java:204-212`): the name, then every reader in
+    /// `completeReaderSet` separated by `", "`, inside one pair of parentheses.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java iterates `completeReaderSet`,
+    /// which is `Collections.newSetFromMap(new IdentityHashMap<>())`
+    /// (`ParallelLeafReader.java:55-56`), so the order of the readers is the
+    /// identity-hash order of that map — unspecified by `IdentityHashMap`, and
+    /// observed to differ between two instances built from the same readers in
+    /// the same JVM. This port keeps the identity-deduplicated union in
+    /// construction order, which is deterministic. The rendered set of readers
+    /// and the separators are identical; only an order Java does not define
+    /// differs.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ParallelLeafReader(")?;
+        for (i, reader) in self.complete_reader_set.iter().enumerate() {
+            if i != 0 {
+                f.write_str(", ")?;
+            }
+            Display::fmt(reader, f)?;
+        }
+        f.write_str(")")
     }
 }
 
@@ -852,6 +878,18 @@ impl Debug for ParallelCompositeReader {
     }
 }
 
+impl Display for ParallelCompositeReader {
+    /// `ParallelCompositeReader` overrides no `toString()`, so
+    /// `CompositeReader`'s applies under this simple name — over the synthetic
+    /// per-ordinal `ParallelLeafReader`s that are its sequential sub-readers.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::composite_reader_to_string(
+            "ParallelCompositeReader",
+            &self.sub_readers,
+        ))
+    }
+}
+
 impl ParallelCompositeReader {
     /// Creates a `ParallelCompositeReader` over `readers` that closes its
     /// sub-readers on close.
@@ -1266,6 +1304,16 @@ mod tests {
         fields: HashSet<String>,
     }
 
+    impl std::fmt::Display for StubLeaf {
+        /// Test double; it has no Lucene counterpart whose `toString()` could be
+        /// reproduced, so it renders under its own name. `Display` is required
+        /// because `LeafReader`/`IndexReader` carry it as a supertrait, standing in
+        /// for the `toString()` every Java reader inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubLeaf")
+        }
+    }
+
     impl StubLeaf {
         fn new(max_doc: i32, num_docs: i32, field_names: &[&str]) -> Self {
             let mut infos: Vec<FieldInfo> = Vec::new();
@@ -1588,6 +1636,16 @@ mod tests {
         core: IndexReaderCore,
         leaves: Vec<Arc<StubLeaf>>,
         max_doc: i32,
+    }
+
+    impl std::fmt::Display for StubComposite {
+        /// Test double; it has no Lucene counterpart whose `toString()` could be
+        /// reproduced, so it renders under its own name. `Display` is required
+        /// because `LeafReader`/`IndexReader` carry it as a supertrait, standing in
+        /// for the `toString()` every Java reader inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubComposite")
+        }
     }
 
     impl StubComposite {

@@ -425,3 +425,46 @@ mod tests {
         assert_eq!(a, b);
     }
 }
+
+// -----------------------------------------------------------------------------
+// Object contracts: the `toString()` bodies of this module's three types
+// -----------------------------------------------------------------------------
+
+impl std::fmt::Display for Impact {
+    /// Port of `Impact.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{freq={},norm={}}}", self.freq, self.norm)
+    }
+}
+
+impl std::fmt::Display for BlockTermState {
+    /// Port of `BlockTermState.toString()`.
+    ///
+    /// It does *not* call `super.toString()`, so the `ord` that
+    /// `OrdTermState.toString()` would print never appears here.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "docFreq={} totalTermFreq={} termBlockOrd={} blockFP={}",
+            self.doc_freq, self.total_term_freq, self.term_block_ord, self.block_file_pointer
+        )
+    }
+}
+
+impl std::fmt::Display for CompetitiveImpactAccumulator {
+    /// Port of `CompetitiveImpactAccumulator.toString()`, which is
+    /// `new ArrayList<>(getCompetitiveFreqNormPairs()).toString()` — that is,
+    /// `java.util.AbstractCollection.toString()` over the competitive pairs:
+    /// the elements' own `toString()`, separated by `", "`, inside square
+    /// brackets, in the iteration order of the returned collection.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[")?;
+        for (i, impact) in self.get_competitive_freq_norm_pairs().iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{impact}")?;
+        }
+        f.write_str("]")
+    }
+}

@@ -5,7 +5,7 @@
 
 #![deny(unsafe_code)]
 
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::sync::{Arc, Weak};
 
 use crate::error::{LuceneError, Result};
@@ -143,13 +143,52 @@ impl TermVectors for EmptyTermVectors {
 // LeafReader
 // ---------------------------------------------------------------------------
 
+/// Hands out an [`IndexReader`] handle onto a leaf reader.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `LeafReader extends IndexReader`,
+/// so a `LeafReader` reference *is* an `IndexReader` reference and
+/// `BaseCompositeReader` can hold the wrapped leaves as sub-readers with no
+/// conversion at all. This port relates the two by the blanket
+/// `impl<T: LeafReader> IndexReader for T` below instead, and Rust cannot
+/// unsize `Arc<dyn LeafReader>` into `Arc<dyn IndexReader>` across a blanket
+/// impl — only across a supertrait. This trait restores the missing step: the
+/// coercion is legal inside the blanket impl, where `Self` is a concrete sized
+/// type, and reaches `dyn LeafReader` through the vtable because
+/// [`LeafReader`] has it as a supertrait. No implementor writes anything.
+///
+/// The handle is the very same allocation, so the reader's identity — which
+/// [`IndexReaderCore::identity_hash_code`] takes from the core's address, and
+/// on which `IndexReader`'s `PartialEq` and `Hash` rest — is preserved, as it
+/// is in Java.
+pub trait AsIndexReader {
+    /// Returns this leaf as an [`IndexReader`], without copying it.
+    fn as_index_reader(self: Arc<Self>) -> Arc<dyn IndexReader>;
+}
+
+impl<T: LeafReader> AsIndexReader for T {
+    fn as_index_reader(self: Arc<Self>) -> Arc<dyn IndexReader> {
+        self
+    }
+}
+
 /// Atomic reader providing direct access to terms, postings, doc values,
 /// stored fields, term vectors, points, and vectors.
 ///
 /// Equivalent to `org.apache.lucene.index.LeafReader`. Concrete leaf readers
 /// implement this trait; a blanket implementation makes them usable as
-/// `dyn IndexReader`.
-pub trait LeafReader: Send + Sync + Debug + 'static {
+/// `dyn IndexReader`, and [`AsIndexReader`] carries that view onto
+/// `Arc<dyn LeafReader>`.
+///
+/// One inherited member is answered by that blanket implementation rather than
+/// declared here. Equivalent to `LeafReader.getContext()` — which Java declares
+/// `final`, returning the `LeafReaderContext` the reader built for itself — is
+/// [`IndexReader::get_context`](crate::index::index_reader::IndexReader::get_context),
+/// whose body is `build_context(...)`; the `build_context` in
+/// `impl<T: LeafReader> IndexReader for T` below is the one that builds a
+/// `LeafReaderContext`, so every leaf answers `getContext()` exactly as Java's
+/// override does. Declaring a second `get_context` on this trait would give
+/// every leaf two methods of that name for no gain.
+pub trait LeafReader: AsIndexReader + Send + Sync + Debug + Display + 'static {
     /// Returns the shared core state for this reader.
     fn core(&self) -> &IndexReaderCore;
 
@@ -181,6 +220,18 @@ pub trait LeafReader: Send + Sync + Debug + 'static {
 
     /// Implements close logic for this leaf.
     fn do_close(&self) -> Result<()>;
+
+    /// Runs the close listeners registered on this leaf's own cache helper.
+    ///
+    /// The `IndexReader.notifyReaderClosedListeners()` override point, declared
+    /// here as well so that a leaf can take it: the blanket
+    /// `impl<T: LeafReader> IndexReader for T` below is what answers the
+    /// `IndexReader` method, and a leaf that implemented it directly would
+    /// collide with that impl. `SegmentReader` is the leaf that overrides it in
+    /// Lucene. The default is the no-op `IndexReader` declares.
+    fn notify_reader_closed_listeners(&self) -> Result<()> {
+        Ok(())
+    }
 
     /// Returns the reader-level cache helper, if any.
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>>;
@@ -381,6 +432,10 @@ impl<T: LeafReader> IndexReader for T {
         LeafReader::do_close(self)
     }
 
+    fn notify_reader_closed_listeners(&self) -> Result<()> {
+        LeafReader::notify_reader_closed_listeners(self)
+    }
+
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
         LeafReader::get_reader_cache_helper(self)
     }
@@ -498,6 +553,16 @@ mod tests {
         max_doc: i32,
         num_docs: i32,
         meta: LeafMetaData,
+    }
+
+    impl std::fmt::Display for DummyLeafReader {
+        /// Test double; it has no Lucene counterpart whose `toString()` could be
+        /// reproduced, so it renders under its own name. `Display` is required
+        /// because `LeafReader`/`IndexReader` carry it as a supertrait, standing in
+        /// for the `toString()` every Java reader inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("DummyLeafReader")
+        }
     }
 
     impl DummyLeafReader {

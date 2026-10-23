@@ -355,6 +355,9 @@ impl Default for LMDirichletSimilarity {
 }
 
 impl Similarity for LMDirichletSimilarity {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.similarities.LMDirichletSimilarity"
+    }
     fn discount_overlaps(&self) -> bool {
         self.discount_overlaps
     }
@@ -590,6 +593,9 @@ impl LMJelinekMercerSimilarity {
 }
 
 impl Similarity for LMJelinekMercerSimilarity {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.similarities.LMJelinekMercerSimilarity"
+    }
     fn discount_overlaps(&self) -> bool {
         self.discount_overlaps
     }
@@ -854,6 +860,9 @@ impl Default for IndriDirichletSimilarity {
 }
 
 impl Similarity for IndriDirichletSimilarity {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.similarities.IndriDirichletSimilarity"
+    }
     fn discount_overlaps(&self) -> bool {
         self.discount_overlaps
     }

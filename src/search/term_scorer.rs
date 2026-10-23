@@ -66,6 +66,15 @@ impl DocIdSetIterator for BoxedImpactsEnum {
     }
 }
 
+impl std::fmt::Display for BoxedImpactsEnum {
+    /// Port-only newtype with no Lucene counterpart: Java passes the
+    /// `ImpactsEnum` straight through, so this forwards to the enumeration it
+    /// wraps.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
 impl PostingsEnum for BoxedImpactsEnum {
     fn freq(&self) -> Result<i32> {
         self.0.freq()

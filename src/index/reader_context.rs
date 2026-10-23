@@ -71,6 +71,20 @@ pub struct LeafReaderContext {
     identity: usize,
 }
 
+impl std::fmt::Display for LeafReaderContext {
+    /// Port of `LeafReaderContext.toString()`
+    /// (`LeafReaderContext.java:71-74`). Measured against
+    /// `lucene-core-10.5.0.jar`: the first leaf of a two-segment reader renders
+    /// as `LeafReaderContext(_0(10.5.0):C3 docBase=0 ord=0)`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "LeafReaderContext({} docBase={} ord={})",
+            self.leaf_reader, self.doc_base, self.ord
+        )
+    }
+}
+
 impl LeafReaderContext {
     /// Creates a leaf context.
     ///
@@ -376,6 +390,16 @@ mod tests {
         num_docs: i32,
     }
 
+    impl std::fmt::Display for DummyLeafReader {
+        /// Test double; it has no Lucene counterpart whose `toString()` could be
+        /// reproduced, so it renders under its own name. `Display` is required
+        /// because `LeafReader`/`IndexReader` carry it as a supertrait, standing in
+        /// for the `toString()` every Java reader inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("DummyLeafReader")
+        }
+    }
+
     impl LeafReader for DummyLeafReader {
         fn core(&self) -> &IndexReaderCore {
             &self.core
@@ -536,6 +560,16 @@ mod tests {
             core: IndexReaderCore,
             subs: Vec<Arc<dyn IndexReader>>,
             max_doc: i32,
+        }
+
+        impl std::fmt::Display for DummyCompositeReader {
+            /// Test double; it has no Lucene counterpart whose `toString()` could be
+            /// reproduced, so it renders under its own name. `Display` is required
+            /// because `LeafReader`/`IndexReader` carry it as a supertrait, standing in
+            /// for the `toString()` every Java reader inherits from `Object`.
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("DummyCompositeReader")
+            }
         }
 
         impl IndexReader for DummyCompositeReader {

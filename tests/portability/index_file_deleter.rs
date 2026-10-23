@@ -202,7 +202,7 @@ fn open_deleter(
 ) -> (IndexFileDeleter, SegmentInfos) {
     register_lucene_codec();
     let directory: Arc<dyn Directory> = Arc::new(NIOFSDirectory::open(dir).unwrap());
-    let mut sis = SegmentInfos::read_latest_commit(directory.as_ref())
+    let mut sis = SegmentInfos::read_latest_commit(Arc::clone(&directory))
         .expect("Rucene must read the Java-written commit");
     let files = directory.list_all().unwrap();
     let deleter = IndexFileDeleter::new(
@@ -414,7 +414,7 @@ fn a_persisted_snapshot_pins_its_commit_in_rucene_as_in_lucene() {
     .expect("Rucene must read the snapshots file Java wrote");
 
     let directory: Arc<dyn Directory> = Arc::new(NIOFSDirectory::open(&rucene_dir).unwrap());
-    let mut sis = SegmentInfos::read_latest_commit(directory.as_ref()).unwrap();
+    let mut sis = SegmentInfos::read_latest_commit(Arc::clone(&directory)).unwrap();
     let files = directory.list_all().unwrap();
     let deleter = IndexFileDeleter::new(
         &files,

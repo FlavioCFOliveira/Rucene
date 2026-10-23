@@ -9,6 +9,12 @@ use crate::error::Result;
 ///
 /// Equivalent to the abstract class `org.apache.lucene.search.LongValues`.
 ///
+/// Not to be confused with `org.apache.lucene.util.LongValues`, an unrelated
+/// abstract class of the same simple name: that one is a random-access
+/// abstraction over an array of longs, read with `get(long index)`, and is
+/// ported separately as [`crate::util::LongValues`]. Lucene really does declare
+/// both.
+///
 /// **Divergence from Lucene 10.5.0.** As for
 /// [`DoubleValues`](crate::search::DoubleValues), `longValue()` takes
 /// `&mut self` because every non-trivial implementation reads through an

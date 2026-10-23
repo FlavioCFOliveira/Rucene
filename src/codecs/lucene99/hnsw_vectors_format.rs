@@ -22,6 +22,7 @@ use crate::codecs::hnsw::flat_vectors::{
     FlatFieldVectorsWriter, FlatVectorsFormat, FlatVectorsReader, FlatVectorsScorer,
     FlatVectorsWriter,
 };
+use crate::codecs::hnsw::graph_provider::HnswGraphProvider;
 use crate::codecs::knn_vectors::{
     FieldVectorWriter, KnnFieldVectorsWriter, KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
     SorterDocMap,
@@ -40,13 +41,12 @@ use crate::search::{AcceptDocs, DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{DataInput, IndexInput, IndexOutput};
 use crate::util::hnsw::{
     ArrayNodesIterator, CloseableRandomVectorScorerSupplier, ConcurrentHnswMerger,
-    DenseNodesIterator, HnswBuilder, HnswGraph, HnswGraphBuilder, HnswGraphMerger,
-    HnswGraphSearcher, IncrementalHnswGraphMerger, NeighborArray, NeighborQueue, NodesIterator,
-    OnHeapHnswGraph, RandomVectorScorer,
+    DenseNodesIterator, EmptyHnswGraph, HnswBuilder, HnswGraph, HnswGraphBuilder, HnswGraphMerger,
+    HnswGraphSearcher, IncrementalHnswGraphMerger, NeighborArray, NodesIterator, OnHeapHnswGraph,
+    RandomVectorScorer,
 };
 use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter};
 use crate::util::quantization::{QuantizedByteVectorValues, ScalarQuantizer};
-use crate::util::FixedBitSet;
 
 // -----------------------------------------------------------------------------
 // Format constants
@@ -59,14 +59,14 @@ const META_EXTENSION: &str = "vem";
 const VECTOR_INDEX_EXTENSION: &str = "vex";
 const VERSION_START: i32 = 0;
 const VERSION_GROUPVARINT: i32 = 1;
-const VERSION_CURRENT: i32 = VERSION_GROUPVARINT;
+pub(crate) const VERSION_CURRENT: i32 = VERSION_GROUPVARINT;
 
 const MAXIMUM_MAX_CONN: i32 = 512;
 const MAXIMUM_BEAM_WIDTH: i32 = 3200;
 const DEFAULT_MAX_CONN: i32 = crate::util::hnsw::DEFAULT_M;
 const DEFAULT_BEAM_WIDTH: i32 = crate::util::hnsw::DEFAULT_BEAM_WIDTH;
-const DEFAULT_NUM_MERGE_WORKER: i32 = 1;
-const HNSW_GRAPH_THRESHOLD: i32 = 100;
+pub(crate) const DEFAULT_NUM_MERGE_WORKER: i32 = 1;
+pub(crate) const HNSW_GRAPH_THRESHOLD: i32 = 100;
 const DIRECT_MONOTONIC_BLOCK_SHIFT: i32 = 16;
 const EXHAUSTIVE_BULK_SCORE_ORDS: usize = 64;
 
@@ -205,7 +205,13 @@ pub struct Lucene99HnswVectorsWriter {
     /// The format the flat vectors were written with, reopened for reading by
     /// [`Lucene99HnswVectorsWriter::ensure_flat_reader_open`] once the merge
     /// needs to score them.
-    flat_vectors_format: Lucene99FlatVectorsFormat,
+    ///
+    /// Equivalent to Lucene's `final FlatVectorsFormat flatVectorsFormat`
+    /// constructor parameter: the graph writer does not choose the flat format,
+    /// its caller does — which is how
+    /// `Lucene104HnswScalarQuantizedVectorsFormat` puts the scalar-quantized
+    /// format underneath the same graph writer.
+    flat_vectors_format: Box<dyn FlatVectorsFormat>,
     /// The reader over the flat vectors this writer just wrote, opened lazily.
     flat_vectors_reader: Option<Box<dyn FlatVectorsReader>>,
     /// Whether [`Lucene99HnswVectorsWriter::ensure_flat_reader_open`] already
@@ -276,7 +282,8 @@ impl<T: Clone + Send + Sync + 'static> KnnFieldVectorsWriter<T> for SharedFieldW
 }
 
 impl Lucene99HnswVectorsWriter {
-    /// Creates a new HNSW vector writer for the given segment.
+    /// Creates a new HNSW vector writer that stores its vectors with the
+    /// default Lucene 9.9 flat format.
     pub fn new(
         state: &SegmentWriteState<'_>,
         m: i32,
@@ -285,9 +292,38 @@ impl Lucene99HnswVectorsWriter {
         tiny_segments_threshold: i32,
         version: i32,
     ) -> Result<Self> {
-        let flat_vector_writer = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE)
-            .fields_writer_flat(state)?;
+        let flat_vectors_format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
+        let flat_vector_writer = flat_vectors_format.fields_writer_flat(state)?;
+        Self::with_flat_format(
+            state,
+            m,
+            beam_width,
+            num_merge_workers,
+            tiny_segments_threshold,
+            version,
+            Box::new(flat_vectors_format),
+            flat_vector_writer,
+        )
+    }
 
+    /// Creates a new HNSW vector writer over a caller-supplied flat format and
+    /// its writer.
+    ///
+    /// Equivalent to Lucene's sole constructor
+    /// `Lucene99HnswVectorsWriter(SegmentWriteState, int, int, FlatVectorsFormat,
+    /// FlatVectorsWriter, int, TaskExecutor, int)`, which is what lets a
+    /// quantized flat format share this graph writer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_flat_format(
+        state: &SegmentWriteState<'_>,
+        m: i32,
+        beam_width: i32,
+        num_merge_workers: i32,
+        tiny_segments_threshold: i32,
+        version: i32,
+        flat_vectors_format: Box<dyn FlatVectorsFormat>,
+        flat_vector_writer: Box<dyn FlatVectorsWriter>,
+    ) -> Result<Self> {
         let meta_file_name = segment_file_name(
             &state.segment_info.name,
             &state.segment_suffix,
@@ -335,9 +371,7 @@ impl Lucene99HnswVectorsWriter {
                 meta: meta_opt.take(),
                 vector_index: vector_index_opt.take(),
                 flat_vector_writer,
-                flat_vectors_format: Lucene99FlatVectorsFormat::new(
-                    DefaultFlatVectorScorer::INSTANCE,
-                ),
+                flat_vectors_format,
                 flat_vectors_reader: None,
                 flat_writer_closed: false,
                 m,
@@ -1410,13 +1444,13 @@ fn build_ord_to_doc(docs_with_field_set: &DocsWithFieldSet) -> Result<Vec<i32>> 
     Ok(ord_to_doc)
 }
 
-struct VecDocIndexIterator {
+pub(crate) struct VecDocIndexIterator {
     docs: Vec<i32>,
     index: i32,
 }
 
 impl VecDocIndexIterator {
-    fn new(docs: Vec<i32>) -> Self {
+    pub(crate) fn new(docs: Vec<i32>) -> Self {
         Self { docs, index: -1 }
     }
 }
@@ -1689,46 +1723,137 @@ impl Lucene99HnswVectorsReader {
         Ok(entry)
     }
 
+    /// Returns the graph stored for `entry`, or the empty graph when the field
+    /// stored no graph at all.
+    ///
+    /// Equivalent to the private
+    /// `Lucene99HnswVectorsReader.getGraph(FieldEntry)`.
+    fn get_graph_for_entry(&self, entry: &FieldEntry) -> Result<Box<dyn HnswGraph>> {
+        if entry.vector_index_length == 0 {
+            return Ok(Box::new(EmptyHnswGraph));
+        }
+        Ok(Box::new(OffHeapHnswGraph::new(
+            entry,
+            self.vector_index.as_ref(),
+            self.version,
+        )?))
+    }
+
+    /// Searches `entry` for the nearest neighbours of the query the scorer
+    /// carries, on the graph or by scanning every vector.
+    ///
+    /// `accept_docs` restricts the search to the documents that are neither
+    /// deleted nor excluded by the caller's filter. It is put to Lucene's three
+    /// uses: it caps the filtered document count at the graph size, it yields
+    /// the ordinals the search may visit, and that filtered count decides
+    /// between the graph and the exhaustive scan.
+    ///
+    /// Equivalent to the private `Lucene99HnswVectorsReader.search(FieldEntry,
+    /// KnnCollector, AcceptDocs, IOSupplier<RandomVectorScorer>)`.
+    ///
+    /// # Divergences from Lucene 10.5.0
+    ///
+    /// * Java hands the graph search an `OrdinalTranslatedKnnCollector` that
+    ///   wraps the caller's collector and translates each ordinal as it is
+    ///   collected, and hands the exhaustive scan the caller's collector
+    ///   directly. This port collects ordinals into a [`TopKnnCollector`] of
+    ///   its own and translates them once the search is over, because
+    ///   `OrdinalTranslatedKnnCollector` owns the collector it wraps and the
+    ///   caller's arrives as a borrow. The collector is built with the caller's
+    ///   `k`, visit limit and search strategy, so it terminates early, reports
+    ///   the same minimum competitive similarity and selects the same searcher
+    ///   as the collector Java passes; only the visited count reaches the
+    ///   caller in one increment at the end rather than as the search goes.
+    /// * Acceptance is asked of the vector ordinal rather than of the document
+    ///   it maps to — see the divergence recorded on
+    ///   [`RandomVectorScorer::get_accept_ords`], which no scorer in this crate
+    ///   can override the way Java's `AbstractRandomVectorScorer` does. The two
+    ///   agree for a field whose documents all have a vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever reading the graph, the vectors or the accept docs
+    /// raises.
     fn search_with_scorer(
         &self,
         entry: &FieldEntry,
         mut scorer: Box<dyn RandomVectorScorer>,
         knn_collector: &mut dyn KnnCollector,
-        _accept_docs: &mut dyn AcceptDocs,
+        accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
         if entry.size == 0 || knn_collector.k() == 0 {
             return Ok(());
         }
-        let num_vectors = scorer.max_ord();
-        let graph_size = if entry.vector_index_length > 0 {
-            entry.size
-        } else {
-            0
-        };
         let k = knn_collector.k();
-        let visit_limit = knn_collector.visit_limit();
-        let use_graph = graph_size > 0
-            && k < num_vectors
-            && expected_visited_nodes(k, graph_size) < num_vectors;
-        let mut internal = TopKnnCollector::new(k, visit_limit);
-        if use_graph {
-            let mut graph = OffHeapHnswGraph::new(entry, self.vector_index.as_ref(), self.version)?;
-            let mut searcher = HnswGraphSearcher::new(
-                NeighborQueue::new(k, true),
-                Box::new(FixedBitSet::new(graph.max_node_id().max(0) as usize + 1)),
-            );
-            searcher.search_graph(&mut internal, scorer.as_mut(), &mut graph, None)?;
+        let mut internal = TopKnnCollector::with_strategy(
+            k,
+            knn_collector.visit_limit(),
+            knn_collector.get_search_strategy().cloned(),
+        );
+        // Use the approximate cardinality, as this is good enough, but ensure
+        // it does not exceed the graph size, as that is illogical.
+        let graph_size = if entry.vector_index_length == 0 {
+            0
         } else {
-            let mut ords = Vec::with_capacity(EXHAUSTIVE_BULK_SCORE_ORDS);
-            let mut scores = vec![0.0f32; EXHAUSTIVE_BULK_SCORE_ORDS];
+            entry.size
+        };
+        let filtered_doc_count = accept_docs.cost()?.min(i64::from(graph_size)) as i32;
+        let accepted = accept_docs.bits()?;
+        let accepted_ords = scorer.get_accept_ords(accepted);
+        let num_vectors = scorer.max_ord();
+        let mut do_hnsw = k < num_vectors;
+        // The approximate number of vectors that would be visited if we did not
+        // filter.
+        let unfiltered_visit = crate::util::hnsw::searcher::expected_visited_nodes(k, graph_size);
+        if unfiltered_visit >= filtered_doc_count || graph_size == 0 {
+            do_hnsw = false;
+        }
+        if do_hnsw {
+            let mut graph = self.get_graph_for_entry(entry)?;
+            HnswGraphSearcher::search(
+                scorer.as_mut(),
+                &mut internal,
+                graph.as_mut(),
+                accepted_ords.as_deref(),
+                filtered_doc_count,
+            )?;
+        } else {
+            // If k is larger than the number of vectors we expect to visit in
+            // an HNSW search, we can just iterate over all vectors and collect
+            // them.
+            let mut ords = [0i32; EXHAUSTIVE_BULK_SCORE_ORDS];
+            let mut scores = [0f32; EXHAUSTIVE_BULK_SCORE_ORDS];
+            let mut num_ords = 0usize;
             for i in 0..num_vectors {
-                ords.push(i);
-                if ords.len() == EXHAUSTIVE_BULK_SCORE_ORDS {
-                    score_batch_exhaustive(&mut ords, &mut scores, &mut internal, scorer.as_mut())?;
+                if accepted_ords
+                    .as_deref()
+                    .map_or(true, |accepted| accepted.get(i as usize))
+                {
+                    if internal.early_terminated() {
+                        break;
+                    }
+                    ords[num_ords] = i;
+                    num_ords += 1;
+                    if num_ords == ords.len() {
+                        score_batch_exhaustive(
+                            &ords,
+                            &mut scores,
+                            num_ords,
+                            &mut internal,
+                            scorer.as_mut(),
+                        )?;
+                        num_ords = 0;
+                    }
                 }
             }
-            if !ords.is_empty() {
-                score_batch_exhaustive(&mut ords, &mut scores, &mut internal, scorer.as_mut())?;
+            if num_ords > 0 {
+                score_batch_exhaustive(
+                    &ords,
+                    &mut scores,
+                    num_ords,
+                    &mut internal,
+                    scorer.as_mut(),
+                )?;
             }
         }
         knn_collector.inc_visited_count(internal.visited_count() as i32);
@@ -1736,6 +1861,23 @@ impl Lucene99HnswVectorsReader {
             knn_collector.collect(scorer.ord_to_doc(ord), score);
         }
         Ok(())
+    }
+}
+
+/// Hands out the HNSW graph a field stored, so that a merge can reuse it
+/// instead of rebuilding one.
+///
+/// Equivalent to `Lucene99HnswVectorsReader implements HnswGraphProvider`.
+impl HnswGraphProvider for Lucene99HnswVectorsReader {
+    /// Returns the graph stored for `field`.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsReader.getGraph(String)`: an unknown
+    /// field, or a known field with no vector values, is an
+    /// `IllegalArgumentException`, while a known field that stored no graph
+    /// answers `HnswGraph.EMPTY`.
+    fn get_graph(&self, field: &str) -> Result<Box<dyn HnswGraph>> {
+        let entry = self.get_field_entry_or_throw(field)?;
+        self.get_graph_for_entry(entry)
     }
 }
 
@@ -1806,22 +1948,39 @@ impl KnnVectorsReader for Lucene99HnswVectorsReader {
     }
 }
 
+/// Scores one batch of accepted ordinals and collects it when the batch holds
+/// anything competitive.
+///
+/// Equivalent to the body Lucene repeats twice inside the exhaustive branch of
+/// `Lucene99HnswVectorsReader.search(FieldEntry, KnnCollector, AcceptDocs,
+/// IOSupplier)`: the visited count is raised before the batch is scored, and
+/// the batch is only collected when its best score beats the collector's
+/// minimum competitive similarity.
+///
+/// The ordinals are collected untranslated, because the caller translates them
+/// once the search is over — see the divergence recorded on
+/// `Lucene99HnswVectorsReader::search_with_scorer`.
+///
+/// # Errors
+///
+/// Returns whatever scoring the batch raises.
 fn score_batch_exhaustive(
-    ords: &mut Vec<i32>,
+    ords: &[i32],
     scores: &mut [f32],
+    num_ords: usize,
     collector: &mut TopKnnCollector,
     scorer: &mut dyn RandomVectorScorer,
 ) -> Result<()> {
-    let n = ords.len();
-    if n == 0 {
+    if num_ords == 0 {
         return Ok(());
     }
-    scorer.bulk_score(ords, &mut scores[..n], n as i32)?;
-    for i in 0..n {
-        collector.collect(ords[i], scores[i]);
+    collector.inc_visited_count(num_ords as i32);
+    let best = scorer.bulk_score(ords, &mut scores[..num_ords], num_ords as i32)?;
+    if best > collector.min_competitive_similarity() {
+        for i in 0..num_ords {
+            collector.collect(ords[i], scores[i]);
+        }
     }
-    collector.inc_visited_count(n as i32);
-    ords.clear();
     Ok(())
 }
 
@@ -1927,12 +2086,21 @@ impl FieldEntry {
                 }
                 number_of_offsets += i64::from(num_nodes);
                 // Java reads `nodesByLevel[level][0]` unconditionally and hits
-                // an `ArrayIndexOutOfBoundsException` on an empty level.
+                // an `ArrayIndexOutOfBoundsException` on an empty level. That
+                // exception is catchable and a Rust panic is not, so the empty
+                // level is refused here, exactly as `OffHeapHnswGraph::seek`
+                // below refuses a level outside the graph for the same reason.
+                if num_nodes == 0 {
+                    return Err(LuceneError::CorruptIndex(format!(
+                        "level {level} of field \"{}\" declares no nodes",
+                        field_info.name
+                    )));
+                }
 
-                // Again grown, not pre-sized: each node is at least one byte.
-                let mut nodes: Vec<i32> = vec![0i32; num_nodes as usize];
-                nodes[0] = input.read_v_int()?;
-                nodes.truncate(1);
+                // Again grown, not pre-sized: each node is at least one byte,
+                // so a hostile count runs out of file instead of out of memory.
+                let mut nodes: Vec<i32> = Vec::new();
+                nodes.push(input.read_v_int()?);
                 for i in 1..num_nodes as usize {
                     let delta = input.read_v_int()?;
                     // Java accumulates with `int` arithmetic, which wraps.
@@ -2362,7 +2530,7 @@ mod tests {
             DocValuesType::NONE,
             DocValuesSkipIndexType::NONE,
             -1,
-            HashMap::new(),
+            crate::util::java_collections::JavaStringMap::default(),
             0,
             0,
             0,
@@ -2385,7 +2553,7 @@ mod tests {
             DocValuesType::NONE,
             DocValuesSkipIndexType::NONE,
             -1,
-            HashMap::new(),
+            crate::util::java_collections::JavaStringMap::default(),
             0,
             0,
             0,
@@ -2525,5 +2693,266 @@ mod tests {
         let reader = format.fields_reader(&read_state)?;
         reader.check_integrity()?;
         Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // accept_docs (rmp task #205)
+    //
+    // `Lucene99HnswVectorsReader.search` puts `acceptDocs` to three uses
+    // (`Lucene99HnswVectorsReader.java:331-361`): it caps the filtered document
+    // count at the graph size, it turns the accepted documents into the
+    // accepted ordinals the graph search may visit, and it compares that
+    // filtered count against `HnswGraphSearcher.expectedVisitedNodes` to decide
+    // between the graph and the exhaustive scan. A search that ignores it
+    // returns deleted documents and documents the caller's filter excludes.
+    // -------------------------------------------------------------------------
+
+    /// A [`Bits`](crate::util::Bits) over an explicit acceptance vector.
+    #[derive(Debug)]
+    struct VecBits(Vec<bool>);
+
+    impl crate::util::Bits for VecBits {
+        fn get(&self, index: usize) -> bool {
+            self.0[index]
+        }
+
+        fn length(&self) -> usize {
+            self.0.len()
+        }
+    }
+
+    /// The number of documents the accept-docs fixtures index.
+    const ACCEPT_DOCS_SIZE: i32 = 64;
+
+    /// Writes `num_docs` float vectors, document `i` holding `[i, 0]`, so that
+    /// the neighbours of `[0, 0]` are documents 0, 1, 2, … in that order.
+    ///
+    /// `tiny_segments_threshold` is forced to 1 so that a graph is written for
+    /// a segment this small: `Lucene99HnswVectorsWriter.shouldCreateGraph`
+    /// otherwise skips the graph whenever `numNodes <= log(numNodes) * 100`.
+    fn write_accept_docs_segment(
+        dir: &Arc<dyn crate::store::Directory>,
+        seg_info: &SegmentInfo,
+        field_info: &FieldInfo,
+        field_infos: &FieldInfos,
+        num_docs: i32,
+    ) -> Result<()> {
+        let seg_updates = BufferedUpdates;
+        let write_state = OwnedSegmentWriteState::new(
+            Arc::new(crate::util::NoOutputInfoStream),
+            Arc::clone(dir),
+            seg_info.clone(),
+            field_infos.clone(),
+            seg_updates,
+            Arc::new(DefaultIOContext::default()),
+        );
+        let format = Lucene99HnswVectorsFormat::with_params(
+            DEFAULT_MAX_CONN,
+            DEFAULT_BEAM_WIDTH,
+            DEFAULT_NUM_MERGE_WORKER,
+            1,
+            VERSION_CURRENT,
+        );
+        let mut writer = format.fields_writer(&write_state)?;
+        let field_writer = writer.add_field(field_info)?;
+        let mut float_writer = match field_writer {
+            FieldVectorWriter::Float(w) => w,
+            _ => panic!("expected float field writer"),
+        };
+        for doc in 0..num_docs {
+            float_writer.add_value(doc, vec![doc as f32, 0.0])?;
+        }
+        writer.flush(num_docs, None)?;
+        writer.finish()?;
+        writer.close()?;
+        Ok(())
+    }
+
+    /// Returns the documents a search for `[0, 0]` collects, best first.
+    fn accept_docs_search(
+        reader: &dyn KnnVectorsReader,
+        k: i32,
+        accept_docs: &mut dyn AcceptDocs,
+    ) -> Result<(Vec<i32>, i64)> {
+        let mut collector = TopKnnCollector::new(k, i64::MAX);
+        reader.search("float_field", &[0.0, 0.0], &mut collector, accept_docs)?;
+        let visited = collector.visited_count();
+        let docs = collector
+            .top_docs_with_scores()
+            .into_iter()
+            .map(|(doc, _)| doc)
+            .collect();
+        Ok((docs, visited))
+    }
+
+    /// Live docs that accept every document except `deleted`.
+    fn live_docs_without(deleted: &[i32], max_doc: i32) -> Box<dyn crate::util::Bits> {
+        let mut live = vec![true; max_doc as usize];
+        for doc in deleted {
+            live[*doc as usize] = false;
+        }
+        Box::new(VecBits(live))
+    }
+
+    #[test]
+    fn the_graph_path_does_not_return_deleted_documents() -> Result<()> {
+        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let seg_info = make_segment_info(&dir, ACCEPT_DOCS_SIZE)?;
+        let field_info = float_field_info("float_field", 0, 2)?;
+        let field_infos = FieldInfos::new(vec![field_info.clone()])?;
+        write_accept_docs_segment(&dir, &seg_info, &field_info, &field_infos, ACCEPT_DOCS_SIZE)?;
+
+        let io_ctx = DefaultIOContext::default();
+        let read_state = SegmentReadState::new(dir.as_ref(), &seg_info, &field_infos, &io_ctx);
+        let mut reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
+
+        // Without deletions the three nearest vectors to [0, 0] are documents
+        // 0, 1 and 2, which fixes what the deletions must displace.
+        let mut all = from_live_docs(None, ACCEPT_DOCS_SIZE)?;
+        let (docs, _) = accept_docs_search(reader.as_ref(), 3, &mut all)?;
+        assert_eq!(docs, vec![0, 1, 2]);
+
+        let mut with_deletions = from_live_docs(
+            Some(live_docs_without(&[0, 1], ACCEPT_DOCS_SIZE)),
+            ACCEPT_DOCS_SIZE,
+        )?;
+        let (docs, _) = accept_docs_search(reader.as_ref(), 3, &mut with_deletions)?;
+        assert_eq!(
+            docs,
+            vec![2, 3, 4],
+            "a deleted document must not come back from a kNN search"
+        );
+
+        reader.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn the_graph_path_honours_a_caller_filter() -> Result<()> {
+        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let seg_info = make_segment_info(&dir, ACCEPT_DOCS_SIZE)?;
+        let field_info = float_field_info("float_field", 0, 2)?;
+        let field_infos = FieldInfos::new(vec![field_info.clone()])?;
+        write_accept_docs_segment(&dir, &seg_info, &field_info, &field_infos, ACCEPT_DOCS_SIZE)?;
+
+        let io_ctx = DefaultIOContext::default();
+        let read_state = SegmentReadState::new(dir.as_ref(), &seg_info, &field_infos, &io_ctx);
+        let mut reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
+
+        // 54 of the 64 documents pass, which keeps the filtered count above the
+        // `expectedVisitedNodes(3, 64) == 12` the graph search is expected to
+        // touch, so the search stays on the graph path.
+        let mut filtered = crate::search::from_iterator_supplier(
+            || {
+                Ok(Box::new(crate::search::range(10, ACCEPT_DOCS_SIZE)?)
+                    as Box<dyn crate::search::DocIdSetIterator>)
+            },
+            None,
+            ACCEPT_DOCS_SIZE,
+        )?;
+        let (docs, _) = accept_docs_search(reader.as_ref(), 3, &mut filtered)?;
+        assert_eq!(
+            docs,
+            vec![10, 11, 12],
+            "a caller filter must be honoured by the graph search"
+        );
+
+        reader.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn the_exhaustive_path_does_not_return_deleted_documents() -> Result<()> {
+        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let seg_info = make_segment_info(&dir, ACCEPT_DOCS_SIZE)?;
+        let field_info = float_field_info("float_field", 0, 2)?;
+        let field_infos = FieldInfos::new(vec![field_info.clone()])?;
+        write_accept_docs_segment(&dir, &seg_info, &field_info, &field_infos, ACCEPT_DOCS_SIZE)?;
+
+        let io_ctx = DefaultIOContext::default();
+        let read_state = SegmentReadState::new(dir.as_ref(), &seg_info, &field_infos, &io_ctx);
+        let mut reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
+
+        // `k == numVectors` makes `doHnsw` false, so this is the exhaustive
+        // scan rather than the graph search.
+        let mut with_deletions = from_live_docs(
+            Some(live_docs_without(&[0, 1], ACCEPT_DOCS_SIZE)),
+            ACCEPT_DOCS_SIZE,
+        )?;
+        let (docs, visited) =
+            accept_docs_search(reader.as_ref(), ACCEPT_DOCS_SIZE, &mut with_deletions)?;
+        assert_eq!(docs.len(), (ACCEPT_DOCS_SIZE - 2) as usize);
+        assert_eq!(
+            docs[0], 2,
+            "the exhaustive scan must skip deleted documents"
+        );
+        assert!(
+            !docs.contains(&0) && !docs.contains(&1),
+            "the exhaustive scan returned a deleted document: {docs:?}"
+        );
+        assert_eq!(
+            visited,
+            i64::from(ACCEPT_DOCS_SIZE - 2),
+            "the exhaustive scan must only score the accepted ordinals"
+        );
+
+        reader.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_restrictive_filter_sends_the_search_down_the_exhaustive_path() -> Result<()> {
+        let dir = Arc::new(RamDirectory::new()) as Arc<dyn crate::store::Directory>;
+        let seg_info = make_segment_info(&dir, ACCEPT_DOCS_SIZE)?;
+        let field_info = float_field_info("float_field", 0, 2)?;
+        let field_infos = FieldInfos::new(vec![field_info.clone()])?;
+        write_accept_docs_segment(&dir, &seg_info, &field_info, &field_infos, ACCEPT_DOCS_SIZE)?;
+
+        let io_ctx = DefaultIOContext::default();
+        let read_state = SegmentReadState::new(dir.as_ref(), &seg_info, &field_infos, &io_ctx);
+        let mut reader = Lucene99HnswVectorsFormat::new().fields_reader(&read_state)?;
+
+        // Ten of the 64 documents pass, below the `expectedVisitedNodes(3, 64)
+        // == 12` an unfiltered graph search would visit, so Java clears
+        // `doHnsw` and scans exhaustively — visiting exactly the ten accepted
+        // ordinals. Deciding against the unfiltered vector count instead, as
+        // this port used to, keeps the search on the graph and visits a
+        // different number of nodes.
+        let mut filtered = crate::search::from_iterator_supplier(
+            || {
+                Ok(Box::new(crate::search::range(10, 20)?)
+                    as Box<dyn crate::search::DocIdSetIterator>)
+            },
+            None,
+            ACCEPT_DOCS_SIZE,
+        )?;
+        let (docs, visited) = accept_docs_search(reader.as_ref(), 3, &mut filtered)?;
+        assert_eq!(docs, vec![10, 11, 12]);
+        assert_eq!(
+            visited, 10,
+            "the filtered document count must drive the choice of search path"
+        );
+
+        reader.close()?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for Lucene99HnswVectorsFormat {
+    /// Port of `Lucene99HnswVectorsFormat.toString()`.
+    ///
+    /// The `name=` is a literal in Java, not `getName()`. `flatVectorFormat` is
+    /// the `Lucene99FlatVectorsFormat` the writer and reader are built from,
+    /// which this port creates on demand in `flat_format()` rather than keeping
+    /// in a field.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Lucene99HnswVectorsFormat(name=Lucene99HnswVectorsFormat, maxConn={}, beamWidth={}, tinySegmentsThreshold={}, flatVectorFormat={})",
+            self.max_conn,
+            self.beam_width,
+            self.tiny_segments_threshold,
+            self.flat_format()
+        )
     }
 }

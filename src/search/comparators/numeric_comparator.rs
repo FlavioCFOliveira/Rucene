@@ -37,8 +37,20 @@ const MAX_SKIP_INTERVAL: i32 = 8192;
 ///
 /// **Divergence from Lucene 10.5.0.** Java declares `sortableBytesToLong` as an
 /// abstract method that each subclass overrides with a one-line call into
-/// `NumericUtils`. Rust models the same two choices as data, so that the shared
-/// state can decode without a virtual call back into the concrete comparator.
+/// `NumericUtils`, and the inner `NumericLeafComparator` calls it back on the
+/// enclosing object. Rust cannot express that: [`NumericComparator`] is *owned*
+/// by the concrete comparator rather than inherited by it, so a call back into
+/// the owner from inside the state it owns would be a self-referential borrow.
+/// The two decoders are therefore modelled as data, and each concrete
+/// comparator passes the variant its own override would have used —
+/// [`IntComparator`](crate::search::comparators::IntComparator) and
+/// [`FloatComparator`](crate::search::comparators::FloatComparator) pass
+/// [`Int`](SortableBytes::Int), and
+/// [`LongComparator`](crate::search::comparators::LongComparator) and
+/// [`DoubleComparator`](crate::search::comparators::DoubleComparator) pass
+/// [`Long`](SortableBytes::Long). The portability test
+/// `comparator_sortable_bytes_to_long_matches_java` measures that mapping
+/// against the four real Java overrides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortableBytes {
     /// Four bytes decoded with `NumericUtils.sortableBytesToInt`, used by
@@ -722,7 +734,7 @@ impl NumericComparator {
                 .expect("INVARIANT: the builder was just observed to be present");
             let has_missing = match &builder.kind {
                 CompetitiveKind::Points { point_values, .. } => {
-                    point_values.doc_count() != builder.common.max_doc
+                    point_values.doc_count()? != builder.common.max_doc
                 }
                 CompetitiveKind::Skipper { doc_count, .. } => *doc_count != builder.common.max_doc,
             };
@@ -849,7 +861,7 @@ impl NumericComparator {
                     // The new range is not selective enough to be worth
                     // materializing: it does not reduce the number of docs at
                     // least 8x.
-                    let doc_count = point_values.doc_count();
+                    let doc_count = point_values.doc_count()?;
                     let success = false;
                     update_skip_interval(&mut builder.common, try_update_fail_count, success);
                     if i64::from(doc_count) < *iterator_cost {
@@ -937,8 +949,9 @@ impl CompetitiveVisitor<'_> {
 }
 
 impl IntersectVisitor for CompetitiveVisitor<'_> {
-    fn grow(&mut self, count: i32) {
+    fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
+        Ok(())
     }
 
     fn visit(&mut self, doc_id: i32) -> Result<()> {
@@ -978,7 +991,7 @@ impl IntersectVisitor for CompetitiveVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
         let min = self.sortable_bytes.decode(min_packed_value);
         let max = self.sortable_bytes.decode(max_packed_value);
 
@@ -990,12 +1003,12 @@ impl IntersectVisitor for CompetitiveVisitor<'_> {
             // 2. When the comparison is 0 and pruning is GREATER_THAN:
             //    maxValueAsLong equals bottom, but there are several
             //    comparators, so it could be competitive.
-            return Relation::CellOutsideQuery;
+            return Ok(Relation::CellOutsideQuery);
         }
 
         if min < self.min_value_as_long || max > self.max_value_as_long {
-            return Relation::CellCrossesQuery;
+            return Ok(Relation::CellCrossesQuery);
         }
-        Relation::CellInsideQuery
+        Ok(Relation::CellInsideQuery)
     }
 }

@@ -341,7 +341,8 @@ mod tests {
         writer.write_field_f64(&info, 2.0).unwrap();
         writer.write_field_bytes(&info, b"x").unwrap();
         writer.write_field_string(&info, "s").unwrap();
-        let mut input = crate::store::ByteArrayDataInput::new(vec![1, 2, 3]);
+        let input_src = vec![1, 2, 3];
+        let mut input = crate::store::ByteArrayDataInput::new(&input_src);
         let mut stored_input = StoredFieldDataInput::new(&mut input, 3);
         writer
             .write_field_data_input(&info, &mut stored_input)
@@ -369,11 +370,20 @@ mod tests {
 
 /// Decides whether a sub-reader's field numbers need remapping.
 ///
-/// Equivalent to the loop in `StoredFieldsWriter.MergeVisitor`'s constructor:
-/// when every field of the sub-reader keeps its number and name in the merged
-/// `FieldInfos`, the numbers are aligned and each field access can skip the
-/// lookup; one mismatch and every field must be looked up by name instead.
-fn merge_visitor_remapper(merge_state: &MergeState, reader_index: usize) -> Option<FieldInfos> {
+/// Equivalent to the loop in `StoredFieldsWriter.MergeVisitor`'s constructor
+/// (`StoredFieldsWriter.java:182-193`): when every field of the sub-reader
+/// keeps its number and name in the merged `FieldInfos`, the numbers are
+/// aligned and each field access can skip the lookup; one mismatch and every
+/// field must be looked up by name instead. Returns the merged `FieldInfos` to
+/// remap through, or `None` when the numbers are aligned.
+///
+/// Shared with the codecs whose own `merge` keeps the visitor route for some
+/// segments, as `Lucene90CompressingStoredFieldsWriter#merge` does
+/// (`Lucene90CompressingStoredFieldsWriter.java:613-615`).
+pub(crate) fn merge_visitor_remapper(
+    merge_state: &MergeState,
+    reader_index: usize,
+) -> Option<FieldInfos> {
     let Some(reader_field_infos) = merge_state.field_infos.get(reader_index) else {
         return None;
     };
@@ -427,13 +437,23 @@ impl DocIDMergerSub for StoredFieldsMergeSub {
 
 /// Forwards every stored field read from a sub-reader straight to the writer.
 ///
-/// Equivalent to `StoredFieldsWriter.MergeVisitor`, which Java also makes an
-/// `IndexableField` so it can hand itself to `writeField`. This port's writer
-/// takes the value directly, one method per type, so the visitor forwards the
-/// callback instead of impersonating a field.
-struct MergeVisitor<'a, W: StoredFieldsWriter + ?Sized> {
-    writer: &'a mut W,
-    remapper: Option<&'a FieldInfos>,
+/// Equivalent to `StoredFieldsWriter.MergeVisitor`
+/// (`StoredFieldsWriter.java:176-245`): each typed callback calls the writer's
+/// matching `writeField` overload with the field remapped to the merged
+/// numbering, and `needsField` always answers `YES`.
+///
+/// Java's visitor is an inner class that reaches its writer through the
+/// enclosing instance and is built once per sub-reader; this one borrows the
+/// writer for one document at a time, so callers keep the per-sub-reader state
+/// — the remapper from [`merge_visitor_remapper`] — and rebuild the visitor
+/// around it for each document.
+pub(crate) struct MergeVisitor<'a, W: StoredFieldsWriter + ?Sized> {
+    /// The writer every field is forwarded to; Java's enclosing
+    /// `StoredFieldsWriter` instance.
+    pub(crate) writer: &'a mut W,
+    /// The merged `FieldInfos` to look each field up in by name, or `None`
+    /// when the sub-reader's numbering is aligned; Java's `remapper` field.
+    pub(crate) remapper: Option<&'a FieldInfos>,
 }
 
 impl<W: StoredFieldsWriter + ?Sized> MergeVisitor<'_, W> {

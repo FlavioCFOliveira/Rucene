@@ -25,8 +25,8 @@ use super::knn_vectors::{
     FloatVectorValues, KnnCollector, KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
 };
 use super::postings::{
-    postings_for_name, Fields, FieldsConsumer, FieldsProducer, MergeState, NormsProducer,
-    PostingsFormat, Terms,
+    postings_for_name, Fields, FieldsConsumer, FieldsProducer, MergeState, PostingsFormat,
+    PostingsNormsProducer, Terms,
 };
 use super::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use super::stub::FieldInfo;
@@ -231,7 +231,7 @@ impl<'a> FieldsWriter<'a> {
 }
 
 impl<'a> FieldsConsumer for FieldsWriter<'a> {
-    fn write(&mut self, fields: &dyn Fields, norms: &dyn NormsProducer) -> Result<()> {
+    fn write(&mut self, fields: &dyn Fields, norms: &dyn PostingsNormsProducer) -> Result<()> {
         let mut groups = self.build_groups(fields.iterator())?;
         for group in groups.values_mut() {
             let masked = MaskedFields::new(fields, &group.fields);
@@ -244,7 +244,7 @@ impl<'a> FieldsConsumer for FieldsWriter<'a> {
         Ok(())
     }
 
-    fn merge(&mut self, merge_state: &MergeState, norms: &dyn NormsProducer) -> Result<()> {
+    fn merge(&mut self, merge_state: &MergeState, norms: &dyn PostingsNormsProducer) -> Result<()> {
         let field_names = merge_state
             .merge_field_infos
             .iter()
@@ -300,11 +300,15 @@ impl Fields for MaskedFields<'_> {
 struct NoOpFieldsConsumer;
 
 impl FieldsConsumer for NoOpFieldsConsumer {
-    fn write(&mut self, _fields: &dyn Fields, _norms: &dyn NormsProducer) -> Result<()> {
+    fn write(&mut self, _fields: &dyn Fields, _norms: &dyn PostingsNormsProducer) -> Result<()> {
         Ok(())
     }
 
-    fn merge(&mut self, _merge_state: &MergeState, _norms: &dyn NormsProducer) -> Result<()> {
+    fn merge(
+        &mut self,
+        _merge_state: &MergeState,
+        _norms: &dyn PostingsNormsProducer,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -585,6 +589,35 @@ impl<'a> DvFieldsWriter<'a> {
         }
     }
 
+    /// Records `key` on the `FieldInfo` the caller passed **and** on the one the
+    /// segment's `FieldInfos` will serialise into the `.fnm`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java writes the attribute once, on
+    /// the object the caller passed
+    /// (`PerFieldDocValuesFormat.java:150,175`), because that object *is* the
+    /// one `state.fieldInfos` holds: `IndexingChain` gives its `PerField` a
+    /// reference to the `FieldInfo` the builder created, and
+    /// `FieldInfos.Builder.finish()` hands those very objects to the
+    /// `FieldInfos` it returns. This port copies the `FieldInfo` at both steps
+    /// — `IndexingChain`'s `PerField` owns one, each doc-values writer owns
+    /// another — so mutating the object the writer passes leaves the `.fnm`
+    /// without the attribute, and the segment cannot be reopened. Writing to
+    /// both objects reproduces what one shared object would have given.
+    /// `PerFieldPostingsFormat.FieldsWriter` already reaches the segment's
+    /// `FieldInfo` by name for the same reason (see `build_groups`).
+    fn record_attribute(&self, field: &FieldInfo, key: &str, value: &str) {
+        field.put_attribute(key, value);
+        self.record_shared_attribute(&field.name, key, value);
+    }
+
+    /// Records `key` on the `FieldInfo` the segment's `FieldInfos` holds for
+    /// `name`, when it holds one. See [`Self::record_attribute`].
+    fn record_shared_attribute(&self, name: &str, key: &str, value: &str) {
+        if let Some(shared) = self.segment_write_state.field_infos.field_info(name) {
+            shared.put_attribute(key, value);
+        }
+    }
+
     fn get_instance(&mut self, field: &FieldInfo) -> Result<&mut Box<dyn DocValuesConsumer + 'a>> {
         self.get_instance_with_ignore(field, false)
     }
@@ -614,7 +647,7 @@ impl<'a> DvFieldsWriter<'a> {
         })?;
 
         let format_name = format.name().to_string();
-        field.put_attribute(PER_FIELD_DOC_VALUES_FORMAT_KEY, &format_name);
+        self.record_attribute(field, PER_FIELD_DOC_VALUES_FORMAT_KEY, &format_name);
 
         if !self.formats.contains_key(&format_name) {
             let suffix = if field.doc_values_gen != -1 {
@@ -653,8 +686,16 @@ impl<'a> DvFieldsWriter<'a> {
             .formats
             .get_mut(&format_name)
             .expect("consumer just inserted");
-        field.put_attribute(PER_FIELD_DOC_VALUES_SUFFIX_KEY, entry.suffix.to_string());
-        Ok(&mut entry.consumer)
+        let suffix = entry.suffix.to_string();
+        // `entry` borrows `self.formats` mutably, so the shared field info is
+        // reached after the borrow ends, on the next statement.
+        field.put_attribute(PER_FIELD_DOC_VALUES_SUFFIX_KEY, &suffix);
+        self.record_shared_attribute(&field.name, PER_FIELD_DOC_VALUES_SUFFIX_KEY, &suffix);
+        Ok(&mut self
+            .formats
+            .get_mut(&format_name)
+            .expect("consumer just inserted")
+            .consumer)
     }
 }
 
@@ -1425,7 +1466,7 @@ impl FieldsProducer for FilterFieldsProducer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codecs::postings::NumericDocValues;
+    use crate::codecs::postings::PostingsNumericDocValues;
     use crate::codecs::stub::FieldInfos;
     use crate::index::{IndexOptions, SegmentInfo};
 
@@ -1574,8 +1615,11 @@ mod tests {
 
         #[derive(Debug, Default, Clone)]
         struct NoOpNorms;
-        impl NormsProducer for NoOpNorms {
-            fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+        impl PostingsNormsProducer for NoOpNorms {
+            fn get_norms(
+                &self,
+                _field_info: &FieldInfo,
+            ) -> Result<Box<dyn PostingsNumericDocValues>> {
                 unreachable!("no norms requested in this test")
             }
         }

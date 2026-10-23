@@ -943,49 +943,6 @@ fn assert_case_matches_lucene(case: &str) {
     );
 }
 
-/// Asserts what a case whose segment carries an **HNSW graph** can prove today.
-///
-/// # The gap this records
-///
-/// `Lucene99HnswVectorsWriter` writes the graph itself into the `.vex`, and its
-/// length and offsets into the `.vem`. Building that graph bit-identically to
-/// Lucene needs `HnswGraphBuilder` — the beam search, the neighbour array and
-/// the diversity heuristic — to agree with Java step for step, and this port's
-/// builder does not yet. Measured on `threshold648`, with the level assignment
-/// already matching after the `SplittableRandom` port: the `.vem` is the same
-/// 215 bytes and differs in 19 of them — the `.vex` length at 95-96, the
-/// offsets that follow it, and the footer checksum — while the `.vex` is 6583
-/// bytes against Rucene's 5946 and first differs at offset 83, the neighbour
-/// count of the graph's first node.
-///
-/// So this asserts what the vectors **consumer** owns — the flat vector data
-/// and its metadata, byte for byte, in every direction — and pins the graph
-/// files as *not yet* identical. The pin is deliberate: when the graph builder
-/// is made faithful this assertion fails, and whoever does that work is told to
-/// promote these three cases to [`assert_case_matches_lucene`] rather than
-/// discovering the gap closed by accident.
-fn assert_flat_files_match_lucene_and_the_graph_does_not(case: &str) {
-    let result = run_case(case);
-    assert_reads_agree(&result);
-
-    assert_eq!(
-        result.java_extensions,
-        vec!["vec", "vem", "vemf", "vex"],
-        "{}: a segment with vectors must carry all four vector files",
-        result.case
-    );
-    let mut matched = result.matched.clone();
-    matched.sort();
-    assert_eq!(
-        matched,
-        vec!["vec", "vemf"],
-        "{}: the flat vector data and its metadata must be byte-identical to \
-         Lucene's, and the graph files must not be — differences were:\n{}",
-        result.case,
-        result.differences.join("\n")
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1094,13 +1051,13 @@ fn the_last_size_below_the_graph_threshold_matches_lucene() {
 }
 
 #[test]
-fn the_first_size_that_builds_a_graph_matches_lucene_except_for_the_graph() {
-    assert_flat_files_match_lucene_and_the_graph_does_not("threshold648");
+fn the_first_size_that_builds_a_graph_matches_lucene() {
+    assert_case_matches_lucene("threshold648");
 }
 
 #[test]
-fn a_multi_level_graph_matches_lucene_except_for_the_graph() {
-    assert_flat_files_match_lucene_and_the_graph_does_not("threshold2000");
+fn a_multi_level_graph_matches_lucene() {
+    assert_case_matches_lucene("threshold2000");
 }
 
 #[test]

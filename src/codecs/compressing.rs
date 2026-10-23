@@ -92,14 +92,18 @@ impl CompressionMode {
 }
 
 impl std::fmt::Display for CompressionMode {
+    /// Equivalent to `LZ4WithPresetDictCompressionMode.toString()`, which
+    /// returns `BEST_SPEED`, and to
+    /// `DeflateWithPresetDictCompressionMode.toString()`, which returns
+    /// `BEST_COMPRESSION`. Java declares each on its own subclass of
+    /// `CompressionMode`; the port folds the modes into one enum, so the two
+    /// overrides are two arms of one `Display`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::FAST => write!(f, "FAST"),
             Self::HIGH_COMPRESSION => write!(f, "HIGH_COMPRESSION"),
             Self::FAST_DECOMPRESSION => write!(f, "FAST_DECOMPRESSION"),
-            // `LZ4WithPresetDictCompressionMode.toString()` returns BEST_SPEED.
             Self::LZ4_WITH_PRESET_DICT => write!(f, "BEST_SPEED"),
-            // `DeflateWithPresetDictCompressionMode.toString()`.
             Self::DEFLATE_WITH_PRESET_DICT => write!(f, "BEST_COMPRESSION"),
         }
     }
@@ -135,6 +139,15 @@ pub trait Decompressor: Send + Sync + std::fmt::Debug {
         length: usize,
         bytes: &mut BytesRef,
     ) -> Result<()>;
+
+    /// Returns an independent decompressor over the same algorithm, so that a
+    /// cloned reader gets its own decompression state.
+    ///
+    /// Equivalent to the abstract `Decompressor.clone()`. Rust's [`Clone`] is
+    /// not object safe, so the contract is expressed as a boxed factory method,
+    /// exactly as [`IndexInput::clone_input`](crate::store::IndexInput::clone_input)
+    /// expresses `IndexInput.clone()`.
+    fn clone_decompressor(&self) -> Box<dyn Decompressor>;
 }
 
 // -----------------------------------------------------------------------------
@@ -195,6 +208,13 @@ impl Compressor for Lz4HighCompressor {
 struct Lz4Decompressor;
 
 impl Decompressor for Lz4Decompressor {
+    /// Java's LZ4 decompressor is stateless, and its `clone()` returns `this`
+    /// (`CompressionMode.java:145`); this returns an equal copy of the unit
+    /// struct, which is the same thing without shared ownership.
+    fn clone_decompressor(&self) -> Box<dyn Decompressor> {
+        Box::new(*self)
+    }
+
     fn decompress(
         &mut self,
         input: &mut dyn DataInput,
@@ -380,6 +400,13 @@ impl Lz4WithPresetDictDecompressor {
 }
 
 impl Decompressor for Lz4WithPresetDictDecompressor {
+    /// Equivalent to `LZ4WithPresetDictDecompressor.clone()`, which is
+    /// `new LZ4WithPresetDictDecompressor()` — a fresh instance with empty
+    /// scratch buffers, not a copy of this one's.
+    fn clone_decompressor(&self) -> Box<dyn Decompressor> {
+        Box::new(Self::new())
+    }
+
     fn decompress(
         &mut self,
         input: &mut dyn DataInput,
@@ -661,6 +688,12 @@ impl DeflateDecompressor {
 }
 
 impl Decompressor for DeflateDecompressor {
+    /// Equivalent to `DeflateDecompressor.clone()`, which is
+    /// `new DeflateDecompressor()`.
+    fn clone_decompressor(&self) -> Box<dyn Decompressor> {
+        Box::new(Self::new())
+    }
+
     fn decompress(
         &mut self,
         input: &mut dyn DataInput,
@@ -803,6 +836,12 @@ impl DeflateWithPresetDictDecompressor {
 }
 
 impl Decompressor for DeflateWithPresetDictDecompressor {
+    /// Equivalent to `DeflateWithPresetDictDecompressor.clone()`, which is
+    /// `new DeflateWithPresetDictDecompressor()`.
+    fn clone_decompressor(&self) -> Box<dyn Decompressor> {
+        Box::new(Self::new())
+    }
+
     fn decompress(
         &mut self,
         input: &mut dyn DataInput,
@@ -945,18 +984,18 @@ mod tests {
     use crate::codecs::stub::{FieldInfo, FieldInfos};
     use crate::codecs::MergeState;
     use crate::store::ByteArrayDataInput;
-    use crate::store::ByteArrayDataOutput;
+    use crate::store::VecDataOutput;
 
     fn round_trip(mode: CompressionMode, data: &[u8], offset: usize, length: usize) {
         let mut compressor = mode.new_compressor();
-        let mut output = ByteArrayDataOutput::new();
+        let mut output = VecDataOutput::new();
         let mut bbo = ByteBuffersDataOutput::with_expected_size(data.len());
         bbo.write_bytes(data, 0, data.len()).unwrap();
         compressor.compress(&bbo, &mut output).unwrap();
         compressor.close().unwrap();
 
         let compressed = output.into_inner();
-        let mut input = ByteArrayDataInput::new(compressed);
+        let mut input = ByteArrayDataInput::new(&compressed);
         let mut decompressor = mode.new_decompressor();
         let mut bytes = BytesRef::default();
         decompressor
@@ -1059,7 +1098,7 @@ mod tests {
         let data: Vec<u8> = (0..4_000).map(|i| (i % 97) as u8).collect();
         let compress = |mode: CompressionMode| {
             let mut compressor = mode.new_compressor();
-            let mut output = ByteArrayDataOutput::new();
+            let mut output = VecDataOutput::new();
             let mut buffered = ByteBuffersDataOutput::with_expected_size(data.len());
             buffered.write_bytes(&data, 0, data.len()).unwrap();
             compressor.compress(&buffered, &mut output).unwrap();
@@ -1130,7 +1169,7 @@ mod tests {
             CompressionMode::DEFLATE_WITH_PRESET_DICT,
         ] {
             let mut compressor = mode.new_compressor();
-            let mut output = ByteArrayDataOutput::new();
+            let mut output = VecDataOutput::new();
             let mut buffered = ByteBuffersDataOutput::with_expected_size(data.len());
             buffered.write_bytes(&data, 0, data.len()).unwrap();
             compressor.compress(&buffered, &mut output).unwrap();
@@ -1147,7 +1186,7 @@ mod tests {
         let data: Vec<u8> = (0..9_000).map(|i| (i % 97) as u8).collect();
         let compress = |mode: CompressionMode| {
             let mut compressor = mode.new_compressor();
-            let mut output = ByteArrayDataOutput::new();
+            let mut output = VecDataOutput::new();
             let mut buffered = ByteBuffersDataOutput::with_expected_size(data.len());
             buffered.write_bytes(&data, 0, data.len()).unwrap();
             compressor.compress(&buffered, &mut output).unwrap();

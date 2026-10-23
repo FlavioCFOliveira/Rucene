@@ -82,6 +82,15 @@ import org.apache.lucene.util.BytesRef;
  *   <li>{@code sortedsetmulti} — a genuinely multi-valued sorted set with
  *       in-document duplicates and cross-document repeats, which drives the
  *       multi-valued addresses route;
+ *   <li>{@code sortedlongterms} — 200 distinct 400-byte terms in a single
+ *       sorted field. The terms dictionary writes 64 terms per LZ4 block
+ *       ({@code TERMS_DICT_BLOCK_LZ4_SHIFT}), so each block buffers roughly
+ *       25 KB — past the 16384 bytes {@code Lucene90DocValuesConsumer}
+ *       allocates for {@code termsDictBuffer}, which forces
+ *       {@code maybeGrowBuffer} to grow it. Every other case in this suite
+ *       keeps its terms far below that, so this is the only one that reaches
+ *       the growth path, the multi-block path, and LZ4 blocks large enough to
+ *       have anything to compress;
  *   <li>{@code mixed} — one document stream carrying all five types at once,
  *       with gaps in several of them.
  * </ul>
@@ -100,7 +109,7 @@ public final class DocValuesFixture {
       System.err.println("Usage: DocValuesFixture <output-dir> <case>");
       System.err.println(
           "Supported cases: numeric, sparse, dense, binary, sorted, sortednumeric, "
-              + "sortedsetsingle, sortedsetmulti, mixed");
+              + "sortedsetsingle, sortedsetmulti, sortedlongterms, mixed");
       System.exit(1);
     }
 
@@ -291,6 +300,34 @@ public final class DocValuesFixture {
     return documents;
   }
 
+  /**
+   * Builds term {@code i}: a zero-padded ordinal prefix followed by a rotating
+   * alphabet, padded to exactly 400 ASCII bytes. Sorted order and insertion
+   * order agree here on purpose — this case is about the buffer, not the
+   * ordinals — and consecutive terms share a prefix, so the suffix each block
+   * stores is long enough to take the {@code writeVInt(suffixLength - 16)}
+   * branch.
+   */
+  private static String longTerm(int i) {
+    StringBuilder term = new StringBuilder(String.format(java.util.Locale.ROOT, "t%04d-", i));
+    for (int j = 0; term.length() < 400; j++) {
+      term.append((char) ('a' + ((i + j) % 26)));
+    }
+    return term.toString();
+  }
+
+  private static List<Document> sortedLongTerms() {
+    List<Document> documents = new ArrayList<>();
+    for (int doc = 0; doc < 200; doc++) {
+      Document document = new Document();
+      document.add(
+          new SortedDocValuesField(
+              "lterm", new BytesRef(longTerm(doc).getBytes(StandardCharsets.UTF_8))));
+      documents.add(document);
+    }
+    return documents;
+  }
+
   private static List<Document> mixed() {
     List<Document> documents = new ArrayList<>();
     for (int doc = 0; doc < 12; doc++) {
@@ -333,6 +370,7 @@ public final class DocValuesFixture {
       case "sortednumeric" -> sortedNumeric();
       case "sortedsetsingle" -> sortedSetSingle();
       case "sortedsetmulti" -> sortedSetMulti();
+      case "sortedlongterms" -> sortedLongTerms();
       case "mixed" -> mixed();
       default -> throw new IllegalArgumentException("unknown case: " + caseName);
     };

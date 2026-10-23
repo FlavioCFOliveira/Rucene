@@ -115,7 +115,7 @@ fn write_compound_file(
 
         let mut input = dir.open_checksum_input(file)?;
         // Verify and copy the index header, ensuring the segment id matches.
-        verify_and_copy_index_header(input.as_mut(), data, &segment_info.id(), "")?;
+        verify_and_copy_index_header(input.as_mut(), data, &segment_info.id())?;
 
         let num_bytes_to_copy =
             input.length() - codec_util::footer_length() as i64 - input.file_pointer();
@@ -139,35 +139,55 @@ fn write_compound_file(
     Ok(())
 }
 
-/// Reads an index header from `input`, verifies the object id and suffix, and
-/// copies the header fields to `output` verbatim.
+/// Reads an index header from `input`, verifies the object id, and copies the
+/// header to `output` verbatim.
 ///
-/// This mirrors Java's `CodecUtil.verifyAndCopyIndexHeader` used by the
-/// compound writer: the actual codec name is not validated because the compound
-/// format embeds arbitrary sub-files.
+/// Equivalent to `CodecUtil.verifyAndCopyIndexHeader(IndexInput, DataOutput,
+/// byte[])` (`CodecUtil.java:274-314`). Only the magic and the segment id can be
+/// checked: a compound file embeds sub-files of many different codecs and
+/// suffixes, so the codec name, the version and the suffix are passed straight
+/// through. Verifying the suffix against a fixed value would reject every
+/// per-format file — those named `_0_Lucene104_0.doc` and friends — and, worse,
+/// rewriting it would corrupt the copied header.
 fn verify_and_copy_index_header(
-    input: &mut dyn DataInput,
+    input: &mut dyn IndexInput,
     output: &mut dyn DataOutput,
     expected_id: &[u8],
-    expected_suffix: &str,
 ) -> Result<()> {
+    // Make sure it is large enough to have a header and a footer.
+    if input.length() < i64::from(codec_util::footer_length() + codec_util::header_length("")) {
+        return Err(LuceneError::CorruptIndex(format!(
+            "compound sub-files must have a valid codec header and footer: file is too small ({} bytes)",
+            input.length()
+        )));
+    }
+
     let magic = codec_util::read_be_int(input)?;
     if magic != codec_util::CODEC_MAGIC {
         return Err(LuceneError::CorruptIndex(format!(
-            "codec header mismatch: actual header={magic} vs expected header={}",
+            "compound sub-files must have a valid codec header and footer: codec header mismatch: actual header={magic} vs expected header={}",
             codec_util::CODEC_MAGIC
         )));
     }
-    codec_util::write_be_int(output, magic)?;
+
+    // These cannot be verified, so they are passed through.
     let codec_name = input.read_string()?;
-    output.write_string(&codec_name)?;
     let version = codec_util::read_be_int(input)?;
-    codec_util::write_be_int(output, version)?;
+
     codec_util::check_index_header_id(input, expected_id)?;
+
+    // The extension cannot be verified either, so it is passed through too.
+    let suffix_length = input.read_byte()? as usize;
+    let mut suffix_bytes = vec![0u8; suffix_length];
+    input.read_bytes(&mut suffix_bytes, 0, suffix_length)?;
+
+    // Now write the header that was just verified.
+    codec_util::write_be_int(output, codec_util::CODEC_MAGIC)?;
+    output.write_string(&codec_name)?;
+    codec_util::write_be_int(output, version)?;
     output.write_bytes(expected_id, 0, expected_id.len())?;
-    codec_util::check_index_header_suffix(input, expected_suffix)?;
-    output.write_byte(expected_suffix.len() as u8)?;
-    output.write_bytes(expected_suffix.as_bytes(), 0, expected_suffix.len())?;
+    output.write_byte(suffix_length as u8)?;
+    output.write_bytes(&suffix_bytes, 0, suffix_length)?;
     Ok(())
 }
 
@@ -191,12 +211,21 @@ pub struct Lucene90CompoundReader {
     segment_name: String,
     entries: std::collections::HashMap<String, CompoundFileEntry>,
     data: Arc<[u8]>,
+    /// How the directory this reader was opened from renders itself.
+    ///
+    /// Java keeps the `Directory` in a field and concatenates it in
+    /// `toString()`. This port reads the whole compound file into `data` at
+    /// open time and keeps no handle on the outer directory, so the rendering
+    /// is captured instead of the directory — which is all `toString()` ever
+    /// asked of it.
+    directory_description: String,
 }
 
 impl Lucene90CompoundReader {
     /// Opens the compound reader for the given segment.
     pub fn new(dir: &dyn Directory, segment_info: &SegmentInfo) -> Result<Self> {
         let segment_name = segment_info.name.clone();
+        let directory_description = dir.directory_to_string();
         let data_file = segment_file_name(&segment_name, "", COMPOUND_FILE_EXTENSION);
         let entries_file = segment_file_name(&segment_name, "", COMPOUND_FILE_ENTRIES_EXTENSION);
 
@@ -236,6 +265,7 @@ impl Lucene90CompoundReader {
             segment_name,
             entries,
             data: Arc::from(bytes),
+            directory_description,
         })
     }
 
@@ -448,5 +478,18 @@ mod tests {
         original.read_bytes(&mut orig_bytes, 0, orig_len).unwrap();
 
         assert_eq!(bytes, orig_bytes);
+    }
+}
+
+impl std::fmt::Display for Lucene90CompoundReader {
+    /// Port of `Lucene90CompoundReader.toString()`, which names itself
+    /// `CompoundFileDirectory` rather than after its own class and puts the
+    /// segment name in double quotes.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "CompoundFileDirectory(segment=\"{}\" in dir={})",
+            self.segment_name, self.directory_description
+        )
     }
 }

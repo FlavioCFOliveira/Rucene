@@ -49,7 +49,11 @@ use crate::search::abstract_multi_term_query_constant_score_wrapper::BOOLEAN_REW
 /// different terms in the several fields.
 #[derive(Debug, Clone)]
 pub struct DisjunctionMaxQuery {
-    /// The subqueries, deduplicated the way `equals` and `hashCode` need.
+    /// The subqueries, counted the way `equals` and `hashCode` need.
+    ///
+    /// Java holds them in a `Multiset<Query>`, so `equalsTo` compares them
+    /// without regard to order but with regard to how many times each one
+    /// occurs — despite what the `equals` javadoc says about order.
     disjuncts: Multiset<QueryKey>,
     /// The subqueries in the order the caller supplied them; used by
     /// [`to_query_string`](Query::to_query_string).
@@ -350,6 +354,17 @@ impl Weight for DisjunctionMaxWeight {
     }
 }
 
+impl<'a> IntoIterator for &'a DisjunctionMaxQuery {
+    type Item = &'a Arc<dyn Query>;
+    type IntoIter = std::slice::Iter<'a, Arc<dyn Query>>;
+
+    /// Equivalent to `DisjunctionMaxQuery.iterator()`, the `Iterable<Query>` implementation,
+    /// which iterates `getDisjuncts()`.
+    fn into_iter(self) -> Self::IntoIter {
+        self.get_disjuncts().iter()
+    }
+}
+
 impl Query for DisjunctionMaxQuery {
     fn as_any(&self) -> &dyn Any {
         self
@@ -460,6 +475,11 @@ impl Query for DisjunctionMaxQuery {
         let Some(other) = other.as_any().downcast_ref::<DisjunctionMaxQuery>() else {
             return false;
         };
+        // The body of the private `DisjunctionMaxQuery.equalsTo`, which Java
+        // factors out only because `equals` has to take an `Object`. The tie
+        // breaker is compared with `==` while `hashCode` mixes
+        // `floatToIntBits`, so `+0.0` and `-0.0` are equal but hash apart;
+        // that is Lucene's behaviour and this port reproduces it.
         self.tie_breaker_multiplier == other.tie_breaker_multiplier
             && self.disjuncts == other.disjuncts
     }

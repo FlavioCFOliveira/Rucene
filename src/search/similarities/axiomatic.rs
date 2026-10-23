@@ -456,6 +456,10 @@ fn ln_one_explain(value: f64) -> Explanation {
 macro_rules! axiomatic_boilerplate {
     ($ty:ident, $name:literal) => {
         impl Similarity for $ty {
+            fn java_class_name(&self) -> &'static str {
+                concat!("org.apache.lucene.search.similarities.", stringify!($ty))
+            }
+
             fn discount_overlaps(&self) -> bool {
                 self.params.discount_overlaps
             }

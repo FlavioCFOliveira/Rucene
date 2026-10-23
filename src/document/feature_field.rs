@@ -18,6 +18,8 @@ use crate::index::reader_context::LeafReaderContext;
 use crate::index::terms::TermsEnum;
 use crate::index::Term;
 use crate::index::{IndexOptions, IndexableField, IndexableFieldType};
+use crate::search::double_values::{DoubleValues, EmptyDoubleValues};
+use crate::search::double_values_source::DoubleValuesSource;
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::query::Query;
 use crate::search::query_visitor::QueryVisitor;
@@ -31,6 +33,7 @@ use crate::search::term_query::TermQuery;
 use crate::search::term_scorer::TermScorer;
 use crate::search::weight::Weight;
 use crate::search::DocIdSetIterator;
+use crate::util::attribute::DefaultAttributeFactory;
 use crate::util::{AttributeSource, BytesRef};
 
 /// Largest frequency the encoding can carry.
@@ -350,6 +353,17 @@ pub struct FeatureField {
     field_type: FieldType,
 }
 
+impl std::fmt::Display for FeatureField {
+    /// `FeatureField` extends `Field` and overrides no `toString()`. Its
+    /// `fieldsData` is the **feature name**, not the value, so a
+    /// `FeatureField("f", "name", 2.5f)` renders as
+    /// `indexed,omitNorms,indexOptions=DOCS_AND_FREQS<f:name>`. Measured
+    /// against `lucene-core-10.5.0.jar`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        crate::document::field_to_string(f, &self.field_type, &self.name, &self.feature_name)
+    }
+}
+
 impl FeatureField {
     /// Creates the field.
     ///
@@ -505,13 +519,27 @@ struct FeatureTokenStream {
 
 impl FeatureTokenStream {
     fn new(feature_name: String, freq: i32) -> Self {
-        let mut source = AttributeSource::default();
+        // Java's `TokenStream()` installs `DEFAULT_TOKEN_ATTRIBUTE_FACTORY`,
+        // which serves `CharTermAttribute` from `PackedTokenAttributeImpl` and
+        // falls back to `AttributeFactory.DEFAULT_ATTRIBUTE_FACTORY` for
+        // anything else — that fallback finds `TermFrequencyAttributeImpl` by
+        // reflection. Rust has no reflection, so the two implementations this
+        // stream needs are registered explicitly.
+        //
+        // `AttributeSource::default()` carries an empty registry, so building
+        // the source that way made every `add_attribute` below fail and the
+        // `expect` panic: a `FeatureField` could not be indexed at all. The
+        // regression is pinned by `feature_field_token_stream_carries_its_term_and_frequency`.
+        let mut factory = DefaultAttributeFactory::new();
+        factory.register_attribute_impl::<CharTermAttributeImpl>();
+        factory.register_attribute_impl::<TermFrequencyAttributeImpl>();
+        let mut source = AttributeSource::new_with_factory(Arc::new(factory));
         source
             .add_attribute::<CharTermAttributeImpl>()
-            .expect("CharTermAttributeImpl always registers");
+            .expect("CharTermAttributeImpl is registered just above");
         source
             .add_attribute::<TermFrequencyAttributeImpl>()
-            .expect("TermFrequencyAttributeImpl always registers");
+            .expect("TermFrequencyAttributeImpl is registered just above");
         Self {
             source,
             feature_name,
@@ -666,6 +694,113 @@ impl FeatureDoubleValuesSource {
     /// Returns the value a stored frequency decodes to.
     pub fn double_value(&self, freq: f32) -> f64 {
         f64::from(decode_feature_value(freq))
+    }
+}
+
+/// The values a [`FeatureDoubleValuesSource`] hands out for one leaf.
+///
+/// Equivalent to the static nested class
+/// `FeatureDoubleValuesSource.FeatureDoubleValues`, which reads the feature
+/// straight out of the postings: the term frequency *is* the encoded feature
+/// value.
+struct FeatureDoubleValues {
+    postings: Box<dyn crate::index::postings_enum::PostingsEnum>,
+}
+
+impl DoubleValues for FeatureDoubleValues {
+    /// Equivalent to `FeatureDoubleValues.doubleValue()`.
+    fn double_value(&mut self) -> Result<f64> {
+        Ok(f64::from(
+            decode_feature_value(self.postings.freq()? as f32),
+        ))
+    }
+
+    /// Equivalent to `FeatureDoubleValues.advanceExact(int)`, which will not
+    /// move backwards: a document already behind the cursor has no value here.
+    fn advance_exact(&mut self, doc: i32) -> Result<bool> {
+        if doc < self.postings.doc_id() {
+            return Ok(false);
+        }
+        if self.postings.doc_id() == doc {
+            return Ok(true);
+        }
+        Ok(self.postings.advance(doc)? == doc)
+    }
+}
+
+impl SegmentCacheable for FeatureDoubleValuesSource {
+    /// Equivalent to `FeatureDoubleValuesSource.isCacheable(LeafReaderContext)`,
+    /// which answers `true`: the values depend only on the index.
+    fn is_cacheable(&self, _ctx: &LeafReaderContext) -> bool {
+        true
+    }
+}
+
+impl DoubleValuesSource for FeatureDoubleValuesSource {
+    /// Equivalent to
+    /// `FeatureDoubleValuesSource.getValues(LeafReaderContext, DoubleValues)`.
+    ///
+    /// Java reaches the terms through `Terms.getTerms`, which substitutes
+    /// `Terms.EMPTY` for a field the leaf never saw; the seek then fails and the
+    /// empty values are returned, which is what the absent branch does here.
+    fn get_values<'a>(
+        self: Arc<Self>,
+        ctx: &LeafReaderContext,
+        _scores: Option<Box<dyn DoubleValues + 'a>>,
+    ) -> Result<Box<dyn DoubleValues + 'a>> {
+        let reader = ctx.leaf_reader();
+        let Some(terms) = reader.terms(&self.field)? else {
+            return Ok(Box::new(EmptyDoubleValues));
+        };
+        let mut terms_enum = terms.iterator()?;
+        let feature = BytesRef::new(self.feature.as_bytes().to_vec());
+        if !terms_enum.seek_exact(&feature)? {
+            return Ok(Box::new(EmptyDoubleValues));
+        }
+        let postings = terms_enum.postings(None, POSTINGS_ENUM_FREQS)?;
+        Ok(Box::new(FeatureDoubleValues { postings }))
+    }
+
+    /// Equivalent to `FeatureDoubleValuesSource.needsScores()`, which answers
+    /// `false`: the feature value comes from the postings, not from a score.
+    fn needs_scores(&self) -> bool {
+        false
+    }
+
+    /// Equivalent to `FeatureDoubleValuesSource.rewrite(IndexSearcher)`, which
+    /// returns `this`.
+    fn rewrite(self: Arc<Self>, _searcher: &IndexSearcher) -> Result<Arc<dyn DoubleValuesSource>> {
+        Ok(self)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    /// Equivalent to `FeatureDoubleValuesSource.equals(Object)`.
+    fn source_eq(&self, other: &dyn DoubleValuesSource) -> bool {
+        match other.as_any().downcast_ref::<Self>() {
+            Some(other) => self.field == other.field && self.feature == other.feature,
+            None => false,
+        }
+    }
+
+    /// Equivalent to `FeatureDoubleValuesSource.hashCode()`.
+    fn source_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.field.hash(&mut hasher);
+        self.feature.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Equivalent to `FeatureDoubleValuesSource.toString()`.
+    fn to_source_string(&self) -> String {
+        format!(
+            "FeatureDoubleValuesSource({}, {})",
+            self.field, self.feature
+        )
     }
 }
 
@@ -887,5 +1022,185 @@ impl Query for FeatureQuery {
             boost,
             top_level_scoring_clause: false,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::StandardAnalyzer;
+    use crate::index::postings_enum::PostingsEnum;
+    use crate::search::NO_MORE_DOCS;
+
+    /// A `PostingsEnum` over a fixed table of documents and frequencies.
+    #[derive(Debug)]
+    struct StubPostings {
+        entries: Vec<(i32, i32)>,
+        upto: usize,
+    }
+
+    impl StubPostings {
+        fn new(entries: Vec<(i32, i32)>) -> Self {
+            Self {
+                entries,
+                upto: usize::MAX,
+            }
+        }
+    }
+
+    impl DocIdSetIterator for StubPostings {
+        fn doc_id(&self) -> i32 {
+            match self.upto {
+                usize::MAX => -1,
+                i if i < self.entries.len() => self.entries[i].0,
+                _ => NO_MORE_DOCS,
+            }
+        }
+
+        fn next_doc(&mut self) -> Result<i32> {
+            self.upto = if self.upto == usize::MAX {
+                0
+            } else {
+                self.upto.saturating_add(1)
+            };
+            Ok(self.doc_id())
+        }
+
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            let mut i = if self.upto == usize::MAX {
+                0
+            } else {
+                self.upto
+            };
+            while i < self.entries.len() && self.entries[i].0 < target {
+                i += 1;
+            }
+            self.upto = i;
+            Ok(self.doc_id())
+        }
+
+        fn cost(&self) -> i64 {
+            self.entries.len() as i64
+        }
+    }
+
+    impl std::fmt::Display for StubPostings {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubPostings")
+        }
+    }
+
+    impl PostingsEnum for StubPostings {
+        fn freq(&self) -> Result<i32> {
+            Ok(self.entries[self.upto].1)
+        }
+
+        fn next_position(&mut self) -> Result<i32> {
+            Ok(-1)
+        }
+
+        fn start_offset(&self) -> i32 {
+            -1
+        }
+
+        fn end_offset(&self) -> i32 {
+            -1
+        }
+
+        fn get_payload(&self) -> Result<Option<&[u8]>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn feature_double_values_decodes_the_frequency_as_the_feature() {
+        // The encoded feature value *is* the term frequency, so the values
+        // decode whatever `FeatureField` encoded.
+        let postings = StubPostings::new(vec![
+            (0, encode_feature_value(1.0)),
+            (2, encode_feature_value(4.0)),
+        ]);
+        let mut values = FeatureDoubleValues {
+            postings: Box::new(postings),
+        };
+
+        assert!(values.advance_exact(0).unwrap());
+        let got = values.double_value().unwrap();
+        assert!((got - 1.0).abs() / 1.0 < 0.02, "got {got}");
+
+        // Document 1 has no posting: the cursor moves past it and reports the
+        // miss, exactly as Java's `advanceExact` does.
+        assert!(!values.advance_exact(1).unwrap());
+
+        assert!(values.advance_exact(2).unwrap());
+        let got = values.double_value().unwrap();
+        assert!((got - 4.0).abs() / 4.0 < 0.02, "got {got}");
+
+        // A document behind the cursor can no longer be answered.
+        assert!(!values.advance_exact(0).unwrap());
+    }
+
+    #[test]
+    fn feature_double_values_source_states_its_contract() {
+        let source = FeatureField::new_double_values("feat", "pagerank");
+        // Java answers `false`: the value comes from the postings, not a score.
+        assert!(!source.needs_scores());
+        assert_eq!(
+            source.to_source_string(),
+            "FeatureDoubleValuesSource(feat, pagerank)"
+        );
+
+        let same = FeatureField::new_double_values("feat", "pagerank");
+        let other_feature = FeatureField::new_double_values("feat", "other");
+        let other_field = FeatureField::new_double_values("other", "pagerank");
+        assert!(source.source_eq(&same));
+        assert_eq!(source.source_hash(), same.source_hash());
+        assert!(!source.source_eq(&other_feature));
+        assert!(!source.source_eq(&other_field));
+    }
+
+    #[test]
+    fn feature_double_values_source_rewrites_to_itself() {
+        // Java's `rewrite(IndexSearcher)` returns `this`.
+        let reader: Arc<dyn crate::index::IndexReader> =
+            Arc::new(crate::index::MultiReader::new(Vec::new(), true).unwrap());
+        let searcher = IndexSearcher::new(reader).unwrap();
+        let source: Arc<dyn DoubleValuesSource> =
+            Arc::new(FeatureField::new_double_values("feat", "pagerank"));
+        let rewritten = Arc::clone(&source).rewrite(&searcher).unwrap();
+        assert!(rewritten.source_eq(source.as_ref()));
+    }
+
+    #[test]
+    fn feature_field_token_stream_carries_its_term_and_frequency() {
+        // Regression test. `FeatureTokenStream` used to build its
+        // `AttributeSource` from an empty attribute registry, so every
+        // `add_attribute` failed and constructing the stream panicked: a
+        // `FeatureField` could not be indexed at all.
+        let field = FeatureField::new("feat", "pagerank", 3.0).unwrap();
+        let analyzer = StandardAnalyzer::new();
+        let mut stream = field.token_stream(&analyzer, None);
+        stream.reset().unwrap();
+        assert!(stream.increment_token().unwrap());
+
+        let source = stream.attribute_source();
+        let term = source.get_attribute::<CharTermAttributeImpl>().unwrap();
+        let text: String = term.buffer()[..term.length()].iter().collect();
+        assert_eq!(text, "pagerank");
+        drop(term);
+        let freq = source
+            .get_attribute::<TermFrequencyAttributeImpl>()
+            .unwrap();
+        assert_eq!(freq.get_term_frequency(), encode_feature_value(3.0));
+        drop(freq);
+
+        // One token per field, as Java's `incrementToken` returns false the
+        // second time.
+        assert!(!stream.increment_token().unwrap());
+        stream.end().unwrap();
+        stream.close().unwrap();
     }
 }

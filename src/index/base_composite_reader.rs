@@ -4,7 +4,9 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
-use crate::index::index_reader::IndexReader;
+use crate::index::index_reader::{IndexReader, StoredFields};
+use crate::index::leaf_reader::TermVectors;
+use crate::index::multi_reader::{MultiStoredFields, MultiTermVectors};
 use crate::index::terms::TermsEnum;
 use crate::index::Term;
 
@@ -134,6 +136,42 @@ impl BaseCompositeReader {
         total
     }
 
+    /// Returns a [`TermVectors`] view that dispatches each document to the
+    /// sub-reader owning it.
+    ///
+    /// Equivalent to `BaseCompositeReader.termVectors()`, a `final` method that
+    /// every composite reader inherits: it translates the global document id
+    /// into the sub-reader's local id by subtracting that sub-reader's start,
+    /// and opens the sub-reader's own `TermVectors` on first use.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening a sub-reader's term vectors raises.
+    pub fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+        Ok(Box::new(MultiTermVectors::new(
+            self.sub_readers.clone(),
+            self.starts.clone(),
+            self.max_doc,
+        )))
+    }
+
+    /// Returns a [`StoredFields`] view that dispatches each document to the
+    /// sub-reader owning it.
+    ///
+    /// Equivalent to `BaseCompositeReader.storedFields()`, the `final`
+    /// counterpart of [`term_vectors`](Self::term_vectors).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening a sub-reader's stored fields raises.
+    pub fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+        Ok(Box::new(MultiStoredFields::new(
+            self.sub_readers.clone(),
+            self.starts.clone(),
+            self.max_doc,
+        )))
+    }
+
     /// Sums `doc_freq` across the sub-readers.
     ///
     /// Equivalent to `BaseCompositeReader.docFreq(Term)`.
@@ -224,3 +262,169 @@ impl BaseCompositeReader {
 pub trait BaseTermsEnum: TermsEnum {}
 
 impl<T: TermsEnum + ?Sized> BaseTermsEnum for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codecs::stub::StoredFieldVisitor;
+    use crate::index::index_reader::{CacheHelper, IndexReaderCore};
+    use crate::index::reader_context::IndexReaderContext;
+    use crate::index::{EmptyFields, Fields};
+    use std::sync::Weak;
+
+    /// Reports the sub-reader-local document id it was handed, so the doc-base
+    /// arithmetic can be observed from the outside.
+    #[derive(Debug)]
+    struct StubStoredFields;
+
+    impl StoredFields for StubStoredFields {
+        fn document_with_visitor(
+            &self,
+            doc_id: i32,
+            _visitor: &mut dyn StoredFieldVisitor,
+        ) -> Result<()> {
+            Err(LuceneError::IllegalState(format!("local doc {doc_id}")))
+        }
+    }
+
+    #[derive(Debug)]
+    struct StubTermVectors;
+
+    impl crate::index::leaf_reader::TermVectors for StubTermVectors {
+        fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
+            if doc == 0 {
+                Ok(Some(Box::new(EmptyFields)))
+            } else {
+                Err(LuceneError::IllegalState(format!("local doc {doc}")))
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct StubReader {
+        core: IndexReaderCore,
+        max_doc: i32,
+    }
+
+    impl std::fmt::Display for StubReader {
+        /// Test double; it has no Lucene counterpart whose `toString()` could be
+        /// reproduced, so it renders under its own name. `Display` is required
+        /// because `LeafReader`/`IndexReader` carry it as a supertrait, standing in
+        /// for the `toString()` every Java reader inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubReader")
+        }
+    }
+
+    impl IndexReader for StubReader {
+        fn core(&self) -> &IndexReaderCore {
+            &self.core
+        }
+        fn term_vectors(&self) -> Result<Box<dyn crate::index::leaf_reader::TermVectors>> {
+            Ok(Box::new(StubTermVectors))
+        }
+        fn num_docs(&self) -> i32 {
+            self.max_doc
+        }
+        fn max_doc(&self) -> i32 {
+            self.max_doc
+        }
+        fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+            Ok(Box::new(StubStoredFields))
+        }
+        fn do_close(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+            None
+        }
+        fn doc_freq(&self, _term: &Term) -> Result<i32> {
+            Ok(0)
+        }
+        fn total_term_freq(&self, _term: &Term) -> Result<i64> {
+            Ok(0)
+        }
+        fn get_sum_doc_freq(&self, _field: &str) -> Result<i64> {
+            Ok(0)
+        }
+        fn get_doc_count(&self, _field: &str) -> Result<i32> {
+            Ok(0)
+        }
+        fn get_sum_total_term_freq(&self, _field: &str) -> Result<i64> {
+            Ok(0)
+        }
+        fn build_context(
+            self: Arc<Self>,
+            _parent: Option<Weak<dyn IndexReaderContext>>,
+            _ord_in_parent: i32,
+            _doc_base_in_parent: i32,
+            _leaf_ord: i32,
+            _leaf_doc_base: i32,
+        ) -> Arc<dyn IndexReaderContext> {
+            unreachable!("this stub is never asked for a reader context")
+        }
+    }
+
+    fn base_of(sizes: &[i32]) -> BaseCompositeReader {
+        let subs: Vec<Arc<dyn IndexReader>> = sizes
+            .iter()
+            .map(|&size| {
+                Arc::new(StubReader {
+                    core: IndexReaderCore::new(),
+                    max_doc: size,
+                }) as Arc<dyn IndexReader>
+            })
+            .collect();
+        BaseCompositeReader::new(subs, false).expect("composite over stub readers")
+    }
+
+    /// `BaseCompositeReader.termVectors()` and `storedFields()` translate the
+    /// global document id into the owning sub-reader's local id by subtracting
+    /// that sub-reader's start. The stubs answer only for local id 0, so a hit
+    /// on the first document of each sub-reader proves the subtraction, and the
+    /// reported local id proves it for the rest.
+    #[test]
+    fn the_composite_views_hand_each_sub_reader_a_local_doc_id() {
+        let base = base_of(&[3, 4, 2]);
+        assert_eq!(base.max_doc(), 9);
+
+        let vectors = base.term_vectors().expect("term vectors view");
+        // Global 0, 3 and 7 are the first document of each sub-reader.
+        for global in [0, 3, 7] {
+            match vectors.get(global) {
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("global doc {global} must map to local 0"),
+                Err(error) => panic!("global doc {global} mis-resolved: {error}"),
+            }
+        }
+        // Global 5 is local 2 of the second sub-reader, which starts at 3.
+        match vectors.get(5) {
+            Err(error) => assert!(error.to_string().contains("local doc 2"), "{error}"),
+            other => panic!(
+                "expected the stub to report the local id, got {other:?}",
+                other = other.is_ok()
+            ),
+        }
+
+        let stored = base.stored_fields().expect("stored fields view");
+        // Global 8 is local 1 of the third sub-reader, which starts at 7.
+        let mut visitor = NoopVisitor;
+        match stored.document_with_visitor(8, &mut visitor) {
+            Err(error) => assert!(error.to_string().contains("local doc 1"), "{error}"),
+            Ok(()) => panic!("expected the stub to report the local id"),
+        }
+    }
+
+    /// A visitor that is never asked for anything: the stub reports the local
+    /// document id before any field is visited.
+    struct NoopVisitor;
+
+    impl StoredFieldVisitor for NoopVisitor {
+        fn needs_field(
+            &mut self,
+            _field_info: &crate::index::FieldInfo,
+        ) -> Result<crate::index::StoredFieldVisitorStatus> {
+            Ok(crate::index::StoredFieldVisitorStatus::No)
+        }
+    }
+}

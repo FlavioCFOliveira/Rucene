@@ -274,7 +274,7 @@ impl IntersectVisitor for NearestVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
         let cell_min_lat = GeoEncodingUtils::decode_latitude_bytes(min_packed_value, 0);
         let cell_min_lon =
             GeoEncodingUtils::decode_longitude_bytes(min_packed_value, COORDINATE_BYTES);
@@ -289,9 +289,9 @@ impl IntersectVisitor for NearestVisitor<'_> {
         {
             // This cell falls outside the search bounding box, so there is no
             // point exploring it any further.
-            return Relation::CellOutsideQuery;
+            return Ok(Relation::CellOutsideQuery);
         }
-        Relation::CellCrossesQuery
+        Ok(Relation::CellCrossesQuery)
     }
 }
 
@@ -347,7 +347,7 @@ pub fn nearest(
     }
 
     while let Some(mut cell) = cell_queue.pop() {
-        if visitor.compare(&cell.min_packed, &cell.max_packed) == Relation::CellOutsideQuery {
+        if visitor.compare(&cell.min_packed, &cell.max_packed)? == Relation::CellOutsideQuery {
             continue;
         }
 
@@ -360,16 +360,16 @@ pub fn nearest(
             // Non-leaf block: split into two cells and put them back in the
             // queue. The cursor must be cloned so the two branches can be
             // explored "concurrently".
-            let new_index = cell.index.clone_tree();
+            let new_index = cell.index.clone_tree()?;
             let distance = approx_best_distance_packed(
-                new_index.min_packed_value(),
-                new_index.max_packed_value(),
+                new_index.min_packed_value()?,
+                new_index.max_packed_value()?,
                 point_lat,
                 point_lon,
             );
             let (min_packed, max_packed) = (
-                new_index.min_packed_value().to_vec(),
-                new_index.max_packed_value().to_vec(),
+                new_index.min_packed_value()?.to_vec(),
+                new_index.max_packed_value()?.to_vec(),
             );
             cell_queue.push(Cell::new(
                 new_index,
@@ -382,14 +382,14 @@ pub fn nearest(
             // A binary tree is assumed here, as in Lucene.
             if cell.index.move_to_sibling()? {
                 let distance = approx_best_distance_packed(
-                    cell.index.min_packed_value(),
-                    cell.index.max_packed_value(),
+                    cell.index.min_packed_value()?,
+                    cell.index.max_packed_value()?,
                     point_lat,
                     point_lon,
                 );
                 let (min_packed, max_packed) = (
-                    cell.index.min_packed_value().to_vec(),
-                    cell.index.max_packed_value().to_vec(),
+                    cell.index.min_packed_value()?.to_vec(),
+                    cell.index.max_packed_value()?.to_vec(),
                 );
                 let reader_index = cell.reader_index;
                 cell_queue.push(Cell::new(

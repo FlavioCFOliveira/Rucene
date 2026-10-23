@@ -18,6 +18,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::index_file_names::{file_name_from_generation, PENDING_SEGMENTS, SEGMENTS};
 use crate::index::SegmentCommitInfo;
 use crate::store::{Directory, IndexOutput};
+use crate::util::java_collections::JavaStringMap;
 use crate::util::string_helper::{StringHelper, ID_LENGTH};
 use crate::util::{InfoStream, Version};
 
@@ -90,7 +91,13 @@ pub struct SegmentInfos {
     pub version: i64,
 
     /// Opaque user data attached to this commit.
-    pub user_data: HashMap<String, String>,
+    /// Carries an iteration order because `segments_N` does: it is serialised
+    /// with `DataOutput.writeMapOfStrings`, which walks the map. Java stores
+    /// whatever `Map` `setUserData` was handed — the `HashMap` `IndexWriter`
+    /// builds from the live commit data (`IndexWriter.java:3816-3820`) or the
+    /// map `DataInput.readMapOfStrings` returned on the way in. See
+    /// [`JavaStringMap`].
+    pub user_data: JavaStringMap,
 
     /// Segments in this commit, in order.
     segments: Vec<SegmentCommitInfo>,
@@ -138,7 +145,7 @@ impl SegmentInfos {
             last_generation: -1,
             counter: 0,
             version: 0,
-            user_data: HashMap::new(),
+            user_data: JavaStringMap::default(),
             segments: Vec::new(),
             id: StringHelper::random_id(),
             lucene_version: Version::LATEST,
@@ -337,14 +344,14 @@ impl SegmentInfos {
     }
 
     /// Returns the user data attached to this commit.
-    pub fn user_data(&self) -> &HashMap<String, String> {
+    pub fn user_data(&self) -> &JavaStringMap {
         &self.user_data
     }
 
     /// Sets the commit user data.
     ///
     /// If `do_increment_version` is `true`, `changed()` is called.
-    pub fn set_user_data(&mut self, data: HashMap<String, String>, do_increment_version: bool) {
+    pub fn set_user_data(&mut self, data: JavaStringMap, do_increment_version: bool) {
         self.user_data = data;
         if do_increment_version {
             self.changed();
@@ -577,7 +584,7 @@ impl SegmentInfos {
     /// Reads the named commit file from the directory.
     ///
     /// Equivalent to `SegmentInfos.readCommit(Directory, String)`.
-    pub fn read_commit(directory: &dyn Directory, segment_file_name: &str) -> Result<Self> {
+    pub fn read_commit(directory: Arc<dyn Directory>, segment_file_name: &str) -> Result<Self> {
         Self::read_commit_with_min_version(
             directory,
             segment_file_name,
@@ -590,7 +597,7 @@ impl SegmentInfos {
     ///
     /// Equivalent to `SegmentInfos.readCommit(Directory, String, int)`.
     pub fn read_commit_with_min_version(
-        directory: &dyn Directory,
+        directory: Arc<dyn Directory>,
         segment_file_name: &str,
         min_supported_major_version: i32,
     ) -> Result<Self> {
@@ -608,7 +615,7 @@ impl SegmentInfos {
     ///
     /// Equivalent to `SegmentInfos.readCommit(Directory, ChecksumIndexInput, long, int)`.
     pub fn read_commit_input(
-        directory: &dyn Directory,
+        directory: Arc<dyn Directory>,
         input: &mut dyn crate::store::ChecksumIndexInput,
         generation: i64,
         min_supported_major_version: i32,
@@ -657,12 +664,22 @@ impl SegmentInfos {
             Ok(infos)
         })();
 
-        codec_util::check_footer(input)?;
-        result
+        // Java's `finally` calls `CodecUtil.checkFooter(input, priorE)`, which
+        // *rethrows* the parse failure when there is one, reporting the footer
+        // only as extra context. Validating the footer with `?` before the
+        // parse result would replace the real cause with a footer complaint,
+        // because a parse that stopped early always leaves unread bytes.
+        match result {
+            Ok(infos) => {
+                codec_util::check_footer(input)?;
+                Ok(infos)
+            }
+            Err(prior) => Err(codec_util::check_footer_with_prior(input, prior)),
+        }
     }
 
     fn parse_segment_infos(
-        directory: &dyn Directory,
+        directory: Arc<dyn Directory>,
         input: &mut dyn crate::store::DataInput,
         infos: &mut SegmentInfos,
         format: i32,
@@ -694,7 +711,7 @@ impl SegmentInfos {
             let codec = Self::read_codec(input)?;
 
             let mut info = codec.segment_info_format().read(
-                directory,
+                Arc::clone(&directory),
                 &seg_name,
                 &segment_id,
                 &*crate::store::READONCE_IO_CONTEXT,
@@ -760,11 +777,11 @@ impl SegmentInfos {
             si_per_commit.set_field_infos_files(field_infos_files);
 
             let num_dv_fields = codec_util::read_be_int(input)?;
-            let mut dv_updates_files: HashMap<i32, HashSet<String>> = HashMap::new();
+            let mut dv_updates_files: HashMap<i32, Vec<String>> = HashMap::new();
             for _ in 0..num_dv_fields {
                 let field_number = codec_util::read_be_int(input)?;
                 let files = input.read_set_of_strings()?;
-                dv_updates_files.insert(field_number, files);
+                dv_updates_files.insert(field_number, files.into_iter().collect());
             }
             si_per_commit.set_doc_values_updates_files(dv_updates_files);
 
@@ -837,7 +854,7 @@ impl SegmentInfos {
     /// Finds the latest commit and loads all `SegmentCommitInfo`s.
     ///
     /// Equivalent to `SegmentInfos.readLatestCommit(Directory)`.
-    pub fn read_latest_commit(directory: &dyn Directory) -> Result<Self> {
+    pub fn read_latest_commit(directory: Arc<dyn Directory>) -> Result<Self> {
         Self::read_latest_commit_with_min_version(directory, Version::MIN_SUPPORTED_MAJOR)
     }
 
@@ -876,7 +893,7 @@ impl SegmentInfos {
     ///
     /// Equivalent to `SegmentInfos.readLatestCommit(Directory, int)`.
     pub fn read_latest_commit_with_min_version(
-        directory: &dyn Directory,
+        directory: Arc<dyn Directory>,
         min_supported_major_version: i32,
     ) -> Result<Self> {
         let mut last_gen = -1i64;
@@ -915,7 +932,7 @@ impl SegmentInfos {
                         ))
                     })?;
                 match Self::read_commit_with_min_version(
-                    directory,
+                    Arc::clone(&directory),
                     &segment_file_name,
                     min_supported_major_version,
                 ) {
@@ -1005,11 +1022,17 @@ impl SegmentInfos {
     ///
     /// Equivalent to `SegmentInfos.write(IndexOutput)`.
     pub fn write_to_output(&self, out: &mut dyn IndexOutput) -> Result<()> {
+        // Java stamps every written commit with a *fresh* id
+        // (`StringHelper.randomId()` in `SegmentInfos.write(IndexOutput)`),
+        // not with the `id` field, which only records the id that was read
+        // back from disk. Two commits of the same `SegmentInfos` therefore
+        // carry different ids.
+        let commit_id = StringHelper::random_id();
         codec_util::write_index_header(
             out,
             "segments",
             VERSION_CURRENT,
-            &self.id,
+            &commit_id,
             &radix_36(self.generation as u64),
         )?;
 
@@ -1133,16 +1156,26 @@ impl SegmentInfos {
         let mut success_rename_and_sync = false;
         let result: Result<()> = (|| {
             directory.rename(&src, &dest)?;
-            directory.sync_metadata()?;
-            success_rename_and_sync = true;
-            Ok(())
+            // Only now does `dest` name a file this commit created. Java's
+            // inner `finally` — the one that deletes `dest` — is entered only
+            // after `rename` returns, so a failing `rename` must leave `dest`
+            // alone: it is still the previous, valid commit point.
+            match directory.sync_metadata() {
+                Ok(()) => {
+                    success_rename_and_sync = true;
+                    Ok(())
+                }
+                Err(err) => {
+                    // The file was created but the directory was never synced,
+                    // so remove the renamed file as Java does.
+                    let _ = directory.delete_file(&dest);
+                    Err(err)
+                }
+            }
         })();
 
-        if result.is_err() && !success_rename_and_sync {
-            let _ = directory.delete_file(&dest);
-        }
-
-        if result.is_err() {
+        if !success_rename_and_sync {
+            // Deletes pending_segments_N.
             self.rollback_commit(directory);
         }
 
@@ -1358,14 +1391,16 @@ mod tests {
 
     #[test]
     fn round_trip_empty_segments_file() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let mut sis = SegmentInfos::new(10).unwrap();
-        sis.user_data = HashMap::from([("foo".to_string(), "bar".to_string())]);
+        sis.user_data = [("foo".to_string(), "bar".to_string())]
+            .into_iter()
+            .collect();
 
-        let written = sis.commit(&dir).unwrap();
+        let written = sis.commit(dir.as_ref()).unwrap();
         assert_eq!(written, "segments_1");
 
-        let read = SegmentInfos::read_latest_commit(&dir).unwrap();
+        let read = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
         assert_eq!(read.size(), 0);
         assert_eq!(read.version(), sis.version());
         assert_eq!(read.counter, sis.counter);
@@ -1375,7 +1410,7 @@ mod tests {
 
     #[test]
     fn round_trip_single_segment() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let mut info = test_segment_info("_0", 42);
         info.set_codec(test_codec());
         info.set_index_sort(
@@ -1389,19 +1424,21 @@ mod tests {
         info.set_diagnostics(HashMap::from([("source".to_string(), "test".to_string())]));
         info.set_files(HashSet::from(["_0.fnm".to_string(), "_0.fdt".to_string()]));
 
-        write_segment_info_file(&dir, &info).unwrap();
+        write_segment_info_file(dir.as_ref(), &info).unwrap();
 
         let sci = SegmentCommitInfo::new(info, 2, 1, 0, 1, 2, StringHelper::random_id()).unwrap();
         let mut sis = SegmentInfos::new(10).unwrap();
         sis.counter = 1;
         sis.changed();
-        sis.user_data = HashMap::from([("user".to_string(), "data".to_string())]);
+        sis.user_data = [("user".to_string(), "data".to_string())]
+            .into_iter()
+            .collect();
         sis.add(sci).unwrap();
 
-        let written = sis.commit(&dir).unwrap();
+        let written = sis.commit(dir.as_ref()).unwrap();
         assert_eq!(written, "segments_1");
 
-        let read = SegmentInfos::read_latest_commit(&dir).unwrap();
+        let read = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
         assert_eq!(read.size(), 1);
         assert_eq!(read.counter, 1);
         assert_eq!(read.version(), sis.version());
@@ -1439,5 +1476,77 @@ mod tests {
         cloned.remove(&sci);
         assert_eq!(cloned.size(), 0);
         assert_eq!(sis.size(), 1);
+    }
+}
+
+impl std::fmt::Display for SegmentInfos {
+    /// Port of `SegmentInfos.toString()`, which is `toString(false)`: the
+    /// segments file name, `": "`, then each segment separated by a space.
+    ///
+    /// Each segment is rendered by `SegmentCommitInfo.toString(0)` — the
+    /// *overload*, which folds in that commit's own deletion count — not by its
+    /// no-argument `toString()`, which does not.
+    ///
+    /// `getSegmentsFileName()` returns `null` before the first commit; Java's
+    /// `StringBuilder.append` then writes the four characters `null`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.write_to_string(f, false)
+    }
+}
+
+impl SegmentInfos {
+    /// Renders the commit, verbosely or not.
+    ///
+    /// Equivalent to the package-private `SegmentInfos.toString(boolean)`, the
+    /// body both `toString()` and
+    /// [`to_string_verbose`](Self::to_string_verbose) share. It writes into the
+    /// formatter rather than building a `StringBuilder`, so that
+    /// [`Display`](std::fmt::Display) does not have to allocate one.
+    fn write_to_string(&self, f: &mut std::fmt::Formatter<'_>, verbose: bool) -> std::fmt::Result {
+        match self.segments_file_name() {
+            Some(name) => f.write_str(&name)?,
+            None => f.write_str("null")?,
+        }
+        f.write_str(": ")?;
+        for (i, info) in self.segments.iter().enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            if verbose {
+                f.write_str(&info.to_string_verbose())?;
+            } else {
+                f.write_str(&info.to_string_with_pending_del_count(0))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns the long-form description the info stream logs for this commit.
+    ///
+    /// Equivalent to `SegmentInfos.toStringVerbose()`, which is
+    /// `toString(true)`: the same shape as
+    /// [`Display`](std::fmt::Display), with every segment rendered by
+    /// [`SegmentCommitInfo::to_string_verbose`] instead.
+    pub fn to_string_verbose(&self) -> String {
+        struct Verbose<'a>(&'a SegmentInfos);
+        impl std::fmt::Display for Verbose<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.write_to_string(f, true)
+            }
+        }
+        Verbose(self).to_string()
+    }
+
+    /// Returns a deep copy of the segment list, to roll back to.
+    ///
+    /// Equivalent to `SegmentInfos.createBackupSegmentInfos()`, which clones
+    /// every [`SegmentCommitInfo`] — so that a later mutation of the live list
+    /// does not reach the backup — and asserts that each carries a codec.
+    ///
+    /// The codec assertion has no counterpart here: [`SegmentInfo`]'s codec is
+    /// a non-optional `Arc<dyn Codec>`, so a `SegmentCommitInfo` without one
+    /// cannot be built.
+    pub fn create_backup_segment_infos(&self) -> Vec<SegmentCommitInfo> {
+        self.segments.to_vec()
     }
 }

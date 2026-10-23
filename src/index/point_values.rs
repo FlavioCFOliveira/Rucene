@@ -163,14 +163,31 @@ pub trait IntersectVisitor {
     }
 
     /// Tests a non-leaf cell against the query to decide how to recurse.
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation;
+    ///
+    /// # Errors
+    ///
+    /// Java's `IntersectVisitor.compare` declares no exception, but a decorator
+    /// may still raise an unchecked one from it —
+    /// `ExitableDirectoryReader.ExitableIntersectVisitor.compare` throws
+    /// `ExitingReaderException` when the query timeout has fired
+    /// (`ExitableDirectoryReader.java:839-843`). Rust has no unchecked
+    /// exception, so the fallibility is in the signature.
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation>;
 
     /// Notifies the visitor that **this many** documents are about to be
     /// visited.
     ///
     /// The count is exact, not an estimate: Lucene's consumers size their
     /// buffers from it.
-    fn grow(&mut self, _count: i32) {}
+    ///
+    /// # Errors
+    ///
+    /// As [`compare`](Self::compare):
+    /// `ExitableIntersectVisitor.grow` throws `ExitingReaderException` on a
+    /// fired timeout (`ExitableDirectoryReader.java:845-849`).
+    fn grow(&mut self, _count: i32) -> Result<()> {
+        Ok(())
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -229,8 +246,8 @@ impl IntersectVisitor for DocValuesIntersectAdapter<'_> {
         self.visitor.visit(doc_id, packed_value)
     }
 
-    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Relation {
-        Relation::CellCrossesQuery
+    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Result<Relation> {
+        Ok(Relation::CellCrossesQuery)
     }
 }
 
@@ -253,7 +270,15 @@ pub trait PointTree {
     /// [`std::clone::Clone`]: the result is re-rooted, so
     /// [`move_to_parent`](Self::move_to_parent) on the copy stops where the
     /// original currently is.
-    fn clone_tree(&self) -> Box<dyn PointTree>;
+    ///
+    /// # Errors
+    ///
+    /// Java's `PointTree.clone()` declares no exception, but
+    /// `ExitableDirectoryReader.ExitablePointTree.clone()` throws
+    /// `ExitingReaderException` when the query timeout has fired
+    /// (`ExitableDirectoryReader.java:732-736`). Rust has no unchecked
+    /// exception, so the fallibility is in the signature.
+    fn clone_tree(&self) -> Result<Box<dyn PointTree>>;
 
     /// Moves to the first child, returning `false` for leaf nodes.
     ///
@@ -277,13 +302,30 @@ pub trait PointTree {
     fn move_to_parent(&mut self) -> Result<bool>;
 
     /// Returns the minimum packed value of the current node.
-    fn min_packed_value(&self) -> &[u8];
+    ///
+    /// # Errors
+    ///
+    /// As [`clone_tree`](Self::clone_tree):
+    /// `ExitablePointTree.getMinPackedValue()` throws `ExitingReaderException`
+    /// on a fired timeout (`ExitableDirectoryReader.java:756-760`).
+    fn min_packed_value(&self) -> Result<&[u8]>;
 
     /// Returns the maximum packed value of the current node.
-    fn max_packed_value(&self) -> &[u8];
+    ///
+    /// # Errors
+    ///
+    /// As [`min_packed_value`](Self::min_packed_value)
+    /// (`ExitableDirectoryReader.java:762-766`).
+    fn max_packed_value(&self) -> Result<&[u8]>;
 
     /// Returns the number of points below the current node.
-    fn size(&self) -> i64;
+    ///
+    /// # Errors
+    ///
+    /// As [`min_packed_value`](Self::min_packed_value):
+    /// `ExitablePointTree.size()` throws `ExitingReaderException` on a fired
+    /// timeout (`ExitableDirectoryReader.java:768-772`).
+    fn size(&self) -> Result<i64>;
 
     /// Visits every doc ID below the current node.
     ///
@@ -400,8 +442,10 @@ pub trait MutablePointTree: PointTree {
 /// Propagates tree navigation and visitor errors.
 pub fn intersect(visitor: &mut dyn IntersectVisitor, point_tree: &mut dyn PointTree) -> Result<()> {
     loop {
-        let relation =
-            visitor.compare(point_tree.min_packed_value(), point_tree.max_packed_value());
+        let relation = visitor.compare(
+            point_tree.min_packed_value()?,
+            point_tree.max_packed_value()?,
+        )?;
         match relation {
             Relation::CellInsideQuery => {
                 // Fully inside: take every point below this cell unfiltered.
@@ -468,12 +512,15 @@ fn estimate_point_count_bounded(
     point_tree: &mut dyn PointTree,
     upper_bound: i64,
 ) -> Result<i64> {
-    let relation = visitor.compare(point_tree.min_packed_value(), point_tree.max_packed_value());
+    let relation = visitor.compare(
+        point_tree.min_packed_value()?,
+        point_tree.max_packed_value()?,
+    )?;
     match relation {
         // Fully outside: no points.
         Relation::CellOutsideQuery => Ok(0),
         // Fully inside: every point below this cell.
-        Relation::CellInsideQuery => Ok(point_tree.size()),
+        Relation::CellInsideQuery => point_tree.size(),
         Relation::CellCrossesQuery => {
             if point_tree.move_to_child()? {
                 let mut cost: i64 = 0;
@@ -487,7 +534,7 @@ fn estimate_point_count_bounded(
                 Ok(cost)
             } else {
                 // Leaf: assume half the points matched.
-                Ok((point_tree.size() + 1) / 2)
+                Ok((point_tree.size()? + 1) / 2)
             }
         }
     }
@@ -608,17 +655,32 @@ pub trait PointValues: Send + Sync {
         let estimated_point_count = self.estimate_point_count(visitor)?;
         Ok(estimate_doc_count(
             estimated_point_count,
-            self.doc_count(),
-            self.size(),
+            self.doc_count()?,
+            self.size()?,
         ))
     }
 
     /// Returns the total number of indexed points across all documents.
-    fn size(&self) -> i64;
+    ///
+    /// # Errors
+    ///
+    /// Java's `PointValues.size()` declares no exception, but a decorator may
+    /// still raise an unchecked one from it —
+    /// `ExitableDirectoryReader.ExitablePointValues.size()` throws
+    /// `ExitingReaderException` when the query timeout has fired
+    /// (`ExitableDirectoryReader.java:678-682`). Rust has no unchecked
+    /// exception, so the fallibility is in the signature.
+    fn size(&self) -> Result<i64>;
 
     /// Returns the total number of documents that have indexed at least one
     /// point.
-    fn doc_count(&self) -> i32;
+    ///
+    /// # Errors
+    ///
+    /// As [`size`](Self::size): `ExitablePointValues.getDocCount()` throws
+    /// `ExitingReaderException` on a fired timeout
+    /// (`ExitableDirectoryReader.java:684-688`).
+    fn doc_count(&self) -> Result<i32>;
 
     /// Returns the minimum packed value, or `None` when [`size`](Self::size) is
     /// zero.
@@ -690,7 +752,7 @@ pub fn size(reader: Arc<dyn IndexReader>, field: &str) -> Result<i64> {
     let mut size = 0i64;
     for ctx in reader.leaves() {
         if let Some(values) = ctx.leaf_reader().get_point_values(field)? {
-            size += values.size();
+            size += values.size()?;
         }
     }
     Ok(size)
@@ -707,7 +769,7 @@ pub fn doc_count(reader: Arc<dyn IndexReader>, field: &str) -> Result<i32> {
     let mut count = 0i32;
     for ctx in reader.leaves() {
         if let Some(values) = ctx.leaf_reader().get_point_values(field)? {
-            count += values.doc_count();
+            count += values.doc_count()?;
         }
     }
     Ok(count)
@@ -1051,12 +1113,12 @@ fn merge_bound(
 }
 
 impl PointTree for InMemoryPointTree {
-    fn clone_tree(&self) -> Box<dyn PointTree> {
-        Box::new(Self {
+    fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
+        Ok(Box::new(Self {
             nodes: Arc::clone(&self.nodes),
             root: self.current,
             current: self.current,
-        })
+        }))
     }
 
     fn move_to_child(&mut self) -> Result<bool> {
@@ -1103,22 +1165,22 @@ impl PointTree for InMemoryPointTree {
         }
     }
 
-    fn min_packed_value(&self) -> &[u8] {
-        &self.node().min_packed_value
+    fn min_packed_value(&self) -> Result<&[u8]> {
+        Ok(&self.node().min_packed_value)
     }
 
-    fn max_packed_value(&self) -> &[u8] {
-        &self.node().max_packed_value
+    fn max_packed_value(&self) -> Result<&[u8]> {
+        Ok(&self.node().max_packed_value)
     }
 
-    fn size(&self) -> i64 {
-        self.node().size
+    fn size(&self) -> Result<i64> {
+        Ok(self.node().size)
     }
 
     fn visit_doc_ids(&mut self, visitor: &mut dyn IntersectVisitor) -> Result<()> {
-        let size = self.size();
+        let size = self.size()?;
         if size <= i32::MAX as i64 {
-            visitor.grow(size as i32);
+            visitor.grow(size as i32)?;
         }
         let current = self.current;
         let mut doc_ids: Vec<i32> = Vec::new();
@@ -1140,7 +1202,7 @@ impl PointTree for InMemoryPointTree {
             Ok(())
         })?;
         for block in blocks {
-            visitor.grow(block.len() as i32);
+            visitor.grow(block.len() as i32)?;
             for (doc_id, value) in block {
                 visitor.visit_with_value(doc_id, &value)?;
             }
@@ -1204,26 +1266,26 @@ impl PointValues for InMemoryPointValues {
         Ok(Box::new(self.tree.clone()))
     }
 
-    fn size(&self) -> i64 {
-        self.size
+    fn size(&self) -> Result<i64> {
+        Ok(self.size)
     }
 
-    fn doc_count(&self) -> i32 {
-        self.doc_count
+    fn doc_count(&self) -> Result<i32> {
+        Ok(self.doc_count)
     }
 
     fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
         if self.size == 0 {
             return Ok(None);
         }
-        Ok(Some(self.tree.min_packed_value().to_vec()))
+        Ok(Some(self.tree.min_packed_value()?.to_vec()))
     }
 
     fn max_packed_value(&self) -> Result<Option<Vec<u8>>> {
         if self.size == 0 {
             return Ok(None);
         }
-        Ok(Some(self.tree.max_packed_value().to_vec()))
+        Ok(Some(self.tree.max_packed_value()?.to_vec()))
     }
 
     fn num_dimensions(&self) -> Result<i32> {
@@ -1248,8 +1310,8 @@ impl PointValues for InMemoryPointValues {
 struct EmptyPointTree;
 
 impl PointTree for EmptyPointTree {
-    fn clone_tree(&self) -> Box<dyn PointTree> {
-        Box::new(*self)
+    fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
+        Ok(Box::new(*self))
     }
 
     fn move_to_child(&mut self) -> Result<bool> {
@@ -1264,16 +1326,16 @@ impl PointTree for EmptyPointTree {
         Ok(false)
     }
 
-    fn min_packed_value(&self) -> &[u8] {
-        &[]
+    fn min_packed_value(&self) -> Result<&[u8]> {
+        Ok(&[])
     }
 
-    fn max_packed_value(&self) -> &[u8] {
-        &[]
+    fn max_packed_value(&self) -> Result<&[u8]> {
+        Ok(&[])
     }
 
-    fn size(&self) -> i64 {
-        0
+    fn size(&self) -> Result<i64> {
+        Ok(0)
     }
 
     fn visit_doc_ids(&mut self, _visitor: &mut dyn IntersectVisitor) -> Result<()> {
@@ -1294,12 +1356,12 @@ impl PointValues for EmptyPointValues {
         Ok(Box::new(EmptyPointTree))
     }
 
-    fn size(&self) -> i64 {
-        0
+    fn size(&self) -> Result<i64> {
+        Ok(0)
     }
 
-    fn doc_count(&self) -> i32 {
-        0
+    fn doc_count(&self) -> Result<i32> {
+        Ok(0)
     }
 
     fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
@@ -1385,7 +1447,7 @@ mod tests {
             Ok(())
         }
 
-        fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
+        fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
             // A cell with no bounds holds no points, so it cannot overlap the
             // query. Only `EmptyPointValues` produces one.
             let disjoint = min_packed_value.is_empty()
@@ -1404,11 +1466,12 @@ mod tests {
                 max_packed_value.to_vec(),
                 relation,
             ));
-            relation
+            Ok(relation)
         }
 
-        fn grow(&mut self, count: i32) {
+        fn grow(&mut self, count: i32) -> Result<()> {
             self.trace.borrow_mut().push(Call::Grow(count));
+            Ok(())
         }
     }
 
@@ -1459,25 +1522,25 @@ mod tests {
         let mut tree = values.point_tree().unwrap();
 
         // The root spans every value and holds every point.
-        assert_eq!(tree.min_packed_value(), &[10]);
-        assert_eq!(tree.max_packed_value(), &[60]);
-        assert_eq!(tree.size(), 6);
+        assert_eq!(tree.min_packed_value().unwrap(), &[10]);
+        assert_eq!(tree.max_packed_value().unwrap(), &[60]);
+        assert_eq!(tree.size().unwrap(), 6);
         assert!(!tree.move_to_parent().unwrap(), "the root has no parent");
         assert!(!tree.move_to_sibling().unwrap(), "the root has no sibling");
 
         assert!(tree.move_to_child().unwrap());
-        assert_eq!(tree.min_packed_value(), &[10]);
-        assert_eq!(tree.max_packed_value(), &[30]);
-        assert_eq!(tree.size(), 3);
+        assert_eq!(tree.min_packed_value().unwrap(), &[10]);
+        assert_eq!(tree.max_packed_value().unwrap(), &[30]);
+        assert_eq!(tree.size().unwrap(), 3);
         assert!(!tree.move_to_child().unwrap(), "leaves have no children");
 
         assert!(tree.move_to_sibling().unwrap());
-        assert_eq!(tree.min_packed_value(), &[40]);
-        assert_eq!(tree.size(), 3);
+        assert_eq!(tree.min_packed_value().unwrap(), &[40]);
+        assert_eq!(tree.size().unwrap(), 3);
         assert!(!tree.move_to_sibling().unwrap());
 
         assert!(tree.move_to_parent().unwrap());
-        assert_eq!(tree.size(), 6);
+        assert_eq!(tree.size().unwrap(), 6);
         assert!(!tree.move_to_parent().unwrap());
     }
 
@@ -1488,8 +1551,8 @@ mod tests {
         tree.move_to_child().unwrap();
         tree.move_to_sibling().unwrap();
 
-        let mut clone = tree.clone_tree();
-        assert_eq!(clone.min_packed_value(), &[40]);
+        let mut clone = tree.clone_tree().unwrap();
+        assert_eq!(clone.min_packed_value().unwrap(), &[40]);
         // The clone's root is the node the original was on.
         assert!(!clone.move_to_parent().unwrap());
         assert!(!clone.move_to_sibling().unwrap());
@@ -1704,8 +1767,8 @@ mod tests {
     #[test]
     fn empty_point_values_reports_zero() {
         let points = EmptyPointValues;
-        assert_eq!(points.size(), 0);
-        assert_eq!(points.doc_count(), 0);
+        assert_eq!(points.size().unwrap(), 0);
+        assert_eq!(points.doc_count().unwrap(), 0);
         assert!(points.min_packed_value().unwrap().is_none());
         assert!(points.max_packed_value().unwrap().is_none());
         assert_eq!(points.num_dimensions().unwrap(), 0);
@@ -1760,8 +1823,8 @@ mod tests {
             vec![vec![(0, vec![10]), (0, vec![20]), (1, vec![30])]],
         )
         .unwrap();
-        assert_eq!(values.size(), 3);
-        assert_eq!(values.doc_count(), 2);
+        assert_eq!(values.size().unwrap(), 3);
+        assert_eq!(values.doc_count().unwrap(), 2);
     }
 
     // -------------------------------------------------------------------------
@@ -1825,6 +1888,16 @@ mod tests {
         values: Option<InMemoryPointValues>,
     }
 
+    impl std::fmt::Display for PointsLeafReader {
+        /// Test double; it has no Lucene counterpart whose `toString()` could be
+        /// reproduced, so it renders under its own name. `Display` is required
+        /// because `LeafReader`/`IndexReader` carry it as a supertrait, standing in
+        /// for the `toString()` every Java reader inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("PointsLeafReader")
+        }
+    }
+
     impl PointsLeafReader {
         fn new(field: &str, values: Option<InMemoryPointValues>) -> Arc<Self> {
             Arc::new(Self {
@@ -1843,7 +1916,10 @@ mod tests {
             Ok(Box::new(StubTermVectors))
         }
         fn num_docs(&self) -> i32 {
-            self.values.as_ref().map(|v| v.doc_count()).unwrap_or(0)
+            self.values
+                .as_ref()
+                .map(|v| v.doc_count().unwrap())
+                .unwrap_or(0)
         }
         fn max_doc(&self) -> i32 {
             LeafReader::num_docs(self)
@@ -1943,6 +2019,16 @@ mod tests {
     struct StubCompositeReader {
         core: IndexReaderCore,
         subs: Vec<Arc<dyn IndexReader>>,
+    }
+
+    impl std::fmt::Display for StubCompositeReader {
+        /// Test double; it has no Lucene counterpart whose `toString()` could be
+        /// reproduced, so it renders under its own name. `Display` is required
+        /// because `LeafReader`/`IndexReader` carry it as a supertrait, standing in
+        /// for the `toString()` every Java reader inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubCompositeReader")
+        }
     }
 
     impl IndexReader for StubCompositeReader {
@@ -2126,8 +2212,8 @@ mod tests {
                 self.ids.push(doc_id);
                 Ok(())
             }
-            fn compare(&self, _min: &[u8], _max: &[u8]) -> Relation {
-                Relation::CellCrossesQuery
+            fn compare(&self, _min: &[u8], _max: &[u8]) -> Result<Relation> {
+                Ok(Relation::CellCrossesQuery)
             }
         }
 
@@ -2158,8 +2244,8 @@ mod tests {
             fn visit_with_value(&mut self, _doc_id: i32, _packed_value: &[u8]) -> Result<()> {
                 Ok(())
             }
-            fn compare(&self, _min: &[u8], _max: &[u8]) -> Relation {
-                Relation::CellInsideQuery
+            fn compare(&self, _min: &[u8], _max: &[u8]) -> Result<Relation> {
+                Ok(Relation::CellInsideQuery)
             }
         }
         let values = single_leaf_values();

@@ -218,6 +218,15 @@ mod tests {
         }
     }
 
+    impl std::fmt::Display for ListTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("ListTermsEnum")
+        }
+    }
+
     impl TermsEnum for ListTermsEnum {
         fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
             &mut self.atts
@@ -263,11 +272,11 @@ mod tests {
             Ok(self.pos as i64)
         }
 
-        fn doc_freq(&self) -> crate::error::Result<i32> {
+        fn doc_freq(&mut self) -> crate::error::Result<i32> {
             Ok(0)
         }
 
-        fn total_term_freq(&self) -> crate::error::Result<i64> {
+        fn total_term_freq(&mut self) -> crate::error::Result<i64> {
             Ok(0)
         }
 
@@ -307,6 +316,15 @@ mod tests {
             Self {
                 atts: crate::util::attribute::AttributeSource::new(),
             }
+        }
+    }
+
+    impl std::fmt::Display for IntersectTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("IntersectTermsEnum")
         }
     }
 
@@ -354,11 +372,11 @@ mod tests {
             Ok(-1)
         }
 
-        fn doc_freq(&self) -> crate::error::Result<i32> {
+        fn doc_freq(&mut self) -> crate::error::Result<i32> {
             Ok(0)
         }
 
-        fn total_term_freq(&self) -> crate::error::Result<i64> {
+        fn total_term_freq(&mut self) -> crate::error::Result<i64> {
             Ok(0)
         }
 

@@ -70,7 +70,6 @@ pub mod stored_fields_consumer;
 pub mod term_vectors_consumer;
 pub mod terms;
 pub mod terms_enum_index;
-pub mod two_phase_commit;
 pub mod vector_values;
 pub mod vector_values_consumer;
 
@@ -109,7 +108,7 @@ pub use index_utilities::{
     LockableConcurrentApproximatePriorityQueue, QueryTimeout, QueryTimeoutImpl,
     TrackingTmpOutputDirectoryWrapper, TryLockable,
 };
-pub use leaf_reader::{EmptyTermVectors, LeafMetaData, LeafReader, TermVectors};
+pub use leaf_reader::{AsIndexReader, EmptyTermVectors, LeafMetaData, LeafReader, TermVectors};
 pub use merge::{
     deletion_doc_map, identity_doc_map, DocIDMerger, DocIDMergerSub, DocMap, MergeState,
 };
@@ -168,7 +167,7 @@ pub use documents_writer::{
     DocumentsWriterPerThreadPool, DocumentsWriterShared, DocumentsWriterStallControl, DwptGuard,
     FlushByRamOrCountsPolicy, FlushControlHandle, FlushNotifications, FlushPolicy, FlushTicket,
     FlushedSegment, FrozenBufferedUpdates, IndexingChain, IndexingChainFactory,
-    IndexingChainFlushState, LockAllGuard, NoOpFlushNotifications, Query, SegmentNameSupplier,
+    IndexingChainFlushState, LockAllGuard, NoOpFlushNotifications, SegmentNameSupplier,
     SharedIndexingScratch, TermDelete, BYTES_PER_DEL_QUERY, BYTES_SCRATCH_SIZE, INTS_SCRATCH_SIZE,
     MAX_DOCS, SOURCE_FLUSH,
 };
@@ -425,7 +424,9 @@ impl VectorSimilarityFunction {
 /// Describes the properties of a field.
 ///
 /// Equivalent to `org.apache.lucene.index.IndexableFieldType`.
-pub trait IndexableFieldType {
+/// [`Display`](std::fmt::Display) is a supertrait because `Field.toString()`
+/// renders `type.toString()` on whatever `IndexableFieldType` the field holds.
+pub trait IndexableFieldType: std::fmt::Display {
     /// True if the field's value should be stored.
     fn stored(&self) -> bool;
 
@@ -475,13 +476,19 @@ pub trait IndexableFieldType {
     fn vector_similarity_function(&self) -> VectorSimilarityFunction;
 
     /// Attributes for the field type.
-    fn attributes(&self) -> &HashMap<String, String>;
+    fn attributes(&self) -> &crate::util::java_collections::JavaHashMap<String>;
 }
 
 /// Represents a single field for indexing.
 ///
 /// Equivalent to `org.apache.lucene.index.IndexableField`.
-pub trait IndexableField {
+///
+/// [`Display`](std::fmt::Display) is a supertrait because
+/// `Document.toString()` is polymorphic over it: Java renders each field by
+/// calling `field.toString()`, which every implementation inherits from
+/// `Object` and almost all of them get from `Field.toString()`. Without it a
+/// `Document` could not be rendered at all.
+pub trait IndexableField: std::fmt::Display {
     /// Field name.
     fn name(&self) -> &str;
 
@@ -699,7 +706,8 @@ mod tests {
 
     #[test]
     fn stored_field_data_input_wraps_byte_array_input() {
-        let mut input = ByteArrayDataInput::new(vec![0x01, 0x02, 0x03]);
+        let input_src = vec![0x01, 0x02, 0x03];
+        let mut input = ByteArrayDataInput::new(&input_src);
         let mut stored = StoredFieldDataInput::from_byte_array_input(&mut input);
         assert_eq!(stored.length(), 3);
         assert_eq!(stored.data_input().read_byte().unwrap(), 0x01);

@@ -644,8 +644,9 @@ struct LongRangeVisitor<'a> {
 }
 
 impl IntersectVisitor for LongRangeVisitor<'_> {
-    fn grow(&mut self, count: i32) {
+    fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
+        Ok(())
     }
 
     fn visit(&mut self, doc_id: i32) -> Result<()> {
@@ -689,16 +690,16 @@ impl IntersectVisitor for LongRangeVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
         let min_doc_value = NumericUtils::sortable_bytes_to_long(min_packed_value, 0);
         let max_doc_value = NumericUtils::sortable_bytes_to_long(max_packed_value, 0);
         if min_doc_value > self.max || max_doc_value < self.min {
-            return Relation::CellOutsideQuery;
+            return Ok(Relation::CellOutsideQuery);
         }
         if min_doc_value < self.min || max_doc_value > self.max {
-            return Relation::CellCrossesQuery;
+            return Ok(Relation::CellCrossesQuery);
         }
-        Relation::CellInsideQuery
+        Ok(Relation::CellInsideQuery)
     }
 }
 
@@ -1083,8 +1084,9 @@ struct LatLonRangeVisitor<'a> {
 }
 
 impl IntersectVisitor for LatLonRangeVisitor<'_> {
-    fn grow(&mut self, count: i32) {
+    fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
+        Ok(())
     }
 
     fn visit(&mut self, doc_id: i32) -> Result<()> {
@@ -1120,11 +1122,11 @@ impl IntersectVisitor for LatLonRangeVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
         let lat_lower_bound = NumericUtils::sortable_bytes_to_int(min_packed_value, 0);
         let lat_upper_bound = NumericUtils::sortable_bytes_to_int(max_packed_value, 0);
         if lat_lower_bound > self.bounds.max_lat || lat_upper_bound < self.bounds.min_lat {
-            return Relation::CellOutsideQuery;
+            return Ok(Relation::CellOutsideQuery);
         }
         let mut crosses =
             lat_lower_bound < self.bounds.min_lat || lat_upper_bound > self.bounds.max_lat;
@@ -1134,21 +1136,21 @@ impl IntersectVisitor for LatLonRangeVisitor<'_> {
             NumericUtils::sortable_bytes_to_int(max_packed_value, LatLonPoint::BYTES);
         if self.bounds.cross_date_line {
             if lon_lower_bound > self.bounds.max_lon && lon_upper_bound < self.bounds.min_lon {
-                return Relation::CellOutsideQuery;
+                return Ok(Relation::CellOutsideQuery);
             }
             crosses |=
                 lon_lower_bound < self.bounds.max_lon || lon_upper_bound > self.bounds.min_lon;
         } else {
             if lon_lower_bound > self.bounds.max_lon || lon_upper_bound < self.bounds.min_lon {
-                return Relation::CellOutsideQuery;
+                return Ok(Relation::CellOutsideQuery);
             }
             crosses |=
                 lon_lower_bound < self.bounds.min_lon || lon_upper_bound > self.bounds.max_lon;
         }
         if crosses {
-            Relation::CellCrossesQuery
+            Ok(Relation::CellCrossesQuery)
         } else {
-            Relation::CellInsideQuery
+            Ok(Relation::CellInsideQuery)
         }
     }
 }

@@ -514,7 +514,7 @@ impl PhraseWeightImpl for MultiPhraseWeightImpl {
                         POSTINGS_ENUM_POSITIONS
                     };
                     postings.push(terms_enum.postings(None, flags)?);
-                    total_match_cost += term_positions_cost(&*terms_enum)?;
+                    total_match_cost += term_positions_cost(&mut *terms_enum)?;
                 }
             }
 
@@ -847,6 +847,20 @@ impl DocIdSetIterator for UnionPostingsEnum {
     }
 }
 
+impl std::fmt::Display for UnionPostingsEnum {
+    /// `UnionPostingsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.search.MultiPhraseQuery$UnionPostingsEnum",
+            self,
+        ))
+    }
+}
+
 impl PostingsEnum for UnionPostingsEnum {
     fn freq(&self) -> Result<i32> {
         Ok(self.pos_queue.size() as i32)
@@ -1086,6 +1100,20 @@ impl DocIdSetIterator for UnionFullPostingsEnum {
 
     fn cost(&self) -> i64 {
         DocIdSetIterator::cost(&self.base)
+    }
+}
+
+impl std::fmt::Display for UnionFullPostingsEnum {
+    /// `UnionFullPostingsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.search.MultiPhraseQuery$UnionFullPostingsEnum",
+            self,
+        ))
     }
 }
 

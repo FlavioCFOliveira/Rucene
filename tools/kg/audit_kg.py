@@ -8,7 +8,9 @@ therefore re-derives both sides from primary sources --
 
 * the Apache Lucene 10.5.0 clone, parsed here by a brace-depth scanner written
   independently of `extract_lucene_kg.py`/`enrich_lucene_kg.py`, so the two can
-  disagree;
+  disagree. Only the lexical pass is shared, `javatext.strip_java`: agreeing on
+  what a comment, a string and a char literal are is not what this audit is
+  adversarial about, and one correct implementation of it beats two that drift;
 * the crate as the **compiler** sees it, from
   `cargo +nightly rustc --lib -- -Zunpretty=expanded`, which is the only way to
   see the 118 macro-generated types no source line declares;
@@ -29,50 +31,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from kgio import read
+from javatext import strip_java
 import extract_rucene_kg as ex
 
 JAVA_DECL = re.compile(
     r"[{}]|\b(?:class|interface|enum|record)\s+[A-Za-z_$][\w$]*"
     r"|@interface\s+[A-Za-z_$][\w$]*")
-
-
-def strip_java(src: str) -> str:
-    """Blank comments, strings and char literals, preserving length."""
-    out, i, n = [], 0, len(src)
-    while i < n:
-        c = src[i]
-        if c == "/" and i + 1 < n and src[i + 1] == "/":
-            j = src.find("\n", i)
-            j = n if j < 0 else j
-            out.append(" " * (j - i))
-            i = j
-        elif c == "/" and i + 1 < n and src[i + 1] == "*":
-            j = src.find("*/", i + 2)
-            j = n if j < 0 else j + 2
-            out.append(" " * (j - i))
-            i = j
-        elif c == '"':
-            if src.startswith('""""', i) or src.startswith('"""', i):
-                j = src.find('"""', i + 3)
-                j = n if j < 0 else j + 3
-            else:
-                j = i + 1
-                while j < n and src[j] != '"':
-                    j += 2 if src[j] == "\\" else 1
-                j += 1
-            out.append(" " * (j - i))
-            i = j
-        elif c == "'":
-            j = i + 1
-            while j < n and src[j] != "'":
-                j += 2 if src[j] == "\\" else 1
-            j += 1
-            out.append(" " * (j - i))
-            i = j
-        else:
-            out.append(c)
-            i += 1
-    return "".join(out)
 
 
 def java_census(lucene_root: Path):
@@ -204,6 +168,25 @@ def main():
         print(f"   portState {str(r[0]):<12} {r[1]}")
     noscope = q("MATCH (c:Class) WHERE c.portScope IS NULL RETURN count(c)")[0][0]
     check("Class nodes without a portScope", noscope, 0)
+    # The nested half of the module. `portScope='nested'` keeps these out of the
+    # coverage denominator; what makes that defensible rather than assumed is
+    # that each one carries a measured state and the evidence for it
+    # (`nested_port_kg.py`). A nested type with no state is the assumption
+    # coming back, so it is a failure.
+    for r in q("MATCH (c:Class) WHERE c.portScope='nested' "
+               "RETURN c.portState AS s, count(c) AS n ORDER BY n DESC"):
+        print(f"   nested portState {str(r[0]):<12} {r[1]}")
+    for r in q("MATCH (c:Class) WHERE c.portScope='nested' "
+               "RETURN coalesce(c.portStateEvidence,'UNSTATED') AS e, count(c) AS n "
+               "ORDER BY n DESC"):
+        print(f"     nested evidence {str(r[0]):<22} {r[1]}")
+    unstated_nested = q("MATCH (c:Class) WHERE c.portScope='nested' AND "
+                        "(c.portState IS NULL OR c.portStateEvidence IS NULL) "
+                        "RETURN count(c)")[0][0]
+    check("nested types without a measured port state", unstated_nested, 0)
+    orphan = q("MATCH (c:Class) WHERE c.portScope='nested' AND c.portState='unported' "
+               "AND c.portDestination IS NULL RETURN count(c)")[0][0]
+    check("unported nested types without a destination", orphan, 0)
     for r in q("MATCH ()-[e:PORTS]->(:Class) RETURN coalesce(e.evidence,'UNSTATED') AS ev, "
                "count(*) AS n ORDER BY n DESC"):
         print(f"   PORTS evidence {str(r[0]):<12} {r[1]}")

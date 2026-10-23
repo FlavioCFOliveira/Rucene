@@ -162,10 +162,21 @@ impl<V> CharArrayMap<V> {
 
     /// Returns every key in the map.
     ///
-    /// Equivalent to `CharArrayMap.keySet()`, and to `originalKeySet()`, which
-    /// Java distinguishes only so an unmodifiable view can reject writes
-    /// through the returned set. This port returns owned keys, which cannot
-    /// write back at all.
+    /// Equivalent to `CharArrayMap.keySet()`, which in Java returns a
+    /// `CharArraySet` *view* over this map. This port returns owned keys.
+    ///
+    /// Java's package-private `originalKeySet()` — `return super.keySet()`,
+    /// commented "helper for CharArraySet to not produce endless recursion"
+    /// (`CharArrayMap.java:334-337`) — has no counterpart here, and not for the
+    /// reason of write-protection. It exists because `CharArraySet.iterator()`
+    /// is implemented as `map.originalKeySet().iterator()`
+    /// (`CharArraySet.java:164-167`): calling the overridden `keySet()` there
+    /// would hand back a `CharArraySet` whose own `iterator()` would call
+    /// `keySet()` again, forever. This port's [`CharArraySet::iter`] walks the
+    /// map's slots directly through [`CharArrayMap::iter`] and never consults
+    /// `key_set`, so the cycle the Java helper breaks cannot form.
+    ///
+    /// [`CharArraySet::iter`]: crate::analysis::CharArraySet::iter
     pub fn key_set(&self) -> Vec<Vec<char>> {
         self.keys.iter().flatten().cloned().collect()
     }

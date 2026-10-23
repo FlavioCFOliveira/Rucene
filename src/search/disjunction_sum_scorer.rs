@@ -62,9 +62,9 @@ impl DocIdSetIterator for DisjunctionSumScorer {
 }
 
 impl Scorable for DisjunctionSumScorer {
+    /// Equivalent to `DisjunctionScorer.score()`, which is
+    /// `score(getSubMatches())`, fused with the `score(DisiWrapper)` override.
     fn score(&mut self) -> Result<f32> {
-        // Equivalent to `DisjunctionScorer.score()`, which is
-        // `score(getSubMatches())`, and to the `score(DisiWrapper)` override.
         let mut score = 0.0f64;
         for position in self.base.sub_matches()? {
             score += f64::from(self.base.wrapper(position).scorable().score()?);
@@ -91,6 +91,8 @@ impl Scorer for DisjunctionSumScorer {
     }
 
     fn two_phase_iterator(&mut self) -> Option<&mut dyn TwoPhaseIterator> {
+        // `DisjunctionScorer.twoPhaseIterator()`, which returns the `twoPhase`
+        // field: an inner object in Java, this scorer's base here.
         if self.base.has_two_phase() {
             Some(&mut self.base)
         } else {

@@ -8,7 +8,7 @@
 #![deny(unsafe_code)]
 
 use std::{
-    fmt::{Debug, Formatter},
+    fmt::{Debug, Display, Formatter},
     sync::{
         atomic::{AtomicBool, AtomicI32, Ordering},
         Arc, Mutex, Weak,
@@ -371,7 +371,7 @@ impl IndexReaderCore {
 /// implement [`CompositeReader`] (which extends `IndexReader`) and must provide
 /// an explicit `IndexReader` implementation, typically overriding
 /// [`IndexReader::build_context`] to build a [`CompositeReaderContext`].
-pub trait IndexReader: Send + Sync + Debug + 'static {
+pub trait IndexReader: Send + Sync + Debug + Display + 'static {
     /// Returns the shared core state for this reader.
     fn core(&self) -> &IndexReaderCore;
 
@@ -430,6 +430,13 @@ pub trait IndexReader: Send + Sync + Debug + 'static {
     }
 
     /// Decrements the reference count, closing the reader when it reaches zero.
+    ///
+    /// Equivalent to `IndexReader.decRef()` (`IndexReader.java:246-264`), whose
+    /// body is `doClose()` inside a try-with-resources declaring
+    /// `reportCloseToParentReaders` and then `notifyReaderClosedListeners` —
+    /// and resources close in *reverse* declaration order, so the listeners run
+    /// before the parents are told. An exception from `doClose()` wins; if it
+    /// succeeded, the first finalizer's exception propagates.
     fn dec_ref(&self) -> Result<()> {
         if self.core().ref_count() <= 0 {
             return Err(LuceneError::AlreadyClosed(
@@ -440,9 +447,9 @@ pub trait IndexReader: Send + Sync + Debug + 'static {
         if rc == 0 {
             self.core().set_closed();
             let close_result = self.do_close();
+            let notify_result = self.notify_reader_closed_listeners();
             self.core().report_close_to_parent_readers();
-            let _ = self.notify_reader_closed_listeners();
-            close_result
+            close_result.and(notify_result)
         } else if rc < 0 {
             Err(LuceneError::IllegalState(format!(
                 "too many decRef calls: refCount is {rc} after decrement"
@@ -496,6 +503,15 @@ pub trait IndexReader: Send + Sync + Debug + 'static {
     ) -> Arc<dyn IndexReaderContext>;
 
     /// Returns the root context for this reader's sub-reader tree.
+    ///
+    /// Equivalent to the abstract `IndexReader.getContext()` and to the two
+    /// implementations of it: `LeafReader.getContext()`, which Java declares
+    /// `final` and answers with the `LeafReaderContext` the reader built for
+    /// itself, and `CompositeReader.getContext()`, which builds a
+    /// `CompositeReaderContext` over the sub-readers and caches it. Both are
+    /// answered here by [`build_context`](Self::build_context), which each
+    /// reader implements — so the split is between the two `build_context`
+    /// bodies rather than between two `getContext` overrides.
     fn get_context(self: Arc<Self>) -> Arc<dyn IndexReaderContext> {
         self.build_context(None, 0, 0, 0, 0)
     }
@@ -569,5 +585,58 @@ pub fn build_composite_context(
         doc_base_in_parent,
         leaf_ord,
         leaf_doc_base,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// toString helpers shared by the reader hierarchy
+// ---------------------------------------------------------------------------
+
+/// Renders a composite reader exactly as `CompositeReader.toString()` does:
+/// the reader's own simple name, then its sequential sub-readers separated by a
+/// single space, inside one pair of parentheses.
+///
+/// Equivalent to `org.apache.lucene.index.CompositeReader.toString()`
+/// (`CompositeReader.java:56-78`). Java obtains the leading name by walking up
+/// the class hierarchy until it finds a class that is not anonymous; Rust has
+/// no anonymous types and no runtime class walk, so each concrete composite
+/// reader passes the name its Java counterpart would have produced.
+///
+/// Measured against `lucene-core-10.5.0.jar`: a `MultiReader` over two segment
+/// readers renders as `MultiReader(_0(10.5.0):C3 _1(10.5.0):C3)`, and an empty
+/// one as `MultiReader()`.
+pub fn composite_reader_to_string(simple_name: &str, subs: &[Arc<dyn IndexReader>]) -> String {
+    let mut buffer = String::from(simple_name);
+    buffer.push('(');
+    for (i, sub) in subs.iter().enumerate() {
+        if i != 0 {
+            buffer.push(' ');
+        }
+        buffer.push_str(&sub.to_string());
+    }
+    buffer.push(')');
+    buffer
+}
+
+/// Renders an object the way `java.lang.Object.toString()` does, for the types
+/// whose Lucene counterpart declares no `toString()` of its own.
+///
+/// Java's default is `getClass().getName() + "@" + Integer.toHexString(hashCode())`,
+/// where `hashCode()` is the identity hash. `class_name` must therefore be the
+/// **binary** Java name (`org.apache.lucene.index.FilterCodecReader`, with a
+/// `$` before a nested class), and `identity` stands in for the identity hash.
+///
+/// **Divergence from Lucene 10.5.0.** The hexadecimal suffix cannot match:
+/// Java's identity hash is drawn from a per-thread PRNG inside the JVM and has
+/// no counterpart in Rust. The port substitutes the object's own address, which
+/// is the same kind of value — a per-instance identity, stable for the object's
+/// lifetime and distinct between live objects — and reproduces the class name
+/// and the `name@hex` shape exactly. No Lucene format, and no `toString()` that
+/// Lucene itself defines, depends on the digits.
+pub fn java_object_to_string<T: ?Sized>(class_name: &str, identity: &T) -> String {
+    format!(
+        "{}@{:x}",
+        class_name,
+        std::ptr::from_ref(identity).cast::<()>() as usize
     )
 }

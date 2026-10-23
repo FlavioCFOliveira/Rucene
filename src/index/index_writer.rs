@@ -21,7 +21,8 @@ use crate::index::directory_reader::{
 };
 use crate::index::doc_values_field_updates::DocValuesFieldUpdates;
 use crate::index::doc_values_update::{DocValuesUpdate, DocValuesUpdateValue};
-use crate::index::documents_writer::Query;
+use crate::util::java_collections::JavaStringMap;
+
 use crate::index::documents_writer::{DeleteNode, DocumentsWriter, FlushNotifications, MAX_DOCS};
 use crate::index::field_infos::FieldNumbers;
 use crate::index::index_file_deleter::{IndexFileDeleter, WRITE_LOCK_NAME};
@@ -73,7 +74,11 @@ struct WriterState {
     /// Bumped on every merge registration, as Java's `mergeGen` is.
     merge_gen: i64,
     /// User data to attach to the next commit.
-    commit_user_data: HashMap<String, String>,
+    /// Equivalent to `private Iterable<Map.Entry<String, String>> commitUserData`
+    /// (`IndexWriter.java`), which keeps whatever order the caller handed over:
+    /// `prepareCommitInternal` copies it into a `HashMap` in that order, and
+    /// that map's bucket order is what `segments_N` records.
+    commit_user_data: Vec<(String, String)>,
     /// Merges that failed, kept until the next merge generation.
     ///
     /// Equivalent to `IndexWriter.mergeExceptions`.
@@ -105,19 +110,49 @@ pub struct IndexWriter {
     /// Equivalent to `IndexWriter.globalFieldNumberMap`.
     global_field_numbers: Arc<FieldNumbers>,
     state: Mutex<WriterState>,
-    /// Held for the writer's whole life, so only one writer opens a directory.
-    _write_lock: Box<dyn Lock>,
+    /// Held from construction until the writer closes, so only one writer
+    /// opens a directory at a time.
+    ///
+    /// Equivalent to `IndexWriter.writeLock`. Java closes it and sets the field
+    /// to `null` in `rollbackInternalNoCommit`, which is why this is an
+    /// `Option`: `None` is Java's `writeLock == null`.
+    write_lock: Mutex<Option<Box<dyn Lock>>>,
     closed: AtomicBool,
     /// Documents buffered plus published, capped at [`MAX_DOCS`].
     pending_num_docs: Arc<AtomicI64>,
-    /// Next segment name, as Java's `segmentInfos.counter` is.
-    segment_counter: Arc<AtomicI32>,
+    /// Source of the next segment name, i.e. Java's `segmentInfos.counter`.
+    ///
+    /// Java increments the field of the `SegmentInfos` itself, under
+    /// `synchronized (segmentInfos)` and deliberately *not* under the writer's
+    /// own monitor, because doing the latter deadlocks
+    /// (`IndexWriter.java:2129-2142`). This port cannot hand the segment-name
+    /// supplier a borrow of `WriterState.segment_infos` for the same reason —
+    /// the supplier runs from the indexing threads, which must not take the
+    /// writer's state lock — so the counter lives in this atomic and is
+    /// published into [`SegmentInfos::counter`] by
+    /// [`Self::publish_segment_counter`] at every point where the segments are
+    /// registered or written. The value the atomic holds and the value Java's
+    /// field holds are therefore the same at every observable moment; only the
+    /// place it is kept between those moments differs.
+    ///
+    /// It is seeded from the counter of the commit the writer opened, so that a
+    /// writer reopened on an existing index carries on naming segments where
+    /// the previous one stopped instead of restarting at `_0`.
+    segment_counter: Arc<AtomicI64>,
     /// Set when an unrecoverable error forces the writer closed.
     tragedy: Mutex<Option<String>>,
     /// Bumped on every change that must be written at close.
     ///
     /// Equivalent to `IndexWriter.changeCount`.
     change_count: AtomicI64,
+    /// The `change_count` the last successful commit wrote.
+    ///
+    /// Equivalent to `IndexWriter.lastCommitChangeCount`.
+    last_commit_change_count: AtomicI64,
+    /// The `change_count` the commit under way is about to write.
+    ///
+    /// Equivalent to `IndexWriter.pendingCommitChangeCount`.
+    pending_commit_change_count: AtomicI64,
     /// Bumped once per flushed segment.
     ///
     /// Equivalent to `IndexWriter.flushCount`.
@@ -152,6 +187,15 @@ pub struct IndexWriter {
     /// between, the merged segment may have missed some of the packet's
     /// updates, so the pass is repeated against the new segment.
     merge_finished_gen: AtomicI64,
+    /// The callbacks installed on the documents writer, kept so that the writer
+    /// can drain the events they record.
+    ///
+    /// Equivalent to holding the anonymous `DocumentsWriter.FlushNotifications`
+    /// together with `IndexWriter.eventQueue`: Java's notifications push a
+    /// closure onto the queue and `processEvents` runs it, so the writer needs a
+    /// handle on the queue. Here the queue lives inside the notifications and
+    /// [`process_events`](Self::process_events) drains it.
+    flush_notifications: Arc<WriterFlushNotifications>,
     /// Serialises the two-stage full flushes, so that only one runs at a time.
     ///
     /// Equivalent to `IndexWriter.fullFlushLock`. A full flush swaps the
@@ -237,6 +281,19 @@ impl FlushNotifications for WriterFlushNotifications {
     fn on_ticket_backlog(&self) {}
 }
 
+impl WriterFlushNotifications {
+    /// Takes the files recorded so far, leaving the set empty.
+    ///
+    /// Equivalent to draining the `deleteUnusedFiles` events off
+    /// `IndexWriter.eventQueue`.
+    fn take_orphaned_files(&self) -> HashSet<String> {
+        match self.orphaned_files.lock() {
+            Ok(mut guard) => std::mem::take(&mut *guard),
+            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+        }
+    }
+}
+
 impl IndexWriter {
     /// Opens a writer over `directory`.
     ///
@@ -259,7 +316,7 @@ impl IndexWriter {
         let mut segment_infos = if create {
             SegmentInfos::new(Version::LATEST.major as i32)?
         } else {
-            SegmentInfos::read_latest_commit(directory.as_ref())?
+            SegmentInfos::read_latest_commit(Arc::clone(&directory))?
         };
 
         let initial_index_exists =
@@ -291,13 +348,16 @@ impl IndexWriter {
 
         let live_config = Arc::new(config.into_live());
         let pending_num_docs = Arc::new(AtomicI64::new(i64::from(segment_infos.total_max_doc())));
-        let segment_counter = Arc::new(AtomicI32::new(0));
+        // Java reads `counter` off the commit it opened, because `SegmentInfos`
+        // carries it in the `segments_N` it was read from; a fresh index starts
+        // at zero. Seeding from `segment_infos` reproduces both cases.
+        let segment_counter = Arc::new(AtomicI64::new(segment_infos.counter));
 
         let segment_name_supplier = {
             let counter = Arc::clone(&segment_counter);
             Arc::new(move || {
                 let n = counter.fetch_add(1, Ordering::AcqRel);
-                format!("_{}", radix_36(i64::from(n)))
+                format!("_{}", radix_36(n))
             })
         };
 
@@ -315,7 +375,7 @@ impl IndexWriter {
         reader_pool.enable_reader_pooling(live_config.reader_pooling());
 
         let documents_writer = Arc::new(DocumentsWriter::with_default_chain(
-            notifications,
+            Arc::clone(&notifications) as Arc<dyn FlushNotifications>,
             segment_infos.index_created_version_major(),
             Arc::clone(&pending_num_docs),
             segment_name_supplier,
@@ -342,17 +402,19 @@ impl IndexWriter {
                 pending_merges: Vec::new(),
                 merging_segments: HashSet::new(),
                 merge_gen: 0,
-                commit_user_data: HashMap::new(),
+                commit_user_data: Vec::new(),
                 merge_exceptions: Vec::new(),
                 merge_max_num_segments: -1,
                 stop_merges: false,
             }),
-            _write_lock: write_lock,
+            write_lock: Mutex::new(Some(write_lock)),
             closed: AtomicBool::new(false),
             pending_num_docs,
             segment_counter,
             tragedy,
             change_count: AtomicI64::new(0),
+            last_commit_change_count: AtomicI64::new(0),
+            pending_commit_change_count: AtomicI64::new(0),
             flush_count: AtomicI32::new(0),
             flush_deletes_count: AtomicI32::new(0),
             did_message_state: AtomicBool::new(false),
@@ -360,6 +422,7 @@ impl IndexWriter {
             buffered_updates_stream: BufferedUpdatesStream::with_info_stream(info_stream),
             closing: AtomicBool::new(false),
             merge_finished_gen: AtomicI64::new(0),
+            flush_notifications: notifications,
             full_flush_lock: Mutex::new(()),
             self_ref: OnceLock::new(),
         })
@@ -519,6 +582,135 @@ impl IndexWriter {
         Ok(self.documents_writer.max_completed_sequence_number())
     }
 
+    /// Returns whether the deleter has been closed.
+    ///
+    /// Equivalent to `IndexWriter.isDeleterClosed()`
+    /// (`IndexWriter.java:5944-5946`), which forwards to
+    /// [`IndexFileDeleter::is_closed`]. In Lucene the only caller is the
+    /// `IndexWriterAccess` accessor the test framework reaches through
+    /// `TestSecrets`; here it is public for the same reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the writer's state lock is
+    /// poisoned.
+    pub fn is_deleter_closed(&self) -> Result<bool> {
+        let state = self.state()?;
+        Ok(state.deleter.is_closed(self))
+    }
+
+    /// Returns whether anything is buffered in RAM that a commit would have to
+    /// write.
+    ///
+    /// Equivalent to `IndexWriter.hasChangesInRam()`
+    /// (`IndexWriter.java:4211-4214`), which is
+    /// `docWriter.anyChanges() || bufferedUpdatesStream.any()` and is the
+    /// second half of [`has_uncommitted_changes`](Self::has_uncommitted_changes).
+    pub fn has_changes_in_ram(&self) -> bool {
+        self.documents_writer.any_changes() || self.buffered_updates_stream.any()
+    }
+
+    /// Returns the writer's buffering half.
+    ///
+    /// Equivalent to the package-private `IndexWriter.getDocsWriter()`
+    /// (`IndexWriter.java:4439-4442`), which Lucene comments "for testing only"
+    /// and reaches from `TestSecrets`.
+    pub fn get_docs_writer(&self) -> &Arc<DocumentsWriter> {
+        &self.documents_writer
+    }
+
+    /// Fills in `estimated_merge_bytes` and `total_merge_bytes` for `merge`.
+    ///
+    /// Equivalent to `IndexWriter.addEstimatedBytesToMerge(MergePolicy.OneMerge)`
+    /// (`IndexWriter.java:4916-4930`): each segment contributes its whole size
+    /// to the total and the live fraction of it to the estimate, and a segment
+    /// with no document contributes nothing at all.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading a segment's size or its deletion count
+    /// raises.
+    ///
+    /// # Panics
+    ///
+    /// In a debug build, when `merge` already carries either figure — Java
+    /// asserts the same, because the method adds rather than assigns.
+    pub fn add_estimated_bytes_to_merge(&self, merge: &mut OneMerge) -> Result<()> {
+        let state = self.state()?;
+        self.add_estimated_bytes_to_merge_with(&state, merge)
+    }
+
+    /// [`add_estimated_bytes_to_merge`](Self::add_estimated_bytes_to_merge) for
+    /// a caller that already holds the writer state.
+    ///
+    /// Java's monitor is reentrant, so `registerMerge` calls this while holding
+    /// it; a Rust `Mutex` is not, which is the same adaptation
+    /// [`num_deleted_docs_with`](Self::num_deleted_docs_with) already makes.
+    fn add_estimated_bytes_to_merge_with(
+        &self,
+        state: &WriterState,
+        merge: &mut OneMerge,
+    ) -> Result<()> {
+        debug_assert_eq!(merge.estimated_merge_bytes, 0);
+        debug_assert_eq!(merge.total_merge_bytes, 0);
+        for info in merge.segments.iter_mut() {
+            let max_doc = info.info.max_doc()?;
+            if max_doc <= 0 {
+                continue;
+            }
+            let del_count = self.num_deleted_docs_with(state, info)?;
+            debug_assert!(del_count <= max_doc);
+            let del_ratio = f64::from(del_count) / f64::from(max_doc);
+            let size = info.size_in_bytes()?;
+            merge.estimated_merge_bytes += (size as f64 * (1.0 - del_ratio)) as i64;
+            merge.total_merge_bytes += size;
+        }
+        Ok(())
+    }
+
+    /// Waits until every merge that had started has finished.
+    ///
+    /// Equivalent to `IndexWriter.waitForMerges()`
+    /// (`IndexWriter.java:2845-2869`), which gives the scheduler one last
+    /// chance to run — outside the writer's lock, because taking it there
+    /// deadlocks — and then waits for the pending and running sets to empty.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java waits on the writer's own
+    /// monitor and is woken by `notifyAll()`; this port has no monitor to wait
+    /// on, so it polls through [`do_wait`](Self::do_wait), which is the
+    /// adaptation that method already declares. Java's own wait carries a
+    /// one-second timeout for exactly the missed-notification case, so the
+    /// worst-case latency is the same.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::AlreadyClosed`] when the writer is closed, and
+    /// propagates whatever the merge scheduler raises.
+    pub fn wait_for_merges(&self) -> Result<()> {
+        // Give the merge scheduler a last chance to run, in case any pending
+        // merge is waiting. The writer's lock must not be held here: going into
+        // a merge while holding it can deadlock.
+        self.execute_merge(MergeTrigger::Closing)?;
+
+        self.ensure_open_with(false)?;
+        if self.info_stream.is_enabled(IW) {
+            self.info_stream.message(IW, "waitForMerges");
+        }
+        loop {
+            {
+                let state = self.state()?;
+                if state.pending_merges.is_empty() && state.merging_segments.is_empty() {
+                    break;
+                }
+            }
+            self.do_wait();
+        }
+        if self.info_stream.is_enabled(IW) {
+            self.info_stream.message(IW, "waitForMerges done");
+        }
+        Ok(())
+    }
+
     /// Returns the deleted-document count for `info`.
     ///
     /// Equivalent to `IndexWriter.numDeletedDocs(SegmentCommitInfo)`, which
@@ -579,10 +771,17 @@ impl IndexWriter {
 
     /// Fails when `info` was not produced by this writer's directory.
     ///
-    /// Equivalent to `IndexWriter.validate(SegmentCommitInfo)`.
+    /// Equivalent to `IndexWriter.validate(SegmentCommitInfo)`
+    /// (`IndexWriter.java:6608-6612`), which compares the segment's own
+    /// directory with the one the writer was opened on — reference equality in
+    /// Java, pointer equality of the `Arc` here.
+    ///
+    /// A segment that belongs to this directory but is not (yet) part of the
+    /// committed `SegmentInfos` passes, as it must: a merge asks the merge
+    /// policy about the segment it is *about to* add, which is exactly such a
+    /// segment.
     fn validate(&self, info: &SegmentCommitInfo) -> Result<()> {
-        let state = self.state()?;
-        if state.segment_infos.contains(info) {
+        if Arc::ptr_eq(&info.info.directory, &self.directory) {
             return Ok(());
         }
         Err(LuceneError::IllegalArgument(
@@ -646,7 +845,7 @@ impl IndexWriter {
     /// Returns the user data attached to the next commit.
     ///
     /// Equivalent to `IndexWriter.getLiveCommitData()`.
-    pub fn get_live_commit_data(&self) -> Result<HashMap<String, String>> {
+    pub fn get_live_commit_data(&self) -> Result<Vec<(String, String)>> {
         Ok(self.state()?.commit_user_data.clone())
     }
 
@@ -818,8 +1017,16 @@ impl IndexWriter {
 
     /// Deletes every document matching any of `queries`.
     ///
-    /// Equivalent to `IndexWriter.deleteDocuments(Query...)`.
-    pub fn delete_documents_by_queries(&self, queries: Vec<Box<dyn Query>>) -> Result<i64> {
+    /// Equivalent to `IndexWriter.deleteDocuments(Query...)`. The queries are
+    /// buffered and resolved against each segment when the deletes are applied,
+    /// which is what [`FrozenBufferedUpdates`](crate::index::FrozenBufferedUpdates)
+    /// does; a query is never evaluated against documents still buffered in
+    /// RAM, so the returned sequence number orders the delete but does not mean
+    /// it has already run.
+    pub fn delete_documents_by_queries(
+        &self,
+        queries: Vec<Arc<dyn crate::search::Query>>,
+    ) -> Result<i64> {
         self.ensure_open()?;
         self.documents_writer.delete_queries(queries)
     }
@@ -1107,43 +1314,84 @@ impl IndexWriter {
         // finally block does.
         self.documents_writer
             .finish_full_flush(flush_result.is_ok() && published.is_ok())?;
+        // Java's same finally block then drains the event queue, and explicitly
+        // must not trigger merges here or it can deadlock
+        // (`IndexWriter.java:3799`, `:4396`). This is what deletes the raw
+        // segment files a compound file has just replaced.
+        let processed = self.process_events(false);
         flush_result?;
-        published
+        published?;
+        processed
     }
 
-    /// Moves every flushed segment from the ticket queue into `segment_infos`.
+    /// Moves every flushed segment and every frozen delete packet from the
+    /// ticket queue into the index.
     ///
-    /// Equivalent to `IndexWriter.publishFlushedSegments`.
+    /// Equivalent to `IndexWriter.publishFlushedSegments(boolean)`. A ticket
+    /// carries a flushed segment, a packet of frozen global deletes, or both,
+    /// and both halves have to be published: a ticket with no segment is a
+    /// pure delete packet, which goes straight to the buffered-updates stream,
+    /// while a ticket with a segment publishes the segment together with its
+    /// own segment-private deletes and the global packet that preceded it.
+    /// Dropping either half is what makes a delete a silent no-op.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever purging the tickets or publishing a segment raises.
     fn publish_flushed_segments(&self) -> Result<()> {
-        let mut flushed: Vec<SegmentCommitInfo> = Vec::new();
+        // The closure borrows `self` immutably and each publication takes the
+        // writer state on its own, exactly as Java's per-ticket
+        // `publishFlushedSegment` does; nothing is batched, so a ticket is
+        // fully published before the next one is looked at.
         self.documents_writer.purge_flush_tickets(true, |ticket| {
-            if let Some(segment) = ticket.take_flushed_segment() {
-                flushed.push(segment.segment_info);
-            }
+            let new_segment = ticket.take_flushed_segment();
+            let buffered_updates = ticket.take_frozen_updates();
             ticket.mark_published();
-            Ok(())
-        })?;
-
-        if flushed.is_empty() {
-            return Ok(());
-        }
-
-        let mut state = self.state()?;
-        for info in flushed {
-            state.segment_infos.add(info)?;
-        }
-        state.segment_infos.changed();
-        let infos = clone_infos(&state.segment_infos)?;
-        state.deleter.checkpoint(&infos, false)?;
-        Ok(())
+            match new_segment {
+                // A flushed global deletes package, not a segment.
+                None => {
+                    if let Some(buffered_updates) = buffered_updates {
+                        if !buffered_updates.is_empty() {
+                            if self.info_stream.is_enabled(IW) {
+                                self.info_stream.message(
+                                    IW,
+                                    &format!("flush: push buffered updates: {buffered_updates:?}"),
+                                );
+                            }
+                            self.publish_frozen_updates(buffered_updates)?;
+                        }
+                    }
+                    Ok(())
+                }
+                Some(new_segment) => {
+                    if self.info_stream.is_enabled(IW) {
+                        self.info_stream.message(
+                            IW,
+                            &format!(
+                                "publishFlushedSegment seg-private updates={:?}",
+                                new_segment.segment_updates
+                            ),
+                        );
+                    }
+                    self.publish_flushed_segment(
+                        new_segment.segment_info,
+                        new_segment.segment_updates,
+                        buffered_updates,
+                    )
+                }
+            }
+        })
     }
 
     /// Sets the user data written into the next commit.
     ///
     /// Equivalent to `IndexWriter.setLiveCommitData`.
-    pub fn set_live_commit_data(&self, data: HashMap<String, String>) -> Result<()> {
+    pub fn set_live_commit_data<I>(&self, data: I) -> Result<()>
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
         let mut state = self.state()?;
-        state.commit_user_data = data;
+        state.commit_user_data = data.into_iter().collect();
         Ok(())
     }
 
@@ -1192,10 +1440,41 @@ impl IndexWriter {
         self.apply_all_deletes_and_updates()?;
         self.do_after_flush()?;
 
+        // Java's `prepareCommitInternal` runs `writeReaderPool(true)` under the
+        // writer monitor right after applying the deletes
+        // (`IndexWriter.java:3803-3805`). Resolving a packet only marks
+        // documents deleted in the pooled `ReadersAndUpdates`; without this the
+        // new live docs are never written to a `.liv` and the commit records a
+        // segment that still has every document.
+        self.write_reader_pool(true)?;
+
         let mut state = self.state()?;
-        let user_data = state.commit_user_data.clone();
+        if self.change_count.load(Ordering::Acquire)
+            != self.last_commit_change_count.load(Ordering::Acquire)
+        {
+            // There are changes to commit, so `start_commit` will write a new
+            // `segments_N`. Committing is itself an NRT-visible change, so Java
+            // bumps `changeCount` and the segments version here so that a later
+            // NRT reopen sees it (`IndexWriter.java:3806-3812`).
+            self.change_count.fetch_add(1, Ordering::AcqRel);
+            state.segment_infos.changed();
+        }
+        // `IndexWriter.prepareCommitInternal` copies the live commit data into
+        // a fresh `HashMap` before handing it to `setUserData`
+        // (`IndexWriter.java:3816-3820`), so the map `segments_N` walks is a
+        // `java.util.HashMap` filled in the live data's iteration order.
+        let user_data: JavaStringMap = JavaStringMap::Hash(
+            state
+                .commit_user_data
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        );
         state.segment_infos.set_user_data(user_data, false);
+        self.publish_segment_counter(&mut state.segment_infos);
         let to_sync = clone_infos(&state.segment_infos)?;
+        self.pending_commit_change_count
+            .store(self.change_count.load(Ordering::Acquire), Ordering::Release);
         self.start_commit(&mut state, to_sync)?;
         Ok(seq_no)
     }
@@ -1220,6 +1499,24 @@ impl IndexWriter {
                     self.seg_string_of(state, to_sync.as_slice())?
                 ),
             );
+        }
+        let last_commit_change_count = self.last_commit_change_count.load(Ordering::Acquire);
+        if last_commit_change_count > self.change_count.load(Ordering::Acquire) {
+            return Err(LuceneError::IllegalState(format!(
+                "lastCommitChangeCount={last_commit_change_count},changeCount={}",
+                self.change_count.load(Ordering::Acquire)
+            )));
+        }
+        if self.pending_commit_change_count.load(Ordering::Acquire) == last_commit_change_count {
+            // Nothing changed since the last commit, so Lucene writes no new
+            // `segments_N` at all (`IndexWriter.java:5714-5724`). Without this
+            // a `commit()` or a `close()` over an unchanged index would burn a
+            // generation that Lucene never produces.
+            if self.info_stream.is_enabled(IW) {
+                self.info_stream
+                    .message(IW, "  skip startCommit(): no changes pending");
+            }
+            return Ok(());
         }
         debug_assert!(self.files_exist(state, &to_sync)?);
         to_sync.prepare_commit(self.directory.as_ref())?;
@@ -1283,6 +1580,10 @@ impl IndexWriter {
         };
         pending.finish_commit(self.directory.as_ref())?;
         state.segment_infos.update_generation(&pending);
+        self.last_commit_change_count.store(
+            self.pending_commit_change_count.load(Ordering::Acquire),
+            Ordering::Release,
+        );
         state.rollback_segments = state
             .segment_infos
             .iter()
@@ -1342,7 +1643,7 @@ impl IndexWriter {
         state.merging_segments.clear();
 
         // Restore the segments the last commit recorded.
-        let restored = match SegmentInfos::read_latest_commit(self.directory.as_ref()) {
+        let restored = match SegmentInfos::read_latest_commit(Arc::clone(&self.directory)) {
             Ok(infos) => infos,
             // An index with no commit rolls back to empty.
             Err(_) => SegmentInfos::new(Version::LATEST.major as i32)?,
@@ -1360,11 +1661,38 @@ impl IndexWriter {
         let infos = clone_infos(&state.segment_infos)?;
         state.deleter.checkpoint(&infos, false)?;
         state.deleter.refresh()?;
+        // Java discards any change the rollback undid, so the next writer over
+        // this index starts level with the commit on disk
+        // (`IndexWriter.java:2636`).
+        self.last_commit_change_count
+            .store(self.change_count.load(Ordering::Acquire), Ordering::Release);
         // Must set `closed` before releasing the writer's state, so no
         // concurrent thread sneaks a flush in behind the rollback.
         self.closed.store(true, Ordering::Release);
+        // Java closes the write lock and nulls the field in the same
+        // synchronized block, so the directory is free the moment the writer
+        // is closed rather than whenever the object is finally dropped.
+        self.release_write_lock()?;
         self.closing.store(false, Ordering::Release);
         Ok(())
+    }
+
+    /// Releases the directory's write lock, so another writer may open it.
+    ///
+    /// Equivalent to the `IOUtils.close(writeLock, cleanupAndNotify)` /
+    /// `writeLock = null` pair in `IndexWriter.rollbackInternalNoCommit()`.
+    /// Idempotent, because Java's `writeLock` is already `null` on a second
+    /// pass.
+    fn release_write_lock(&self) -> Result<()> {
+        let taken = self
+            .write_lock
+            .lock()
+            .map_err(|_| LuceneError::IllegalState("write lock mutex poisoned".to_string()))?
+            .take();
+        match taken {
+            Some(mut lock) => lock.close(),
+            None => Ok(()),
+        }
     }
 
     /// Discards everything since the last commit and closes the deleter.
@@ -1422,6 +1750,11 @@ impl IndexWriter {
                 state.deleter.close()?;
                 self.reader_pool.close()?;
                 self.closed.store(true, Ordering::Release);
+                // Java reaches this through `rollbackInternal()`, which closes
+                // the write lock; this port inlines that tail, so it must
+                // release the lock here too.
+                drop(state);
+                self.release_write_lock()?;
                 self.closing.store(false, Ordering::Release);
                 Ok(())
             }
@@ -1697,6 +2030,11 @@ impl IndexWriter {
         for segment in &merge.segments {
             state.merging_segments.insert(segment.info.name.clone());
         }
+
+        // `registerMerge` fills the two byte figures in before the merge is
+        // handed to the scheduler (`IndexWriter.java:5022`); they are what
+        // `ConcurrentMergeScheduler` sorts, throttles and paces merges by.
+        self.add_estimated_bytes_to_merge_with(state, &mut merge)?;
 
         if self.info_stream.is_enabled(IW) {
             self.info_stream.message(
@@ -3151,15 +3489,22 @@ fn radix_36(mut value: i64) -> String {
     String::from_utf8(out).expect("base-36 digits are ASCII")
 }
 
-/// Produces an independent `SegmentInfos` carrying the same segments.
+/// Produces an independent snapshot of `SegmentInfos`.
 ///
-/// `SegmentInfos` is not `Clone` in this crate, and both the deleter's
-/// checkpoint and the merge policy need a snapshot that does not borrow the
-/// writer's state.
+/// Equivalent to `SegmentInfos.clone()`: a field-by-field copy — `generation`,
+/// `lastGeneration`, `counter`, `version` and `id` included — with the segment
+/// list deep-cloned. Both the deleter's checkpoint and the merge policy need a
+/// snapshot that does not borrow the writer's state.
+///
+/// This is deliberately **not** `SegmentInfos::replace`, which is Java's
+/// `SegmentInfos.replace(SegmentInfos)`: that one copies only the segments,
+/// `lastGeneration` and the user data, keeping the target's own `generation`
+/// so a rollback can never make the next commit reuse a `segments_N` name.
+/// Using it here would leave every commit's snapshot at generation `-1`, so
+/// `SegmentInfos.getNextPendingGeneration()` would return `1` forever and the
+/// second commit would try to write `segments_1` again.
 fn clone_infos(source: &SegmentInfos) -> Result<SegmentInfos> {
-    let mut copy = SegmentInfos::new(source.index_created_version_major())?;
-    copy.replace(source);
-    Ok(copy)
+    Ok(source.clone())
 }
 
 /// Document statistics taken in one consistent snapshot.
@@ -3271,7 +3616,31 @@ impl IndexWriter {
         self.change_count.fetch_add(1, Ordering::AcqRel);
         state.segment_infos.changed();
         let n = self.segment_counter.fetch_add(1, Ordering::AcqRel);
-        format!("_{}", radix_36(i64::from(n)))
+        state.segment_infos.counter = n + 1;
+        format!("_{}", radix_36(n))
+    }
+
+    /// Copies the segment counter into `infos`, which is where Lucene keeps it.
+    ///
+    /// Java has nothing to copy: `newSegmentName` increments
+    /// `segmentInfos.counter` in place (`IndexWriter.java:2140`), so the field
+    /// that `SegmentInfos.write` serialises
+    /// (`SegmentInfos.java`, `writeVLong(counter)`) is always current. This port
+    /// keeps the counter in an atomic the indexing threads can reach without
+    /// the writer's state lock — see [`Self::segment_counter`] — so the value
+    /// has to be published before the segments are written or handed out.
+    ///
+    /// The counter only ever grows, so publishing takes the larger of the two:
+    /// a `SegmentInfos` that a merge or an `addIndexes` already pushed further
+    /// must not be pulled back.
+    fn publish_segment_counter(&self, infos: &mut SegmentInfos) {
+        let counter = self.segment_counter.load(Ordering::Acquire);
+        if infos.counter < counter {
+            infos.counter = counter;
+        } else {
+            self.segment_counter
+                .fetch_max(infos.counter, Ordering::AcqRel);
+        }
     }
 
     // -- Document accounting -------------------------------------------------
@@ -3424,10 +3793,31 @@ impl IndexWriter {
     /// Renders one segment together with the deletions pending against it.
     ///
     /// Equivalent to `IndexWriter.segString(SegmentCommitInfo)`.
-    fn seg_string_info(&self, _state: &WriterState, info: &SegmentCommitInfo) -> Result<String> {
-        let pending =
-            self.num_deleted_docs(info)? - info.get_del_count_with_soft(self.soft_deletes_enabled);
+    fn seg_string_info(&self, state: &WriterState, info: &SegmentCommitInfo) -> Result<String> {
+        let pending = self.num_deleted_docs_with(state, info)?
+            - info.get_del_count_with_soft(self.soft_deletes_enabled);
         Ok(info.info.to_string_with_del_count(pending))
+    }
+
+    /// [`num_deleted_docs`](Self::num_deleted_docs) for a caller that already
+    /// holds the writer state.
+    ///
+    /// Java's `IndexWriter` guards its state with the object monitor, which is
+    /// reentrant, so `segString(SegmentCommitInfo)` can call `numDeletedDocs`,
+    /// and through it `readerPool.get` and the segment infos, while the caller
+    /// is already inside a `synchronized` block — which is exactly what
+    /// `startCommit` does when it renders the segments for the info stream
+    /// (`IndexWriter.java:5687-5692`). A Rust `Mutex` is not reentrant, so
+    /// re-locking there deadlocks the committing thread against itself. This
+    /// variant reuses the caller's guard instead of taking a second one.
+    fn num_deleted_docs_with(&self, state: &WriterState, info: &SegmentCommitInfo) -> Result<i32> {
+        self.ensure_open_with(false)?;
+        self.validate(info)?;
+        let created_version_major = state.segment_infos.index_created_version_major();
+        if let Some(rld) = self.reader_pool.get(info, false, created_version_major)? {
+            return Ok(rld.get_del_count());
+        }
+        Ok(info.get_del_count())
     }
 
     /// Prints the one-shot banner Lucene writes to the info stream.
@@ -3439,9 +3829,7 @@ impl IndexWriter {
                 IW,
                 &format!(
                     "\ndir={}\nindex={}\nversion={}\n{}",
-                    crate::index::index_writer_config::type_name_of_trait_object(
-                        self.directory.as_ref()
-                    ),
+                    self.directory.directory_to_string(),
                     self.seg_string()?,
                     Version::LATEST,
                     self.config.to_config_string()
@@ -3810,6 +4198,12 @@ impl IndexWriter {
         if apply_all_deletes {
             self.apply_all_deletes_and_updates()?;
         }
+        // Java's `doFlush` runs `writeReaderPool(applyAllDeletes)` under the
+        // writer monitor right after applying the deletes: resolving a packet
+        // only marks documents deleted in the pooled `ReadersAndUpdates`, so
+        // the new live docs and doc-values updates still have to be written out
+        // before `doAfterFlush`.
+        self.write_reader_pool(apply_all_deletes)?;
         self.do_after_flush()?;
         Ok(true)
     }
@@ -3833,16 +4227,28 @@ impl IndexWriter {
 
     /// Applies every buffered delete and doc-values update.
     ///
-    /// Equivalent to `IndexWriter.applyAllDeletesAndUpdates()`.
+    /// Equivalent to `IndexWriter.applyAllDeletesAndUpdates()`, whose whole
+    /// body is `bufferedUpdatesStream.waitApplyAll(this)`: it is what carries
+    /// the frozen packets to the segments they name and resolves them there.
+    /// Java asserts the caller does *not* hold the writer monitor, which is why
+    /// [`do_flush_internal`](Self::do_flush_internal) calls this only after the
+    /// full-flush lock of [`do_flush`](Self::do_flush) has been released.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever resolving a packet raises.
     fn apply_all_deletes_and_updates(&self) -> Result<()> {
         self.flush_deletes_count.fetch_add(1, Ordering::AcqRel);
         if self.info_stream.is_enabled(IW) {
             self.info_stream.message(
                 IW,
-                "now apply all deletes for all segments buffered updates bytesUsed",
+                &format!(
+                    "now apply all deletes for all segments buffered updates bytesUsed={}",
+                    self.buffered_updates_stream.ram_bytes_used()
+                ),
             );
         }
-        self.write_reader_pool(true)
+        self.buffered_updates_stream.wait_apply_all(self)
     }
 
     /// Writes every pending live-docs and doc-values update the reader pool
@@ -3856,8 +4262,20 @@ impl IndexWriter {
                 let state = self.state()?;
                 state.segment_infos.as_slice().to_vec()
             };
-            if self.reader_pool.commit(&infos).is_ok() {
+            if self.reader_pool.commit(&infos)? {
                 let mut state = self.state()?;
+                // Java's `rld.info` is the very `SegmentCommitInfo` the
+                // writer's `SegmentInfos` holds, so writing a pooled reader's
+                // live docs updates the writer's copy through reference
+                // identity. This port keeps a clone in the pool, so the new
+                // deletion generation and count are copied back here; without
+                // it the commit would record a segment that still has every
+                // document and would not reference the `.liv` just written.
+                for info in state.segment_infos.iter_mut() {
+                    if let Some(rld) = self.reader_pool.peek(&info.info.name) {
+                        *info = rld.info();
+                    }
+                }
                 self.checkpoint_no_sis(&mut state)?;
             }
         }
@@ -3877,12 +4295,25 @@ impl IndexWriter {
     /// Returns whether every document of `readers_and_updates` is deleted and
     /// the segment may be dropped.
     ///
-    /// Equivalent to `IndexWriter.isFullyDeleted(ReadersAndUpdates)`.
+    /// Equivalent to `IndexWriter.isFullyDeleted(ReadersAndUpdates)`
+    /// (`IndexWriter.java:6230-6236`), which answers `true` only when the merge
+    /// policy does *not* want the emptied segment kept — a
+    /// `SoftDeletesRetentionMergePolicy` keeps it so that its soft-deleted
+    /// documents stay readable.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the segment's delete counts or the merge policy
+    /// raise.
     pub fn is_fully_deleted(
         &self,
         readers_and_updates: &crate::index::readers_and_updates::ReadersAndUpdates,
     ) -> Result<bool> {
-        readers_and_updates.is_fully_deleted()
+        if readers_and_updates.is_fully_deleted()? {
+            return Ok(!readers_and_updates
+                .keep_fully_deleted_segment(self.config.merge_policy().as_ref())?);
+        }
+        Ok(false)
     }
 
     /// Returns a pooled reader to the pool.
@@ -3920,6 +4351,16 @@ impl IndexWriter {
     ///
     /// Equivalent to `IndexWriter.processEvents(boolean)`.
     fn process_events(&self, trigger_merge: bool) -> Result<()> {
+        // Java drains the event queue first, and skips it once the writer is
+        // tragic (`IndexWriter.java:5568-5576`). The only event this port
+        // records is `deleteUnusedFiles`, which a flush raises for the raw
+        // segment files a compound file has just replaced.
+        if self.get_tragic_exception().is_none() {
+            let files = self.flush_notifications.take_orphaned_files();
+            if !files.is_empty() {
+                self.delete_new_files(files)?;
+            }
+        }
         if trigger_merge && !self.closed.load(Ordering::Acquire) {
             self.maybe_merge()?;
         }
@@ -4228,7 +4669,7 @@ impl IndexWriter {
                 self.info_stream
                     .message(IW, "addIndexes: process directory");
             }
-            let sis = SegmentInfos::read_latest_commit(dir.as_ref())?;
+            let sis = SegmentInfos::read_latest_commit(Arc::clone(dir))?;
             if created != sis.index_created_version_major() {
                 return Err(LuceneError::IllegalArgument(format!(
                     "Cannot use addIndexes(Directory) with indexes that have been created by a different Lucene version. The current index was generated by Lucene {created} while one of the directories contains an index that was generated with Lucene {}",
@@ -4270,7 +4711,7 @@ impl IndexWriter {
                         );
                     }
                     let mut copy = info.clone();
-                    let context = crate::store::FlushIOContext::new(crate::store::FlushInfo::new(
+                    let context = crate::store::flush_io_context(crate::store::FlushInfo::new(
                         info.info.max_doc()?,
                         copy.size_in_bytes()?,
                     ));
@@ -4280,7 +4721,7 @@ impl IndexWriter {
                         // schema change.
                         self.global_field_numbers.add_or_get(fi)?;
                     }
-                    infos.push(self.copy_segment_as_is(info, &new_seg_name, &context)?);
+                    infos.push(self.copy_segment_as_is(info, &new_seg_name, context.as_ref())?);
                 }
             }
             Ok(())
@@ -4330,12 +4771,12 @@ impl IndexWriter {
             info.info.codec().ok_or_else(|| {
                 LuceneError::IllegalState(format!("segment {} has no codec", info.info.name))
             })?,
-            info.info.get_diagnostics().clone(),
+            info.info.get_diagnostics().to_std(),
             info.info.id(),
             info.info.get_attributes(),
             info.info.index_sort().clone(),
         )?;
-        new_info.set_files(info.info.files()?);
+        new_info.set_files(info.info.files_ordered()?);
 
         let mut new_info_per_commit = SegmentCommitInfo::new(
             new_info,
@@ -4347,8 +4788,12 @@ impl IndexWriter {
             info.id(),
         )?;
         new_info_per_commit.set_field_infos_files(info.get_field_infos_files().clone());
-        new_info_per_commit
-            .set_doc_values_updates_files(info.get_doc_values_updates_files().clone());
+        new_info_per_commit.set_doc_values_updates_files(
+            info.get_doc_values_updates_files()
+                .iter()
+                .map(|(number, files)| (*number, files.clone()))
+                .collect::<Vec<_>>(),
+        );
 
         let mut copied_files: HashSet<String> = HashSet::new();
         let outcome = (|| -> Result<()> {
@@ -4791,6 +5236,9 @@ impl IndexWriter {
 
         let mut state = self.state()?;
         state.segment_infos.add(new_segment)?;
+        // The name of the segment just added came from the atomic counter, so
+        // the `SegmentInfos` that now holds it must record the counter too.
+        self.publish_segment_counter(&mut state.segment_infos);
         self.checkpoint(&mut state)
     }
 }
@@ -4926,9 +5374,16 @@ impl IndexWriter {
     /// the packet will retry it, so nothing is lost by declining.
     pub fn try_apply(
         &self,
-        updates: &crate::index::documents_writer::FrozenBufferedUpdates,
+        updates: &Arc<crate::index::documents_writer::FrozenBufferedUpdates>,
     ) -> Result<bool> {
-        self.force_apply(updates)?;
+        // Java: `if (updates.tryLock()) { try { forceApply(updates); return true; }
+        // finally { updates.unlock(); } } return false;`
+        let Some(guard) = updates.try_lock_apply() else {
+            return Ok(false);
+        };
+        let outcome = self.apply_locked(updates);
+        drop(guard);
+        outcome?;
         Ok(true)
     }
 
@@ -4941,6 +5396,61 @@ impl IndexWriter {
     /// on the next pass, because `already_seen_segments` remembers the ones
     /// already covered.
     pub fn force_apply(
+        &self,
+        updates: &Arc<crate::index::documents_writer::FrozenBufferedUpdates>,
+    ) -> Result<()> {
+        let guard = updates.lock_apply()?;
+        let outcome = self.apply_locked(updates);
+        drop(guard);
+        outcome
+    }
+
+    /// Resolves a packet whose apply lock this thread already holds.
+    ///
+    /// Equivalent to the body of `IndexWriter.forceApply(FrozenBufferedUpdates)`
+    /// after it has taken `updates.lock()`. A packet that has already been
+    /// resolved returns immediately, which is Java's
+    /// `if (updates.isApplied()) return;`, and one that this call resolves is
+    /// recorded as finished with the stream — Java's
+    /// `bufferedUpdatesStream.finished(updates)` — so that it stops being
+    /// carried, and re-applied, by every later flush.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the segment states or resolving the packet
+    /// against them raises.
+    fn apply_locked(
+        &self,
+        updates: &Arc<crate::index::documents_writer::FrozenBufferedUpdates>,
+    ) -> Result<()> {
+        if updates.is_applied() {
+            // already done
+            return Ok(());
+        }
+        let outcome = self.apply_to_segments(updates);
+        if outcome.is_ok() {
+            self.buffered_updates_stream.finished(updates)?;
+            updates.mark_applied();
+        }
+        outcome
+    }
+
+    /// Resolves a packet against every segment it reaches.
+    ///
+    /// Equivalent to the optimistic loop inside
+    /// `IndexWriter.forceApply(FrozenBufferedUpdates)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java retries the whole resolution
+    /// when a merge finished while it was running, so that the newly merged
+    /// segment also receives the packet. This port resolves once: a segment
+    /// that appeared meanwhile is picked up on the next pass, because
+    /// `already_seen_segments` remembers the ones already covered.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the segment states or resolving the packet
+    /// against them raises.
+    fn apply_to_segments(
         &self,
         updates: &crate::index::documents_writer::FrozenBufferedUpdates,
     ) -> Result<()> {

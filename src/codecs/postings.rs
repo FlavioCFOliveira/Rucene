@@ -61,20 +61,43 @@ pub use crate::index::merge::MergeState;
 // Doc-values / norms abstractions used by postings
 // -----------------------------------------------------------------------------
 
-/// Access to a single numeric doc-values field.
+/// Random-access view of one numeric doc-values field, used by the postings
+/// path to read norms.
 ///
-/// Equivalent to `org.apache.lucene.index.NumericDocValues`.
-pub trait NumericDocValues {
+/// **This is not a port of a Lucene type, and no Lucene type carries this
+/// name.** Java passes `org.apache.lucene.index.NumericDocValues` — a
+/// forward-only iterator, ported as [`crate::index::NumericDocValues`] — down
+/// the postings path, obtaining a fresh one from the `NormsProducer` for every
+/// term so that the iterator contract holds. This port instead grew a
+/// random-access shape for that same job, so the two cannot be the same trait.
+/// The name says so, rather than claiming a Lucene type this does not
+/// implement.
+///
+/// The divergence is described in full at
+/// `crate::index::segment_merger::PostingsNormsAdapter`, which bridges the two;
+/// unifying them is the faithful fix and is tracked separately.
+pub trait PostingsNumericDocValues {
     /// Returns the value for the given document.
     fn get(&self, doc_id: i32) -> Result<i64>;
 }
 
-/// Source of normalization values for a segment.
+/// Source of normalization values for the postings path.
 ///
-/// Equivalent to `org.apache.lucene.codecs.NormsProducer`.
-pub trait NormsProducer: Send + Sync {
+/// **This is not a port of a Lucene type, and no Lucene type carries this
+/// name.** Java has a single `org.apache.lucene.codecs.NormsProducer`, ported
+/// as [`crate::codecs::norms::NormsProducer`], which the norms format and the
+/// postings path share. This port grew a second, narrower trait for the
+/// postings path, whose `get_norms` hands back the random-access
+/// [`PostingsNumericDocValues`] instead of the iterator Java returns, and which
+/// carries none of `check_integrity`, `get_merge_instance` or `close`. The name
+/// says so, rather than claiming a Lucene type this does not implement.
+///
+/// The divergence is described in full at
+/// `crate::index::segment_merger::PostingsNormsAdapter`, which bridges the two;
+/// unifying them is the faithful fix and is tracked separately.
+pub trait PostingsNormsProducer: Send + Sync {
     /// Returns the numeric doc-values for the requested field.
-    fn get_norms(&self, field_info: &FieldInfo) -> Result<Box<dyn NumericDocValues>>;
+    fn get_norms(&self, field_info: &FieldInfo) -> Result<Box<dyn PostingsNumericDocValues>>;
 }
 
 // -----------------------------------------------------------------------------
@@ -123,6 +146,20 @@ impl std::fmt::Debug for SingleTermsEnum {
     }
 }
 
+impl std::fmt::Display for SingleTermsEnum {
+    /// `org.apache.lucene.index.SingleTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.SingleTermsEnum",
+            self,
+        ))
+    }
+}
+
 impl TermsEnum for SingleTermsEnum {
     fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
         &mut self.atts
@@ -162,13 +199,13 @@ impl TermsEnum for SingleTermsEnum {
         ))
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         Err(LuceneError::UnsupportedOperation(
             "doc_freq not supported by SingleTermsEnum".to_string(),
         ))
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         Err(LuceneError::UnsupportedOperation(
             "total_term_freq not supported by SingleTermsEnum".to_string(),
         ))
@@ -200,10 +237,10 @@ impl TermsEnum for SingleTermsEnum {
 /// Equivalent to `org.apache.lucene.codecs.FieldsConsumer`.
 pub trait FieldsConsumer: Send + Sync {
     /// Writes every field/term/posting in `fields`.
-    fn write(&mut self, fields: &dyn Fields, norms: &dyn NormsProducer) -> Result<()>;
+    fn write(&mut self, fields: &dyn Fields, norms: &dyn PostingsNormsProducer) -> Result<()>;
 
     /// Merges the source segments described by `merge_state`.
-    fn merge(&mut self, merge_state: &MergeState, norms: &dyn NormsProducer) -> Result<()>;
+    fn merge(&mut self, merge_state: &MergeState, norms: &dyn PostingsNormsProducer) -> Result<()>;
 
     /// Closes this consumer, releasing all resources.
     fn close(&mut self) -> Result<()>;
@@ -245,6 +282,18 @@ pub trait PostingsFormat: Send + Sync + fmt::Debug {
 
     /// Creates a reader for an existing segment.
     fn fields_producer<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn FieldsProducer>>;
+}
+
+impl fmt::Display for dyn PostingsFormat + '_ {
+    /// Port of the concrete `PostingsFormat.toString()`, which every
+    /// implementation inherits: `"PostingsFormat(name=" + name + ")"`.
+    ///
+    /// It hangs off the trait object for the same reason `Codec`'s does: Rust
+    /// cannot give [`fmt::Display`] a default body, but Java's method is
+    /// concrete on the abstract class.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PostingsFormat(name={})", self.name())
+    }
 }
 
 /// A registry mapping postings-format short names to [`PostingsFormat`]
@@ -353,8 +402,30 @@ pub fn reload_postings_formats(format: Arc<dyn PostingsFormat>) -> Result<()> {
     GLOBAL_POSTINGS_REGISTRY.register_arc(format)
 }
 
-static GLOBAL_POSTINGS_REGISTRY: LazyLock<PostingsFormatRegistry> =
-    LazyLock::new(PostingsFormatRegistry::new);
+/// The global registry, seeded with the formats this crate ships.
+///
+/// Lucene discovers postings formats through the Java service loader:
+/// `PostingsFormat.forName` consults a `NamedSPILoader` that reads
+/// `META-INF/services/org.apache.lucene.codecs.PostingsFormat`, and the
+/// `lucene-core` jar lists exactly one entry there,
+/// `org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat`. Nothing in
+/// Lucene registers it explicitly, so a caller that merely has `lucene-core` on
+/// the classpath can already resolve the name `Lucene104` — which is what
+/// `PerFieldPostingsFormat.FieldsReader` does when it reads a segment back and
+/// looks up the format named by each field's
+/// `PerFieldPostingsFormat.format` attribute.
+///
+/// Rust has no run-time service discovery, so the built-in entries of that
+/// service file are registered here instead, when the registry is first
+/// touched. [`reload_postings_formats`] remains the equivalent of
+/// `reloadPostingsFormats(ClassLoader)` for formats defined outside this crate.
+static GLOBAL_POSTINGS_REGISTRY: LazyLock<PostingsFormatRegistry> = LazyLock::new(|| {
+    let registry = PostingsFormatRegistry::new();
+    registry
+        .register_arc(Arc::new(crate::codecs::Lucene104PostingsFormat::new()))
+        .expect("built-in postings formats have valid, distinct SPI names");
+    registry
+});
 
 /// Looks up a postings format by name from the global registry.
 ///
@@ -376,7 +447,9 @@ pub fn available_postings_formats() -> Vec<String> {
 /// Low-level postings reader used by term dictionaries.
 ///
 /// Equivalent to `org.apache.lucene.codecs.PostingsReaderBase`.
-pub trait PostingsReaderBase: Send + Sync {
+/// Java's `Lucene103BlockTreeTermsReader.toString()` concatenates the postings
+/// reader it delegates to, so [`fmt::Display`] is a supertrait here.
+pub trait PostingsReaderBase: Send + Sync + fmt::Display {
     /// Performs initialization, such as reading and verifying the header from
     /// the terms dictionary input.
     fn init(&mut self, terms_in: &mut dyn IndexInput, state: &SegmentReadState) -> Result<()>;
@@ -385,8 +458,17 @@ pub trait PostingsReaderBase: Send + Sync {
     fn new_term_state(&self) -> Result<BlockTermState>;
 
     /// Decodes metadata for the next term.
+    ///
+    /// Takes `&self`: Java's `decodeTerm` writes into the `state` it is handed
+    /// and never touches the reader, and the same is true of `postings` and
+    /// `impacts` below, which only read the reader's inputs to clone them. The
+    /// `&mut` this port used instead was not Lucene's shape, and it was what
+    /// made the reader unshareable — `SegmentTermsEnum` could not hold it while
+    /// `Lucene103BlockTreeTermsReader` owned it behind `&mut self`, so the
+    /// terms dictionary had no way to decode a term's metadata and every term
+    /// query over an on-disk segment silently found nothing.
     fn decode_term(
-        &mut self,
+        &self,
         input: &mut dyn DataInput,
         field_info: &FieldInfo,
         state: &mut BlockTermState,
@@ -395,7 +477,7 @@ pub trait PostingsReaderBase: Send + Sync {
 
     /// Returns a postings iterator for the given term state.
     fn postings(
-        &mut self,
+        &self,
         field_info: &FieldInfo,
         state: &BlockTermState,
         reuse: Option<Box<dyn PostingsEnum>>,
@@ -404,7 +486,7 @@ pub trait PostingsReaderBase: Send + Sync {
 
     /// Returns an impacts iterator for the given term state.
     fn impacts(
-        &mut self,
+        &self,
         field_info: &FieldInfo,
         state: &BlockTermState,
         flags: i32,
@@ -435,7 +517,7 @@ pub trait PostingsWriterBase: Send + Sync {
         term: &BytesRef,
         terms_enum: &mut dyn TermsEnum,
         docs_seen: &mut FixedBitSet,
-        norms: &dyn NormsProducer,
+        norms: &dyn PostingsNormsProducer,
     ) -> Result<Option<BlockTermState>>;
 
     /// Encodes term metadata to the provided output.
@@ -520,7 +602,7 @@ pub trait PushPostingsWriterBase: Send + Sync {
     fn new_term_state(&self) -> Result<BlockTermState>;
 
     /// Starts a new term.
-    fn start_term(&mut self, norms: Option<&dyn NumericDocValues>) -> Result<()>;
+    fn start_term(&mut self, norms: Option<&dyn PostingsNumericDocValues>) -> Result<()>;
 
     /// Finishes the current term.
     fn finish_term(&mut self, state: &mut BlockTermState) -> Result<()>;
@@ -588,7 +670,7 @@ pub trait PushPostingsWriterBase: Send + Sync {
         _term: &BytesRef,
         terms_enum: &mut dyn TermsEnum,
         docs_seen: &mut FixedBitSet,
-        norms: &dyn NormsProducer,
+        norms: &dyn PostingsNormsProducer,
     ) -> Result<Option<BlockTermState>> {
         let field_info = self
             .push_state()
@@ -597,7 +679,7 @@ pub trait PushPostingsWriterBase: Send + Sync {
             .ok_or_else(|| LuceneError::IllegalState("set_field not called".to_string()))?
             .clone();
 
-        let mut norms_values: Option<Box<dyn NumericDocValues>> = None;
+        let mut norms_values: Option<Box<dyn PostingsNumericDocValues>> = None;
         if field_info.has_norms() {
             norms_values = Some(norms.get_norms(&field_info)?);
         }
@@ -687,7 +769,7 @@ impl<T: PushPostingsWriterBase + ?Sized> PostingsWriterBase for T {
         term: &BytesRef,
         terms_enum: &mut dyn TermsEnum,
         docs_seen: &mut FixedBitSet,
-        norms: &dyn NormsProducer,
+        norms: &dyn PostingsNormsProducer,
     ) -> Result<Option<BlockTermState>> {
         PushPostingsWriterBase::write_term(self, term, terms_enum, docs_seen, norms)
     }
@@ -730,6 +812,15 @@ mod tests {
         atts: crate::util::attribute::AttributeSource,
     }
 
+    impl std::fmt::Display for StubTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubTermsEnum")
+        }
+    }
+
     impl TermsEnum for StubTermsEnum {
         fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
             &mut self.atts
@@ -767,11 +858,11 @@ mod tests {
             Ok(-1)
         }
 
-        fn doc_freq(&self) -> Result<i32> {
+        fn doc_freq(&mut self) -> Result<i32> {
             Ok(0)
         }
 
-        fn total_term_freq(&self) -> Result<i64> {
+        fn total_term_freq(&mut self) -> Result<i64> {
             Ok(0)
         }
 
@@ -816,6 +907,15 @@ mod tests {
         }
     }
 
+    impl std::fmt::Display for StubPostingsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubPostingsEnum")
+        }
+    }
+
     impl PostingsEnum for StubPostingsEnum {
         fn freq(&self) -> Result<i32> {
             Ok(0)
@@ -857,6 +957,15 @@ mod tests {
 
         fn cost(&self) -> i64 {
             0
+        }
+    }
+
+    impl std::fmt::Display for StubImpactsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubImpactsEnum")
         }
     }
 
@@ -913,11 +1022,11 @@ mod tests {
         }
     }
 
-    // Stub NumericDocValues / NormsProducer ---------------------------------
+    // Stub norms -----------------------------------------------------------
     #[derive(Debug, Default, Clone)]
     struct StubNumericDocValues;
 
-    impl NumericDocValues for StubNumericDocValues {
+    impl PostingsNumericDocValues for StubNumericDocValues {
         fn get(&self, _doc_id: i32) -> Result<i64> {
             Ok(0)
         }
@@ -926,8 +1035,8 @@ mod tests {
     #[derive(Debug, Default, Clone)]
     struct StubNormsProducer;
 
-    impl NormsProducer for StubNormsProducer {
-        fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+    impl PostingsNormsProducer for StubNormsProducer {
+        fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn PostingsNumericDocValues>> {
             Ok(Box::new(StubNumericDocValues))
         }
     }
@@ -937,11 +1046,19 @@ mod tests {
     struct StubFieldsConsumer;
 
     impl FieldsConsumer for StubFieldsConsumer {
-        fn write(&mut self, _fields: &dyn Fields, _norms: &dyn NormsProducer) -> Result<()> {
+        fn write(
+            &mut self,
+            _fields: &dyn Fields,
+            _norms: &dyn PostingsNormsProducer,
+        ) -> Result<()> {
             Ok(())
         }
 
-        fn merge(&mut self, _merge_state: &MergeState, _norms: &dyn NormsProducer) -> Result<()> {
+        fn merge(
+            &mut self,
+            _merge_state: &MergeState,
+            _norms: &dyn PostingsNormsProducer,
+        ) -> Result<()> {
             Ok(())
         }
 
@@ -1010,6 +1127,12 @@ mod tests {
     #[derive(Debug, Default, Clone)]
     struct StubPostingsReader;
 
+    impl fmt::Display for StubPostingsReader {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("StubPostingsReader()")
+        }
+    }
+
     impl PostingsReaderBase for StubPostingsReader {
         fn init(
             &mut self,
@@ -1024,7 +1147,7 @@ mod tests {
         }
 
         fn decode_term(
-            &mut self,
+            &self,
             _input: &mut dyn DataInput,
             _field_info: &FieldInfo,
             _state: &mut BlockTermState,
@@ -1034,7 +1157,7 @@ mod tests {
         }
 
         fn postings(
-            &mut self,
+            &self,
             _field_info: &FieldInfo,
             _state: &BlockTermState,
             _reuse: Option<Box<dyn PostingsEnum>>,
@@ -1044,7 +1167,7 @@ mod tests {
         }
 
         fn impacts(
-            &mut self,
+            &self,
             _field_info: &FieldInfo,
             _state: &BlockTermState,
             _flags: i32,
@@ -1102,7 +1225,7 @@ mod tests {
             Ok(BlockTermState::default())
         }
 
-        fn start_term(&mut self, _norms: Option<&dyn NumericDocValues>) -> Result<()> {
+        fn start_term(&mut self, _norms: Option<&dyn PostingsNumericDocValues>) -> Result<()> {
             Ok(())
         }
 
@@ -1147,7 +1270,7 @@ mod tests {
             _term: &BytesRef,
             _terms_enum: &mut dyn TermsEnum,
             _docs_seen: &mut FixedBitSet,
-            _norms: &dyn NormsProducer,
+            _norms: &dyn PostingsNormsProducer,
         ) -> Result<Option<BlockTermState>> {
             Ok(None)
         }
@@ -1258,7 +1381,7 @@ mod tests {
         assert_eq!(state.doc_freq, 0);
         reader
             .decode_term(
-                &mut crate::store::ByteArrayDataInput::new(vec![]),
+                &mut crate::store::ByteArrayDataInput::empty(),
                 &FieldInfo::new("field", 0).with_postings_options(IndexOptions::DOCS, false, false),
                 &mut BlockTermState::default(),
                 true,
@@ -1342,7 +1465,7 @@ mod tests {
 
         PostingsWriterBase::encode_term(
             &mut writer,
-            &mut crate::store::ByteArrayDataOutput::new(),
+            &mut crate::store::VecDataOutput::new(),
             &field_info,
             &BlockTermState::default(),
             true,
@@ -1405,7 +1528,7 @@ mod tests {
         assert!(result.is_none());
         writer
             .encode_term(
-                &mut crate::store::ByteArrayDataOutput::new(),
+                &mut crate::store::VecDataOutput::new(),
                 &field_info,
                 &BlockTermState::default(),
                 true,

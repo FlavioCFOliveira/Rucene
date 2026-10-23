@@ -195,18 +195,25 @@ impl AbstractAnalysisFactory {
         })
     }
 
-    /// Reads the lines of one resource.
+    /// Reads the data-carrying lines of one resource.
     ///
     /// Equivalent to `AbstractAnalysisFactory.getLines(ResourceLoader, String)`,
-    /// which decodes the resource as UTF-8 through `WordlistLoader.getLines`.
+    /// which is `WordlistLoader.getLines(loader.openResource(resource),
+    /// StandardCharsets.UTF_8)` — so comment lines (`#`) and blank lines are
+    /// dropped, a leading byte-order mark is removed, and every kept line is
+    /// trimmed. See [`crate::analysis::wordlist_loader::get_lines`], which does
+    /// that work and documents the order the four rules apply in.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever opening or reading the resource raises, or an error
+    /// when its bytes are not valid UTF-8.
     pub fn get_lines(
         loader: &dyn crate::util::resource_loader::ResourceLoader,
         resource: &str,
     ) -> Result<Vec<String>> {
-        let mut reader = loader.open_resource(resource)?;
-        let mut text = String::new();
-        std::io::Read::read_to_string(&mut reader, &mut text)?;
-        Ok(text.lines().map(str::to_string).collect())
+        let reader = loader.open_resource(resource)?;
+        crate::analysis::wordlist_loader::get_lines(reader, crate::util::IOUtils::UTF_8)
     }
 
     /// Reads one or more word-list resources into a set.
@@ -250,7 +257,17 @@ impl AbstractAnalysisFactory {
         }
         let mut words = crate::analysis::CharArraySet::new(files.len() * 10, ignore_case);
         for file in &files {
-            let lines = Self::get_lines(loader, file.trim())?;
+            // Java does *not* route this through `getLines`: it opens the
+            // resource with a reporting UTF-8 decoder and hands the reader
+            // straight to `WordlistLoader.getSnowballWordSet`
+            // (`AbstractAnalysisFactory.java:307-327`). The two differ, because
+            // `getLines` drops `#` comments and blank lines and trims, none of
+            // which the Snowball format asks for — its comment character is
+            // `|`, and `#` is an ordinary character.
+            let stream = loader.open_resource(file.trim())?;
+            let decoded =
+                crate::util::IOUtils::get_decoding_reader(stream, crate::util::IOUtils::UTF_8)?;
+            let lines = crate::analysis::wordlist_loader::read_lines(&decoded.into_inner());
             for word in crate::analysis::wordlist_loader::get_snowball_word_set(lines).iter() {
                 words.add(word.iter().collect::<String>());
             }
@@ -908,4 +925,64 @@ pub fn reload_char_filters(factory: Arc<dyn CharFilterFactory>) -> Result<()> {
         .write()
         .expect("INVARIANT: the char-filter loader lock is never poisoned")
         .register(name, factory)
+}
+
+#[cfg(test)]
+mod get_lines_tests {
+    use super::*;
+    use crate::util::resource_loader::ResourceLoader;
+    use std::io::Read;
+
+    /// A loader over one in-memory resource.
+    struct OneResource(&'static str);
+
+    impl ResourceLoader for OneResource {
+        fn open_resource(&self, _resource: &str) -> Result<Box<dyn Read + Send>> {
+            Ok(Box::new(std::io::Cursor::new(self.0.as_bytes().to_vec())))
+        }
+    }
+
+    /// `AbstractAnalysisFactory.getLines` is `WordlistLoader.getLines(stream,
+    /// UTF_8)`, so it must drop comment and blank lines rather than hand every
+    /// raw line back. Reading the resource and splitting it on newlines — which
+    /// is what this port did before rmp task #173 — turns a `#` comment into a
+    /// stop word.
+    #[test]
+    fn get_lines_applies_the_wordlist_loader_rules() {
+        let loader = OneResource("# a comment\n\n  spaced  \nword\n");
+        let lines = AbstractAnalysisFactory::get_lines(&loader, "stop.txt").expect("lines");
+        assert_eq!(lines, vec!["spaced".to_string(), "word".to_string()]);
+    }
+
+    /// And therefore neither does the word set built from it.
+    #[test]
+    fn get_word_set_does_not_admit_comments_or_blanks() {
+        let loader = OneResource("# a comment\n\nword\n");
+        let words = AbstractAnalysisFactory::get_word_set(&loader, Some("stop.txt"), false)
+            .expect("word set")
+            .expect("a file was named");
+        let mut got: Vec<String> = words.iter().map(|w| w.iter().collect()).collect();
+        got.sort();
+        assert_eq!(got, vec!["word".to_string()]);
+    }
+
+    /// The Snowball reader must *not* go through `getLines`: its comment
+    /// character is `|`, `#` is an ordinary character, and Java hands the
+    /// decoded reader straight to `WordlistLoader.getSnowballWordSet`
+    /// (`AbstractAnalysisFactory.java:307-327`).
+    #[test]
+    fn snowball_word_set_keeps_what_get_lines_would_drop() {
+        let loader = OneResource("#hash a | comment\n\nb\n");
+        let words =
+            AbstractAnalysisFactory::get_snowball_word_set(&loader, Some("stop.txt"), false)
+                .expect("word set")
+                .expect("a file was named");
+        let mut got: Vec<String> = words.iter().map(|w| w.iter().collect()).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec!["#hash".to_string(), "a".to_string(), "b".to_string()],
+            "'#hash' is a Snowball word, not a comment"
+        );
+    }
 }

@@ -218,6 +218,9 @@ impl Default for ClassicSimilarity {
 }
 
 impl Similarity for ClassicSimilarity {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.similarities.ClassicSimilarity"
+    }
     fn discount_overlaps(&self) -> bool {
         self.discount_overlaps
     }

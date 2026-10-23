@@ -198,8 +198,8 @@ impl IntersectVisitor for FindNextValueVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Relation {
-        Relation::CellCrossesQuery
+    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Result<Relation> {
+        Ok(Relation::CellCrossesQuery)
     }
 }
 
@@ -227,8 +227,8 @@ impl IntersectVisitor for LastDocVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Relation {
-        Relation::CellCrossesQuery
+    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Result<Relation> {
+        Ok(Relation::CellCrossesQuery)
     }
 }
 
@@ -241,7 +241,7 @@ fn find_next_value(
     bytes_per_dim: usize,
     last_doc: bool,
 ) -> Result<Option<ValueAndDoc>> {
-    let cmp = compare_unsigned(point_tree.max_packed_value(), 0, value, 0, bytes_per_dim);
+    let cmp = compare_unsigned(point_tree.max_packed_value()?, 0, value, 0, bytes_per_dim);
     if cmp < 0 || (cmp == 0 && !allow_equal) {
         return Ok(None);
     }
@@ -325,12 +325,12 @@ fn last_doc_of(point_tree: &mut dyn PointTree, value: &[u8], bytes_per_dim: usiz
                 break 'outer;
             }
         }
-        if compare_unsigned(point_tree.min_packed_value(), 0, value, 0, bytes_per_dim) > 0 {
+        if compare_unsigned(point_tree.min_packed_value()?, 0, value, 0, bytes_per_dim) > 0 {
             // This node does not hold the value, so the next nodes cannot
             // either.
             break;
         }
-        stack.push(point_tree.clone_tree());
+        stack.push(point_tree.clone_tree()?);
     }
     while let Some(mut next) = stack.pop() {
         if !next.move_to_child()? {
@@ -348,12 +348,12 @@ fn last_doc_of(point_tree: &mut dyn PointTree, value: &[u8], bytes_per_dim: usiz
             }
         } else {
             loop {
-                if compare_unsigned(next.min_packed_value(), 0, value, 0, bytes_per_dim) > 0 {
+                if compare_unsigned(next.min_packed_value()?, 0, value, 0, bytes_per_dim) > 0 {
                     // This node does not hold the value, so the next nodes
                     // cannot either.
                     break;
                 }
-                stack.push(next.clone_tree());
+                stack.push(next.clone_tree()?);
                 if !next.move_to_sibling()? {
                     break;
                 }
@@ -537,7 +537,7 @@ impl IndexSortSortedNumericDocValuesRangeQuery {
         if bytes_per_dim != 8 && bytes_per_dim != 4 {
             return Ok(None);
         }
-        if points.size() != i64::from(points.doc_count()) {
+        if points.size()? != i64::from(points.doc_count()?) {
             return Ok(None);
         }
         debug_assert!(self.lower_value() <= self.upper_value());
@@ -563,7 +563,7 @@ impl IndexSortSortedNumericDocValuesRangeQuery {
         }
         if Self::match_all(points.as_ref(), &query_lower_point, &query_upper_point)? {
             let max_doc = reader.max_doc();
-            return Ok(Some(if points.doc_count() == max_doc {
+            return Ok(Some(if points.doc_count()? == max_doc {
                 IteratorAndCount::all(max_doc)?
             } else {
                 IteratorAndCount::sparse_range(0, max_doc, delegate)
@@ -618,7 +618,7 @@ impl IndexSortSortedNumericDocValuesRangeQuery {
         if min_doc_id == max_doc_id {
             return Ok(Some(IteratorAndCount::empty()));
         }
-        Ok(Some(if points.doc_count() == reader.max_doc() {
+        Ok(Some(if points.doc_count()? == reader.max_doc() {
             IteratorAndCount::dense_range(min_doc_id, max_doc_id)?
         } else {
             IteratorAndCount::sparse_range(min_doc_id, max_doc_id, delegate)
@@ -732,9 +732,11 @@ impl IndexSortSortedNumericDocValuesRangeQuery {
         let missing_long_value = missing_long_value(sort_field);
         // Either all documents have doc values, or the missing value falls
         // outside the range.
-        if point_values
-            .map(|values| values.doc_count() == reader.max_doc())
-            .unwrap_or(false)
+        let points_cover_all_docs = match point_values {
+            Some(values) => values.doc_count()? == reader.max_doc(),
+            None => false,
+        };
+        if points_cover_all_docs
             || missing_long_value < self.lower_value()
             || missing_long_value > self.upper_value()
         {
@@ -833,10 +835,10 @@ impl ConstantScoreWeightImpl for IndexSortRangeWeight {
             let numeric_values =
                 IndexSortSortedNumericDocValuesRangeQuery::single_valued_numeric(context, field)?;
             let point_values = reader.get_point_values(field)?;
-            let points_cover_all_docs = point_values
-                .as_ref()
-                .map(|values| values.doc_count() == reader.max_doc())
-                .unwrap_or(false);
+            let points_cover_all_docs = match point_values.as_ref() {
+                Some(values) => values.doc_count()? == reader.max_doc(),
+                None => false,
+            };
             let mut it_and_count = None;
             if points_cover_all_docs {
                 if let Some(numeric_values) = numeric_values {

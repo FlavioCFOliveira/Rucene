@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
 use crate::internal::hppc::IntHashSet;
-use crate::util::FixedBitSet;
+use crate::util::{FixedBitSet, InfoStream};
 
 use super::builder::{HnswBuilder, HnswGraphBuilder, DEFAULT_RAND_SEED};
 use super::hnsw_lock::HnswLock;
@@ -38,8 +38,10 @@ const DEFAULT_BATCH_SIZE: i32 = 2048;
 ///   what it does not reproduce is the wall-clock speed-up. Note that Lucene's
 ///   concurrent merge is itself non-deterministic: the graph it produces depends on
 ///   how the threads interleave.
-/// * Java's `setInfoStream` forwards a debugging stream to each worker; this port's
-///   [`HnswGraphBuilder`] has no info stream, so there is nothing to forward.
+/// * Java keeps one `ConcurrentMergeWorker` per thread, each its own
+///   `HnswGraphBuilder` over the shared graph, and `setInfoStream` forwards the
+///   stream to every one of them. Executing on the calling thread means there is
+///   exactly one builder here, so the forwarding reaches that one builder.
 pub struct HnswConcurrentMergeBuilder {
     builder: HnswGraphBuilder,
     /// Striped locks shared by every worker, exactly as Lucene shares them.
@@ -115,20 +117,31 @@ impl HnswConcurrentMergeBuilder {
         }
     }
 
+    /// Freezes the workers' builders.
+    ///
+    /// Equivalent to the private `HnswConcurrentMergeBuilder.finish()`
+    /// (`HnswConcurrentMergeBuilder.java:149-151`), which calls
+    /// `workers[0].finish()` — one worker suffices because every worker builds
+    /// into the same graph.
+    fn finish(&mut self) {
+        self.builder.finish();
+    }
+
     /// Adds every node in `[start, end)`, skipping the ones already initialized.
     ///
-    /// Equivalent to `ConcurrentMergeWorker.addVectors` together with its
-    /// `addGraphNode` override.
+    /// Equivalent to the inherited `HnswGraphBuilder.addVectors(int, int)` that
+    /// `ConcurrentMergeWorker.run` calls, together with the worker's
+    /// `addGraphNode` override that skips an already-initialized node. Rust
+    /// spells that override as the `skip` argument of
+    /// [`HnswGraphBuilder::add_vectors_skipping`], so the progress the worker
+    /// reports to its info stream is emitted on the same path Java emits it on.
     fn add_vectors(&mut self, start: i32, end: i32) -> Result<()> {
-        for node in start..end {
-            if let Some(initialized) = &self.initialized_nodes {
-                if initialized.get(node as usize) {
-                    continue;
-                }
-            }
-            self.builder.add_graph_node(node)?;
-        }
-        Ok(())
+        let initialized = self.initialized_nodes.take();
+        let result = self
+            .builder
+            .add_vectors_skipping(start, end, initialized.as_ref());
+        self.initialized_nodes = initialized;
+        result
     }
 }
 
@@ -164,10 +177,14 @@ impl HnswBuilder for HnswConcurrentMergeBuilder {
         self.builder.get_graph()
     }
 
+    fn set_info_stream(&mut self, info_stream: Arc<dyn InfoStream>) {
+        self.builder.set_info_stream(info_stream);
+    }
+
     fn get_completed_graph(&mut self) -> Result<&OnHeapHnswGraph> {
         if !self.frozen {
             // Should already have been done in build(), but just in case.
-            self.builder.finish();
+            self.finish();
             self.frozen = true;
         }
         Ok(self.builder.get_graph())

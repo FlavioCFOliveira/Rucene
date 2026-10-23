@@ -73,6 +73,9 @@ impl DFISimilarity {
 }
 
 impl Similarity for DFISimilarity {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.similarities.DFISimilarity"
+    }
     fn discount_overlaps(&self) -> bool {
         self.discount_overlaps
     }

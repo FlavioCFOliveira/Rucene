@@ -30,6 +30,14 @@ pub struct BlockTreeShared {
     pub segment: String,
     /// Format version of the three files.
     pub version: i32,
+    /// The one postings reader every enum of every field decodes through.
+    ///
+    /// Java reaches it as `ste.fr.parent.postingsReader`: a single reader held
+    /// by the terms dictionary and shared by every `SegmentTermsEnum` it hands
+    /// out. `BlockTreeShared` is this port's `parent`, so it is held here, and
+    /// shared rather than cloned — a per-enum copy would duplicate the `.doc`,
+    /// `.pos` and `.pay` handles Lucene opens once.
+    pub postings_reader: Arc<dyn crate::codecs::postings::PostingsReaderBase>,
 }
 
 impl std::fmt::Debug for BlockTreeShared {
@@ -260,5 +268,21 @@ impl Terms for FieldReader {
 
     fn max(&self) -> Result<Option<BytesRef>> {
         Ok(Some(self.max_term.clone()))
+    }
+}
+
+impl std::fmt::Display for FieldReader {
+    /// Port of `FieldReader.toString()`, which names itself `BlockTreeTerms`
+    /// rather than after its own class.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "BlockTreeTerms(seg={} terms={},postings={},positions={},docs={})",
+            self.shared.segment,
+            self.num_terms,
+            self.sum_doc_freq,
+            self.sum_total_term_freq,
+            self.doc_count
+        )
     }
 }

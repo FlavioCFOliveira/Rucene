@@ -54,6 +54,48 @@ pub struct OptimizedScalarQuantizer {
 }
 
 /// Clamps `v` into `[lo, hi]`.
+/// `java.lang.Math.round(double)`, as a `f64`.
+///
+/// Java returns "the closest `long` to the argument, with ties rounding to
+/// positive infinity", and **`0` when the argument is NaN**. Rust's
+/// [`f64::round`] rounds halves *away from zero* and propagates NaN, so both
+/// halves of that contract differ:
+///
+/// * a tie at a negative value — Java's `round(-2.5)` is `-2`, Rust's is `-3`;
+/// * NaN — which this quantizer really produces, because a vector whose
+///   residual components are all equal gives `a == b`, hence an infinite
+///   `stepInv` and a `0 * Infinity` product. Java turns that into `0` and the
+///   optimiser leaves the interval alone; propagating NaN instead poisons every
+///   accumulator and writes a NaN interval into the `.vemq`.
+///
+/// The value is `floor(x + 0.5)` computed without the intermediate addition, so
+/// it does not inherit that addition's double rounding.
+fn java_math_round_f64(x: f64) -> f64 {
+    if x.is_nan() {
+        return 0.0;
+    }
+    let floor = x.floor();
+    if x - floor >= 0.5 {
+        floor + 1.0
+    } else {
+        floor
+    }
+}
+
+/// `java.lang.Math.round(float)`, as a `f32`. See [`java_math_round_f64`] for
+/// why Rust's [`f32::round`] cannot be used.
+fn java_math_round_f32(x: f32) -> f32 {
+    if x.is_nan() {
+        return 0.0;
+    }
+    let floor = x.floor();
+    if x - floor >= 0.5 {
+        floor + 1.0
+    } else {
+        floor
+    }
+}
+
 fn clamp(v: f64, lo: f64, hi: f64) -> f64 {
     v.max(lo).min(hi)
 }
@@ -100,11 +142,16 @@ impl OptimizedScalarQuantizer {
         for &xi in vector {
             let xi = f64::from(xi);
             // Quantize then dequantize, and measure what was lost.
-            let xiq = a + step * ((clamp(xi, a, b) - a) * step_inv).round();
+            let xiq = a + step * java_math_round_f64((clamp(xi, a, b) - a) * step_inv);
             xe += xi * (xi - xiq);
             e += (xi - xiq) * (xi - xiq);
         }
-        f64::from(1.0 - self.lambda) * xe * xe / f64::from(norm2) + f64::from(self.lambda) * e
+        // Java is `(1.0 - lambda) * xe * xe / norm2 + lambda * e`, where `1.0`
+        // is a **double** literal, so `1.0 - lambda` is a double subtraction of
+        // the widened float. Computing it in `f32` first and widening — as this
+        // port did — gives 0.9f (0.899999976…) instead of 0.899999998…, which
+        // shifts the loss and can pick a different optimised interval.
+        (1.0 - f64::from(self.lambda)) * xe * xe / f64::from(norm2) + f64::from(self.lambda) * e
     }
 
     /// Refines `interval` by coordinate descent, stopping as soon as a step
@@ -125,14 +172,32 @@ impl OptimizedScalarQuantizer {
 
             let (mut daa, mut dab, mut dbb, mut dax, mut dbx) = (0.0f64, 0.0, 0.0, 0.0, 0.0);
             for &xi in vector {
-                let k = ((clamp(f64::from(xi), f64::from(a), f64::from(b)) as f32 - a) * step_inv)
-                    .round();
-                let s = f64::from(k / (points as f32 - 1.0));
-                daa += (1.0 - s) * (1.0 - s);
-                dab += (1.0 - s) * s;
-                dbb += s * s;
-                dax += f64::from(xi) * (1.0 - s);
-                dbx += f64::from(xi) * s;
+                // Java is `float k = Math.round((clamp(xi, a, b) - a) * stepInv)`,
+                // where `clamp` returns a **double**, so the subtraction and the
+                // multiplication both widen to double and only the rounded
+                // result narrows to float. Narrowing the clamped value to `f32`
+                // first — as this port did — changes the last bits of `k` for
+                // some vectors, which moves the optimised interval and then a
+                // quantized component, and the `.veq` stops matching Lucene's.
+                let k = java_math_round_f64(
+                    (clamp(f64::from(xi), f64::from(a), f64::from(b)) - f64::from(a))
+                        * f64::from(step_inv),
+                ) as f32;
+                // `s` stays a `float`, because Java's five accumulations do
+                // **not** all widen it. `1.0` is a double literal, so
+                // `(1.0 - s)` is a double and `daa`, `dab` and `dax` are double
+                // products; but `s * s` and `xi * s` are float*float, rounded to
+                // float *before* being added to the double accumulator. Doing
+                // those two in `f64` — as this port did — makes `dbb` and `dbx`
+                // differ in the 8th digit, which moves the optimised interval by
+                // one ULP and changes a quantized component in the `.veq`.
+                let s = k / (points as f32 - 1.0);
+                let s_wide = f64::from(s);
+                daa += (1.0 - s_wide) * (1.0 - s_wide);
+                dab += (1.0 - s_wide) * s_wide;
+                dbb += f64::from(s * s);
+                dax += f64::from(xi) * (1.0 - s_wide);
+                dbx += f64::from(xi * s);
             }
 
             let m0 = f64::from(scale) * dax * dax + f64::from(self.lambda) * daa;
@@ -230,7 +295,7 @@ impl OptimizedScalarQuantizer {
         let mut sum_query = 0i32;
         for h in 0..vector.len() {
             let xi = clamp(f64::from(vector[h]), f64::from(a), f64::from(b)) as f32;
-            let assignment = ((xi - a) / step).round() as i32;
+            let assignment = java_math_round_f32((xi - a) / step) as i32;
             sum_query += assignment;
             destination[h] = assignment as u8;
         }

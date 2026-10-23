@@ -249,7 +249,7 @@ impl PointsWriter for Lucene90PointsWriter {
         }
 
         let values = values.get_values(&field_info.name)?;
-        if values.size() == 0 {
+        if values.size()? == 0 {
             // No points for this field; do not write a metadata entry.
             return Ok(());
         }
@@ -268,7 +268,7 @@ impl PointsWriter for Lucene90PointsWriter {
             &self.segment_name,
             config,
             self.max_mb_sort_in_heap,
-            values.size(),
+            values.size()?,
             Lucene90PointsFormat::with_version(self.version)?.bkd_version(),
         )?;
 
@@ -286,7 +286,7 @@ impl PointsWriter for Lucene90PointsWriter {
         // immutable files.
         let mut tree = values.point_tree()?;
         if tree.as_mutable().is_some() {
-            if tree.size() == 0 {
+            if tree.size()? == 0 {
                 // Java's `writeField` returns a null finalizer for an empty
                 // tree and the caller then writes nothing at all — no field
                 // number, no meta block (`Lucene90PointsWriter.java:159-167`).
@@ -548,12 +548,12 @@ impl PointValues for BkdPointValues {
         self.reader.lock().unwrap().point_tree()
     }
 
-    fn size(&self) -> i64 {
-        self.reader.lock().unwrap().point_count()
+    fn size(&self) -> Result<i64> {
+        Ok(self.reader.lock().unwrap().point_count())
     }
 
-    fn doc_count(&self) -> i32 {
-        self.reader.lock().unwrap().doc_count()
+    fn doc_count(&self) -> Result<i32> {
+        Ok(self.reader.lock().unwrap().doc_count())
     }
 
     fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
@@ -685,16 +685,16 @@ mod tests {
             Ok(values.point_tree()?)
         }
 
-        fn size(&self) -> i64 {
-            self.points.len() as i64
+        fn size(&self) -> Result<i64> {
+            Ok(self.points.len() as i64)
         }
 
-        fn doc_count(&self) -> i32 {
+        fn doc_count(&self) -> Result<i32> {
             let mut docs: std::collections::HashSet<i32> = std::collections::HashSet::new();
             for (doc, _) in &self.points {
                 docs.insert(*doc);
             }
-            docs.len() as i32
+            Ok(docs.len() as i32)
         }
 
         fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
@@ -834,7 +834,7 @@ mod tests {
         let points_reader = Lucene90PointsReader::new(&read_state).unwrap();
         let read_values = points_reader.get_values("int_point").unwrap();
 
-        assert_eq!(read_values.size(), 6);
+        assert_eq!(read_values.size().unwrap(), 6);
         assert_eq!(read_values.num_dimensions().unwrap(), 1);
         assert_eq!(read_values.bytes_per_dimension().unwrap(), 4);
 
@@ -890,10 +890,10 @@ mod tests {
         let points_reader = Lucene90PointsReader::new(&read_state).unwrap();
 
         let read_f1 = points_reader.get_values("f1").unwrap();
-        assert_eq!(read_f1.size(), 5);
+        assert_eq!(read_f1.size().unwrap(), 5);
 
         let read_f2 = points_reader.get_values("f2").unwrap();
-        assert_eq!(read_f2.size(), 3);
+        assert_eq!(read_f2.size().unwrap(), 3);
 
         let mut found1 = Vec::new();
         read_f1
@@ -948,7 +948,7 @@ mod tests {
         );
         let points_reader = Lucene90PointsReader::new(&read_state).unwrap();
         let read_values = points_reader.get_values("int_point").unwrap();
-        assert_eq!(read_values.size(), 0);
+        assert_eq!(read_values.size().unwrap(), 0);
     }
 
     #[test]
@@ -984,7 +984,7 @@ mod tests {
         );
         let points_reader = Lucene90PointsReader::new(&read_state).unwrap();
         let read_values = points_reader.get_values("int_point").unwrap();
-        assert_eq!(read_values.size(), 1);
+        assert_eq!(read_values.size().unwrap(), 1);
 
         let mut found = Vec::new();
         read_values
@@ -1035,8 +1035,8 @@ mod tests {
         let points_reader = Lucene90PointsReader::new(&read_state).unwrap();
         let read_values = points_reader.get_values("int_point").unwrap();
 
-        assert_eq!(read_values.size(), 4);
-        assert_eq!(read_values.doc_count(), 3);
+        assert_eq!(read_values.size().unwrap(), 4);
+        assert_eq!(read_values.doc_count().unwrap(), 3);
         assert_eq!(
             read_values.min_packed_value().unwrap(),
             Some(packed_int(10))
@@ -1133,16 +1133,16 @@ mod tests {
         }
 
         impl IntersectVisitor for RangeVisitor {
-            fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+            fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Result<Relation> {
                 let min_v = BitUtil::read_le_int(min_packed, 0);
                 let max_v = BitUtil::read_le_int(max_packed, 0);
-                if max_v < self.min || min_v > self.max {
+                Ok(if max_v < self.min || min_v > self.max {
                     Relation::CellOutsideQuery
                 } else if min_v >= self.min && max_v <= self.max {
                     Relation::CellInsideQuery
                 } else {
                     Relation::CellCrossesQuery
-                }
+                })
             }
 
             fn visit(&mut self, _doc_id: i32) -> Result<()> {
@@ -1213,26 +1213,28 @@ mod tests {
         }
 
         impl IntersectVisitor for BoxVisitor {
-            fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+            fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Result<Relation> {
                 let min_x = BitUtil::read_le_int(min_packed, 0);
                 let max_x = BitUtil::read_le_int(max_packed, 0);
                 let min_y = BitUtil::read_le_int(min_packed, 4);
                 let max_y = BitUtil::read_le_int(max_packed, 4);
-                if max_x < self.min_x
-                    || min_x > self.max_x
-                    || max_y < self.min_y
-                    || min_y > self.max_y
-                {
-                    Relation::CellOutsideQuery
-                } else if min_x >= self.min_x
-                    && max_x <= self.max_x
-                    && min_y >= self.min_y
-                    && max_y <= self.max_y
-                {
-                    Relation::CellInsideQuery
-                } else {
-                    Relation::CellCrossesQuery
-                }
+                Ok(
+                    if max_x < self.min_x
+                        || min_x > self.max_x
+                        || max_y < self.min_y
+                        || min_y > self.max_y
+                    {
+                        Relation::CellOutsideQuery
+                    } else if min_x >= self.min_x
+                        && max_x <= self.max_x
+                        && min_y >= self.min_y
+                        && max_y <= self.max_y
+                    {
+                        Relation::CellInsideQuery
+                    } else {
+                        Relation::CellCrossesQuery
+                    },
+                )
             }
 
             fn visit(&mut self, _doc_id: i32) -> Result<()> {

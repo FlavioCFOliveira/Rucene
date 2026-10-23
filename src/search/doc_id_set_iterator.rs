@@ -18,6 +18,8 @@ use crate::util::{bit_set_of, BitSet, BitSetIterator, Bits, FixedBitSet};
 /// Equivalent to `DocIdSetIterator.NO_MORE_DOCS` in Java Lucene.
 pub const NO_MORE_DOCS: i32 = i32::MAX;
 
+/// Port of `org.apache.lucene.search.DocIdSetIterator`.
+///
 /// Iterator over a non-decreasing set of doc IDs.
 ///
 /// The contract mirrors `org.apache.lucene.search.DocIdSetIterator`:
@@ -601,6 +603,8 @@ fn create_bit_set(
 // Internal helpers
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.search.FilteredDocIdSetIterator`.
+///
 /// Iterator that wraps another iterator and only returns doc IDs satisfying a
 /// predicate.
 struct FilteredDocIdSetIterator {

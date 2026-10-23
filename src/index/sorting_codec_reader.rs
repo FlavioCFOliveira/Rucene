@@ -69,6 +69,15 @@ impl std::fmt::Debug for SortingCodecReader {
     }
 }
 
+impl std::fmt::Display for SortingCodecReader {
+    /// Port of `SortingCodecReader.toString()`
+    /// (`SortingCodecReader.java:771-774`). Measured against
+    /// `lucene-core-10.5.0.jar`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SortingCodecReader({})", self.inner)
+    }
+}
+
 impl SortingCodecReader {
     /// Wraps `reader` so its documents appear in the order `doc_map` gives.
     ///
@@ -760,6 +769,18 @@ impl std::fmt::Debug for SlowCompositeCodecReaderWrapper {
             .field("readers", &self.readers.len())
             .field("max_doc", &self.max_doc)
             .finish()
+    }
+}
+
+impl std::fmt::Display for SlowCompositeCodecReaderWrapper {
+    /// `org.apache.lucene.index.SlowCompositeCodecReaderWrapper` declares no
+    /// `toString()`, so `Object`'s applies. The binary name was measured from
+    /// `lucene-core-10.5.0.jar`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.SlowCompositeCodecReaderWrapper",
+            self,
+        ))
     }
 }
 

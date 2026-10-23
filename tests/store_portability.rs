@@ -139,7 +139,7 @@ fn fs_directory_writes_java_compatible_payload() -> Result<()> {
 #[test]
 fn rucene_reads_java_hello_fixture() -> Result<()> {
     let bytes = java_hello_bytes();
-    let mut input = ByteArrayDataInput::new(bytes);
+    let mut input = ByteArrayDataInput::new(&bytes);
     assert_eq!(input.read_string()?, "Hello Lucene");
     Ok(())
 }

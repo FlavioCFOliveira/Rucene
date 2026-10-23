@@ -231,6 +231,9 @@ impl DocIdSetIterator for LogOddsFusionScorer {
 }
 
 impl Scorable for LogOddsFusionScorer {
+    /// Equivalent to `DisjunctionScorer.score()`, which is
+    /// `score(getSubMatches())`, fused with the `score(DisiWrapper)` override
+    /// `LogOddsFusionScorer` declares.
     fn score(&mut self) -> Result<f32> {
         let mut logit_sum = 0f64;
         for position in self.base.sub_matches()? {
@@ -280,6 +283,8 @@ impl Scorer for LogOddsFusionScorer {
     }
 
     fn two_phase_iterator(&mut self) -> Option<&mut dyn TwoPhaseIterator> {
+        // `DisjunctionScorer.twoPhaseIterator()`, which returns the `twoPhase`
+        // field: an inner object in Java, this scorer's base here.
         if self.base.has_two_phase() {
             Some(&mut self.base)
         } else {

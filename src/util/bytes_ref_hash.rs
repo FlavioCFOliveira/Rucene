@@ -41,6 +41,7 @@ use std::sync::Arc;
 
 use crate::error::Result;
 use crate::util::byte_block_pool::{hash_bytes, ByteBlockPool};
+use crate::util::RamUsageEstimator;
 
 /// Initial number of slots in the hash table.
 ///
@@ -261,13 +262,100 @@ impl BytesRefHash {
         sorted
     }
 
+    /// Shallow size of the Java class plus the `Counter` it shares, the fixed
+    /// part of [`ram_bytes_used`](Self::ram_bytes_used).
+    ///
+    /// Equivalent to the private `BytesRefHash.BASE_RAM_BYTES`
+    /// (`BytesRefHash.java:36-41`), which is
+    /// `RamUsageEstimator.shallowSizeOfInstance(BytesRefHash.class)` — an object
+    /// header, the five references `pool`, `bytesStart`, `ids`, `bytesUsed` and
+    /// `bytesStartArray`, and the six `int` fields `hashSize`, `hashHalfSize`,
+    /// `hashMask`, `highMask`, `count` and `lastCount` — plus
+    /// `RamUsageEstimator.primitiveSizes.get(long.class)` for the counter's
+    /// `long`. Measured against `lucene-core-10.5.0.jar` on a JVM with
+    /// compressed references, the shallow size is 56 and the whole constant 64.
+    pub const BASE_RAM_BYTES: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + 5 * RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + 6 * 4,
+    ) + 8;
+
+    /// Returns the bytes interned under `bytes_id`.
+    ///
+    /// Equivalent to `org.apache.lucene.util.BytesRefHash#get(int, BytesRef)`
+    /// (`BytesRefHash.java:163-168`), which fills the caller's `BytesRef` from
+    /// `pool.fillBytesRef(ref, bytesStart[bytesID])` and hands it back. A
+    /// Rucene [`BytesRef`](crate::util::BytesRef) owns its buffer, so there is
+    /// no scratch to fill: the bytes are returned as a slice borrowed from the
+    /// pool, which is what Java's `BytesRef` is a view over.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `bytes_id` is not a term id this table handed out, which is
+    /// what Java's two assertions check.
+    pub fn get<'p>(&self, pool: &'p ByteBlockPool, bytes_id: i32) -> &'p [u8] {
+        assert!(
+            bytes_id >= 0 && (bytes_id as usize) < self.bytes_start.len(),
+            "bytesID exceeds byteStart len: {}",
+            self.bytes_start.len()
+        );
+        pool.term_bytes(self.bytes_start[bytes_id as usize])
+    }
+
+    /// Returns an estimate of the heap this table occupies, including the pool
+    /// its terms live in.
+    ///
+    /// Equivalent to `org.apache.lucene.util.BytesRefHash#ramBytesUsed`
+    /// (`BytesRefHash.java:505-512`), which sums
+    /// [`BASE_RAM_BYTES`](Self::BASE_RAM_BYTES) with `sizeOfObject` of
+    /// `bytesStart`, `ids` and `pool`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java reaches the pool through a
+    /// `pool` field; this port keeps the pool outside the table — every other
+    /// method that needs it takes it as an argument — so the pool is a
+    /// parameter here too. That also means this cannot be the
+    /// [`Accountable`](crate::util::Accountable) implementation, whose
+    /// `ram_bytes_used` takes nothing but `&self`.
+    pub fn ram_bytes_used(&self, pool: &ByteBlockPool) -> i64 {
+        use crate::util::Accountable;
+        Self::BASE_RAM_BYTES
+            + RamUsageEstimator::size_of_int(&self.bytes_start)
+            + RamUsageEstimator::size_of_int(&self.ids)
+            + pool.ram_bytes_used()
+    }
+
+    /// Empties the table, resets the pool and releases every byte this table
+    /// charged to the shared counter.
+    ///
+    /// Equivalent to `org.apache.lucene.util.BytesRefHash#close`
+    /// (`BytesRefHash.java:314-318`), which calls `clear(true)`, drops `ids`
+    /// and returns `Integer.BYTES * hashSize` to the counter. `clear(true)` is
+    /// Java's `clear()`; this port's [`clear`](Self::clear) is `clear(false)`,
+    /// so the pool reset is spelled out here.
+    ///
+    /// The table is unusable afterwards until [`reinit`](Self::reinit) puts it
+    /// back; calling this twice is harmless.
+    pub fn close(&mut self, pool: &mut ByteBlockPool) {
+        self.clear();
+        pool.reset();
+        let hash_size = self.ids.len();
+        self.bytes_used.fetch_sub(
+            (hash_size * std::mem::size_of::<i32>()) as i64,
+            Ordering::AcqRel,
+        );
+        self.ids = Vec::new();
+    }
+
     /// Drops both arrays and removes them from the shared RAM counter.
     ///
-    /// Java never needs this: the JVM reclaims a discarded `BytesRefHash` and
-    /// its `Counter` is per-`DocumentsWriterPerThread`, so a leaked charge
-    /// disappears with the thread state. Rust frees eagerly, so the owner must
-    /// hand the bytes back when it discards the table. The table is empty and
-    /// unusable afterwards, and calling this twice is harmless.
+    /// This is [`close`](Self::close) without the pool: it returns the same
+    /// bytes to the shared counter that Java's `close()` does — the `ids` and
+    /// `bytesStart` arrays — but leaves the pool alone, for the callers that
+    /// discard a table without owning the pool it interned into. Rust frees
+    /// eagerly, so the owner must hand the bytes back when it drops the table,
+    /// whereas the JVM reclaims a discarded `BytesRefHash` on its own. The
+    /// table is empty and unusable afterwards, and calling this twice is
+    /// harmless.
     pub fn release_accounting(&mut self) {
         let held = (self.ids.len() + self.bytes_start.len()) * std::mem::size_of::<i32>();
         self.bytes_used.fetch_sub(held as i64, Ordering::AcqRel);
@@ -282,17 +370,30 @@ impl BytesRefHash {
     /// Restores the table's buffers after a [`close`](Self::clear) that
     /// released them.
     ///
-    /// Equivalent to `BytesRefHash.reinit()`, which reallocates the id and
-    /// byte-start arrays when a previous `close()` dropped them, and does
-    /// nothing when they are still there.
+    /// Equivalent to `BytesRefHash.reinit()` (`BytesRefHash.java:480-489`),
+    /// which reallocates the id and byte-start arrays when a previous
+    /// [`close`](Self::close) dropped them, and does nothing when they are
+    /// still there.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java can drop both arrays to null and
-    /// rebuild them here. This port keeps them allocated — a `Vec` that has
-    /// been cleared holds no elements — so `reinit` only has to clear the
-    /// table, which is what leaves it in the state Java's `reinit` leaves it
-    /// in: empty, sized, and ready to intern again.
+    /// Java tests each array against `null`; this port tests each `Vec` for
+    /// emptiness, which is the state [`close`](Self::close) and
+    /// [`release_accounting`](Self::release_accounting) leave them in. The
+    /// slot count comes from `hash_mask`, which those methods do not disturb,
+    /// and is Java's `hashSize` field. Whichever way the table got here, it is
+    /// left empty, sized, and ready to intern again.
     pub fn reinit(&mut self) {
-        self.clear();
+        if self.ids.is_empty() {
+            let hash_size = (self.hash_mask as usize) + 1;
+            self.ids = vec![-1i32; hash_size];
+            self.bytes_used.fetch_add(
+                (hash_size * std::mem::size_of::<i32>()) as i64,
+                Ordering::AcqRel,
+            );
+            self.count = 0;
+            self.last_count = -1;
+        } else {
+            self.clear();
+        }
     }
 
     pub fn clear(&mut self) {
@@ -687,5 +788,109 @@ mod tests {
             0,
             "the offset is new again after a clear"
         );
+    }
+
+    /// `get(bytesID)` must return exactly the bytes that `add` interned under
+    /// that id, which is what Java's `get(int, BytesRef)` fills its scratch
+    /// with.
+    #[test]
+    fn get_returns_the_bytes_interned_under_each_id() {
+        let (mut pool, mut hash) = fixture();
+        let terms: Vec<&[u8]> = vec![
+            b"alpha",
+            b"beta",
+            b"",
+            b"a-much-longer-term-than-the-others",
+        ];
+        let mut ids = Vec::new();
+        for t in &terms {
+            ids.push(hash.add(&mut pool, t).expect("add"));
+        }
+        for (id, expected) in ids.iter().zip(&terms) {
+            assert_eq!(hash.get(&pool, *id), *expected, "id={id}");
+        }
+        // `get` agrees with the offset-based route the rest of the crate uses.
+        for id in &ids {
+            assert_eq!(hash.get(&pool, *id), pool.term_bytes(hash.byte_start(*id)));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "bytesID exceeds byteStart len")]
+    fn get_rejects_an_id_the_table_never_handed_out() {
+        let (mut pool, mut hash) = fixture();
+        hash.add(&mut pool, b"alpha").expect("add");
+        hash.get(&pool, 7);
+    }
+
+    /// `ramBytesUsed` is `BASE_RAM_BYTES + sizeOfObject(bytesStart) +
+    /// sizeOfObject(ids) + sizeOfObject(pool)`.
+    #[test]
+    fn ram_bytes_used_sums_javas_terms() {
+        use crate::util::Accountable;
+        let (mut pool, mut hash) = fixture();
+
+        // Measured against lucene-core-10.5.0.jar on a JVM with compressed
+        // references: shallowSizeOfInstance(BytesRefHash.class) == 56, and
+        // BASE_RAM_BYTES adds the Counter's 8-byte long.
+        assert_eq!(BytesRefHash::BASE_RAM_BYTES, 64);
+
+        hash.add(&mut pool, b"hello").expect("hello");
+        hash.add(&mut pool, b"world").expect("world");
+
+        // Java's terms, spelled out rather than re-using the implementation's
+        // expression. `sizeOf(int[n])` is `align(16 + 4n)`.
+        let size_of_int_array = |n: usize| -> i64 {
+            let raw = 16 + 4 * n as i64;
+            raw + ((8 - raw % 8) % 8)
+        };
+        let expected = 64
+            + size_of_int_array(hash.bytes_start.len())
+            + size_of_int_array(hash.ids.len())
+            + pool.ram_bytes_used();
+        assert_eq!(hash.ram_bytes_used(&pool), expected);
+
+        // Every term is charged: interning more can only raise the estimate.
+        let before = hash.ram_bytes_used(&pool);
+        for i in 0..1000 {
+            hash.add(&mut pool, format!("term-{i:05}").as_bytes())
+                .expect("add");
+        }
+        assert!(hash.ram_bytes_used(&pool) > before);
+    }
+
+    /// `close()` empties the table, resets the pool and returns every byte it
+    /// charged, which is what Java's `clear(true)` plus the `ids` release does.
+    #[test]
+    fn close_releases_everything_the_table_charged() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut hash = BytesRefHash::new(Arc::clone(&bytes_used));
+
+        let baseline = bytes_used.load(Ordering::Acquire);
+        for i in 0..200 {
+            hash.add(&mut pool, format!("term-{i:04}").as_bytes())
+                .expect("add");
+        }
+        assert!(bytes_used.load(Ordering::Acquire) > baseline);
+        assert_eq!(hash.size(), 200);
+
+        hash.close(&mut pool);
+
+        assert_eq!(hash.size(), 0);
+        // The pool was reset, so its blocks went back to the counter too.
+        assert_eq!(
+            bytes_used.load(Ordering::Acquire),
+            0,
+            "close must return every byte the table and its pool charged"
+        );
+        // Calling it twice is harmless.
+        hash.close(&mut pool);
+        assert_eq!(bytes_used.load(Ordering::Acquire), 0);
+
+        // `reinit` puts the table back to work, as it does after Java's close.
+        hash.reinit();
+        assert_eq!(hash.add(&mut pool, b"again").expect("again"), 0);
+        assert_eq!(hash.get(&pool, 0), b"again");
     }
 }

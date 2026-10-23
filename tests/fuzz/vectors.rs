@@ -234,7 +234,7 @@ fn field_info(spec: &FieldSpec) -> FieldInfo {
         DocValuesType::NONE,
         DocValuesSkipIndexType::NONE,
         -1,
-        HashMap::new(),
+        rucene::util::java_collections::JavaStringMap::default(),
         0,
         0,
         0,

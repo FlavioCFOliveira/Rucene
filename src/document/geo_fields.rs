@@ -14,7 +14,7 @@ use crate::document::point_queries::{
     LatLonDocValuesBoxQuery, LatLonDocValuesQuery, LatLonPointDistanceQuery, LatLonPointQuery,
     XYDocValuesPointInGeometryQuery,
 };
-use crate::document::range_fields::{RangeFieldQuery, RangeQueryType};
+use crate::document::range_fields::{RangeFieldQuery, RangeQueryType, RangeValueKind};
 use crate::document::shape_field::QueryRelation;
 use crate::document::spatial_query::{LatLonGeometryValue, XYGeometryValue};
 use crate::document::{FieldData, FieldType, InvertableType, NumericValue, StoredValue};
@@ -29,7 +29,9 @@ use crate::search::field_comparator::SortValue;
 use crate::search::field_doc::FieldDoc;
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::match_no_docs_query::MatchNoDocsQuery;
+use crate::search::point_in_set_query::{PointFormatter, PointInSetQuery};
 use crate::search::point_range_query::{DimensionFormatter, PointRangeQuery};
+use crate::search::similarities::java_fmt;
 use crate::search::top_field_docs::TopFieldDocs;
 use crate::search::total_hits::{TotalHits, TotalHitsRelation};
 use crate::search::{Occur, Query};
@@ -457,7 +459,7 @@ impl LatLonPoint {
         for leaf in Arc::clone(searcher.get_index_reader()).leaves() {
             let reader = leaf.leaf_reader();
             if let Some(points) = reader.get_point_values(field)? {
-                total_hits += points.doc_count();
+                total_hits += points.doc_count()?;
                 readers.push(points);
                 doc_bases.push(leaf.doc_base());
                 live_docs.push(reader.get_live_docs());
@@ -1317,6 +1319,47 @@ impl InetAddressPoint {
             Arc::new(InetAddressPointFormatter),
         )?))
     }
+
+    /// Creates a query matching one exact address.
+    ///
+    /// Equivalent to `InetAddressPoint.newExactQuery(String, InetAddress)`,
+    /// which is a range query whose two bounds are the same address.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`new_range_query`](Self::new_range_query) raises.
+    pub fn new_exact_query(field: &str, value: &[u8]) -> Result<Arc<dyn Query>> {
+        Self::new_range_query(field, value, value)
+    }
+
+    /// Creates a query matching any of `values`, the points equivalent of a
+    /// terms query.
+    ///
+    /// Equivalent to `InetAddressPoint.newSetQuery(String, InetAddress...)`.
+    /// The addresses are encoded first and then sorted by their encoded bytes,
+    /// because that is the order the points index is in — Java notes that
+    /// `InetAddress` is not `Comparable`, and that even if it were, the IPv4
+    /// mapping would make its order the wrong one.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`encode`](Self::encode) and
+    /// [`PointInSetQuery::new`](crate::search::PointInSetQuery) raise.
+    pub fn new_set_query(field: &str, values: &[&[u8]]) -> Result<Arc<dyn Query>> {
+        let mut sorted_values = values
+            .iter()
+            .map(|v| Self::encode(v))
+            .collect::<Result<Vec<Vec<u8>>>>()?;
+        sorted_values.sort();
+        let mut stream = crate::document::PointValueStream::new(sorted_values);
+        Ok(Arc::new(PointInSetQuery::new(
+            field,
+            1,
+            Self::BYTES as i32,
+            &mut stream,
+            Arc::new(InetAddressPointFormatter),
+        )?))
+    }
 }
 
 /// Renders an encoded address as a host address for a range query's string
@@ -1331,6 +1374,19 @@ struct InetAddressPointFormatter;
 
 impl DimensionFormatter for InetAddressPointFormatter {
     fn format(&self, _dimension: i32, value: &[u8]) -> String {
+        inet_address_host_address(value)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl PointFormatter for InetAddressPointFormatter {
+    /// Equivalent to the `toString(byte[])` override of the anonymous
+    /// `PointInSetQuery` subclass in `InetAddressPoint.newSetQuery`, which
+    /// prints `decode(value).getHostAddress()`.
+    fn format(&self, value: &[u8]) -> String {
         inet_address_host_address(value)
     }
 
@@ -1425,6 +1481,21 @@ pub struct InetAddressRange {
     name: String,
     field_type: FieldType,
     fields_data: FieldData,
+}
+
+impl std::fmt::Display for InetAddressRange {
+    /// `InetAddressRange` extends `Field` and overrides no `toString()`, so the
+    /// packed range renders as a plain `BytesRef`. Measured against
+    /// `lucene-core-10.5.0.jar`:
+    /// `pointDimensionCount=2,pointIndexDimensionCount=2,pointNumBytes=16<r:[0 0 …]>`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        crate::document::field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &crate::document::field_data_to_string(&self.fields_data),
+        )
+    }
 }
 
 impl InetAddressRange {
@@ -1551,14 +1622,33 @@ impl InetAddressRange {
         Self::new_relation_query(field, min, max, RangeQueryType::Crosses)
     }
 
+    /// Renders one dimension of an encoded range as `[min : max]`.
+    ///
+    /// Equivalent to the private static
+    /// `InetAddressRange.toString(byte[], int)`, which the anonymous
+    /// `RangeFieldQuery` subclass this type builds installs as its
+    /// `toString(byte[], int)` override.
+    ///
+    /// Java concatenates the two `InetAddress` objects `InetAddressPoint.decode`
+    /// returns, so it is `InetAddress.toString()` that renders them —
+    /// `hostname + "/" + hostAddress`, and the host name of an address decoded
+    /// from bytes is always empty. Hence the leading slash on each bound.
+    pub fn range_to_string(ranges: &[u8], _dimension: usize) -> String {
+        let half = ranges.len() / 2;
+        format!(
+            "[/{} : /{}]",
+            inet_address_host_address(&ranges[..half]),
+            inet_address_host_address(&ranges[half..])
+        )
+    }
+
     /// Builds the query for the desired relation.
     ///
     /// Equivalent to the private static
-    /// `InetAddressRange.newRelationQuery(String, InetAddress, InetAddress, QueryType)`.
-    /// Java's anonymous `RangeFieldQuery` subclass exists only to override
-    /// `toString(byte[], int)` with `InetAddressRange.toString`, which prints
-    /// `[min : max]`; [`RangeFieldQuery`] has no such rendering hook in this
-    /// port, so there is nothing to override.
+    /// `InetAddressRange.newRelationQuery(String, InetAddress, InetAddress, QueryType)`,
+    /// whose anonymous `RangeFieldQuery` subclass exists only to override
+    /// `toString(byte[], int)` with [`range_to_string`](Self::range_to_string).
+    /// This port carries that choice as [`RangeValueKind::InetAddress`] instead.
     ///
     /// # Errors
     ///
@@ -1570,7 +1660,13 @@ impl InetAddressRange {
         max: &[u8],
         relation: RangeQueryType,
     ) -> Result<RangeFieldQuery> {
-        RangeFieldQuery::new(field, Self::encode(min, max)?, 1, relation)
+        RangeFieldQuery::new(
+            field,
+            Self::encode(min, max)?,
+            1,
+            relation,
+            RangeValueKind::InetAddress,
+        )
     }
 }
 
@@ -1683,5 +1779,184 @@ impl DimensionFormatter for LatLonPointFormatter {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod inet_address_query_tests {
+    use super::*;
+
+    /// The 16-byte IPv6 form of an IPv4 address, which is what the field
+    /// indexes and therefore what a query must ask for.
+    fn encoded(address: &[u8]) -> Vec<u8> {
+        InetAddressPoint::encode(address).unwrap()
+    }
+
+    #[test]
+    fn new_exact_query_is_a_range_of_one_address() {
+        // Java's `newExactQuery(field, value)` is `newRangeQuery(field, value,
+        // value)`, so the two must render identically.
+        let exact = InetAddressPoint::new_exact_query("ip", &[10, 0, 0, 1]).unwrap();
+        let range =
+            InetAddressPoint::new_range_query("ip", &[10, 0, 0, 1], &[10, 0, 0, 1]).unwrap();
+        assert!(exact.query_eq(range.as_ref()));
+        assert_eq!(exact.query_hash(), range.query_hash());
+        // The rendered bounds are host addresses, not raw bytes.
+        let rendered = exact.to_query_string("ip");
+        assert!(
+            rendered.contains("10.0.0.1"),
+            "unexpected rendering: {rendered}"
+        );
+    }
+
+    #[test]
+    fn new_exact_query_encodes_into_the_indexed_form() {
+        // The field stores every address in its 16-byte IPv6 form, so an exact
+        // query over an IPv4 literal has to ask for the mapped form or it would
+        // match nothing.
+        let mapped = encoded(&[10, 0, 0, 1]);
+        assert_eq!(mapped.len(), InetAddressPoint::BYTES);
+        assert_eq!(&mapped[..12], &InetAddressPoint::IPV4_PREFIX[..]);
+        assert_eq!(&mapped[12..], &[10, 0, 0, 1]);
+    }
+
+    #[test]
+    fn new_set_query_sorts_the_encoded_addresses() {
+        // Java sorts the *encoded* forms, because `InetAddress` is not
+        // comparable and the IPv4 mapping would make its order the wrong one.
+        // Two set queries built from the same addresses in different orders are
+        // therefore the same query.
+        let one =
+            InetAddressPoint::new_set_query("ip", &[&[192, 168, 0, 1][..], &[10, 0, 0, 1][..]])
+                .unwrap();
+        let other =
+            InetAddressPoint::new_set_query("ip", &[&[10, 0, 0, 1][..], &[192, 168, 0, 1][..]])
+                .unwrap();
+        assert!(one.query_eq(other.as_ref()));
+        assert_eq!(one.query_hash(), other.query_hash());
+    }
+
+    #[test]
+    fn new_set_query_renders_its_addresses_as_hosts() {
+        let query = InetAddressPoint::new_set_query("ip", &[&[10, 0, 0, 1][..]]).unwrap();
+        let rendered = query.to_query_string("ip");
+        assert!(
+            rendered.contains("10.0.0.1"),
+            "unexpected rendering: {rendered}"
+        );
+    }
+
+    #[test]
+    fn new_set_query_over_different_addresses_is_a_different_query() {
+        let one = InetAddressPoint::new_set_query("ip", &[&[10, 0, 0, 1][..]]).unwrap();
+        let other = InetAddressPoint::new_set_query("ip", &[&[10, 0, 0, 2][..]]).unwrap();
+        assert!(!one.query_eq(other.as_ref()));
+    }
+
+    #[test]
+    fn address_queries_reject_a_malformed_address() {
+        // `encode` accepts a 4-byte or a 16-byte address and nothing else.
+        assert!(InetAddressPoint::new_exact_query("ip", &[10, 0, 0]).is_err());
+        assert!(InetAddressPoint::new_set_query("ip", &[&[10, 0, 0][..]]).is_err());
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Object contract: `toString`
+// -----------------------------------------------------------------------------
+//
+// Every string below is built by concatenation in Java, so the coordinates go
+// through `java_fmt` rather than Rust's own float rendering, which prints `35`
+// where `Double.toString` prints `35.0`. The exact strings were measured from
+// `lucene-core-10.5.0.jar` and are locked in by
+// `tests/portability/object_contract.rs`.
+
+impl std::fmt::Display for LatLonPoint {
+    /// Equivalent to `LatLonPoint.toString()`, which prints the latitude and
+    /// then the longitude decoded back out of the packed value.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LatLonPoint <{}:", self.name)?;
+        if let Some(bytes) = self.packed_value() {
+            write!(
+                f,
+                "{},{}",
+                java_fmt::double_to_string(GeoEncodingUtils::decode_latitude_bytes(bytes, 0)),
+                java_fmt::double_to_string(GeoEncodingUtils::decode_longitude_bytes(
+                    bytes,
+                    COORDINATE_BYTES
+                ))
+            )?;
+        }
+        f.write_str(">")
+    }
+}
+
+impl std::fmt::Display for LatLonDocValuesField {
+    /// Equivalent to `LatLonDocValuesField.toString()`, which splits the packed
+    /// `long` into its two encoded halves.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "LatLonDocValuesField <{}:{},{}>",
+            self.name,
+            java_fmt::double_to_string(Self::decode_latitude(self.value)),
+            java_fmt::double_to_string(Self::decode_longitude(self.value))
+        )
+    }
+}
+
+impl std::fmt::Display for XYPointField {
+    /// Equivalent to `XYPointField.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "XYPointField <{}:", self.name)?;
+        if let Some(bytes) = self.packed_value() {
+            write!(
+                f,
+                "{},{}",
+                java_fmt::float_to_string(XYEncodingUtils::decode_bytes(bytes, 0)),
+                java_fmt::float_to_string(XYEncodingUtils::decode_bytes(bytes, COORDINATE_BYTES))
+            )?;
+        }
+        f.write_str(">")
+    }
+}
+
+impl std::fmt::Display for XYDocValuesField {
+    /// Equivalent to `XYDocValuesField.toString()`, which splits the packed
+    /// `long` into its two encoded halves.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "XYDocValuesField <{}:{},{}>",
+            self.name,
+            java_fmt::float_to_string(Self::decode_x(self.value)),
+            java_fmt::float_to_string(Self::decode_y(self.value))
+        )
+    }
+}
+
+impl std::fmt::Display for InetAddressPoint {
+    /// Equivalent to `InetAddressPoint.toString()`, which brackets an IPv6
+    /// address so that it cannot be confused with the historic `field:value`
+    /// form, and leaves an IPv4 address bare.
+    ///
+    /// Java decides between the two by the length `InetAddress.getAddress()`
+    /// reports, which is four exactly when `decode` produced an `Inet4Address`
+    /// — that is, when the encoded bytes are an IPv4-mapped address.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "InetAddressPoint <{}:", self.name)?;
+        if let Some(bytes) = self.packed_value() {
+            let is_v4 = bytes.len() == Self::BYTES
+                && bytes[..10].iter().all(|&b| b == 0)
+                && bytes[10] == 0xFF
+                && bytes[11] == 0xFF;
+            let rendered = inet_address_host_address(bytes);
+            if is_v4 {
+                f.write_str(&rendered)?;
+            } else {
+                write!(f, "[{rendered}]")?;
+            }
+        }
+        f.write_str(">")
     }
 }

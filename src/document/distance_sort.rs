@@ -6,23 +6,33 @@
 //! build; each hands out the matching comparator, which reads the packed
 //! locations out of the field's sorted-numeric doc values.
 //!
-//! # Divergence from Lucene 10.5.0: the comparator hierarchy
+//! # Divergence from Lucene 10.5.0: the sort fields
 //!
 //! Java's comparators extend `FieldComparator<Double>` and implement
-//! `LeafFieldComparator`, and the sort fields extend `SortField` overriding
-//! `getComparator(int, Pruning)`. Neither `FieldComparator` nor
-//! `LeafFieldComparator` nor `Pruning` is part of this crate's search surface
-//! yet, so the comparators here are standalone types carrying exactly the same
-//! methods and the same state, and the sort fields *hold* a
-//! [`SortField`](crate::search::SortField) rather than extending it. Every
-//! comparison, every bounding-box short-circuit and every sort key is ported
-//! unchanged.
+//! `LeafFieldComparator`; both traits exist in this crate, and both comparators
+//! implement them, so a comparator can be handed to the collector exactly as in
+//! Java. Each also keeps the inherent, Java-named methods it has always had —
+//! `compare`, `set_bottom`, `sort_key` and the rest — which take the natural
+//! Rust types (`usize` slots, `f64` values); the trait impls are thin
+//! adaptations of those to the trait's `i32` slots and
+//! [`SortValue`](crate::search::field_comparator::SortValue).
+//!
+//! What still diverges is the sort fields: Java's `LatLonPointSortField` and
+//! `XYPointSortField` extend `SortField` and override
+//! `getComparator(int, Pruning)`, whereas this crate has no `SortField`
+//! subclassing, so [`LatLonPointSortField`] and [`XYPointSortField`] *hold* a
+//! [`SortField`](crate::search::SortField) and hand out their comparator
+//! through their own [`LatLonPointSortField::get_comparator`] and
+//! [`XYPointSortField::get_comparator`].
 
 use crate::document::geo_fields::{LatLonDocValuesField, XYDocValuesField};
 use crate::error::{LuceneError, Result};
 use crate::geo::encoding::{GeoEncodingUtils, GeoUtils, XYEncodingUtils};
 use crate::geo::geometry::{Rectangle, XYRectangle};
-use crate::index::{DocValues, LeafReader, SortedNumericDocValues};
+use crate::index::{DocValues, LeafReader, LeafReaderContext, SortedNumericDocValues};
+use crate::search::field_comparator::{FieldComparator, SortValue};
+use crate::search::leaf_field_comparator::LeafFieldComparator;
+use crate::search::scorable::Scorable;
 use crate::search::{DocIdSetIterator, MissingValue, SortField, SortFieldType};
 use crate::util::sloppy_math::SloppyMath;
 
@@ -355,6 +365,73 @@ pub struct XYPointDistanceComparator {
     values_doc_id: i32,
 }
 
+impl LeafFieldComparator for LatLonPointDistanceComparator {
+    /// Equivalent to `LatLonPointDistanceComparator.setBottom(int)`.
+    fn set_bottom(&mut self, slot: i32) -> Result<()> {
+        LatLonPointDistanceComparator::set_bottom(self, slot as usize)
+    }
+
+    /// Equivalent to `LatLonPointDistanceComparator.compareBottom(int)`, which reads no score.
+    fn compare_bottom(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
+        LatLonPointDistanceComparator::compare_bottom(self, doc)
+    }
+
+    /// Equivalent to `LatLonPointDistanceComparator.compareTop(int)`, which reads no score.
+    fn compare_top(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
+        LatLonPointDistanceComparator::compare_top(self, doc)
+    }
+
+    /// Equivalent to `LatLonPointDistanceComparator.copy(int, int)`, which reads no score.
+    fn copy(&mut self, slot: i32, doc: i32, _scorer: &mut dyn Scorable) -> Result<()> {
+        LatLonPointDistanceComparator::copy(self, slot as usize, doc)
+    }
+
+    /// Equivalent to `LatLonPointDistanceComparator.setScorer(Scorable)`, whose body is empty: the
+    /// distance is decided by the document's location alone, never by its
+    /// score.
+    fn set_scorer(&mut self, _scorer: &mut dyn Scorable) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl FieldComparator for LatLonPointDistanceComparator {
+    /// Equivalent to `LatLonPointDistanceComparator.compare(int, int)`.
+    fn compare(&self, slot1: i32, slot2: i32) -> i32 {
+        ordering_to_int(LatLonPointDistanceComparator::compare(
+            self,
+            slot1 as usize,
+            slot2 as usize,
+        ))
+    }
+
+    /// Equivalent to `LatLonPointDistanceComparator.setTopValue(Double)`. A value of another type is
+    /// ignored, as Java's signature makes it unrepresentable.
+    fn set_top_value(&mut self, value: SortValue) {
+        if let SortValue::Double(value) = value {
+            LatLonPointDistanceComparator::set_top_value(self, value);
+        }
+    }
+
+    /// Equivalent to `LatLonPointDistanceComparator.value(int)`, which boxes the distance in metres.
+    fn value(&self, slot: i32) -> SortValue {
+        SortValue::Double(LatLonPointDistanceComparator::value(self, slot as usize))
+    }
+
+    /// Equivalent to `LatLonPointDistanceComparator.getLeafComparator(LeafReaderContext)`, which
+    /// returns `this` because the class is its own leaf comparator.
+    fn get_leaf_comparator(&mut self, context: &LeafReaderContext) -> Result<()> {
+        LatLonPointDistanceComparator::get_leaf_comparator(self, context.leaf_reader().as_ref())
+    }
+
+    fn as_leaf_comparator(&mut self) -> &mut dyn LeafFieldComparator {
+        self
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 impl std::fmt::Debug for XYPointDistanceComparator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("XYPointDistanceComparator")
@@ -581,6 +658,73 @@ pub struct LatLonPointSortField {
     sort_field: SortField,
     latitude: f64,
     longitude: f64,
+}
+
+impl LeafFieldComparator for XYPointDistanceComparator {
+    /// Equivalent to `XYPointDistanceComparator.setBottom(int)`.
+    fn set_bottom(&mut self, slot: i32) -> Result<()> {
+        XYPointDistanceComparator::set_bottom(self, slot as usize)
+    }
+
+    /// Equivalent to `XYPointDistanceComparator.compareBottom(int)`, which reads no score.
+    fn compare_bottom(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
+        XYPointDistanceComparator::compare_bottom(self, doc)
+    }
+
+    /// Equivalent to `XYPointDistanceComparator.compareTop(int)`, which reads no score.
+    fn compare_top(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
+        XYPointDistanceComparator::compare_top(self, doc)
+    }
+
+    /// Equivalent to `XYPointDistanceComparator.copy(int, int)`, which reads no score.
+    fn copy(&mut self, slot: i32, doc: i32, _scorer: &mut dyn Scorable) -> Result<()> {
+        XYPointDistanceComparator::copy(self, slot as usize, doc)
+    }
+
+    /// Equivalent to `XYPointDistanceComparator.setScorer(Scorable)`, whose body is empty: the
+    /// distance is decided by the document's location alone, never by its
+    /// score.
+    fn set_scorer(&mut self, _scorer: &mut dyn Scorable) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl FieldComparator for XYPointDistanceComparator {
+    /// Equivalent to `XYPointDistanceComparator.compare(int, int)`.
+    fn compare(&self, slot1: i32, slot2: i32) -> i32 {
+        ordering_to_int(XYPointDistanceComparator::compare(
+            self,
+            slot1 as usize,
+            slot2 as usize,
+        ))
+    }
+
+    /// Equivalent to `XYPointDistanceComparator.setTopValue(Double)`. A value of another type is
+    /// ignored, as Java's signature makes it unrepresentable.
+    fn set_top_value(&mut self, value: SortValue) {
+        if let SortValue::Double(value) = value {
+            XYPointDistanceComparator::set_top_value(self, value);
+        }
+    }
+
+    /// Equivalent to `XYPointDistanceComparator.value(int)`, which boxes the distance in metres.
+    fn value(&self, slot: i32) -> SortValue {
+        SortValue::Double(XYPointDistanceComparator::value(self, slot as usize))
+    }
+
+    /// Equivalent to `XYPointDistanceComparator.getLeafComparator(LeafReaderContext)`, which
+    /// returns `this` because the class is its own leaf comparator.
+    fn get_leaf_comparator(&mut self, context: &LeafReaderContext) -> Result<()> {
+        XYPointDistanceComparator::get_leaf_comparator(self, context.leaf_reader().as_ref())
+    }
+
+    fn as_leaf_comparator(&mut self) -> &mut dyn LeafFieldComparator {
+        self
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl LatLonPointSortField {
@@ -837,5 +981,81 @@ fn ordering_to_int(ordering: std::cmp::Ordering) -> i32 {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,
         std::cmp::Ordering::Greater => 1,
+    }
+}
+
+#[cfg(test)]
+mod comparator_trait_tests {
+    use super::*;
+    use crate::search::scorable::Scorable;
+
+    /// A scorer the distance comparators must never consult.
+    #[derive(Debug, Default)]
+    struct UnusedScorer;
+
+    impl Scorable for UnusedScorer {
+        fn score(&mut self) -> Result<f32> {
+            panic!("a distance comparator must not read the score");
+        }
+    }
+
+    #[test]
+    fn lat_lon_comparator_is_a_field_comparator() {
+        let mut comparator = LatLonPointDistanceComparator::new("point", 0.0, 0.0, 3);
+        // Java allocates the slots with `this.values = new double[numHits]`
+        // (`LatLonPointDistanceComparator.java:76`), and a Java `double[]` is
+        // zero-initialised (JLS 4.12.5). So an untouched slot holds `0.0`, not
+        // a sentinel, and every slot compares equal until `copy` writes one.
+        assert_eq!(FieldComparator::compare(&comparator, 0, 1), 0);
+        FieldComparator::set_top_value(&mut comparator, SortValue::Double(1234.0));
+        // `value(int)` reports metres: it maps the slot through `haversin2`,
+        // and `SloppyMath.haversinMeters(0.0)` is `0.0` — measured with
+        // lucene-core-10.5.0.jar.
+        assert_eq!(
+            FieldComparator::value(&comparator, 0),
+            SortValue::Double(0.0)
+        );
+        // A value of the wrong type is ignored, as Java's signature makes it
+        // unrepresentable.
+        FieldComparator::set_top_value(&mut comparator, SortValue::Int(7));
+    }
+
+    #[test]
+    fn xy_comparator_is_a_field_comparator() {
+        let mut comparator = XYPointDistanceComparator::new("point", 0.0, 0.0, 3);
+        assert_eq!(FieldComparator::compare(&comparator, 0, 1), 0);
+        FieldComparator::set_top_value(&mut comparator, SortValue::Double(5.0));
+        // The cartesian comparator sorts on the distance itself, so `value(int)`
+        // returns the slot unchanged (`XYPointDistanceComparator.java:181-183`);
+        // an untouched slot is therefore `0.0`.
+        assert_eq!(
+            FieldComparator::value(&comparator, 2),
+            SortValue::Double(0.0)
+        );
+    }
+
+    #[test]
+    fn set_scorer_is_a_no_op_that_never_reads_the_score() {
+        // Equivalent to `LatLonPointDistanceComparator.setScorer(Scorable)` and
+        // its cartesian twin, whose bodies are empty: the distance depends on
+        // the document's location alone. `UnusedScorer` panics if it is ever
+        // consulted, so a body that did read the score would fail here.
+        let mut scorer = UnusedScorer;
+        let mut lat_lon = LatLonPointDistanceComparator::new("point", 0.0, 0.0, 1);
+        LeafFieldComparator::set_scorer(&mut lat_lon, &mut scorer).unwrap();
+        let mut xy = XYPointDistanceComparator::new("point", 0.0, 0.0, 1);
+        LeafFieldComparator::set_scorer(&mut xy, &mut scorer).unwrap();
+    }
+
+    #[test]
+    fn the_leaf_comparator_of_a_comparator_is_itself() {
+        // Java's `getLeafComparator` returns `this`; here the same object is
+        // handed out through `as_leaf_comparator`.
+        let mut comparator = LatLonPointDistanceComparator::new("point", 0.0, 0.0, 1);
+        let mut scorer = UnusedScorer;
+        comparator
+            .as_leaf_comparator()
+            .set_scorer(&mut scorer)
+            .unwrap();
     }
 }

@@ -207,6 +207,8 @@ impl DisiPriorityQueue {
     }
 }
 
+/// Port of `org.apache.lucene.search.DisiPriorityQueue2`.
+///
 /// A [`DisiPriorityQueue`] of two entries or less.
 ///
 /// Equivalent to the `final class org.apache.lucene.search.DisiPriorityQueue2`,
@@ -350,6 +352,8 @@ impl DisiPriorityQueue2 {
     }
 }
 
+/// Port of `org.apache.lucene.search.DisiPriorityQueueN`.
+///
 /// The general [`DisiPriorityQueue`].
 ///
 /// Equivalent to the `final class

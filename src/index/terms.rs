@@ -16,7 +16,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
 use crate::index::reader_context::{IndexReaderContext, LeafReaderContext};
 use crate::search::index_searcher::IndexSearcher;
-use crate::store::{ByteArrayDataInput, ByteArrayDataOutput, DataInput, DataOutput};
+use crate::store::{ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput};
 use crate::util::attribute::AttributeSource;
 use crate::util::automaton::CompiledAutomaton;
 use crate::util::string_helper::StringHelper;
@@ -166,7 +166,10 @@ impl fmt::Display for Term {
 /// the term dictionary.
 ///
 /// Equivalent to `org.apache.lucene.index.TermState`.
-pub trait TermState: Send + Sync + std::fmt::Debug {
+/// [`std::fmt::Display`] is a supertrait because Java's `TermState.toString()`
+/// is a concrete method on the abstract class — every term state renders — and
+/// `OrdTermState` and `BlockTermState` override it.
+pub trait TermState: Send + Sync + std::fmt::Debug + std::fmt::Display {
     /// Copies the content of `other` into `self`.
     fn copy_from(&mut self, other: &dyn TermState);
 
@@ -232,7 +235,10 @@ pub enum SeekStatus {
 /// [`prepare_seek_exact`](Self::prepare_seek_exact),
 /// [`seek_term_state`](Self::seek_term_state) and
 /// [`term_state`](Self::term_state) mirror `BaseTermsEnum`.
-pub trait TermsEnum {
+/// [`Display`](std::fmt::Display) is a supertrait because `MultiTermsEnum` and
+/// `TermsEnumIndex` render the enumerations they wrap: every Java `TermsEnum`
+/// has a `toString()`, inherited from `Object` unless overridden.
+pub trait TermsEnum: std::fmt::Display {
     /// Returns the attribute source attached to this enum.
     fn attributes(&mut self) -> &mut AttributeSource;
 
@@ -296,10 +302,10 @@ pub trait TermsEnum {
     fn ord(&self) -> Result<i64>;
 
     /// Returns the number of documents containing the current term.
-    fn doc_freq(&self) -> Result<i32>;
+    fn doc_freq(&mut self) -> Result<i32>;
 
     /// Returns the total number of occurrences of the current term.
-    fn total_term_freq(&self) -> Result<i64>;
+    fn total_term_freq(&mut self) -> Result<i64>;
 
     /// Returns a postings enum for the current term with the given flags.
     fn postings(
@@ -403,6 +409,20 @@ impl FilteredTermsEnum {
     }
 }
 
+impl std::fmt::Display for FilteredTermsEnum {
+    /// `org.apache.lucene.index.FilteredTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FilteredTermsEnum",
+            self,
+        ))
+    }
+}
+
 impl TermsEnum for FilteredTermsEnum {
     fn attributes(&mut self) -> &mut AttributeSource {
         self.tenum.attributes()
@@ -412,11 +432,11 @@ impl TermsEnum for FilteredTermsEnum {
         self.tenum.term()
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         self.tenum.doc_freq()
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         self.tenum.total_term_freq()
     }
 
@@ -702,7 +722,18 @@ pub trait Fields {
 /// Equivalent to `org.apache.lucene.index.PrefixCodedTerms`.
 #[derive(Debug, Clone)]
 pub struct PrefixCodedTerms {
-    content: Vec<u8>,
+    /// The encoded payload, as the block list a `ByteBuffersDataOutput`
+    /// produced.
+    ///
+    /// Equivalent to `private final List<ByteBuffer> content`
+    /// (`PrefixCodedTerms.java:37`), which `Builder.finish()` fills with
+    /// `output.toBufferList()` (`:103`). The block structure is not an
+    /// implementation detail that could be flattened into one buffer: Lucene's
+    /// `ramBytesUsed()` sums the *capacity* of each block (`:49-51`) and its
+    /// `hashCode()` folds one `ByteBuffer.hashCode()` per block (`:190-197`),
+    /// so both answers change if the same bytes are held in a different number
+    /// of blocks.
+    content: Vec<Vec<u8>>,
     size: i64,
     del_gen: i64,
 }
@@ -714,8 +745,23 @@ impl PrefixCodedTerms {
     }
 
     /// Returns an iterator over the encoded terms.
+    ///
+    /// Equivalent to `PrefixCodedTerms.iterator()`, which is
+    /// `new TermIterator(delGen, new ByteBuffersDataInput(content))`
+    /// (`PrefixCodedTerms.java:170-172`): a fresh reader with its own position
+    /// over the same blocks.
     pub fn iterator(&self) -> PrefixCodedTermsIterator {
-        PrefixCodedTermsIterator::new(self.del_gen, ByteArrayDataInput::new(self.content.clone()))
+        let input = ByteBuffersDataInput::new(self.content.clone())
+            .expect("the content is the block list of a ByteBuffersDataOutput");
+        PrefixCodedTermsIterator::new(self.del_gen, input)
+    }
+
+    /// The encoded payload, block by block.
+    ///
+    /// Equivalent to reading the private `content` field, which Lucene's own
+    /// `hashCode`/`equals` do (`PrefixCodedTerms.java:180-197`).
+    pub fn content(&self) -> &[Vec<u8>] {
+        &self.content
     }
 
     /// Records the deletion generation for this packet.
@@ -724,12 +770,28 @@ impl PrefixCodedTerms {
     }
 }
 
+impl crate::util::Accountable for PrefixCodedTerms {
+    /// Equivalent to `PrefixCodedTerms.ramBytesUsed()`
+    /// (`PrefixCodedTerms.java:49-51`), which sums the *capacities* of the
+    /// buffers holding the payload and adds `2 * Long.BYTES` for the `size` and
+    /// `delGen` fields.
+    ///
+    /// Both terms are Java's, capacity included: the payload lives in the block
+    /// list of a `ByteBuffersDataOutput`, whose blocks are 1 KiB by default, so
+    /// a builder given three short terms answers 1040 and an empty one answers
+    /// 16 — measured against `lucene-core-10.5.0.jar` by
+    /// `tests/portability/prefix_coded_terms.rs`.
+    fn ram_bytes_used(&self) -> i64 {
+        self.content.iter().map(Vec::capacity).sum::<usize>() as i64 + 2 * 8
+    }
+}
+
 /// Builder for [`PrefixCodedTerms`].
 ///
 /// Equivalent to `org.apache.lucene.index.PrefixCodedTerms.Builder`.
 #[derive(Debug)]
 pub struct PrefixCodedTermsBuilder {
-    output: ByteArrayDataOutput,
+    output: ByteBuffersDataOutput,
     last_term: Term,
     last_term_bytes: Vec<u8>,
     size: i64,
@@ -745,7 +807,7 @@ impl PrefixCodedTermsBuilder {
     /// Creates a new builder.
     pub fn new() -> Self {
         Self {
-            output: ByteArrayDataOutput::new(),
+            output: ByteBuffersDataOutput::new(),
             last_term: Term::empty(""),
             last_term_bytes: Vec::new(),
             size: 0,
@@ -796,7 +858,9 @@ impl PrefixCodedTermsBuilder {
     /// Finalizes the builder into a `PrefixCodedTerms`.
     pub fn finish(self) -> PrefixCodedTerms {
         PrefixCodedTerms {
-            content: self.output.into_inner(),
+            // `new PrefixCodedTerms(output.toBufferList(), size)`
+            // (`PrefixCodedTerms.java:103`).
+            content: self.output.into_buffer_list(),
             size: self.size,
             del_gen: -1,
         }
@@ -808,7 +872,21 @@ impl PrefixCodedTermsBuilder {
 /// Equivalent to `org.apache.lucene.index.PrefixCodedTerms.TermIterator`.
 #[derive(Debug)]
 pub struct PrefixCodedTermsIterator {
-    input: ByteArrayDataInput,
+    /// The reader over the payload's blocks.
+    ///
+    /// Equivalent to `final ByteBuffersDataInput input`
+    /// (`PrefixCodedTerms.java:107`), which `iterator()` opens over the very
+    /// blocks the `PrefixCodedTerms` holds (`:170-172`); it keeps its own
+    /// position, so `next()` simply reads on.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `ByteBuffersDataInput` wraps
+    /// the shared `ByteBuffer` views without copying their bytes, so opening an
+    /// iterator is free. This port's `ByteBuffersDataInput` owns its blocks,
+    /// because a Rust view would borrow from a buffer the iterator is stored
+    /// next to, so each iterator copies the payload. The copy is the same one
+    /// this iterator already made, and it is the input type — not the payload
+    /// layout — that carries it.
+    input: ByteBuffersDataInput,
     end: i64,
     del_gen: i64,
     field: String,
@@ -816,7 +894,7 @@ pub struct PrefixCodedTermsIterator {
 }
 
 impl PrefixCodedTermsIterator {
-    fn new(del_gen: i64, input: ByteArrayDataInput) -> Self {
+    fn new(del_gen: i64, input: ByteBuffersDataInput) -> Self {
         let end = input.length() as i64;
         Self {
             input,
@@ -840,7 +918,7 @@ impl PrefixCodedTermsIterator {
     /// Returns the current term bytes, or `None` when exhausted.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<BytesRef>> {
-        if self.input.position() as i64 >= self.end {
+        if (self.input.position() as i64) >= self.end {
             self.field = String::new();
             return Ok(None);
         }
@@ -855,7 +933,7 @@ impl PrefixCodedTermsIterator {
 
         let suffix = self.input.read_v_int()? as usize;
         self.bytes.resize(prefix + suffix, 0);
-        self.input.read_bytes(&mut self.bytes, prefix, suffix)?;
+        self.input.read_bytes(&mut self.bytes[..], prefix, suffix)?;
         self.bytes.truncate(prefix + suffix);
 
         Ok(Some(BytesRef::new(self.bytes.clone())))
@@ -1178,6 +1256,20 @@ impl EmptyTermsEnum {
     }
 }
 
+impl std::fmt::Display for EmptyTermsEnum {
+    /// `1` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.TermsEnum$1",
+            self,
+        ))
+    }
+}
+
 impl TermsEnum for EmptyTermsEnum {
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.atts
@@ -1213,13 +1305,13 @@ impl TermsEnum for EmptyTermsEnum {
         ))
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         Err(LuceneError::IllegalState(
             "doc_freq should never be called on EmptyTermsEnum".to_string(),
         ))
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         Err(LuceneError::IllegalState(
             "total_term_freq should never be called on EmptyTermsEnum".to_string(),
         ))
@@ -1329,6 +1421,67 @@ impl Fields for EmptyFields {
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod prefix_coded_terms_accounting_tests {
+    use super::*;
+    use crate::util::Accountable;
+
+    /// `PrefixCodedTerms.ramBytesUsed()` is the payload's allocated size plus
+    /// `2 * Long.BYTES` for `size` and `delGen`. Running
+    /// `new PrefixCodedTerms.Builder().finish().ramBytesUsed()` against
+    /// `lucene-core-10.5.0.jar` prints 16, because an empty payload allocates no
+    /// buffer; this port allocates none either, so it prints 16 too.
+    #[test]
+    fn an_empty_packet_costs_only_its_two_long_fields() {
+        let empty = PrefixCodedTermsBuilder::new().finish();
+        assert_eq!(empty.size(), 0);
+        assert_eq!(empty.ram_bytes_used(), 16);
+    }
+
+    /// A packet holding anything at all has allocated one 1 KiB block, so it
+    /// costs 1040 whatever the terms are — the block *capacity*, not the bytes
+    /// written into it, is what `ramBytesUsed` sums. Checked against
+    /// `lucene-core-10.5.0.jar` by
+    /// `prefix_coded_terms::ram_bytes_used_matches_lucene`.
+    #[test]
+    fn a_populated_packet_costs_one_whole_block_plus_its_two_long_fields() {
+        let mut builder = PrefixCodedTermsBuilder::new();
+        for term in [("f", &b"aaa"[..]), ("f", &b"aab"[..]), ("g", &b"z"[..])] {
+            builder
+                .add_bytes(term.0, &BytesRef::new(term.1.to_vec()))
+                .unwrap();
+        }
+        let packet = builder.finish();
+        assert_eq!(packet.size(), 3);
+        assert_eq!(packet.content().len(), 1, "one block");
+        let written: usize = packet.content().iter().map(Vec::len).sum();
+        assert!(
+            written < 1024,
+            "{written} bytes should fit inside the single block"
+        );
+        assert_eq!(packet.ram_bytes_used(), 1024 + 16);
+    }
+
+    /// The payload spills into a second block once it passes 1 KiB, and both
+    /// blocks are charged.
+    #[test]
+    fn a_packet_larger_than_one_block_costs_every_block_it_allocated() {
+        let mut builder = PrefixCodedTermsBuilder::new();
+        for i in 0..400u32 {
+            builder
+                .add_bytes("f", &BytesRef::new(format!("term{i:08}").into_bytes()))
+                .unwrap();
+        }
+        let packet = builder.finish();
+        assert!(
+            packet.content().len() > 1,
+            "400 terms should not fit in one block"
+        );
+        let capacity: i64 = packet.content().iter().map(Vec::capacity).sum::<usize>() as i64;
+        assert_eq!(packet.ram_bytes_used(), capacity + 16);
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1458,6 +1611,15 @@ mod tests {
         }
     }
 
+    impl std::fmt::Display for VecTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("VecTermsEnum")
+        }
+    }
+
     impl TermsEnum for VecTermsEnum {
         fn attributes(&mut self) -> &mut AttributeSource {
             &mut self.atts
@@ -1503,11 +1665,11 @@ mod tests {
             Ok(self.pos as i64)
         }
 
-        fn doc_freq(&self) -> Result<i32> {
+        fn doc_freq(&mut self) -> Result<i32> {
             Ok(1)
         }
 
-        fn total_term_freq(&self) -> Result<i64> {
+        fn total_term_freq(&mut self) -> Result<i64> {
             Ok(1)
         }
 
@@ -1588,5 +1750,59 @@ mod tests {
         });
         let mut it = FilteredTermsEnum::new(inner, filter);
         assert!(it.seek_exact(&BytesRef::new(vec![0])).is_err());
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Object contracts of this module's term states and of PrefixCodedTerms
+// -----------------------------------------------------------------------------
+
+impl std::fmt::Display for OrdTermState {
+    /// Port of `OrdTermState.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OrdTermState ord={}", self.ord)
+    }
+}
+
+impl std::fmt::Display for EmptyTermState {
+    /// `EmptyTermState` has no Lucene counterpart; it stands for a term state
+    /// that carries nothing, so it renders with the base
+    /// `TermState.toString()`, which is the bare string `TermState`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TermState")
+    }
+}
+
+impl PartialEq for PrefixCodedTerms {
+    /// Port of `PrefixCodedTerms.equals(Object)`: same `delGen`, same term
+    /// count, same content.
+    ///
+    /// Java's `content` is a `List<ByteBuffer>` and `List.equals` compares it
+    /// buffer by buffer, so two lists holding the same bytes in different
+    /// chunkings are unequal there. This port stores the content as one flat
+    /// buffer, so it compares the bytes themselves — which is what the chunking
+    /// stands for, and cannot disagree for two instances the builder produced
+    /// from the same terms.
+    fn eq(&self, other: &Self) -> bool {
+        self.del_gen == other.del_gen && self.size == other.size && self.content == other.content
+    }
+}
+
+impl Eq for PrefixCodedTerms {}
+
+impl std::hash::Hash for PrefixCodedTerms {
+    /// Hashes exactly what [`PartialEq`] compares, so the two agree.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `hashCode()`
+    /// (`PrefixCodedTerms.java:52`) folds `bb.hashCode()` of every `ByteBuffer`
+    /// in the content list into a 31-chain, then mixes `delGen`. Its value
+    /// depends on where the `ByteBuffersDataOutput` happened to split the
+    /// content into blocks, which this port does not model — it keeps one flat
+    /// buffer — so that particular `int` is not reproducible. What the number
+    /// is *for* is reproduced: equal values hash equally.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.del_gen.hash(state);
+        self.size.hash(state);
+        self.content.hash(state);
     }
 }

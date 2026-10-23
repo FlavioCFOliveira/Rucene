@@ -58,7 +58,7 @@ pub use tokenattributes::{
     TermFrequencyAttributeImpl, TermToBytesRefAttribute, TypeAttribute, TypeAttributeImpl,
 };
 pub use wordlist_loader::{
-    get_buffered_reader, get_snowball_word_set, get_stem_dict, get_word_set,
+    get_buffered_reader, get_lines, get_snowball_word_set, get_stem_dict, get_word_set,
     get_word_set_ignoring_comments, get_word_set_into, get_word_set_with_comment,
 };
 
@@ -379,6 +379,39 @@ impl<T: TokenizerLogic> Tokenizer<T> {
     /// Returns a mutable reference to the tokenizer logic.
     pub fn logic_mut(&mut self) -> &mut T {
         &mut self.logic
+    }
+
+    /// Maps an offset in this tokenizer's output back onto the original input.
+    ///
+    /// When the input is a [`CharFilter`], the offset is corrected through it —
+    /// and, because [`CharFilter::correct_offset`] chains, through every filter
+    /// below it as well. Otherwise the offset is returned unchanged.
+    ///
+    /// Equivalent to `Tokenizer.correctOffset(int)`:
+    ///
+    /// ```text
+    /// return (input instanceof CharFilter)
+    ///     ? ((CharFilter) input).correctOffset(currentOff)
+    ///     : currentOff;
+    /// ```
+    ///
+    /// Before `reset()` Java's `input` is the `ILLEGAL_STATE_READER` sentinel,
+    /// which is not a `CharFilter`, so the offset comes back unchanged; this
+    /// port has no reader at all in that state, which answers the same.
+    ///
+    /// This is the offset a tokenizer must report on
+    /// [`OffsetAttribute`](crate::analysis::OffsetAttribute): the positions its
+    /// scanner sees are positions in the *filtered* text, and a consumer such
+    /// as a highlighter needs positions in the text the user supplied.
+    pub fn correct_offset(&self, current_off: i32) -> i32 {
+        match self
+            .input
+            .as_ref()
+            .and_then(|reader| reader.as_char_filter())
+        {
+            Some(filter) => filter.correct_offset(current_off),
+            None => current_off,
+        }
     }
 }
 
@@ -936,6 +969,17 @@ pub trait Analyzer: Debug + Send + Sync {
     /// Returns the shared state for this analyzer.
     fn analyzer_state(&self) -> &AnalyzerState;
 
+    /// Returns the binary name of the Lucene class this analyzer ports.
+    ///
+    /// Stands in for `getClass().getName()`, which Rust cannot answer: there is
+    /// no runtime class object, and `std::any::type_name` names the Rust type,
+    /// not the Java one. `LiveIndexWriterConfig.toString()` prints the
+    /// analyzer's class name, so the name has to be carried by the type itself.
+    ///
+    /// There is no default: Java has no analyzer whose class is unknown, so
+    /// every implementor states its own.
+    fn java_class_name(&self) -> &'static str;
+
     /// Creates a new [`TokenStreamComponents`] instance for `field_name`.
     fn create_components(&self, field_name: &str) -> TokenStreamComponents;
 
@@ -1205,6 +1249,10 @@ impl Analyzer for AnalyzerWrapper {
         &self.state
     }
 
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.analysis.AnalyzerWrapper"
+    }
+
     fn create_components(&self, field_name: &str) -> TokenStreamComponents {
         let wrapped = self.logic.get_wrapped_analyzer(field_name);
         let components = wrapped.create_components(field_name);
@@ -1295,6 +1343,10 @@ impl DelegatingAnalyzerWrapper {
 impl Analyzer for DelegatingAnalyzerWrapper {
     fn analyzer_state(&self) -> &AnalyzerState {
         &self.state
+    }
+
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.analysis.DelegatingAnalyzerWrapper"
     }
 
     fn create_components(&self, field_name: &str) -> TokenStreamComponents {
@@ -1845,6 +1897,10 @@ mod tests {
             &self.state
         }
 
+        fn java_class_name(&self) -> &'static str {
+            "org.apache.lucene.analysis.core.WhitespaceAnalyzer"
+        }
+
         fn create_components(&self, _field_name: &str) -> TokenStreamComponents {
             let tokenizer = Rc::new(RefCell::new(Tokenizer::new(WhitespaceTokenizer::default())));
             TokenStreamComponents::from_tokenizer(tokenizer)
@@ -1924,6 +1980,10 @@ mod tests {
     impl Analyzer for PerFieldAnalyzer {
         fn analyzer_state(&self) -> &AnalyzerState {
             &self.state
+        }
+
+        fn java_class_name(&self) -> &'static str {
+            "org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper"
         }
 
         fn create_components(&self, _field_name: &str) -> TokenStreamComponents {

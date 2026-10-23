@@ -223,6 +223,19 @@ pub trait DocValuesFormat: Send + Sync + fmt::Debug {
     ) -> Result<Box<dyn DocValuesProducer>>;
 }
 
+impl fmt::Display for dyn DocValuesFormat + '_ {
+    /// Port of the concrete `DocValuesFormat.toString()`, which every
+    /// implementation inherits: `"DocValuesFormat(name=" + name + ")"`.
+    ///
+    /// It hangs off the trait object rather than off each implementation for
+    /// the same reason `Codec`'s does: Rust cannot give [`fmt::Display`] a
+    /// default body, but Java's method is concrete on the abstract class, so
+    /// one implementation for `dyn DocValuesFormat` reproduces it for all.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DocValuesFormat(name={})", self.name())
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Doc-values format registry
 // -----------------------------------------------------------------------------
@@ -335,8 +348,24 @@ pub fn reload_doc_values_formats(format: Arc<dyn DocValuesFormat>) -> Result<()>
     GLOBAL_DOC_VALUES_REGISTRY.register_arc(format)
 }
 
-static GLOBAL_DOC_VALUES_REGISTRY: LazyLock<DocValuesFormatRegistry> =
-    LazyLock::new(DocValuesFormatRegistry::new);
+/// The global registry, seeded with the formats this crate ships.
+///
+/// The `lucene-core` jar lists a single doc-values format in
+/// `META-INF/services/org.apache.lucene.codecs.DocValuesFormat`,
+/// `org.apache.lucene.codecs.lucene90.Lucene90DocValuesFormat`, which the Java
+/// service loader makes resolvable by name without anyone registering it. Rust
+/// has no run-time service discovery, so that entry is registered here when the
+/// registry is first touched; see [`GLOBAL_POSTINGS_REGISTRY`] for the full
+/// reasoning.
+///
+/// [`GLOBAL_POSTINGS_REGISTRY`]: crate::codecs::postings_for_name
+static GLOBAL_DOC_VALUES_REGISTRY: LazyLock<DocValuesFormatRegistry> = LazyLock::new(|| {
+    let registry = DocValuesFormatRegistry::new();
+    registry
+        .register_arc(Arc::new(crate::codecs::Lucene90DocValuesFormat::new()))
+        .expect("built-in doc-values formats have valid, distinct SPI names");
+    registry
+});
 
 /// Looks up a doc-values format by name from the global registry.
 ///
@@ -1485,6 +1514,20 @@ impl BitsFilteredTermsEnum {
     }
 }
 
+impl std::fmt::Display for BitsFilteredTermsEnum {
+    /// `BitsFilteredTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.codecs.DocValuesConsumer$BitsFilteredTermsEnum",
+            self,
+        ))
+    }
+}
+
 impl TermsEnum for BitsFilteredTermsEnum {
     fn attributes(&mut self) -> &mut AttributeSource {
         self.inner.attributes()
@@ -1510,11 +1553,11 @@ impl TermsEnum for BitsFilteredTermsEnum {
         self.inner.ord()
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         self.inner.doc_freq()
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         self.inner.total_term_freq()
     }
 

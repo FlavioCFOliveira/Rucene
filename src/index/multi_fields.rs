@@ -744,6 +744,16 @@ pub struct TermsEnumEntry {
     current: Option<BytesRef>,
 }
 
+impl std::fmt::Display for TermsEnumEntry {
+    /// Port of `MultiTermsEnum.TermsEnumWithSlice.toString()`
+    /// (`MultiTermsEnum.java:367-370`): the slice, a colon, then
+    /// `super.toString()` — which is `TermsEnumIndex`'s, i.e. the wrapped
+    /// enumeration's own rendering.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.slice, self.tenum)
+    }
+}
+
 impl TermsEnumEntry {
     fn new(tenum: Box<dyn TermsEnum>, slice: ReaderSlice) -> Self {
         Self {
@@ -1060,6 +1070,27 @@ impl MultiTermsEnum {
     }
 }
 
+impl std::fmt::Display for MultiTermsEnum {
+    /// Port of `MultiTermsEnum.toString()` (`MultiTermsEnum.java:420-423`):
+    /// the name, then `Arrays.toString(subs)` — Java's array rendering, which
+    /// is the elements separated by `", "` inside square brackets.
+    ///
+    /// Measured against `lucene-core-10.5.0.jar`:
+    /// `MultiTermsEnum([ReaderSlice[start=0, length=6, readerIndex=0]:org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnum@1292f6e0, …])`.
+    /// Only the hexadecimal identity of each sub-enumeration diverges; see
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MultiTermsEnum([")?;
+        for (i, sub) in self.subs.iter().enumerate() {
+            if i != 0 {
+                f.write_str(", ")?;
+            }
+            std::fmt::Display::fmt(sub, f)?;
+        }
+        f.write_str("])")
+    }
+}
+
 impl TermsEnum for MultiTermsEnum {
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.atts
@@ -1149,7 +1180,7 @@ impl TermsEnum for MultiTermsEnum {
         ))
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         let mut sum: i32 = 0;
         for &idx in &self.top {
             sum = sum.wrapping_add(self.subs[idx].tenum.doc_freq()?);
@@ -1157,7 +1188,7 @@ impl TermsEnum for MultiTermsEnum {
         Ok(sum)
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         let mut sum: i64 = 0;
         for &idx in &self.top {
             sum += self.subs[idx].tenum.total_term_freq()?;
@@ -1222,6 +1253,15 @@ pub struct EnumWithSlice {
     pub postings_enum: Box<dyn PostingsEnum>,
     /// Placement of this sub-reader inside the composite reader.
     pub slice: ReaderSlice,
+}
+
+impl std::fmt::Display for EnumWithSlice {
+    /// Port of `MultiPostingsEnum.EnumWithSlice.toString()`
+    /// (`MultiPostingsEnum.java:176-179`): the slice, a colon, then the
+    /// sub-enum rendered by its own `toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.slice, self.postings_enum)
+    }
 }
 
 impl EnumWithSlice {
@@ -1409,6 +1449,26 @@ impl DocIdSetIterator for MultiPostingsEnum {
     }
 }
 
+impl std::fmt::Display for MultiPostingsEnum {
+    /// Port of `MultiPostingsEnum.toString()`
+    /// (`MultiPostingsEnum.java:191-194`).
+    ///
+    /// **The class renames itself**: the string opens with
+    /// `MultiDocsAndPositionsEnum`, the name this class carried before docs and
+    /// positions were merged into one enumeration — not `MultiPostingsEnum`.
+    /// Measured against `lucene-core-10.5.0.jar`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MultiDocsAndPositionsEnum([")?;
+        for (i, sub) in self.subs.iter().enumerate() {
+            if i != 0 {
+                f.write_str(", ")?;
+            }
+            std::fmt::Display::fmt(sub, f)?;
+        }
+        f.write_str("])")
+    }
+}
+
 impl PostingsEnum for MultiPostingsEnum {
     fn freq(&self) -> Result<i32> {
         self.current_idx()
@@ -1487,6 +1547,20 @@ impl DocIdSetIterator for SlowImpactsEnum {
 
     fn cost(&self) -> i64 {
         self.delegate.cost()
+    }
+}
+
+impl std::fmt::Display for SlowImpactsEnum {
+    /// `org.apache.lucene.index.SlowImpactsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.SlowImpactsEnum",
+            self,
+        ))
     }
 }
 
@@ -1606,6 +1680,15 @@ mod tests {
         }
     }
 
+    impl std::fmt::Display for VecPostings {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("VecPostings")
+        }
+    }
+
     impl PostingsEnum for VecPostings {
         fn freq(&self) -> Result<i32> {
             Ok(1)
@@ -1643,6 +1726,15 @@ mod tests {
                 pos: -1,
                 atts: AttributeSource::new(),
             }
+        }
+    }
+
+    impl std::fmt::Display for VecTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("VecTermsEnum")
         }
     }
 
@@ -1691,11 +1783,11 @@ mod tests {
             Ok(self.pos as i64)
         }
 
-        fn doc_freq(&self) -> Result<i32> {
+        fn doc_freq(&mut self) -> Result<i32> {
             Ok(self.entries[self.pos as usize].1)
         }
 
-        fn total_term_freq(&self) -> Result<i64> {
+        fn total_term_freq(&mut self) -> Result<i64> {
             Ok(self.entries[self.pos as usize].2)
         }
 
@@ -2253,6 +2345,16 @@ mod tests {
         field_infos: FieldInfos,
         /// Fields that actually have a terms dictionary, keyed by name.
         terms: std::collections::BTreeMap<String, VecTerms>,
+    }
+
+    impl std::fmt::Display for StubLeaf {
+        /// Test double; it has no Lucene counterpart whose `toString()` could be
+        /// reproduced, so it renders under its own name. `Display` is required
+        /// because `LeafReader`/`IndexReader` carry it as a supertrait, standing in
+        /// for the `toString()` every Java reader inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubLeaf")
+        }
     }
 
     impl StubLeaf {

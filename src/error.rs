@@ -252,6 +252,19 @@ impl LuceneError {
         }
     }
 
+    /// Returns the reason an `IndexFormatTooOld` carries when the version
+    /// itself could not be read off the file.
+    ///
+    /// Equivalent to `org.apache.lucene.index.IndexFormatTooOldException#getReason`,
+    /// which returns `null` when the version *was* available; this returns
+    /// `None` in that case, and `None` for every other error.
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::IndexFormatTooOld { reason, .. } => reason.as_deref(),
+            _ => None,
+        }
+    }
+
     /// Returns the version of the file that was too old or too new.
     ///
     /// For `IndexFormatTooOld`, returns `None` when only a `reason` is
@@ -345,3 +358,30 @@ impl LuceneError {
 
 /// Convenience alias for `Result<T, LuceneError>`.
 pub type Result<T> = std::result::Result<T, LuceneError>;
+
+#[cfg(test)]
+mod tests {
+    use super::LuceneError;
+
+    /// `IndexFormatTooOldException.getReason()` returns the free-form reason
+    /// when the version could not be read off the file, and `null` when the
+    /// version *was* available — the two constructors are mutually exclusive.
+    #[test]
+    fn index_format_too_old_reports_its_reason_only_when_it_has_one() {
+        let with_reason = LuceneError::index_format_too_old_reason("segments_1", "unreadable");
+        assert_eq!(with_reason.reason(), Some("unreadable"));
+        assert_eq!(with_reason.version(), None);
+        assert_eq!(with_reason.resource_description(), Some("segments_1"));
+
+        let with_version = LuceneError::index_format_too_old("_0.si", 5, 9, 10);
+        assert_eq!(with_version.reason(), None);
+        assert_eq!(with_version.version(), Some(5));
+
+        // Every other error carries no reason at all.
+        assert_eq!(
+            LuceneError::index_format_too_new("_0.si", 12, 9, 10).reason(),
+            None
+        );
+        assert_eq!(LuceneError::CorruptIndex("x".to_string()).reason(), None);
+    }
+}

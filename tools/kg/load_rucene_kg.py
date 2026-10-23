@@ -877,17 +877,53 @@ def phase_audit(roadmap, s: Survey):
 
 
 def phase_prune(roadmap, s: Survey, batch_size):
-    """Delete nodes the survey no longer confirms.
+    """Delete the files and nodes the survey no longer confirms.
 
     `phase_audit` reports them; without this phase they accumulate, and a node
-    for a type the crate deleted is a false statement about the code. Two
-    safeguards: a node carrying a `PORTS` edge is never pruned -- that edge is a
-    curated or declared claim, and its disappearance would silently reduce
-    reported coverage -- and the survey must be non-empty, so a failed extraction
-    can never be read as "the crate has no types".
+    for a type the crate deleted is a false statement about the code.
+
+    **Which rule yields.** The original safeguard refused to prune *any* node
+    carrying a `PORTS` edge, and `port_evidence_kg.py` never retired an edge
+    whose declaration site had vanished. Between them a deleted file kept its
+    port for ever: `TwoPhaseCommitTool` still read `ported` at 9cf23e5 on a
+    doc comment in `src/index/two_phase_commit.rs`, a file the same commit
+    deleted. That inflates coverage silently for every file the crate will ever
+    delete, which is exactly what `CLAUDE.md` 6.1 forbids -- coverage has to be
+    defensible.
+
+    So the safeguard yields, but only where it was wrong. It conflated two
+    situations it could not tell apart:
+
+    1. the crate really deleted the item -- the edge must go with it;
+    2. the survey failed to *see* an item that exists -- nothing may be deleted.
+
+    The discriminator is not "does it carry `PORTS`" but "can this survey see
+    this kind of item at all". A survey run without `--expand` cannot see the
+    macro-generated types, and a curated edge has no source site for any survey
+    to confirm. Those two are still protected, by name:
+
+    * `evidence: 'curated'` -- asserted by hand, not by a doc comment, so the
+      crate survey is not its authority;
+    * `declarationSource: 'macro-expansion'` -- declared by a type no source
+      line contains, invisible to a survey that did not expand macros.
+
+    Everything else is a `doc-comment` edge over a source-declared item, and
+    for those the survey *is* the authority: if it does not list the item, the
+    doc comment that declared the edge does not exist either. `port_evidence_kg.py`
+    closes the same gap from the other end, retiring a `doc-comment` edge whose
+    declaration site no longer states the claim, so an edge cannot outlive its
+    evidence even when the node survives for another reason.
+
+    Stale `File` nodes are pruned here too. `phase_audit` has always reported
+    them and nothing ever deleted them, so a deleted `.rs` file left a `File`
+    node behind permanently -- the third limb of the same defect.
+
+    The remaining safeguard is unchanged and unconditional: an empty survey is
+    refused, so a failed extraction can never be read as "the crate has no
+    types".
     """
     print("phase: prune", file=sys.stderr)
-    if not s.types or not s.fns:
+    if not s.types or not s.fns or not s.files:
         print("  survey is empty; refusing to prune", file=sys.stderr)
         return
 
@@ -910,26 +946,50 @@ def phase_prune(roadmap, s: Survey, batch_size):
         {"qn": r["qn"]} for r in graph_fns if r["qn"] not in survey_fns
     ]
 
+    # Only the two edge kinds this survey cannot judge are protected; see the
+    # docstring for why the blanket `PORTS` protection had to go.
+    unjudgeable = ("MATCH (t)-[e:PORTS]->(:Class) "
+                   "WHERE e.evidence = 'curated' "
+                   "OR e.declarationSource = 'macro-expansion' ")
     protected = {
         (r["name"], r["file"])
-        for r in read(
-            roadmap,
-            "MATCH (t)-[:PORTS]->(:Class) RETURN t.name AS name, t.file AS file",
-        )
+        for r in read(roadmap, unjudgeable + "RETURN t.name AS name, t.file AS file")
     }
     kept = [t for t in stale_types if (t["name"], t["file"]) in protected]
     stale_types = [t for t in stale_types if (t["name"], t["file"]) not in protected]
     protected_fns = {
         r["qn"]
         for r in read(
-            roadmap, "MATCH (f:RustFn)-[:PORTS]->(:Class) RETURN f.qualifiedName AS qn"
+            roadmap,
+            "MATCH (f:RustFn)-[e:PORTS]->(:Class) "
+            "WHERE e.evidence = 'curated' OR e.declarationSource = 'macro-expansion' "
+            "RETURN f.qualifiedName AS qn",
         )
     }
     kept += [f for f in stale_fns if f["qn"] in protected_fns]
     stale_fns = [f for f in stale_fns if f["qn"] not in protected_fns]
 
     for t in kept:
-        print(f"  KEPT (carries PORTS): {t}", file=sys.stderr)
+        print(f"  KEPT (carries a curated or macro-expansion PORTS): {t}",
+              file=sys.stderr)
+    if stale_types:
+        ported = {(r["name"], r["file"]) for r in read(
+            roadmap,
+            "MATCH (t)-[:PORTS]->(:Class) RETURN t.name AS name, t.file AS file")}
+        for t in stale_types:
+            if (t["name"], t["file"]) in ported:
+                print("  RETIRING a doc-comment PORTS with its deleted node: "
+                      f"{t}", file=sys.stderr)
+
+    survey_files = {f["path"] for f in s.files}
+    stale_files = [
+        {"path": r["path"]}
+        for r in read(
+            roadmap,
+            "MATCH (f:File) WHERE f.path ENDS WITH '.rs' RETURN f.path AS path",
+        )
+        if r["path"] not in survey_files
+    ]
 
     if stale_fns:
         run_unwind(
@@ -945,7 +1005,13 @@ def phase_prune(roadmap, s: Survey, batch_size):
             "DETACH DELETE t",
             batch_size, "stale type nodes deleted",
         )
-    if not stale_types and not stale_fns:
+    if stale_files:
+        run_unwind(
+            "delete", roadmap, stale_files,
+            "MATCH (f:File {path:row.path}) DETACH DELETE f",
+            batch_size, "stale File nodes deleted",
+        )
+    if not stale_types and not stale_fns and not stale_files:
         print("  nothing to prune", file=sys.stderr)
 
 

@@ -739,8 +739,8 @@ def run_macro_expansion(root: Path) -> str:
     return proc.stdout
 
 
-def parse_expanded(text: str):
-    """Module-level types and functions of the expanded crate.
+def parse_expanded_records(text: str):
+    """Module-level items of the expanded crate, each with its raw header.
 
     Scans the masked text brace by brace and classifies each block from the
     *header* that precedes its `{` -- the text since the last `;`, `{` or `}`.
@@ -749,11 +749,21 @@ def parse_expanded(text: str):
     the expander emits: matching only the opening line mistook 348 derive- and
     trait-impl methods for free functions.
 
-    Returns `(types, fns)` where `types` is `(module_path, name, kind)` and
-    `fns` is `(module_path, name, owner, signature)`. Anything inside a `fn`, a
-    `trait` or an `impl Trait for Type` body is skipped, matching what the
-    literal parser models; inherent `impl Type` blocks yield their methods with
-    `owner` set.
+    Returns one dict per item: `mods`, `kind` (`"type"` or `"fn"`), `name`,
+    `decl` (`struct` / `enum` / `union` / `trait`, types only), `owner`
+    (functions only), `signature` (functions only) and `header` -- the item's
+    slice of the **raw** text, before masking. Anything inside a `fn`, a `trait`
+    or an `impl Trait for Type` body is skipped, matching what the literal
+    parser models; inherent `impl Type` blocks yield their methods with `owner`
+    set.
+
+    `header` exists because the masked header is enough to name an item but not
+    to read it. The raw slice also carries the item's doc comment -- the `///`
+    lines and the `#[doc = "..."]` attributes a `concat!` inside a macro
+    template expands to -- and for a macro-generated type that is the only place
+    its `Equivalent to `org.apache.lucene...`` claim exists at all. Keeping one
+    scanner and widening what it returns avoids a second scanner that could
+    disagree with this one about which items the crate has.
     """
     # `macro_rules!` definitions survive `-Zunpretty=expanded` verbatim, so the
     # templates inside them have to be blanked here too, exactly as for a source
@@ -761,7 +771,7 @@ def parse_expanded(text: str):
     masked = blank_macro_bodies(mask(text))
     n = len(masked)
     stack = []  # (kind, name)
-    types, fns = [], []
+    records = []
     header_start = 0
     i = 0
 
@@ -812,7 +822,10 @@ def parse_expanded(text: str):
                     h,
                 )
                 if mu:
-                    types.append((mods(), mu.group(2), "struct"))
+                    records.append({"mods": mods(), "kind": "type",
+                                    "name": mu.group(2), "decl": "struct",
+                                    "owner": None, "signature": None,
+                                    "header": text[header_start:i]})
             if c == "}" and stack:
                 stack.pop()
             header_start = i + 1
@@ -821,42 +834,87 @@ def parse_expanded(text: str):
             kind, name = classify(header)
             if kind == "type" and not opaque() and not owner():
                 m = re.search(r"\b(struct|enum|union)\s+([A-Za-z_]\w*)", " ".join(header.split()))
-                types.append((mods(), name, m.group(1)))
+                records.append({"mods": mods(), "kind": "type", "name": name,
+                                "decl": m.group(1), "owner": None,
+                                "signature": None,
+                                "header": text[header_start:i]})
             elif kind == "trait" and not opaque() and not owner():
                 m = re.search(r"\btrait\s+([A-Za-z_]\w*)", " ".join(header.split()))
                 if m:
-                    types.append((mods(), m.group(1), "trait"))
+                    records.append({"mods": mods(), "kind": "type",
+                                    "name": m.group(1), "decl": "trait",
+                                    "owner": None, "signature": None,
+                                    "header": text[header_start:i]})
             elif kind == "fn" and not opaque():
                 m = re.search(r"\bfn\s+([A-Za-z_]\w*)", " ".join(header.split()))
                 if m:
-                    fns.append((mods(), m.group(1), owner(), " ".join(header.split())))
+                    records.append({"mods": mods(), "kind": "fn",
+                                    "name": m.group(1), "decl": None,
+                                    "owner": owner(),
+                                    "signature": " ".join(header.split()),
+                                    "header": text[header_start:i]})
             stack.append((kind, name))
             header_start = i + 1
         i += 1
 
+    return records
+
+
+def parse_expanded(text: str):
+    """`(types, fns)` of the expanded crate, as the callers of this module read it.
+
+    `types` is `(module_path, name, kind)`, `fns` is
+    `(module_path, name, owner, signature)`. A thin projection of
+    `parse_expanded_records`, kept so the shape the survey and the audit consume
+    does not change.
+    """
+    types, fns = [], []
+    for rec in parse_expanded_records(text):
+        if rec["kind"] == "type":
+            types.append((rec["mods"], rec["name"], rec["decl"]))
+        else:
+            fns.append((rec["mods"], rec["name"], rec["owner"], rec["signature"]))
     return types, fns
+
+
+def resolve_module_file(mod_path: str, mod_to_file: dict):
+    """`(file, modSuffix)` for a module path of the **expanded** crate.
+
+    The expander prints one flattened module tree, and it places a generated
+    item in the module where the macro was *invoked*, never in the module that
+    declares the `macro_rules!`: `define_array_list!` lives in
+    `src/internal/hppc/macros.rs` but its `LongArrayList` is printed inside
+    `rucene::internal::hppc::long_array_list`. Resolving the module path is
+    therefore what attributes the item to its invocation site, and that is the
+    attribution the model needs: `measure_depth` pairs a type's `file` with the
+    `file` of the functions that implement it, and the expander puts the type
+    and its inherent methods in the same module. Attributing either to
+    `macros.rs` would leave `(name, file)` unresolvable on both sides.
+
+    Walks up until a module path is a file the crate declares, so an item
+    generated into an inline `mod` still lands on the right file with the
+    leftover segments returned as the suffix.
+    """
+    segs = mod_path.split("::")
+    suffix = []
+    while segs:
+        cand = "::".join(segs)
+        if cand in mod_to_file:
+            return mod_to_file[cand], suffix
+        suffix.insert(0, segs.pop())
+    return None, suffix
 
 
 def macro_generated_types(root: Path, mod_to_file: dict, known: set, expanded: str):
     """Types the compiler sees that the literal parser did not record.
 
     `known` holds the (name, file) pairs the literal survey already produced.
-    A module path is resolved to the file that declares it, walking up so that a
-    type generated into an inline `mod` lands on the right file with the leftover
-    segments kept as `modSuffix`.
+    `resolve_module_file` decides which file each one is attributed to.
     """
     added = []
     types_seen, _fns = parse_expanded(expanded)
     for mod_path, name, kind in types_seen:
-        segs = mod_path.split("::")
-        suffix = []
-        rel = None
-        while segs:
-            cand = "::".join(segs)
-            if cand in mod_to_file:
-                rel = mod_to_file[cand]
-                break
-            suffix.insert(0, segs.pop())
+        rel, suffix = resolve_module_file(mod_path, mod_to_file)
         if rel is None or (name, rel) in known:
             continue
         known.add((name, rel))
@@ -882,15 +940,7 @@ def macro_generated_fns(mod_to_file: dict, known: set, expanded: str):
     added = []
     _types, fns = parse_expanded(expanded)
     for mod_path, name, owner, signature in fns:
-        segs = mod_path.split("::")
-        suffix = []
-        rel = None
-        while segs:
-            cand = "::".join(segs)
-            if cand in mod_to_file:
-                rel = mod_to_file[cand]
-                break
-            suffix.insert(0, segs.pop())
+        rel, suffix = resolve_module_file(mod_path, mod_to_file)
         if rel is None:
             continue
         key = (name, rel, owner)

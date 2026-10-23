@@ -30,6 +30,8 @@ pub mod graph;
 pub mod info_stream;
 pub mod int_block_pool;
 pub mod io_function;
+pub mod java_collections;
+pub(crate) mod java_fmt;
 pub mod jvm;
 pub mod long_heap;
 pub mod math_util;
@@ -302,6 +304,37 @@ impl PartialEq for BytesRef {
     }
 }
 
+impl BytesRef {
+    /// Java's `BytesRef.hashCode()`, reproduced exactly so that values hash the
+    /// same way on both sides of the port.
+    ///
+    /// The value is `StringHelper.murmurhash3_x86_32(this,
+    /// StringHelper.GOOD_FAST_HASH_SEED)`. The seed is drawn once per process
+    /// and is only stable across runs when `tests.seed` is set, so this number
+    /// is reproducible only under a fixed seed — exactly as in Java. See
+    /// [`StringHelper::good_fast_hash_seed`](crate::util::string_helper::StringHelper::good_fast_hash_seed).
+    pub fn hash_code(&self) -> i32 {
+        crate::util::string_helper::StringHelper::murmurhash3_x86_32_bytes_ref(
+            self,
+            crate::util::string_helper::StringHelper::good_fast_hash_seed(),
+        )
+    }
+}
+
+impl Hash for BytesRef {
+    /// Hashes the active slice, which is what [`PartialEq`] compares, so the
+    /// two agree: equal `BytesRef`s hash equally.
+    ///
+    /// Java's `hashCode()` is the seeded MurmurHash3 value that
+    /// [`BytesRef::hash_code`] reproduces; a Rust `Hasher` consumes bytes
+    /// rather than producing an `i32`, so this feeds it the same bytes the
+    /// Java hash is computed over instead of forcing that particular mixing
+    /// function on every caller's hasher.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Hash::hash_slice(self.slice(), state);
+    }
+}
+
 impl Eq for BytesRef {}
 
 impl PartialOrd for BytesRef {
@@ -346,6 +379,16 @@ impl Debug for BytesRef {
 // ---------------------------------------------------------------------------
 
 /// A builder for [`BytesRef`] values, equivalent to Lucene's `BytesRefBuilder`.
+///
+/// # `equals` and `hashCode`
+///
+/// Lucene's `BytesRefBuilder.equals(Object)` and `BytesRefBuilder.hashCode()` both
+/// `throw new UnsupportedOperationException()`: a mutable builder must never be
+/// used as a map key or compared by value, and Lucene enforces that at runtime.
+/// The faithful port of a method that only throws is to leave the trait
+/// unimplemented, so this type deliberately implements neither [`PartialEq`]
+/// nor [`std::hash::Hash`], which turns Java's runtime failure into a compile
+/// error. Compare the built value instead, via `get()`.
 #[derive(Clone, Default, Debug)]
 pub struct BytesRefBuilder {
     inner: BytesRef,
@@ -2238,7 +2281,11 @@ impl RamUsageEstimator {
     pub const UNKNOWN_DEFAULT_RAM_BYTES_USED: i64 = 256;
 
     /// Aligns a size to the next multiple of the object alignment.
-    pub fn align_object_size(size: i64) -> i64 {
+    ///
+    /// `const` so that a type whose Java counterpart declares its shallow size
+    /// as a `static final` — `Transition.BYTES_USED`, for one — can declare the
+    /// same thing as an associated constant.
+    pub const fn align_object_size(size: i64) -> i64 {
         let size = size + Self::NUM_BYTES_OBJECT_ALIGNMENT - 1;
         size - (size % Self::NUM_BYTES_OBJECT_ALIGNMENT)
     }
@@ -2862,6 +2909,17 @@ impl Constants {
 
 /// Debugging logging sink for Lucene classes.
 pub trait InfoStream: Send + Sync {
+    /// Returns the binary name of the Lucene class this stream ports.
+    ///
+    /// Stands in for `getClass().getName()`, which Rust cannot answer: there is
+    /// no runtime class object, and `std::any::type_name` names the Rust type,
+    /// not the Java one. `LiveIndexWriterConfig.toString()` prints this
+    /// stream's class name, so the name has to be carried by the type itself.
+    ///
+    /// There is no default: Java has no instance whose class is unknown, so
+    /// every implementor states its own.
+    fn java_class_name(&self) -> &'static str;
+
     /// Logs a message for the given component.
     fn message(&self, component: &str, message: &str);
 
@@ -2877,6 +2935,10 @@ pub trait InfoStream: Send + Sync {
 pub struct NoOutputInfoStream;
 
 impl InfoStream for NoOutputInfoStream {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.util.InfoStream$NoOutput"
+    }
+
     fn message(&self, _component: &str, _message: &str) {
         // No-op: `message()` should never be called when `is_enabled` is false.
     }
@@ -3894,9 +3956,31 @@ impl Bits for FixedBitSet {
     }
 }
 
+impl FixedBitSet {
+    /// Shallow size of the Java class, the fixed part of
+    /// [`FixedBitSet::ram_bytes_used`](Accountable::ram_bytes_used).
+    ///
+    /// Equivalent to the private `FixedBitSet.BASE_RAM_BYTES_USED`, which Java
+    /// computes as
+    /// `RamUsageEstimator.shallowSizeOfInstance(FixedBitSet.class)`: an object
+    /// header, the `bits` reference and the `int` fields `numBits` and
+    /// `numWords`. Measured against `lucene-core-10.5.0.jar` on a JVM with
+    /// compressed references, that is 24 bytes.
+    pub const BASE_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + 2 * 4,
+    );
+}
+
 impl Accountable for FixedBitSet {
+    /// Returns an estimate of the heap this bit set occupies.
+    ///
+    /// Equivalent to `org.apache.lucene.util.FixedBitSet#ramBytesUsed`
+    /// (`FixedBitSet.java:203-205`), which is
+    /// `BASE_RAM_BYTES_USED + RamUsageEstimator.sizeOf(bits)`.
     fn ram_bytes_used(&self) -> i64 {
-        RamUsageEstimator::size_of_u64(&self.bits)
+        Self::BASE_RAM_BYTES_USED + RamUsageEstimator::size_of_u64(&self.bits)
     }
 }
 
@@ -4321,5 +4405,30 @@ mod tests {
         assert_eq!(BitUtil::read_be_int(&buf, 0), 0x12345678);
         BitUtil::write_le_long(&mut buf, 0, 0x123456789ABCDEF0i64);
         assert_eq!(BitUtil::read_le_long(&buf, 0), 0x123456789ABCDEF0i64);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FixedBitSet: the inherited `Object.toString()`
+// ---------------------------------------------------------------------------
+
+impl Display for FixedBitSet {
+    /// Lucene's `FixedBitSet` does not override `toString()`, so Java renders it
+    /// with `Object.toString()`: the class name, `@`, and the identity hash in
+    /// hexadecimal. That string reaches the outside world through
+    /// `BitDocIdSet.toString()`, which concatenates the set it wraps, so the
+    /// shape has to exist here too.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Rust has no identity hash. Following
+    /// the convention this port already uses for `Object.hashCode()` (see
+    /// `IndexCommit`), the address of the value stands in for it. The digits
+    /// therefore differ from a JVM's, exactly as two JVM runs differ from each
+    /// other; nothing in Lucene parses them.
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "FixedBitSet@{}",
+            crate::util::java_fmt::to_hex_string(self as *const Self as usize as i32)
+        )
     }
 }

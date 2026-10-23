@@ -40,12 +40,25 @@ impl IndexOrder<DisiWrapper> for ByMatchCost {
 /// **Divergence from Lucene 10.5.0.** Java expresses "score the linked list of
 /// clauses positioned on the current doc" as an abstract method that a subclass
 /// overrides. Rust has no implementation inheritance, so
-/// [`DisjunctionSumScorer`](crate::search::DisjunctionSumScorer) and
-/// [`DisjunctionMaxScorer`](crate::search::DisjunctionMaxScorer) hold one of
+/// [`DisjunctionSumScorer`](crate::search::DisjunctionSumScorer),
+/// [`DisjunctionMaxScorer`](crate::search::DisjunctionMaxScorer) and
+/// [`LogOddsFusionScorer`](crate::search::LogOddsFusionScorer) hold one of
 /// these and implement their own `score()` over the positions
 /// [`sub_matches`](Self::sub_matches) returns. The linked list itself becomes a
 /// vector of positions in the very order Java's list is traversed, so the order
 /// in which sub-scores are summed is unchanged.
+///
+/// Three inherited members of `DisjunctionScorer` therefore land on the
+/// concrete scorers rather than here:
+///
+/// * the `final score()`, which is `score(getSubMatches())`, and the abstract
+///   `score(DisiWrapper)` it delegates to, fuse into each scorer's
+///   [`Scorable::score`](crate::search::Scorable::score);
+/// * `twoPhaseIterator()`, which returns the `twoPhase` field or `null`,
+///   becomes each scorer's
+///   [`Scorer::two_phase_iterator`](crate::search::Scorer::two_phase_iterator),
+///   answering `Some(self.base)` exactly when
+///   [`has_two_phase`](Self::has_two_phase) holds.
 pub struct DisjunctionScorer {
     approximation: DisjunctionDISIApproximation,
     num_clauses: usize,
@@ -132,7 +145,8 @@ impl DisjunctionScorer {
     }
 
     /// Returns whether any clause supports two-phase iteration, that is,
-    /// whether Java's `twoPhase` field is non-`null`.
+    /// whether Java's `twoPhase` field is non-`null`, which is what
+    /// `DisjunctionScorer.twoPhaseIterator()` returns or withholds.
     pub fn has_two_phase(&self) -> bool {
         self.has_two_phase
     }

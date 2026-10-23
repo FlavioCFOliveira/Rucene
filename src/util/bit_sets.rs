@@ -11,12 +11,17 @@
 //! * [`DenseLiveDocs`] – traditional live docs backed by a [`FixedBitSet`].
 //! * [`SparseLiveDocs`] – live docs optimized for sparse deletions by storing
 //!   the deleted docs in a [`SparseFixedBitSet`] with inverted semantics.
+//! * `FilteredDocIdSetIterator` – the package-private `O(max_doc)` predicate
+//!   scan that Lucene's two live-docs classes iterate with.
 
 #![deny(unsafe_code)]
 
 use std::fmt;
+use std::sync::Arc;
 
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
+use crate::util::bit_set::{BitSet, BitSetIterator, LiveDocs};
+use crate::util::java_fmt;
 use crate::util::{Accountable, FixedBitSet, RamUsageEstimator};
 
 use super::Bits;
@@ -186,47 +191,104 @@ impl SparseFixedBitSet {
         self.length.min(estimate as usize)
     }
 
+    /// Returns the first document that occurs on or after the block index
+    /// `i4096`, or [`NO_MORE_DOCS`] when no block up to `i4096upper` holds one.
+    ///
+    /// Equivalent to the private `SparseFixedBitSet.firstDoc(int, int)`. Because
+    /// a block stores only its non-zero words, the first word of the block that
+    /// the index word points at (`bits[i4096][0]`) is by construction the
+    /// lowest-addressed non-zero word, so the answer needs no scan within the
+    /// block.
+    fn first_doc(&self, mut i4096: usize, i4096upper: usize) -> i32 {
+        debug_assert!(
+            i4096upper <= self.indices.len(),
+            "i4096upper={i4096upper}, indices.len()={}",
+            self.indices.len()
+        );
+        while i4096 < i4096upper {
+            let index = self.indices[i4096];
+            if index != 0 {
+                let i64w = index.trailing_zeros() as usize;
+                let block = self.bits[i4096]
+                    .as_ref()
+                    .expect("INVARIANT: a non-zero index word implies an allocated block");
+                return ((i4096 << 12) | (i64w << 6) | block[0].trailing_zeros() as usize) as i32;
+            }
+            i4096 += 1;
+        }
+        NO_MORE_DOCS
+    }
+
+    /// Returns the next set bit in `[start, upper_bound)`, treating
+    /// `upper_bound` as a best-effort hint rather than a hard requirement: the
+    /// result may be `>= upper_bound`, so a caller for which the bound is hard
+    /// must check it.
+    ///
+    /// Equivalent to the private `SparseFixedBitSet.nextSetBitInRange(int, int)`.
+    ///
+    /// The name carries a suffix Java's does not, because Java's *public*
+    /// `nextSetBit(int, int)` — which applies the bound strictly — is already
+    /// spelled `next_set_bit_in_range` on the [`BitSet`] trait, Rust having no
+    /// overloading to separate it from `nextSetBit(int)`. The suffix keeps the
+    /// two apart and names the difference between them.
+    fn next_set_bit_in_range_best_effort(&self, start: usize, upper_bound: usize) -> i32 {
+        debug_assert!(start < self.length);
+        debug_assert!(
+            upper_bound > start && upper_bound <= self.length,
+            "upper_bound={upper_bound}, start={start}, length={}",
+            self.length
+        );
+        let i4096 = start >> 12;
+        let index = self.indices[i4096];
+        let block = self.bits[i4096].as_ref();
+        // Java keeps `i64` as a *global* word index and relies on the JVM's
+        // shift-by-modulo-64 to use it as a block-local one; the `& 0x3f` below
+        // is that modulo made explicit, since Rust's `>>` would panic instead.
+        let mut i64w = start >> 6;
+        let i64bit = 1u64 << (i64w & 0x3f);
+        let mut o = (index & (i64bit - 1)).count_ones() as usize;
+        if (index & i64bit) != 0 {
+            // At least one bit is set in the current word; check whether one of
+            // them is at or after `start`.
+            let bits = block.expect("INVARIANT: a non-zero index word implies an allocated block")
+                [o]
+                >> (start & 0x3f);
+            if bits != 0 {
+                return (start + bits.trailing_zeros() as usize) as i32;
+            }
+            o += 1;
+        }
+        let index_bits = (index >> (i64w & 0x3f)) >> 1;
+        if index_bits == 0 {
+            // No more bits are set in this block of 4096; go to the next one.
+            let i4096upper = if upper_bound == self.length {
+                self.indices.len()
+            } else {
+                sparse_block_count(upper_bound)
+            };
+            return self.first_doc(i4096 + 1, i4096upper);
+        }
+        // There are still set bits in this block.
+        i64w += 1 + index_bits.trailing_zeros() as usize;
+        let bits = block.expect("INVARIANT: a non-zero index word implies an allocated block")[o];
+        ((i64w << 6) | bits.trailing_zeros() as usize) as i32
+    }
+
     /// Returns the first set bit at or after `start`, or `None` if there is none.
+    ///
+    /// Equivalent to `SparseFixedBitSet.nextSetBit(int)`, which delegates to
+    /// `nextSetBitInRange(i, length)` and skips the bound check on the result
+    /// because no bit at or past `length` can be set. Java signals "no more" with
+    /// `DocIdSetIterator.NO_MORE_DOCS`; this port keeps the `Option` its callers
+    /// already use.
     pub fn next_set_bit(&self, start: usize) -> Option<usize> {
         if start >= self.length {
             return None;
         }
-        let start_i4096 = start >> 12;
-        let start_i64 = (start >> 6) & 0x3f;
-        let start_sub = start & 0x3f;
-
-        for (block_idx, index_word) in self.indices.iter().enumerate().skip(start_i4096) {
-            if *index_word == 0 {
-                continue;
-            }
-            let first_i64 = if block_idx == start_i4096 {
-                start_i64
-            } else {
-                0
-            };
-            for i64 in first_i64..SPARSE_LONGS_PER_BLOCK {
-                let i64bit = 1u64 << i64;
-                if (index_word & i64bit) == 0 {
-                    continue;
-                }
-                let o = (index_word & (i64bit - 1)).count_ones() as usize;
-                let word = self.bits[block_idx].as_ref().unwrap()[o];
-                let sub = if block_idx == start_i4096 && i64 == start_i64 {
-                    start_sub
-                } else {
-                    0
-                };
-                let shifted = word >> sub;
-                if shifted != 0 {
-                    let candidate =
-                        (block_idx << 12) | (i64 << 6) | (sub + shifted.trailing_zeros() as usize);
-                    if candidate < self.length {
-                        return Some(candidate);
-                    }
-                }
-            }
+        match self.next_set_bit_in_range_best_effort(start, self.length) {
+            NO_MORE_DOCS => None,
+            doc => Some(doc as usize),
         }
-        None
     }
 
     /// Returns an iterator over the set bits as a [`DocIdSetIterator`].
@@ -709,9 +771,38 @@ impl Bits for SparseFixedBitSet {
     }
 }
 
+impl SparseFixedBitSet {
+    /// Shallow size of the Java class, the fixed part of
+    /// [`SparseFixedBitSet::ram_bytes_used`](Accountable::ram_bytes_used).
+    ///
+    /// Equivalent to the private `SparseFixedBitSet.BASE_RAM_BYTES_USED`, which
+    /// Java computes as
+    /// `RamUsageEstimator.shallowSizeOfInstance(SparseFixedBitSet.class)`: an
+    /// object header, the `indices` and `bits` references, the `int` fields
+    /// `length` and `nonZeroLongCount`, and the `long ramBytesUsed` cache.
+    /// Measured against `lucene-core-10.5.0.jar` on a JVM with compressed
+    /// references, that is 40 bytes.
+    pub const BASE_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + 2 * RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + 2 * 4
+            + 8,
+    );
+}
+
 impl Accountable for SparseFixedBitSet {
+    /// Returns an estimate of the heap this bit set occupies.
+    ///
+    /// Equivalent to `org.apache.lucene.util.SparseFixedBitSet#ramBytesUsed`,
+    /// which answers a `ramBytesUsed` field kept up to date as blocks are
+    /// allocated. Java seeds that field with
+    /// `BASE_RAM_BYTES_USED + sizeOf(indices) + shallowSizeOf(bits)` in the
+    /// constructor (`SparseFixedBitSet.java:71-74`) and adds `sizeOf(block)`
+    /// for each block it allocates; this port recomputes the same sum on
+    /// demand, which is the same value.
     fn ram_bytes_used(&self) -> i64 {
-        let mut bytes = RamUsageEstimator::size_of_u64(&self.indices)
+        let mut bytes = Self::BASE_RAM_BYTES_USED
+            + RamUsageEstimator::size_of_u64(&self.indices)
             + RamUsageEstimator::shallow_size_of(&self.bits);
         for arr in self.bits.iter().flatten() {
             bytes += RamUsageEstimator::size_of_u64(arr);
@@ -770,6 +861,8 @@ impl DocIdSetIterator for SparseFixedBitSetIterator {
 const ROARING_BLOCK_SIZE: usize = 1 << 16; // 65536
 const ROARING_MAX_ARRAY_LENGTH: usize = 1 << 12; // 4096
 
+/// Port of `org.apache.lucene.util.RoaringDocIdSet`.
+///
 /// A roaring-bitmap-inspired doc-id set, equivalent to Lucene's
 /// `RoaringDocIdSet`.
 ///
@@ -1445,6 +1538,101 @@ impl DocIdSetIterator for RoaringDocIdSetIterator {
 }
 
 // -----------------------------------------------------------------------------
+// FilteredDocIdSetIterator
+// -----------------------------------------------------------------------------
+
+/// Port of `org.apache.lucene.util.FilteredDocIdSetIterator`.
+///
+/// A [`DocIdSetIterator`] that returns the documents matching a predicate by
+/// scanning every document position. It wraps no inner iterator, so iteration
+/// has `O(max_doc)` complexity, and it can walk either the live or the deleted
+/// documents depending on the predicate it is given.
+///
+/// Not to be confused with `org.apache.lucene.search.FilteredDocIdSetIterator`,
+/// an unrelated class of the same simple name: that one is a public abstract
+/// decorator over an *inner* iterator, with `getDelegate()`/`match(int)` and a
+/// delegated `cost()`, and is ported separately in
+/// [`crate::search::doc_id_set_iterator`].
+///
+/// Lucene declares the Java class package-private within
+/// `org.apache.lucene.util` and marks it `@lucene.internal`. `pub(in
+/// crate::util)` is the closest Rust equivalent, confining it to the port of
+/// that same package.
+pub(in crate::util) struct FilteredDocIdSetIterator {
+    max_doc: i32,
+    cost: i32,
+    predicate: Box<dyn Fn(i32) -> bool>,
+    doc: i32,
+}
+
+impl FilteredDocIdSetIterator {
+    /// Creates a filtered iterator over the documents in `[0, max_doc)`.
+    ///
+    /// `cost` is the expected number of documents to return, reported verbatim
+    /// by [`DocIdSetIterator::cost`], and `predicate` returns `true` for the
+    /// documents to include in the iteration.
+    ///
+    /// Equivalent to
+    /// `FilteredDocIdSetIterator(int maxDoc, int cost, IntPredicate predicate)`.
+    ///
+    /// In Lucene 10.5.0 this type has exactly two callers, both in the same
+    /// package: `DenseLiveDocs.deletedDocsIterator()` (`DenseLiveDocs.java:139`,
+    /// predicate `doc -> !liveDocs.get(doc)`) and
+    /// `SparseLiveDocs.liveDocsIterator()` (`SparseLiveDocs.java:133`,
+    /// predicate `doc -> !deletedDocs.get(doc)`). Both are reachable here:
+    /// [`DenseLiveDocs`] and [`SparseLiveDocs`] hold their bit set behind an
+    /// [`Arc`], so the predicate closure captures a reference-counted handle
+    /// instead of borrowing out of `&self`. That satisfies the implicit
+    /// `'static` bound of the `Box<dyn DocIdSetIterator>` that
+    /// [`crate::util::bit_set::LiveDocs`] returns, and costs one atomic
+    /// increment per call rather than a copy of the bit set — Java's lambda
+    /// capture of the field reference costs the same.
+    pub(in crate::util) fn new(
+        max_doc: i32,
+        cost: i32,
+        predicate: Box<dyn Fn(i32) -> bool>,
+    ) -> Self {
+        Self {
+            max_doc,
+            cost,
+            predicate,
+            doc: -1,
+        }
+    }
+}
+
+impl DocIdSetIterator for FilteredDocIdSetIterator {
+    fn doc_id(&self) -> i32 {
+        self.doc
+    }
+
+    fn next_doc(&mut self) -> crate::error::Result<i32> {
+        self.advance(self.doc + 1)
+    }
+
+    fn advance(&mut self, target: i32) -> crate::error::Result<i32> {
+        if target >= self.max_doc {
+            self.doc = NO_MORE_DOCS;
+            return Ok(self.doc);
+        }
+
+        self.doc = target;
+        while self.doc < self.max_doc {
+            if (self.predicate)(self.doc) {
+                return Ok(self.doc);
+            }
+            self.doc += 1;
+        }
+        self.doc = NO_MORE_DOCS;
+        Ok(self.doc)
+    }
+
+    fn cost(&self) -> i64 {
+        i64::from(self.cost)
+    }
+}
+
+// -----------------------------------------------------------------------------
 // DenseLiveDocs
 // -----------------------------------------------------------------------------
 
@@ -1455,7 +1643,13 @@ impl DocIdSetIterator for RoaringDocIdSetIterator {
 /// Equivalent to `org.apache.lucene.util.DenseLiveDocs`.
 #[derive(Clone, Debug)]
 pub struct DenseLiveDocs {
-    live_docs: FixedBitSet,
+    /// Java holds a plain `FixedBitSet` field and lets `liveDocsIterator()` and
+    /// the `deletedDocsIterator()` lambda capture a reference to it. Rust's
+    /// [`LiveDocs`] contract hands back a `Box<dyn DocIdSetIterator>`, whose
+    /// implicit `'static` bound forbids borrowing out of `&self`, so the set is
+    /// held behind an [`Arc`]: the iterators capture a reference-counted handle
+    /// in `O(1)`, which is what Java's reference capture costs too.
+    live_docs: Arc<FixedBitSet>,
     max_doc: usize,
     deleted_count: usize,
 }
@@ -1490,6 +1684,43 @@ impl Bits for DenseLiveDocs {
 
     fn length(&self) -> usize {
         self.max_doc
+    }
+
+    fn into_live_docs(self: Box<Self>) -> Option<Box<dyn LiveDocs>> {
+        Some(self)
+    }
+}
+
+impl LiveDocs for DenseLiveDocs {
+    /// Iterates the live documents by walking the set bits of the live-docs
+    /// bit set directly.
+    ///
+    /// Equivalent to `DenseLiveDocs.liveDocsIterator()`, which builds a
+    /// `BitSetIterator(liveDocs, maxDoc - deletedCount)`.
+    fn live_docs_iterator(&self) -> crate::error::Result<Box<dyn DocIdSetIterator>> {
+        let bits: Arc<dyn BitSet> = self.live_docs.clone();
+        Ok(Box::new(BitSetIterator::new(
+            bits,
+            (self.max_doc - self.deleted_count) as i64,
+        )?))
+    }
+
+    /// Iterates the deleted documents by scanning `[0, max_doc)` and keeping
+    /// the documents whose live bit is clear.
+    ///
+    /// Equivalent to `DenseLiveDocs.deletedDocsIterator()`, which builds a
+    /// `FilteredDocIdSetIterator(maxDoc, deletedCount, doc -> !liveDocs.get(doc))`.
+    fn deleted_docs_iterator(&self) -> crate::error::Result<Box<dyn DocIdSetIterator>> {
+        let live_docs = Arc::clone(&self.live_docs);
+        Ok(Box::new(FilteredDocIdSetIterator::new(
+            self.max_doc as i32,
+            self.deleted_count as i32,
+            Box::new(move |doc| !live_docs.get(doc as usize)),
+        )))
+    }
+
+    fn deleted_count(&self) -> i32 {
+        self.deleted_count as i32
     }
 }
 
@@ -1537,7 +1768,7 @@ impl DenseLiveDocsBuilder {
             "deletedCount does not match maxDoc - liveDocs.cardinality()"
         );
         DenseLiveDocs {
-            live_docs: self.live_docs,
+            live_docs: Arc::new(self.live_docs),
             max_doc: self.max_doc,
             deleted_count: count,
         }
@@ -1556,7 +1787,10 @@ impl DenseLiveDocsBuilder {
 /// `org.apache.lucene.util.SparseLiveDocs`.
 #[derive(Clone, Debug)]
 pub struct SparseLiveDocs {
-    deleted_docs: SparseFixedBitSet,
+    /// Held behind an [`Arc`] for the same reason as
+    /// [`DenseLiveDocs::live_docs`]: the [`LiveDocs`] iterators must own what
+    /// they read.
+    deleted_docs: Arc<SparseFixedBitSet>,
     max_doc: usize,
     deleted_count: usize,
 }
@@ -1591,6 +1825,43 @@ impl Bits for SparseLiveDocs {
 
     fn length(&self) -> usize {
         self.max_doc
+    }
+
+    fn into_live_docs(self: Box<Self>) -> Option<Box<dyn LiveDocs>> {
+        Some(self)
+    }
+}
+
+impl LiveDocs for SparseLiveDocs {
+    /// Iterates the live documents by scanning `[0, max_doc)` and keeping the
+    /// documents whose deleted bit is clear.
+    ///
+    /// Equivalent to `SparseLiveDocs.liveDocsIterator()`, which builds a
+    /// `FilteredDocIdSetIterator(maxDoc, maxDoc - deletedCount, doc -> !deletedDocs.get(doc))`.
+    fn live_docs_iterator(&self) -> crate::error::Result<Box<dyn DocIdSetIterator>> {
+        let deleted_docs = Arc::clone(&self.deleted_docs);
+        Ok(Box::new(FilteredDocIdSetIterator::new(
+            self.max_doc as i32,
+            (self.max_doc - self.deleted_count) as i32,
+            Box::new(move |doc| !deleted_docs.get(doc as usize)),
+        )))
+    }
+
+    /// Iterates the deleted documents by walking the set bits of the
+    /// deleted-docs bit set directly.
+    ///
+    /// Equivalent to `SparseLiveDocs.deletedDocsIterator()`, which builds a
+    /// `BitSetIterator(deletedDocs, deletedCount)`.
+    fn deleted_docs_iterator(&self) -> crate::error::Result<Box<dyn DocIdSetIterator>> {
+        let bits: Arc<dyn BitSet> = self.deleted_docs.clone();
+        Ok(Box::new(BitSetIterator::new(
+            bits,
+            self.deleted_count as i64,
+        )?))
+    }
+
+    fn deleted_count(&self) -> i32 {
+        self.deleted_count as i32
     }
 }
 
@@ -1638,7 +1909,7 @@ impl SparseLiveDocsBuilder {
             "deletedCount does not match deletedDocs.cardinality()"
         );
         SparseLiveDocs {
-            deleted_docs: self.deleted_docs,
+            deleted_docs: Arc::new(self.deleted_docs),
             max_doc: self.max_doc,
             deleted_count: count,
         }
@@ -1970,5 +2241,442 @@ mod tests {
                 "sparse mismatch at {d}"
             );
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // FilteredDocIdSetIterator (org.apache.lucene.util)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn filtered_doc_id_set_iterator_next_doc_and_terminal_values() {
+        let mut it = FilteredDocIdSetIterator::new(8, 4, Box::new(|doc| doc % 2 == 0));
+        assert_eq!(it.doc_id(), -1, "docID must be -1 before the first call");
+
+        let mut seen = Vec::new();
+        loop {
+            let doc = it.next_doc().unwrap();
+            if doc == NO_MORE_DOCS {
+                break;
+            }
+            seen.push(doc);
+        }
+
+        assert_eq!(seen, vec![0, 2, 4, 6]);
+        assert_eq!(
+            it.doc_id(),
+            NO_MORE_DOCS,
+            "docID must stick at NO_MORE_DOCS"
+        );
+    }
+
+    #[test]
+    fn filtered_doc_id_set_iterator_advance() {
+        let matches = |doc: i32| matches!(doc, 2 | 5 | 6);
+
+        // advance() is inclusive: it lands on the target when the target matches.
+        let mut on_target = FilteredDocIdSetIterator::new(10, 3, Box::new(matches));
+        assert_eq!(on_target.advance(2).unwrap(), 2);
+        assert_eq!(on_target.doc_id(), 2);
+        // ... and otherwise scans forward to the next matching document.
+        assert_eq!(on_target.advance(3).unwrap(), 5);
+        assert_eq!(on_target.next_doc().unwrap(), 6);
+
+        let mut from_zero = FilteredDocIdSetIterator::new(10, 3, Box::new(matches));
+        assert_eq!(from_zero.advance(0).unwrap(), 2);
+
+        // A target at or beyond max_doc exhausts the iterator immediately.
+        let mut past_end = FilteredDocIdSetIterator::new(10, 3, Box::new(matches));
+        assert_eq!(past_end.advance(10).unwrap(), NO_MORE_DOCS);
+        assert_eq!(past_end.doc_id(), NO_MORE_DOCS);
+
+        // So does a target with no match at or after it.
+        let mut no_match_after = FilteredDocIdSetIterator::new(10, 3, Box::new(matches));
+        assert_eq!(no_match_after.advance(7).unwrap(), NO_MORE_DOCS);
+    }
+
+    #[test]
+    fn filtered_doc_id_set_iterator_rejects_ignoring_the_predicate() {
+        // Regression guard (CLAUDE.md §9): every assertion here fails if the
+        // predicate is dropped and the iterator degenerates into a plain scan
+        // of [0, max_doc).
+        let max_doc = 9;
+
+        // Doc 0 deliberately does not match, so an unfiltered scan would answer
+        // 0 where Lucene answers 1.
+        let mut it = FilteredDocIdSetIterator::new(max_doc, 3, Box::new(|doc| doc % 3 == 1));
+        assert_eq!(it.next_doc().unwrap(), 1);
+        assert_eq!(it.next_doc().unwrap(), 4);
+        assert_eq!(it.advance(5).unwrap(), 7);
+        assert_eq!(it.next_doc().unwrap(), NO_MORE_DOCS);
+
+        // The sharpest case: a predicate that never matches must consume the
+        // whole range and report NO_MORE_DOCS, not return doc 0.
+        let mut never = FilteredDocIdSetIterator::new(max_doc, 0, Box::new(|_| false));
+        assert_eq!(never.next_doc().unwrap(), NO_MORE_DOCS);
+        assert_eq!(never.doc_id(), NO_MORE_DOCS);
+        let mut never_advance = FilteredDocIdSetIterator::new(max_doc, 0, Box::new(|_| false));
+        assert_eq!(never_advance.advance(0).unwrap(), NO_MORE_DOCS);
+    }
+
+    #[test]
+    fn filtered_doc_id_set_iterator_cost_is_reported_verbatim() {
+        // Java stores `cost` and widens it to long; it is an estimate supplied
+        // by the caller and is never recomputed from the predicate.
+        let generous = FilteredDocIdSetIterator::new(1_000, 7, Box::new(|_| true));
+        assert_eq!(generous.cost(), 7);
+
+        let empty = FilteredDocIdSetIterator::new(0, 0, Box::new(|_| true));
+        assert_eq!(empty.cost(), 0);
+    }
+
+    #[test]
+    fn filtered_doc_id_set_iterator_range_edges() {
+        // An empty range is exhausted straight away.
+        let mut empty = FilteredDocIdSetIterator::new(0, 0, Box::new(|_| true));
+        assert_eq!(empty.doc_id(), -1);
+        assert_eq!(empty.next_doc().unwrap(), NO_MORE_DOCS);
+
+        // The last document in range is reachable; max_doc itself is not.
+        let mut last = FilteredDocIdSetIterator::new(4, 1, Box::new(|doc| doc == 3));
+        assert_eq!(last.next_doc().unwrap(), 3);
+        assert_eq!(last.next_doc().unwrap(), NO_MORE_DOCS);
+    }
+
+    #[test]
+    fn filtered_doc_id_set_iterator_reproduces_the_two_lucene_call_sites() {
+        // Portability test (CLAUDE.md §14.3) for the only two callers in
+        // Lucene 10.5.0:
+        //   DenseLiveDocs.java:139
+        //     new FilteredDocIdSetIterator(maxDoc, deletedCount, doc -> !liveDocs.get(doc))
+        //   SparseLiveDocs.java:133
+        //     new FilteredDocIdSetIterator(maxDoc, maxDoc - deletedCount, doc -> !deletedDocs.get(doc))
+        let max_doc = 10usize;
+        let deleted = [1usize, 3, 7];
+        let deleted_count = deleted.len();
+
+        let mut live_bits = FixedBitSet::new(max_doc);
+        for d in 0..max_doc {
+            if !deleted.contains(&d) {
+                live_bits.set(d);
+            }
+        }
+
+        // Dense side: the bit set stores LIVE docs, so the scan yields the
+        // deleted ones.
+        let dense_probe = live_bits.clone();
+        let mut deleted_iter = FilteredDocIdSetIterator::new(
+            max_doc as i32,
+            deleted_count as i32,
+            Box::new(move |doc| !dense_probe.get(doc as usize)),
+        );
+        assert_eq!(deleted_iter.cost(), deleted_count as i64);
+        let mut got_deleted = Vec::new();
+        loop {
+            let doc = deleted_iter.next_doc().unwrap();
+            if doc == NO_MORE_DOCS {
+                break;
+            }
+            got_deleted.push(doc as usize);
+        }
+        assert_eq!(got_deleted, deleted.to_vec());
+
+        // Sparse side: the bit set stores DELETED docs, so the scan yields the
+        // live ones.
+        let mut deleted_bits = SparseFixedBitSet::new(max_doc);
+        for &d in deleted.iter() {
+            deleted_bits.set(d);
+        }
+        let mut live_iter = FilteredDocIdSetIterator::new(
+            max_doc as i32,
+            (max_doc - deleted_count) as i32,
+            Box::new(move |doc| !deleted_bits.get(doc as usize)),
+        );
+        assert_eq!(live_iter.cost(), (max_doc - deleted_count) as i64);
+        let mut got_live = Vec::new();
+        loop {
+            let doc = live_iter.next_doc().unwrap();
+            if doc == NO_MORE_DOCS {
+                break;
+            }
+            got_live.push(doc as usize);
+        }
+        let expected_live: Vec<usize> = (0..max_doc).filter(|d| !deleted.contains(d)).collect();
+        assert_eq!(got_live, expected_live);
+
+        // The two iterators partition [0, max_doc) exactly.
+        let mut union = got_deleted;
+        union.extend(got_live);
+        union.sort_unstable();
+        assert_eq!(union, (0..max_doc).collect::<Vec<_>>());
+    }
+
+    fn drain(it: &mut dyn DocIdSetIterator) -> Vec<i32> {
+        let mut out = Vec::new();
+        loop {
+            let doc = it.next_doc().expect("next_doc");
+            if doc == NO_MORE_DOCS {
+                break;
+            }
+            out.push(doc);
+        }
+        out
+    }
+
+    /// The four live-docs iterators, against the same deletions expressed both
+    /// ways. Equivalent to the four Java call sites:
+    /// `DenseLiveDocs.liveDocsIterator()` / `deletedDocsIterator()` and
+    /// `SparseLiveDocs.liveDocsIterator()` / `deletedDocsIterator()`.
+    #[test]
+    fn live_docs_iterators_agree_with_the_bits_view() {
+        let max_doc = 300usize;
+        let deleted: Vec<usize> = vec![0, 1, 7, 63, 64, 65, 128, 299];
+
+        let mut live_bits = FixedBitSet::new(max_doc);
+        live_bits.set_range(0, max_doc);
+        let mut deleted_bits = SparseFixedBitSet::new(max_doc);
+        for &d in &deleted {
+            live_bits.clear(d);
+            deleted_bits.set(d);
+        }
+
+        let dense = DenseLiveDocs::builder(live_bits, max_doc)
+            .with_deleted_count(deleted.len())
+            .build();
+        let sparse = SparseLiveDocs::builder(deleted_bits, max_doc)
+            .with_deleted_count(deleted.len())
+            .build();
+
+        let expected_deleted: Vec<i32> = deleted.iter().map(|&d| d as i32).collect();
+        let expected_live: Vec<i32> = (0..max_doc)
+            .filter(|d| !deleted.contains(d))
+            .map(|d| d as i32)
+            .collect();
+
+        for (name, docs) in [
+            ("dense", &dense as &dyn LiveDocs),
+            ("sparse", &sparse as &dyn LiveDocs),
+        ] {
+            assert_eq!(docs.deleted_count(), deleted.len() as i32, "{name}");
+
+            let mut live_it = docs.live_docs_iterator().expect("live iterator");
+            assert_eq!(
+                live_it.cost(),
+                (max_doc - deleted.len()) as i64,
+                "{name}: live cost is maxDoc - deletedCount"
+            );
+            assert_eq!(drain(live_it.as_mut()), expected_live, "{name}: live docs");
+
+            let mut del_it = docs.deleted_docs_iterator().expect("deleted iterator");
+            assert_eq!(
+                del_it.cost(),
+                deleted.len() as i64,
+                "{name}: deleted cost is deletedCount"
+            );
+            assert_eq!(
+                drain(del_it.as_mut()),
+                expected_deleted,
+                "{name}: deleted docs"
+            );
+
+            // Every document is live exactly when `Bits::get` says so.
+            for doc in 0..max_doc {
+                assert_eq!(
+                    Bits::get(docs, doc),
+                    !deleted.contains(&doc),
+                    "{name}: get({doc})"
+                );
+            }
+        }
+    }
+
+    /// `Bits::into_live_docs` is Rucene's stand-in for Java's
+    /// `bits instanceof LiveDocs` in `LeafReader.getLiveDocsWithDeletedIterator`,
+    /// so both live-docs types must answer it.
+    #[test]
+    fn live_docs_narrow_from_bits() {
+        let max_doc = 64usize;
+        let mut live_bits = FixedBitSet::new(max_doc);
+        live_bits.set_range(0, max_doc);
+        live_bits.clear(3);
+        let dense: Box<dyn Bits> = Box::new(
+            DenseLiveDocs::builder(live_bits, max_doc)
+                .with_deleted_count(1)
+                .build(),
+        );
+        let narrowed = dense.into_live_docs().expect("DenseLiveDocs is LiveDocs");
+        assert_eq!(narrowed.deleted_count(), 1);
+        assert_eq!(
+            drain(narrowed.deleted_docs_iterator().unwrap().as_mut()),
+            vec![3]
+        );
+
+        let mut deleted_bits = SparseFixedBitSet::new(max_doc);
+        deleted_bits.set(3);
+        let sparse: Box<dyn Bits> = Box::new(
+            SparseLiveDocs::builder(deleted_bits, max_doc)
+                .with_deleted_count(1)
+                .build(),
+        );
+        let narrowed = sparse.into_live_docs().expect("SparseLiveDocs is LiveDocs");
+        assert_eq!(narrowed.deleted_count(), 1);
+        assert_eq!(
+            drain(narrowed.deleted_docs_iterator().unwrap().as_mut()),
+            vec![3]
+        );
+    }
+
+    /// `first_doc` answers the first set bit at or after a block, which is what
+    /// `next_set_bit_in_range` falls back to once the current block is
+    /// exhausted. Crossing a 4096-bit block boundary is the case that exercises
+    /// it.
+    #[test]
+    fn first_doc_finds_the_next_non_empty_block() {
+        let mut set = SparseFixedBitSet::new(20_000);
+        set.set(5);
+        set.set(4096 * 3 + 77);
+
+        // Block 0 holds doc 5.
+        assert_eq!(set.first_doc(0, 5), 5);
+        // Blocks 1 and 2 are empty, so the answer is the doc in block 3.
+        assert_eq!(set.first_doc(1, 5), 4096 * 3 + 77);
+        assert_eq!(set.first_doc(3, 5), 4096 * 3 + 77);
+        // Past the last non-empty block there is nothing.
+        assert_eq!(set.first_doc(4, 5), NO_MORE_DOCS);
+        // An empty upper bound is an immediate miss.
+        assert_eq!(set.first_doc(0, 0), NO_MORE_DOCS);
+    }
+
+    /// `next_set_bit` now delegates to `next_set_bit_in_range`, which delegates
+    /// to `first_doc`; the whole chain must agree with a straight scan.
+    #[test]
+    fn next_set_bit_matches_a_linear_scan_across_blocks() {
+        let length = 30_000usize;
+        let mut set = SparseFixedBitSet::new(length);
+        let mut rng = TestRng::new(0x51ED_2701);
+        let mut expected = Vec::new();
+        for _ in 0..400 {
+            let bit = rng.next_in_range(length);
+            if !set.get(bit) {
+                set.set(bit);
+                expected.push(bit);
+            }
+        }
+        expected.sort_unstable();
+
+        // Walk the set with next_set_bit and compare against the known bits.
+        let mut walked = Vec::new();
+        let mut cursor = 0usize;
+        while let Some(bit) = set.next_set_bit(cursor) {
+            walked.push(bit);
+            cursor = bit + 1;
+            if cursor >= length {
+                break;
+            }
+        }
+        assert_eq!(walked, expected);
+
+        // And from every start position, the answer is the first expected bit
+        // at or after it.
+        for start in 0..length {
+            let want = expected.iter().copied().find(|&b| b >= start);
+            assert_eq!(set.next_set_bit(start), want, "start={start}");
+        }
+    }
+
+    /// Regression: `FixedBitSet.ramBytesUsed()` is
+    /// `BASE_RAM_BYTES_USED + sizeOf(bits)`. Rucene used to omit the base term
+    /// and report only the words, which understated every estimate built on it
+    /// — `RunAutomaton.ramBytesUsed()` among them.
+    #[test]
+    fn fixed_bit_set_ram_bytes_used_includes_the_shallow_size() {
+        // Measured against lucene-core-10.5.0.jar on a JVM with compressed
+        // references: shallowSizeOfInstance(FixedBitSet.class) == 24, and
+        // new FixedBitSet(2).ramBytesUsed() == 48.
+        assert_eq!(FixedBitSet::BASE_RAM_BYTES_USED, 24);
+        assert_eq!(FixedBitSet::new(2).ram_bytes_used(), 24 + (16 + 8));
+        assert_eq!(FixedBitSet::new(2).ram_bytes_used(), 48);
+        // new FixedBitSet(1000).ramBytesUsed() == 168: 16 words of 8 bytes
+        // under a 16-byte array header, aligned, plus the 24-byte base.
+        assert_eq!(FixedBitSet::new(1000).ram_bytes_used(), 168);
+    }
+
+    /// Regression, same defect as above:
+    /// `SparseFixedBitSet.ramBytesUsed()` is seeded with
+    /// `BASE_RAM_BYTES_USED + sizeOf(indices) + shallowSizeOf(bits)`.
+    #[test]
+    fn sparse_fixed_bit_set_ram_bytes_used_includes_the_shallow_size() {
+        // Measured against lucene-core-10.5.0.jar:
+        // shallowSizeOfInstance(SparseFixedBitSet.class) == 40, and
+        // new SparseFixedBitSet(10000).ramBytesUsed() == 112 while empty.
+        assert_eq!(SparseFixedBitSet::BASE_RAM_BYTES_USED, 40);
+        let mut set = SparseFixedBitSet::new(10_000);
+        // 3 blocks: indices is a long[3] (40 bytes) and bits an Object[3]
+        // (32 bytes).
+        assert_eq!(set.ram_bytes_used(), 40 + 40 + 32);
+        assert_eq!(set.ram_bytes_used(), 112);
+        // Two bits in two different blocks allocate one word in each, and Java
+        // reports 160 for exactly that.
+        set.set(5);
+        set.set(9000);
+        assert_eq!(set.ram_bytes_used(), 160);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Object contracts: the `toString()` bodies of this module's four types
+// -----------------------------------------------------------------------------
+
+impl fmt::Display for SparseFixedBitSet {
+    /// Port of `SparseFixedBitSet.toString()`.
+    ///
+    /// Java builds `"SparseFixedBitSet(size=" + length + ",cardinality=~" +
+    /// approximateCardinality()` — the closing parenthesis is missing in
+    /// `SparseFixedBitSet.java:369` of Lucene 10.5.0, and this port reproduces
+    /// the string as Lucene emits it rather than repairing it, because the text
+    /// is the observable contract.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "SparseFixedBitSet(size={},cardinality=~{}",
+            self.length,
+            self.approximate_cardinality()
+        )
+    }
+}
+
+impl fmt::Display for RoaringDocIdSet {
+    /// Port of `RoaringDocIdSet.toString()`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RoaringDocIdSet(cardinality={})", self.cardinality)
+    }
+}
+
+impl fmt::Display for DenseLiveDocs {
+    /// Port of `DenseLiveDocs.toString()`.
+    ///
+    /// The deletion rate goes through `String.format(Locale.ROOT, "%.2f%%",
+    /// ...)`, whose ties round away from zero; see
+    /// [`java_fmt::format_fixed`].
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "DenseLiveDocs(maxDoc={}, deleted={}, deletionRate={}%)",
+            self.max_doc,
+            self.deleted_count,
+            java_fmt::format_fixed(100.0 * self.deleted_count as f64 / self.max_doc as f64, 2)
+        )
+    }
+}
+
+impl fmt::Display for SparseLiveDocs {
+    /// Port of `SparseLiveDocs.toString()`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "SparseLiveDocs(maxDoc={}, deleted={}, deletionRate={}%)",
+            self.max_doc,
+            self.deleted_count,
+            java_fmt::format_fixed(100.0 * self.deleted_count as f64 / self.max_doc as f64, 2)
+        )
     }
 }

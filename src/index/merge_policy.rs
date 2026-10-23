@@ -882,7 +882,10 @@ impl CfsSettings {
 /// Decides which segments to merge and when.
 ///
 /// Equivalent to `org.apache.lucene.index.MergePolicy`.
-pub trait MergePolicy: Send + Sync {
+/// [`std::fmt::Display`] is a supertrait because `FilterMergePolicy.toString()`
+/// concatenates the policy it wraps, and `LiveIndexWriterConfig.toString()`
+/// concatenates the configured policy.
+pub trait MergePolicy: Send + Sync + std::fmt::Display {
     /// Returns the merges to run for `merge_trigger`, or `None` when there are
     /// none.
     ///
@@ -1527,9 +1530,24 @@ impl TieredMergePolicy {
                 "floorSegmentMB must be > 0.0 (got {v})"
             )));
         }
-        let bytes = (v * 1024.0 * 1024.0).min(i64::MAX as f64);
-        self.floor_segment_bytes = (bytes as i64).max(1);
+        let bytes = v * 1024.0 * 1024.0;
+        self.floor_segment_bytes = if bytes > i64::MAX as f64 {
+            i64::MAX
+        } else {
+            bytes as i64
+        };
         Ok(self)
+    }
+
+    /// Returns the size below which segments are treated as equally small, in
+    /// megabytes.
+    ///
+    /// Equivalent to `TieredMergePolicy.getFloorSegmentMB()`, which divides the
+    /// stored byte count by `1024 * 1024.` — so the value read back is the one
+    /// that survived the `double`-to-`long` truncation in the setter, not the
+    /// one that was passed in.
+    pub fn get_floor_segment_mb(&self) -> f64 {
+        self.floor_segment_bytes as f64 / (1024.0 * 1024.0)
     }
 
     /// Sets how many segments are allowed per tier.
@@ -1546,13 +1564,48 @@ impl TieredMergePolicy {
     /// Sets the percentage of deleted documents the index may carry before the
     /// policy starts merging to reclaim them.
     pub fn set_deletes_pct_allowed(&mut self, v: f64) -> Result<&mut Self> {
-        if !(5.0..=50.0).contains(&v) {
+        if v <= 0.0 || v > 50.0 {
             return Err(crate::error::LuceneError::IllegalArgument(format!(
-                "indexPctDeletedTarget must be >= 5.0 and <= 50 (got {v})"
+                "indexPctDeletedTarget must be > 0 and <= 50 (got {v})"
             )));
         }
         self.deletes_pct_allowed = v;
         Ok(self)
+    }
+
+    /// Returns the maximum percentage of the doc-id space deleted documents may
+    /// take.
+    ///
+    /// Equivalent to `TieredMergePolicy.getDeletesPctAllowed()`.
+    pub fn get_deletes_pct_allowed(&self) -> f64 {
+        self.deletes_pct_allowed
+    }
+
+    /// Sets the delete percentage above which `forceMergeDeletes` rewrites a
+    /// segment.
+    ///
+    /// Equivalent to `TieredMergePolicy.setForceMergeDeletesPctAllowed(double)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError`](crate::error::LuceneError)`::IllegalArgument`
+    /// when `v` is outside `[0.0, 100.0]`.
+    pub fn set_force_merge_deletes_pct_allowed(&mut self, v: f64) -> Result<&mut Self> {
+        if !(0.0..=100.0).contains(&v) {
+            return Err(crate::error::LuceneError::IllegalArgument(format!(
+                "forceMergeDeletesPctAllowed must be between 0.0 and 100.0 inclusive (got {v})"
+            )));
+        }
+        self.force_merge_deletes_pct_allowed = v;
+        Ok(self)
+    }
+
+    /// Returns the delete percentage above which `forceMergeDeletes` rewrites a
+    /// segment.
+    ///
+    /// Equivalent to `TieredMergePolicy.getForceMergeDeletesPctAllowed()`.
+    pub fn get_force_merge_deletes_pct_allowed(&self) -> f64 {
+        self.force_merge_deletes_pct_allowed
     }
 
     /// Sets how many search-concurrency slices the policy aims for.
@@ -1564,6 +1617,35 @@ impl TieredMergePolicy {
         }
         self.target_search_concurrency = v;
         Ok(self)
+    }
+
+    /// Returns how many segments may be merged at once.
+    ///
+    /// Equivalent to `TieredMergePolicy.getMaxMergeAtOnce()`.
+    pub fn get_max_merge_at_once(&self) -> i32 {
+        self.max_merge_at_once
+    }
+
+    /// Returns the largest merged segment, in megabytes.
+    ///
+    /// Equivalent to `TieredMergePolicy.getMaxMergedSegmentMB()`, which divides
+    /// the stored byte count by `1024.0 / 1024.0`.
+    pub fn get_max_merged_segment_mb(&self) -> f64 {
+        self.max_merged_segment_bytes as f64 / 1024.0 / 1024.0
+    }
+
+    /// Returns how many segments are allowed per tier.
+    ///
+    /// Equivalent to `TieredMergePolicy.getSegmentsPerTier()`.
+    pub fn get_segments_per_tier(&self) -> f64 {
+        self.segs_per_tier
+    }
+
+    /// Returns how many search-concurrency slices the policy aims for.
+    ///
+    /// Equivalent to `TieredMergePolicy.getTargetSearchConcurrency()`.
+    pub fn get_target_search_concurrency(&self) -> i32 {
+        self.target_search_concurrency
     }
 
     /// Raises `bytes` to the floor segment size.
@@ -2074,10 +2156,51 @@ impl LogMergePolicy {
         self
     }
 
+    /// Returns the cap on documents in a merged segment.
+    ///
+    /// Equivalent to `LogMergePolicy.getMaxMergeDocs()`.
+    pub fn get_max_merge_docs(&self) -> i32 {
+        self.max_merge_docs
+    }
+
     /// Sets whether a segment's size discounts its deleted documents.
     pub fn set_calibrate_size_by_deletes(&mut self, v: bool) -> &mut Self {
         self.calibrate_size_by_deletes = v;
         self
+    }
+
+    /// Returns whether a segment's size discounts its deleted documents.
+    ///
+    /// Equivalent to `LogMergePolicy.getCalibrateSizeByDeletes()`.
+    pub fn get_calibrate_size_by_deletes(&self) -> bool {
+        self.calibrate_size_by_deletes
+    }
+
+    /// Sets how many search-concurrency slices the policy aims for.
+    ///
+    /// Equivalent to `LogMergePolicy.setTargetSearchConcurrency(int)`. Java
+    /// declares it `void`; this port returns `&mut Self` so that it chains the
+    /// way the other `LogMergePolicy` setters here do.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError`](crate::error::LuceneError)`::IllegalArgument`
+    /// when `v` is below 1.
+    pub fn set_target_search_concurrency(&mut self, v: i32) -> Result<&mut Self> {
+        if v < 1 {
+            return Err(crate::error::LuceneError::IllegalArgument(format!(
+                "targetSearchConcurrency must be >= 1 (got {v})"
+            )));
+        }
+        self.target_search_concurrency = v;
+        Ok(self)
+    }
+
+    /// Returns how many search-concurrency slices the policy aims for.
+    ///
+    /// Equivalent to `LogMergePolicy.getTargetSearchConcurrency()`.
+    pub fn get_target_search_concurrency(&self) -> i32 {
+        self.target_search_concurrency
     }
 
     /// Sets the largest segment, in MB, that may be merged with other segments.
@@ -2875,6 +2998,52 @@ impl TemporalMergePolicy {
         }
     }
 
+    /// Returns the field carrying each document's timestamp.
+    ///
+    /// Equivalent to `TemporalMergePolicy.getTemporalField()`.
+    pub fn get_temporal_field(&self) -> &str {
+        &self.temporal_field
+    }
+
+    /// Returns the width of the newest time window, in seconds.
+    ///
+    /// Equivalent to `TemporalMergePolicy.getBaseTimeInSeconds()`.
+    pub fn get_base_time_in_seconds(&self) -> i64 {
+        self.base_time_seconds
+    }
+
+    /// Returns the minimum number of segments a time window needs before it is
+    /// merged.
+    ///
+    /// Equivalent to `TemporalMergePolicy.getMinThreshold()`, whose Java return
+    /// type is `int`; this port keeps the `usize` its setter takes.
+    pub fn get_min_threshold(&self) -> usize {
+        self.min_threshold
+    }
+
+    /// Returns the maximum number of segments merged at once within a time
+    /// window.
+    ///
+    /// Equivalent to `TemporalMergePolicy.getMaxThreshold()`, whose Java return
+    /// type is `int`; this port keeps the `usize` its setter takes.
+    pub fn get_max_threshold(&self) -> usize {
+        self.max_threshold
+    }
+
+    /// Returns the compaction ratio that decides when a window is merged.
+    ///
+    /// Equivalent to `TemporalMergePolicy.getCompactionRatio()`.
+    pub fn get_compaction_ratio(&self) -> f64 {
+        self.compaction_ratio
+    }
+
+    /// Returns the age beyond which a segment is no longer merged.
+    ///
+    /// Equivalent to `TemporalMergePolicy.getMaxAgeSeconds()`.
+    pub fn get_max_age_seconds(&self) -> i64 {
+        self.max_age_seconds
+    }
+
     /// Sets the field carrying each document's timestamp.
     pub fn set_temporal_field(&mut self, field: impl Into<String>) -> &mut Self {
         self.temporal_field = field.into();
@@ -2933,6 +3102,13 @@ impl TemporalMergePolicy {
     }
 
     /// Supplies each segment's temporal range, by segment name.
+    ///
+    /// Equivalent to
+    /// `TemporalMergePolicy.setSegmentDateRangeOverrides(Map<SegmentCommitInfo, SegmentDateRange>)`,
+    /// which Java marks "visible for testing" and this port makes the only
+    /// source of the ranges — the divergence declared on the type. The map is
+    /// keyed by segment name rather than by `SegmentCommitInfo` because a
+    /// `SegmentCommitInfo` is not hashable here.
     pub fn set_segment_date_ranges(
         &mut self,
         ranges: HashMap<String, SegmentDateRange>,
@@ -3251,6 +3427,45 @@ impl TemporalMergePolicy {
         self.extract_segment_date_ranges(segments)
     }
 
+    /// Turns the time-window buckets into a merge specification.
+    ///
+    /// Equivalent to `TemporalMergePolicy.findMergeCandidates(Map, Map)`
+    /// (`TemporalMergePolicy.java:819-855`): every window with at least
+    /// `min_threshold` segments contributes the merges
+    /// [`plan_window_merges`](Self::plan_window_merges) finds for it, the `-1`
+    /// sentinel bucket — data older than `max_age_seconds` — is skipped, and a
+    /// run that plans nothing returns `None` rather than an empty
+    /// specification.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's second argument is the
+    /// segment-to-range map, which `planWindowMerges` sorts by; this port reads
+    /// the ranges from the policy's own
+    /// [`set_segment_date_ranges`](Self::set_segment_date_ranges) map, the
+    /// divergence already declared on the type, so there is no second argument
+    /// to take. Java also passes `windowStart` down to `planWindowMerges`,
+    /// which does not read it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building a [`OneMerge`] raises.
+    fn find_merge_candidates(
+        &self,
+        buckets: std::collections::BTreeMap<i64, Vec<SegmentCommitInfo>>,
+    ) -> Result<Option<MergeSpecification>> {
+        let mut spec: Option<MergeSpecification> = None;
+        for (window_start, segments) in buckets {
+            // The sentinel bucket holds data too old to be worth rewriting.
+            if window_start == -1 || segments.len() < self.min_threshold {
+                continue;
+            }
+            for merge_segments in self.plan_window_merges(segments)? {
+                spec.get_or_insert_with(MergeSpecification::new)
+                    .add(OneMerge::new(merge_segments)?);
+            }
+        }
+        Ok(spec)
+    }
+
     fn plan_window_merges(
         &self,
         mut ordered: Vec<SegmentCommitInfo>,
@@ -3351,18 +3566,7 @@ impl MergePolicy for TemporalMergePolicy {
             buckets.entry(bucket).or_default().push(info.clone());
         }
 
-        let mut spec: Option<MergeSpecification> = None;
-        for (window_start, segments) in buckets {
-            // The sentinel bucket holds data too old to be worth rewriting.
-            if window_start == -1 || segments.len() < self.min_threshold {
-                continue;
-            }
-            for merge_segments in self.plan_window_merges(segments)? {
-                spec.get_or_insert_with(MergeSpecification::new)
-                    .add(OneMerge::new(merge_segments)?);
-            }
-        }
-        Ok(spec)
+        self.find_merge_candidates(buckets)
     }
 
     fn find_forced_merges(
@@ -3834,4 +4038,283 @@ fn now_millis() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis().min(i64::MAX as u128) as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod merge_policy_setting_tests {
+    use super::*;
+
+    // Every expected value below was measured by running the getters of the real
+    // `lucene-core-10.5.0.jar` (see the task record for the harness), not derived
+    // from this port's own arithmetic.
+
+    #[test]
+    fn tiered_defaults_match_lucene() {
+        let p = TieredMergePolicy::new();
+        assert_eq!(p.get_max_merge_at_once(), 10);
+        assert_eq!(p.get_max_merged_segment_mb(), 5120.0);
+        assert_eq!(p.get_floor_segment_mb(), 16.0);
+        assert_eq!(p.get_segments_per_tier(), 8.0);
+        assert_eq!(p.get_deletes_pct_allowed(), 20.0);
+        assert_eq!(p.get_force_merge_deletes_pct_allowed(), 10.0);
+        assert_eq!(p.get_target_search_concurrency(), 1);
+    }
+
+    #[test]
+    fn tiered_getters_read_back_what_the_setters_stored() {
+        let mut p = TieredMergePolicy::new();
+        p.set_max_merge_at_once(3).unwrap();
+        p.set_max_merged_segment_mb(7.5).unwrap();
+        p.set_floor_segment_mb(0.5).unwrap();
+        p.set_segments_per_tier(4.0).unwrap();
+        p.set_deletes_pct_allowed(33.0).unwrap();
+        p.set_force_merge_deletes_pct_allowed(25.0).unwrap();
+        p.set_target_search_concurrency(6).unwrap();
+        assert_eq!(p.get_max_merge_at_once(), 3);
+        assert_eq!(p.get_max_merged_segment_mb(), 7.5);
+        assert_eq!(p.get_floor_segment_mb(), 0.5);
+        assert_eq!(p.get_segments_per_tier(), 4.0);
+        assert_eq!(p.get_deletes_pct_allowed(), 33.0);
+        assert_eq!(p.get_force_merge_deletes_pct_allowed(), 25.0);
+        assert_eq!(p.get_target_search_concurrency(), 6);
+    }
+
+    /// Regression for a divergence this port carried: `set_floor_segment_mb`
+    /// clamped the stored byte count to a minimum of 1, a bound Lucene does not
+    /// have. `TieredMergePolicy.setFloorSegmentMB(1.0 / (1024 * 1024 * 2))` in
+    /// `lucene-core-10.5.0.jar` truncates to 0 bytes, so `getFloorSegmentMB()`
+    /// reads back `0.0`; with the clamp this port read back 9.5367431640625e-7.
+    #[test]
+    fn floor_segment_mb_below_one_byte_truncates_to_zero_like_lucene() {
+        let mut p = TieredMergePolicy::new();
+        p.set_floor_segment_mb(1.0 / (1024.0 * 1024.0 * 2.0))
+            .unwrap();
+        assert_eq!(p.get_floor_segment_mb(), 0.0);
+    }
+
+    /// Regression for a divergence this port carried: `set_deletes_pct_allowed`
+    /// required `v >= 5.0`, while Lucene 10.5.0 requires only `v > 0`
+    /// (`TieredMergePolicy.java:177-184`). The jar accepts 1.0 and reads it
+    /// back; this port rejected it.
+    #[test]
+    fn deletes_pct_allowed_accepts_everything_above_zero() {
+        let mut p = TieredMergePolicy::new();
+        p.set_deletes_pct_allowed(1.0).unwrap();
+        assert_eq!(p.get_deletes_pct_allowed(), 1.0);
+        let err = p.set_deletes_pct_allowed(0.0).unwrap_err().to_string();
+        assert!(
+            err.contains("indexPctDeletedTarget must be > 0 and <= 50 (got 0)"),
+            "{err}"
+        );
+        assert!(p.set_deletes_pct_allowed(50.0).is_ok());
+        assert!(p.set_deletes_pct_allowed(50.1).is_err());
+    }
+
+    #[test]
+    fn force_merge_deletes_pct_allowed_bounds_match_lucene() {
+        let mut p = TieredMergePolicy::new();
+        assert!(p.set_force_merge_deletes_pct_allowed(0.0).is_ok());
+        assert!(p.set_force_merge_deletes_pct_allowed(100.0).is_ok());
+        let err = p
+            .set_force_merge_deletes_pct_allowed(101.0)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(
+                "forceMergeDeletesPctAllowed must be between 0.0 and 100.0 inclusive (got 101)"
+            ),
+            "{err}"
+        );
+        assert!(p.set_force_merge_deletes_pct_allowed(-0.1).is_err());
+    }
+
+    #[test]
+    fn log_merge_policy_defaults_match_lucene() {
+        let p = LogMergePolicy::by_byte_size();
+        assert_eq!(p.get_max_merge_docs(), i32::MAX);
+        assert!(p.get_calibrate_size_by_deletes());
+        assert_eq!(p.get_target_search_concurrency(), 1);
+        assert_eq!(p.get_merge_factor(), 10);
+        assert_eq!(p.get_min_merge_mb(), 16.0);
+        assert_eq!(p.get_max_merge_mb(), 2048.0);
+
+        let d = LogMergePolicy::by_doc_count();
+        assert_eq!(d.get_min_merge_docs(), 1000);
+        assert_eq!(d.get_max_merge_docs(), i32::MAX);
+    }
+
+    #[test]
+    fn log_merge_policy_getters_read_back_what_the_setters_stored() {
+        let mut p = LogMergePolicy::by_byte_size();
+        p.set_max_merge_docs(1_234);
+        p.set_calibrate_size_by_deletes(false);
+        p.set_target_search_concurrency(4).unwrap();
+        assert_eq!(p.get_max_merge_docs(), 1_234);
+        assert!(!p.get_calibrate_size_by_deletes());
+        assert_eq!(p.get_target_search_concurrency(), 4);
+        let err = p.set_target_search_concurrency(0).unwrap_err().to_string();
+        assert!(
+            err.contains("targetSearchConcurrency must be >= 1 (got 0)"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn temporal_defaults_match_lucene() {
+        let p = TemporalMergePolicy::new();
+        assert_eq!(p.get_temporal_field(), "");
+        assert_eq!(p.get_base_time_in_seconds(), 3600);
+        assert_eq!(p.get_min_threshold(), 4);
+        assert_eq!(p.get_max_threshold(), 8);
+        assert_eq!(p.get_compaction_ratio(), 1.2);
+        assert_eq!(p.get_max_age_seconds(), i64::MAX);
+        assert!(p.get_use_exponential_buckets());
+        assert_eq!(p.get_force_merge_deletes_pct_allowed(), 10.0);
+        assert_eq!(p.get_max_window_size_seconds(), 31_536_000);
+    }
+
+    #[test]
+    fn temporal_getters_read_back_what_the_setters_stored() {
+        let mut p = TemporalMergePolicy::new();
+        p.set_temporal_field("timestamp");
+        p.set_base_time_in_seconds(60).unwrap();
+        p.set_max_threshold(16).unwrap();
+        p.set_min_threshold(3).unwrap();
+        p.set_compaction_ratio(2.5);
+        p.set_max_age_seconds(86_400);
+        assert_eq!(p.get_temporal_field(), "timestamp");
+        assert_eq!(p.get_base_time_in_seconds(), 60);
+        assert_eq!(p.get_min_threshold(), 3);
+        assert_eq!(p.get_max_threshold(), 16);
+        assert_eq!(p.get_compaction_ratio(), 2.5);
+        assert_eq!(p.get_max_age_seconds(), 86_400);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Object contracts: the `toString()` bodies of the merge policies
+// -----------------------------------------------------------------------------
+
+impl std::fmt::Display for NoMergePolicy {
+    /// Port of `NoMergePolicy.toString()`, which is the bare class name with no
+    /// parentheses and no fields.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NoMergePolicy")
+    }
+}
+
+impl std::fmt::Display for FilterMergePolicy {
+    /// Port of `FilterMergePolicy.toString()`, which is
+    /// `getClass().getSimpleName() + "(" + in + ")"`.
+    ///
+    /// Java's `getSimpleName()` is the *runtime* class, so a subclass of
+    /// `FilterMergePolicy` names itself; this port has no subclasses of it, so
+    /// the name is fixed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FilterMergePolicy({})", self.inner)
+    }
+}
+
+impl std::fmt::Display for LogMergePolicy {
+    /// Port of `LogMergePolicy.toString()`.
+    ///
+    /// Java's `getClass().getSimpleName()` resolves to the concrete subclass,
+    /// `LogByteSizeMergePolicy` or `LogDocMergePolicy`. This port models the two
+    /// as one struct discriminated by [`LogSizeKind`], so the name is taken from
+    /// that field.
+    ///
+    /// `maxCFSSegmentSizeMB` and `noCFSRatio` are Java `double`s, rendered by
+    /// `Double.toString`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::util::java_fmt::double_to_string;
+        let simple_name = match self.size_kind {
+            LogSizeKind::Bytes => "LogByteSizeMergePolicy",
+            LogSizeKind::Docs => "LogDocMergePolicy",
+        };
+        write!(
+            f,
+            "[{simple_name}: minMergeSize={}, mergeFactor={}, maxMergeSize={}, \
+             maxMergeSizeForForcedMerge={}, calibrateSizeByDeletes={}, maxMergeDocs={}, \
+             maxCFSSegmentSizeMB={}, noCFSRatio={}]",
+            self.min_merge_size,
+            self.merge_factor,
+            self.max_merge_size,
+            self.max_merge_size_for_forced_merge,
+            self.calibrate_size_by_deletes,
+            self.max_merge_docs,
+            double_to_string(self.cfs.get_max_cfs_segment_size_mb()),
+            double_to_string(self.cfs.get_no_cfs_ratio()),
+        )
+    }
+}
+
+impl std::fmt::Display for TieredMergePolicy {
+    /// Port of `TieredMergePolicy.toString()`.
+    ///
+    /// Note the missing `]`: Java opens with `"[" + getClass().getSimpleName() +
+    /// ": "` and never closes the bracket, and this port reproduces the string
+    /// as Lucene emits it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::util::java_fmt::double_to_string;
+        write!(
+            f,
+            "[TieredMergePolicy: maxMergeAtOnce={}, maxMergedSegmentMB={}, floorSegmentMB={}, \
+             forceMergeDeletesPctAllowed={}, segmentsPerTier={}, maxCFSSegmentSizeMB={}, \
+             noCFSRatio={}, deletesPctAllowed={}, targetSearchConcurrency={}",
+            self.max_merge_at_once,
+            double_to_string(self.max_merged_segment_bytes as f64 / 1024. / 1024.),
+            double_to_string(self.floor_segment_bytes as f64 / 1024. / 1024.),
+            double_to_string(self.force_merge_deletes_pct_allowed),
+            double_to_string(self.segs_per_tier),
+            double_to_string(self.cfs.get_max_cfs_segment_size_mb()),
+            double_to_string(self.cfs.get_no_cfs_ratio()),
+            double_to_string(self.deletes_pct_allowed),
+            self.target_search_concurrency,
+        )
+    }
+}
+
+impl std::fmt::Display for TemporalMergePolicy {
+    /// Port of `TemporalMergePolicy.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::util::java_fmt::double_to_string;
+        write!(
+            f,
+            "[TemporalMergePolicy: temporalField={}, baseTimeSeconds={}, minThreshold={}, \
+             maxThreshold={}, useExponentialBuckets={}, maxWindowSizeSeconds={}, \
+             maxAgeSeconds={}, compactionRatio={}, forceMergeDeletesPctAllowed={}]",
+            self.temporal_field,
+            self.base_time_seconds,
+            self.min_threshold,
+            self.max_threshold,
+            self.use_exponential_buckets,
+            self.max_window_size_seconds,
+            self.max_age_seconds,
+            double_to_string(self.compaction_ratio),
+            double_to_string(self.force_merge_deletes_pct_allowed),
+        )
+    }
+}
+
+impl std::fmt::Display for OneMergeWrappingMergePolicy {
+    /// Java's `OneMergeWrappingMergePolicy extends FilterMergePolicy` and does
+    /// not override `toString()`, so it prints
+    /// `getClass().getSimpleName() + "(" + in + ")"` with its own name.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OneMergeWrappingMergePolicy({})", self.inner)
+    }
+}
+
+impl std::fmt::Display for UpgradeIndexMergePolicy {
+    /// Inherited from `FilterMergePolicy.toString()`, with this class's name.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "UpgradeIndexMergePolicy({})", self.inner)
+    }
+}
+
+impl std::fmt::Display for SoftDeletesRetentionMergePolicy {
+    /// Inherited from `FilterMergePolicy.toString()`, with this class's name.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SoftDeletesRetentionMergePolicy({})", self.inner)
+    }
 }

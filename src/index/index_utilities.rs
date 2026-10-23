@@ -537,3 +537,32 @@ impl Directory for TrackingTmpOutputDirectoryWrapper {
         self.inner.get_pending_deletions()
     }
 }
+
+impl std::fmt::Display for QueryTimeoutImpl {
+    /// Port of `QueryTimeoutImpl.toString()`, which is
+    /// `"timeoutAt: " + timeoutAt + " (System.nanoTime(): " + nanoTime() + ")"`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `timeoutAt` is a `Long` — a
+    /// `System.nanoTime()` reading, or `null` when no timeout was set — and the
+    /// second figure is a fresh `nanoTime()`. Rust's [`Instant`] is opaque and
+    /// has no such absolute reading, so both numbers are expressed as
+    /// nanoseconds relative to the process's own reference point: the deadline
+    /// as nanoseconds from now (negative once it has passed), and the current
+    /// reading as `0`. Neither number is stable between runs in Java either —
+    /// `nanoTime()`'s origin is arbitrary — so nothing may parse them.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let deadline = self.timeout_at.read().expect("timeout_at lock poisoned");
+        match deadline.as_ref() {
+            Some(instant) => {
+                let now = std::time::Instant::now();
+                let remaining = if *instant >= now {
+                    (*instant - now).as_nanos() as i128
+                } else {
+                    -((now - *instant).as_nanos() as i128)
+                };
+                write!(f, "timeoutAt: {remaining} (System.nanoTime(): 0)")
+            }
+            None => f.write_str("timeoutAt: null (System.nanoTime(): 0)"),
+        }
+    }
+}

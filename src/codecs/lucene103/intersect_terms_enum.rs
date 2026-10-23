@@ -48,15 +48,35 @@ pub struct IntersectTermsEnumFrame {
     /// The term state the postings reader fills in.
     pub state_data: BlockTermState,
 
+    // Java's frame keeps a `ByteArrayDataInput` next to each of these buffers
+    // (`IntersectTermsEnumFrame.java:48`, `:51`, `:55`, `:90`) and resets it
+    // over the buffer it sits beside (`:190`, `:203`, `:211`, `:224`). A struct
+    // holding both a buffer and a view of that same buffer is a self-reference
+    // Rust forbids, so the frame keeps the view's two fields — position and
+    // limit — beside the buffer instead, and [`ByteArrayDataInput`] is rebuilt
+    // around them for each read. The state is exactly Java's, only spelled
+    // inline; the frame already stores `floor_data_pos` this way.
     suffix_bytes: Vec<u8>,
-    suffixes_reader: ByteArrayDataInput,
+    /// Read position inside `suffix_bytes`.
+    suffixes_pos: usize,
+    /// Where this block's suffix bytes end inside `suffix_bytes`.
+    suffixes_limit: usize,
     suffix_length_bytes: Vec<u8>,
-    suffix_lengths_reader: ByteArrayDataInput,
+    /// Read position inside `suffix_length_bytes`.
+    suffix_lengths_pos: usize,
+    /// Where this block's suffix lengths end inside `suffix_length_bytes`.
+    suffix_lengths_limit: usize,
     stat_bytes: Vec<u8>,
-    stats_reader: ByteArrayDataInput,
+    /// Read position inside `stat_bytes`.
+    stats_pos: usize,
+    /// Where this block's statistics end inside `stat_bytes`.
+    stats_limit: usize,
     stats_singleton_run_length: i32,
     bytes: Vec<u8>,
-    bytes_reader: ByteArrayDataInput,
+    /// Read position inside `bytes`.
+    bytes_pos: usize,
+    /// Where this block's term metadata ends inside `bytes`.
+    bytes_limit: usize,
 
     /// Floor data, copied out of the term index.
     floor_data: Vec<u8>,
@@ -112,14 +132,18 @@ impl IntersectTermsEnumFrame {
             meta_data_upto: 0,
             state_data: BlockTermState::default(),
             suffix_bytes: Vec::new(),
-            suffixes_reader: ByteArrayDataInput::new(Vec::new()),
+            suffixes_pos: 0,
+            suffixes_limit: 0,
             suffix_length_bytes: Vec::new(),
-            suffix_lengths_reader: ByteArrayDataInput::new(Vec::new()),
+            suffix_lengths_pos: 0,
+            suffix_lengths_limit: 0,
             stat_bytes: Vec::new(),
-            stats_reader: ByteArrayDataInput::new(Vec::new()),
+            stats_pos: 0,
+            stats_limit: 0,
             stats_singleton_run_length: 0,
             bytes: Vec::new(),
-            bytes_reader: ByteArrayDataInput::new(Vec::new()),
+            bytes_pos: 0,
+            bytes_limit: 0,
             floor_data: Vec::new(),
             floor_data_pos: 0,
             prefix: 0,
@@ -154,9 +178,59 @@ impl IntersectTermsEnumFrame {
         }
     }
 
+    /// Runs `f` over this block's suffix bytes and saves the read position
+    /// back.
+    ///
+    /// Stands in for Java's `suffixesReader` field, which cannot be a field
+    /// here; see the note beside `suffix_bytes`.
+    fn with_suffixes<T>(
+        &mut self,
+        f: impl FnOnce(&mut ByteArrayDataInput<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let mut reader = ByteArrayDataInput::with_range(&self.suffix_bytes, 0, self.suffixes_limit);
+        reader.set_position(self.suffixes_pos);
+        let out = f(&mut reader);
+        let position = reader.position();
+        self.suffixes_pos = position;
+        out
+    }
+
+    /// Runs `f` over this block's suffix lengths and saves the read position
+    /// back.
+    ///
+    /// Stands in for Java's `suffixLengthsReader` field.
+    fn with_suffix_lengths<T>(
+        &mut self,
+        f: impl FnOnce(&mut ByteArrayDataInput<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let mut reader =
+            ByteArrayDataInput::with_range(&self.suffix_length_bytes, 0, self.suffix_lengths_limit);
+        reader.set_position(self.suffix_lengths_pos);
+        let out = f(&mut reader);
+        let position = reader.position();
+        self.suffix_lengths_pos = position;
+        out
+    }
+
+    /// Runs `f` over this block's term statistics and saves the read position
+    /// back.
+    ///
+    /// Stands in for Java's `statsReader` field.
+    fn with_stats<T>(
+        &mut self,
+        f: impl FnOnce(&mut ByteArrayDataInput<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let mut reader = ByteArrayDataInput::with_range(&self.stat_bytes, 0, self.stats_limit);
+        reader.set_position(self.stats_pos);
+        let out = f(&mut reader);
+        let position = reader.position();
+        self.stats_pos = position;
+        out
+    }
+
     /// Records this block's floor data.
     pub fn set_floor_data(&mut self, floor_data: Vec<u8>) -> Result<()> {
-        let mut reader = ByteArrayDataInput::from_slice(&floor_data);
+        let mut reader = ByteArrayDataInput::new(&floor_data);
         self.num_follow_floor_blocks = reader.read_v_int()?;
         self.next_floor_label = i32::from(reader.read_byte()?);
         self.floor_data_pos = reader.position();
@@ -193,8 +267,8 @@ impl IntersectTermsEnumFrame {
             &mut self.suffix_bytes,
             num_suffix_bytes,
         )?;
-        self.suffixes_reader =
-            ByteArrayDataInput::from_slice(&self.suffix_bytes[..num_suffix_bytes]);
+        self.suffixes_pos = 0;
+        self.suffixes_limit = num_suffix_bytes;
 
         let mut num_suffix_length_bytes = terms_in.read_v_int()?;
         let all_equal = num_suffix_length_bytes & 0x01 != 0;
@@ -209,14 +283,16 @@ impl IntersectTermsEnumFrame {
         } else {
             terms_in.read_bytes(&mut self.suffix_length_bytes, 0, n)?;
         }
-        self.suffix_lengths_reader = ByteArrayDataInput::from_slice(&self.suffix_length_bytes[..n]);
+        self.suffix_lengths_pos = 0;
+        self.suffix_lengths_limit = n;
 
         let num_stat_bytes = terms_in.read_v_int()?.max(0) as usize;
         if self.stat_bytes.len() < num_stat_bytes {
             self.stat_bytes.resize(num_stat_bytes, 0);
         }
         terms_in.read_bytes(&mut self.stat_bytes, 0, num_stat_bytes)?;
-        self.stats_reader = ByteArrayDataInput::from_slice(&self.stat_bytes[..num_stat_bytes]);
+        self.stats_pos = 0;
+        self.stats_limit = num_stat_bytes;
         self.stats_singleton_run_length = 0;
 
         self.meta_data_upto = 0;
@@ -229,7 +305,8 @@ impl IntersectTermsEnumFrame {
             self.bytes.resize(num_meta_bytes, 0);
         }
         terms_in.read_bytes(&mut self.bytes, 0, num_meta_bytes)?;
-        self.bytes_reader = ByteArrayDataInput::from_slice(&self.bytes[..num_meta_bytes]);
+        self.bytes_pos = 0;
+        self.bytes_limit = num_meta_bytes;
 
         self.fp_end = terms_in.file_pointer();
         Ok(())
@@ -256,25 +333,25 @@ impl IntersectTermsEnumFrame {
 
     fn next_leaf(&mut self) -> Result<()> {
         self.next_ent += 1;
-        self.suffix = self.suffix_lengths_reader.read_v_int()?.max(0) as usize;
-        self.start_byte_pos = self.suffixes_reader.position();
-        self.suffixes_reader
-            .seek(self.start_byte_pos + self.suffix)?;
+        self.suffix = self.with_suffix_lengths(|r| r.read_v_int())?.max(0) as usize;
+        self.start_byte_pos = self.suffixes_pos;
+        let suffix = self.suffix as i64;
+        self.with_suffixes(|r| r.skip_bytes(suffix))?;
         Ok(())
     }
 
     fn next_non_leaf(&mut self) -> Result<bool> {
         self.next_ent += 1;
-        let code = self.suffix_lengths_reader.read_v_int()?;
+        let code = self.with_suffix_lengths(|r| r.read_v_int())?;
         self.suffix = ((code as u32) >> 1) as usize;
-        self.start_byte_pos = self.suffixes_reader.position();
-        self.suffixes_reader
-            .seek(self.start_byte_pos + self.suffix)?;
+        self.start_byte_pos = self.suffixes_pos;
+        let suffix = self.suffix as i64;
+        self.with_suffixes(|r| r.skip_bytes(suffix))?;
         if code & 1 == 0 {
             self.state_data.term_block_ord += 1;
             Ok(false)
         } else {
-            self.last_sub_fp = self.fp - self.suffix_lengths_reader.read_v_long()?;
+            self.last_sub_fp = self.fp - self.with_suffix_lengths(|r| r.read_v_long())?;
             Ok(true)
         }
     }
@@ -305,7 +382,7 @@ impl IntersectTermsEnumFrame {
     pub fn decode_meta_data(
         &mut self,
         field_info: &crate::index::FieldInfo,
-        postings_reader: &mut dyn crate::codecs::postings::PostingsReaderBase,
+        postings_reader: &dyn crate::codecs::postings::PostingsReaderBase,
     ) -> Result<()> {
         let limit = self.get_term_block_ord();
         let mut absolute = self.meta_data_upto == 0;
@@ -315,7 +392,7 @@ impl IntersectTermsEnumFrame {
                 self.state_data.total_term_freq = 1;
                 self.stats_singleton_run_length -= 1;
             } else {
-                let token = self.stats_reader.read_v_int()?;
+                let token = self.with_stats(|r| r.read_v_int())?;
                 if token & 1 == 1 {
                     self.state_data.doc_freq = 1;
                     self.state_data.total_term_freq = 1;
@@ -326,16 +403,27 @@ impl IntersectTermsEnumFrame {
                         if field_info.index_options == IndexOptions::DOCS {
                             i64::from(self.state_data.doc_freq)
                         } else {
-                            i64::from(self.state_data.doc_freq) + self.stats_reader.read_v_long()?
+                            i64::from(self.state_data.doc_freq)
+                                + self.with_stats(|r| r.read_v_long())?
                         };
                 }
             }
-            postings_reader.decode_term(
-                &mut self.bytes_reader,
-                field_info,
-                &mut self.state_data,
-                absolute,
-            )?;
+            // `bytes` and `state_data` are borrowed at once, which Java gets
+            // for free by aliasing; the position is written back whether or not
+            // the decode succeeded, exactly as Java's shared reader leaves it.
+            let Self {
+                bytes,
+                bytes_pos,
+                bytes_limit,
+                state_data,
+                ..
+            } = self;
+            let mut reader = ByteArrayDataInput::with_range(bytes, 0, *bytes_limit);
+            reader.set_position(*bytes_pos);
+            let decoded =
+                postings_reader.decode_term(&mut reader, field_info, state_data, absolute);
+            *bytes_pos = reader.position();
+            decoded?;
             self.meta_data_upto += 1;
             absolute = false;
         }
@@ -473,8 +561,8 @@ impl IntersectTermsEnum {
                 // Remember enough of the frame to be able to step back onto the
                 // entry before the one that overshot the target.
                 let sav_next_ent = self.stack[cur].next_ent;
-                let save_pos = self.stack[cur].suffixes_reader.position();
-                let save_length_pos = self.stack[cur].suffix_lengths_reader.position();
+                let save_pos = self.stack[cur].suffixes_pos;
+                let save_length_pos = self.stack[cur].suffix_lengths_pos;
                 let save_start_byte_pos = self.stack[cur].start_byte_pos;
                 let save_suffix = self.stack[cur].suffix;
                 let save_last_sub_fp = self.stack[cur].last_sub_fp;
@@ -517,8 +605,8 @@ impl IntersectTermsEnum {
                         frame.last_sub_fp = save_last_sub_fp;
                         frame.start_byte_pos = save_start_byte_pos;
                         frame.suffix = save_suffix;
-                        frame.suffixes_reader.set_position(save_pos);
-                        frame.suffix_lengths_reader.set_position(save_length_pos);
+                        frame.suffixes_pos = save_pos;
+                        frame.suffix_lengths_pos = save_length_pos;
                         frame.state_data.term_block_ord = save_term_block_ord;
                         // The last entry may have been a sub-block; there is no
                         // need to recurse into it, because the first next() will
@@ -719,6 +807,36 @@ impl IntersectTermsEnum {
     }
 }
 
+impl IntersectTermsEnum {
+    /// Catches the current frame up on the metadata decode it defers.
+    ///
+    /// Equivalent to the `currentFrame.decodeMetaData()` call every statistics
+    /// and postings accessor of `IntersectTermsEnum` makes before reading
+    /// `state`.
+    fn decode_current_meta_data(&mut self) -> Result<()> {
+        let Some(cur) = self.current else {
+            return Ok(());
+        };
+        let field_info = self.field.field_info().clone();
+        let reader = std::sync::Arc::clone(&self.field.shared().postings_reader);
+        self.stack[cur].decode_meta_data(&field_info, reader.as_ref())
+    }
+}
+
+impl std::fmt::Display for IntersectTermsEnum {
+    /// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnum",
+            self,
+        ))
+    }
+}
+
 impl TermsEnum for IntersectTermsEnum {
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.attributes
@@ -873,34 +991,49 @@ impl TermsEnum for IntersectTermsEnum {
         ))
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
+        // As in `SegmentTermsEnum`, Java decodes the frame's metadata before
+        // reading `state`; without it the frame still holds the zero it was
+        // built with.
+        self.decode_current_meta_data()?;
         let cur = self
             .current
             .ok_or_else(|| LuceneError::IllegalState("no current term".to_string()))?;
         Ok(self.stack[cur].state_data.doc_freq)
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
+        self.decode_current_meta_data()?;
         let cur = self
             .current
             .ok_or_else(|| LuceneError::IllegalState("no current term".to_string()))?;
         Ok(self.stack[cur].state_data.total_term_freq)
     }
 
-    fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
-            "impacts need the postings reader, which the field's producer supplies".to_string(),
-        ))
+    fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+        self.decode_current_meta_data()?;
+        let cur = self
+            .current
+            .ok_or_else(|| LuceneError::IllegalState("no current term".to_string()))?;
+        let field_info = self.field.field_info().clone();
+        let state = self.stack[cur].state_data;
+        let reader = std::sync::Arc::clone(&self.field.shared().postings_reader);
+        reader.impacts(&field_info, &state, flags)
     }
 
     fn postings(
         &mut self,
-        _reuse: Option<Box<dyn PostingsEnum>>,
-        _flags: i32,
+        reuse: Option<Box<dyn PostingsEnum>>,
+        flags: i32,
     ) -> Result<Box<dyn PostingsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
-            "postings need the postings reader, which the field's producer supplies".to_string(),
-        ))
+        self.decode_current_meta_data()?;
+        let cur = self
+            .current
+            .ok_or_else(|| LuceneError::IllegalState("no current term".to_string()))?;
+        let field_info = self.field.field_info().clone();
+        let state = self.stack[cur].state_data;
+        let reader = std::sync::Arc::clone(&self.field.shared().postings_reader);
+        reader.postings(&field_info, &state, reuse, flags)
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {

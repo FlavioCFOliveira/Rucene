@@ -117,6 +117,22 @@ pub struct TermsEnumIndex {
     current_term_prefix8: u64,
 }
 
+impl std::fmt::Display for TermsEnumIndex {
+    /// Port of `TermsEnumIndex.toString()`
+    /// (`TermsEnumIndex.java:153-156`), which is `Objects.toString(termsEnum)`
+    /// — the wrapped enumeration's own rendering, and nothing else. Measured
+    /// against `lucene-core-10.5.0.jar`, where a wrapper over a segment's terms
+    /// renders exactly the same string as that enumeration does on its own.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java allows a `null` `termsEnum` and
+    /// `Objects.toString` then yields the four characters `null`; this port's
+    /// field is a non-optional `Box<dyn TermsEnum>`, so that case cannot arise
+    /// and is not reproduced.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.terms_enum, f)
+    }
+}
+
 impl TermsEnumIndex {
     /// Wraps `terms_enum`, tagging it with `sub_index`.
     ///
@@ -394,6 +410,15 @@ mod tests {
         }
     }
 
+    impl std::fmt::Display for VecTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("VecTermsEnum")
+        }
+    }
+
     impl TermsEnum for VecTermsEnum {
         fn attributes(&mut self) -> &mut AttributeSource {
             &mut self.atts
@@ -437,11 +462,11 @@ mod tests {
                 .ok_or_else(|| LuceneError::IllegalState("not positioned".to_string()))
         }
 
-        fn doc_freq(&self) -> Result<i32> {
+        fn doc_freq(&mut self) -> Result<i32> {
             Ok(1)
         }
 
-        fn total_term_freq(&self) -> Result<i64> {
+        fn total_term_freq(&mut self) -> Result<i64> {
             Ok(1)
         }
 

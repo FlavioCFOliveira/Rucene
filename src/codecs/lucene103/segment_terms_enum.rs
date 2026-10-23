@@ -14,6 +14,7 @@ use crate::index::ImpactsEnum;
 use crate::index::{IndexOptions, PostingsEnum};
 use crate::store::{ByteArrayDataInput, DataInput, IndexInput};
 use crate::util::{AttributeSource, BytesRef, IOBooleanSupplier};
+use std::sync::Arc;
 
 /// One decoded block of the terms dictionary.
 ///
@@ -44,12 +45,34 @@ pub struct SegmentTermsEnumFrame {
     /// Where this block ends.
     pub fp_end: i64,
 
+    // Java's frame keeps a `ByteArrayDataInput` next to each of these buffers
+    // (`SegmentTermsEnumFrame.java:49`, `:52`, `:56`, `:97`) and resets it over
+    // the buffer it sits beside — `suffixesReader.reset(suffixBytes, 0,
+    // numSuffixBytes)` and its three siblings (`:201`, `:214`, `:231`, `:247`).
+    // A struct that
+    // holds both a buffer and a view of that same buffer is a self-reference
+    // Rust forbids, so the frame keeps the view's two fields — position and
+    // limit — beside the buffer instead, and [`ByteArrayDataInput`] is rebuilt
+    // around them for each read. The state is exactly Java's, only spelled
+    // inline; the frame already stores `floor_data_pos` this way.
     suffix_bytes: Vec<u8>,
-    pub(crate) suffixes_reader: ByteArrayDataInput,
+    /// Read position inside `suffix_bytes`.
+    suffixes_pos: usize,
+    /// Where this block's suffix bytes end inside `suffix_bytes`. This is what
+    /// Java's `suffixesReader.length()` reports.
+    pub(crate) suffixes_limit: usize,
     suffix_length_bytes: Vec<u8>,
-    pub(crate) suffix_lengths_reader: ByteArrayDataInput,
+    /// Read position inside `suffix_length_bytes`.
+    suffix_lengths_pos: usize,
+    /// Where this block's suffix lengths end inside `suffix_length_bytes`.
+    /// This is what Java's `suffixLengthsReader.length()` reports.
+    pub(crate) suffix_lengths_limit: usize,
     stat_bytes: Vec<u8>,
-    pub(crate) stats_reader: ByteArrayDataInput,
+    /// Read position inside `stat_bytes`.
+    stats_pos: usize,
+    /// Where this block's statistics end inside `stat_bytes`. This is what
+    /// Java's `statsReader.length()` reports.
+    pub(crate) stats_limit: usize,
     stats_singleton_run_length: i32,
     /// How many bytes of the block the suffixes and their lengths occupy.
     pub total_suffix_bytes: i64,
@@ -85,7 +108,10 @@ pub struct SegmentTermsEnumFrame {
     /// The term state the postings reader fills in.
     pub state: BlockTermState,
     bytes: Vec<u8>,
-    bytes_reader: ByteArrayDataInput,
+    /// Read position inside `bytes`.
+    bytes_pos: usize,
+    /// Where this block's term metadata ends inside `bytes`.
+    bytes_limit: usize,
 
     /// Length of the current entry's suffix.
     pub suffix_length: usize,
@@ -108,6 +134,56 @@ impl std::fmt::Debug for SegmentTermsEnumFrame {
 }
 
 impl SegmentTermsEnumFrame {
+    /// Runs `f` over this block's suffix bytes and saves the read position
+    /// back.
+    ///
+    /// Stands in for Java's `suffixesReader` field, which cannot be a field
+    /// here; see the note beside `suffix_bytes`.
+    fn with_suffixes<T>(
+        &mut self,
+        f: impl FnOnce(&mut ByteArrayDataInput<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let mut reader = ByteArrayDataInput::with_range(&self.suffix_bytes, 0, self.suffixes_limit);
+        reader.set_position(self.suffixes_pos);
+        let out = f(&mut reader);
+        let position = reader.position();
+        self.suffixes_pos = position;
+        out
+    }
+
+    /// Runs `f` over this block's suffix lengths and saves the read position
+    /// back.
+    ///
+    /// Stands in for Java's `suffixLengthsReader` field.
+    fn with_suffix_lengths<T>(
+        &mut self,
+        f: impl FnOnce(&mut ByteArrayDataInput<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let mut reader =
+            ByteArrayDataInput::with_range(&self.suffix_length_bytes, 0, self.suffix_lengths_limit);
+        reader.set_position(self.suffix_lengths_pos);
+        let out = f(&mut reader);
+        let position = reader.position();
+        self.suffix_lengths_pos = position;
+        out
+    }
+
+    /// Runs `f` over this block's term statistics and saves the read position
+    /// back.
+    ///
+    /// Stands in for Java's `statsReader` field.
+    fn with_stats<T>(
+        &mut self,
+        f: impl FnOnce(&mut ByteArrayDataInput<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let mut reader = ByteArrayDataInput::with_range(&self.stat_bytes, 0, self.stats_limit);
+        reader.set_position(self.stats_pos);
+        let out = f(&mut reader);
+        let position = reader.position();
+        self.stats_pos = position;
+        out
+    }
+
     /// Creates an empty frame at stack position `ord`.
     pub fn new(ord: usize, state: BlockTermState) -> Self {
         Self {
@@ -120,11 +196,14 @@ impl SegmentTermsEnumFrame {
             fp_orig: 0,
             fp_end: 0,
             suffix_bytes: Vec::new(),
-            suffixes_reader: ByteArrayDataInput::new(Vec::new()),
+            suffixes_pos: 0,
+            suffixes_limit: 0,
             suffix_length_bytes: Vec::new(),
-            suffix_lengths_reader: ByteArrayDataInput::new(Vec::new()),
+            suffix_lengths_pos: 0,
+            suffix_lengths_limit: 0,
             stat_bytes: Vec::new(),
-            stats_reader: ByteArrayDataInput::new(Vec::new()),
+            stats_pos: 0,
+            stats_limit: 0,
             stats_singleton_run_length: 0,
             total_suffix_bytes: 0,
             compression_alg: CompressionAlgorithm::NoCompression,
@@ -142,7 +221,8 @@ impl SegmentTermsEnumFrame {
             meta_data_upto: 0,
             state,
             bytes: Vec::new(),
-            bytes_reader: ByteArrayDataInput::new(Vec::new()),
+            bytes_pos: 0,
+            bytes_limit: 0,
             suffix_length: 0,
             start_byte_pos: 0,
             sub_code: 0,
@@ -153,7 +233,7 @@ impl SegmentTermsEnumFrame {
     ///
     /// Equivalent to `SegmentTermsEnumFrame.setFloorData`.
     pub fn set_floor_data(&mut self, floor_data: Vec<u8>) -> Result<()> {
-        let mut reader = ByteArrayDataInput::from_slice(&floor_data);
+        let mut reader = ByteArrayDataInput::new(&floor_data);
         self.num_follow_floor_blocks = reader.read_v_int()?;
         self.next_floor_label = i32::from(reader.read_byte()?);
         self.floor_data_pos = reader.position();
@@ -202,8 +282,8 @@ impl SegmentTermsEnumFrame {
         let compression = CompressionAlgorithm::by_code((code_l & 0x03) as i32)?;
         self.compression_alg = compression;
         compression.read(terms_in, &mut self.suffix_bytes, num_suffix_bytes)?;
-        self.suffixes_reader =
-            ByteArrayDataInput::from_slice(&self.suffix_bytes[..num_suffix_bytes]);
+        self.suffixes_pos = 0;
+        self.suffixes_limit = num_suffix_bytes;
 
         let mut num_suffix_length_bytes = terms_in.read_v_int()?;
         self.all_equal = num_suffix_length_bytes & 0x01 != 0;
@@ -218,7 +298,8 @@ impl SegmentTermsEnumFrame {
         } else {
             terms_in.read_bytes(&mut self.suffix_length_bytes, 0, n)?;
         }
-        self.suffix_lengths_reader = ByteArrayDataInput::from_slice(&self.suffix_length_bytes[..n]);
+        self.suffix_lengths_pos = 0;
+        self.suffix_lengths_limit = n;
         self.total_suffix_bytes = terms_in.file_pointer() - start_suffix_fp;
 
         let num_stat_bytes = terms_in.read_v_int()?.max(0) as usize;
@@ -226,7 +307,8 @@ impl SegmentTermsEnumFrame {
             self.stat_bytes.resize(num_stat_bytes, 0);
         }
         terms_in.read_bytes(&mut self.stat_bytes, 0, num_stat_bytes)?;
-        self.stats_reader = ByteArrayDataInput::from_slice(&self.stat_bytes[..num_stat_bytes]);
+        self.stats_pos = 0;
+        self.stats_limit = num_stat_bytes;
         self.stats_singleton_run_length = 0;
 
         self.meta_data_upto = 0;
@@ -239,7 +321,8 @@ impl SegmentTermsEnumFrame {
             self.bytes.resize(num_meta_bytes, 0);
         }
         terms_in.read_bytes(&mut self.bytes, 0, num_meta_bytes)?;
-        self.bytes_reader = ByteArrayDataInput::from_slice(&self.bytes[..num_meta_bytes]);
+        self.bytes_pos = 0;
+        self.bytes_limit = num_meta_bytes;
 
         self.fp_end = terms_in.file_pointer();
         Ok(())
@@ -280,25 +363,38 @@ impl SegmentTermsEnumFrame {
             return Ok(());
         }
 
-        let mut new_fp = self.fp_orig;
-        let mut reader = ByteArrayDataInput::from_slice(&self.floor_data);
-        reader.seek(self.floor_data_pos)?;
+        // The reader borrows `floor_data`, so the fields it writes are taken
+        // apart from it here; Java simply aliases the frame's own array.
+        let Self {
+            floor_data,
+            floor_data_pos,
+            fp_orig,
+            has_terms,
+            is_last_in_floor,
+            num_follow_floor_blocks,
+            next_floor_label,
+            ..
+        } = self;
+        let mut new_fp = *fp_orig;
+        let mut reader = ByteArrayDataInput::new(floor_data);
+        reader.set_position(*floor_data_pos);
         loop {
             let code = reader.read_v_long()?;
-            new_fp = self.fp_orig + ((code as u64) >> 1) as i64;
-            self.has_terms = code & 1 != 0;
-            self.is_last_in_floor = self.num_follow_floor_blocks == 1;
-            self.num_follow_floor_blocks -= 1;
-            if self.is_last_in_floor {
-                self.next_floor_label = 256;
+            new_fp = *fp_orig + ((code as u64) >> 1) as i64;
+            *has_terms = code & 1 != 0;
+            *is_last_in_floor = *num_follow_floor_blocks == 1;
+            *num_follow_floor_blocks -= 1;
+            if *is_last_in_floor {
+                *next_floor_label = 256;
                 break;
             }
-            self.next_floor_label = i32::from(reader.read_byte()?);
-            if target_label < self.next_floor_label {
+            *next_floor_label = i32::from(reader.read_byte()?);
+            if target_label < *next_floor_label {
                 break;
             }
         }
-        self.floor_data_pos = reader.position();
+        let position = reader.position();
+        self.floor_data_pos = position;
 
         if new_fp != self.fp {
             self.next_ent = -1;
@@ -331,12 +427,12 @@ impl SegmentTermsEnumFrame {
     /// Equivalent to `SegmentTermsEnumFrame.nextLeaf`.
     pub fn next_leaf(&mut self, term: &mut Vec<u8>) -> Result<()> {
         self.next_ent += 1;
-        self.suffix_length = self.suffix_lengths_reader.read_v_int()?.max(0) as usize;
-        self.start_byte_pos = self.suffixes_reader.position();
+        self.suffix_length = self.with_suffix_lengths(|r| r.read_v_int())?.max(0) as usize;
+        self.start_byte_pos = self.suffixes_pos;
         term.truncate(self.prefix_length);
         term.resize(self.prefix_length + self.suffix_length, 0);
-        self.suffixes_reader
-            .read_bytes(&mut term[..], self.prefix_length, self.suffix_length)?;
+        let (prefix_length, suffix_length) = (self.prefix_length, self.suffix_length);
+        self.with_suffixes(|r| r.read_bytes(&mut term[..], prefix_length, suffix_length))?;
         Ok(())
     }
 
@@ -347,13 +443,13 @@ impl SegmentTermsEnumFrame {
     /// its floor-block loop, which the cursor drives.
     pub fn next_non_leaf_entry(&mut self, term: &mut Vec<u8>) -> Result<bool> {
         self.next_ent += 1;
-        let code = self.suffix_lengths_reader.read_v_int()?;
+        let code = self.with_suffix_lengths(|r| r.read_v_int())?;
         self.suffix_length = ((code as u32) >> 1) as usize;
-        self.start_byte_pos = self.suffixes_reader.position();
+        self.start_byte_pos = self.suffixes_pos;
         term.truncate(self.prefix_length);
         term.resize(self.prefix_length + self.suffix_length, 0);
-        self.suffixes_reader
-            .read_bytes(&mut term[..], self.prefix_length, self.suffix_length)?;
+        let (prefix_length, suffix_length) = (self.prefix_length, self.suffix_length);
+        self.with_suffixes(|r| r.read_bytes(&mut term[..], prefix_length, suffix_length))?;
 
         if code & 1 == 0 {
             // A term.
@@ -362,7 +458,7 @@ impl SegmentTermsEnumFrame {
             Ok(false)
         } else {
             // A sub-block: its pointer is stored as a delta from this block.
-            self.sub_code = self.suffix_lengths_reader.read_v_long()?;
+            self.sub_code = self.with_suffix_lengths(|r| r.read_v_long())?;
             self.last_sub_fp = self.fp - self.sub_code;
             Ok(true)
         }
@@ -467,10 +563,9 @@ impl SegmentTermsEnumFrame {
         let target_suffix = self.target_suffix(target);
         loop {
             self.next_ent += 1;
-            self.suffix_length = self.suffix_lengths_reader.read_v_int()?.max(0) as usize;
-            self.start_byte_pos = self.suffixes_reader.position();
-            self.suffixes_reader
-                .set_position(self.start_byte_pos + self.suffix_length);
+            self.suffix_length = self.with_suffix_lengths(|r| r.read_v_int())?.max(0) as usize;
+            self.start_byte_pos = self.suffixes_pos;
+            self.suffixes_pos = self.start_byte_pos + self.suffix_length;
 
             let suffix =
                 &self.suffix_bytes[self.start_byte_pos..self.start_byte_pos + self.suffix_length];
@@ -531,7 +626,7 @@ impl SegmentTermsEnumFrame {
 
         debug_assert!(self.prefix_matches(target, term));
 
-        self.suffix_length = self.suffix_lengths_reader.read_v_int()?.max(0) as usize;
+        self.suffix_length = self.with_suffix_lengths(|r| r.read_v_int())?.max(0) as usize;
         let target_suffix = self.target_suffix(target);
         let mut start = self.next_ent;
         let mut end = self.ent_count - 1;
@@ -548,8 +643,7 @@ impl SegmentTermsEnumFrame {
                 std::cmp::Ordering::Less => start = mid + 1,
                 std::cmp::Ordering::Greater => end = mid - 1,
                 std::cmp::Ordering::Equal => {
-                    self.suffixes_reader
-                        .set_position(self.start_byte_pos + self.suffix_length);
+                    self.suffixes_pos = self.start_byte_pos + self.suffix_length;
                     self.fill_term(term);
                     return Ok((SeekStatus::FOUND, false));
                 }
@@ -565,13 +659,11 @@ impl SegmentTermsEnumFrame {
                 self.start_byte_pos += self.suffix_length;
                 self.next_ent += 1;
             }
-            self.suffixes_reader
-                .set_position(self.start_byte_pos + self.suffix_length);
+            self.suffixes_pos = self.start_byte_pos + self.suffix_length;
             self.fill_term(term);
             SeekStatus::NOT_FOUND
         } else {
-            self.suffixes_reader
-                .set_position(self.start_byte_pos + self.suffix_length);
+            self.suffixes_pos = self.start_byte_pos + self.suffix_length;
             if exact_only {
                 self.fill_term(term);
             }
@@ -623,17 +715,16 @@ impl SegmentTermsEnumFrame {
         while self.next_ent < self.ent_count {
             self.next_ent += 1;
 
-            let code = self.suffix_lengths_reader.read_v_int()?;
+            let code = self.with_suffix_lengths(|r| r.read_v_int())?;
             self.suffix_length = ((code as u32) >> 1) as usize;
-            self.start_byte_pos = self.suffixes_reader.position();
-            self.suffixes_reader
-                .set_position(self.start_byte_pos + self.suffix_length);
+            self.start_byte_pos = self.suffixes_pos;
+            self.suffixes_pos = self.start_byte_pos + self.suffix_length;
             *term_exists = code & 1 == 0;
             if *term_exists {
                 self.state.term_block_ord += 1;
                 self.sub_code = 0;
             } else {
-                self.sub_code = self.suffix_lengths_reader.read_v_long()?;
+                self.sub_code = self.with_suffix_lengths(|r| r.read_v_long())?;
                 self.last_sub_fp = self.fp - self.sub_code;
             }
 
@@ -671,7 +762,7 @@ impl SegmentTermsEnumFrame {
     pub fn decode_meta_data(
         &mut self,
         field_info: &crate::index::FieldInfo,
-        postings_reader: &mut dyn crate::codecs::postings::PostingsReaderBase,
+        postings_reader: &dyn crate::codecs::postings::PostingsReaderBase,
     ) -> Result<()> {
         let limit = self.get_term_block_ord();
         let mut absolute = self.meta_data_upto == 0;
@@ -681,7 +772,7 @@ impl SegmentTermsEnumFrame {
                 self.state.total_term_freq = 1;
                 self.stats_singleton_run_length -= 1;
             } else {
-                let token = self.stats_reader.read_v_int()?;
+                let token = self.with_stats(|r| r.read_v_int())?;
                 if token & 1 == 1 {
                     // A run of terms that each appear in exactly one document.
                     self.state.doc_freq = 1;
@@ -692,16 +783,25 @@ impl SegmentTermsEnumFrame {
                     self.state.total_term_freq = if field_info.index_options == IndexOptions::DOCS {
                         i64::from(self.state.doc_freq)
                     } else {
-                        i64::from(self.state.doc_freq) + self.stats_reader.read_v_long()?
+                        i64::from(self.state.doc_freq) + self.with_stats(|r| r.read_v_long())?
                     };
                 }
             }
-            postings_reader.decode_term(
-                &mut self.bytes_reader,
-                field_info,
-                &mut self.state,
-                absolute,
-            )?;
+            // `bytes` and `state` are borrowed at once, which Java gets for
+            // free by aliasing; the position is written back whether or not the
+            // decode succeeded, exactly as Java's shared reader leaves it.
+            let Self {
+                bytes,
+                bytes_pos,
+                bytes_limit,
+                state,
+                ..
+            } = self;
+            let mut reader = ByteArrayDataInput::with_range(bytes, 0, *bytes_limit);
+            reader.set_position(*bytes_pos);
+            let decoded = postings_reader.decode_term(&mut reader, field_info, state, absolute);
+            *bytes_pos = reader.position();
+            decoded?;
             self.meta_data_upto += 1;
             absolute = false;
         }
@@ -1458,12 +1558,38 @@ impl SegmentTermsEnum {
     /// frame's state.
     pub fn block_term_state(
         &mut self,
-        postings_reader: &mut dyn crate::codecs::postings::PostingsReaderBase,
+        postings_reader: &dyn crate::codecs::postings::PostingsReaderBase,
     ) -> Result<BlockTermState> {
         let field_info = self.field.field_info().clone();
         let frame = &mut self.stack[self.current];
         frame.decode_meta_data(&field_info, postings_reader)?;
         Ok(frame.state.clone())
+    }
+
+    /// Catches the current frame up on the metadata decode it defers.
+    ///
+    /// Equivalent to `SegmentTermsEnum.decodeMetaData`, which every accessor of
+    /// the current term's statistics and postings calls before reading `state`.
+    /// The decode is lazy in Lucene and lazy here: a scan that never asks for a
+    /// term's statistics never pays for them.
+    fn decode_meta_data(&mut self) -> Result<()> {
+        let field_info = self.field.field_info().clone();
+        let reader = Arc::clone(&self.field.shared().postings_reader);
+        self.stack[self.current].decode_meta_data(&field_info, reader.as_ref())
+    }
+}
+
+impl std::fmt::Display for SegmentTermsEnum {
+    /// `org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.codecs.lucene103.blocktree.SegmentTermsEnum",
+            self,
+        ))
     }
 }
 
@@ -1676,31 +1802,43 @@ impl TermsEnum for SegmentTermsEnum {
         ))
     }
 
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
+        // Java asserts `!eof` and calls `currentFrame.decodeMetaData()` before
+        // reading `state`; without it the frame still holds the zero it was
+        // built with, which is what made every term look absent.
+        debug_assert!(!self.eof);
+        self.decode_meta_data()?;
         Ok(self.stack[self.current].state.doc_freq)
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
+        debug_assert!(!self.eof);
+        self.decode_meta_data()?;
         Ok(self.stack[self.current].state.total_term_freq)
     }
 
-    fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
-            "impacts need the postings reader, which the field's producer supplies".to_string(),
-        ))
+    fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+        self.decode_meta_data()?;
+        let field_info = self.field.field_info().clone();
+        let state = self.stack[self.current].state;
+        let reader = Arc::clone(&self.field.shared().postings_reader);
+        reader.impacts(&field_info, &state, flags)
     }
 
     fn postings(
         &mut self,
-        _reuse: Option<Box<dyn PostingsEnum>>,
-        _flags: i32,
+        reuse: Option<Box<dyn PostingsEnum>>,
+        flags: i32,
     ) -> Result<Box<dyn PostingsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
-            "postings need the postings reader, which the field's producer supplies".to_string(),
-        ))
+        self.decode_meta_data()?;
+        let field_info = self.field.field_info().clone();
+        let state = self.stack[self.current].state;
+        let reader = Arc::clone(&self.field.shared().postings_reader);
+        reader.postings(&field_info, &state, reuse, flags)
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        self.decode_meta_data()?;
         Ok(Box::new(self.stack[self.current].state.clone()))
     }
 }

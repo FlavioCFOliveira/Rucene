@@ -12,6 +12,21 @@ fn ensure_codec() {
     let _ = rucene::codecs::register_codec("Lucene104", rucene::codecs::Lucene104Codec::new());
 }
 
+/// A directory of this test binary's own, unique to the calling test.
+///
+/// The process id alone is not enough: every test in this binary shares it, so
+/// two tests that both wrote on disk would meet in the same directory and, with
+/// them, on the same `write.lock`. The counter makes the name unique per test.
+fn scratch_dir(name: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir =
+        std::env::temp_dir().join(format!("rucene-smoke-{}-{seq}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    dir
+}
+
 fn build(dir: Arc<dyn Directory>, segments: usize) {
     ensure_codec();
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
@@ -77,9 +92,7 @@ fn only_segments_marks_the_status_partial() {
 
 #[test]
 fn do_main_reports_a_clean_index() {
-    let tmp = std::env::temp_dir().join(format!("rucene-smoke-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).unwrap();
+    let tmp = scratch_dir("do-main");
     let dir: Arc<dyn Directory> = Arc::new(rucene::store::FSDirectory::open(&tmp).unwrap());
     build(Arc::clone(&dir), 2);
     drop(dir);
@@ -101,4 +114,94 @@ fn upgrader_parse_args_rejects_a_missing_directory() {
     assert!(
         rucene::index::check_index::IndexUpgrader::parse_args(&["-dir-impl".to_string()]).is_err()
     );
+}
+
+/// Regression for an index-compatibility defect in the block-tree terms reader.
+///
+/// `Lucene103BlockTreeTermsWriter` always writes both the field's first and last
+/// term into the `.tmd` (`Lucene103BlockTreeTermsWriter.java:1091-1092`), and
+/// `Lucene103BlockTreeTermsReader` always reads both; its `numTerms == 1` branch
+/// only aliases `maxTerm` to `minTerm` afterwards, to save an object. This port
+/// skipped the *read* in that branch, leaving the max term's length and bytes in
+/// the stream. Any segment holding a field with exactly one term — which is
+/// every single-document segment, and any segment whose `id`-like field happens
+/// to hold one value — was therefore unreadable: the following field decoded
+/// garbage, and with a single field the `.tmd` footer landed two bytes early
+/// ("misplaced codec footer (file extended?): remaining=18, expected=16").
+///
+/// The existing suites all indexed five or more documents per segment, so no
+/// field ever had exactly one term and none of them saw it.
+#[test]
+fn a_segment_whose_fields_have_a_single_term_can_be_read_back() {
+    ensure_codec();
+    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+    let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+    let mut doc = Document::new();
+    doc.add(Box::new(
+        StringField::new("id", "only".to_string(), Store::YES).unwrap(),
+    ));
+    doc.add(Box::new(
+        TextField::new("body", "solo".to_string(), Store::YES).unwrap(),
+    ));
+    writer.add_document(&doc).unwrap();
+    writer.commit().unwrap();
+    writer.close().unwrap();
+
+    let reader = rucene::index::directory_reader::open(Arc::clone(&dir))
+        .expect("a one-term segment must be readable");
+    assert_eq!(reader.max_doc(), 1);
+
+    // Both fields decode, and their single term is both the min and the max.
+    let leaves = Arc::clone(&reader).leaves();
+    let leaf = leaves[0].leaf_reader();
+    for (field, term) in [("id", "only"), ("body", "solo")] {
+        let terms = rucene::index::leaf_reader::LeafReader::terms(leaf.as_ref(), field)
+            .expect("terms")
+            .unwrap_or_else(|| panic!("field {field} must have a terms dictionary"));
+        assert_eq!(terms.size(), 1);
+        assert_eq!(terms.min().unwrap().unwrap().slice(), term.as_bytes());
+        assert_eq!(terms.max().unwrap().unwrap().slice(), term.as_bytes());
+    }
+
+    // And CheckIndex agrees the segment is sound.
+    let mut checker = CheckIndex::with_write_lock(Arc::clone(&dir), None);
+    checker.set_level(Level::MAX_VALUE).unwrap();
+    let status = checker.check_index().expect("check index");
+    checker.close().unwrap();
+    assert!(status.clean, "{status:?}");
+}
+
+/// `IndexUpgrader.main(String[])` is `parseArgs(args).upgrade()`; the port
+/// exposes that body as `IndexUpgrader::do_main`, so a bad command line is
+/// rejected before any directory is touched and a real index is upgraded in
+/// place.
+#[test]
+fn upgrader_do_main_parses_then_upgrades() {
+    let empty: [String; 0] = [];
+    assert!(rucene::index::check_index::IndexUpgrader::do_main(&empty).is_err());
+
+    let tmp = scratch_dir("upgrader-do-main");
+    let dir: Arc<dyn Directory> = Arc::new(rucene::store::FSDirectory::open(&tmp).unwrap());
+    build(Arc::clone(&dir), 1);
+    let before = rucene::index::SegmentInfos::read_latest_commit(Arc::clone(&dir))
+        .unwrap()
+        .generation();
+    drop(dir);
+
+    rucene::index::check_index::IndexUpgrader::do_main(&[tmp.to_string_lossy().to_string()])
+        .expect("upgrade an index already in the current format");
+
+    let dir: Arc<dyn Directory> = Arc::new(rucene::store::FSDirectory::open(&tmp).unwrap());
+    let after = rucene::index::SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+    // The index was already in the current format, so `UpgradeIndexMergePolicy`
+    // finds nothing to rewrite and the commit point is left where it was; what
+    // the run proves is that `do_main` parsed, opened, upgraded and closed
+    // without disturbing the index.
+    assert!(after.generation() >= before);
+    assert_eq!(after.size(), 1, "the single segment survives the upgrade");
+    let reader = rucene::index::directory_reader::open(Arc::clone(&dir))
+        .expect("the upgraded index must still open");
+    assert_eq!(reader.max_doc(), 5);
+    drop(dir);
+    let _ = std::fs::remove_dir_all(&tmp);
 }

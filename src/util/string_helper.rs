@@ -10,7 +10,7 @@
 
 use std::{
     cmp::Ordering,
-    io,
+    fmt, io,
     sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -23,6 +23,8 @@ use super::BytesRef;
 // IntsRef
 // ---------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.util.IntsRef`.
+///
 /// A reference to a slice of `i32` values, equivalent to Lucene's `IntsRef`.
 #[derive(Clone, Default, Debug)]
 pub struct IntsRef {
@@ -118,6 +120,22 @@ impl IntsRef {
             )));
         }
         Ok(())
+    }
+}
+
+impl fmt::Display for IntsRef {
+    /// Port of `IntsRef.toString()`: the active slice rendered as unsigned
+    /// hexadecimal, one value per `Integer.toHexString` call, separated by a
+    /// single space and wrapped in square brackets.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[")?;
+        for (i, value) in self.slice().iter().enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            f.write_str(&crate::util::java_fmt::to_hex_string(*value))?;
+        }
+        f.write_str("]")
     }
 }
 
@@ -992,4 +1010,45 @@ mod tests {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// StringHelper.GOOD_FAST_HASH_SEED
+// ---------------------------------------------------------------------------
+
+static GOOD_FAST_HASH_SEED: OnceLock<i32> = OnceLock::new();
+
+impl StringHelper {
+    /// The seed [`BytesRef::hash_code`] and the other `murmurhash3_x86_32`
+    /// callers mix in.
+    ///
+    /// Equivalent to `StringHelper.GOOD_FAST_HASH_SEED`, whose static
+    /// initialiser reads the `tests.seed` system property and uses its
+    /// `String.hashCode()` when it is set — so that a failure that depended on
+    /// hash order stays reproducible — and otherwise takes
+    /// `(int) System.currentTimeMillis()`. Rust has no system properties, so
+    /// the property is read from the environment variable of the same name,
+    /// which is how the rest of this crate reads `tests.seed` (see
+    /// `BitUtil::get_native_byte_order`).
+    ///
+    /// The value is therefore **not** stable across runs unless `tests.seed` is
+    /// set, exactly as in Java.
+    pub fn good_fast_hash_seed() -> i32 {
+        *GOOD_FAST_HASH_SEED.get_or_init(|| match std::env::var("tests.seed") {
+            Ok(prop) => java_string_hash_code(&prop),
+            Err(_) => SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64 as i32)
+                .unwrap_or(0),
+        })
+    }
+}
+
+/// `java.lang.String.hashCode()`, which the seeded value above depends on.
+fn java_string_hash_code(s: &str) -> i32 {
+    let mut h: i32 = 0;
+    for c in s.encode_utf16() {
+        h = h.wrapping_mul(31).wrapping_add(i32::from(c));
+    }
+    h
 }

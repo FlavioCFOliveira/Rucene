@@ -32,7 +32,7 @@
 #![deny(unsafe_code)]
 
 use std::{
-    fmt::{Debug, Formatter},
+    fmt::{Debug, Display, Formatter},
     sync::{
         atomic::{AtomicI32, Ordering},
         Arc, Weak,
@@ -41,8 +41,8 @@ use std::{
 
 use crate::error::{LuceneError, Result};
 use crate::index::index_reader::{
-    build_composite_context, CacheHelper, CompositeReader, IndexReader, IndexReaderCore,
-    StoredFields,
+    build_composite_context, composite_reader_to_string, CacheHelper, CompositeReader, IndexReader,
+    IndexReaderCore, StoredFields,
 };
 use crate::index::leaf_reader::TermVectors;
 use crate::index::reader_context::{IndexReaderContext, LeafReaderContext};
@@ -95,6 +95,23 @@ pub struct ReaderSlice {
     pub length: i32,
     /// Ordinal of the owning sub-reader.
     pub reader_index: i32,
+}
+
+impl Display for ReaderSlice {
+    /// `ReaderSlice` is a **record** in Lucene 10.5.0
+    /// (`ReaderSlice.java:26`), so its `toString()` is the one the compiler
+    /// generates: the simple name, then each component as `name=value`
+    /// separated by `", "`, inside square brackets.
+    ///
+    /// Measured against `lucene-core-10.5.0.jar` through `MultiTermsEnum`:
+    /// `ReaderSlice[start=0, length=6, readerIndex=0]`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ReaderSlice[start={}, length={}, readerIndex={}]",
+            self.start, self.length, self.reader_index
+        )
+    }
 }
 
 impl ReaderSlice {
@@ -401,6 +418,19 @@ impl Debug for MultiReader {
             .field("max_doc", &self.max_doc)
             .field("close_sub_readers", &self.close_sub_readers)
             .finish()
+    }
+}
+
+impl Display for MultiReader {
+    /// `MultiReader` and its base `BaseCompositeReader` override no
+    /// `toString()`, so `CompositeReader`'s applies under this simple name.
+    /// Measured against `lucene-core-10.5.0.jar`, where a `MultiReader` over
+    /// two segment readers renders as `MultiReader(_0(10.5.0):C3 _1(10.5.0):C3)`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&composite_reader_to_string(
+            "MultiReader",
+            &self.sub_readers,
+        ))
     }
 }
 
@@ -860,6 +890,16 @@ mod tests {
         core: IndexReaderCore,
         max_doc: i32,
         num_docs: i32,
+    }
+
+    impl std::fmt::Display for StubLeafReader {
+        /// Test double; it has no Lucene counterpart whose `toString()` could be
+        /// reproduced, so it renders under its own name. `Display` is required
+        /// because `LeafReader`/`IndexReader` carry it as a supertrait, standing in
+        /// for the `toString()` every Java reader inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubLeafReader")
+        }
     }
 
     impl StubLeafReader {

@@ -13,10 +13,9 @@
 
 #![deny(unsafe_code)]
 
-use std::any::type_name;
 use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{self, Debug, Formatter};
 use std::sync::{Arc, Weak};
 
 use crate::analysis::{Analyzer, StandardAnalyzer};
@@ -42,11 +41,11 @@ use crate::util::InfoStream;
 ///
 /// Only the minimal trait bounds needed by `IndexWriterConfig` are enforced;
 /// warmer logic will be added in a later task.
-pub trait MergedSegmentWarmer: Send + Sync + Debug {}
+pub trait MergedSegmentWarmer: Send + Sync + Debug + fmt::Display {}
 
 /// Placeholder for `java.util.Comparator<LeafReader>` used to sort leaf
 /// readers when a `DirectoryReader` is opened from an `IndexWriter`.
-pub trait LeafComparator: Send + Sync + Debug {
+pub trait LeafComparator: Send + Sync + Debug + fmt::Display {
     /// Compares two leaf readers.
     fn compare(&self, a: &dyn LeafReader, b: &dyn LeafReader) -> Ordering;
 }
@@ -70,6 +69,19 @@ pub enum OpenMode {
     CREATE_OR_APPEND,
 }
 
+impl fmt::Display for OpenMode {
+    /// Equivalent to `IndexWriterConfig.OpenMode`'s inherited
+    /// `Enum.toString()`, which is the constant's own `name()` — the spelling
+    /// `LiveIndexWriterConfig.toString()` prints for `openMode=`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            OpenMode::CREATE => "CREATE",
+            OpenMode::APPEND => "APPEND",
+            OpenMode::CREATE_OR_APPEND => "CREATE_OR_APPEND",
+        })
+    }
+}
+
 // -----------------------------------------------------------------------------
 // IndexWriterEventListener
 // -----------------------------------------------------------------------------
@@ -77,7 +89,7 @@ pub enum OpenMode {
 /// Callback interface for key `IndexWriter` events.
 ///
 /// Equivalent to `org.apache.lucene.index.IndexWriterEventListener`.
-pub trait IndexWriterEventListener: Send + Sync + Debug {
+pub trait IndexWriterEventListener: Send + Sync + Debug + fmt::Display {
     /// Invoked at the start of a merge triggered by a full flush.
     fn begin_merge_on_full_flush(&self, merge: &MergeSpecification);
 
@@ -88,6 +100,18 @@ pub trait IndexWriterEventListener: Send + Sync + Debug {
 /// No-op implementation of [`IndexWriterEventListener`].
 #[derive(Debug, Copy, Clone, Default)]
 pub struct NoOpIndexWriterEventListener;
+
+impl fmt::Display for NoOpIndexWriterEventListener {
+    /// `IndexWriterEventListener.NO_OP_LISTENER` is an anonymous implementation
+    /// of the interface, so Java renders it as `Object.toString()` does, with
+    /// the binary name the compiler gives the anonymous class.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.IndexWriterEventListener$1",
+            self,
+        ))
+    }
+}
 
 impl IndexWriterEventListener for NoOpIndexWriterEventListener {
     fn begin_merge_on_full_flush(&self, _merge: &MergeSpecification) {}
@@ -463,85 +487,84 @@ impl LiveIndexWriterConfig {
 
     /// Builds a human-readable description matching Java's `toString()` output.
     pub fn to_config_string(&self) -> String {
-        let mut sb = String::new();
-        sb.push_str(&format!(
-            "analyzer={}\n",
-            type_name_of_analyzer(&self.analyzer)
-        ));
-        sb.push_str(&format!("ramBufferSizeMB={}\n", self.ram_buffer_size_mb));
-        sb.push_str(&format!("maxBufferedDocs={}\n", self.max_buffered_docs));
-        sb.push_str(&format!(
-            "mergedSegmentWarmer={}\n",
-            option_type_name(&self.merged_segment_warmer)
-        ));
-        sb.push_str(&format!(
-            "delPolicy={}\n",
-            type_name_of_trait_object(self.del_policy.as_ref())
-        ));
-        sb.push_str(&format!(
-            "commit={}\n",
-            self.commit
-                .as_ref()
-                .map_or("null".to_string(), |c| format!("{:?}", c))
-        ));
-        sb.push_str(&format!("openMode={:?}\n", self.open_mode));
-        sb.push_str(&format!(
-            "similarity={}\n",
-            type_name_of_trait_object(self.similarity.as_ref())
-        ));
-        sb.push_str(&format!(
-            "mergeScheduler={}\n",
-            type_name_of_trait_object(self.merge_scheduler.as_ref())
-        ));
-        sb.push_str(&format!("codec={}\n", self.codec.name()));
-        sb.push_str(&format!(
-            "infoStream={}\n",
-            type_name_of_trait_object(self.info_stream.as_ref())
-        ));
-        sb.push_str(&format!(
-            "mergePolicy={}\n",
-            type_name_of_trait_object(self.merge_policy.as_ref())
-        ));
-        sb.push_str(&format!("readerPooling={}\n", self.reader_pooling));
-        sb.push_str(&format!(
-            "perThreadHardLimitMB={}\n",
-            self.per_thread_hard_limit_mb
-        ));
-        sb.push_str(&format!("useCompoundFile={}\n", self.use_compound_file));
-        sb.push_str(&format!("commitOnClose={}\n", self.commit_on_close));
-        sb.push_str(&format!(
-            "indexSort={}\n",
-            self.index_sort
-                .as_ref()
-                .map_or("null".to_string(), |s| s.to_string())
-        ));
-        sb.push_str(&format!(
-            "checkPendingFlushOnUpdate={}\n",
+        self.to_string()
+    }
+}
+
+impl fmt::Display for LiveIndexWriterConfig {
+    /// Renders every live setting, one `name=value` line each.
+    ///
+    /// Equivalent to `LiveIndexWriterConfig.toString()`
+    /// (`LiveIndexWriterConfig.java:469-499`), measured against
+    /// `lucene-core-10.5.0.jar` in `tests/portability/object_contract_core.rs`.
+    ///
+    /// Four of the clauses print `getClass().getName()` rather than the
+    /// object's `toString()`, which is why [`Analyzer`],
+    /// [`IndexDeletionPolicy`], [`Similarity`] and [`InfoStream`] each carry a
+    /// `java_class_name()`: Rust has no runtime class to ask.
+    ///
+    /// **Divergence from Lucene 10.5.0.** The `eventListener=` clause renders
+    /// an object with no `toString()` of its own, so Java prints
+    /// `name@<identity hash>`. The hash is a JVM-internal value with no Rust
+    /// counterpart; this port substitutes the object's address, the same
+    /// substitution [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// makes everywhere else. Every other clause is byte-identical.
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        writeln!(f, "analyzer={}", self.analyzer.java_class_name())?;
+        writeln!(
+            f,
+            "ramBufferSizeMB={}",
+            crate::util::java_fmt::double_to_string(self.ram_buffer_size_mb)
+        )?;
+        writeln!(f, "maxBufferedDocs={}", self.max_buffered_docs)?;
+        match self.merged_segment_warmer.as_ref() {
+            Some(warmer) => writeln!(f, "mergedSegmentWarmer={warmer}")?,
+            None => writeln!(f, "mergedSegmentWarmer=null")?,
+        }
+        writeln!(f, "delPolicy={}", self.del_policy.java_class_name())?;
+        match self.commit.as_ref() {
+            Some(commit) => writeln!(f, "commit={commit}")?,
+            None => writeln!(f, "commit=null")?,
+        }
+        writeln!(f, "openMode={}", self.open_mode)?;
+        writeln!(f, "similarity={}", self.similarity.java_class_name())?;
+        writeln!(f, "mergeScheduler={}", self.merge_scheduler)?;
+        writeln!(f, "codec={}", self.codec)?;
+        writeln!(f, "infoStream={}", self.info_stream.java_class_name())?;
+        writeln!(f, "mergePolicy={}", self.merge_policy)?;
+        writeln!(f, "readerPooling={}", self.reader_pooling)?;
+        writeln!(f, "perThreadHardLimitMB={}", self.per_thread_hard_limit_mb)?;
+        writeln!(f, "useCompoundFile={}", self.use_compound_file)?;
+        writeln!(f, "commitOnClose={}", self.commit_on_close)?;
+        match self.index_sort.as_ref() {
+            Some(sort) => writeln!(f, "indexSort={sort}")?,
+            None => writeln!(f, "indexSort=null")?,
+        }
+        writeln!(
+            f,
+            "checkPendingFlushOnUpdate={}",
             self.check_pending_flush_on_update
-        ));
-        sb.push_str(&format!(
-            "softDeletesField={}\n",
+        )?;
+        writeln!(
+            f,
+            "softDeletesField={}",
             self.soft_deletes_field.as_deref().unwrap_or("null")
-        ));
-        sb.push_str(&format!(
-            "maxFullFlushMergeWaitMillis={}\n",
+        )?;
+        writeln!(
+            f,
+            "maxFullFlushMergeWaitMillis={}",
             self.max_full_flush_merge_wait_millis
-        ));
-        sb.push_str(&format!(
-            "leafSorter={}\n",
-            self.leaf_sorter
-                .as_ref()
-                .map_or("null".to_string(), |_| "Some(...)".to_string())
-        ));
-        sb.push_str(&format!(
-            "eventListener={}\n",
-            type_name_of_trait_object(self.event_listener.as_ref())
-        ));
-        sb.push_str(&format!(
-            "parentField={}\n",
+        )?;
+        match self.leaf_sorter.as_ref() {
+            Some(sorter) => writeln!(f, "leafSorter={sorter}")?,
+            None => writeln!(f, "leafSorter=null")?,
+        }
+        writeln!(f, "eventListener={}", self.event_listener)?;
+        writeln!(
+            f,
+            "parentField={}",
             self.parent_field.as_deref().unwrap_or("null")
-        ));
-        sb
+        )
     }
 }
 
@@ -1018,15 +1041,33 @@ impl IndexWriterConfig {
 
     /// Builds a human-readable description matching Java's `toString()`.
     pub fn to_config_string(&self) -> String {
-        let mut s = self.live.to_config_string();
-        s.push_str(&format!(
-            "writer={}\n",
-            self.writer.as_ref().map_or("null".to_string(), |w| {
-                w.upgrade()
-                    .map_or("null".to_string(), |w| format!("{:?}", w))
-            })
-        ));
-        s
+        self.to_string()
+    }
+}
+
+impl fmt::Display for IndexWriterConfig {
+    /// Equivalent to `IndexWriterConfig.toString()`
+    /// (`IndexWriterConfig.java:499-504`): everything
+    /// [`LiveIndexWriterConfig`]'s own `toString()` writes, then one
+    /// `writer=` line carrying `writer.get()`.
+    ///
+    /// Java's `writer` is a `SetOnce<IndexWriter>` whose `get()` is `null`
+    /// until [`attach_writer`](Self::attach_writer) is called, and `IndexWriter`
+    /// declares no `toString()`, so an attached writer renders as
+    /// `Object.toString()` does.
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.live, f)?;
+        match self.writer.as_ref().and_then(std::sync::Weak::upgrade) {
+            Some(writer) => writeln!(
+                f,
+                "writer={}",
+                crate::index::index_reader::java_object_to_string(
+                    "org.apache.lucene.index.IndexWriter",
+                    writer.as_ref(),
+                )
+            ),
+            None => writeln!(f, "writer=null"),
+        }
     }
 }
 
@@ -1034,24 +1075,6 @@ impl Default for IndexWriterConfig {
     fn default() -> Self {
         Self::new()
     }
-}
-
-// -----------------------------------------------------------------------------
-// Helpers for producing Java-like class names in `toString` output.
-// -----------------------------------------------------------------------------
-
-pub(crate) fn type_name_of_trait_object<T: ?Sized + 'static>(_obj: &T) -> String {
-    type_name::<T>().to_string()
-}
-
-fn type_name_of_analyzer(_analyzer: &Arc<dyn Analyzer>) -> String {
-    // `dyn Analyzer` does not itself implement `Debug` in a way that yields
-    // the concrete type name, so we rely on `type_name` of the trait object.
-    type_name::<dyn Analyzer>().to_string()
-}
-
-fn option_type_name<T: ?Sized + 'static>(_opt: &Option<Arc<T>>) -> String {
-    type_name::<T>().to_string()
 }
 
 // -----------------------------------------------------------------------------
@@ -1314,6 +1337,15 @@ mod tests {
         struct CountingListener {
             begins: AtomicUsize,
             ends: AtomicUsize,
+        }
+
+        impl fmt::Display for CountingListener {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&crate::index::index_reader::java_object_to_string(
+                    "org.apache.lucene.index.IndexWriterEventListener$1",
+                    self,
+                ))
+            }
         }
 
         impl IndexWriterEventListener for CountingListener {

@@ -13,6 +13,32 @@ use crate::error::{LuceneError, Result};
 
 const INITIAL_CAPACITY: usize = 16;
 
+/// `java.lang.String.trim()`.
+///
+/// Java trims "any character whose codepoint is less than or equal to
+/// `'\u0020'`", which is neither Unicode whitespace nor a subset of it:
+/// `U+0001` is trimmed by Java but not by Rust's [`str::trim`], and `U+00A0`
+/// (no-break space) is trimmed by Rust but not by Java. Every loader in this
+/// module trims exactly once per line, so the difference decides whether such a
+/// line becomes a stop word, becomes a *different* stop word, or is dropped as
+/// blank.
+fn java_trim(s: &str) -> &str {
+    s.trim_matches(|c: char| c <= '\u{20}')
+}
+
+/// Splits on `java.util.regex.Pattern`'s `\s+`, dropping empty fields.
+///
+/// Java's `\s` is the ASCII class `[ \t\n\x0B\f\r]`, not Unicode
+/// whitespace, so `String.split("\\s+")` keeps a no-break space inside a word
+/// where Rust's [`str::split_whitespace`] would break on it. Java's `split`
+/// also yields a leading empty field when the string starts with a separator,
+/// which `getSnowballWordSet`'s `words[i].length() > 0` guard discards — so
+/// dropping empty fields here is the same behaviour, not a shortcut.
+fn java_split_whitespace(line: &str) -> impl Iterator<Item = &str> {
+    line.split([' ', '\t', '\n', '\u{0B}', '\u{0C}', '\r'])
+        .filter(|word| !word.is_empty())
+}
+
 /// Reads every non-blank line from `lines` into a new [`CharArraySet`].
 ///
 /// Each line is trimmed of leading and trailing whitespace.
@@ -28,7 +54,7 @@ pub fn get_word_set_into(
     result: &mut CharArraySet,
 ) {
     for line in lines {
-        let word = line.as_ref().trim();
+        let word = java_trim(line.as_ref());
         if !word.is_empty() {
             result.add(word);
         }
@@ -46,7 +72,7 @@ pub fn get_word_set_with_comment(
     for line in lines {
         let line = line.as_ref();
         if !line.starts_with(comment) {
-            let word = line.trim();
+            let word = java_trim(line);
             if !word.is_empty() {
                 result.add(word);
             }
@@ -78,10 +104,8 @@ pub fn get_snowball_word_set(lines: impl IntoIterator<Item = impl AsRef<str>>) -
         } else {
             line
         };
-        for word in line.split_whitespace() {
-            if !word.is_empty() {
-                result.add(word);
-            }
+        for word in java_split_whitespace(line) {
+            result.add(word);
         }
     }
     CharArraySet::unmodifiable_set(result)
@@ -120,6 +144,15 @@ pub fn get_buffered_reader(reader: &mut dyn CharReader) -> Result<Vec<String>> {
         text.extend(buffer[..read].iter());
     }
 
+    Ok(read_lines(&text))
+}
+
+/// Splits `text` the way `java.io.BufferedReader.readLine()` does.
+///
+/// A line is terminated by a line feed, a carriage return, or a carriage return
+/// followed by a line feed; the terminator is not part of the line, and a
+/// trailing fragment with no terminator is still a line.
+pub(crate) fn read_lines(text: &str) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current = String::new();
     let mut chars = text.chars().peekable();
@@ -137,6 +170,56 @@ pub fn get_buffered_reader(reader: &mut dyn CharReader) -> Result<Vec<String>> {
     }
     if !current.is_empty() {
         lines.push(current);
+    }
+    lines
+}
+
+/// Reads the data-carrying lines of `stream`, decoded with `char_set`.
+///
+/// A comment line is any line that starts with `#`. Blank lines are skipped and
+/// every kept line is trimmed. A byte-order mark leading the first *kept* line
+/// is removed.
+///
+/// The order of those four steps is Lucene's and is observable:
+///
+/// 1. the BOM is stripped only while nothing has been kept yet, so a file whose
+///    first lines are all comments or blanks still has the mark taken off
+///    whichever line is first to survive;
+/// 2. the comment test runs **before** the trim, so `"   # x"` is not a comment
+///    — it becomes the word `"# x"`;
+/// 3. the line is trimmed with [`java_trim`], i.e. `String.trim()`'s rule;
+/// 4. only then is a line that has become empty dropped.
+///
+/// # Errors
+///
+/// Returns whatever reading `stream` raises, or an error when its bytes are not
+/// valid `char_set`.
+///
+/// Equivalent to
+/// `org.apache.lucene.analysis.WordlistLoader#getLines(InputStream, Charset)`.
+pub fn get_lines<R: std::io::Read>(stream: R, char_set: &str) -> Result<Vec<String>> {
+    let decoded = crate::util::IOUtils::get_decoding_reader(stream, char_set)?;
+    let text = decoded.into_inner();
+
+    let mut lines: Vec<String> = Vec::new();
+    for line in read_lines(&text) {
+        let mut word = line.as_str();
+        // Skip the initial BOM marker.
+        if lines.is_empty() {
+            if let Some(rest) = word.strip_prefix('\u{FEFF}') {
+                word = rest;
+            }
+        }
+        // Skip comments.
+        if word.starts_with('#') {
+            continue;
+        }
+        let word = java_trim(word);
+        // Skip blank lines.
+        if word.is_empty() {
+            continue;
+        }
+        lines.push(word.to_string());
     }
     Ok(lines)
 }

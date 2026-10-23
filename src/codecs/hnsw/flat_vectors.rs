@@ -484,7 +484,11 @@ impl<T: Clone + Send + Sync + 'static> FlatFieldVectorsWriter<T>
 /// The Rust API uses the typed `FloatVectorValues` / `ByteVectorValues` traits
 /// directly instead of a unified `KnnVectorValues` supertype, which is more
 /// idiomatic and removes the need for runtime encoding dispatch.
-pub trait FlatVectorsScorer: Send + Sync + fmt::Debug {
+/// Every Lucene implementation of this interface overrides `toString()`, and
+/// those strings are concatenated by the vector formats' own `toString()`
+/// (`Lucene99FlatVectorsFormat`, for one), so [`fmt::Display`] is a supertrait
+/// here rather than an implementation detail of each scorer.
+pub trait FlatVectorsScorer: Send + Sync + fmt::Debug + fmt::Display {
     /// Returns a scorer supplier for float vectors.
     fn get_random_vector_scorer_supplier_float(
         &self,
@@ -857,7 +861,7 @@ pub trait FlatVectorsFormat: KnnVectorsFormat {
 /// Reads flat vectors from an index.
 ///
 /// Equivalent to `org.apache.lucene.codecs.hnsw.FlatVectorsReader`.
-pub trait FlatVectorsReader: KnnVectorsReader {
+pub trait FlatVectorsReader: KnnVectorsReader + crate::util::Accountable {
     /// Returns the flat vector scorer for the given field.
     fn get_flat_vector_scorer(&self, field: &str) -> Result<Box<dyn FlatVectorsScorer>>;
 
@@ -902,8 +906,11 @@ pub trait FlatVectorsReader: KnnVectorsReader {
 ///
 /// Equivalent to `org.apache.lucene.codecs.hnsw.FlatVectorsWriter`.
 pub trait FlatVectorsWriter: BufferingKnnVectorsWriter {
-    /// Returns the scorer used to score vectors while writing.
-    fn vectors_scorer(&self) -> &dyn FlatVectorsScorer;
+    /// Returns the scorer this writer scores vectors with.
+    ///
+    /// Equivalent to `FlatVectorsWriter.getFlatVectorScorer()`, which reads the
+    /// `protected final vectorsScorer` field the sole constructor sets.
+    fn get_flat_vector_scorer(&self) -> &dyn FlatVectorsScorer;
 
     /// Merges vectors for a single field.
     fn merge_one_flat_vector_field(
@@ -1022,7 +1029,7 @@ mod tests {
             crate::index::DocValuesType::NONE,
             crate::index::DocValuesSkipIndexType::NONE,
             -1,
-            std::collections::HashMap::new(),
+            crate::util::java_collections::JavaStringMap::default(),
             0,
             0,
             0,
@@ -1096,5 +1103,12 @@ mod tests {
         let score_same = scorer.score(0).unwrap();
         let score_other = scorer.score(1).unwrap();
         assert!(score_same > score_other);
+    }
+}
+
+impl fmt::Display for DefaultFlatVectorScorer {
+    /// Port of `DefaultFlatVectorScorer.toString()`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("DefaultFlatVectorScorer()")
     }
 }

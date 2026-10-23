@@ -38,8 +38,8 @@ use crate::index::doc_values::DocValuesIterator;
 use crate::index::index_file_names::segment_file_name;
 use crate::search::{DocIdSetIterator, SortedSetSelector, SortedSetSelectorType, NO_MORE_DOCS};
 use crate::store::{
-    ByteBuffersDataOutput, ByteBuffersIndexOutput, DataOutput, Directory, IOContext, IndexInput,
-    IndexOutput, MockIndexOutput, RandomAccessInput,
+    ByteArrayDataOutput, ByteBuffersDataOutput, ByteBuffersIndexOutput, DataOutput, Directory,
+    IOContext, IndexInput, IndexOutput, MockIndexOutput, RandomAccessInput,
 };
 use crate::util::compress::{FastCompressionHashTable, Lz4};
 use crate::util::packed::{
@@ -185,6 +185,17 @@ pub struct Lucene90DocValuesConsumer<'a> {
     data: MockIndexOutput,
     meta: MockIndexOutput,
     skip_index: MockIndexOutput,
+    /// Scratch buffer for the terms dictionary, reused across every field of
+    /// the segment that writes one.
+    ///
+    /// Equivalent to the field `termsDictBuffer`
+    /// (`Lucene90DocValuesConsumer.java:69`), allocated once at `1 << 14`
+    /// bytes in the constructor (`:83`) and grown in place by
+    /// [`Self::maybe_grow_buffer`]. It is a field, and not a local of
+    /// [`Self::add_terms_dict_values`], because Lucene makes it one: a second
+    /// terms-dictionary field in the same segment starts from the length the
+    /// first grew it to.
+    terms_dict_buffer: Vec<u8>,
     max_doc: i32,
     #[allow(dead_code)]
     skip_index_interval_size: i32,
@@ -509,6 +520,12 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             data,
             meta,
             skip_index,
+            // `this.termsDictBuffer = new byte[1 << 14]`,
+            // `Lucene90DocValuesConsumer.java:83`. A Java array of that length
+            // is zero-filled and *has* that length; a `Vec::with_capacity`
+            // would have length zero, which would make every growth test in
+            // `maybe_grow_buffer` compare against nothing.
+            terms_dict_buffer: vec![0u8; 1 << 14],
             max_doc: state.segment_info.max_doc()?,
             skip_index_interval_size,
             directory: state.directory,
@@ -561,76 +578,6 @@ impl DocIdSetIterator for BufferedDocIdSetIterator {
 
     fn cost(&self) -> i64 {
         self.docs.len() as i64
-    }
-}
-
-struct ResettableByteArrayOutput {
-    bytes: Vec<u8>,
-    position: usize,
-}
-
-impl ResettableByteArrayOutput {
-    fn with_capacity(capacity: usize) -> Self {
-        Self {
-            bytes: Vec::with_capacity(capacity),
-            position: 0,
-        }
-    }
-
-    fn position(&self) -> usize {
-        self.position
-    }
-
-    fn reset(&mut self) {
-        self.position = 0;
-    }
-
-    fn maybe_grow(&mut self, additional: usize) {
-        if self.position + additional > self.bytes.len() {
-            self.bytes = ArrayUtil::grow(&self.bytes, self.position + additional);
-        }
-    }
-
-    /// Length of the backing buffer, the counterpart of `termsDictBuffer.length`.
-    fn buffer_len(&self) -> usize {
-        self.bytes.len()
-    }
-
-    /// Grows the backing buffer to hold at least `min_len` bytes, the
-    /// counterpart of `termsDictBuffer = ArrayUtil.grow(termsDictBuffer, n)`.
-    fn grow_buffer(&mut self, min_len: usize) {
-        self.bytes = ArrayUtil::grow(&self.bytes, min_len);
-    }
-
-    fn as_bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-}
-
-impl DataOutput for ResettableByteArrayOutput {
-    fn write_byte(&mut self, b: u8) -> Result<()> {
-        if self.position == self.bytes.len() {
-            self.bytes.push(b);
-        } else {
-            self.bytes[self.position] = b;
-        }
-        self.position += 1;
-        Ok(())
-    }
-
-    fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
-        let end = offset
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
-        if end > b.len() {
-            return Err(LuceneError::IllegalArgument(
-                "source buffer too small".to_string(),
-            ));
-        }
-        self.maybe_grow(len);
-        self.bytes[self.position..self.position + len].copy_from_slice(&b[offset..end]);
-        self.position += len;
-        Ok(())
     }
 }
 
@@ -1186,14 +1133,15 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
     /// `org.apache.lucene.codecs.lucene90.Lucene90DocValuesConsumer#compressAndGetTermsDictBlockLength`.
     fn compress_and_get_terms_dict_block_length(
         data: &mut MockIndexOutput,
-        buffered_output: &ResettableByteArrayOutput,
+        terms_dict_buffer: &[u8],
+        buffered_position: usize,
         dict_length: usize,
         ht: &mut FastCompressionHashTable,
     ) -> Result<usize> {
-        let uncompressed_length = buffered_output.position() - dict_length;
+        let uncompressed_length = buffered_position - dict_length;
         data.write_v_int(uncompressed_length as i32)?;
         Lz4::compress_with_dictionary(
-            buffered_output.as_bytes(),
+            terms_dict_buffer,
             0,
             dict_length,
             uncompressed_length,
@@ -1206,24 +1154,59 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
     /// Grows the terms-dictionary buffer when `term_length` more bytes would
     /// not fit into it.
     ///
-    /// Divergence: Lucene keeps the buffer in the `termsDictBuffer` field and,
-    /// after growing it, returns a fresh `ByteArrayDataOutput` re-based on the
-    /// new array at the position the old one had reached, because a
-    /// `ByteArrayDataOutput` is bound to one fixed array
-    /// (`Lucene90DocValuesConsumer.java:840-847`). This port's
-    /// `ResettableByteArrayOutput` owns its buffer and keeps its position
-    /// across a growth, so no output object has to be rebuilt and nothing is
-    /// returned. The growth threshold and the requested new length are
-    /// Lucene's.
-    ///
     /// Equivalent to
-    /// `org.apache.lucene.codecs.lucene90.Lucene90DocValuesConsumer#maybeGrowBuffer`.
-    fn maybe_grow_buffer(buffered_output: &mut ResettableByteArrayOutput, term_length: usize) {
-        let pos = buffered_output.position();
-        let original_length = buffered_output.buffer_len();
-        if pos + term_length + 1 >= original_length {
-            buffered_output.grow_buffer(original_length + term_length);
+    /// `org.apache.lucene.codecs.lucene90.Lucene90DocValuesConsumer#maybeGrowBuffer`
+    /// (`Lucene90DocValuesConsumer.java:840-847`). Java rebuilds the
+    /// `ByteArrayDataOutput` over the new array at the position the old one had
+    /// reached and returns it; here the array and the position are the two
+    /// things the caller carries, and the view over them is built per write
+    /// burst (see [`Self::write_buffered`]), so there is no output object to
+    /// rebuild and only the array is touched.
+    ///
+    /// The test is spelled `pos + term_length + 1 >= original_length` where
+    /// Java spells it `pos + termLength >= originalLength - 1`. The two are the
+    /// same inequality over integers; Java may evaluate `originalLength - 1` on
+    /// an empty array and get `-1` harmlessly, whereas the same subtraction on
+    /// a `usize` would wrap.
+    fn maybe_grow_buffer(terms_dict_buffer: &mut Vec<u8>, position: usize, term_length: usize) {
+        let original_length = terms_dict_buffer.len();
+        if position + term_length + 1 >= original_length {
+            *terms_dict_buffer = ArrayUtil::grow(terms_dict_buffer, original_length + term_length);
         }
+    }
+
+    /// Writes into `terms_dict_buffer` at `position` through a
+    /// [`ByteArrayDataOutput`], and returns the position the output reached.
+    ///
+    /// This is Lucene's `bufferedOutput` (`Lucene90DocValuesConsumer.java:768`):
+    /// a `ByteArrayDataOutput` over the terms-dictionary array, positioned where
+    /// the last write left off and limited by the array's length. Every write in
+    /// [`Self::add_terms_dict_values`] goes through it, so the encoding — the
+    /// `writeVInt` in particular — is the ported one and not a second copy of it.
+    ///
+    /// # Divergence: the view is rebuilt per burst instead of being held
+    ///
+    /// Java keeps one `ByteArrayDataOutput` alive across the whole loop while
+    /// also reading `termsDictBuffer` directly, both to compress a finished
+    /// block (`:836`) and to test its length before growing it (`:841`). Those
+    /// are two live references to one array, one of them writing, which Rust
+    /// forbids: a `ByteArrayDataOutput<'a>` holds `&'a mut [u8]` for as long as
+    /// it lives, and nothing else may look at the array meanwhile. The array
+    /// and the position are therefore what the loop carries, and the view is
+    /// constructed around them for each burst of writes and dropped again —
+    /// which is exactly the object Java rebuilds on every growth
+    /// (`new ByteArrayDataOutput(termsDictBuffer, pos, termsDictBuffer.length - pos)`,
+    /// `:844`), only built more often. It allocates nothing: the view is a
+    /// slice reference and two indices.
+    fn write_buffered<F>(terms_dict_buffer: &mut [u8], position: usize, write: F) -> Result<usize>
+    where
+        F: FnOnce(&mut ByteArrayDataOutput<'_>) -> Result<()>,
+    {
+        let limit = terms_dict_buffer.len();
+        let mut buffered_output =
+            ByteArrayDataOutput::with_range(terms_dict_buffer, position, limit - position);
+        write(&mut buffered_output)?;
+        Ok(buffered_output.position())
     }
 
     fn add_terms_dict_values<F>(&mut self, value_count: i64, mut lookup: F) -> Result<()>
@@ -1250,7 +1233,13 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         let mut max_length = 0i32;
         let mut max_block_length = 0i32;
         let mut ht = FastCompressionHashTable::new();
-        let mut buffered_output = ResettableByteArrayOutput::with_capacity(1 << 14);
+        // Lucene's `bufferedOutput` is a `ByteArrayDataOutput` over
+        // `termsDictBuffer` (`Lucene90DocValuesConsumer.java:768`). Here the
+        // array is `self.terms_dict_buffer` and the output's position is
+        // carried alongside it; `Self::write_buffered` builds the view for each
+        // burst of writes. See its documentation for why it cannot be held.
+        let terms_dict_buffer = &mut self.terms_dict_buffer;
+        let mut buffered_position = 0usize;
         let mut dict_length = 0usize;
 
         for ord in 0..value_count {
@@ -1260,12 +1249,16 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
                     // flush the previous block
                     let uncompressed_length = Self::compress_and_get_terms_dict_block_length(
                         &mut self.data,
-                        &buffered_output,
+                        terms_dict_buffer,
+                        buffered_position,
                         dict_length,
                         &mut ht,
                     )?;
                     max_block_length = max_block_length.max(uncompressed_length as i32);
-                    buffered_output.reset();
+                    // `bufferedOutput.reset(termsDictBuffer)` (`:778`): back to
+                    // position 0 over the whole array, however long it has
+                    // grown by now.
+                    buffered_position = 0;
                 }
 
                 writer.add(self.data.file_pointer() - start)?;
@@ -1274,35 +1267,42 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
                 self.data.write_v_int(term.length as i32)?;
                 self.data
                     .write_bytes(term.slice(), term.offset, term.length)?;
-                Self::maybe_grow_buffer(&mut buffered_output, term.length);
-                buffered_output.write_bytes(term.slice(), term.offset, term.length)?;
+                Self::maybe_grow_buffer(terms_dict_buffer, buffered_position, term.length);
+                buffered_position =
+                    Self::write_buffered(terms_dict_buffer, buffered_position, |out| {
+                        out.write_bytes(term.slice(), term.offset, term.length)
+                    })?;
                 dict_length = term.length;
             } else {
                 let prefix = StringHelper::bytes_difference(&previous.get(), &term)? as usize;
                 let suffix_length = term.length - prefix;
                 assert!(suffix_length > 0);
                 // Will write (suffixLength + 1 byte + 2 vint) bytes. Grow the buffer in need.
-                Self::maybe_grow_buffer(&mut buffered_output, suffix_length + 11);
+                Self::maybe_grow_buffer(terms_dict_buffer, buffered_position, suffix_length + 11);
                 let prefix_clipped = prefix.min(15);
                 let suffix_clipped = (suffix_length - 1).min(15);
                 let b = (prefix_clipped | (suffix_clipped << 4)) as u8;
-                buffered_output.write_byte(b)?;
-                if prefix >= 15 {
-                    buffered_output.write_v_int((prefix - 15) as i32)?;
-                }
-                if suffix_length >= 16 {
-                    buffered_output.write_v_int((suffix_length - 16) as i32)?;
-                }
-                buffered_output.write_bytes(term.slice(), term.offset + prefix, suffix_length)?;
+                buffered_position =
+                    Self::write_buffered(terms_dict_buffer, buffered_position, |out| {
+                        out.write_byte(b)?;
+                        if prefix >= 15 {
+                            out.write_v_int((prefix - 15) as i32)?;
+                        }
+                        if suffix_length >= 16 {
+                            out.write_v_int((suffix_length - 16) as i32)?;
+                        }
+                        out.write_bytes(term.slice(), term.offset + prefix, suffix_length)
+                    })?;
             }
             max_length = max_length.max(term.length as i32);
             previous.copy_ref(&term);
         }
         // Compress and write out the last block
-        if buffered_output.position() > dict_length {
+        if buffered_position > dict_length {
             let uncompressed_length = Self::compress_and_get_terms_dict_block_length(
                 &mut self.data,
-                &buffered_output,
+                terms_dict_buffer,
+                buffered_position,
                 dict_length,
                 &mut ht,
             )?;

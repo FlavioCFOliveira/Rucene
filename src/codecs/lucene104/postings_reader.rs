@@ -87,11 +87,14 @@ fn find_next_geq(arr: &[i32], target: i32, start: usize, end: usize) -> usize {
 }
 
 fn read_impacts(serialized: &[u8], buffer: &mut FreqAndNormBuffer) -> Result<()> {
-    let mut input = crate::store::ByteArrayDataInput::new(serialized.to_vec());
+    let mut input = crate::store::ByteArrayDataInput::new(serialized);
     let mut freq = 0i32;
     let mut norm = 0i64;
     buffer.size = 0;
-    while input.remaining() > 0 {
+    // Java's own bound, `while (in.getPosition() < in.length())`
+    // (`Lucene104PostingsReader.java:1453`), which stops even if a read has
+    // carried the position past the limit.
+    while input.position() < input.length() {
         let freq_delta = input.read_v_int()?;
         if (freq_delta & 0x01) != 0 {
             freq += 1 + (freq_delta >> 1);
@@ -271,7 +274,7 @@ impl PostingsReaderBase for Lucene104PostingsReader {
     }
 
     fn decode_term(
-        &mut self,
+        &self,
         input: &mut dyn DataInput,
         field_info: &FieldInfo,
         state: &mut BlockTermState,
@@ -319,7 +322,7 @@ impl PostingsReaderBase for Lucene104PostingsReader {
     }
 
     fn postings(
-        &mut self,
+        &self,
         field_info: &FieldInfo,
         state: &BlockTermState,
         _reuse: Option<Box<dyn PostingsEnum>>,
@@ -342,7 +345,7 @@ impl PostingsReaderBase for Lucene104PostingsReader {
     }
 
     fn impacts(
-        &mut self,
+        &self,
         field_info: &FieldInfo,
         state: &BlockTermState,
         flags: i32,
@@ -1407,6 +1410,20 @@ impl DocIdSetIterator for BlockPostingsEnum {
     }
 }
 
+impl std::fmt::Display for BlockPostingsEnum {
+    /// `BlockPostingsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.codecs.lucene104.Lucene104PostingsReader$BlockPostingsEnum",
+            self,
+        ))
+    }
+}
+
 impl PostingsEnum for BlockPostingsEnum {
     fn freq(&self) -> Result<i32> {
         if self.freq_fp != -1 {
@@ -1577,7 +1594,7 @@ impl Impacts for BlockImpacts {
 mod tests {
     use super::*;
     use crate::codecs::lucene104::Lucene104PostingsWriter;
-    use crate::codecs::postings::{NumericDocValues, PushPostingsWriterBase};
+    use crate::codecs::postings::{PostingsNumericDocValues, PushPostingsWriterBase};
     use crate::codecs::state::SegmentWriteState;
     use crate::index::{FieldInfo, FieldInfos, IndexOptions};
     use crate::search::DocIdSetIterator;
@@ -1587,7 +1604,7 @@ mod tests {
 
     struct TestNorms;
 
-    impl NumericDocValues for TestNorms {
+    impl PostingsNumericDocValues for TestNorms {
         fn get(&self, _doc_id: i32) -> Result<i64> {
             Ok(1)
         }
@@ -1887,5 +1904,19 @@ mod tests {
         assert_eq!(it.freq().unwrap(), 1);
         assert_eq!(it.next_doc().unwrap(), NO_MORE_DOCS);
         reader.close().expect("close succeeds");
+    }
+}
+
+impl std::fmt::Display for Lucene104PostingsReader {
+    /// Port of `Lucene104PostingsReader.toString()`, which reports whether the
+    /// `.pos` and `.pay` files were opened as Java's `boolean` literals `true`
+    /// and `false`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Lucene104PostingsReader(positions={},payloads={})",
+            self.pos_in.is_some(),
+            self.pay_in.is_some()
+        )
     }
 }

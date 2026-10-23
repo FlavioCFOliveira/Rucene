@@ -18,7 +18,7 @@ use crate::codecs::lucene103::field_reader::{BlockTreeShared, FieldReader};
 use crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnumFrame;
 use crate::codecs::lucene103::trie_reader::{self, ChildSaveStrategy};
 use crate::codecs::postings::{
-    Fields, FieldsConsumer, FieldsProducer, MergeState, NormsProducer, PostingsReaderBase,
+    Fields, FieldsConsumer, FieldsProducer, MergeState, PostingsNormsProducer, PostingsReaderBase,
     PostingsWriterBase, Terms, TermsEnum,
 };
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
@@ -66,6 +66,8 @@ pub const DEFAULT_MAX_BLOCK_SIZE: i32 = 48;
 // CompressionAlgorithm
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.codecs.lucene103.blocktree.CompressionAlgorithm`.
+///
 /// Compression algorithm used for suffix bytes of a block.
 ///
 /// Lucene Core equivalent: `CompressionAlgorithm`.
@@ -140,7 +142,7 @@ impl fmt::Display for CompressionAlgorithm {
 
 /// BlockTree statistics for a single field.
 ///
-/// Lucene Core equivalent: `Stats`.
+/// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.Stats`.
 #[derive(Debug, Default, Clone)]
 pub struct Stats {
     /// Byte size of the index.
@@ -215,9 +217,9 @@ impl Stats {
         self.block_count_by_prefix_len[frame.prefix_length] += 1;
         self.start_block_count += 1;
         self.total_block_suffix_bytes += frame.total_suffix_bytes;
-        self.total_uncompressed_block_suffix_bytes += frame.suffixes_reader.length() as i64;
-        self.total_uncompressed_block_suffix_bytes += frame.suffix_lengths_reader.length() as i64;
-        self.total_block_stats_bytes += frame.stats_reader.length() as i64;
+        self.total_uncompressed_block_suffix_bytes += frame.suffixes_limit as i64;
+        self.total_uncompressed_block_suffix_bytes += frame.suffix_lengths_limit as i64;
+        self.total_block_stats_bytes += frame.stats_limit as i64;
         self.compression_algorithms[frame.compression_alg.code() as usize] += 1;
     }
 
@@ -243,7 +245,7 @@ impl Stats {
         }
         self.end_block_count += 1;
         let other_bytes =
-            frame.fp_end - frame.fp - frame.total_suffix_bytes - frame.stats_reader.length() as i64;
+            frame.fp_end - frame.fp - frame.total_suffix_bytes - frame.stats_limit as i64;
         debug_assert!(
             other_bytes > 0,
             "otherBytes={other_bytes} frame.fp={} frame.fpEnd={}",
@@ -1310,7 +1312,7 @@ impl<'a> TermsWriter<'a> {
         term: &BytesRef,
         terms_enum: &mut dyn TermsEnum,
         postings_writer: &mut dyn PostingsWriterBase,
-        norms: &dyn NormsProducer,
+        norms: &dyn PostingsNormsProducer,
     ) -> Result<()> {
         if let Some(state) =
             postings_writer.write_term(term, terms_enum, &mut self.docs_seen, norms)?
@@ -1602,7 +1604,7 @@ impl<'a> TermsWriter<'a> {
         // Suffix lengths
         let num_suffix_bytes = self.suffix_lengths_writer.size();
         self.spare_bytes.resize(num_suffix_bytes, 0);
-        let mut suffix_lengths_out = crate::store::ByteArrayDataOutput::new();
+        let mut suffix_lengths_out = crate::store::VecDataOutput::new();
         self.suffix_lengths_writer
             .copy_to(&mut suffix_lengths_out)?;
         self.suffix_lengths_writer.reset();
@@ -1854,7 +1856,7 @@ impl<'a> fmt::Debug for Lucene103BlockTreeTermsWriter<'a> {
 }
 
 impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
-    fn write(&mut self, fields: &dyn Fields, norms: &dyn NormsProducer) -> Result<()> {
+    fn write(&mut self, fields: &dyn Fields, norms: &dyn PostingsNormsProducer) -> Result<()> {
         // Open outputs early so per-field TermsWriter can write blocks directly.
         let terms_name = segment_file_name(
             &self.segment_info.name,
@@ -1968,7 +1970,11 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
         Ok(())
     }
 
-    fn merge(&mut self, _merge_state: &MergeState, _norms: &dyn NormsProducer) -> Result<()> {
+    fn merge(
+        &mut self,
+        _merge_state: &MergeState,
+        _norms: &dyn PostingsNormsProducer,
+    ) -> Result<()> {
         // Merges will be implemented once the write path is complete.
         Ok(())
     }
@@ -2067,7 +2073,7 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
 ///
 /// Lucene Core equivalent: `org.apache.lucene.codecs.lucene103.blocktree.Lucene103BlockTreeTermsReader`.
 pub struct Lucene103BlockTreeTermsReader {
-    postings_reader: Box<dyn PostingsReaderBase>,
+    postings_reader: Arc<dyn PostingsReaderBase>,
     shared: Arc<BlockTreeShared>,
     /// One reader per field that has terms, keyed by field name.
     fields: BTreeMap<String, FieldReader>,
@@ -2125,13 +2131,6 @@ impl Lucene103BlockTreeTermsReader {
             &segment_suffix,
         )?;
 
-        let shared = Arc::new(BlockTreeShared {
-            terms_in: Arc::from(terms_in),
-            index_in: Arc::from(index_in),
-            segment: segment.clone(),
-            version,
-        });
-
         let meta_name = segment_file_name(&segment, &segment_suffix, TERMS_META_EXTENSION);
         let mut meta_in = state.directory.open_checksum_input(&meta_name)?;
         codec_util::check_index_header(
@@ -2143,6 +2142,18 @@ impl Lucene103BlockTreeTermsReader {
             &segment_suffix,
         )?;
         postings_reader.init(meta_in.as_mut(), state)?;
+        // `init` is the only method that mutates the reader, and it runs once,
+        // here. From this point it is shared, as Java shares its single
+        // `postingsReader` across every field's terms enum.
+        let postings_reader: Arc<dyn PostingsReaderBase> = Arc::from(postings_reader);
+
+        let shared = Arc::new(BlockTreeShared {
+            terms_in: Arc::from(terms_in),
+            index_in: Arc::from(index_in),
+            segment: segment.clone(),
+            version,
+            postings_reader: Arc::clone(&postings_reader),
+        });
 
         let num_fields = meta_in.read_v_int()?;
         if num_fields < 0 {
@@ -2184,10 +2195,19 @@ impl Lucene103BlockTreeTermsReader {
             };
             let doc_count = meta_in.read_v_int()?;
             let min_term = read_bytes_ref(meta_in.as_mut(), &meta_name)?;
+            // The writer always emits both terms
+            // (`Lucene103BlockTreeTermsWriter.java:1091-1092`), so both must
+            // always be read. Java's `numTerms == 1` branch only *aliases*
+            // `maxTerm` to `minTerm` afterwards, to save one object on the heap;
+            // it does not skip the read. Skipping it left the max term's length
+            // and bytes in the stream, which threw off every field decoded after
+            // it and made the `.tmd` footer land in the wrong place.
+            let max_term_read = read_bytes_ref(meta_in.as_mut(), &meta_name)?;
             let max_term = if num_terms == 1 {
+                debug_assert_eq!(max_term_read, min_term);
                 min_term.clone()
             } else {
-                read_bytes_ref(meta_in.as_mut(), &meta_name)?
+                max_term_read
             };
 
             if doc_count < 0 || doc_count > max_doc {
@@ -2283,8 +2303,11 @@ impl Lucene103BlockTreeTermsReader {
     }
 
     /// Returns the postings reader that decodes each term's metadata.
-    pub fn postings_reader(&mut self) -> &mut dyn PostingsReaderBase {
-        self.postings_reader.as_mut()
+    ///
+    /// Shared, not exclusive: Java holds one `postingsReader` and hands it to
+    /// every `SegmentTermsEnum` it creates.
+    pub fn postings_reader(&self) -> &Arc<dyn PostingsReaderBase> {
+        &self.postings_reader
     }
 }
 
@@ -2360,7 +2383,24 @@ impl FieldsProducer for Lucene103BlockTreeTermsReader {
     }
 
     fn close(&mut self) -> Result<()> {
-        self.postings_reader.close()
+        // **Divergence from Lucene 10.5.0.** Java's `close` is
+        // `IOUtils.close(postingsReader)` (`Lucene103BlockTreeTermsReader.java`),
+        // closing the one postings reader outright. Here that reader is shared
+        // behind an `Arc` — the same sharing Java has, only made explicit — and
+        // `PostingsReaderBase::close` needs `&mut`, which no holder of a shared
+        // reference can give. Lucene's approach cannot be used unchanged, so
+        // this releases the references this object holds and closes the reader
+        // only when it is the last one; otherwise the `.doc`, `.pos` and `.pay`
+        // inputs are released by `Drop` when the last enum goes away. The
+        // observable effect — the files are closed once nothing is reading them
+        // — is the same, and unlike Java it cannot pull a file out from under a
+        // live `TermsEnum`.
+        self.fields.clear();
+        self.field_list.clear();
+        if let Some(reader) = Arc::get_mut(&mut self.postings_reader) {
+            reader.close()?;
+        }
+        Ok(())
     }
 }
 
@@ -2400,7 +2440,7 @@ mod tests {
             _term: &BytesRef,
             _terms_enum: &mut dyn TermsEnum,
             _docs_seen: &mut FixedBitSet,
-            _norms: &dyn NormsProducer,
+            _norms: &dyn PostingsNormsProducer,
         ) -> Result<Option<BlockTermState>> {
             Ok(None)
         }
@@ -2427,11 +2467,11 @@ mod tests {
     /// No-op norms producer.
     struct StubNormsProducer;
 
-    impl NormsProducer for StubNormsProducer {
+    impl PostingsNormsProducer for StubNormsProducer {
         fn get_norms(
             &self,
             _field_info: &FieldInfo,
-        ) -> Result<Box<dyn crate::codecs::postings::NumericDocValues>> {
+        ) -> Result<Box<dyn crate::codecs::postings::PostingsNumericDocValues>> {
             Err(LuceneError::UnsupportedOperation(
                 "stub norms producer".to_string(),
             ))
@@ -2611,6 +2651,15 @@ mod tests {
         atts: crate::util::attribute::AttributeSource,
     }
 
+    impl std::fmt::Display for TestTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("TestTermsEnum")
+        }
+    }
+
     impl TermsEnum for TestTermsEnum {
         fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
             &mut self.atts
@@ -2654,11 +2703,11 @@ mod tests {
             Ok(self.pos as i64)
         }
 
-        fn doc_freq(&self) -> Result<i32> {
+        fn doc_freq(&mut self) -> Result<i32> {
             Ok(1)
         }
 
-        fn total_term_freq(&self) -> Result<i64> {
+        fn total_term_freq(&mut self) -> Result<i64> {
             Ok(1)
         }
 
@@ -2700,7 +2749,7 @@ mod tests {
             _term: &BytesRef,
             _terms_enum: &mut dyn TermsEnum,
             docs_seen: &mut FixedBitSet,
-            _norms: &dyn NormsProducer,
+            _norms: &dyn PostingsNormsProducer,
         ) -> Result<Option<BlockTermState>> {
             docs_seen.set(0);
             let mut state = BlockTermState::default();
@@ -2770,5 +2819,17 @@ mod tests {
                 > (index_header_length(TERMS_CODEC_NAME, "") as i64 + footer_length() as i64),
             ".tim file should contain more than just header and footer"
         );
+    }
+}
+
+impl std::fmt::Display for Lucene103BlockTreeTermsReader {
+    /// Port of `Lucene103BlockTreeTermsReader.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Lucene103BlockTreeTermsReader(fields={},delegate={})",
+            self.fields.len(),
+            self.postings_reader
+        )
     }
 }

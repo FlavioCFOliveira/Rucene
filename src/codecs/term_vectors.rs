@@ -7,7 +7,7 @@ use std::fmt;
 
 use crate::error::{LuceneError, Result};
 use crate::store::{DataInput, Directory, IOContext};
-use crate::util::BytesRef;
+use crate::util::{Accountable, BytesRef};
 
 use std::sync::Arc;
 
@@ -92,7 +92,7 @@ pub trait TermVectorsReader: Send + Sync + fmt::Debug {
 /// Codec API for writing term vectors.
 ///
 /// Lucene Core equivalent: `org.apache.lucene.codecs.TermVectorsWriter`.
-pub trait TermVectorsWriter: Send + Sync + fmt::Debug {
+pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
     /// Called before writing the term vectors of a document.
     fn start_document(&mut self, num_vector_fields: i32) -> Result<()>;
 
@@ -395,6 +395,16 @@ impl TermVectorsReader for EmptyTermVectorsReader {
 #[derive(Debug, Copy, Clone, Default)]
 pub struct EmptyTermVectorsWriter;
 
+/// Holds nothing, so it accounts for nothing.
+///
+/// Java's `TermVectorsWriter` is `Accountable`, so every writer answers
+/// `ramBytesUsed()`.
+impl Accountable for EmptyTermVectorsWriter {
+    fn ram_bytes_used(&self) -> i64 {
+        0
+    }
+}
+
 impl TermVectorsWriter for EmptyTermVectorsWriter {
     fn start_document(&mut self, _num_vector_fields: i32) -> Result<()> {
         Ok(())
@@ -445,6 +455,12 @@ mod tests {
     #[derive(Debug, Default)]
     struct RecordingWriter {
         positions: Vec<(i32, i32, i32, Option<Vec<u8>>)>,
+    }
+
+    impl Accountable for RecordingWriter {
+        fn ram_bytes_used(&self) -> i64 {
+            0
+        }
     }
 
     impl TermVectorsWriter for RecordingWriter {
@@ -539,8 +555,8 @@ mod tests {
         let positions = position_stream(&[(0, Some(b"one")), (3, None), (9, Some(b"two"))]);
         let offsets = offset_stream(&[(0, 5), (10, 14), (20, 30)]);
         let mut writer = RecordingWriter::default();
-        let mut positions = crate::store::ByteArrayDataInput::new(positions);
-        let mut offsets = crate::store::ByteArrayDataInput::new(offsets);
+        let mut positions = crate::store::ByteArrayDataInput::new(&positions);
+        let mut offsets = crate::store::ByteArrayDataInput::new(&offsets);
         writer
             .add_prox(3, Some(&mut positions), Some(&mut offsets))
             .expect("add prox");
@@ -557,8 +573,8 @@ mod tests {
     #[test]
     fn add_prox_reports_minus_one_for_the_stream_it_was_not_given() {
         let mut writer = RecordingWriter::default();
-        let mut positions =
-            crate::store::ByteArrayDataInput::new(position_stream(&[(0, None), (4, None)]));
+        let positions_src = position_stream(&[(0, None), (4, None)]);
+        let mut positions = crate::store::ByteArrayDataInput::new(&positions_src);
         writer
             .add_prox(2, Some(&mut positions), None)
             .expect("positions only");
@@ -569,7 +585,8 @@ mod tests {
         );
 
         let mut writer = RecordingWriter::default();
-        let mut offsets = crate::store::ByteArrayDataInput::new(offset_stream(&[(0, 5), (7, 11)]));
+        let offsets_src = offset_stream(&[(0, 5), (7, 11)]);
+        let mut offsets = crate::store::ByteArrayDataInput::new(&offsets_src);
         writer
             .add_prox(2, None, Some(&mut offsets))
             .expect("offsets only");
@@ -587,7 +604,8 @@ mod tests {
         // unsigned.
         let far = i32::MAX - 128;
         let mut writer = RecordingWriter::default();
-        let mut positions = crate::store::ByteArrayDataInput::new(position_stream(&[(far, None)]));
+        let positions_src = position_stream(&[(far, None)]);
+        let mut positions = crate::store::ByteArrayDataInput::new(&positions_src);
         writer
             .add_prox(1, Some(&mut positions), None)
             .expect("add prox");
@@ -601,7 +619,7 @@ mod tests {
         write_v_int(&mut bytes, 1); // (0 << 1) | 1: a payload follows
         write_v_int(&mut bytes, -1); // its length
         let mut writer = RecordingWriter::default();
-        let mut positions = crate::store::ByteArrayDataInput::new(bytes);
+        let mut positions = crate::store::ByteArrayDataInput::new(&bytes);
         let error = writer
             .add_prox(1, Some(&mut positions), None)
             .expect_err("a negative length is not a length");

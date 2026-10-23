@@ -73,6 +73,36 @@ impl std::fmt::Debug for PendingDeletes {
 }
 
 impl PendingDeletes {
+    /// Port of `PendingDeletes.toString()` (`PendingDeletes.java:161-168`).
+    ///
+    /// Measured against `lucene-core-10.5.0.jar`, where a fresh tracker over a
+    /// three-document segment renders as
+    /// `PendingDeletes(seg=_0(10.5.0):C3 numPendingDeletes=0 writeable=false` —
+    /// Lucene never closes the parenthesis it opens, exactly as it never closes
+    /// `SparseFixedBitSet`'s or `TieredMergePolicy`'s.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java reads `info` off the
+    /// `protected final SegmentCommitInfo info` field this class holds; the
+    /// port takes it as a parameter, because [`PendingDeletes`] owns no
+    /// `SegmentCommitInfo` — every other method that needs one
+    /// ([`delete`](Self::delete), [`write_live_docs`](Self::write_live_docs),
+    /// [`get_del_count`](Self::get_del_count) …) receives it the same way.
+    /// That existing divergence is what keeps the port from holding a second,
+    /// silently diverging copy of a segment commit that `write_live_docs`
+    /// mutates in place: in Java the two are one object, and Rust cannot alias
+    /// a `&mut` that way without moving the whole commit behind a lock.
+    /// Rendering is therefore parameterised rather than becoming the one place
+    /// that needs its own copy.
+    pub fn to_string_with_info(&self, info: &SegmentCommitInfo) -> String {
+        format!(
+            "PendingDeletes(seg={info} numPendingDeletes={} writeable={}",
+            self.pending_delete_count,
+            self.writeable_live_docs.is_some()
+        )
+    }
+}
+
+impl PendingDeletes {
     /// Creates a `PendingDeletes` from a previously opened `SegmentReader`.
     ///
     /// Equivalent to `PendingDeletes(SegmentReader, SegmentCommitInfo)`.
@@ -338,6 +368,56 @@ impl PendingDeletes {
             != self.get_del_count(&reader.get_segment_info().clone())
     }
 
+    /// Checks that this tracker, the segment commit and `reader` agree on how
+    /// many documents are live.
+    ///
+    /// Equivalent to `PendingDeletes.verifyDocCounts(CodecReader)`
+    /// (`PendingDeletes.java:256-293`), which Lucene comments "call only from
+    /// assert!" and which returns `true` so that it can be written
+    /// `assert verifyDocCounts(reader)`. This returns `true` for the same
+    /// reason: the call site wraps it in [`debug_assert!`], so the whole check —
+    /// including the scan of the live-docs bits — disappears from a release
+    /// build, exactly as Java's does when assertions are off.
+    ///
+    /// # Panics
+    ///
+    /// In a debug build, when the live-docs bits, the commit's deletion counts
+    /// and the reader disagree.
+    pub fn verify_doc_counts(&mut self, info: &SegmentCommitInfo, reader: &SegmentReader) -> bool {
+        let max_doc = info.info.max_doc().unwrap_or(0);
+        let count = match self.get_live_docs() {
+            Some(live_docs) => (0..max_doc)
+                .filter(|doc| live_docs.get(*doc as usize))
+                .count() as i32,
+            None => max_doc,
+        };
+        debug_assert_eq!(
+            self.num_docs(info),
+            count,
+            "info.maxDoc={max_doc} info.getDelCount()={} info.getSoftDelCount()={} \
+             pendingDeletes={} count={count} numDocs: {}",
+            info.get_del_count(),
+            info.get_soft_del_count(),
+            self.to_string_with_info(info),
+            self.num_docs(info)
+        );
+        debug_assert_eq!(
+            LeafReader::num_docs(reader),
+            self.num_docs(info),
+            "reader.numDocs() = {} numDocs() {}",
+            LeafReader::num_docs(reader),
+            self.num_docs(info)
+        );
+        debug_assert!(
+            IndexReader::num_deleted_docs(reader) <= max_doc,
+            "delCount={} info.maxDoc={max_doc} rld.pendingDeleteCount={} info.getDelCount()={}",
+            IndexReader::num_deleted_docs(reader),
+            self.num_pending_deletes(),
+            info.get_del_count()
+        );
+        true
+    }
+
     /// Returns how many deletions a merge of this segment would reclaim.
     ///
     /// Equivalent to `PendingDeletes.numDeletesToMerge(MergePolicy,
@@ -403,6 +483,25 @@ impl std::fmt::Debug for PendingSoftDeletes {
             .field("pending_delete_count", &self.pending_delete_count)
             .field("hard_deletes", &self.hard_deletes)
             .finish_non_exhaustive()
+    }
+}
+
+impl PendingSoftDeletes {
+    /// Port of `PendingSoftDeletes.toString()`
+    /// (`PendingSoftDeletes.java:176-185`), which renders its own state and
+    /// then the whole inherited `hardDeletes` tracker — parenthesis left open
+    /// on both, as Java leaves them.
+    ///
+    /// Measured against `lucene-core-10.5.0.jar`. See
+    /// [`PendingDeletes::to_string_with_info`] for why `info` is a parameter.
+    pub fn to_string_with_info(&self, info: &SegmentCommitInfo) -> String {
+        format!(
+            "PendingSoftDeletes(seg={info} numPendingDeletes={} field={} dvGeneration={} hardDeletes={}",
+            self.pending_delete_count,
+            self.field,
+            self.dv_generation,
+            self.hard_deletes.to_string_with_info(info)
+        )
     }
 }
 
@@ -554,45 +653,103 @@ impl PendingSoftDeletes {
         reader: &SegmentReader,
         info: &SegmentCommitInfo,
     ) -> Result<i32> {
-        let field_infos = reader.get_field_infos();
-        let field_info = match field_infos.field_info(&self.field) {
-            Some(fi) if fi.get_doc_values_type() != DocValuesType::NONE => fi,
-            _ => return Ok(0),
+        let docs_with_values = match Self::doc_values_doc_ids(reader, &self.field)? {
+            Some(docs) => docs,
+            None => return Ok(0),
         };
-
-        // Collect all docs that have a value for the soft-delete field.
-        // This mirrors FieldExistsQuery.getDocValuesDocIdSetIterator.
-        let docs_with_values: Vec<i32> = match field_info.get_doc_values_type() {
-            DocValuesType::NUMERIC => {
-                let mut dv = match LeafReader::get_numeric_doc_values(reader, &self.field)? {
-                    Some(d) => d,
-                    None => return Ok(0),
-                };
-                let mut docs = Vec::new();
-                while dv.next_doc()? != NO_MORE_DOCS {
-                    docs.push(dv.doc_id());
-                }
-                docs
-            }
-            DocValuesType::BINARY => {
-                let mut dv = match LeafReader::get_binary_doc_values(reader, &self.field)? {
-                    Some(d) => d,
-                    None => return Ok(0),
-                };
-                let mut docs = Vec::new();
-                while dv.next_doc()? != NO_MORE_DOCS {
-                    docs.push(dv.doc_id());
-                }
-                docs
-            }
-            _ => return Ok(0),
-        };
+        // `PendingSoftDeletes.onNewReader` only touches the live-docs bit set
+        // when the iterator produced at least one document; an empty iterator
+        // means "nothing is soft-deleted in this segment" and leaves the bits
+        // un-materialised.
+        if docs_with_values.is_empty() {
+            return Ok(0);
+        }
 
         let mutable = self.get_mutable_bits(info);
+        let mut docs = docs_with_values.into_iter();
+        // Java hands `applySoftDeletes` a plain doc-values iterator here, which
+        // is not a `DocValuesFieldUpdates.Iterator`, so its `hasValue` is null
+        // and every document takes the clear branch.
+        Self::apply_soft_deletes(mutable, || Ok(docs.next().map(|doc| (doc, true))))
+    }
+
+    /// Returns the documents that carry a value for `field`, or `None` when the
+    /// segment has no doc values for it.
+    ///
+    /// Equivalent to `org.apache.lucene.search.FieldExistsQuery#getDocValuesDocIdSetIterator`,
+    /// which `PendingSoftDeletes.onNewReader` uses to find the soft-deleted
+    /// documents. All five doc-values kinds are covered, as they are in Java: a
+    /// soft-deletes field is normally numeric, but nothing in Lucene requires
+    /// that, and returning nothing for the other three kinds made this port
+    /// disagree with the segment's own soft-delete count.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java returns the iterator itself and
+    /// consumes it lazily; this collects the document ids first, because the
+    /// five doc-values traits here cannot be handed back as one boxed
+    /// `DocIdSetIterator` without a trait upcast.
+    fn doc_values_doc_ids(reader: &SegmentReader, field: &str) -> Result<Option<Vec<i32>>> {
+        let field_infos = reader.get_field_infos();
+        let dv_type = match field_infos.field_info(field) {
+            Some(fi) => fi.get_doc_values_type(),
+            None => return Ok(None),
+        };
+
+        macro_rules! drain {
+            ($values:expr) => {{
+                match $values? {
+                    Some(mut values) => {
+                        let mut docs = Vec::new();
+                        while values.next_doc()? != NO_MORE_DOCS {
+                            docs.push(values.doc_id());
+                        }
+                        Some(docs)
+                    }
+                    None => None,
+                }
+            }};
+        }
+
+        let docs = match dv_type {
+            DocValuesType::NONE => None,
+            DocValuesType::NUMERIC => drain!(LeafReader::get_numeric_doc_values(reader, field)),
+            DocValuesType::BINARY => drain!(LeafReader::get_binary_doc_values(reader, field)),
+            DocValuesType::SORTED => drain!(LeafReader::get_sorted_doc_values(reader, field)),
+            DocValuesType::SORTED_NUMERIC => {
+                drain!(LeafReader::get_sorted_numeric_doc_values(reader, field))
+            }
+            DocValuesType::SORTED_SET => {
+                drain!(LeafReader::get_sorted_set_doc_values(reader, field))
+            }
+        };
+        Ok(docs)
+    }
+
+    /// Clears every bit that is set and is also produced by `next`, and sets
+    /// every bit whose entry reports no value.
+    ///
+    /// Equivalent to the static `PendingSoftDeletes.applySoftDeletes(
+    /// DocIdSetIterator, FixedBitSet)`, which returns how many bits it changed:
+    /// a document that was live and is now soft-deleted counts `+1`, and a
+    /// document whose soft-delete value was removed counts `-1`, which is how a
+    /// soft delete is undone.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java decides whether a document
+    /// carries a value by testing at run time whether the iterator is a
+    /// `DocValuesFieldUpdates.Iterator`; here the caller states it, as the
+    /// second element of each entry. A caller passing a plain doc-values
+    /// iterator passes `true`, which is the branch Java's null check selects.
+    fn apply_soft_deletes<F>(bits: &mut FixedBitSet, mut next: F) -> Result<i32>
+    where
+        F: FnMut() -> Result<Option<(i32, bool)>>,
+    {
         let mut new_deletes = 0;
-        for doc_id in docs_with_values {
-            if mutable.get_and_clear(doc_id as usize) {
-                new_deletes += 1;
+        while let Some((doc_id, has_value)) = next()? {
+            if has_value {
+                if bits.get_and_clear(doc_id as usize) {
+                    new_deletes += 1;
+                }
+            } else if !bits.get_and_set(doc_id as usize) {
+                new_deletes -= 1;
             }
         }
         Ok(new_deletes)
@@ -630,20 +787,13 @@ impl PendingSoftDeletes {
     ) -> Result<()> {
         if self.field == field_info.name {
             let mutable = self.get_mutable_bits(info);
-            let mut new_deletes = 0;
-            loop {
+            let new_deletes = Self::apply_soft_deletes(mutable, || {
                 let doc_id = iterator.next_doc()?;
                 if doc_id == NO_MORE_DOCS {
-                    break;
+                    return Ok(None);
                 }
-                if iterator.has_value() {
-                    if mutable.get_and_clear(doc_id as usize) {
-                        new_deletes += 1;
-                    }
-                } else if !mutable.get_and_set(doc_id as usize) {
-                    new_deletes -= 1;
-                }
-            }
+                Ok(Some((doc_id, iterator.has_value())))
+            })?;
             self.pending_delete_count += new_deletes;
             debug_assert!(self.assert_pending_deletes(info));
             info.set_soft_del_count(info.get_soft_del_count() + self.pending_delete_count)?;
@@ -673,6 +823,55 @@ impl PendingSoftDeletes {
     /// Equivalent to `PendingSoftDeletes.numDocs()`.
     pub fn num_docs(&self, info: &SegmentCommitInfo) -> i32 {
         info.info.max_doc().unwrap_or(0) - self.get_del_count(info)
+    }
+
+    /// Checks that this tracker, the segment commit and `reader` agree on how
+    /// many documents are live.
+    ///
+    /// `PendingSoftDeletes` inherits `PendingDeletes.verifyDocCounts(CodecReader)`
+    /// rather than overriding it, and the inherited body calls `getLiveDocs()`,
+    /// `numDocs()`, `numPendingDeletes()` and `toString()` **virtually** — so it
+    /// sees this subclass's soft-delete-aware answers, not the hard ones. Rust
+    /// has no inheritance, so the body is repeated here over this type's own
+    /// accessors rather than delegated to [`PendingDeletes::verify_doc_counts`],
+    /// which would read the hard tracker's counts.
+    ///
+    /// # Panics
+    ///
+    /// In a debug build, when the three disagree.
+    pub fn verify_doc_counts(&mut self, info: &SegmentCommitInfo, reader: &SegmentReader) -> bool {
+        let max_doc = info.info.max_doc().unwrap_or(0);
+        let count = match self.get_live_docs() {
+            Some(live_docs) => (0..max_doc)
+                .filter(|doc| live_docs.get(*doc as usize))
+                .count() as i32,
+            None => max_doc,
+        };
+        debug_assert_eq!(
+            self.num_docs(info),
+            count,
+            "info.maxDoc={max_doc} info.getDelCount()={} info.getSoftDelCount()={} \
+             pendingDeletes={} count={count} numDocs: {}",
+            info.get_del_count(),
+            info.get_soft_del_count(),
+            self.to_string_with_info(info),
+            self.num_docs(info)
+        );
+        debug_assert_eq!(
+            LeafReader::num_docs(reader),
+            self.num_docs(info),
+            "reader.numDocs() = {} numDocs() {}",
+            LeafReader::num_docs(reader),
+            self.num_docs(info)
+        );
+        debug_assert!(
+            IndexReader::num_deleted_docs(reader) <= max_doc,
+            "delCount={} info.maxDoc={max_doc} rld.pendingDeleteCount={} info.getDelCount()={}",
+            IndexReader::num_deleted_docs(reader),
+            self.num_pending_deletes(),
+            info.get_del_count()
+        );
+        true
     }
 
     /// Returns `true` if the reader's live-doc count is stale.
@@ -937,6 +1136,30 @@ pub(crate) enum PendingDeletesKind {
     Soft(PendingSoftDeletes),
 }
 
+impl PendingDeletesKind {
+    /// Renders whichever tracker this is, the way Java's virtual dispatch on
+    /// `PendingDeletes.toString()` would.
+    pub(crate) fn to_string_with_info(&self, info: &SegmentCommitInfo) -> String {
+        match self {
+            Self::Hard(deletes) => deletes.to_string_with_info(info),
+            Self::Soft(deletes) => deletes.to_string_with_info(info),
+        }
+    }
+
+    /// Dispatches [`PendingDeletes::verify_doc_counts`], which
+    /// `PendingSoftDeletes` inherits rather than overriding.
+    pub(crate) fn verify_doc_counts(
+        &mut self,
+        info: &SegmentCommitInfo,
+        reader: &SegmentReader,
+    ) -> bool {
+        match self {
+            Self::Hard(deletes) => deletes.verify_doc_counts(info, reader),
+            Self::Soft(deletes) => deletes.verify_doc_counts(info, reader),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ReadersAndUpdates
 // ---------------------------------------------------------------------------
@@ -969,6 +1192,25 @@ impl std::fmt::Debug for ReadersAndUpdates {
             .field("seg", &state.info.info.name)
             .field("ref_count", &self.ref_count.load(Ordering::Relaxed))
             .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for ReadersAndUpdates {
+    /// Port of `ReadersAndUpdates.toString()`
+    /// (`ReadersAndUpdates.java:885-891`).
+    ///
+    /// The class renames itself: the string opens with `ReadersAndLiveDocs`,
+    /// not `ReadersAndUpdates` — the name the class carried before doc-values
+    /// updates were added. It also leaves its parenthesis open, and so does the
+    /// `PendingDeletes` it embeds. Measured against `lucene-core-10.5.0.jar`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = self.state.lock().expect("state mutex poisoned");
+        write!(
+            f,
+            "ReadersAndLiveDocs(seg={} pendingDeletes={}",
+            state.info,
+            state.pending_deletes.to_string_with_info(&state.info)
+        )
     }
 }
 
@@ -1302,6 +1544,26 @@ impl ReadersAndUpdates {
     /// # Errors
     ///
     /// Propagates whatever initialising the soft-delete counts raises.
+    /// Returns whether `policy` wants a fully deleted segment kept anyway.
+    ///
+    /// Equivalent to `ReadersAndUpdates.keepFullyDeletedSegment(MergePolicy)`
+    /// (`ReadersAndUpdates.java:897-899`), which is
+    /// `mergePolicy.keepFullyDeletedSegment(this::getLatestReader)`. The reader
+    /// supplier has no counterpart here for the reason already declared on
+    /// [`MergePolicy::keep_fully_deleted_segment`](crate::index::merge_policy::MergePolicy::keep_fully_deleted_segment):
+    /// no policy in this crate inspects the reader to decide retention, so the
+    /// seam takes none.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the policy raises.
+    pub fn keep_fully_deleted_segment(
+        &self,
+        policy: &dyn crate::index::merge_policy::MergePolicy,
+    ) -> Result<bool> {
+        policy.keep_fully_deleted_segment()
+    }
+
     pub fn is_fully_deleted(&self) -> Result<bool> {
         let mut state = self.state.lock().expect("state mutex poisoned");
         if matches!(state.pending_deletes, PendingDeletesKind::Soft(_)) {
@@ -1640,7 +1902,7 @@ impl ReadersAndUpdates {
         // Merge with existing DV updates files.
         for (k, v) in state.info.get_doc_values_updates_files() {
             if !new_dv_files.contains_key(k) {
-                new_dv_files.insert(*k, v.clone());
+                new_dv_files.insert(*k, v.iter().cloned().collect());
             }
         }
         state.info.set_doc_values_updates_files(new_dv_files);
@@ -1992,6 +2254,11 @@ impl ReadersAndUpdates {
         if needs_refresh || del_gen_differs {
             // Beware of zombies.
             reader = Self::create_new_reader_with_latest_live_docs(&mut state, &reader)?;
+        }
+
+        {
+            let info = state.info.clone();
+            debug_assert!(state.pending_deletes.verify_doc_counts(&info, &reader));
         }
 
         let hard_live_docs = match &mut state.pending_deletes {
@@ -2431,7 +2698,18 @@ impl ReaderPool {
         self.ensure_open()?;
         let mut map = self.reader_map.lock().expect("reader_map mutex poisoned");
         if let Some(rld) = map.get(&info.info.name) {
-            return Ok(Some(Arc::clone(rld)));
+            let rld = Arc::clone(rld);
+            if create {
+                // Return ref to caller, which `release` matches with its
+                // `dec_ref`. Without it every pooled instance stays at the
+                // single reference the pool itself holds, and every caller that
+                // tests `refCount() == 1` — which is how
+                // `FrozenBufferedUpdates` recognises a segment that was merged
+                // away underneath it — would wrongly conclude the segment is
+                // gone and skip applying its deletes.
+                rld.inc_ref();
+            }
+            return Ok(Some(rld));
         }
         if !create {
             return Ok(None);
@@ -2441,8 +2719,11 @@ impl ReaderPool {
             info.clone(),
             self.new_pending_deletes(info),
         ));
+        // Steal initial reference: the pool holds the one the constructor set.
         map.insert(info.info.name.clone(), Arc::clone(&rld));
-        debug_assert!(self.no_dups());
+        // Return ref to caller.
+        rld.inc_ref();
+        debug_assert!(Self::no_dups(&map));
         Ok(Some(rld))
     }
 
@@ -2493,14 +2774,30 @@ impl ReaderPool {
     /// `SegmentCommitInfo`, and two distinct infos can name one segment; this
     /// pool is keyed by the name itself, so the property holds by construction
     /// and the check confirms it rather than being able to fail.
-    pub(crate) fn no_dups(&self) -> bool {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+    ///
+    /// It takes the map rather than the pool because Java asserts it from inside
+    /// a `synchronized` method whose monitor is reentrant, while a Rust `Mutex`
+    /// is not: re-locking here would deadlock [`get`](Self::get) against itself.
+    fn no_dups(map: &HashMap<String, Arc<ReadersAndUpdates>>) -> bool {
         let mut seen: HashSet<&str> = HashSet::new();
         for name in map.keys() {
             assert!(!seen.contains(name.as_str()), "seen twice: {name}");
             seen.insert(name.as_str());
         }
         true
+    }
+
+    /// Returns the sum of the RAM used by every pooled reader and its buffered
+    /// updates.
+    ///
+    /// Equivalent to `org.apache.lucene.index.ReaderPool#ramBytesUsed`, which
+    /// `IndexWriter` consults when it decides whether pending doc-values updates
+    /// have to be written to disk before more can be buffered. Java's javadoc
+    /// says "in MB" while the body sums bytes; the body is the contract, and
+    /// this returns bytes too.
+    pub fn ram_bytes_used(&self) -> i64 {
+        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        map.values().map(|rld| rld.ram_bytes_used()).sum()
     }
 
     /// Returns whether any pooled segment carries in-RAM deletions.
@@ -2536,14 +2833,51 @@ impl ReaderPool {
     /// Commits all pending deletes and DV updates for segments in `infos`.
     ///
     /// Equivalent to `ReaderPool.commit(SegmentInfos)`.
-    pub fn commit(&self, infos: &[SegmentCommitInfo]) -> Result<()> {
+    pub fn commit(&self, infos: &[SegmentCommitInfo]) -> Result<bool> {
+        // Java walks the pooled readers, writes each one's live docs and field
+        // updates, and returns whether any of them changed
+        // (`ReaderPool.java:345-370`). Reporting that boolean — rather than
+        // merely "the call succeeded" — is what stops
+        // `IndexWriter.writeReaderPool` from checkpointing, and therefore from
+        // burning a commit generation, when nothing was written.
+        //
+        // **Divergence from Lucene 10.5.0.** Java also folds
+        // `rld.writeFieldUpdates(...)` into the same loop and into the same
+        // boolean. This port leaves the doc-values updates to
+        // [`write_all_doc_values_updates`](Self::write_all_doc_values_updates),
+        // which `IndexWriter.writeReaderPool` already calls immediately after
+        // this method, so they are still written on exactly the same call; only
+        // the `changed` flag they contribute is not observed here.
         let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let mut at_least_one_change = false;
         for info in infos {
             if let Some(rld) = map.get(&info.info.name) {
-                let _ = rld;
+                if rld.write_live_docs(&*self.directory)? {
+                    // Must checkpoint because a new `_X_N.liv` was just
+                    // created; the caller does it, and deliberately not through
+                    // `IndexWriter.checkpoint`, because that would also
+                    // increment the `SegmentInfos` version, which was already
+                    // done when the deletes were applied. All that happened
+                    // here is that the state moved to disk.
+                    at_least_one_change = true;
+                }
             }
         }
-        Ok(())
+        Ok(at_least_one_change)
+    }
+
+    /// Returns the pooled reader for `segment_name`, without creating one and
+    /// without taking a reference for the caller.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java has no such method because it
+    /// does not need one: `rld.info` *is* the `SegmentCommitInfo` instance the
+    /// writer's `SegmentInfos` holds, so writing a pooled reader's live docs
+    /// updates the writer's own copy through reference identity. This port
+    /// keeps a clone in the pool, so the writer has to read the updated
+    /// generation and deletion count back out; this is how it reaches them.
+    pub fn peek(&self, segment_name: &str) -> Option<Arc<ReadersAndUpdates>> {
+        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        map.get(segment_name).map(Arc::clone)
     }
 
     /// Drops all entries from the pool.
@@ -2686,6 +3020,118 @@ fn radix36(value: u64) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+mod pending_soft_deletes_tests {
+    use super::*;
+
+    /// `PendingSoftDeletes.applySoftDeletes` returns the *net* change: a live
+    /// document that gains a soft-delete value counts `+1`, and a document whose
+    /// value is removed counts `-1`, which is how a soft delete is undone. A
+    /// document that was already deleted counts nothing either way.
+    #[test]
+    fn apply_soft_deletes_counts_deletes_and_undeletes() {
+        let mut bits = FixedBitSet::new(8);
+        bits.set_range(0, 8);
+
+        // Three documents gain a value: three new deletes.
+        let mut entries = vec![(1, true), (3, true), (5, true)].into_iter();
+        let changed =
+            PendingSoftDeletes::apply_soft_deletes(&mut bits, || Ok(entries.next())).unwrap();
+        assert_eq!(changed, 3);
+        assert!(!bits.get(1) && !bits.get(3) && !bits.get(5));
+        assert!(bits.get(0) && bits.get(2));
+
+        // Re-applying the same values changes nothing: the bits are already clear.
+        let mut entries = vec![(1, true), (3, true)].into_iter();
+        let changed =
+            PendingSoftDeletes::apply_soft_deletes(&mut bits, || Ok(entries.next())).unwrap();
+        assert_eq!(changed, 0);
+
+        // Removing the value from two of them brings them back.
+        let mut entries = vec![(1, false), (5, false)].into_iter();
+        let changed =
+            PendingSoftDeletes::apply_soft_deletes(&mut bits, || Ok(entries.next())).unwrap();
+        assert_eq!(changed, -2);
+        assert!(bits.get(1) && bits.get(5));
+        assert!(!bits.get(3));
+
+        // A document that already had no value stays live and counts nothing.
+        let mut entries = vec![(0, false)].into_iter();
+        let changed =
+            PendingSoftDeletes::apply_soft_deletes(&mut bits, || Ok(entries.next())).unwrap();
+        assert_eq!(changed, 0);
+        assert!(bits.get(0));
+    }
+
+    /// The read side propagates errors instead of swallowing them, the way
+    /// Java's `IOException` does.
+    #[test]
+    fn apply_soft_deletes_propagates_a_read_failure() {
+        let mut bits = FixedBitSet::new(4);
+        bits.set_range(0, 4);
+        let error = PendingSoftDeletes::apply_soft_deletes(&mut bits, || {
+            Err(LuceneError::CorruptIndex("unreadable".to_string()))
+        })
+        .expect_err("the failure must surface");
+        assert!(matches!(error, LuceneError::CorruptIndex(_)), "{error:?}");
+    }
+}
+
+#[cfg(test)]
+mod reader_pool_accounting_tests {
+    use super::tests::make_sci;
+    use super::*;
+    use crate::index::doc_values_field_updates::DocValuesFieldUpdates;
+    use crate::index::{DocValuesType, FieldNumbers};
+    use crate::store::{Directory, RamDirectory};
+    use crate::util::{Accountable, NoOutputInfoStream};
+
+    fn empty_pool() -> ReaderPool {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        ReaderPool::new(
+            dir,
+            Arc::new(FieldNumbers::new(None, None).unwrap()),
+            Arc::new(NoOutputInfoStream),
+            None,
+        )
+    }
+
+    /// `ReaderPool.ramBytesUsed()` sums `rld.ramBytesUsed` over the pooled
+    /// readers, so an empty pool reports nothing and each pooled packet is added
+    /// exactly once.
+    #[test]
+    fn reader_pool_ram_bytes_used_sums_its_pooled_readers() {
+        let pool = empty_pool();
+        assert_eq!(pool.ram_bytes_used(), 0);
+
+        let a = make_sci("_a", 8);
+        let b = make_sci("_b", 8);
+        let rld_a = pool.get(&a, true, 10).unwrap().unwrap();
+        let rld_b = pool.get(&b, true, 10).unwrap().unwrap();
+        // Two readers with nothing buffered still cost nothing.
+        assert_eq!(pool.ram_bytes_used(), 0);
+
+        let mut updates = DocValuesFieldUpdates::new(8, -1, "f", DocValuesType::NUMERIC);
+        updates.add_long(3, 7);
+        updates.finish().unwrap();
+        let packet_bytes = updates.ram_bytes_used();
+        assert!(packet_bytes > 0);
+        rld_a.add_dv_update(updates).unwrap();
+
+        assert_eq!(rld_a.ram_bytes_used(), packet_bytes);
+        assert_eq!(rld_b.ram_bytes_used(), 0);
+        assert_eq!(pool.ram_bytes_used(), packet_bytes);
+
+        let mut more = DocValuesFieldUpdates::new(8, -1, "f", DocValuesType::NUMERIC);
+        more.add_long(1, 5);
+        more.add_long(2, 6);
+        more.finish().unwrap();
+        let more_bytes = more.ram_bytes_used();
+        rld_b.add_dv_update(more).unwrap();
+        assert_eq!(pool.ram_bytes_used(), packet_bytes + more_bytes);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2703,7 +3149,7 @@ mod tests {
 
     /// Builds a `SegmentCommitInfo` backed by a real `Lucene104Codec` so that
     /// `write_live_docs` uses the on-disk `Lucene90LiveDocsFormat`.
-    fn make_sci(name: &str, max_doc: i32) -> SegmentCommitInfo {
+    pub(super) fn make_sci(name: &str, max_doc: i32) -> SegmentCommitInfo {
         let dir: Arc<dyn Directory> = Arc::new(crate::store::RamDirectory::default());
         let codec: Arc<dyn crate::codecs::Codec> = Arc::new(Lucene104Codec::new());
         let info = crate::index::SegmentInfo::new(

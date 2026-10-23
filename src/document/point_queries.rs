@@ -885,8 +885,9 @@ impl XYPointIntersectVisitor<'_> {
 }
 
 impl IntersectVisitor for XYPointIntersectVisitor<'_> {
-    fn grow(&mut self, count: i32) {
+    fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
+        Ok(())
     }
 
     fn visit(&mut self, doc_id: i32) -> Result<()> {
@@ -921,7 +922,7 @@ impl IntersectVisitor for XYPointIntersectVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
         let cell_min_x = f64::from(XYEncodingUtils::decode_bytes(min_packed_value, 0));
         let cell_min_y = f64::from(XYEncodingUtils::decode_bytes(
             min_packed_value,
@@ -932,8 +933,9 @@ impl IntersectVisitor for XYPointIntersectVisitor<'_> {
             max_packed_value,
             COORDINATE_BYTES,
         ));
-        self.tree
-            .relate(cell_min_x, cell_max_x, cell_min_y, cell_max_y)
+        Ok(self
+            .tree
+            .relate(cell_min_x, cell_max_x, cell_min_y, cell_max_y))
     }
 }
 
@@ -1012,7 +1014,7 @@ impl XYPointInGeometryQuery {
         };
         XYPointField::check_compatible(field_info)?;
 
-        let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref());
+        let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref())?;
         {
             let mut visitor = Self::get_intersect_visitor(&mut result, self.tree.as_ref());
             values.intersect(&mut visitor)?;
@@ -1043,7 +1045,7 @@ impl XYPointInGeometryQuery {
         let Some(values) = reader.get_point_values(&self.field)? else {
             return Ok(0);
         };
-        let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref());
+        let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref())?;
         let mut visitor = Self::get_intersect_visitor(&mut result, self.tree.as_ref());
         values.estimate_doc_count(&mut visitor)
     }
@@ -1067,6 +1069,73 @@ impl PartialEq for XYPointInGeometryQuery {
     /// Equivalent to the private `XYPointInGeometryQuery.equalsTo`.
     fn eq(&self, other: &Self) -> bool {
         self.field == other.field && self.xy_geometries == other.xy_geometries
+    }
+}
+
+impl SpatialMatcher for XYPointInGeometryQuery {
+    fn spatial_field(&self) -> &str {
+        &self.field
+    }
+
+    fn spatial_matching_docs(
+        &self,
+        reader: &dyn LeafReader,
+    ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        self.matching_docs(reader)
+    }
+
+    fn spatial_cost(&self, reader: &dyn LeafReader) -> Result<i64> {
+        self.cost(reader)
+    }
+}
+
+impl Query for XYPointInGeometryQuery {
+    /// Equivalent to `XYPointInGeometryQuery.toString(String)`.
+    fn to_query_string(&self, field: &str) -> String {
+        XYPointInGeometryQuery::to_query_string(self, field)
+    }
+
+    /// Equivalent to `XYPointInGeometryQuery.visit(QueryVisitor)`.
+    fn visit(&self, visitor: &mut dyn QueryVisitor) {
+        if visitor.accept_field(&self.field) {
+            visitor.visit_leaf(self);
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    /// Equivalent to
+    /// `XYPointInGeometryQuery.createWeight(IndexSearcher, ScoreMode, float)`,
+    /// whose `ConstantScoreWeight` walks the BKD tree with the geometry
+    /// visitor.
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        let matcher = Arc::new(self.clone());
+        let query: Arc<dyn Query> = Arc::new(self.clone());
+        spatial_create_weight(matcher, query, score_mode, boost)
+    }
+
+    /// Equivalent to `XYPointInGeometryQuery.equals(Object)`.
+    fn query_eq(&self, other: &dyn Query) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|other| self == other)
+    }
+
+    /// Equivalent to `XYPointInGeometryQuery.hashCode()`.
+    fn query_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.field.hash(&mut hasher);
+        format!("{:?}", self.xy_geometries).hash(&mut hasher);
+        hasher.finish()
     }
 }
 
@@ -1225,8 +1294,9 @@ struct DistanceIntersectVisitor<'a> {
 }
 
 impl IntersectVisitor for DistanceIntersectVisitor<'_> {
-    fn grow(&mut self, count: i32) {
+    fn grow(&mut self, count: i32) -> Result<()> {
         self.result.grow(count);
+        Ok(())
     }
 
     fn visit(&mut self, doc_id: i32) -> Result<()> {
@@ -1261,10 +1331,11 @@ impl IntersectVisitor for DistanceIntersectVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
-        self.bounds
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
+        Ok(self
+            .bounds
             .relate(min_packed_value, max_packed_value)
-            .unwrap_or(Relation::CellCrossesQuery)
+            .unwrap_or(Relation::CellCrossesQuery))
     }
 }
 
@@ -1325,18 +1396,20 @@ impl IntersectVisitor for InverseDistanceIntersectVisitor<'_> {
         Ok(())
     }
 
-    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Relation {
-        match self
-            .bounds
-            .relate(min_packed_value, max_packed_value)
-            .unwrap_or(Relation::CellCrossesQuery)
-        {
-            // All points match, so skip this subtree.
-            Relation::CellInsideQuery => Relation::CellOutsideQuery,
-            // No point matches, so clear every document.
-            Relation::CellOutsideQuery => Relation::CellInsideQuery,
-            Relation::CellCrossesQuery => Relation::CellCrossesQuery,
-        }
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
+        Ok(
+            match self
+                .bounds
+                .relate(min_packed_value, max_packed_value)
+                .unwrap_or(Relation::CellCrossesQuery)
+            {
+                // All points match, so skip this subtree.
+                Relation::CellInsideQuery => Relation::CellOutsideQuery,
+                // No point matches, so clear every document.
+                Relation::CellOutsideQuery => Relation::CellInsideQuery,
+                Relation::CellCrossesQuery => Relation::CellCrossesQuery,
+            },
+        )
     }
 }
 
@@ -1441,8 +1514,8 @@ impl LatLonPointDistanceQuery {
         LatLonPoint::check_compatible(field_info)?;
 
         let max_doc = reader.max_doc();
-        if values.doc_count() == max_doc
-            && i64::from(values.doc_count()) == values.size()
+        if values.doc_count()? == max_doc
+            && i64::from(values.doc_count()?) == values.size()?
             && self.cost(reader)? > i64::from(max_doc) / 2
         {
             // Every document has exactly one value and the cost is more than
@@ -1462,7 +1535,7 @@ impl LatLonPointDistanceQuery {
             )?)));
         }
 
-        let mut result = DocIdSetBuilder::from_point_values(max_doc, values.as_ref());
+        let mut result = DocIdSetBuilder::from_point_values(max_doc, values.as_ref())?;
         {
             let mut visitor = DistanceIntersectVisitor {
                 bounds: self.bounds.clone(),
@@ -1485,7 +1558,7 @@ impl LatLonPointDistanceQuery {
         let Some(values) = reader.get_point_values(&self.field)? else {
             return Ok(0);
         };
-        let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref());
+        let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref())?;
         let mut visitor = DistanceIntersectVisitor {
             bounds: self.bounds.clone(),
             result: &mut result,
@@ -1562,10 +1635,9 @@ impl Query for LatLonPointQuery {
         )
     }
 
+    /// Equivalent to the inherited `SpatialQuery.visit(QueryVisitor)`.
     fn visit(&self, visitor: &mut dyn QueryVisitor) {
-        if visitor.accept_field(self.query.get_field()) {
-            visitor.visit_leaf(self);
-        }
+        self.query.visit(visitor, self);
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -1860,5 +1932,80 @@ impl Query for XYDocValuesPointInGeometryQuery {
         let matcher = Arc::new(self.clone());
         let query: Arc<dyn Query> = Arc::new(self.clone());
         spatial_create_weight(matcher, query, score_mode, boost)
+    }
+}
+
+#[cfg(test)]
+mod xy_point_in_geometry_query_tests {
+    use super::*;
+    use crate::geo::geometry::XYRectangle;
+    use crate::search::query_visitor::QueryVisitor;
+
+    /// Counts the leaves a visitor is shown, and can be told to refuse a field.
+    struct RecordingVisitor {
+        leaves: usize,
+        reject: Option<String>,
+    }
+
+    impl QueryVisitor for RecordingVisitor {
+        fn visit_leaf(&mut self, _query: &dyn Query) {
+            self.leaves += 1;
+        }
+
+        fn accept_field(&self, field: &str) -> bool {
+            self.reject.as_deref() != Some(field)
+        }
+    }
+
+    fn query(field: &str, half_side: f32) -> XYPointInGeometryQuery {
+        let rectangle = XYRectangle::new(-half_side, half_side, -half_side, half_side).unwrap();
+        XYPointInGeometryQuery::new(field, vec![XYGeometryValue::Rectangle(rectangle)]).unwrap()
+    }
+
+    #[test]
+    fn visits_its_field_as_a_leaf() {
+        // Equivalent to `XYPointInGeometryQuery.visit(QueryVisitor)`.
+        let q = query("xy", 10.0);
+        let mut visitor = RecordingVisitor {
+            leaves: 0,
+            reject: None,
+        };
+        Query::visit(&q, &mut visitor);
+        assert_eq!(visitor.leaves, 1);
+
+        let mut visitor = RecordingVisitor {
+            leaves: 0,
+            reject: Some("xy".to_string()),
+        };
+        Query::visit(&q, &mut visitor);
+        assert_eq!(visitor.leaves, 0);
+    }
+
+    #[test]
+    fn equality_follows_the_field_and_the_geometries() {
+        let a = query("xy", 10.0);
+        let b = query("xy", 10.0);
+        let other_field = query("other", 10.0);
+        let other_geometry = query("xy", 20.0);
+        assert!(a.query_eq(&b));
+        assert_eq!(a.query_hash(), b.query_hash());
+        assert!(!a.query_eq(&other_field));
+        assert!(!a.query_eq(&other_geometry));
+    }
+
+    #[test]
+    fn renders_the_field_only_when_it_is_not_the_default() {
+        let q = query("xy", 10.0);
+        let with_default = Query::to_query_string(&q, "xy");
+        let with_other = Query::to_query_string(&q, "other");
+        assert!(with_default.starts_with("XYPointInGeometryQuery:"));
+        assert!(!with_default.contains("field=xy"));
+        assert!(with_other.contains("field=xy"));
+    }
+
+    #[test]
+    fn empty_geometry_list_is_refused() {
+        // Java throws IllegalArgumentException("geometries must not be empty").
+        assert!(XYPointInGeometryQuery::new("xy", Vec::new()).is_err());
     }
 }

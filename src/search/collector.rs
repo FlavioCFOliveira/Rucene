@@ -256,6 +256,8 @@ impl<T: LeafCollector + ?Sized> LeafCollector for &mut T {
     }
 }
 
+/// Port of `org.apache.lucene.search.CollectorManager`.
+///
 /// A manager of collectors, used to parallelise the execution of a search
 /// request.
 ///
@@ -307,6 +309,11 @@ pub trait CollectorManager {
 /// has no implementation inheritance, so the collecting half is this trait and
 /// [`SimpleCollector`] supplies the `Collector` half around it.
 pub trait SimpleCollectorImpl: LeafCollector {
+    // `SimpleCollector.collect(int)` is the `LeafCollector::collect` this
+    // trait's supertrait already requires. Java redeclares it abstract only so
+    // that the javadoc is inherited on subclasses, which the `@Override`
+    // comment above it states; it carries no behaviour of its own.
+
     /// Indicates what features are required from the scorer.
     ///
     /// Equivalent to `Collector.scoreMode()`, which `SimpleCollector` leaves
@@ -409,6 +416,20 @@ impl<C: Collector> FilterCollector<C> {
     }
 }
 
+impl<C: Collector + std::fmt::Display> std::fmt::Display for FilterCollector<C> {
+    /// Equivalent to `FilterCollector.toString()`, which is
+    /// `getClass().getSimpleName() + "(" + in + ")"`.
+    ///
+    /// Java's class is abstract, so the simple name it prints is always that of
+    /// a subclass — empty for the anonymous ones. Here the type is concrete and
+    /// a "subclass" is a type that holds one, so the name is always
+    /// `FilterCollector`, which is what Java prints for a runtime class that is
+    /// `FilterCollector` itself.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FilterCollector({})", self.inner)
+    }
+}
+
 impl<C: Collector> Collector for FilterCollector<C> {
     fn get_leaf_collector<'a>(
         &'a mut self,
@@ -451,6 +472,17 @@ impl<L: LeafCollector> FilterLeafCollector<L> {
     /// Unwraps this collector.
     pub fn into_inner(self) -> L {
         self.inner
+    }
+}
+
+impl<L: LeafCollector + std::fmt::Display> std::fmt::Display for FilterLeafCollector<L> {
+    /// Equivalent to `FilterLeafCollector.toString()`, which is
+    /// `getClass().getSimpleName() + "(" + in + ")"` with `FilterLeafCollector`
+    /// substituted when the simple name is empty — the case of Java's anonymous
+    /// subclasses. This port has one concrete type, whose name is exactly the
+    /// substitute, so both of Java's branches produce the same text here.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FilterLeafCollector({})", self.inner)
     }
 }
 

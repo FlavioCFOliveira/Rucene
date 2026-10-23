@@ -119,6 +119,15 @@ impl ImpactsSource for SharedPostings {
     }
 }
 
+impl std::fmt::Display for SharedPostings {
+    /// Port-only sharing wrapper with no Lucene counterpart: Java hands the
+    /// same `ImpactsEnum` object to three collaborators, so what would be
+    /// rendered there is the enumeration itself. This forwards to it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&*self.inner.borrow(), f)
+    }
+}
+
 impl PostingsEnum for SharedPostings {
     fn freq(&self) -> Result<i32> {
         self.inner.borrow().freq()

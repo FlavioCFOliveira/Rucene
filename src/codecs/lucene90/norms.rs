@@ -1464,7 +1464,8 @@ mod tests {
         // Entries end four bytes (the `-1` marker) before the sixteen-byte
         // footer; there is exactly one, thirty-six bytes long.
         let entry_start = length - 16 - 4 - 36;
-        let mut reader = crate::store::ByteArrayDataInput::new(bytes[entry_start..].to_vec());
+        let reader_src = bytes[entry_start..].to_vec();
+        let mut reader = crate::store::ByteArrayDataInput::new(&reader_src);
         let _ = max_doc;
         let _field_number = reader.read_int().unwrap();
         NormsEntry {
@@ -1874,5 +1875,12 @@ mod tests {
             !message.contains("misplaced codec footer"),
             "the footer must not be blamed, got: {message}"
         );
+    }
+}
+
+impl fmt::Display for Lucene90NormsProducer {
+    /// Port of `Lucene90NormsProducer.toString()`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Lucene90NormsProducer(fields={})", self.norms.len())
     }
 }

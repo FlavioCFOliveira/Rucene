@@ -7,6 +7,12 @@
 //! | `PerField` (private) | `IndexingChain.PerField` |
 //! | [`EmptyNormsProducer`] | the `NormsProducer` the chain passes to the codec |
 //!
+//! The chain's `EmptyNormsProducer` implements
+//! [`PostingsNormsProducer`](crate::codecs::postings::PostingsNormsProducer),
+//! this port's narrower postings-side stand-in, not the full
+//! [`NormsProducer`](crate::codecs::norms::NormsProducer); see that trait's
+//! documentation for the divergence.
+//!
 //! The chain turns a [`Document`] into buffered postings, a stored-fields
 //! stream and a term-vectors stream: it registers each field in the segment's
 //! [`FieldInfosBuilder`], runs the analysis pipeline, validates positions and
@@ -80,7 +86,7 @@ use crate::analysis::TokenStream;
 use crate::codecs::doc_values::DocValuesConsumer;
 use crate::codecs::knn_vectors::FieldVectorWriter;
 use crate::codecs::points::PointsWriter;
-use crate::codecs::postings::{NormsProducer, NumericDocValues};
+use crate::codecs::postings::{PostingsNormsProducer, PostingsNumericDocValues};
 use crate::codecs::state::SegmentWriteState;
 use crate::document::column::{
     create_column_field_adapter, BinaryColumn, ColumnBatch, ColumnFieldAdapter, ColumnValidation,
@@ -106,12 +112,17 @@ use crate::index::{
     DocValuesType, FieldInfo, IndexOptions, IndexableField, IndexableFieldType, SegmentInfo,
 };
 use crate::index::{NumericValue, StoredValue};
+use crate::search::doc_values_iteration::{
+    binary_as_iterator, numeric_as_iterator, sorted_as_iterator, sorted_numeric_as_iterator,
+    sorted_set_as_iterator,
+};
 use crate::search::Similarity;
-use crate::search::NO_MORE_DOCS;
+use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::TrackingDirectoryWrapper;
 use crate::util::byte_block_pool::MAX_TERM_LENGTH;
+use crate::util::java_collections::JavaStringMap;
 use crate::util::NumericUtils;
-use crate::util::{AttributeSource, BytesRef, InfoStream};
+use crate::util::{Accountable, AttributeSource, BytesRef, InfoStream};
 
 /// Highest position a token may occupy.
 ///
@@ -376,14 +387,14 @@ pub struct EmptyNormsProducer;
 #[derive(Debug, Default, Clone, Copy)]
 struct ConstantNorms;
 
-impl NumericDocValues for ConstantNorms {
+impl PostingsNumericDocValues for ConstantNorms {
     fn get(&self, _doc_id: i32) -> Result<i64> {
         Ok(1)
     }
 }
 
-impl NormsProducer for EmptyNormsProducer {
-    fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+impl PostingsNormsProducer for EmptyNormsProducer {
+    fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn PostingsNumericDocValues>> {
         Ok(Box::new(ConstantNorms))
     }
 }
@@ -683,6 +694,17 @@ impl std::fmt::Debug for ColumnFieldTypeCarrier {
         f.debug_struct("ColumnFieldTypeCarrier")
             .field("name", &self.name)
             .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for ColumnFieldTypeCarrier {
+    /// Port-only carrier with no Lucene counterpart: Java passes the column's
+    /// name and field type as two arguments, so there is no object whose
+    /// `toString()` could be reproduced. It renders in the inherited
+    /// `Field.toString()` shape with an empty value, which is what a `Field`
+    /// carrying no `fieldsData` renders as.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}<{}:>", self.field_type, self.name)
     }
 }
 
@@ -1383,7 +1405,7 @@ impl DefaultIndexingChain {
             field_type.doc_values_type(),
             field_type.doc_values_skip_index_type(),
             -1,
-            field_type.attributes().clone(),
+            JavaStringMap::Hash(field_type.attributes().clone()),
             field_type.point_dimension_count(),
             field_type.point_index_dimension_count(),
             field_type.point_num_bytes(),
@@ -2882,7 +2904,94 @@ impl DefaultIndexingChain {
     }
 }
 
+impl Accountable for DefaultIndexingChain {
+    /// Equivalent to `IndexingChain.ramBytesUsed()`.
+    fn ram_bytes_used(&self) -> i64 {
+        self.bytes_used.load(Ordering::Acquire)
+            + self
+                .stored_fields_consumer
+                .as_ref()
+                .map_or(0, StoredFieldsConsumer::ram_bytes_used)
+            + self
+                .term_vectors_consumer
+                .as_ref()
+                .map_or(0, TermVectorsConsumer::ram_bytes_used)
+            // `IndexingChain.ramBytesUsed` ends with
+            // `vectorValuesConsumer.getAccountable().ramBytesUsed()`
+            // (`IndexingChain.java:1720-1724`).
+            + self
+                .vector_values_consumer
+                .as_ref()
+                .map_or(0, VectorValuesConsumer::ram_bytes_used)
+    }
+
+    /// Returns the three consumers whose bytes
+    /// [`ram_bytes_used`](Self::ram_bytes_used) adds to `bytes_used`.
+    ///
+    /// Equivalent to `IndexingChain.getChildResources()`, which returns
+    /// `List.of(storedFieldsConsumer.accountable, termVectorsWriter.accountable,
+    /// vectorValuesConsumer.getAccountable())`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's three fields exist from the
+    /// moment the chain is constructed and default to
+    /// `Accountable.NULL_ACCOUNTABLE`, so the list always has three entries; in
+    /// this port the three consumers are bound when the chain is bound to a
+    /// segment, so before that this returns fewer entries. Every entry reports
+    /// the same bytes Java's counterpart would, and a consumer without a writer
+    /// reports zero either way.
+    fn child_resources(&self) -> Vec<&dyn Accountable> {
+        let mut resources: Vec<&dyn Accountable> = Vec::with_capacity(3);
+        if let Some(consumer) = self.stored_fields_consumer.as_ref() {
+            resources.push(consumer);
+        }
+        if let Some(consumer) = self.term_vectors_consumer.as_ref() {
+            resources.push(consumer);
+        }
+        if let Some(consumer) = self.vector_values_consumer.as_ref() {
+            resources.push(consumer);
+        }
+        resources
+    }
+}
+
 impl IndexingChain for DefaultIndexingChain {
+    /// Returns an iterator over the documents of this segment that have a
+    /// doc-values value for `field`, or `None` when the field has no doc values
+    /// buffered.
+    ///
+    /// Equivalent to `IndexingChain.getHasDocValues(String)`, which
+    /// `DocumentsWriterPerThread.flush` calls **before** flushing so it can
+    /// count how many documents the soft-deletes field marks
+    /// (`DocumentsWriterPerThread.java:486-499`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the buffered doc-values view raises.
+    fn get_has_doc_values(&self, field: &str) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        let Some(index) = self.per_field_index.get(field) else {
+            return Ok(None);
+        };
+        let per_field = &self.per_fields[*index];
+        let Some(writer) = per_field.doc_values.as_ref() else {
+            return Ok(None);
+        };
+        let info = &per_field.field_info;
+        if info.doc_values_type == DocValuesType::NONE {
+            return Ok(None);
+        }
+        let producer = writer.get_doc_values()?;
+        Ok(Some(match info.doc_values_type {
+            DocValuesType::NONE => return Ok(None),
+            DocValuesType::NUMERIC => numeric_as_iterator(producer.get_numeric(info)?),
+            DocValuesType::BINARY => binary_as_iterator(producer.get_binary(info)?),
+            DocValuesType::SORTED => sorted_as_iterator(producer.get_sorted(info)?),
+            DocValuesType::SORTED_NUMERIC => {
+                sorted_numeric_as_iterator(producer.get_sorted_numeric(info)?)
+            }
+            DocValuesType::SORTED_SET => sorted_set_as_iterator(producer.get_sorted_set(info)?),
+        }))
+    }
+
     /// Indexes a column-oriented batch of documents.
     ///
     /// Equivalent to `IndexingChain.processBatch(int, ColumnBatch)`: the
@@ -3446,25 +3555,6 @@ impl IndexingChain for DefaultIndexingChain {
         self.bytes_used.store(0, Ordering::Release);
     }
 
-    fn ram_bytes_used(&self) -> i64 {
-        self.bytes_used.load(Ordering::Acquire)
-            + self
-                .stored_fields_consumer
-                .as_ref()
-                .map_or(0, StoredFieldsConsumer::ram_bytes_used)
-            + self
-                .term_vectors_consumer
-                .as_ref()
-                .map_or(0, TermVectorsConsumer::ram_bytes_used)
-            // `IndexingChain.ramBytesUsed` ends with
-            // `vectorValuesConsumer.getAccountable().ramBytesUsed()`
-            // (`IndexingChain.java:1720-1724`).
-            + self
-                .vector_values_consumer
-                .as_ref()
-                .map_or(0, VectorValuesConsumer::ram_bytes_used)
-    }
-
     fn flush(&mut self, state: &IndexingChainFlushState<'_>) -> Result<IndexingChainFlushResult> {
         let seg_updates = crate::codecs::stub::BufferedUpdates;
         let mut write_state = SegmentWriteState::new(
@@ -3519,6 +3609,20 @@ impl IndexingChain for DefaultIndexingChain {
         self.terms_writer
             .flush(&mut write_state, state.delete_terms, &norms)?;
 
+        // Important to save after asking the consumers to flush, so that a
+        // consumer can still alter a `FieldInfo` on its way out — Lucene's
+        // `FreqProxTermsWriter` does exactly that with `FieldInfo.storePayloads`
+        // (`IndexingChain.java:377-387`). Java takes the codec off the
+        // `IndexWriterConfig` and passes `IOContext.DEFAULT` rather than the
+        // flush context, and both are reproduced here.
+        self.config.codec().field_infos_format().write(
+            state.directory,
+            state.segment_info,
+            "",
+            state.field_infos,
+            &*crate::store::DEFAULT_IO_CONTEXT,
+        )?;
+
         if state.info_stream.is_enabled("DWPT") {
             state.info_stream.message(
                 "DWPT",
@@ -3538,6 +3642,7 @@ impl IndexingChain for DefaultIndexingChain {
         Ok(IndexingChainFlushResult {
             live_docs: write_state.live_docs,
             del_count_on_flush: write_state.del_count_on_flush,
+            sort_map,
         })
     }
 
@@ -3963,6 +4068,29 @@ mod tests {
     }
 
     #[test]
+    fn indexing_chain_child_resources_are_its_three_consumers() {
+        let unbound = DefaultIndexingChain::new(config());
+        assert!(
+            unbound.child_resources().is_empty(),
+            "before a segment is bound there is no consumer to report"
+        );
+
+        let (chain, _tracking, _info) = bound_chain(1);
+        let children = chain.child_resources();
+        assert_eq!(
+            children.len(),
+            3,
+            "stored fields, term vectors and vectors, in Java's order"
+        );
+        let children_bytes: i64 = children.iter().map(|c| c.ram_bytes_used()).sum();
+        // `ramBytesUsed` is `bytesUsed` plus exactly these three.
+        assert_eq!(
+            chain.ram_bytes_used(),
+            chain.bytes_used.load(Ordering::Acquire) + children_bytes
+        );
+    }
+
+    #[test]
     fn a_document_without_indexed_fields_buffers_nothing() {
         let (mut chain, _tracking, _info) = bound_chain(1);
         let mut field_infos = builder();
@@ -4019,6 +4147,15 @@ mod tests {
                 name: name.to_string(),
                 field_type,
             }
+        }
+    }
+
+    impl std::fmt::Display for VectorlessVectorField {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `IndexableField` carries it as a supertrait, standing in for
+        /// the `toString()` every Java field inherits.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("VectorlessVectorField")
         }
     }
 
@@ -4636,6 +4773,10 @@ mod tests {
         #[derive(Debug)]
         struct ZeroSimilarity;
         impl Similarity for ZeroSimilarity {
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.search.similarities.Similarity"
+            }
+
             fn compute_norm(&self, _state: &FieldInvertState) -> Result<i64> {
                 Ok(0)
             }
@@ -4859,10 +5000,19 @@ mod tests {
             .filter_map(|name| name.rsplit_once('.').map(|(_, ext)| ext.to_string()))
             .collect();
         extensions.sort();
+        // The `.fnm` is unconditional: `IndexingChain.flush` writes the field
+        // infos on its way out whatever the fields hold
+        // (`IndexingChain.java:377-387`), and without it no reader could open
+        // the segment. Everything else here is postings, and there are none.
         assert_eq!(
             extensions,
-            vec!["fdm".to_string(), "fdt".to_string(), "fdx".to_string()],
-            "a stored-only document produces the stored-fields files and no postings: {files:?}"
+            vec![
+                "fdm".to_string(),
+                "fdt".to_string(),
+                "fdx".to_string(),
+                "fnm".to_string()
+            ],
+            "a stored-only document produces the stored-fields files, the field infos and no postings: {files:?}"
         );
         assert_eq!(result.del_count_on_flush, 0);
         assert!(result.live_docs.is_none());
@@ -5997,6 +6147,26 @@ struct BufferedDocValuesReader {
             Arc<dyn crate::codecs::doc_values::DocValuesProducer>,
         ),
     >,
+}
+
+impl std::fmt::Display for BufferedDocValuesReader {
+    /// `DocValuesLeafReader` declares no `toString()`, and neither does the
+    /// anonymous subclass `IndexingChain.getDocValuesLeafReader()` returns, so
+    /// `java.lang.Object`'s applies.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java renders the anonymous class's
+    /// own binary name, `org.apache.lucene.index.IndexingChain$N`, where `N` is
+    /// the ordinal javac assigns. That ordinal is a compiler artifact, it is
+    /// not reachable from outside the package to be measured, and no Lucene
+    /// format or `toString()` depends on it; this port renders the named base
+    /// class instead. The identity suffix diverges for the reason given on
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.DocValuesLeafReader",
+            self,
+        ))
+    }
 }
 
 impl std::fmt::Debug for BufferedDocValuesReader {

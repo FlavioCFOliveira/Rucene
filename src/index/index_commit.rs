@@ -67,7 +67,7 @@ fn java_long_hash_code(value: i64) -> u32 {
 /// provided methods [`IndexCommit::commit_equals`],
 /// [`IndexCommit::commit_hash`] and [`IndexCommit::compare_to`], with exactly
 /// the Java semantics. Implementations must not override them.
-pub trait IndexCommit: Send + Sync + Debug {
+pub trait IndexCommit: Send + Sync + Debug + std::fmt::Display {
     /// Returns the segments file (`segments_N`) associated with this commit point.
     ///
     /// Equivalent to `IndexCommit.getSegmentsFileName()`.
@@ -443,6 +443,12 @@ pub(crate) mod test_support {
                 segment_count,
                 deleted: AtomicBool::new(false),
             })
+        }
+    }
+
+    impl std::fmt::Display for TestCommit {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "TestCommit(segments_{})", self.generation)
         }
     }
 

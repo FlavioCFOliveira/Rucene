@@ -331,6 +331,15 @@ mod tests {
         }
     }
 
+    impl std::fmt::Display for ListTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("ListTermsEnum")
+        }
+    }
+
     impl TermsEnum for ListTermsEnum {
         fn attributes(&mut self) -> &mut crate::util::attribute::AttributeSource {
             panic!("not needed")
@@ -376,11 +385,11 @@ mod tests {
             Ok(self.pos as i64)
         }
 
-        fn doc_freq(&self) -> Result<i32> {
+        fn doc_freq(&mut self) -> Result<i32> {
             Ok(1)
         }
 
-        fn total_term_freq(&self) -> Result<i64> {
+        fn total_term_freq(&mut self) -> Result<i64> {
             Ok(1)
         }
 

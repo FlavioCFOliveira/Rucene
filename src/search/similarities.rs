@@ -80,7 +80,7 @@ pub mod distribution;
 pub mod explanation;
 pub mod ib_similarity;
 pub mod independence;
-mod java_fmt;
+pub(crate) mod java_fmt;
 mod java_math;
 pub mod lambda;
 pub mod lm_similarity;
@@ -139,6 +139,17 @@ pub use tfidf_similarity::{tfidf_scorer, ClassicSimilarity, TFIDFSimilarity};
 /// governs it. See the module documentation for why the scoring half is absent
 /// and how it will be added.
 pub trait Similarity: Send + Sync + Debug {
+    /// Returns the binary name of the Lucene class this similarity ports.
+    ///
+    /// Stands in for `getClass().getName()`, which Rust cannot answer: there is
+    /// no runtime class object, and `std::any::type_name` names the Rust type,
+    /// not the Java one. `LiveIndexWriterConfig.toString()` prints this
+    /// similarity's class name, so the name has to be carried by the type itself.
+    ///
+    /// There is no default: Java has no instance whose class is unknown, so
+    /// every implementor states its own.
+    fn java_class_name(&self) -> &'static str;
+
     /// Returns `true` when overlap tokens — tokens whose position increment is
     /// zero, such as synonyms — are discounted from the document's length.
     ///
@@ -591,6 +602,9 @@ impl BM25Similarity {
 }
 
 impl Similarity for BM25Similarity {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.similarities.BM25Similarity"
+    }
     fn discount_overlaps(&self) -> bool {
         self.discount_overlaps
     }

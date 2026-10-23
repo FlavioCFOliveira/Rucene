@@ -946,7 +946,7 @@ fn join(present: bool, values: &[String]) -> String {
 fn read_java_index(dir: &Path) -> Vec<String> {
     let codec = ensure_codec();
     let directory: Arc<dyn Directory> = Arc::new(FSDirectory::open(dir).expect("directory"));
-    let infos = SegmentInfos::read_latest_commit(directory.as_ref()).expect("segments file");
+    let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory)).expect("segments file");
     let segment_info = infos.info(0).info.clone();
     let field_infos = codec
         .field_infos_format()
@@ -1151,7 +1151,7 @@ fn rucene_reads_the_term_vectors_of_a_compound_file_segment_written_by_lucene() 
     let codec = ensure_codec();
     let directory: Arc<dyn Directory> =
         Arc::new(FSDirectory::open(java_tmp.path()).expect("directory"));
-    let infos = SegmentInfos::read_latest_commit(directory.as_ref()).expect("segments file");
+    let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory)).expect("segments file");
     let segment_info = infos.info(0).info.clone();
     let compound = codec
         .compound_format()
@@ -1177,4 +1177,135 @@ fn rucene_reads_the_term_vectors_of_a_compound_file_segment_written_by_lucene() 
         segment.dump,
         "Rucene must decode a compound-file segment exactly as Lucene does"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Reading term vectors back through a DirectoryReader
+// ---------------------------------------------------------------------------
+//
+// The tests above drive the indexing chain and the codec directly, so they say
+// nothing about the composite reader a caller actually holds. Lucene's
+// `DirectoryReader` extends `BaseCompositeReader<LeafReader>` and inherits its
+// `final termVectors()`, which resolves the global document id to a leaf and
+// asks that leaf for its vectors; this port answered
+// `UnsupportedOperation` there, so term vectors were unreadable through the one
+// reader the public API hands out. The test below writes an index through
+// `IndexWriter` and reads its vectors back through the reader, across a segment
+// boundary so that the doc-base arithmetic is exercised.
+
+/// Builds a document whose `body` is analysed and stores term vectors with
+/// positions and offsets.
+fn vector_doc(id: &str, body: &str) -> Document {
+    let mut field_type = FieldType::new();
+    field_type.set_tokenized(true).expect("tokenized");
+    field_type.set_stored(true).expect("stored");
+    field_type.set_omit_norms(true).expect("omit norms");
+    field_type
+        .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
+        .expect("index options");
+    field_type
+        .set_store_term_vectors(true)
+        .expect("store term vectors");
+    field_type
+        .set_store_term_vector_positions(true)
+        .expect("store term vector positions");
+    field_type
+        .set_store_term_vector_offsets(true)
+        .expect("store term vector offsets");
+    field_type.freeze();
+
+    let mut document = Document::new();
+    document.add(Box::new(
+        rucene::document::StringField::new("id", id.to_string(), rucene::document::Store::YES)
+            .expect("id field"),
+    ));
+    document.add(Box::new(
+        Field::new("body", body.to_string(), field_type).expect("body field"),
+    ));
+    document
+}
+
+/// Collects `(term, totalTermFreq)` for one document's `body` vector, read
+/// through the composite reader.
+fn body_terms(
+    vectors: &dyn rucene::index::leaf_reader::TermVectors,
+    doc_id: i32,
+) -> Vec<(String, i64)> {
+    let fields = vectors
+        .get(doc_id)
+        .expect("term vectors must be readable")
+        .unwrap_or_else(|| panic!("document {doc_id} must carry term vectors"));
+    let terms = fields
+        .terms("body")
+        .expect("terms")
+        .expect("the body field must have a vector");
+    let mut out = Vec::new();
+    let mut terms_enum = terms.iterator().expect("terms enum");
+    while let Some(term) = terms_enum.next().expect("next term") {
+        out.push((
+            String::from_utf8(term.slice().to_vec()).expect("utf8 term"),
+            terms_enum.total_term_freq().expect("total term freq"),
+        ));
+    }
+    out
+}
+
+/// Regression: `DirectoryReader.termVectors()` must resolve a document to its
+/// leaf and return that leaf's vectors, across segment boundaries.
+#[test]
+fn a_directory_reader_reads_the_term_vectors_of_every_segment() {
+    let _ = register_codec("Lucene104", Lucene104Codec::new());
+
+    let temp = tempfile::tempdir().expect("temp dir");
+    let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(temp.path()).expect("open directory"));
+    let mut config = rucene::index::index_writer_config::IndexWriterConfig::new();
+    config
+        .set_merge_policy(Arc::new(rucene::index::merge_policy::NoMergePolicy::new()))
+        .expect("set merge policy");
+    let writer = rucene::index::index_writer::IndexWriter::new(Arc::clone(&dir), config)
+        .expect("open writer");
+
+    // Two commits under NoMergePolicy, so the reader has two leaves and the
+    // second leaf's documents sit above docBase 0.
+    writer
+        .add_document(&vector_doc("a", "alpha beta alpha"))
+        .expect("add a");
+    writer.commit().expect("first commit");
+    writer
+        .add_document(&vector_doc("b", "gamma delta"))
+        .expect("add b");
+    writer
+        .add_document(&vector_doc("c", "epsilon epsilon epsilon"))
+        .expect("add c");
+    writer.commit().expect("second commit");
+
+    let reader =
+        rucene::index::directory_reader::open(Arc::clone(&dir)).expect("open directory reader");
+    assert_eq!(reader.max_doc(), 3);
+    assert!(
+        Arc::clone(&reader).leaves().len() >= 2,
+        "the fix has to be exercised across a segment boundary"
+    );
+
+    let vectors = reader
+        .term_vectors()
+        .expect("a DirectoryReader must return term vectors, not UnsupportedOperation");
+
+    // Documents are laid out in commit order, so docID 0 is "a" and docIDs 1
+    // and 2 live in the second segment.
+    assert_eq!(
+        body_terms(vectors.as_ref(), 0),
+        vec![("alpha".to_string(), 2), ("beta".to_string(), 1)]
+    );
+    assert_eq!(
+        body_terms(vectors.as_ref(), 1),
+        vec![("delta".to_string(), 1), ("gamma".to_string(), 1)]
+    );
+    assert_eq!(
+        body_terms(vectors.as_ref(), 2),
+        vec![("epsilon".to_string(), 3)]
+    );
+
+    // And a document id outside the index is rejected rather than mis-resolved.
+    assert!(vectors.get(3).is_err() || vectors.get(3).expect("no panic").is_none());
 }

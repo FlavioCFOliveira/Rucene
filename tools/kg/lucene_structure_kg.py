@@ -3,7 +3,7 @@
 
 `enrich_lucene_kg.py` emits one Cypher statement per element and
 `run_kg_batches.py` runs one statement per `rmp` invocation, so loading the 908
-nested types and the 18,020 members costs ~19,000 process launches -- hours of
+nested types and the 22,542 members costs ~23,000 process launches -- hours of
 wall clock. This tool calls the enricher's extraction functions directly and
 writes the same facts in `UNWIND` batches, which is the same result by a far
 shorter path.
@@ -120,7 +120,12 @@ def load_members(roadmap, commit, date):
     all_rows = []
     for kind, items in (("method", members["methods"]),
                         ("constructor", members["constructors"]),
-                        ("field", members["fields"])):
+                        ("field", members["fields"]),
+                        # Lucene's own Javadoc gives enum constants a summary
+                        # section of their own, separate from fields; the graph
+                        # keeps that distinction so "how many fields" and "how
+                        # many constants" stay separately answerable.
+                        ("enumConstant", members["enumConstants"])):
         for m in items:
             all_rows.append({
                 "qn": m["qualifiedName"], "name": m["name"],

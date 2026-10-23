@@ -33,7 +33,7 @@ portabilidade como cidadaos de primeira classe e o `lucene/core` e o alvo.
 
 Uso:
     python3 tools/kg/lucene_tests_kg.py rucene \\
-        --lucene-root /tmp/lucene1050 --survey /tmp/rucene_kg/survey.json \\
+        --lucene-root /tmp/lucene1050 --repo-root . \\
         --commit <sha> --date <YYYY-MM-DD>
 """
 

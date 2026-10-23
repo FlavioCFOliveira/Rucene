@@ -440,7 +440,7 @@ fn hex(bytes: &[u8]) -> String {
 fn read_java_index(dir: &Path) -> Vec<String> {
     let codec = ensure_codec();
     let directory: Arc<dyn Directory> = Arc::new(FSDirectory::open(dir).expect("directory"));
-    let infos = SegmentInfos::read_latest_commit(directory.as_ref()).expect("segments file");
+    let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory)).expect("segments file");
     let segment_info = infos.info(0).info.clone();
     let field_infos = codec
         .field_infos_format()
@@ -581,6 +581,7 @@ fn fields(case: &str) -> Vec<(&'static str, DocValuesType)> {
         "sortednumeric" => vec![("snum", DocValuesType::SORTED_NUMERIC)],
         "sortedsetsingle" => vec![("ss", DocValuesType::SORTED_SET)],
         "sortedsetmulti" => vec![("ss", DocValuesType::SORTED_SET)],
+        "sortedlongterms" => vec![("lterm", DocValuesType::SORTED)],
         "mixed" => vec![
             ("mnum", DocValuesType::NUMERIC),
             ("mbin", DocValuesType::BINARY),
@@ -590,6 +591,22 @@ fn fields(case: &str) -> Vec<(&'static str, DocValuesType)> {
         ],
         other => panic!("unknown case: {other}"),
     }
+}
+
+/// Builds term `i`: a zero-padded ordinal prefix followed by a rotating
+/// alphabet, padded to exactly 400 ASCII bytes.
+///
+/// Must produce byte-identical terms to `DocValuesFixture.longTerm(int)`;
+/// every character is ASCII, so `len()` counts bytes and Java's `length()`
+/// counts the same characters.
+fn long_term(i: usize) -> String {
+    let mut term = format!("t{i:04}-");
+    let mut j = 0usize;
+    while term.len() < 400 {
+        term.push((b'a' + ((i + j) % 26) as u8) as char);
+        j += 1;
+    }
+    term
 }
 
 /// The documents of one case, in order; each entry is a
@@ -689,6 +706,15 @@ fn documents(case: &str) -> Vec<Vec<(usize, Dv)>> {
                     values.push((0, Dv::SortedSet(terms)));
                 }
                 values
+            })
+            .collect(),
+        "sortedlongterms" => (0..200)
+            .map(|doc| {
+                // Leaked because the case table is typed `&'static [u8]`, and
+                // these terms are generated rather than written out. The test
+                // process is short-lived and builds each case once.
+                let term: &'static [u8] = Box::leak(long_term(doc).into_bytes().into_boxed_slice());
+                vec![(0, Dv::Sorted(term))]
             })
             .collect(),
         "mixed" => (0..12)
@@ -971,6 +997,16 @@ fn multi_valued_sorted_set_doc_values_match_lucene() {
     // Genuinely multi-valued, with cross-document repeats: the addresses
     // route.
     assert_case_matches_lucene("sortedsetmulti");
+}
+
+#[test]
+fn sorted_long_terms_doc_values_match_lucene() {
+    // 200 distinct 400-byte terms: four LZ4 blocks of 64 terms each, roughly
+    // 25 KB per block. That is past the 16384 bytes Lucene allocates for
+    // `termsDictBuffer`, so `maybeGrowBuffer` has to grow it -- the only case
+    // in this suite that reaches the growth path, the multi-block path, or an
+    // LZ4 block with real redundancy to compress.
+    assert_case_matches_lucene("sortedlongterms");
 }
 
 #[test]

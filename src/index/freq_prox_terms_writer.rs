@@ -86,7 +86,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
-use crate::codecs::postings::NormsProducer;
+use crate::codecs::postings::PostingsNormsProducer;
 use crate::codecs::state::SegmentWriteState;
 use crate::error::{LuceneError, Result};
 use crate::index::documents_writer::TermDelete;
@@ -99,7 +99,7 @@ use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{DataInput, DataOutput};
 use crate::util::byte_block_pool::{ByteBlockPool, BYTE_BLOCK_MASK, BYTE_BLOCK_SHIFT};
 use crate::util::bytes_ref_hash::BytesRefHash;
-use crate::util::{compare_utf16, AttributeSource, BytesRef, FixedBitSet};
+use crate::util::{compare_utf16, ArrayUtil, AttributeSource, BytesRef, FixedBitSet};
 
 // ---------------------------------------------------------------------------
 // ByteSlicePool
@@ -511,11 +511,31 @@ pub struct FreqProxPosting {
     pub last_offset: i32,
 }
 
-/// Heap cost of one buffered term, used for the RAM-driven flush triggers.
+/// Heap cost of one buffered term slot, used for the RAM-driven flush triggers.
 ///
-/// Mirrors `FreqProxPostingsArray.bytesPerPosting()`: the struct itself plus the
-/// `bytesStart` entry that the term hash keeps for the same term id.
+/// Plays the role of `FreqProxPostingsArray.bytesPerPosting()`: the columns of
+/// one posting plus the `bytesStart`/`textStarts` entry the term hash keeps for
+/// the same term id.
+///
+/// **Divergence from Lucene 10.5.0.** Java's value varies with the field's
+/// index options, because `FreqProxPostingsArray` allocates `lastPositions`,
+/// `lastOffsets` and `termFreqs` only when they are needed: it is
+/// `ParallelPostingsArray.BYTES_PER_POSTING` (`3 * Integer.BYTES` = 12) plus
+/// `2 * Integer.BYTES`, plus four more for each of those three arrays, so 20 for
+/// a docs-only field and 32 for a field with freqs, positions and offsets
+/// (`FreqProxTermsWriterPerField.java:292-305`). This port stores one
+/// [`FreqProxPosting`] struct per term with every column present whatever the
+/// index options are, so the cost really is the same for every field, and the
+/// constant reports what this port actually allocates rather than what Java
+/// would have.
 const BYTES_PER_POSTING: i64 = std::mem::size_of::<FreqProxPosting>() as i64 + 4;
+
+/// Number of term slots the first allocation reserves.
+///
+/// Equivalent to the `perField.createPostingsArray(2)` that
+/// `TermsHashPerField.PostingsBytesStartArray.init()` performs the first time a
+/// field sees a term.
+const INITIAL_POSTINGS_SLOTS: usize = 2;
 
 /// Outcome of interning a term.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -576,6 +596,21 @@ impl TermsHash {
     /// Equivalent to `TermsHash.reset()`.
     pub fn reset(&mut self) {
         self.pool.reset();
+    }
+
+    /// Discards every buffered byte after an indexing failure.
+    ///
+    /// Equivalent to `TermsHash.abort()`, which resets its own buffers and then
+    /// aborts the next hash in the chain.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java chains two `TermsHash`
+    /// instances, the postings hash holding a reference to the term-vectors one,
+    /// so aborting the first aborts the second. In this port each consumer owns
+    /// its own [`TermsHash`] and there is no `nextTermsHash` link, so this
+    /// aborts one hash and the caller — `IndexingChain::abort` — aborts the
+    /// other. The bytes released are the same either way.
+    pub fn abort(&mut self) {
+        self.reset();
     }
 
     /// Moves the pool out, leaving an empty one behind.
@@ -918,7 +953,8 @@ impl TermsHashPerField {
     /// Equivalent to `TermsHashPerField.initStreamSlices(int, int)` minus the
     /// `IntBlockPool` reservation, which this port inlines into the slot.
     fn init_stream_slices(&mut self, pool: &mut ByteBlockPool, term_id: i32) -> Result<()> {
-        debug_assert_eq!(term_id as usize, self.postings.len());
+        debug_assert_eq!(term_id, self.num_terms() - 1);
+        self.grow_postings(term_id as usize);
         // Make sure at least one byte per stream fits in the current block, so
         // that the streams of a term stay close together.
         pool.ensure_capacity(2 * self.stream_count * FIRST_LEVEL_SIZE)?;
@@ -929,10 +965,40 @@ impl TermsHashPerField {
             slot.stream_address[stream] = upto as i32 + pool.byte_offset();
         }
         slot.byte_start = slot.stream_address[0];
-        self.postings.push(slot);
-        self.bytes_used
-            .fetch_add(BYTES_PER_POSTING, Ordering::AcqRel);
+        self.postings[term_id as usize] = slot;
         Ok(())
+    }
+
+    /// Makes room for `term_id`, charging the shared counter for every slot the
+    /// table allocates.
+    ///
+    /// Equivalent to `ParallelPostingsArray.grow()` together with the two
+    /// `TermsHashPerField.PostingsBytesStartArray` methods that drive it:
+    /// `init()` allocates the first two slots and charges
+    /// `size * bytesPerPosting()`, and `grow()` replaces the array with one of
+    /// `ArrayUtil.oversize(size + 1, bytesPerPosting())` slots and charges the
+    /// difference. Charging the *allocated* slots rather than the used ones is
+    /// what makes the RAM-driven flush trigger fire where Lucene's does.
+    ///
+    /// Java reaches this through `BytesRefHash`, whose `bytesStart` array *is*
+    /// the postings array's `textStarts` column; this port keeps the two apart,
+    /// so the growth is driven from here instead.
+    fn grow_postings(&mut self, term_id: usize) {
+        if term_id < self.postings.len() {
+            return;
+        }
+        let old_size = self.postings.len();
+        let new_size = if old_size == 0 {
+            INITIAL_POSTINGS_SLOTS
+        } else {
+            ArrayUtil::oversize(old_size + 1, BYTES_PER_POSTING as usize)
+        };
+        debug_assert!(new_size > term_id);
+        self.postings.resize(new_size, FreqProxPosting::default());
+        self.bytes_used.fetch_add(
+            BYTES_PER_POSTING * (new_size - old_size) as i64,
+            Ordering::AcqRel,
+        );
     }
 
     /// Appends one byte to `stream` of `term_id`.
@@ -1122,8 +1188,12 @@ impl FreqProxTermsWriterPerField {
 
     /// Returns `true` when any token of this field carried a payload.
     ///
-    /// Equivalent to `FreqProxTermsWriterPerField.sawPayloads`, which drives
-    /// `FieldInfo.setStorePayloads()`.
+    /// Equivalent to `FreqProxTermsWriterPerField.sawPayloads`, and to the
+    /// `FreqProxTermsWriterPerField.finish()` that reads it: Java's whole
+    /// override is `super.finish(); if (sawPayloads) fieldInfo.setStorePayloads();`,
+    /// and the base call is the chain walk this port does not have. The second
+    /// half runs in the indexing chain, which owns the `FieldInfo` this writer
+    /// only borrows, so the flag is exposed instead of the method.
     pub fn saw_payloads(&self) -> bool {
         self.saw_payloads
     }
@@ -1553,6 +1623,20 @@ impl FreqProxTermsEnum {
     }
 }
 
+impl std::fmt::Display for FreqProxTermsEnum {
+    /// `FreqProxTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FreqProxFields$FreqProxTermsEnum",
+            self,
+        ))
+    }
+}
+
 impl TermsEnum for FreqProxTermsEnum {
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.attributes
@@ -1605,14 +1689,14 @@ impl TermsEnum for FreqProxTermsEnum {
     /// Equivalent to `FreqProxTermsEnum.docFreq()`, which throws
     /// `UnsupportedOperationException` for the same reason — computing it would
     /// need an extra pass over the postings.
-    fn doc_freq(&self) -> Result<i32> {
+    fn doc_freq(&mut self) -> Result<i32> {
         Err(LuceneError::UnsupportedOperation(
             "buffered postings do not record docFreq".to_string(),
         ))
     }
 
     /// Always fails; see [`TermsEnum::doc_freq`] on this type.
-    fn total_term_freq(&self) -> Result<i64> {
+    fn total_term_freq(&mut self) -> Result<i64> {
         Err(LuceneError::UnsupportedOperation(
             "buffered postings do not record totalTermFreq".to_string(),
         ))
@@ -1760,6 +1844,20 @@ impl DocIdSetIterator for FreqProxDocsEnum {
     }
 }
 
+impl std::fmt::Display for FreqProxDocsEnum {
+    /// `FreqProxDocsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FreqProxFields$FreqProxDocsEnum",
+            self,
+        ))
+    }
+}
+
 impl PostingsEnum for FreqProxDocsEnum {
     fn freq(&self) -> Result<i32> {
         if self.read_term_freq {
@@ -1886,6 +1984,20 @@ impl DocIdSetIterator for FreqProxPostingsEnum {
     /// [`FreqProxDocsEnum`].
     fn cost(&self) -> i64 {
         i64::MAX
+    }
+}
+
+impl std::fmt::Display for FreqProxPostingsEnum {
+    /// `FreqProxPostingsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FreqProxFields$FreqProxPostingsEnum",
+            self,
+        ))
     }
 }
 
@@ -2019,14 +2131,20 @@ impl FreqProxTermsWriter {
 
     /// Discards every buffered posting.
     ///
-    /// Equivalent to `TermsHash.abort()`.
+    /// Equivalent to `TermsHash.abort()` as `FreqProxTermsWriter` inherits it:
+    /// Java's `FreqProxTermsWriter extends TermsHash` and does not override
+    /// `abort`, so calling it on the postings writer *is* calling the base
+    /// method. The per-field release around it is this port's: Java's per-field
+    /// tables charge their postings arrays to the same counter the pools use, so
+    /// resetting the pools releases everything at once, while here each
+    /// [`TermsHashPerField`] holds its own `Vec` and has to hand its slots back.
     pub fn abort(&mut self) {
         for field in &mut self.fields {
             field.release_accounting();
         }
         self.fields.clear();
         self.field_index.clear();
-        self.terms_hash.reset();
+        self.terms_hash.abort();
     }
 
     /// Freezes the buffers into the read-back view the codec consumes.
@@ -2086,7 +2204,7 @@ impl FreqProxTermsWriter {
         &mut self,
         state: &mut SegmentWriteState<'_>,
         delete_terms: &[TermDelete],
-        norms: &dyn NormsProducer,
+        norms: &dyn PostingsNormsProducer,
     ) -> Result<()> {
         let fields = self.freeze();
         self.terms_hash.reset();
@@ -2223,7 +2341,7 @@ mod tests {
             DocValuesType::NONE,
             DocValuesSkipIndexType::NONE,
             -1,
-            HashMap::new(),
+            crate::util::java_collections::JavaStringMap::default(),
             0,
             0,
             0,
@@ -3224,6 +3342,106 @@ mod tests {
     }
 
     // -- PooledSliceReader --------------------------------------------------
+
+    /// Java charges the term hash for the *slots it allocated*, not for the
+    /// terms it used: `PostingsBytesStartArray.init()` allocates two slots and
+    /// charges both, and `grow()` replaces the array with
+    /// `ArrayUtil.oversize(size + 1, bytesPerPosting())` slots and charges the
+    /// difference. This port did neither — it charged one slot per interned
+    /// term — so its RAM-driven flush trigger fired later than Lucene's.
+    #[test]
+    fn the_postings_table_charges_every_slot_it_allocates() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut field = TermsHashPerField::new(
+            1,
+            "body".to_string(),
+            IndexOptions::DOCS,
+            Arc::clone(&bytes_used),
+        );
+
+        // No term is interned in this test, so whatever the hash charged at
+        // construction is all it will ever charge, and the rest of the counter
+        // movement belongs to the postings table.
+        let hash_baseline = bytes_used.load(Ordering::Acquire);
+
+        // The first term allocates two slots, like `createPostingsArray(2)`.
+        let before = bytes_used.load(Ordering::Acquire);
+        field.grow_postings(0);
+        assert_eq!(field.postings.len(), INITIAL_POSTINGS_SLOTS);
+        assert_eq!(
+            bytes_used.load(Ordering::Acquire) - before,
+            INITIAL_POSTINGS_SLOTS as i64 * BYTES_PER_POSTING
+        );
+
+        // A term that fits in the slots already allocated charges nothing.
+        let before = bytes_used.load(Ordering::Acquire);
+        field.grow_postings(1);
+        assert_eq!(field.postings.len(), INITIAL_POSTINGS_SLOTS);
+        assert_eq!(bytes_used.load(Ordering::Acquire), before);
+
+        // The next one grows to `oversize(size + 1, bytesPerPosting)` and
+        // charges exactly the slots it added.
+        let grown = ArrayUtil::oversize(INITIAL_POSTINGS_SLOTS + 1, BYTES_PER_POSTING as usize);
+        assert!(grown > INITIAL_POSTINGS_SLOTS);
+        let before = bytes_used.load(Ordering::Acquire);
+        field.grow_postings(INITIAL_POSTINGS_SLOTS);
+        assert_eq!(field.postings.len(), grown);
+        assert_eq!(
+            bytes_used.load(Ordering::Acquire) - before,
+            (grown - INITIAL_POSTINGS_SLOTS) as i64 * BYTES_PER_POSTING
+        );
+
+        // And releasing hands every allocated slot back.
+        let allocated = field.postings.len() as i64 * BYTES_PER_POSTING;
+        let before = bytes_used.load(Ordering::Acquire);
+        field.release_accounting();
+        assert_eq!(
+            before - bytes_used.load(Ordering::Acquire),
+            allocated + hash_baseline
+        );
+        assert!(field.postings.is_empty());
+    }
+
+    /// Interning terms drives the same growth, so a field holding three terms
+    /// has allocated — and charged for — more slots than it has terms.
+    #[test]
+    fn interning_terms_allocates_slots_ahead_of_the_terms_that_need_them() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut field = TermsHashPerField::new(
+            1,
+            "body".to_string(),
+            IndexOptions::DOCS,
+            Arc::clone(&bytes_used),
+        );
+        for term in [&b"a"[..], b"b", b"c"] {
+            field.intern(&mut pool, term, 0).expect("intern");
+        }
+        assert_eq!(field.num_terms(), 3);
+        assert_eq!(
+            field.postings.len(),
+            ArrayUtil::oversize(INITIAL_POSTINGS_SLOTS + 1, BYTES_PER_POSTING as usize)
+        );
+        assert!(field.postings.len() > field.num_terms() as usize);
+        // Every term still reads back its own slot.
+        for term_id in 0..3 {
+            assert!(field.posting(term_id).byte_start >= 0);
+        }
+    }
+
+    /// `TermsHash.abort()` drops every buffered byte and gives the counter back
+    /// what the pool charged.
+    #[test]
+    fn aborting_a_terms_hash_releases_its_pool() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut hash = TermsHash::new(Arc::clone(&bytes_used));
+        hash.pool_mut()
+            .add_bytes_ref(b"a term long enough to take a block")
+            .expect("intern");
+        assert!(bytes_used.load(Ordering::Acquire) > 0);
+        hash.abort();
+        assert_eq!(bytes_used.load(Ordering::Acquire), 0);
+    }
 
     #[test]
     fn a_pooled_slice_reader_reads_the_stream_as_a_data_input() {

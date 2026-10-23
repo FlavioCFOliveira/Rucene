@@ -150,19 +150,51 @@ impl DocValuesFieldUpdates {
     }
 
     fn add_internal(&mut self, doc: i32, has_value_mask: u64) -> usize {
+        // `DocValuesFieldUpdates.addInternal` grows the structures only when the
+        // buffer is full, and grows them through `grow(size + 1)`.
         if self.size == self.docs.len() {
-            self.docs.reserve(PAGE_SIZE);
-            self.values.reserve(PAGE_SIZE);
-            for _ in 0..PAGE_SIZE {
-                self.docs.push(0);
-                self.values.push(UpdateValue::Reset);
-            }
+            self.grow(self.size + 1);
         }
         let packed = ((doc as u64) << SHIFT) | has_value_mask;
         self.docs[self.size] = packed;
         let idx = self.size;
         self.size += 1;
         idx
+    }
+
+    /// Makes room for at least `size` entries.
+    ///
+    /// Equivalent to `DocValuesFieldUpdates.grow(int)` together with the
+    /// `BinaryDocValuesFieldUpdates.grow(int)` and
+    /// `NumericDocValuesFieldUpdates.grow(int)` overrides: Java splits the
+    /// entries across a `PagedMutable docs` on the base class and the value
+    /// arrays on each subclass, and every override grows its own arrays after
+    /// calling `super.grow(size)`. This port keeps one buffer per concern in a
+    /// single type, so the one method grows both.
+    ///
+    /// The growth policy is `AbstractPagedMutable.grow(long)`'s: nothing happens
+    /// when the buffer is already long enough, and otherwise it becomes
+    /// `size + max(size >> 3, 3)` entries. Charging that shape matters because
+    /// [`ram_bytes_used`](Accountable::ram_bytes_used) counts the buffer, and
+    /// that figure drives when buffered updates are written to disk.
+    fn grow(&mut self, size: usize) {
+        if size <= self.docs.len() {
+            return;
+        }
+        let extra = std::cmp::max(size >> 3, 3);
+        self.resize(size + extra);
+    }
+
+    /// Exchanges the entries at `i` and `j`.
+    ///
+    /// Equivalent to `DocValuesFieldUpdates.swap(int, int)` together with the
+    /// `BinaryDocValuesFieldUpdates` and `NumericDocValuesFieldUpdates`
+    /// overrides, which swap their own value columns after calling
+    /// `super.swap(i, j)`. One method covers both columns here for the same
+    /// reason [`grow`](Self::grow) does.
+    fn swap(&mut self, i: usize, j: usize) {
+        self.docs.swap(i, j);
+        self.values.swap(i, j);
     }
 
     /// Freezes internal data structures and sorts updates by docID for
@@ -223,18 +255,28 @@ impl DocValuesFieldUpdates {
     /// Stable sort by docID (ascending), preserving insertion order for ties
     /// so the last update to a given docID wins during iteration.
     fn sort(&mut self) {
-        // Create ordinal indices for stable sort.
+        // Java sorts with an `IntroSorter` over an `ords` array that records each
+        // entry's original position, so that ties on docID keep insertion order
+        // and the last update to a docID wins; its `swap` moves the ords and the
+        // entries together. This port computes the same permutation with a
+        // stable sort and then applies it in place through
+        // [`swap`](Self::swap), which is where Java's `swap` override does its
+        // work.
         let mut ords: Vec<usize> = (0..self.size).collect();
-        ords.sort_by(|&a, &b| {
-            let doc_a = self.docs[a] >> SHIFT;
-            let doc_b = self.docs[b] >> SHIFT;
-            doc_a.cmp(&doc_b).then(a.cmp(&b))
-        });
-        let old_docs = self.docs.clone();
-        let old_values: Vec<UpdateValue> = self.values.clone();
+        ords.sort_by_key(|&i| self.docs[i] >> SHIFT);
+
+        // `ords[new] = old`; invert it into "the entry at `old` belongs at
+        // `new`", which is the form the in-place swap loop consumes.
+        let mut destination = vec![0usize; self.size];
         for (new_pos, &old_pos) in ords.iter().enumerate() {
-            self.docs[new_pos] = old_docs[old_pos];
-            self.values[new_pos] = old_values[old_pos].clone();
+            destination[old_pos] = new_pos;
+        }
+        for i in 0..self.size {
+            while destination[i] != i {
+                let j = destination[i];
+                self.swap(i, j);
+                destination.swap(i, j);
+            }
         }
     }
 
@@ -283,13 +325,19 @@ impl Accountable for DocValuesFieldUpdates {
                 _ => 0,
             })
             .sum();
+        // Java's tail is
+        // `NUM_BYTES_OBJECT_HEADER + 2 * Integer.BYTES + 2 + Long.BYTES +
+        // NUM_BYTES_OBJECT_REF` (`DocValuesFieldUpdates.java:416-423`); it is
+        // written out literally here so the constant does not drift with Rust's
+        // own type sizes.
         docs_size
             + values_size
             + binary_size
             + RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
-            + (2 * std::mem::size_of::<i32>()) as i64
-            + std::mem::size_of::<bool>() as i64
-            + std::mem::size_of::<i64>() as i64
+            + 2 * 4
+            + 2
+            + 8
+            + RamUsageEstimator::NUM_BYTES_OBJECT_REF
     }
 }
 
@@ -702,6 +750,67 @@ mod tests {
         assert_eq!(merged.next_doc().unwrap(), 7);
         assert_eq!(merged.long_value(), 70);
         assert_eq!(merged.next_doc().unwrap(), NO_MORE_DOCS);
+    }
+
+    /// `grow` follows `AbstractPagedMutable.grow(long)`: a buffer that is
+    /// already long enough is left alone, and otherwise it becomes
+    /// `size + max(size >> 3, 3)` entries. The port previously added a fixed
+    /// 1024 entries at a time, which charged RAM in the wrong steps.
+    #[test]
+    fn grow_follows_lucenes_paged_mutable_growth() {
+        let mut updates = DocValuesFieldUpdates::new(1_000, -1, "f", DocValuesType::NUMERIC);
+        // Start from an empty buffer so the policy is visible.
+        updates.docs.clear();
+        updates.values.clear();
+
+        updates.grow(1);
+        assert_eq!(updates.docs.len(), 4, "1 + max(0, 3)");
+        assert_eq!(updates.values.len(), updates.docs.len());
+
+        updates.grow(4);
+        assert_eq!(updates.docs.len(), 4, "already long enough");
+
+        updates.grow(5);
+        assert_eq!(updates.docs.len(), 8, "5 + max(0, 3)");
+
+        updates.grow(64);
+        assert_eq!(updates.docs.len(), 72, "64 + max(8, 3)");
+    }
+
+    /// `swap` exchanges the doc entry and its value together, which is what
+    /// Java's base `swap` plus the numeric and binary overrides do between them.
+    #[test]
+    fn swap_moves_the_doc_entry_and_its_value_together() {
+        let mut updates = DocValuesFieldUpdates::new(10, -1, "f", DocValuesType::NUMERIC);
+        updates.add_long(1, 100);
+        updates.add_long(2, 200);
+        updates.swap(0, 1);
+        assert_eq!(updates.docs[0] >> SHIFT, 2);
+        assert_eq!(updates.docs[1] >> SHIFT, 1);
+        assert!(matches!(updates.values[0], UpdateValue::Long(200)));
+        assert!(matches!(updates.values[1], UpdateValue::Long(100)));
+    }
+
+    /// The in-place sort must still be stable: with several updates to the same
+    /// docID the *last* one has to win, which is what `finish` promises and what
+    /// the iterator relies on.
+    #[test]
+    fn sorting_in_place_keeps_the_last_update_to_a_doc() {
+        let mut updates = DocValuesFieldUpdates::new(10, -1, "f", DocValuesType::NUMERIC);
+        for (doc, value) in [(5, 1), (1, 2), (5, 3), (3, 4), (1, 5), (5, 6)] {
+            updates.add_long(doc, value);
+        }
+        updates.finish().unwrap();
+        let mut it = updates.iterator();
+        let mut seen = Vec::new();
+        loop {
+            let doc = it.next_doc().unwrap();
+            if doc == crate::search::NO_MORE_DOCS {
+                break;
+            }
+            seen.push((doc, it.long_value()));
+        }
+        assert_eq!(seen, vec![(1, 5), (3, 4), (5, 6)]);
     }
 
     #[test]

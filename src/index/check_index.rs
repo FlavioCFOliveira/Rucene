@@ -618,6 +618,13 @@ impl BufferingInfoStream {
 }
 
 impl InfoStream for BufferingInfoStream {
+    fn java_class_name(&self) -> &'static str {
+        // Java has no dedicated class here: `checkIndex` writes into a
+        // `PrintStream` over a `ByteArrayOutputStream`, so that is the class
+        // an instance of this would report.
+        "java.io.PrintStream"
+    }
+
     fn message(&self, _component: &str, message: &str) {
         self.messages
             .lock()
@@ -832,30 +839,33 @@ impl CheckIndex {
             // Do not use `SegmentInfos::read_latest_commit`, since the spooky
             // retrying it does is not necessary here (we hold the write lock);
             // always open old indices if codecs are around.
-            let infos =
-                match SegmentInfos::read_commit_with_min_version(self.dir.as_ref(), file_name, 0) {
-                    Ok(infos) => infos,
-                    Err(error) => {
-                        if self.fail_fast {
-                            return Err(error);
-                        }
-                        let message = if is_last_commit {
-                            format!(
-                                "ERROR: could not read latest commit point from segments file \
-                                 \"{file_name}\" in directory"
-                            )
-                        } else {
-                            format!(
-                                "ERROR: could not read old (not latest) commit point segments \
-                                 file \"{file_name}\" in directory"
-                            )
-                        };
-                        msg(self.info(), &message);
-                        msg(self.info(), &format!("{error}"));
-                        result.missing_segments = true;
-                        return Ok(result);
+            let infos = match SegmentInfos::read_commit_with_min_version(
+                Arc::clone(&self.dir),
+                file_name,
+                0,
+            ) {
+                Ok(infos) => infos,
+                Err(error) => {
+                    if self.fail_fast {
+                        return Err(error);
                     }
-                };
+                    let message = if is_last_commit {
+                        format!(
+                            "ERROR: could not read latest commit point from segments file \
+                                 \"{file_name}\" in directory"
+                        )
+                    } else {
+                        format!(
+                            "ERROR: could not read old (not latest) commit point segments \
+                                 file \"{file_name}\" in directory"
+                        )
+                    };
+                    msg(self.info(), &message);
+                    msg(self.info(), &format!("{error}"));
+                    result.missing_segments = true;
+                    return Ok(result);
+                }
+            };
 
             if is_last_commit {
                 // Record the latest commit point: we will deeply check all
@@ -913,7 +923,7 @@ impl CheckIndex {
         let segments_file_name = last_commit.segments_file_name();
         result.segments_file_name = segments_file_name.clone();
         result.num_segments = num_segments;
-        result.user_data = last_commit.user_data().clone();
+        result.user_data = last_commit.user_data().to_std();
         let user_data_string = if result.user_data.is_empty() {
             String::new()
         } else {
@@ -1260,7 +1270,7 @@ impl CheckIndex {
                 info_stream,
                 &format!("    size (MB)={:.3}", seg_info_stat.size_mb),
             );
-            let diagnostics = info.info.get_diagnostics().clone();
+            let diagnostics = info.info.get_diagnostics().to_std();
             if !diagnostics.is_empty() {
                 msg(info_stream, &format!("    diagnostics = {diagnostics:?}"));
             }
@@ -4180,6 +4190,26 @@ pub struct IndexUpgrader {
 }
 
 impl IndexUpgrader {
+    /// Parses `args` and runs the upgrade.
+    ///
+    /// Equivalent to the whole body of `IndexUpgrader.main(String[])`, which is
+    /// `parseArgs(args).upgrade()`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's entry point is a
+    /// `public static void main`, which the JVM invokes for a process and which
+    /// lets an `IOException` escape to terminate it. A library crate has no
+    /// process entry point, so this is a plain function returning the failure
+    /// instead; a `[[bin]]` target wanting Lucene's command line calls it and
+    /// maps the error onto its own exit code.
+    ///
+    /// # Errors
+    ///
+    /// Propagates an invalid command line, a directory that cannot be opened,
+    /// and whatever [`IndexUpgrader::upgrade`] raises.
+    pub fn do_main<S: AsRef<str>>(args: &[S]) -> Result<()> {
+        Self::parse_args(args)?.upgrade()
+    }
+
     /// Writes to standard error how the tool is invoked.
     ///
     /// Equivalent to `IndexUpgrader.printUsage()`.
@@ -4354,9 +4384,16 @@ impl IndexUpgrader {
         // `get_live_commit_data`; it reads the same value from the commit the
         // writer is about to open on, which is exactly what Java's writer
         // initialises its `commitUserData` from (`IndexWriter.java:1122`).
-        let commit_user_data = SegmentInfos::read_latest_commit(self.dir.as_ref())
-            .map(|infos| infos.user_data().clone())
-            .unwrap_or_default();
+        let commit_user_data: Vec<(String, String)> =
+            SegmentInfos::read_latest_commit(Arc::clone(&self.dir))
+                .map(|infos| {
+                    infos
+                        .user_data()
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
 
         let inner_policy = self.iwc.merge_policy();
         self.iwc
@@ -4543,8 +4580,8 @@ impl crate::index::point_values::IntersectVisitor for ConstantRelationIntersectV
         &self,
         _min_packed_value: &[u8],
         _max_packed_value: &[u8],
-    ) -> crate::index::point_values::Relation {
-        self.relation
+    ) -> Result<crate::index::point_values::Relation> {
+        Ok(self.relation)
     }
 }
 
@@ -4597,27 +4634,27 @@ impl VerifyPointsVisitor {
         let global_min_packed_value = values.min_packed_value()?;
         let global_max_packed_value = values.max_packed_value()?;
 
-        if i64::from(values.doc_count()) > values.size() {
+        if i64::from(values.doc_count()?) > values.size()? {
             return Err(check_index_error(format!(
                 "point values for field \"{field_name}\" claims to have size={} points and \
                  inconsistent docCount={}",
-                values.size(),
-                values.doc_count()
+                values.size()?,
+                values.doc_count()?
             )));
         }
-        if values.doc_count() > max_doc {
+        if values.doc_count()? > max_doc {
             return Err(check_index_error(format!(
                 "point values for field \"{field_name}\" claims to have docCount={} but that's \
                  greater than maxDoc={max_doc}",
-                values.doc_count()
+                values.doc_count()?
             )));
         }
         match global_min_packed_value.as_ref() {
             None => {
-                if values.size() != 0 {
+                if values.size()? != 0 {
                     return Err(check_index_error(format!(
                         "getMinPackedValue is null points for field \"{field_name}\" yet size={}",
-                        values.size()
+                        values.size()?
                     )));
                 }
             }
@@ -4632,10 +4669,10 @@ impl VerifyPointsVisitor {
         }
         match global_max_packed_value.as_ref() {
             None => {
-                if values.size() != 0 {
+                if values.size()? != 0 {
                     return Err(check_index_error(format!(
                         "getMaxPackedValue is null points for field \"{field_name}\" yet size={}",
-                        values.size()
+                        values.size()?
                     )));
                 }
             }
@@ -4771,17 +4808,17 @@ impl crate::index::point_values::IntersectVisitor for VerifyPointsVisitor {
         &self,
         _min_packed_value: &[u8],
         _max_packed_value: &[u8],
-    ) -> crate::index::point_values::Relation {
+    ) -> Result<crate::index::point_values::Relation> {
         // The query shape is always claimed to be complex enough to cross every
         // cell, so the codec passes each packed value through `visit_with_value`.
         //
         // **Divergence from Lucene 10.5.0.** Java also records the cell bounds
         // here and checks them against the global minimum and maximum. This
-        // signature returns a `Relation` and takes `&self`, so it cannot do
-        // either; `visit_with_value` performs the per-point bound check, and
-        // the cell-versus-global check is done up front in
-        // [`VerifyPointsVisitor::new`] from the same statistics.
-        crate::index::point_values::Relation::CellCrossesQuery
+        // signature takes `&self`, so it cannot do either; `visit_with_value`
+        // performs the per-point bound check, and the cell-versus-global check
+        // is done up front in [`VerifyPointsVisitor::new`] from the same
+        // statistics.
+        Ok(crate::index::point_values::Relation::CellCrossesQuery)
     }
 }
 
@@ -4816,8 +4853,8 @@ pub fn test_points(
             let values = points_reader.get_values(&field_info.name)?;
             status.total_value_fields += 1;
 
-            let size = values.size();
-            let doc_count = values.doc_count();
+            let size = values.size()?;
+            let doc_count = values.doc_count()?;
 
             let mut crossing = ConstantRelationIntersectVisitor {
                 relation: crate::index::point_values::Relation::CellCrossesQuery,

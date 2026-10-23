@@ -3,7 +3,7 @@
 //! Covers `MergeScheduler` with its `MergeSource`, `SerialMergeScheduler`,
 //! `NoMergeScheduler`, `ConcurrentMergeScheduler` and `MergeRateLimiter`.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -40,7 +40,7 @@ pub trait MergeSource: Send + Sync {
 /// Decides when and on which thread merges run.
 ///
 /// Equivalent to `org.apache.lucene.index.MergeScheduler`.
-pub trait MergeScheduler: Send + Sync {
+pub trait MergeScheduler: Send + Sync + std::fmt::Display {
     /// Runs whatever merges `merge_source` currently offers.
     ///
     /// Equivalent to `MergeScheduler.merge(MergeSource, MergeTrigger)`.
@@ -164,9 +164,9 @@ impl MergeScheduler for NoMergeScheduler {
 
 /// Default number of merges that may run at once when the count is not derived
 /// from the machine.
-pub const DEFAULT_MAX_MERGE_COUNT: usize = 6;
+pub const DEFAULT_MAX_MERGE_COUNT: i32 = 6;
 /// Default number of merge threads.
-pub const DEFAULT_MAX_THREAD_COUNT: usize = 3;
+pub const DEFAULT_MAX_THREAD_COUNT: i32 = 3;
 /// Sentinel telling `set_max_merges_and_threads` to derive both counts from the
 /// machine's core count.
 ///
@@ -200,8 +200,19 @@ const MIN_BIG_MERGE_MB: f64 = 50.0;
 /// reproduces the concurrency and the `max_thread_count` bound but not the
 /// dynamic re-rating; the rate limiter is honoured per merge instead.
 pub struct ConcurrentMergeScheduler {
-    max_thread_count: usize,
-    max_merge_count: usize,
+    /// How many merges may run at once, and how many may be queued before the
+    /// producer is stalled.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.maxThreadCount` and
+    /// `maxMergeCount`, which start at
+    /// [`AUTO_DETECT_MERGES_AND_THREADS`] and are resolved by
+    /// [`init_dynamic_defaults`](Self::init_dynamic_defaults) on the first
+    /// merge — which is why `getMaxThreadCount()` and `toString()` report `-1`
+    /// on a scheduler that has not merged yet. Java mutates them under the
+    /// scheduler's own monitor; here they are atomics, because the merge path
+    /// holds only `&self`.
+    max_thread_count: AtomicI32,
+    max_merge_count: AtomicI32,
     /// Merges currently running, for `merge_thread_count()`.
     running: AtomicU64,
     /// Per-merge IO throttle rate for a forced merge.
@@ -306,8 +317,8 @@ impl ConcurrentMergeScheduler {
     /// Creates a scheduler with Lucene's default thread and merge counts.
     pub fn new() -> Self {
         Self {
-            max_thread_count: DEFAULT_MAX_THREAD_COUNT,
-            max_merge_count: DEFAULT_MAX_MERGE_COUNT,
+            max_thread_count: AtomicI32::new(AUTO_DETECT_MERGES_AND_THREADS),
+            max_merge_count: AtomicI32::new(AUTO_DETECT_MERGES_AND_THREADS),
             running: AtomicU64::new(0),
             force_merge_mb_per_sec: Mutex::new(f64::INFINITY),
             do_auto_io_throttle: AtomicBool::new(false),
@@ -383,8 +394,10 @@ impl ConcurrentMergeScheduler {
                 "maxThreadCount should be <= maxMergeCount (= {max_merge_count})"
             )));
         }
-        self.max_thread_count = max_thread_count as usize;
-        self.max_merge_count = max_merge_count as usize;
+        self.max_thread_count
+            .store(max_thread_count, Ordering::Release);
+        self.max_merge_count
+            .store(max_merge_count, Ordering::Release);
         Ok(())
     }
 
@@ -395,10 +408,11 @@ impl ConcurrentMergeScheduler {
     /// `spins` selects the conservative defaults for rotational storage; `false`
     /// derives both counts from [`std::thread::available_parallelism`], mirroring
     /// Java's `Runtime.availableProcessors()`.
-    pub fn set_default_max_merges_and_threads(&mut self, spins: bool) {
+    pub fn set_default_max_merges_and_threads(&self, spins: bool) {
         if spins {
-            self.max_thread_count = 1;
-            self.max_merge_count = 6;
+            self.max_thread_count.store(1, Ordering::Release);
+            self.max_merge_count
+                .store(DEFAULT_MAX_MERGE_COUNT, Ordering::Release);
             return;
         }
         let core_count = std::thread::available_parallelism()
@@ -407,8 +421,9 @@ impl ConcurrentMergeScheduler {
         // If indexing at full throttle, merging costs about as much work as
         // indexing/flushing overall for some data structures (kNN vectors), so
         // half the cores go to merges, exactly as Java's comment explains.
-        self.max_thread_count = (core_count / 2).max(1);
-        self.max_merge_count = self.max_thread_count + 5;
+        let threads = ((core_count / 2).max(1)) as i32;
+        self.max_thread_count.store(threads, Ordering::Release);
+        self.max_merge_count.store(threads + 5, Ordering::Release);
     }
 
     /// Sets the per-merge IO throttle rate for a forced merge.
@@ -485,13 +500,13 @@ impl ConcurrentMergeScheduler {
     }
 
     /// Returns the configured thread count.
-    pub fn get_max_thread_count(&self) -> usize {
-        self.max_thread_count
+    pub fn get_max_thread_count(&self) -> i32 {
+        self.max_thread_count.load(Ordering::Acquire)
     }
 
     /// Returns the configured merge count.
-    pub fn get_max_merge_count(&self) -> usize {
-        self.max_merge_count
+    pub fn get_max_merge_count(&self) -> i32 {
+        self.max_merge_count.load(Ordering::Acquire)
     }
 }
 
@@ -531,7 +546,8 @@ impl ConcurrentMergeScheduler {
             let merge = &thread.merge;
             // Pause the merge when max_thread_count is smaller than the number
             // of big merges running.
-            let do_pause = (idx as i64) < big_merge_count as i64 - self.max_thread_count as i64;
+            let do_pause =
+                (idx as i64) < big_merge_count as i64 - self.get_max_thread_count() as i64;
             let new_mb_per_sec = if do_pause {
                 0.0
             } else if merge.max_num_segments != -1 {
@@ -568,7 +584,7 @@ impl ConcurrentMergeScheduler {
     pub fn maybe_stall(&self, merge_source: &dyn MergeSource) -> bool {
         let mut start_stall_time: Option<Instant> = None;
         while merge_source.has_pending_merges()
-            && self.merge_thread_count() >= self.max_merge_count as u64
+            && self.merge_thread_count() >= self.get_max_merge_count().max(0) as u64
         {
             // Merging has fallen behind: `max_merge_count` merges are already
             // running and at least one more is pending. Stall the producer so
@@ -715,7 +731,7 @@ impl ConcurrentMergeScheduler {
                 .lock()
                 .map(|threads| threads.iter().map(|t| t.merge.clone()).collect())
                 .unwrap_or_default();
-            if running.len() > self.max_thread_count {
+            if running.len() > self.get_max_thread_count().max(0) as usize {
                 // More merges than threads allowed already counts as backlog.
                 cur_backlog = true;
             } else {
@@ -780,10 +796,42 @@ impl ConcurrentMergeScheduler {
     /// the `spins` argument that `set_default_max_merges_and_threads` already
     /// accepts, and defaults it to `false` — the same choice Java makes on every
     /// platform where the probe fails.
-    pub fn init_dynamic_defaults(&mut self) {
-        if self.max_thread_count == 0 {
+    pub fn init_dynamic_defaults(&self) {
+        if self.get_max_thread_count() == AUTO_DETECT_MERGES_AND_THREADS {
             self.set_default_max_merges_and_threads(false);
+            if self.verbose() {
+                self.message(&format!(
+                    "initDynamicDefaults maxThreadCount={} maxMergeCount={}",
+                    self.get_max_thread_count(),
+                    self.get_max_merge_count()
+                ));
+            }
         }
+    }
+
+    /// Creates the state for one merge thread and names it.
+    ///
+    /// Equivalent to `ConcurrentMergeScheduler.getMergeThread(MergeSource, OneMerge)`
+    /// (`ConcurrentMergeScheduler.java:672-678`), which Java declares
+    /// `protected` so a subclass can hand back its own `MergeThread`; the name
+    /// it gives — `Lucene Merge Thread #N`, from a counter this scheduler owns
+    /// — is what the info stream reports.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java returns a `Thread` subclass and
+    /// marks it a daemon. Rust cannot subclass a thread, so what is created is
+    /// the *state* the scheduler tracks — the divergence already declared on
+    /// [`MergeThreadState`] — and `mergeSource` is not carried in it, because
+    /// the thread this port spawns is handed the source directly. Nothing
+    /// corresponds to `setDaemon(true)`: the threads are scoped and joined
+    /// before [`merge`](MergeScheduler::merge) returns, so none can outlive it.
+    pub fn get_merge_thread(&self, merge: OneMerge) -> Arc<MergeThreadState> {
+        Arc::new(MergeThreadState::new(
+            merge,
+            format!(
+                "Lucene Merge Thread #{}",
+                self.merge_thread_counter.fetch_add(1, Ordering::AcqRel)
+            ),
+        ))
     }
 
     /// Returns the executor a merge should use for its own internal parallelism.
@@ -877,8 +925,8 @@ impl std::fmt::Display for ConcurrentMergeScheduler {
         write!(
             f,
             "ConcurrentMergeScheduler: maxThreadCount={}, maxMergeCount={}, ioThrottle={}",
-            self.max_thread_count,
-            self.max_merge_count,
+            self.get_max_thread_count(),
+            self.get_max_merge_count(),
             self.do_auto_io_throttle.load(Ordering::Acquire)
         )
     }
@@ -894,6 +942,11 @@ impl MergeScheduler for ConcurrentMergeScheduler {
     }
 
     fn merge(&self, merge_source: &dyn MergeSource, _trigger: MergeTrigger) -> Result<()> {
+        // `ConcurrentMergeScheduler.merge` resolves the auto-detected counts
+        // before it looks at the backlog (`ConcurrentMergeScheduler.java:538`
+        // through `initialize`), so a scheduler that was never configured picks
+        // them up here.
+        self.init_dynamic_defaults();
         let mut first_error: Option<LuceneError> = None;
 
         std::thread::scope(|scope| {
@@ -907,13 +960,7 @@ impl MergeScheduler for ConcurrentMergeScheduler {
                 let Some(merge) = merge_source.get_next_merge() else {
                     break;
                 };
-                let state = Arc::new(MergeThreadState::new(
-                    merge.clone(),
-                    format!(
-                        "Lucene Merge Thread #{}",
-                        self.merge_thread_counter.fetch_add(1, Ordering::AcqRel)
-                    ),
-                ));
+                let state = self.get_merge_thread(merge.clone());
                 self.update_io_throttle(&state.merge, &state.rate_limiter);
                 if let Ok(mut threads) = self.merge_threads.lock() {
                     threads.push(Arc::clone(&state));
@@ -934,7 +981,7 @@ impl MergeScheduler for ConcurrentMergeScheduler {
                         other => other,
                     }
                 }));
-                if handles.len() >= self.max_thread_count {
+                if handles.len() >= self.get_max_thread_count().max(1) as usize {
                     for handle in handles.drain(..) {
                         match handle.join() {
                             Ok(Err(err)) if first_error.is_none() => first_error = Some(err),
@@ -1310,6 +1357,15 @@ impl MultiIndexMergeScheduler {
     }
 
     /// Returns the name identifying this scheduler's index.
+    ///
+    /// Equivalent to `MultiIndexMergeScheduler.getDirectory()`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java returns the `Directory` itself,
+    /// which its `sync()` compares with `equals` to decide which merge threads
+    /// belong to this index. That comparison only exists because Java tags each
+    /// `MergeSource` with its directory, which this port does not do — see the
+    /// divergence declared on the type — so nothing here needs a `Directory`,
+    /// and a name is what identifies the index in the info stream.
     pub fn get_directory_name(&self) -> &str {
         &self.directory_name
     }
@@ -1327,6 +1383,39 @@ impl MultiIndexMergeScheduler {
     /// `initialize`, so this is the only way its scheduler learns where to log.
     pub fn set_info_stream(&self, info_stream: Arc<dyn InfoStream>) {
         self.shared.set_info_stream(info_stream);
+    }
+}
+
+impl std::fmt::Display for SerialMergeScheduler {
+    /// `SerialMergeScheduler` declares no `toString()`, so Java falls back to
+    /// `Object.toString()` — `getClass().getName() + "@" + hex identity hash`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.SerialMergeScheduler",
+            self,
+        ))
+    }
+}
+
+impl std::fmt::Display for NoMergeScheduler {
+    /// `NoMergeScheduler` declares no `toString()`, so Java falls back to
+    /// `Object.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.NoMergeScheduler",
+            self,
+        ))
+    }
+}
+
+impl std::fmt::Display for MultiIndexMergeScheduler {
+    /// `MultiIndexMergeScheduler` declares no `toString()`, so Java falls back
+    /// to `Object.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.MultiIndexMergeScheduler",
+            self,
+        ))
     }
 }
 

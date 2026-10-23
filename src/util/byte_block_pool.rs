@@ -33,12 +33,19 @@
 //!   `AtomicI64` that already accounts indexing RAM, and released blocks are
 //!   dropped rather than recycled, which in Rust costs one `free` instead of
 //!   keeping a global block cache alive.
+//! * Lucene's `buffers` is a `byte[][]` whose slots are `null` until a block is
+//!   allocated into them, and which is grown — never shrunk — by
+//!   `ArrayUtil.oversize`. A `Vec<Vec<u8>>` has no empty slots, so the length of
+//!   that reference array is carried separately in `buffers_length` and grown by
+//!   the same rule. It is not bookkeeping for its own sake:
+//!   `ByteBlockPool.ramBytesUsed()` charges the *whole* reference array, empty
+//!   slots included, so without it the estimate cannot reproduce Lucene's.
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
-use crate::util::{Accountable, StringHelper};
+use crate::util::{Accountable, ArrayUtil, RamUsageEstimator, StringHelper};
 
 /// Number of bits used to address a byte inside one block.
 ///
@@ -49,6 +56,12 @@ pub const BYTE_BLOCK_SHIFT: u32 = 15;
 ///
 /// Equivalent to `ByteBlockPool.BYTE_BLOCK_SIZE`.
 pub const BYTE_BLOCK_SIZE: usize = 1 << BYTE_BLOCK_SHIFT;
+
+/// Number of block slots the pool starts with.
+///
+/// Equivalent to the initial length of `ByteBlockPool.buffers`, which Java
+/// declares as `new byte[10][]`.
+const INITIAL_BUFFERS_LENGTH: usize = 10;
 
 /// Mask that extracts the position of a global offset inside its block.
 ///
@@ -77,6 +90,14 @@ pub const TERM_HASH_SEED: i32 = 0;
 #[derive(Debug)]
 pub struct ByteBlockPool {
     buffers: Vec<Vec<u8>>,
+    /// Length of the `byte[][]` Lucene would be holding.
+    ///
+    /// Equivalent to `ByteBlockPool.buffers.length`. See the module-level
+    /// adaptation notes: this port stores only the blocks it allocated, so the
+    /// length of Lucene's reference array — which
+    /// [`ram_bytes_used`](Accountable::ram_bytes_used) charges in full — is
+    /// tracked here instead of being read off `buffers`.
+    buffers_length: usize,
     /// Index of the head block, or `-1` before the first allocation.
     buffer_upto: i32,
     /// Next free position inside the head block.
@@ -94,6 +115,7 @@ impl ByteBlockPool {
     pub fn new(bytes_used: Arc<AtomicI64>) -> Self {
         Self {
             buffers: Vec::new(),
+            buffers_length: INITIAL_BUFFERS_LENGTH,
             buffer_upto: -1,
             byte_upto: BYTE_BLOCK_SIZE,
             byte_offset: -(BYTE_BLOCK_SIZE as i32),
@@ -151,10 +173,18 @@ impl ByteBlockPool {
 
     /// Returns the byte at the given global offset.
     ///
+    /// Equivalent to `org.apache.lucene.util.ByteBlockPool#readByte(long)`
+    /// (`ByteBlockPool.java:335-339`).
+    ///
+    /// Java's parameter is a `long`; this port takes an `i32` because its
+    /// global offsets are bounded by `i32`
+    /// ([`next_buffer`](Self::next_buffer) refuses to grow past that), so a
+    /// wider parameter could only carry an offset the pool cannot hold.
+    ///
     /// # Panics
     ///
     /// Panics if the offset addresses a block that was never allocated.
-    pub fn byte_at(&self, offset: i32) -> u8 {
+    pub fn read_byte(&self, offset: i32) -> u8 {
         let offset = offset as usize;
         self.buffers[offset >> BYTE_BLOCK_SHIFT][offset & BYTE_BLOCK_MASK]
     }
@@ -176,6 +206,13 @@ impl ByteBlockPool {
                     "ByteBlockPool exceeded the addressable 2 GB of buffered postings".to_string(),
                 )
             })?;
+        if 1 + self.buffer_upto == self.buffers_length as i32 {
+            // The reference array is full - expand it, as `nextBuffer` does.
+            self.buffers_length = ArrayUtil::oversize(
+                self.buffers_length + 1,
+                RamUsageEstimator::NUM_BYTES_OBJECT_REF as usize,
+            );
+        }
         self.buffers.push(vec![0u8; BYTE_BLOCK_SIZE]);
         self.buffer_upto += 1;
         self.byte_upto = 0;
@@ -209,6 +246,9 @@ impl ByteBlockPool {
         }
         let released = (self.buffer_upto as i64 + 1) * BYTE_BLOCK_SIZE as i64;
         self.bytes_used.fetch_sub(released, Ordering::AcqRel);
+        // `buffers_length` is deliberately left alone: Java nulls the slots and
+        // recycles the blocks but never shrinks the reference array, so a reset
+        // pool still reports the larger shallow size it grew to.
         self.buffers.clear();
         self.buffer_upto = -1;
         self.byte_upto = BYTE_BLOCK_SIZE;
@@ -424,9 +464,54 @@ impl ByteBlockPool {
     }
 }
 
+impl ByteBlockPool {
+    /// Shallow size of the Java class, the fixed part of
+    /// [`ByteBlockPool::ram_bytes_used`](Accountable::ram_bytes_used).
+    ///
+    /// Equivalent to the private `ByteBlockPool.BASE_RAM_BYTES`, which Java
+    /// computes as
+    /// `RamUsageEstimator.shallowSizeOfInstance(ByteBlockPool.class)`: an object
+    /// header, the three references `buffers`, `buffer` and `allocator`, and the
+    /// three `int` fields `bufferUpto`, `byteUpto` and `byteOffset`. Measured
+    /// against `lucene-core-10.5.0.jar` on a JVM with compressed references,
+    /// that is 40 bytes.
+    pub const BASE_RAM_BYTES: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + 3 * RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + 3 * 4,
+    );
+}
+
 impl Accountable for ByteBlockPool {
+    /// Returns an estimate of the heap this pool occupies.
+    ///
+    /// Equivalent to `org.apache.lucene.util.ByteBlockPool#ramBytesUsed`
+    /// (`ByteBlockPool.java:341-348`), which is `BASE_RAM_BYTES` plus
+    /// `RamUsageEstimator.shallowSizeOf(buffers)` plus
+    /// `RamUsageEstimator.sizeOfObject(buf)` for every block.
+    ///
+    /// Three parts of that are easy to lose, and each one changes the answer:
+    /// the shallow size of the pool object itself; the *whole* reference array,
+    /// including the slots that hold no block and the ones a
+    /// [`reset`](Self::reset) emptied; and the 16-byte array header every block
+    /// carries, which is why the estimate is never a whole number of blocks.
+    /// A pool holding a single block reports 32880, not 32768.
+    ///
+    /// This is an *estimate of heap*, not the allocator's charge: what the pool
+    /// adds to the `Counter` it shares with the rest of the indexing chain is
+    /// exactly [`BYTE_BLOCK_SIZE`] per block. The two numbers are different and
+    /// are not interchangeable.
     fn ram_bytes_used(&self) -> i64 {
-        self.buffers.len() as i64 * BYTE_BLOCK_SIZE as i64
+        let mut size = Self::BASE_RAM_BYTES;
+        // `RamUsageEstimator.shallowSizeOf(byte[][])` for the reference array.
+        size += RamUsageEstimator::align_object_size(
+            RamUsageEstimator::NUM_BYTES_ARRAY_HEADER
+                + RamUsageEstimator::NUM_BYTES_OBJECT_REF * self.buffers_length as i64,
+        );
+        for buffer in &self.buffers {
+            size += RamUsageEstimator::size_of(buffer);
+        }
+        size
     }
 }
 
@@ -553,7 +638,44 @@ mod tests {
         pool.buffer_mut(0)[BYTE_BLOCK_SIZE - 1] = 42;
         pool.next_buffer().expect("block");
         pool.buffer_mut(1)[0] = 43;
-        assert_eq!(pool.byte_at(BYTE_BLOCK_SIZE as i32 - 1), 42);
-        assert_eq!(pool.byte_at(BYTE_BLOCK_SIZE as i32), 43);
+        assert_eq!(pool.read_byte(BYTE_BLOCK_SIZE as i32 - 1), 42);
+        assert_eq!(pool.read_byte(BYTE_BLOCK_SIZE as i32), 43);
+    }
+
+    /// `readByte(long)` reads one byte at a global offset, across block
+    /// boundaries, and agrees with `readBytes` over the same range.
+    #[test]
+    fn read_byte_reads_one_byte_at_any_global_offset() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(bytes_used);
+
+        // Fill two whole blocks plus a little, with a position-dependent value
+        // so a misread offset cannot pass.
+        let total = BYTE_BLOCK_SIZE * 2 + 37;
+        let payload: Vec<u8> = (0..total).map(|i| (i % 251) as u8).collect();
+        pool.append(&payload).expect("append");
+
+        for offset in 0..total {
+            assert_eq!(
+                pool.read_byte(offset as i32),
+                payload[offset],
+                "offset={offset}"
+            );
+        }
+
+        // The same bytes through the bulk reader.
+        let mut buf = vec![0u8; total];
+        pool.read_bytes(0, &mut buf, 0, total);
+        assert_eq!(buf, payload);
+
+        // The block boundaries specifically.
+        assert_eq!(
+            pool.read_byte(BYTE_BLOCK_SIZE as i32 - 1),
+            payload[BYTE_BLOCK_SIZE - 1]
+        );
+        assert_eq!(
+            pool.read_byte(BYTE_BLOCK_SIZE as i32),
+            payload[BYTE_BLOCK_SIZE]
+        );
     }
 }

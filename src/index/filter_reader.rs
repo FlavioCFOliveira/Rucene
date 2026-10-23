@@ -17,14 +17,17 @@ use crate::error::Result;
 use crate::index::codec_reader::CodecReader;
 use crate::index::index_reader::{CacheHelper, IndexReaderCore, StoredFields};
 use crate::index::leaf_reader::{LeafMetaData, LeafReader, TermVectors};
+use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
 use crate::index::{
     BinaryDocValues, ByteVectorValues, DocValuesSkipper, FieldInfos, FloatVectorValues,
-    NumericDocValues, PointValues, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
-    Terms,
+    NumericDocValues, PointValues, SeekStatus, SortedDocValues, SortedNumericDocValues,
+    SortedSetDocValues, TermState, Terms, TermsEnum,
 };
 use crate::search::knn::KnnCollector;
 use crate::search::AcceptDocs;
+use crate::util::attribute::AttributeSource;
 use crate::util::Bits;
+use crate::util::{BytesRef, IOBooleanSupplier};
 
 /// A [`LeafReader`] that forwards every call to a wrapped reader.
 ///
@@ -35,9 +38,10 @@ use crate::util::Bits;
 /// inheritance, so the port is a concrete struct that forwards everything; a
 /// caller that wants to intercept one method wraps this type and forwards the
 /// rest to it, which is the same delegation with one more level of indirection.
-/// Java's `FilterLeafReader.FilterFields`, `FilterTerms`, `FilterTermsEnum` and
-/// `FilterPostingsEnum` inner classes are pure delegation too and are not
-/// reproduced: nothing in the crate subclasses them.
+/// Java's `FilterLeafReader.FilterTerms` and `FilterTermsEnum` inner classes
+/// are ported the same way, as [`FilterTerms`] and [`FilterTermsEnum`]. The
+/// `FilterFields` and `FilterPostingsEnum` inner classes are pure delegation
+/// too and are not reproduced: nothing in the crate subclasses them.
 pub struct FilterLeafReader {
     /// The wrapped reader.
     pub(crate) inner: Arc<dyn LeafReader>,
@@ -46,6 +50,19 @@ pub struct FilterLeafReader {
 impl std::fmt::Debug for FilterLeafReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FilterLeafReader").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for FilterLeafReader {
+    /// Port of `FilterLeafReader.toString()` (`FilterLeafReader.java:416-422`).
+    ///
+    /// Java hardcodes the literal `"FilterLeafReader("` instead of asking for
+    /// its own simple name, so every subclass that does not override
+    /// `toString()` — `ExitableFilterAtomicReader` and
+    /// `SoftDeletesFilterLeafReader` among them — also renders under this name.
+    /// Measured against `lucene-core-10.5.0.jar`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FilterLeafReader({})", self.inner)
     }
 }
 
@@ -192,6 +209,185 @@ impl LeafReader for FilterLeafReader {
     }
 }
 
+/// A [`Terms`] that forwards every call to a wrapped instance.
+///
+/// Equivalent to `org.apache.lucene.index.FilterLeafReader.FilterTerms`, whose
+/// `in` field this struct holds and whose every method is plain delegation.
+///
+/// **Divergence from Lucene 10.5.0.** Java makes it an abstract class that a
+/// caller extends, overriding only what it needs; Rust has no implementation
+/// inheritance, so the port is a concrete struct that a caller wraps and
+/// forwards to — the same delegation with one more level of indirection. See
+/// [`FilterLeafReader`] for the same divergence on the reader itself.
+pub struct FilterTerms {
+    inner: Box<dyn Terms>,
+}
+
+impl FilterTerms {
+    /// Wraps `inner`.
+    ///
+    /// Equivalent to `FilterTerms(Terms)`. Java refuses a null delegate with a
+    /// `NullPointerException`; Rust's type system refuses it at compile time.
+    pub fn new(inner: Box<dyn Terms>) -> Self {
+        Self { inner }
+    }
+
+    /// Returns the wrapped instance.
+    ///
+    /// Equivalent to reading the protected `FilterTerms.in` field, which the
+    /// Java subclasses do to reach the delegate without going through their own
+    /// overrides.
+    pub fn get_delegate(&self) -> &dyn Terms {
+        self.inner.as_ref()
+    }
+}
+
+impl Terms for FilterTerms {
+    fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
+        self.inner.iterator()
+    }
+
+    fn size(&self) -> i64 {
+        self.inner.size()
+    }
+
+    fn sum_total_term_freq(&self) -> i64 {
+        self.inner.sum_total_term_freq()
+    }
+
+    fn sum_doc_freq(&self) -> i64 {
+        self.inner.sum_doc_freq()
+    }
+
+    fn doc_count(&self) -> i32 {
+        self.inner.doc_count()
+    }
+
+    fn has_freqs(&self) -> bool {
+        self.inner.has_freqs()
+    }
+
+    fn has_offsets(&self) -> bool {
+        self.inner.has_offsets()
+    }
+
+    fn has_positions(&self) -> bool {
+        self.inner.has_positions()
+    }
+
+    fn has_payloads(&self) -> bool {
+        self.inner.has_payloads()
+    }
+
+    fn stats(&self) -> String {
+        self.inner.stats()
+    }
+}
+
+/// A [`TermsEnum`] that forwards every call to a wrapped instance.
+///
+/// Equivalent to `org.apache.lucene.index.FilterLeafReader.FilterTermsEnum`.
+///
+/// **Divergence from Lucene 10.5.0.** As [`FilterTerms`]: Java's abstract class
+/// becomes a concrete struct the caller wraps.
+pub struct FilterTermsEnum {
+    inner: Box<dyn TermsEnum>,
+}
+
+impl FilterTermsEnum {
+    /// Wraps `inner`.
+    ///
+    /// Equivalent to `FilterTermsEnum(TermsEnum)`.
+    pub fn new(inner: Box<dyn TermsEnum>) -> Self {
+        Self { inner }
+    }
+
+    /// Returns the wrapped instance.
+    ///
+    /// Equivalent to reading the protected `FilterTermsEnum.in` field.
+    pub fn get_delegate(&self) -> &dyn TermsEnum {
+        self.inner.as_ref()
+    }
+}
+
+impl std::fmt::Display for FilterTermsEnum {
+    /// `FilterLeafReader.FilterTermsEnum` declares no `toString()`, so
+    /// `java.lang.Object`'s applies. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FilterLeafReader$FilterTermsEnum",
+            self,
+        ))
+    }
+}
+
+impl TermsEnum for FilterTermsEnum {
+    fn attributes(&mut self) -> &mut AttributeSource {
+        self.inner.attributes()
+    }
+
+    fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {
+        self.inner.seek_ceil(text)
+    }
+
+    fn seek_exact(&mut self, text: &BytesRef) -> Result<bool> {
+        self.inner.seek_exact(text)
+    }
+
+    fn seek_ord(&mut self, ord: i64) -> Result<()> {
+        self.inner.seek_ord(ord)
+    }
+
+    fn next(&mut self) -> Result<Option<BytesRef>> {
+        self.inner.next()
+    }
+
+    fn term(&self) -> Result<BytesRef> {
+        self.inner.term()
+    }
+
+    fn ord(&self) -> Result<i64> {
+        self.inner.ord()
+    }
+
+    fn doc_freq(&mut self) -> Result<i32> {
+        self.inner.doc_freq()
+    }
+
+    fn total_term_freq(&mut self) -> Result<i64> {
+        self.inner.total_term_freq()
+    }
+
+    fn postings(
+        &mut self,
+        reuse: Option<Box<dyn PostingsEnum>>,
+        flags: i32,
+    ) -> Result<Box<dyn PostingsEnum>> {
+        self.inner.postings(reuse, flags)
+    }
+
+    fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+        self.inner.impacts(flags)
+    }
+
+    fn seek_term_state(&mut self, text: &BytesRef, state: &dyn TermState) -> Result<()> {
+        self.inner.seek_term_state(text, state)
+    }
+
+    fn prepare_seek_exact<'a>(
+        &'a mut self,
+        text: &BytesRef,
+    ) -> Result<Option<Box<dyn IOBooleanSupplier + 'a>>> {
+        self.inner.prepare_seek_exact(text)
+    }
+
+    fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        self.inner.term_state()
+    }
+}
+
 /// A [`CodecReader`] that forwards every call to a wrapped codec reader.
 ///
 /// Equivalent to `org.apache.lucene.index.FilterCodecReader`.
@@ -203,6 +399,17 @@ pub struct FilterCodecReader {
 impl std::fmt::Debug for FilterCodecReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FilterCodecReader").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for FilterCodecReader {
+    /// `org.apache.lucene.index.FilterCodecReader` declares no `toString()` of
+    /// its own — unlike its sibling `FilterLeafReader` — so `Object`'s applies.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FilterCodecReader",
+            self,
+        ))
     }
 }
 
@@ -416,6 +623,19 @@ impl std::fmt::Debug for LiveDocsCodecReader {
         f.debug_struct("LiveDocsCodecReader")
             .field("num_docs", &self.num_docs)
             .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for LiveDocsCodecReader {
+    /// The anonymous `FilterCodecReader` that `FilterCodecReader.wrapLiveDocs`
+    /// returns overrides no `toString()`, so `Object`'s applies. The binary
+    /// name javac gives it was measured from `lucene-core-10.5.0.jar`:
+    /// `org.apache.lucene.index.FilterCodecReader$1`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FilterCodecReader$1",
+            self,
+        ))
     }
 }
 

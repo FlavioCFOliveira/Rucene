@@ -23,10 +23,21 @@ use crate::search::top_field_docs::TopFieldDocs;
 /// manager should be created for each search, because of its internal state.
 ///
 /// Java also keeps a deprecated five-argument constructor whose
-/// `supportsConcurrency` flag it ignores, and a deprecated `getCollectors()`
-/// accessor over the collectors it has handed out; neither is ported, because
-/// the first carries no behaviour and the second would require the manager to
-/// retain collectors it has already given away.
+/// `supportsConcurrency` flag it ignores — it simply delegates to the
+/// four-argument one — and a deprecated `getCollectors()` accessor over the
+/// collectors it has handed out. Neither is ported.
+///
+/// The constructor carries no behaviour at all. `getCollectors()` is marked for
+/// removal in Lucene 11, its javadoc directing callers to the `TopFieldDocs`
+/// that reduction returns, and nothing in the Lucene 10.5.0 tree calls it.
+/// Porting it would mean the manager retaining every collector it has already
+/// given away, which in Java costs nothing because both sides hold the same
+/// object, but in Rust would force
+/// [`CollectorManager::Collector`](crate::search::CollectorManager) to become a
+/// shared, interior-mutable handle for this manager alone — changing the
+/// ownership contract of the whole collection path for an accessor that is
+/// scheduled to disappear. The absence is confined to this one method: every
+/// value it would expose is reachable through the reduced `TopFieldDocs`.
 #[derive(Debug)]
 pub struct TopFieldCollectorManager {
     sort: Sort,

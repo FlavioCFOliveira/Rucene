@@ -244,7 +244,7 @@ impl PostingsFormat for Lucene104PostingsFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codecs::postings::{NormsProducer, NumericDocValues};
+    use crate::codecs::postings::{PostingsNormsProducer, PostingsNumericDocValues};
     use crate::codecs::stub::{FieldInfo, FieldInfos};
     use crate::index::SegmentInfo;
     use crate::store::{Directory, RamDirectory};
@@ -256,14 +256,14 @@ mod tests {
     #[derive(Debug, Default, Clone)]
     struct TestNormsProducer;
 
-    impl NumericDocValues for TestNormsProducer {
+    impl PostingsNumericDocValues for TestNormsProducer {
         fn get(&self, _doc_id: i32) -> Result<i64> {
             Ok(0)
         }
     }
 
-    impl NormsProducer for TestNormsProducer {
-        fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+    impl PostingsNormsProducer for TestNormsProducer {
+        fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn PostingsNumericDocValues>> {
             Ok(Box::new(TestNormsProducer))
         }
     }

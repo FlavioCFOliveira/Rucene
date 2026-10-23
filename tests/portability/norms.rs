@@ -190,6 +190,11 @@ struct ScaledSimilarity {
 }
 
 impl Similarity for ScaledSimilarity {
+    fn java_class_name(&self) -> &'static str {
+        // The Java fixture declares it as a nested class of `NormsFixture`.
+        "org.apache.lucene.rucene.codec.NormsFixture$ScaledSimilarity"
+    }
+
     fn compute_norm(&self, state: &FieldInvertState) -> rucene::error::Result<i64> {
         Ok(state.length() as i64 * self.factor)
     }
@@ -780,7 +785,7 @@ fn dump(producer: Option<&dyn NormsProducer>, field_infos: &FieldInfos) -> Vec<S
 fn read_java_index(dir: &Path) -> Vec<String> {
     let codec = ensure_codec();
     let directory: Arc<dyn Directory> = Arc::new(FSDirectory::open(dir).expect("directory"));
-    let infos = SegmentInfos::read_latest_commit(directory.as_ref()).expect("segments file");
+    let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory)).expect("segments file");
     let segment_info = infos.info(0).info.clone();
     let field_infos = codec
         .field_infos_format()
@@ -1080,7 +1085,7 @@ fn rucene_reads_the_norms_of_a_compound_file_segment_written_by_lucene() {
     let codec = ensure_codec();
     let directory: Arc<dyn Directory> =
         Arc::new(FSDirectory::open(java_tmp.path()).expect("directory"));
-    let infos = SegmentInfos::read_latest_commit(directory.as_ref()).expect("segments file");
+    let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory)).expect("segments file");
     let segment_info = infos.info(0).info.clone();
     let compound = codec
         .compound_format()

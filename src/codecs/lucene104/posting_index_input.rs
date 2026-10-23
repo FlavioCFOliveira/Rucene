@@ -36,7 +36,7 @@ impl PostingIndexInput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{ByteArrayDataOutput, MockIndexInput};
+    use crate::store::{MockIndexInput, VecDataOutput};
 
     #[test]
     fn posting_index_input_round_trip() {
@@ -47,7 +47,7 @@ mod tests {
         }
 
         let mut encoded = original;
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         for_util.encode(&mut encoded, 16, &mut out).unwrap();
 
         let data = out.into_inner();

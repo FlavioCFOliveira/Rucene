@@ -655,6 +655,10 @@ impl Analyzer for StandardAnalyzer {
         &self.state
     }
 
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.analysis.standard.StandardAnalyzer"
+    }
+
     fn create_components(&self, _field_name: &str) -> TokenStreamComponents {
         let tokenizer = Rc::new(RefCell::new(new_standard_tokenizer()));
         tokenizer

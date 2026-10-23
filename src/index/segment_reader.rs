@@ -11,7 +11,7 @@
 #![deny(unsafe_code)]
 
 use std::collections::HashMap;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -31,7 +31,7 @@ use crate::codecs::DocValuesSkipper;
 use crate::error::{LuceneError, Result};
 use crate::index::codec_reader::CodecReader;
 use crate::index::index_reader::{
-    CacheHelper, CacheKey, ClosedListener, IndexReaderCore, StoredFields,
+    java_object_to_string, CacheHelper, CacheKey, ClosedListener, IndexReaderCore, StoredFields,
 };
 use crate::index::leaf_reader::{LeafMetaData, LeafReader, TermVectors};
 use crate::index::{
@@ -369,10 +369,22 @@ impl Drop for SegmentCoreReaders {
 }
 
 impl CacheHelper for SegmentCoreReaders {
+    /// Equivalent to `SegmentCoreReaders.getCacheHelper()`
+    /// (`SegmentCoreReaders.java:199-201`) and to the anonymous
+    /// `IndexReader.CacheHelper` it hands back, whose `getKey()` answers
+    /// `coreCacheKey`.
+    ///
+    /// Java keeps that anonymous object in a field and returns it; both of its
+    /// methods read state that lives on `SegmentCoreReaders` itself, so this
+    /// port implements the trait on the type rather than building a second
+    /// object to hold a borrow of it — which is why there is no `get_cache_helper`
+    /// to call.
     fn get_key(&self) -> &CacheKey {
         &self.core_cache_key
     }
 
+    /// The `addClosedListener` of the same anonymous `CacheHelper`, which
+    /// appends to `coreClosedListeners`.
     fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
         if let Ok(mut listeners) = self.core_closed_listeners.lock() {
             listeners.push(listener);
@@ -877,6 +889,18 @@ pub struct DocValuesLeafReader {
     doc_values_producer: Arc<dyn DocValuesProducer>,
 }
 
+impl Display for DocValuesLeafReader {
+    /// `org.apache.lucene.index.DocValuesLeafReader` declares no `toString()`,
+    /// so `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash in hexadecimal. See [`java_object_to_string`].
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&java_object_to_string(
+            "org.apache.lucene.index.DocValuesLeafReader",
+            self,
+        ))
+    }
+}
+
 impl DocValuesLeafReader {
     /// Creates a doc-values-only reader.
     pub fn new(
@@ -1094,6 +1118,27 @@ impl Debug for SegmentReader {
             .field("max_doc", &self.max_doc)
             .field("num_docs", &self.num_docs)
             .finish_non_exhaustive()
+    }
+}
+
+impl Display for SegmentReader {
+    /// Port of `SegmentReader.toString()` (`SegmentReader.java:296-301`).
+    ///
+    /// Java reverse-computes the *pending* deletion count — the deletes this
+    /// reader knows about that the commit does not — and hands it to
+    /// `SegmentCommitInfo.toString(int)`, which adds it to the committed
+    /// `delCount` before rendering. Note that the maximum comes from
+    /// `si.info.maxDoc()` rather than this reader's own `maxDoc()`.
+    ///
+    /// Measured against `lucene-core-10.5.0.jar`: a three-document segment with
+    /// no deletions renders as `_0(10.5.0):C3`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        // `self.max_doc` is initialised from `segment_info.info.max_doc()`, which
+        // is the very value Java reads here — `SegmentReader.maxDoc()` returns
+        // `si.info.maxDoc()` too. Reading the field avoids the fallible
+        // accessor, which `Display` has no way to propagate.
+        let pending = self.max_doc - self.num_docs - self.segment_info.get_del_count();
+        f.write_str(&self.segment_info.to_string_with_pending_del_count(pending))
     }
 }
 
@@ -1544,10 +1589,21 @@ impl LeafReader for SegmentReader {
         } else {
             Ok(())
         };
-        let listener_result = self.reader_cache_helper.notify_closed_listeners();
         core_result?;
-        dv_result?;
-        listener_result
+        dv_result
+    }
+
+    /// Tells everything registered on this reader's own cache helper that the
+    /// reader has closed.
+    ///
+    /// Equivalent to `SegmentReader.notifyReaderClosedListeners()`
+    /// (`SegmentReader.java:323-328`), which `IndexReader.decRef` runs *after*
+    /// `doClose()` and before the parent readers are told — which is why it is
+    /// an override here rather than the tail of
+    /// [`do_close`](Self::do_close): a failure inside `doClose()` must not stop
+    /// the listeners from running.
+    fn notify_reader_closed_listeners(&self) -> Result<()> {
+        self.reader_cache_helper.notify_closed_listeners()
     }
 
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
@@ -3047,7 +3103,7 @@ mod tests {
                 DocValuesType::NUMERIC,
                 DocValuesSkipIndexType::NONE,
                 -1, // doc_values_gen
-                HashMap::new(),
+                crate::util::java_collections::JavaStringMap::default(),
                 1, // point_dimension_count
                 1, // point_index_dimension_count
                 4, // point_num_bytes
@@ -3311,5 +3367,29 @@ impl CodecReader for SegmentReader {
 
     fn get_vector_reader(&self) -> Result<Option<Arc<dyn KnnVectorsReader>>> {
         SegmentReader::get_vector_reader(self)
+    }
+}
+
+impl std::fmt::Display for SegmentCoreReaders {
+    /// Port of `SegmentCoreReaders.toString()`, which names itself
+    /// `SegmentCoreReader`, in the singular.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SegmentCoreReader({})", self.segment)
+    }
+}
+
+impl std::fmt::Display for SegmentDocValuesProducer {
+    /// Port of `SegmentDocValuesProducer.toString()`.
+    ///
+    /// Java counts `dvProducers`, the list of *distinct* producers, one per
+    /// doc-values generation; this port keys them by field, so the distinct
+    /// producers are counted through the generation list, which has the same
+    /// length.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SegmentDocValuesProducer(producers={})",
+            self.dv_gens.len()
+        )
     }
 }

@@ -73,7 +73,7 @@ use crate::{
     error::{LuceneError, Result},
     search::{DocIdSetIterator, NO_MORE_DOCS},
     store::{
-        ByteArrayDataOutput, DataOutput, Directory, IndexInput, IndexOutput, DEFAULT_IO_CONTEXT,
+        DataOutput, Directory, IndexInput, IndexOutput, VecDataOutput, DEFAULT_IO_CONTEXT,
         READONCE_IO_CONTEXT,
     },
     util::{
@@ -834,6 +834,8 @@ impl PointWriter for HeapPointWriter {
     }
 }
 
+/// Port of `org.apache.lucene.util.bkd.HeapPointReader`.
+///
 /// In-memory point reader that reads from a [`HeapPointWriter`].
 pub struct HeapPointReader<'a> {
     writer: &'a HeapPointWriter,
@@ -894,8 +896,18 @@ impl OfflinePointWriter {
         temp_file_name_prefix: &str,
         desc: &str,
     ) -> Result<Self> {
-        let name = format!("{}_bkd_{}.tmp", temp_file_name_prefix, desc);
-        let out = temp_dir.create_output(&name, &*DEFAULT_IO_CONTEXT)?;
+        // Lucene calls `tempDir.createTempOutput(tempFileNamePrefix, "bkd_" + desc,
+        // IOContext.DEFAULT)` and takes the name the directory chose
+        // (`OfflinePointWriter.java:49`). That name carries the directory's own
+        // counter — `<prefix>_bkd_<desc>_<n>.tmp` — which is what keeps two
+        // writers created with the same prefix and description from opening the
+        // same file. Building the name here instead would drop the counter.
+        let out = temp_dir.create_temp_output(
+            temp_file_name_prefix,
+            &format!("bkd_{desc}"),
+            &*DEFAULT_IO_CONTEXT,
+        )?;
+        let name = out.name().to_string();
         Ok(Self {
             config,
             temp_dir,
@@ -1030,6 +1042,8 @@ impl OfflinePointWriter {
     }
 }
 
+/// Port of `org.apache.lucene.util.bkd.OfflinePointReader`.
+///
 /// Disk-backed point reader for records previously written by
 /// [`OfflinePointWriter`].
 pub struct OfflinePointReader {
@@ -1410,6 +1424,22 @@ impl DocIdsWriter {
                 "bit set block declares {long_len} words for {count} doc ids, but at most {max_words} are possible"
             )));
         }
+        // The same boundary drawn from the other side. `writeIdsAsBitSet` sets
+        // exactly one bit per doc id (`DocIdsWriter.java:206-219`), so a block
+        // naming `count` doc ids needs at least `count` bits to put them in.
+        // Below that the set cannot hold what the block claims, and the
+        // iterator walks off its own end: `DocBaseBitSetIterator::advance` is a
+        // line-for-line port of Java's and asks `nextSetBit` for a bit outside
+        // the set, which is where Java's `assert index >= 0 && index < numBits`
+        // sits (`FixedBitSet.java:415`). With assertions off Java reads a stale
+        // word out of the reused `scratchLongs` and answers a doc id that was
+        // never written. Neither a panic nor a fabricated doc id is acceptable,
+        // so the contradiction is refused where it is read.
+        if (count as i64) > (i64::from(long_len)) << 6 {
+            return Err(LuceneError::CorruptIndex(format!(
+                "bit set block declares {count} doc ids but only {long_len} words to hold them"
+            )));
+        }
         // The same writer-shaped boundary, drawn around the doc base:
         // `writeIdsAsBitSet` writes `offsetWords = min >>> 6` for a doc id
         // `min`, so it is never negative and `offsetWords << 6` never leaves
@@ -1708,7 +1738,7 @@ impl IntersectVisitor for LastLeafDocIdCounter {
         ))
     }
 
-    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Relation {
+    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Result<Relation> {
         unreachable!("BKDReader.isTreeBalanced never compares cells")
     }
 }
@@ -1834,10 +1864,23 @@ impl BKDReader {
         }
         if self.config.num_dims > 1 {
             // High-dimensional trees in pre-8.6 indices are balanced.
-            debug_assert_eq!(
-                1i32 << MathUtil::log(self.num_leaves as i64, 2)?,
-                self.num_leaves
-            );
+            //
+            // This is where Java's `assert 1 << MathUtil.log(numLeaves, 2) ==
+            // numLeaves` sits (`BKDReader.java:135`). `numLeaves` is a vint off
+            // disk, so with assertions off Java answers `true` for a tree that
+            // is not balanced and then walks it with balanced-tree arithmetic,
+            // reaching an `ArrayIndexOutOfBoundsException` further in. That
+            // exception is catchable and a Rust panic is not, so the count is
+            // refused here, at the boundary where it was read rather than where
+            // it is used -- the same rule the HNSW graph reader applies to the
+            // neighbour ordinals behind `assert friendOrd < size`.
+            if 1i32 << MathUtil::log(self.num_leaves as i64, 2)? != self.num_leaves {
+                return Err(LuceneError::CorruptIndex(format!(
+                    "a pre-8.6 tree over {} dimensions declares {} leaves, which is not a power \
+                     of two, so it cannot be the balanced tree that version writes",
+                    self.config.num_dims, self.num_leaves
+                )));
+            }
             return Ok(true);
         }
         if 1i32 << MathUtil::log(self.num_leaves as i64, 2)? != self.num_leaves {
@@ -1906,7 +1949,7 @@ impl BKDReader {
             // `visitDocIDs`. `BKDReader.visit` must do the same so the trace
             // carries the tree-level `compare` that precedes the leaf-level
             // refinement `compare` inside `visitDocValuesWithCardinality`.
-            match visitor.compare(&node.min_packed, &node.max_packed) {
+            match visitor.compare(&node.min_packed, &node.max_packed)? {
                 Relation::CellOutsideQuery => return Ok(()),
                 Relation::CellInsideQuery => {
                     return self.visit_all(node, inner, leaf, visitor);
@@ -1922,7 +1965,7 @@ impl BKDReader {
                 }
             }
         }
-        match visitor.compare(&node.min_packed, &node.max_packed) {
+        match visitor.compare(&node.min_packed, &node.max_packed)? {
             Relation::CellOutsideQuery => Ok(()),
             Relation::CellInsideQuery => self.visit_all(node, inner, leaf, visitor),
             Relation::CellCrossesQuery => {
@@ -2012,7 +2055,7 @@ impl BKDReader {
         let count = read_leaf_count(leaf_in.as_mut(), config)?;
         let mut doc_ids = vec![0i32; count];
         DocIdsWriter::read_doc_ids(leaf_in.as_mut(), count, &mut doc_ids, version)?;
-        visitor.grow(count as i32);
+        visitor.grow(count as i32)?;
         let ints_ref = IntsRef::new(doc_ids);
         visitor.visit_ints_ref(&ints_ref)?;
         Ok(())
@@ -2081,7 +2124,7 @@ impl BKDReader {
             //
             // Equivalent to `BKDReader.visitUniqueRawDocValues`: one bulk
             // `visit(DocIdSetIterator, byte[])` call, not N per-doc calls.
-            visitor.grow(doc_ids.len() as i32);
+            visitor.grow(doc_ids.len() as i32)?;
             let mut iter = BkdReaderDocIdSetIterator::new(doc_ids);
             iter.reset(0, doc_ids.len());
             visitor.visit_iterator_with_value(&mut iter, scratch_packed)?;
@@ -2101,7 +2144,7 @@ impl BKDReader {
         } else {
             // Single index dimension: the cell bounds from the index are the
             // bounds of the values, so no refinement is possible.
-            visitor.grow(doc_ids.len() as i32);
+            visitor.grow(doc_ids.len() as i32)?;
         }
         if compressed_dim == -2 {
             visit_sparse_doc_values(
@@ -2151,7 +2194,7 @@ impl BKDReader {
                 return Ok(());
             }
         } else {
-            visitor.grow(doc_ids.len() as i32);
+            visitor.grow(doc_ids.len() as i32)?;
         }
         let compressed_dim = read_compressed_dim(leaf_in.as_mut(), version, config)?;
         if compressed_dim == -1 {
@@ -2220,11 +2263,11 @@ impl BKDReader {
             &mut max_packed,
         )?;
 
-        let relation = visitor.compare(&min_packed, &max_packed);
+        let relation = visitor.compare(&min_packed, &max_packed)?;
         if relation == Relation::CellOutsideQuery {
             return Ok(true);
         }
-        visitor.grow(doc_ids.len() as i32);
+        visitor.grow(doc_ids.len() as i32)?;
         if relation == Relation::CellInsideQuery {
             let ints_ref = IntsRef::new(doc_ids.to_vec());
             visitor.visit_ints_ref(&ints_ref)?;
@@ -2444,12 +2487,12 @@ impl PointValues for BKDReader {
         self.point_tree()
     }
 
-    fn size(&self) -> i64 {
-        self.point_count
+    fn size(&self) -> Result<i64> {
+        Ok(self.point_count)
     }
 
-    fn doc_count(&self) -> i32 {
-        self.doc_count
+    fn doc_count(&self) -> Result<i32> {
+        Ok(self.doc_count)
     }
 
     fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
@@ -2708,9 +2751,9 @@ impl BKDPointTree {
     fn add_all(&mut self, grown: bool, visitor: &mut dyn IntersectVisitor) -> Result<()> {
         let mut grown = grown;
         if !grown {
-            let size = self.size();
+            let size = self.size()?;
             if size <= i32::MAX as i64 {
-                visitor.grow(size as i32);
+                visitor.grow(size as i32)?;
                 grown = true;
             }
         }
@@ -2769,7 +2812,7 @@ impl BKDPointTree {
 }
 
 impl PointTree for BKDPointTree {
-    fn clone_tree(&self) -> Box<dyn PointTree> {
+    fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
         // Re-root at the current node: the clone's stack holds only the current
         // frame, so its `move_to_parent` stops here. Fresh input clones keep
         // the clone independent of the original's stream position.
@@ -2781,7 +2824,7 @@ impl PointTree for BKDPointTree {
             .leaf
             .clone_input()
             .expect("INVARIANT: cloning a readable index input does not fail");
-        Box::new(Self {
+        Ok(Box::new(Self {
             config: self.config.clone(),
             version: self.version,
             num_leaves: self.num_leaves,
@@ -2794,7 +2837,7 @@ impl PointTree for BKDPointTree {
             is_tree_balanced: self.is_tree_balanced,
             scratch_doc_ids: Vec::new(),
             scratch_ints_ref: IntsRef::default(),
-        })
+        }))
     }
 
     fn move_to_child(&mut self) -> Result<bool> {
@@ -2826,15 +2869,15 @@ impl PointTree for BKDPointTree {
         Ok(true)
     }
 
-    fn min_packed_value(&self) -> &[u8] {
-        &self.current().min_packed
+    fn min_packed_value(&self) -> Result<&[u8]> {
+        Ok(&self.current().min_packed)
     }
 
-    fn max_packed_value(&self) -> &[u8] {
-        &self.current().max_packed
+    fn max_packed_value(&self) -> Result<&[u8]> {
+        Ok(&self.current().max_packed)
     }
 
-    fn size(&self) -> i64 {
+    fn size(&self) -> Result<i64> {
         let mut left_most = self.current().node_id;
         while left_most < self.num_leaves {
             left_most *= 2;
@@ -2849,19 +2892,21 @@ impl PointTree for BKDPointTree {
             right_most - left_most + 1 + self.num_leaves
         };
         if self.is_tree_balanced {
-            return size_from_balanced_tree(
+            return Ok(size_from_balanced_tree(
                 left_most,
                 right_most,
                 self.num_leaves,
                 self.point_count,
                 self.config.max_points_in_leaf_node,
-            );
+            ));
         }
         if right_most == self.right_most_leaf_node {
-            (num_leaves as i64 - 1) * self.config.max_points_in_leaf_node as i64
-                + self.last_leaf_node_point_count as i64
+            Ok(
+                (num_leaves as i64 - 1) * self.config.max_points_in_leaf_node as i64
+                    + self.last_leaf_node_point_count as i64,
+            )
         } else {
-            num_leaves as i64 * self.config.max_points_in_leaf_node as i64
+            Ok(num_leaves as i64 * self.config.max_points_in_leaf_node as i64)
         }
     }
 
@@ -3844,7 +3889,7 @@ impl BKDWriter {
             ));
         }
         self.finished = true;
-        self.point_count = tree.size();
+        self.point_count = tree.size()?;
         if self.point_count == 0 {
             return Ok(());
         }
@@ -3921,7 +3966,7 @@ impl BKDWriter {
         data_out: &mut dyn IndexOutput,
         tree: &mut dyn MutablePointTree,
     ) -> Result<()> {
-        let count = tree.size() as usize;
+        let count = tree.size()? as usize;
         {
             let mut points = MutableTreePoints { tree };
             self.sort_by_packed_value(&mut points, 0, count);
@@ -5030,8 +5075,8 @@ impl IntersectVisitor for MergeIntersectsVisitor {
         Ok(())
     }
 
-    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Relation {
-        Relation::CellCrossesQuery
+    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Result<Relation> {
+        Ok(Relation::CellCrossesQuery)
     }
 
     /// # Panics
@@ -5039,7 +5084,7 @@ impl IntersectVisitor for MergeIntersectsVisitor {
     /// Panics when the packed values would not fit one array, which is Java's
     /// `IllegalStateException`; the trait has no error channel here, and Java's
     /// exception is likewise unchecked.
-    fn grow(&mut self, count: i32) {
+    fn grow(&mut self, count: i32) -> Result<()> {
         debug_assert_eq!(self.docs_in_block, 0);
         let count = count as usize;
         if self.doc_ids.len() < count {
@@ -5051,7 +5096,8 @@ impl IntersectVisitor for MergeIntersectsVisitor {
                 ArrayUtil::MAX_ARRAY_LENGTH
             );
             self.packed_values = ArrayUtil::grow_exact(&self.packed_values, packed_values_size);
-        }
+        };
+        Ok(())
     }
 }
 
@@ -5429,18 +5475,18 @@ struct BKDTreeLeafNodes {
 /// growing in-memory file, and returns how many bytes that block holds.
 ///
 /// Equivalent to `org.apache.lucene.util.bkd.BKDWriter#appendBlock`.
-fn append_block(write_buffer: &mut ByteArrayDataOutput, blocks: &mut Vec<Vec<u8>>) -> usize {
+fn append_block(write_buffer: &mut VecDataOutput, blocks: &mut Vec<Vec<u8>>) -> usize {
     let block = write_buffer.as_inner().to_vec();
     let len = block.len();
     blocks.push(block);
     // `ByteBuffersDataOutput.reset()`: the buffer is reused for the next block.
-    *write_buffer = ByteArrayDataOutput::new();
+    *write_buffer = VecDataOutput::new();
     len
 }
 
 fn pack_index(config: &BKDConfig, leaf_nodes: &BKDTreeLeafNodes) -> Result<Vec<u8>> {
     // Reused while packing the index.
-    let mut write_buffer = ByteArrayDataOutput::new();
+    let mut write_buffer = VecDataOutput::new();
     let mut blocks: Vec<Vec<u8>> = Vec::new();
     let mut last_split_values = vec![0u8; config.packed_index_bytes_length() as usize];
     let mut negative_deltas = vec![false; config.num_index_dims as usize];
@@ -5471,7 +5517,7 @@ fn recurse_pack_index(
     config: &BKDConfig,
     leaf_nodes: &BKDTreeLeafNodes,
     min_block_fp: i64,
-    write_buffer: &mut ByteArrayDataOutput,
+    write_buffer: &mut VecDataOutput,
     blocks: &mut Vec<Vec<u8>>,
     last_split_values: &mut [u8],
     negative_deltas: &mut [bool],
@@ -5579,7 +5625,7 @@ fn recurse_pack_index(
     // Java copies the buffer out and *replaces* the placeholder rather than
     // appending, which is why this cannot go through `append_block`.
     let bytes2 = write_buffer.as_inner().to_vec();
-    *write_buffer = ByteArrayDataOutput::new();
+    *write_buffer = VecDataOutput::new();
     let bytes2_len = bytes2.len();
     blocks[idx_sav] = bytes2;
 
@@ -6496,16 +6542,16 @@ mod tests {
     }
 
     impl IntersectVisitor for RangeVisitor {
-        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Result<Relation> {
             let min_v = BitUtil::read_be_int(min_packed, 0);
             let max_v = BitUtil::read_be_int(max_packed, 0);
-            if max_v < self.min || min_v > self.max {
+            Ok(if max_v < self.min || min_v > self.max {
                 Relation::CellOutsideQuery
             } else if min_v >= self.min && max_v <= self.max {
                 Relation::CellInsideQuery
             } else {
                 Relation::CellCrossesQuery
-            }
+            })
         }
         fn visit(&mut self, doc_id: i32) -> Result<()> {
             self.found.push(doc_id);
@@ -6526,16 +6572,16 @@ mod tests {
     }
 
     impl IntersectVisitor for ExactVisitor {
-        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Result<Relation> {
             let min_v = BitUtil::read_be_int(min_packed, 0);
             let max_v = BitUtil::read_be_int(max_packed, 0);
-            if self.value < min_v || self.value > max_v {
+            Ok(if self.value < min_v || self.value > max_v {
                 Relation::CellOutsideQuery
             } else if self.value == min_v && self.value == max_v {
                 Relation::CellInsideQuery
             } else {
                 Relation::CellCrossesQuery
-            }
+            })
         }
         fn visit(&mut self, doc_id: i32) -> Result<()> {
             self.found.push(doc_id);
@@ -6558,23 +6604,28 @@ mod tests {
     }
 
     impl IntersectVisitor for Box2DVisitor {
-        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Result<Relation> {
             let min_x = BitUtil::read_le_int(min_packed, 0);
             let max_x = BitUtil::read_le_int(max_packed, 0);
             let min_y = BitUtil::read_le_int(min_packed, 4);
             let max_y = BitUtil::read_le_int(max_packed, 4);
-            if max_x < self.min_x || min_x > self.max_x || max_y < self.min_y || min_y > self.max_y
-            {
-                Relation::CellOutsideQuery
-            } else if min_x >= self.min_x
-                && max_x <= self.max_x
-                && min_y >= self.min_y
-                && max_y <= self.max_y
-            {
-                Relation::CellInsideQuery
-            } else {
-                Relation::CellCrossesQuery
-            }
+            Ok(
+                if max_x < self.min_x
+                    || min_x > self.max_x
+                    || max_y < self.min_y
+                    || min_y > self.max_y
+                {
+                    Relation::CellOutsideQuery
+                } else if min_x >= self.min_x
+                    && max_x <= self.max_x
+                    && min_y >= self.min_y
+                    && max_y <= self.max_y
+                {
+                    Relation::CellInsideQuery
+                } else {
+                    Relation::CellCrossesQuery
+                },
+            )
         }
         fn visit(&mut self, doc_id: i32) -> Result<()> {
             self.found.push(doc_id);
@@ -6713,14 +6764,15 @@ mod tests {
             Ok(())
         }
 
-        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+        fn compare(&self, min_packed: &[u8], max_packed: &[u8]) -> Result<Relation> {
             let r = self.relate(min_packed, max_packed);
             self.trace.borrow_mut().push(format!("compare {r:?}"));
-            r
+            Ok(r)
         }
 
-        fn grow(&mut self, count: i32) {
+        fn grow(&mut self, count: i32) -> Result<()> {
             self.trace.borrow_mut().push(format!("grow {count}"));
+            Ok(())
         }
     }
 
@@ -7485,5 +7537,31 @@ mod tests {
                 right.node_id, n.split_dim, n.node_id
             );
         }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Object contracts: the `toString()` bodies of the two point writers
+// -----------------------------------------------------------------------------
+
+impl std::fmt::Display for HeapPointWriter {
+    /// Port of `HeapPointWriter.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "HeapPointWriter(count={} size={})",
+            self.next_write, self.size
+        )
+    }
+}
+
+impl std::fmt::Display for OfflinePointWriter {
+    /// Port of `OfflinePointWriter.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "OfflinePointWriter(count={} tempFileName={})",
+            self.count, self.name
+        )
     }
 }

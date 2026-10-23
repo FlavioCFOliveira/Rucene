@@ -201,6 +201,16 @@ const NULL_STRING: &str = "null";
 /// therefore produces one element per code point, where Java produces one per
 /// UTF-16 code unit; the decoded text is the same. Use
 /// [`UnicodeUtil::utf8_to_utf16`] directly when UTF-16 units are required.
+///
+/// # `equals` and `hashCode`
+///
+/// Lucene's `CharsRefBuilder.equals(Object)` and `CharsRefBuilder.hashCode()` both
+/// `throw new UnsupportedOperationException()`: a mutable builder must never be
+/// used as a map key or compared by value, and Lucene enforces that at runtime.
+/// The faithful port of a method that only throws is to leave the trait
+/// unimplemented, so this type deliberately implements neither [`PartialEq`]
+/// nor [`std::hash::Hash`], which turns Java's runtime failure into a compile
+/// error. Compare the built value instead, via `get()`.
 #[derive(Debug, Default, Clone)]
 pub struct CharsRefBuilder {
     r: CharsRef,
@@ -359,6 +369,16 @@ impl Display for CharsRefBuilder {
 /// A builder for [`IntsRef`] instances.
 ///
 /// Port of `org.apache.lucene.util.IntsRefBuilder`.
+///
+/// # `equals` and `hashCode`
+///
+/// Lucene's `IntsRefBuilder.equals(Object)` and `IntsRefBuilder.hashCode()` both
+/// `throw new UnsupportedOperationException()`: a mutable builder must never be
+/// used as a map key or compared by value, and Lucene enforces that at runtime.
+/// The faithful port of a method that only throws is to leave the trait
+/// unimplemented, so this type deliberately implements neither [`PartialEq`]
+/// nor [`std::hash::Hash`], which turns Java's runtime failure into a compile
+/// error. Compare the built value instead, via `get()`.
 #[derive(Debug, Default, Clone)]
 pub struct IntsRefBuilder {
     r: IntsRef,

@@ -209,7 +209,9 @@ mod tests {
         let mut sis = SegmentInfos::new(Version::LATEST.major as i32).unwrap();
         sis.counter = 1;
         sis.changed();
-        sis.user_data = HashMap::from([("user".to_string(), "data".to_string())]);
+        sis.user_data = [("user".to_string(), "data".to_string())]
+            .into_iter()
+            .collect();
         let sci = make_sci(directory.as_ref(), "_0", 42);
         sis.add(sci).unwrap();
         sis.commit(directory.as_ref()).unwrap();
@@ -218,7 +220,7 @@ mod tests {
 
     /// Writes an additional segment and commits, producing a newer version.
     fn add_second_commit(directory: &Arc<dyn Directory>, extra_doc: i32) {
-        let latest = SegmentInfos::read_latest_commit(directory.as_ref()).unwrap();
+        let latest = SegmentInfos::read_latest_commit(Arc::clone(&directory)).unwrap();
         let mut sis = latest.clone();
         sis.set_next_write_generation(latest.generation() + 1)
             .unwrap();

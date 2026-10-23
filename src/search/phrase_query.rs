@@ -55,7 +55,7 @@ const TERM_OPS_PER_POS: i32 = 7;
 /// # Errors
 ///
 /// Propagates any I/O error raised while reading the statistics.
-pub fn term_positions_cost(terms_enum: &dyn TermsEnum) -> Result<f32> {
+pub fn term_positions_cost(terms_enum: &mut dyn TermsEnum) -> Result<f32> {
     let doc_freq = terms_enum.doc_freq()?;
     debug_assert!(doc_freq > 0);
     let total_term_freq = terms_enum.total_term_freq()?;
@@ -766,7 +766,7 @@ impl PhraseWeightImpl for PhraseQueryWeightImpl {
                 self.query.get_positions()[i],
                 vec![t.clone()],
             ));
-            total_match_cost += term_positions_cost(&*te)?;
+            total_match_cost += term_positions_cost(&mut *te)?;
         }
 
         if self.query.get_slop() == 0 {

@@ -2,7 +2,7 @@
 //! `org.apache.lucene.util.automaton.ByteRunnable`.
 
 use crate::error::{LuceneError, Result};
-use crate::util::FixedBitSet;
+use crate::util::{Accountable, FixedBitSet, RamUsageEstimator};
 
 use super::automaton::{append_char_string, Automaton, Transition};
 
@@ -181,6 +181,42 @@ impl RunAutomaton {
     }
 }
 
+impl RunAutomaton {
+    /// Shallow size of the Java class, the fixed part of
+    /// [`RunAutomaton::ram_bytes_used`].
+    ///
+    /// Equivalent to the private `RunAutomaton.BASE_RAM_BYTES`, which Java
+    /// computes as `RamUsageEstimator.shallowSizeOfInstance(RunAutomaton.class)`:
+    /// an object header, the `int` fields `alphabetSize` and `size`, and the
+    /// references `automaton`, `accept`, `transitions`, `points` and `classmap`.
+    /// Measured against `lucene-core-10.5.0.jar` on a JVM with compressed
+    /// references, that is 40 bytes.
+    const BASE_RAM_BYTES: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + 2 * 4
+            + 5 * RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+    );
+}
+
+impl Accountable for RunAutomaton {
+    /// Returns an estimate of the heap this run automaton occupies.
+    ///
+    /// Equivalent to `org.apache.lucene.util.automaton.RunAutomaton#ramBytesUsed`
+    /// (`RunAutomaton.java:206-213`): the shallow size of the class plus the
+    /// accept bit set, the source automaton, and the `classmap`, `points` and
+    /// `transitions` arrays. Java reaches the first two through
+    /// `Accountable.ramBytesUsed()` and `RamUsageEstimator.sizeOfObject`, which
+    /// dispatches to the same method for an `Accountable`.
+    fn ram_bytes_used(&self) -> i64 {
+        Self::BASE_RAM_BYTES
+            + self.accept.ram_bytes_used()
+            + self.automaton.ram_bytes_used()
+            + RamUsageEstimator::size_of_int(&self.classmap)
+            + RamUsageEstimator::size_of_int(&self.points)
+            + RamUsageEstimator::size_of_int(&self.transitions)
+    }
+}
+
 impl std::fmt::Display for RunAutomaton {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut b = String::new();
@@ -226,6 +262,33 @@ impl PartialEq for RunAutomaton {
 }
 
 impl Eq for RunAutomaton {}
+
+impl RunAutomaton {
+    /// Java's `RunAutomaton.hashCode()`, reproduced exactly.
+    ///
+    /// Java hashes only three of the five fields [`PartialEq`] compares —
+    /// `alphabetSize`, `points.length` and `size` — which keeps the contract
+    /// (equal automata agree on all five, hence on these three) while staying
+    /// cheap.
+    pub fn hash_code(&self) -> i32 {
+        const PRIME: i32 = 31;
+        let mut result: i32 = 1;
+        result = PRIME.wrapping_mul(result).wrapping_add(self.alphabet_size);
+        result = PRIME
+            .wrapping_mul(result)
+            .wrapping_add(self.points.len() as i32);
+        result = PRIME.wrapping_mul(result).wrapping_add(self.size);
+        result
+    }
+}
+
+impl std::hash::Hash for RunAutomaton {
+    /// Feeds the exact `i32` that [`RunAutomaton::hash_code`] computes, so this
+    /// is consistent with [`PartialEq`].
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_i32(self.hash_code());
+    }
+}
 
 impl ByteRunnable for RunAutomaton {
     fn step(&self, state: i32, c: i32) -> i32 {

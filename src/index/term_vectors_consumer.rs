@@ -417,8 +417,12 @@ impl TermVectorsConsumerPerField {
     /// Records one occurrence of the term interned at `text_start`.
     ///
     /// Equivalent to `TermsHashPerField.add(int, int)` followed by
-    /// `TermVectorsConsumerPerField.newTerm` or `.addTerm`. `streams` is this
-    /// consumer's own byte pool; `text_start` addresses the *postings* pool.
+    /// `TermVectorsConsumerPerField.newTerm(int, int)` or
+    /// `TermVectorsConsumerPerField.addTerm(int, int)` — the two halves of
+    /// Java's template method, which this port dispatches on the returned
+    /// [`TermSlot`](crate::index::TermSlot) instead of overriding. `streams` is
+    /// this consumer's own byte pool; `text_start` addresses the *postings*
+    /// pool.
     ///
     /// # Errors
     ///
@@ -1214,30 +1218,70 @@ mod tests {
         consumer.fields[index].do_vectors = true;
         consumer.fields[index].do_vector_positions = true;
 
+        let before_term_pool = bytes_used.load(Ordering::Acquire);
         let mut term_pool = ByteBlockPool::new(Arc::clone(&bytes_used));
         let mut state = FieldInvertState::new(
             10,
             "body".to_string(),
             IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
         );
+        // Intern every term before the consumer sees any of them, so that what
+        // the caller's own pool charges can be read off the counter that
+        // accounts for it. That charge is one `BYTE_BLOCK_SIZE` per allocated
+        // block and nothing else; it is deliberately *not*
+        // `ByteBlockPool::ram_bytes_used()`, which is a heap estimate that also
+        // counts the pool object, the whole `byte[][]` reference array and each
+        // block's array header.
+        let mut text_starts = Vec::with_capacity(64);
         for term in 0..64 {
-            let text_start = term_pool
-                .add_bytes_ref(format!("term{term}").as_bytes())
-                .expect("intern");
+            text_starts.push(
+                term_pool
+                    .add_bytes_ref(format!("term{term}").as_bytes())
+                    .expect("intern"),
+            );
+        }
+        let term_pool_charge = bytes_used.load(Ordering::Acquire) - before_term_pool;
+        assert_eq!(
+            term_pool_charge,
+            crate::util::BYTE_BLOCK_SIZE as i64,
+            "64 short terms fit in the pool's first block, so the allocator was \
+             charged exactly one block"
+        );
+        assert_ne!(
+            term_pool_charge,
+            term_pool.ram_bytes_used(),
+            "the allocator's charge and the heap estimate are different numbers, \
+             and this test is about the first one"
+        );
+
+        for (term, text_start) in (0..64).zip(text_starts) {
             state.set_position(term);
             consumer
                 .add(index, &state, text_start, &token(0, 4))
                 .expect("add");
         }
         let charged_before = bytes_used.load(Ordering::Acquire);
-        let term_pool_bytes = term_pool.ram_bytes_used();
-        assert!(charged_before > term_pool_bytes);
+        assert!(charged_before > term_pool_charge);
+        // The per-field term tables charge the consumer's own private counter —
+        // the `Counter.newCounter()` Java hands to the `TermsHash` constructor —
+        // so they never reach the chain's counter and the assertion above cannot
+        // see them. `abort` has to hand those back as well.
+        let private_before = consumer.field_bytes_used.load(Ordering::Acquire);
+        assert!(
+            private_before > 0,
+            "indexing 64 terms must have charged the per-field tables"
+        );
 
         consumer.abort();
         assert_eq!(
             bytes_used.load(Ordering::Acquire),
-            term_pool_bytes,
+            term_pool_charge,
             "only the caller's own term pool may still be charged"
+        );
+        assert_eq!(
+            consumer.field_bytes_used.load(Ordering::Acquire),
+            0,
+            "abort must also release what the per-field tables charged privately"
         );
     }
 
@@ -1462,5 +1506,18 @@ mod tests {
         assert!(field.finish());
         field.do_vectors = false;
         assert!(!field.finish(), "the field did not ask for vectors");
+    }
+}
+
+impl crate::util::Accountable for TermVectorsConsumer {
+    /// Equivalent to the `Accountable` view Lucene exposes for this consumer:
+    /// `StoredFieldsConsumer.accountable` / `TermVectorsConsumer.accountable` /
+    /// `VectorValuesConsumer.getAccountable()`, each of which holds the segment
+    /// writer when there is one and `Accountable.NULL_ACCOUNTABLE` when there is
+    /// not. Implementing the trait on the consumer itself lets
+    /// `IndexingChain.getChildResources()` borrow it, which a `Box<dyn
+    /// Accountable>` view could not offer.
+    fn ram_bytes_used(&self) -> i64 {
+        TermVectorsConsumer::ram_bytes_used(self)
     }
 }

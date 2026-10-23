@@ -908,7 +908,7 @@ fn assert_stored_fields_bytes_equal(java_dir: &Path, rust_dir: &Path, segment: &
 fn open_java_segment(dir: &Path) -> (Arc<dyn Directory>, SegmentInfo, FieldInfos) {
     let codec = ensure_codec();
     let directory: Arc<dyn Directory> = Arc::new(FSDirectory::open(dir).expect("directory"));
-    let infos = SegmentInfos::read_latest_commit(directory.as_ref()).expect("segments file");
+    let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory)).expect("segments file");
     assert_eq!(infos.size(), 1, "the fixture writes exactly one segment");
     let segment_info = infos.info(0).info.clone();
     let field_infos = codec
@@ -1275,7 +1275,7 @@ fn rucene_reads_the_stored_fields_of_a_compound_file_segment_written_by_lucene()
     let codec = ensure_codec();
     let directory: Arc<dyn Directory> =
         Arc::new(FSDirectory::open(java_tmp.path()).expect("directory"));
-    let infos = SegmentInfos::read_latest_commit(directory.as_ref()).expect("segments file");
+    let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory)).expect("segments file");
     let segment_info = infos.info(0).info.clone();
     let compound = codec
         .compound_format()

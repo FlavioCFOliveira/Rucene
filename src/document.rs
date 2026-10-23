@@ -40,12 +40,14 @@ use crate::index::{
     IndexableFieldType, StoredFieldVisitor, StoredFieldVisitorStatus, VectorEncoding,
     VectorSimilarityFunction, MAX_DIMENSIONS, MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
 };
+use crate::search::similarities::java_fmt;
 use crate::search::{
     BoostQuery, ConstantScoreQuery, IndexOrDocValuesQuery,
     IndexSortSortedNumericDocValuesRangeQuery, PointInSetQuery, PointRangeQuery, Query,
     SortedSetSelectorType, SortedSetSortField, TermInSetQuery, TermQuery,
 };
 use crate::store::DataInput;
+use crate::util::java_collections::JavaHashMap;
 use crate::util::BytesRef;
 
 // -----------------------------------------------------------------------------
@@ -117,12 +119,19 @@ pub enum NumericValue {
 }
 
 impl std::fmt::Display for NumericValue {
+    /// Renders the value the way Java's `String.valueOf(Number)` does, which is
+    /// what `Field.toString()` reaches when `fieldsData` holds a boxed number.
+    ///
+    /// The float and double arms go through
+    /// [`java_fmt`](crate::search::similarities::java_fmt) rather than Rust's
+    /// own `Display`, which prints `100` where `Double.toString` prints
+    /// `100.0` and `0.0001` where it prints `1.0E-4`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NumericValue::Int(v) => write!(f, "{v}"),
             NumericValue::Long(v) => write!(f, "{v}"),
-            NumericValue::Float(v) => write!(f, "{v}"),
-            NumericValue::Double(v) => write!(f, "{v}"),
+            NumericValue::Float(v) => f.write_str(&java_fmt::float_to_string(*v)),
+            NumericValue::Double(v) => f.write_str(&java_fmt::double_to_string(*v)),
         }
     }
 }
@@ -519,7 +528,10 @@ pub struct FieldType {
     vector_dimension: i32,
     vector_encoding: VectorEncoding,
     vector_similarity_function: VectorSimilarityFunction,
-    attributes: HashMap<String, String>,
+    /// A `java.util.HashMap` mutated in place by `putAttribute`
+    /// (`FieldType.java`), whose iteration order the `FieldInfo` built from it
+    /// inherits and a `.fnm` therefore records.
+    attributes: JavaHashMap<String>,
 }
 
 impl FieldType {
@@ -543,7 +555,7 @@ impl FieldType {
             vector_dimension: 0,
             vector_encoding: VectorEncoding::FLOAT32,
             vector_similarity_function: VectorSimilarityFunction::EUCLIDEAN,
-            attributes: HashMap::new(),
+            attributes: JavaHashMap::new(),
         }
     }
 
@@ -835,7 +847,7 @@ impl IndexableFieldType for FieldType {
         self.vector_similarity_function
     }
 
-    fn attributes(&self) -> &HashMap<String, String> {
+    fn attributes(&self) -> &JavaHashMap<String> {
         &self.attributes
     }
 }
@@ -1139,6 +1151,159 @@ impl Field {
         }
     }
 
+    /// Returns the Java simple name of the kind of value this field holds.
+    ///
+    /// Equivalent to `fieldsData.getClass().getSimpleName()`, which Java's typed
+    /// setters splice into the message of the exception they throw. Java names
+    /// the *concrete* runtime class, so a reader value renders as (say)
+    /// `StringReader`; this port has one variant per kind and names the kind,
+    /// because the concrete reader sits behind a `dyn Read`.
+    fn value_type_name(&self) -> &'static str {
+        match &self.fields_data {
+            FieldData::String(_) => "String",
+            FieldData::Reader(_) => "Reader",
+            FieldData::TokenStream(_) => "TokenStream",
+            FieldData::Bytes(_) => "BytesRef",
+            FieldData::Number(NumericValue::Int(_)) => "Integer",
+            FieldData::Number(NumericValue::Long(_)) => "Long",
+            FieldData::Number(NumericValue::Float(_)) => "Float",
+            FieldData::Number(NumericValue::Double(_)) => "Double",
+            FieldData::StoredInput { .. } => "StoredFieldDataInput",
+        }
+    }
+
+    /// Changes the `byte` value of this field.
+    ///
+    /// Equivalent to `Field.setByteValue(byte)`, which refuses unless the field
+    /// already holds a `Byte`.
+    ///
+    /// # A value no field can hold
+    ///
+    /// [`NumericValue`] has no byte variant, and needs none: in Lucene 10.5.0
+    /// `Field.setByteValue` is the only place in the whole of Lucene Core that
+    /// ever assigns a `Byte` to `fieldsData` (`Field.java:354`), and it demands
+    /// a `Byte` be there already. No constructor and no subclass puts one
+    /// there, so the state is unreachable in Java too, and this method answers
+    /// exactly as Java's does for every field either library can build.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`], as Java throws
+    /// `IllegalArgumentException`, for every field this crate can construct.
+    pub fn set_byte_value(&mut self, _value: i8) -> Result<()> {
+        Err(LuceneError::IllegalArgument(format!(
+            "cannot change value type from {} to Byte",
+            self.value_type_name()
+        )))
+    }
+
+    /// Changes the `short` value of this field.
+    ///
+    /// Equivalent to `Field.setShortValue(short)`, which refuses unless the
+    /// field already holds a `Short`. As with
+    /// [`set_byte_value`](Self::set_byte_value), no Lucene 10.5.0 field ever
+    /// holds one (`Field.java:363` is the only assignment), so the rejection is
+    /// what Java produces too.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`], as Java throws
+    /// `IllegalArgumentException`, for every field this crate can construct.
+    pub fn set_short_value(&mut self, _value: i16) -> Result<()> {
+        Err(LuceneError::IllegalArgument(format!(
+            "cannot change value type from {} to Short",
+            self.value_type_name()
+        )))
+    }
+
+    /// Changes the `int` value of this field.
+    ///
+    /// Equivalent to `Field.setIntValue(int)`. The value type cannot change:
+    /// the field must already hold an `int`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when this field holds anything
+    /// but an `int`, as Java throws `IllegalArgumentException`.
+    pub fn set_int_value(&mut self, value: i32) -> Result<()> {
+        match &self.fields_data {
+            FieldData::Number(NumericValue::Int(_)) => {
+                self.fields_data = FieldData::Number(NumericValue::Int(value));
+                Ok(())
+            }
+            _ => Err(LuceneError::IllegalArgument(format!(
+                "cannot change value type from {} to Integer",
+                self.value_type_name()
+            ))),
+        }
+    }
+
+    /// Changes the `long` value of this field.
+    ///
+    /// Equivalent to `Field.setLongValue(long)`. The value type cannot change:
+    /// the field must already hold a `long`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when this field holds anything
+    /// but a `long`, as Java throws `IllegalArgumentException`.
+    pub fn set_long_value(&mut self, value: i64) -> Result<()> {
+        match &self.fields_data {
+            FieldData::Number(NumericValue::Long(_)) => {
+                self.fields_data = FieldData::Number(NumericValue::Long(value));
+                Ok(())
+            }
+            _ => Err(LuceneError::IllegalArgument(format!(
+                "cannot change value type from {} to Long",
+                self.value_type_name()
+            ))),
+        }
+    }
+
+    /// Changes the `float` value of this field.
+    ///
+    /// Equivalent to `Field.setFloatValue(float)`. The value type cannot
+    /// change: the field must already hold a `float`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when this field holds anything
+    /// but a `float`, as Java throws `IllegalArgumentException`.
+    pub fn set_float_value(&mut self, value: f32) -> Result<()> {
+        match &self.fields_data {
+            FieldData::Number(NumericValue::Float(_)) => {
+                self.fields_data = FieldData::Number(NumericValue::Float(value));
+                Ok(())
+            }
+            _ => Err(LuceneError::IllegalArgument(format!(
+                "cannot change value type from {} to Float",
+                self.value_type_name()
+            ))),
+        }
+    }
+
+    /// Changes the `double` value of this field.
+    ///
+    /// Equivalent to `Field.setDoubleValue(double)`. The value type cannot
+    /// change: the field must already hold a `double`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when this field holds anything
+    /// but a `double`, as Java throws `IllegalArgumentException`.
+    pub fn set_double_value(&mut self, value: f64) -> Result<()> {
+        match &self.fields_data {
+            FieldData::Number(NumericValue::Double(_)) => {
+                self.fields_data = FieldData::Number(NumericValue::Double(value));
+                Ok(())
+            }
+            _ => Err(LuceneError::IllegalArgument(format!(
+                "cannot change value type from {} to Double",
+                self.value_type_name()
+            ))),
+        }
+    }
+
     /// Changes the token stream value of this field.
     pub fn set_token_stream_value(&mut self, value: Rc<RefCell<dyn TokenStream>>) -> Result<()> {
         match &self.fields_data {
@@ -1297,6 +1462,29 @@ impl Debug for Document {
         f.debug_struct("Document")
             .field("field_count", &self.fields.len())
             .finish()
+    }
+}
+
+impl std::fmt::Display for Document {
+    /// Port of `Document.toString()` (`Document.java:227-240`): `Document<`,
+    /// then every field rendered by **its own** `toString()` separated by a
+    /// single space, then `>`.
+    ///
+    /// The rendering is polymorphic in Java and is polymorphic here too, over
+    /// the [`Display`](std::fmt::Display) supertrait of
+    /// [`IndexableField`](crate::index::IndexableField). Measured against
+    /// `lucene-core-10.5.0.jar`: an empty document is `Document<>`, and a
+    /// document holding a `StringField` and an `IntPoint` is
+    /// `Document<indexed,omitNorms,indexOptions=DOCS<id:1> IntPoint <count:42>>`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Document<")?;
+        for (i, field) in self.fields.iter().enumerate() {
+            if i != 0 {
+                f.write_str(" ")?;
+            }
+            std::fmt::Display::fmt(field, f)?;
+        }
+        f.write_str(">")
     }
 }
 
@@ -2337,6 +2525,34 @@ impl IntPoint {
         self.set_values(point)
     }
 
+    /// Changes the single value of this one-dimensional field.
+    ///
+    /// Equivalent to `IntPoint.setIntValue(int)`, which delegates to
+    /// [`set_int_values`](Self::set_int_values) with a one-dimensional point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field was created with
+    /// more than one dimension, as Java throws `IllegalArgumentException`.
+    pub fn set_int_value(&mut self, value: i32) -> Result<()> {
+        self.set_int_values(&[value])
+    }
+
+    /// Packs one or more `int` dimensions into a [`BytesRef`].
+    ///
+    /// Equivalent to `IntPoint.pack(int...)`. This is the exact byte
+    /// layout the BKD tree stores, so it is also what a query must produce for
+    /// its bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `point` has no dimensions,
+    /// as Java throws `IllegalArgumentException`. Java also rejects a null
+    /// array, which Rust's type system already does.
+    pub fn pack(point: &[i32]) -> Result<BytesRef> {
+        pack_int_point(point)
+    }
+
     /// Creates a query matching an exact value.
     ///
     /// Equivalent to `IntPoint.newExactQuery(String, int)`. This is for
@@ -2540,6 +2756,34 @@ impl LongPoint {
     /// number of dimensions than the field was created with.
     pub fn set_long_values(&mut self, point: &[i64]) -> Result<()> {
         self.set_values(point)
+    }
+
+    /// Changes the single value of this one-dimensional field.
+    ///
+    /// Equivalent to `LongPoint.setLongValue(long)`, which delegates to
+    /// [`set_long_values`](Self::set_long_values) with a one-dimensional point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field was created with
+    /// more than one dimension, as Java throws `IllegalArgumentException`.
+    pub fn set_long_value(&mut self, value: i64) -> Result<()> {
+        self.set_long_values(&[value])
+    }
+
+    /// Packs one or more `long` dimensions into a [`BytesRef`].
+    ///
+    /// Equivalent to `LongPoint.pack(long...)`. This is the exact byte
+    /// layout the BKD tree stores, so it is also what a query must produce for
+    /// its bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `point` has no dimensions,
+    /// as Java throws `IllegalArgumentException`. Java also rejects a null
+    /// array, which Rust's type system already does.
+    pub fn pack(point: &[i64]) -> Result<BytesRef> {
+        pack_long_point(point)
     }
 
     /// Creates a query matching an exact value.
@@ -2830,6 +3074,34 @@ impl FloatPoint {
         self.set_values(point)
     }
 
+    /// Changes the single value of this one-dimensional field.
+    ///
+    /// Equivalent to `FloatPoint.setFloatValue(float)`, which delegates to
+    /// [`set_float_values`](Self::set_float_values) with a one-dimensional point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field was created with
+    /// more than one dimension, as Java throws `IllegalArgumentException`.
+    pub fn set_float_value(&mut self, value: f32) -> Result<()> {
+        self.set_float_values(&[value])
+    }
+
+    /// Packs one or more `float` dimensions into a [`BytesRef`].
+    ///
+    /// Equivalent to `FloatPoint.pack(float...)`. This is the exact byte
+    /// layout the BKD tree stores, so it is also what a query must produce for
+    /// its bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `point` has no dimensions,
+    /// as Java throws `IllegalArgumentException`. Java also rejects a null
+    /// array, which Rust's type system already does.
+    pub fn pack(point: &[f32]) -> Result<BytesRef> {
+        pack_float_point(point)
+    }
+
     /// Creates a query matching an exact value.
     ///
     /// Equivalent to `FloatPoint.newExactQuery(String, float)`. This is for
@@ -3044,6 +3316,34 @@ impl DoublePoint {
     /// number of dimensions than the field was created with.
     pub fn set_double_values(&mut self, point: &[f64]) -> Result<()> {
         self.set_values(point)
+    }
+
+    /// Changes the single value of this one-dimensional field.
+    ///
+    /// Equivalent to `DoublePoint.setDoubleValue(double)`, which delegates to
+    /// [`set_double_values`](Self::set_double_values) with a one-dimensional point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the field was created with
+    /// more than one dimension, as Java throws `IllegalArgumentException`.
+    pub fn set_double_value(&mut self, value: f64) -> Result<()> {
+        self.set_double_values(&[value])
+    }
+
+    /// Packs one or more `double` dimensions into a [`BytesRef`].
+    ///
+    /// Equivalent to `DoublePoint.pack(double...)`. This is the exact byte
+    /// layout the BKD tree stores, so it is also what a query must produce for
+    /// its bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `point` has no dimensions,
+    /// as Java throws `IllegalArgumentException`. Java also rejects a null
+    /// array, which Rust's type system already does.
+    pub fn pack(point: &[f64]) -> Result<BytesRef> {
+        pack_double_point(point)
     }
 
     /// Creates a query matching an exact value.
@@ -3419,7 +3719,7 @@ fn sorted_set_doc_values_indexed_field_type() -> &'static FieldType {
     })
 }
 
-fn binary_doc_values_field_type() -> &'static FieldType {
+pub(crate) fn binary_doc_values_field_type() -> &'static FieldType {
     static TYPE: std::sync::OnceLock<FieldType> = std::sync::OnceLock::new();
     TYPE.get_or_init(|| {
         let mut ft = FieldType::new();
@@ -3545,17 +3845,39 @@ pub struct FloatDocValuesField {
 
 impl FloatDocValuesField {
     /// Creates a new FloatDocValuesField.
+    ///
+    /// Equivalent to `FloatDocValuesField(String, float)`, which stores
+    /// `Float.floatToRawIntBits(value)` as the numeric doc value.
     pub fn new(name: &str, value: f32) -> Self {
-        let bits = value.to_bits() as i64;
         Self {
-            inner: NumericDocValuesField::new(name, bits),
+            inner: NumericDocValuesField::new(name, raw_float_bits_as_long(value)),
         }
     }
 
     /// Sets a new value.
+    ///
+    /// Equivalent to `FloatDocValuesField.setFloatValue(float)`, which
+    /// re-encodes the value and hands it to `Field.setLongValue`. Java's
+    /// companion override `setLongValue` throws
+    /// `IllegalArgumentException("cannot change value type from Float to
+    /// Long")`; this port exposes no such method at all, so the same misuse is
+    /// refused at compile time.
     pub fn set_value(&mut self, value: f32) {
-        self.inner.set_value(value.to_bits() as i64);
+        self.inner.set_value(raw_float_bits_as_long(value));
     }
+}
+
+/// Returns the `long` Lucene stores for a `float` doc value.
+///
+/// Equivalent to Java's `Float.floatToRawIntBits(value)` where the resulting
+/// `int` is then widened to the `long` that `Field.setLongValue` takes. That
+/// widening is a JLS 5.1.2 widening primitive conversion, which **sign-extends**
+/// (`FloatDocValuesField.java:44-45` of Lucene 10.5.0). The `as i32` step here
+/// is what reproduces it: [`f32::to_bits`] yields a `u32`, and casting that
+/// straight to `i64` would zero-extend instead, storing a value 2^32 too large
+/// for every negative float and breaking index compatibility.
+fn raw_float_bits_as_long(value: f32) -> i64 {
+    i64::from(value.to_bits() as i32)
 }
 
 impl IndexableField for FloatDocValuesField {
@@ -5464,6 +5786,501 @@ impl IndexableField for KnnByteVectorField {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Object contract: `toString`, `equals`, `hashCode` and `iterator`
+// -----------------------------------------------------------------------------
+//
+// Every string below is built by concatenation in Java, so the exact text is
+// part of the contract: it reaches score explanations, `IndexWriter` error
+// messages and Luke. The renderings were measured from `lucene-core-10.5.0.jar`
+// through `tests/fixtures/java-codec-harness/.../RuceneObjectContractFixture.java`
+// and are locked in by `tests/portability/object_contract.rs`.
+
+/// Renders a byte slice the way `org.apache.lucene.util.BytesRef.toString()`
+/// does: `[` then each byte as unsigned hexadecimal separated by a single
+/// space, then `]`.
+///
+/// Java uses `Integer.toHexString(b & 0xff)`, which does **not** pad to two
+/// digits, so `0x0a` renders as `a` and `0x00` as `0`.
+pub(crate) fn bytes_ref_to_string(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(2 + 3 * bytes.len());
+    out.push('[');
+    for (i, byte) in bytes.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(&format!("{byte:x}"));
+    }
+    out.push(']');
+    out
+}
+
+/// Renders a [`FieldData`] the way Java's `StringBuilder.append(Object)` renders
+/// the `fieldsData` of a `Field`.
+///
+/// **Divergence from Lucene 10.5.0.** Java can also hold a `Reader` or a
+/// `TokenStream` in `fieldsData`, and appending either of those calls
+/// `Object.toString()`, which prints the class name and the identity hash code
+/// of that particular JVM object. Neither is reproducible — Rust has no
+/// identity hash — and neither is stable across Java runs either, so this port
+/// prints a fixed placeholder for those two cases. Every other case is exact.
+/// Renders any field the way the inherited `Field.toString()` does
+/// (`Field.java:437-451`): the field type, then the name and the value between
+/// angle brackets.
+///
+/// Every `IndexableField` in `org.apache.lucene.document` except the point,
+/// range and geometry classes inherits exactly this, so a port of each one is a
+/// call to this helper with its own `fieldsData` rendered as Java renders that
+/// Java object.
+pub(crate) fn field_to_string(
+    f: &mut Formatter<'_>,
+    field_type: &FieldType,
+    name: &str,
+    data: &str,
+) -> std::fmt::Result {
+    write!(f, "{field_type}<{name}:{data}>")
+}
+
+pub(crate) fn field_data_to_string(data: &FieldData) -> String {
+    match data {
+        FieldData::String(v) => v.clone(),
+        FieldData::Bytes(v) => bytes_ref_to_string(v.slice()),
+        FieldData::Number(v) => v.to_string(),
+        FieldData::Reader(_) => "java.io.Reader".to_string(),
+        FieldData::TokenStream(_) => "org.apache.lucene.analysis.TokenStream".to_string(),
+        FieldData::StoredInput { .. } => "org.apache.lucene.index.StoredFieldDataInput".to_string(),
+    }
+}
+
+/// Renders the point value of a field the way the `toString()` of `IntPoint`
+/// and its three siblings does: the dimensions of the packed value, separated
+/// by commas, each decoded by `decode`.
+fn point_to_string(
+    f: &mut Formatter<'_>,
+    class_name: &str,
+    name: &str,
+    field_type: &FieldType,
+    data: &FieldData,
+    bytes_per_dim: usize,
+    decode: impl Fn(&[u8], usize) -> String,
+) -> std::fmt::Result {
+    write!(f, "{class_name} <{name}:")?;
+    if let FieldData::Bytes(bytes) = data {
+        let dims = IndexableFieldType::point_dimension_count(field_type);
+        for dim in 0..dims as usize {
+            if dim > 0 {
+                f.write_str(",")?;
+            }
+            f.write_str(&decode(bytes.slice(), dim * bytes_per_dim))?;
+        }
+    }
+    f.write_str(">")
+}
+
+impl std::fmt::Display for IntPoint {
+    /// Equivalent to `IntPoint.toString()`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        point_to_string(
+            f,
+            "IntPoint",
+            &self.name,
+            &self.field_type,
+            &self.fields_data,
+            4,
+            |bytes, offset| IntPoint::decode_dimension(bytes, offset).to_string(),
+        )
+    }
+}
+
+impl std::fmt::Display for LongPoint {
+    /// Equivalent to `LongPoint.toString()`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        point_to_string(
+            f,
+            "LongPoint",
+            &self.name,
+            &self.field_type,
+            &self.fields_data,
+            8,
+            |bytes, offset| LongPoint::decode_dimension(bytes, offset).to_string(),
+        )
+    }
+}
+
+impl std::fmt::Display for FloatPoint {
+    /// Equivalent to `FloatPoint.toString()`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        point_to_string(
+            f,
+            "FloatPoint",
+            &self.name,
+            &self.field_type,
+            &self.fields_data,
+            4,
+            |bytes, offset| java_fmt::float_to_string(FloatPoint::decode_dimension(bytes, offset)),
+        )
+    }
+}
+
+impl std::fmt::Display for DoublePoint {
+    /// Equivalent to `DoublePoint.toString()`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        point_to_string(
+            f,
+            "DoublePoint",
+            &self.name,
+            &self.field_type,
+            &self.fields_data,
+            8,
+            |bytes, offset| {
+                java_fmt::double_to_string(DoublePoint::decode_dimension(bytes, offset))
+            },
+        )
+    }
+}
+
+impl std::fmt::Display for IntField {
+    /// Equivalent to `IntField.toString()`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IntField <{}:{}>", self.name, self.value)
+    }
+}
+
+impl std::fmt::Display for LongField {
+    /// Equivalent to `LongField.toString()`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LongField <{}:{}>", self.name, self.value)
+    }
+}
+
+impl std::fmt::Display for FloatField {
+    /// Equivalent to `FloatField.toString()`, which prints
+    /// `getValueAsFloat()` because `fieldsData` holds the sortable `int`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "FloatField <{}:{}>",
+            self.name,
+            java_fmt::float_to_string(self.value)
+        )
+    }
+}
+
+impl std::fmt::Display for DoubleField {
+    /// Equivalent to `DoubleField.toString()`, which prints
+    /// `getValueAsDouble()` because `fieldsData` holds the sortable `long`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "DoubleField <{}:{}>",
+            self.name,
+            java_fmt::double_to_string(self.value)
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `Field.toString()`, inherited by every field class below
+// ---------------------------------------------------------------------------
+//
+// None of the classes in this block overrides `toString()` in Lucene 10.5.0;
+// they all extend `Field` and so render through `Field.toString()`. Each impl
+// therefore differs only in how its own `fieldsData` is rendered, and every one
+// of the strings below was measured from `lucene-core-10.5.0.jar`.
+
+impl std::fmt::Display for StringField {
+    /// `indexed,omitNorms,indexOptions=DOCS<id:1>` for a non-stored
+    /// `StringField("id", "1")`; a `BytesRef` value renders as `[61 62 63]`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &field_data_to_string(&self.fields_data),
+        )
+    }
+}
+
+impl std::fmt::Display for TextField {
+    /// `stored,indexed,tokenized<body:hello world>` for a stored `TextField`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &field_data_to_string(&self.fields_data),
+        )
+    }
+}
+
+impl std::fmt::Display for StoredField {
+    /// `stored<s:42>`; the whole rendering is the wrapped [`Field`]'s.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::fmt::Display for KeywordField {
+    /// `indexed,omitNorms,indexOptions=DOCS,docValuesType=SORTED_SET<k:v>`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &field_data_to_string(&self.fields_data),
+        )
+    }
+}
+
+impl std::fmt::Display for BinaryPoint {
+    /// `pointDimensionCount=1,pointIndexDimensionCount=1,pointNumBytes=3<b:[1 2 3]>`
+    /// — unlike `IntPoint` and its siblings, `BinaryPoint` overrides no
+    /// `toString()`, so the packed value renders as a plain `BytesRef`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &field_data_to_string(&self.fields_data),
+        )
+    }
+}
+
+impl std::fmt::Display for NumericDocValuesField {
+    /// `docValuesType=NUMERIC<n:17>`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(f, &self.field_type, &self.name, &self.value.to_string())
+    }
+}
+
+impl std::fmt::Display for FloatDocValuesField {
+    /// `docValuesType=NUMERIC<n:1075838976>` for `2.5f`: Java's constructor is
+    /// `super(name, Float.floatToRawIntBits(value))`, so `fieldsData` is the
+    /// **raw bit pattern**, and that is what renders — not the float.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.inner, f)
+    }
+}
+
+impl std::fmt::Display for DoubleDocValuesField {
+    /// `docValuesType=NUMERIC<n:4612811918334230528>` for `2.5`: the raw
+    /// `Double.doubleToRawLongBits` pattern, exactly as for
+    /// [`FloatDocValuesField`].
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.inner, f)
+    }
+}
+
+impl std::fmt::Display for SortedDocValuesField {
+    /// `docValuesType=SORTED<s:[61 62 63]>`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &bytes_ref_to_string(self.value.slice()),
+        )
+    }
+}
+
+impl std::fmt::Display for SortedSetDocValuesField {
+    /// `docValuesType=SORTED_SET<s:[61 62 63]>`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &bytes_ref_to_string(self.value.slice()),
+        )
+    }
+}
+
+impl std::fmt::Display for SortedNumericDocValuesField {
+    /// `docValuesType=SORTED_NUMERIC<s:17>`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(f, &self.field_type, &self.name, &self.value.to_string())
+    }
+}
+
+impl std::fmt::Display for BinaryDocValuesField {
+    /// `docValuesType=BINARY<b:[61 62 63]>`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &bytes_ref_to_string(self.value.slice()),
+        )
+    }
+}
+
+impl std::fmt::Display for KnnFloatVectorField {
+    /// `<v:[F@1b6d3586>` — the field type renders empty, because
+    /// `FieldType.toString()` ignores the vector attributes, and `fieldsData`
+    /// is a bare `float[]`, whose `toString()` is `java.lang.Object`'s over the
+    /// JVM's array class name `[F`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Only the hexadecimal identity differs,
+    /// for the reason given on
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string);
+    /// the `[F@` prefix is reproduced exactly.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &crate::index::index_reader::java_object_to_string("[F", self.vector.as_slice()),
+        )
+    }
+}
+
+impl std::fmt::Display for KnnByteVectorField {
+    /// `<v:[B@1b6d3586>`; see [`KnnFloatVectorField`] for the array-identity
+    /// note.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &crate::index::index_reader::java_object_to_string("[B", self.vector.as_slice()),
+        )
+    }
+}
+
+impl std::fmt::Display for Field {
+    /// Equivalent to `Field.toString()`, which is the field type, then the
+    /// name and the value between angle brackets.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}<{}:{}>",
+            self.field_type,
+            self.name,
+            field_data_to_string(&self.fields_data)
+        )
+    }
+}
+
+impl std::fmt::Display for FieldType {
+    /// Equivalent to `FieldType.toString()`, which lists only the properties
+    /// that are set, in a fixed order, separated by commas.
+    ///
+    /// Note that the vector attributes and the field attributes never appear:
+    /// Java's rendering ignores them, so the string of a vector field is the
+    /// same as that of the same field without vectors.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut result = String::new();
+        if self.stored {
+            result.push_str("stored");
+        }
+        if self.index_options != IndexOptions::NONE {
+            if !result.is_empty() {
+                result.push(',');
+            }
+            result.push_str("indexed");
+            if self.tokenized {
+                result.push_str(",tokenized");
+            }
+            if self.store_term_vectors {
+                result.push_str(",termVector");
+            }
+            if self.store_term_vector_offsets {
+                result.push_str(",termVectorOffsets");
+            }
+            if self.store_term_vector_positions {
+                // Java's spelling: the singular is not a typo in this port.
+                result.push_str(",termVectorPosition");
+            }
+            if self.store_term_vector_payloads {
+                result.push_str(",termVectorPayloads");
+            }
+            if self.omit_norms {
+                result.push_str(",omitNorms");
+            }
+            if self.index_options != IndexOptions::DOCS_AND_FREQS_AND_POSITIONS {
+                result.push_str(",indexOptions=");
+                result.push_str(&format!("{:?}", self.index_options));
+            }
+        }
+        if self.dimension_count != 0 {
+            if !result.is_empty() {
+                result.push(',');
+            }
+            result.push_str("pointDimensionCount=");
+            result.push_str(&self.dimension_count.to_string());
+            result.push_str(",pointIndexDimensionCount=");
+            result.push_str(&self.index_dimension_count.to_string());
+            result.push_str(",pointNumBytes=");
+            result.push_str(&self.dimension_num_bytes.to_string());
+        }
+        if self.doc_values_type != DocValuesType::NONE {
+            if !result.is_empty() {
+                result.push(',');
+            }
+            result.push_str("docValuesType=");
+            result.push_str(&format!("{:?}", self.doc_values_type));
+        }
+        f.write_str(&result)
+    }
+}
+
+impl PartialEq for FieldType {
+    /// Equivalent to `FieldType.equals(Object)`, which compares thirteen
+    /// properties and deliberately ignores the frozen flag, the vector
+    /// attributes and the attribute map.
+    fn eq(&self, other: &Self) -> bool {
+        self.dimension_count == other.dimension_count
+            && self.index_dimension_count == other.index_dimension_count
+            && self.dimension_num_bytes == other.dimension_num_bytes
+            && self.doc_values_type == other.doc_values_type
+            && self.doc_values_skip_index_type == other.doc_values_skip_index_type
+            && self.index_options == other.index_options
+            && self.omit_norms == other.omit_norms
+            && self.store_term_vector_offsets == other.store_term_vector_offsets
+            && self.store_term_vector_payloads == other.store_term_vector_payloads
+            && self.store_term_vector_positions == other.store_term_vector_positions
+            && self.store_term_vectors == other.store_term_vectors
+            && self.stored == other.stored
+            && self.tokenized == other.tokenized
+    }
+}
+
+impl Eq for FieldType {}
+
+impl std::hash::Hash for FieldType {
+    /// Consistent with [`PartialEq`]: it folds in exactly the thirteen
+    /// properties `FieldType.equals` compares, in the order
+    /// `FieldType.hashCode()` folds them.
+    ///
+    /// **Divergence from Lucene 10.5.0.** The numeric value cannot be
+    /// reproduced, and neither can Java reproduce it across runs: two of the
+    /// terms Java folds in are `docValuesType.hashCode()` and
+    /// `indexOptions.hashCode()`, and a Java enum inherits `Object.hashCode()`,
+    /// an identity hash that differs between JVM launches. Only the consistency
+    /// with equality is a contract, and that is reproduced exactly.
+    ///
+    /// The three enum-valued properties are folded in through
+    /// [`std::mem::discriminant`] rather than through [`Hash`], because they are
+    /// declared in [`crate::index`] and carry no payload: for such an enum,
+    /// discriminant equality *is* value equality, so this is consistent with
+    /// [`PartialEq`] above.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.dimension_count.hash(state);
+        self.index_dimension_count.hash(state);
+        self.dimension_num_bytes.hash(state);
+        std::mem::discriminant(&self.doc_values_type).hash(state);
+        std::mem::discriminant(&self.doc_values_skip_index_type).hash(state);
+        std::mem::discriminant(&self.index_options).hash(state);
+        self.omit_norms.hash(state);
+        self.store_term_vector_offsets.hash(state);
+        self.store_term_vector_payloads.hash(state);
+        self.store_term_vector_positions.hash(state);
+        self.store_term_vectors.hash(state);
+        self.stored.hash(state);
+        self.tokenized.hash(state);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5722,12 +6539,62 @@ mod tests {
     }
 
     #[test]
+    fn float_doc_values_field_sign_extends_a_negative_value() {
+        // Java widens the `int` of `Float.floatToRawIntBits` to a `long`, which
+        // sign-extends. Values measured with Lucene 10.5.0 itself:
+        //   new FloatDocValuesField("f", -1.0f).numericValue() == -1082130432
+        //   new FloatDocValuesField("f", -0.0f).numericValue() == -2147483648
+        for (value, expected) in [
+            (-1.0f32, -1_082_130_432i64),
+            (-0.5f32, -1_090_519_040i64),
+            (-0.0f32, -2_147_483_648i64),
+            (2.5f32, 1_075_838_976i64),
+        ] {
+            assert_eq!(
+                FloatDocValuesField::new("score", value).numeric_value(),
+                Some(NumericValue::Long(expected)),
+                "constructor disagrees with Lucene for {value}"
+            );
+            let mut field = FloatDocValuesField::new("score", 1.0f32);
+            field.set_value(value);
+            assert_eq!(
+                field.numeric_value(),
+                Some(NumericValue::Long(expected)),
+                "set_value disagrees with Lucene for {value}"
+            );
+        }
+    }
+
+    #[test]
     fn double_doc_values_field_encodes_raw_bits() {
         let field = DoubleDocValuesField::new("score", 1.5f64);
         assert_eq!(
             field.numeric_value(),
             Some(NumericValue::Long(1.5f64.to_bits() as i64))
         );
+    }
+
+    #[test]
+    fn double_doc_values_field_keeps_the_sign_of_a_negative_value() {
+        // `Double.doubleToRawLongBits` already yields a `long`, so no widening
+        // takes place. Values measured with Lucene 10.5.0 itself.
+        for (value, expected) in [
+            (-1.0f64, -4_616_189_618_054_758_400i64),
+            (2.5f64, 4_612_811_918_334_230_528i64),
+        ] {
+            assert_eq!(
+                DoubleDocValuesField::new("score", value).numeric_value(),
+                Some(NumericValue::Long(expected)),
+                "constructor disagrees with Lucene for {value}"
+            );
+            let mut field = DoubleDocValuesField::new("score", 1.0f64);
+            field.set_value(value);
+            assert_eq!(
+                field.numeric_value(),
+                Some(NumericValue::Long(expected)),
+                "set_value disagrees with Lucene for {value}"
+            );
+        }
     }
 
     #[test]
@@ -6010,7 +6877,7 @@ mod tests {
 
     #[test]
     fn a_stored_data_input_field_yields_its_bytes_once() {
-        let input = Box::new(crate::store::ByteArrayDataInput::new(vec![9, 8, 7]));
+        let input = Box::new(crate::store::ByteArrayDataInput::new(&[9u8, 8, 7]));
         let field = Field::new_with_stored_input("p", input, 3, stored_type()).unwrap();
         assert_eq!(
             IndexableField::stored_value(&field).unwrap(),
@@ -6174,7 +7041,7 @@ mod tests {
             DocValuesType::NONE,
             DocValuesSkipIndexType::NONE,
             -1,
-            HashMap::new(),
+            crate::util::java_collections::JavaStringMap::default(),
             0,
             0,
             0,

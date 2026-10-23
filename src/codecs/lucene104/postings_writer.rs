@@ -27,7 +27,9 @@ use crate::codecs::lucene104::{
     postings_util::write_v_int_block,
     BLOCK_SIZE, DOC_CODEC, LEVEL1_MASK, META_CODEC, PAY_CODEC, POS_CODEC, VERSION_CURRENT,
 };
-use crate::codecs::postings::{NumericDocValues, PushPostingsWriterBase, PushPostingsWriterState};
+use crate::codecs::postings::{
+    PostingsNumericDocValues, PushPostingsWriterBase, PushPostingsWriterState,
+};
 use crate::codecs::state::SegmentWriteState;
 use crate::codecs::term_state::{BlockTermState, CompetitiveImpactAccumulator, Impact};
 use crate::error::{LuceneError, Result};
@@ -393,7 +395,7 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         Ok(BlockTermState::default())
     }
 
-    fn start_term(&mut self, _norms: Option<&dyn NumericDocValues>) -> Result<()> {
+    fn start_term(&mut self, _norms: Option<&dyn PostingsNumericDocValues>) -> Result<()> {
         self.doc_start_fp = self.doc_out.file_pointer();
         if self.push_state.write_positions {
             let pos_out = self.pos_out.as_mut().expect("pos output must exist");
@@ -915,7 +917,9 @@ mod tests {
     use crate::codecs::lucene104::{
         Lucene104PostingsFormat, DOC_CODEC, META_CODEC, PAY_CODEC, POS_CODEC,
     };
-    use crate::codecs::postings::{NormsProducer, NumericDocValues, PostingsFormat};
+    use crate::codecs::postings::{
+        PostingsFormat, PostingsNormsProducer, PostingsNumericDocValues,
+    };
     use crate::codecs::state::SegmentWriteState;
     use crate::index::{FieldInfo, FieldInfos, Fields, PostingsEnum, SeekStatus, Terms, TermsEnum};
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
@@ -925,17 +929,17 @@ mod tests {
 
     struct TestNorms;
 
-    impl NumericDocValues for TestNorms {
+    impl PostingsNumericDocValues for TestNorms {
         fn get(&self, _doc_id: i32) -> crate::error::Result<i64> {
             Ok(1)
         }
     }
 
-    impl NormsProducer for TestNorms {
+    impl PostingsNormsProducer for TestNorms {
         fn get_norms(
             &self,
             _field_info: &FieldInfo,
-        ) -> crate::error::Result<Box<dyn NumericDocValues>> {
+        ) -> crate::error::Result<Box<dyn PostingsNumericDocValues>> {
             Ok(Box::new(TestNorms))
         }
     }
@@ -1027,6 +1031,15 @@ mod tests {
         }
     }
 
+    impl std::fmt::Display for TestPostingsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("TestPostingsEnum")
+        }
+    }
+
     impl PostingsEnum for TestPostingsEnum {
         fn freq(&self) -> crate::error::Result<i32> {
             Ok(self.freqs[self.doc_idx as usize])
@@ -1067,6 +1080,15 @@ mod tests {
                 idx: -1,
                 atts: AttributeSource::new(),
             }
+        }
+    }
+
+    impl std::fmt::Display for TestTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("TestTermsEnum")
         }
     }
 
@@ -1111,11 +1133,11 @@ mod tests {
             Ok(self.idx as i64)
         }
 
-        fn doc_freq(&self) -> crate::error::Result<i32> {
+        fn doc_freq(&mut self) -> crate::error::Result<i32> {
             Ok(self.postings[self.idx as usize].docs.len() as i32)
         }
 
-        fn total_term_freq(&self) -> crate::error::Result<i64> {
+        fn total_term_freq(&mut self) -> crate::error::Result<i64> {
             Ok(self.postings[self.idx as usize]
                 .freqs
                 .iter()
@@ -1484,7 +1506,7 @@ mod tests {
 
     #[test]
     fn write_impacts_round_trip() {
-        let mut out = crate::store::ByteArrayDataOutput::new();
+        let mut out = crate::store::VecDataOutput::new();
         let impacts = vec![Impact::new(1, 1), Impact::new(3, 2), Impact::new(5, 3)];
         write_impacts(&impacts, &mut out).unwrap();
         // The exact bytes are tested against the format expectations indirectly

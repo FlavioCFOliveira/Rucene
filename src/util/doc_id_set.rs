@@ -56,6 +56,20 @@ pub struct BitDocIdSet {
     cost: i64,
 }
 
+impl std::fmt::Display for BitDocIdSet {
+    /// Port of `BitDocIdSet.toString()`, which is
+    /// `getClass().getSimpleName() + "(set=" + set + ",cost=" + cost + ")"`.
+    ///
+    /// The wrapped set is rendered by its own `toString()`. Only
+    /// `SparseFixedBitSet` overrides it — and its text is famously missing its
+    /// closing parenthesis, which this port reproduces — so a `BitDocIdSet` over
+    /// a `FixedBitSet` prints an identity-shaped string for the set, exactly as
+    /// Java does.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BitDocIdSet(set={},cost={})", self.set, self.cost)
+    }
+}
+
 impl std::fmt::Debug for BitDocIdSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "BitDocIdSet(set={:?},cost={})", self.set, self.cost)
@@ -467,8 +481,18 @@ impl DocIdSetBuilder {
     /// Creates a builder optimised for accumulating docs matching `values`.
     ///
     /// Equivalent to `new DocIdSetBuilder(int, PointValues)`.
-    pub fn from_point_values(max_doc: i32, values: &dyn PointValues) -> Self {
-        Self::with_stats(max_doc, values.doc_count(), values.size())
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`PointValues::size`] and
+    /// [`PointValues::doc_count`] raise; Java's constructor lets the same
+    /// failure escape as an unchecked `ExitingReaderException`.
+    pub fn from_point_values(max_doc: i32, values: &dyn PointValues) -> Result<Self> {
+        Ok(Self::with_stats(
+            max_doc,
+            values.doc_count()?,
+            values.size()?,
+        ))
     }
 
     /// Creates a builder from raw index statistics.
