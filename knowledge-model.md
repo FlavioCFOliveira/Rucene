@@ -1232,7 +1232,8 @@ each is now covered by a check that would catch it again.
 | `#[cfg(test)]` was read on the enclosing module only | test-only types recorded as production code | item-level attribute check |
 | `portScope` was assigned by package-name prefix | Rucene's own five Java test fixtures counted as Lucene inner types | classify by the declaring file |
 | `extract_lucene_kg.py` and `enrich_lucene_kg.py` hard-coded `/tmp/lucene-10.5.0` | the Lucene half of the pipeline could not run at all against the path `CLAUDE.md` §16.1 names | `--lucene-root`, defaulting to `/tmp/lucene1050` |
-| No loader retried a busy store | an `rmp web` session was enough to leave a load half-applied, indistinguishable from real drift | bounded backoff in `kgio.rmp` |
+| No loader retried a busy store | an `rmp web` session was enough to leave a load half-applied, indistinguishable from real drift | bounded backoff in `kgio.rmp`; since rmp 1.18.0 a server owns the store, and `kgio.client` retries only a `graph write conflict` |
+| The loaders called `rmp graph query`/`create`/`update`, which rmp 1.17 replaced with `serve`/`client` | from 2026-10-02 no sync could run, and the graph stayed at `5c68398` | every call through `kgio.client`; batches sized to the server's 5 s statement budget |
 | One `rmp` invocation per statement | ~19,000 process launches to load the Lucene member surface | `UNWIND` batching in `kgio.unwind` |
 
 ## Materialization status

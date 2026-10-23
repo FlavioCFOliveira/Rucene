@@ -192,8 +192,14 @@ def main():
         print(f"   PORTS evidence {str(r[0]):<12} {r[1]}")
     unstated = q("MATCH ()-[e:PORTS]->(:Class) WHERE e.evidence IS NULL RETURN count(e)")[0][0]
     check("PORTS edges without evidence", unstated, 0)
-    both = q("MATCH (a)-[:PORTS]->(c:Class) WITH DISTINCT c "
-             "MATCH (b)-[:PORTS_CANDIDATE]->(c) RETURN count(DISTINCT c)")[0][0]
+    # Two flat reads intersected here, not one statement: the engine runs the
+    # second MATCH of `... WITH DISTINCT c MATCH (b)-[:PORTS_CANDIDATE]->(c)` as
+    # an all-nodes scan per ported type, which exceeds the server's 5-second
+    # statement budget (measured 2026-10-23: >5 s, against 0.03 s for the pair).
+    ported = {r[0] for r in q("MATCH ()-[:PORTS]->(c:Class) RETURN DISTINCT id(c)")}
+    candidate = {r[0] for r in q("MATCH ()-[:PORTS_CANDIDATE]->(c:Class) "
+                                 "RETURN DISTINCT id(c)")}
+    both = len(ported & candidate)
     check("types with both PORTS and PORTS_CANDIDATE", both, 0)
 
     # Every PORTS edge must start at a node the survey confirms -- as a type or

@@ -10,16 +10,16 @@ recomputes the gap by comparing, per type:
   * the Java method names the type declares, taken from the graph, and
   * every Rust function name declared by the file(s) that port it.
 """
-import json, os, re, subprocess, sys
+import json, os, re, sys
 from collections import defaultdict
+
+from kgio import client
 
 ROOT = "/data/dev/github.com/FlavioCFOliveira/Rucene"
 EXCLUSIONS = os.path.join(ROOT, "tools/kg/port_gaps_exclusions.json")
 
 def q(cypher):
-    out = subprocess.run(["rmp", "graph", "query", "-r", "rucene", "-q", cypher],
-                         capture_output=True, text=True, check=True).stdout
-    return json.loads(out)
+    return json.loads(client("rucene", cypher, label="read"))
 
 def camel_to_snake(name):
     s = re.sub(r'(.)([A-Z][a-z]+)', r'\1_\2', name)

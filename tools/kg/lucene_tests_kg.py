@@ -310,9 +310,9 @@ def phase_classes(roadmap, survey, commit, date, batch_size):
         }
         for c in survey["classes"]
     ]
-    # `rmp graph create` so aceita CREATE/MERGE puros, e `graph update` so
-    # SET/REMOVE, por isso cada no entra em duas passagens: primeiro a
-    # identidade, depois as propriedades.
+    # Cada no entra em duas passagens, primeiro a identidade e depois as
+    # propriedades. A forma vem do rmp anterior ao 1.17, cujo `graph create`
+    # recusava SET; com `graph client` ja nao e obrigatoria, mas mantem-se.
     run_unwind(
         "create",
         roadmap,

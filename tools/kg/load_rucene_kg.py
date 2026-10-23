@@ -25,10 +25,10 @@ Uso:
 
 import argparse
 import json
-import subprocess
-import time
 import sys
 from collections import defaultdict
+
+from kgio import PER_ROW_SCAN_BATCH, client as kg_client
 
 TYPE_LABEL = {
     "struct": "RustStruct",
@@ -52,31 +52,11 @@ def esc(v) -> str:
 
 
 def rmp(mode: str, roadmap: str, query: str, label: str = "", attempts: int = 6):
-    # The graph store rejects a write while another one is in progress -- an
-    # `rmp web` session is enough to cause it -- and a half-applied load leaves
-    # the graph in a state no audit can distinguish from real drift. Retry the
-    # transient case with backoff instead of dying mid-phase.
-    delay = 1.0
-    for attempt in range(1, attempts + 1):
-        result = subprocess.run(
-            ["rmp", "graph", mode, "-r", roadmap],
-            input=query,
-            text=True,
-            capture_output=True,
-        )
-        if result.returncode == 0 or "store is busy" not in result.stderr:
-            break
-        if attempt < attempts:
-            print(f"  store busy, retrying in {delay:.0f}s "
-                  f"({attempt}/{attempts - 1})", file=sys.stderr)
-            time.sleep(delay)
-            delay = min(delay * 2, 20)
-    if result.returncode != 0:
-        print(f"\n{label} FAILED (exit {result.returncode})", file=sys.stderr)
-        print(result.stderr, file=sys.stderr)
-        print("QUERY:\n" + query[:800], file=sys.stderr)
-        sys.exit(1)
-    return result.stdout
+    # One statement through the roadmap's graph server (`kgio.client`). `mode`
+    # named a subcommand of the old CLI and now only labels a failure. A failure
+    # exits non-zero rather than leaving the graph half-applied, a state no audit
+    # can distinguish from real drift.
+    return kg_client(roadmap, query, label=label or mode, attempts=attempts)
 
 
 def read(roadmap: str, query: str):
@@ -277,7 +257,7 @@ def phase_repair(roadmap, s: Survey, batch_size):
             ],
             "MATCH (f:File {path:row.o}) MATCH (x {name:row.t}) "
             "MERGE (f)-[:TESTS]->(x)",
-            batch_size,
+            min(batch_size, PER_ROW_SCAN_BATCH),
             "TestSuite TESTS lifted to file",
         )
     rmp("delete", roadmap, "MATCH (n:TestSuite) DETACH DELETE n", "drop-testsuite")
@@ -341,7 +321,7 @@ def phase_repair(roadmap, s: Survey, batch_size):
             "n.visibility = row.visibility, n.scope = row.scope, "
             "n.language = 'Rust', n.gitCommit = row.gitCommit, "
             f"n.gitDate = row.gitDate REMOVE n.package{rem}",
-            batch_size,
+            min(batch_size, PER_ROW_SCAN_BATCH),
             f"relabel {'+'.join(remove) or '-'} -> {label}",
         )
 
@@ -373,7 +353,7 @@ def phase_repair(roadmap, s: Survey, batch_size):
             "n.visibility = row.visibility, n.scope = row.scope, "
             "n.language = 'Rust', n.gitCommit = row.gitCommit, "
             f"n.gitDate = row.gitDate REMOVE n.package{rem}",
-            batch_size,
+            min(batch_size, PER_ROW_SCAN_BATCH),
             f"relabel {'+'.join(remove) or '-'} -> RustFn",
         )
 
@@ -399,7 +379,7 @@ def phase_repair(roadmap, s: Survey, batch_size):
         "MATCH (n) WHERE id(n) = row.id SET n.file = row.file, "
         "n.kind = 'module', n.language = 'Rust', "
         "n.gitCommit = row.gitCommit, n.gitDate = row.gitDate",
-        batch_size,
+        min(batch_size, PER_ROW_SCAN_BATCH),
         "Component kept (module of free functions)",
     )
     for row in unresolved:
@@ -531,7 +511,7 @@ def phase_nodes(roadmap, s: Survey, batch_size):
         roadmap,
         [{"qualifiedName": f["qualifiedName"]} for f in s.fns],
         "MERGE (f:RustFn {qualifiedName:row.qualifiedName})",
-        batch_size,
+        min(batch_size, PER_ROW_SCAN_BATCH),
         "RustFn create",
     )
     run_unwind(
@@ -1003,7 +983,7 @@ def phase_prune(roadmap, s: Survey, batch_size):
             "MATCH (t {name:row.name, file:row.file}) "
             "WHERE t:RustStruct OR t:RustTrait OR t:RustEnum OR t:RustAlias "
             "DETACH DELETE t",
-            batch_size, "stale type nodes deleted",
+            min(batch_size, PER_ROW_SCAN_BATCH), "stale type nodes deleted",
         )
     if stale_files:
         run_unwind(

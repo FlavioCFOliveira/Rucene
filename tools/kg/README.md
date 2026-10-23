@@ -5,8 +5,12 @@ they rebuild the whole graph from an empty store: the reference Apache Lucene Co
 10.5.0 structure, the Rucene crate structure, and the port-coverage layer that says
 what is ported, what is missing, and what to do next.
 
-They are survey tooling, not part of the Rucene crate. They need only Python 3 and
-the `rmp` binary on `PATH`.
+They are survey tooling, not part of the Rucene crate. They need only Python 3, the
+`rmp` binary (1.18.0 or later) on `PATH`, and a running graph server for the
+roadmap. Every statement goes through `rmp graph client`, which reaches the graph
+only through a server started with `rmp graph serve -r rucene`. The scripts never
+start or stop that server: start it first and leave it running. When no server is
+reachable, a script stops with a message that says how to start one.
 
 ## The scripts
 
@@ -14,7 +18,7 @@ the `rmp` binary on `PATH`.
 |---|---|
 | `extract_lucene_kg.py` | Regex extractor for the Lucene side: packages, source files, top-level types, imports, `extends` and `implements`. Emits Cypher files. |
 | `enrich_lucene_kg.py` | Second Lucene pass: inner types and members — methods, constructors, fields (initialised or not) and enum constants, the last under their own `kind`, `enumConstant`, as Lucene's own Javadoc categorises them. A member needs no modifier to be seen: an interface's abstract methods and every package-private member carry none, and requiring one hid 949 methods, 338 constructors and 438 fields — 10.1% of the denominator every depth and triage figure is quoted against. Emits Cypher files. |
-| `run_kg_batches.py` | Feeds a generated Cypher file into `rmp graph create` / `rmp graph update`, one statement per invocation. |
+| `run_kg_batches.py` | Feeds a generated Cypher file to the graph server, one statement per `rmp graph client` invocation. Its `create` / `update` argument named a subcommand of the old CLI; it is kept so existing invocations still work, and both values run the same way. |
 | `load_members_unwind.py` | Superseded by `lucene_structure_kg.py`, which loads the same facts from the extractor's data instead of re-parsing its generated Cypher. Kept for replaying an old run. |
 | `extract_rucene_kg.py` | Regex extractor for the Rucene side: every `.rs` file under `src/` and `tests/`, its structs, traits, enums, type aliases, functions and tests, its `impl` blocks, and the dependencies implied by its `use` declarations. Emits one JSON survey. |
 | `load_rucene_kg.py` | Loads that survey into the graph in `UNWIND` batches, and keeps the Rucene side of the graph honest: collapses legacy labels, merges duplicate nodes, stamps provenance, and audits the result against the survey. |
@@ -36,7 +40,7 @@ the `rmp` binary on `PATH`.
 | `member_extraction_check.py` | Proof, off the store and off the Lucene clone, that the member extractor sees every shape it has lost at one time or another: enum constants (implicitly `public static final`), fields carrying an initialiser up to an anonymous class spanning many lines, members with no modifier at all, an annotation written *before* the modifiers, code a mis-ordered lexer deletes, C-style array declarators — and that the traps opening the regex up creates stay shut, a continuation line and the blanked Javadoc above a member both being offered to it as declarations. A hand-built source tree modelled on `PreloadHint`, `ScoreMode`, `HnswGraph`, `Accountable`, `DocumentsWriterDeleteQueue`, `Version`, `Automaton`, `RegExp` and `SimpleWKTShapeParser`. Run `python3 tools/kg/member_extraction_check.py`; `failures: 0` is the pass condition. |
 | `audit_kg.py` | The adversarial fidelity audit. Re-derives both sides from primary sources — the Lucene clone, parsed by a scanner written independently of the loaders (only the lexical pass, `javatext.strip_java`, is shared), and the crate as the compiler expands it — and reports every divergence. `problems: 0` is the pass condition. |
 | `javatext.py` | The Java lexical pass both Lucene-side scanners need: `strip_java` blanks comments, strings and char literals in one left-to-right pass, preserving length. Order is not negotiable — stripping strings *before* line comments lets a `//` holding an odd number of `"` open a phantom string that swallows the code after it, which is what deleted `Automaton#toDot` and `RegExp#parseCharExp`. The loader and the audit share it so they cannot drift; the audit's independence rests on its scanner, not on disagreeing about what a token is. |
-| `kgio.py` | Shared `rmp graph` I/O: Cypher map-literal serialisation (the engine rejects JSON's quoted keys), `UNWIND` batching, and retry-with-backoff when the store is busy. |
+| `kgio.py` | Shared `rmp graph client` I/O, the one place any script runs a statement: Cypher map-literal serialisation (the engine rejects JSON's quoted keys), `UNWIND` batching, the batch cap for statements the engine runs once per row (`PER_ROW_SCAN_BATCH`), and failure handling: a write conflict is retried with backoff, and every other failure stops the script with a non-zero exit. |
 
 ## Rebuilding the graph from scratch
 
@@ -193,9 +197,36 @@ git worktree remove /tmp/rucene-survey
 
 ## Gotchas these scripts encode
 
-- `rmp graph create` rejects any `SET`, including inside `MERGE … ON CREATE SET`.
-  Every upsert is therefore two steps: `create` with identity properties only, then
-  `update` with the rest.
+- Every statement runs under the server's **5-second budget**. A statement the
+  budget cancels writes nothing, and the script exits non-zero. An `UNWIND` batch
+  is one statement, so it must fit the budget whole. In rmp 1.18.0 (GoGraph
+  v0.15.0) a labelled lookup such as `UNWIND … MATCH (n:L {k: row.k})` is
+  hash-joined: one label scan per statement, 0.02–0.3 s at 300 rows. Three shapes
+  instead cost a scan **per row**:
+  - a node `MERGE (n:L {k: row.k})`, which walks every `L` node;
+  - a `MATCH` that binds an unlabelled node by property, `(t {name: row.name})`;
+  - `MATCH (n) WHERE id(n) = row.id`.
+
+  The last two scan every node in the graph. Batches of these three shapes are
+  capped at `kgio.PER_ROW_SCAN_BATCH` (50 rows). Measured on 2026-10-23 with
+  read-only analogues of each shape: at the 200–300 rows the loaders used, they
+  took from 1.8 s to over the budget, and at 50 rows the slowest took 1.40 s. A second `MATCH` on an unlabelled node after `WITH`
+  (`… WITH DISTINCT c MATCH (b)-[:X]->(c)`) also scans every node per row, so
+  `audit_kg.py` runs that check as two flat reads and intersects them in Python.
+- `rmp graph client` exits 1 for every failure and prints one published `Error:`
+  line, which is not always the first line of stderr. Only `graph write conflict`
+  is retried, at most six attempts in all, 1–16 s apart. By then rmp has spent its
+  own 2.5 s retry policy, nothing was written, and rmp's documented remedy is to
+  run the statement again. Every other failure stops the script:
+  - **no server listening:** it says to run `rmp graph serve -r <roadmap>`;
+  - **a budget overrun:** deterministic for the same statement and graph, so a
+    retry would fail the same way;
+  - **a lost or silent connection:** the outcome is unknown, so re-sending a
+    write could apply it twice.
+- Each upsert is two statements: a `MERGE` with the identity properties only,
+  then a `MATCH … SET` of the rest. The old `rmp graph create` rejected any `SET`,
+  including inside `MERGE … ON CREATE SET`. `rmp graph client` has no such
+  restriction, but the scripts keep the two steps.
 - `MERGE` matches the **whole** pattern, so only identity properties may appear in a
   `MERGE` map, and existing nodes are located with `MATCH` before being related.
 - `MATCH (x), (y) WHERE id(x) = … AND id(y) = …` builds the Cartesian product of all

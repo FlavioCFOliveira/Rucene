@@ -7,9 +7,10 @@ UNWIND.
 """
 
 import re
-import subprocess
 import sys
 import argparse
+
+from kgio import PER_ROW_SCAN_BATCH, client
 
 
 def cypher_escape(value: str) -> str:
@@ -144,14 +145,9 @@ def emit_update_batches(rows, batch_size: int, roadmap: str):
 
 
 def run_rmp(mode: str, roadmap: str, query: str, idx: int, total: int):
-    cmd = ["rmp", "graph", mode, "-r", roadmap]
-    result = subprocess.run(cmd, input=query, text=True, capture_output=True)
-    if result.returncode != 0:
-        print(f"\nBATCH {idx}/{total} FAILED (exit {result.returncode})", file=sys.stderr)
-        print(result.stderr, file=sys.stderr)
-        print("QUERY:\n" + query[:500], file=sys.stderr)
-        sys.exit(1)
-    out = result.stdout.strip()
+    # `mode` named the old `rmp graph <mode>` subcommand; it now only labels a
+    # failure, which `client` reports before exiting non-zero.
+    client(roadmap, query, label=f"BATCH {idx}/{total} ({mode})")
     if idx % 10 == 0 or idx == total:
         print(f"  {idx}/{total} done", file=sys.stderr)
 
@@ -177,7 +173,10 @@ def main():
             print(f"No rows for {kind}; skipping.", file=sys.stderr)
             continue
         print(f"\nLoading {kind}: {len(rows)} members", file=sys.stderr)
-        emit_create_batches(rows.copy(), args.batch_size, args.roadmap)
+        # The create step MERGEs a `Method` and a `Class` node per row, which the
+        # engine runs as a label walk per row: see `kgio.PER_ROW_SCAN_BATCH`.
+        emit_create_batches(rows.copy(), min(args.batch_size, PER_ROW_SCAN_BATCH),
+                            args.roadmap)
         emit_update_batches(rows, args.batch_size, args.roadmap)
     print("All member loads completed.", file=sys.stderr)
 

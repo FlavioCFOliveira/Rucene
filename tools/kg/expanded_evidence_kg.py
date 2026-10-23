@@ -59,7 +59,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import extract_rucene_kg as ex
 import port_evidence_kg as pe
-from kgio import read as kg_read, unwind
+from kgio import PER_ROW_SCAN_BATCH, read as kg_read, unwind
 
 # `#[doc = "…"]`, as the pretty-printer prints it: it wraps after the `=`, so
 # the string routinely starts on the next line, and `concat!` has already been
@@ -206,7 +206,7 @@ def load(roadmap, claims, commit, date):
            "MATCH (t {name:row.name, file:row.file}) "
            "SET t.origin = 'macro', t.scope = coalesce(t.scope, 'crate'), "
            "t.gitCommit = row.commit, t.gitDate = row.date",
-           "node provenance")
+           "node provenance", batch=PER_ROW_SCAN_BATCH)
     after = len(kg_read(roadmap, "MATCH (t) WHERE t.origin = 'macro' RETURN t.name"))
     print(f"  macro-origin nodes: {before} -> {after}", file=sys.stderr)
 
@@ -235,7 +235,7 @@ def load(roadmap, claims, commit, date):
         unwind(roadmap, "delete", dead,
                "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
                "(c:Class {qualifiedName:row.lucene}) DELETE e",
-               "PORTS edges retired")
+               "PORTS edges retired", batch=PER_ROW_SCAN_BATCH)
 
     # `MERGE (a)-[:PORTS]->(b)` silently matches a relationship of a *different*
     # type between the same ordered pair (see `knowledge-model.md`), so a pair
@@ -244,12 +244,12 @@ def load(roadmap, claims, commit, date):
     unwind(roadmap, "delete", rows,
            "MATCH (t {name:row.name, file:row.file})-[e:PORTS_CANDIDATE]->"
            "(c:Class {qualifiedName:row.lucene}) DELETE e",
-           "superseded PORTS_CANDIDATE removed")
+           "superseded PORTS_CANDIDATE removed", batch=PER_ROW_SCAN_BATCH)
     unwind(roadmap, "create", rows,
            "MATCH (t {name:row.name, file:row.file}) "
            "WITH t, row MATCH (c:Class {qualifiedName:row.lucene}) "
            "MERGE (t)-[:PORTS]->(c)",
-           "PORTS edges")
+           "PORTS edges", batch=PER_ROW_SCAN_BATCH)
     # `declaredAt` names the file the compiler places the generated item in --
     # the macro's invocation site, not the file that declares the `macro_rules!`
     # (see `resolve_module_file`). There is no line to quote: the declaration
@@ -262,7 +262,7 @@ def load(roadmap, claims, commit, date):
            "e.declarationSource = 'macro-expansion', "
            "e.declaredAt = row.file, e.note = coalesce(row.note, e.note), "
            "e.gitCommit = row.commit, e.gitDate = row.date",
-           "PORTS evidence stamped")
+           "PORTS evidence stamped", batch=PER_ROW_SCAN_BATCH)
     return rows
 
 
