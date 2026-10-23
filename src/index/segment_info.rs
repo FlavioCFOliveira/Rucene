@@ -239,6 +239,17 @@ impl SegmentInfo {
         self.min_version
     }
 
+    /// Records the minimum version that contributed documents to this segment.
+    ///
+    /// Java has no setter: `SegmentMerger`'s constructor assigns the
+    /// package-private field `segmentInfo.minVersion` directly
+    /// (`SegmentMerger.java:76-89`). Rust has no package visibility, so the
+    /// assignment goes through this crate-private method, which only that
+    /// constructor calls.
+    pub(crate) fn set_min_version(&mut self, min_version: Option<Version>) {
+        self.min_version = min_version;
+    }
+
     /// Returns the 16-byte segment id.
     pub fn id(&self) -> [u8; ID_LENGTH] {
         self.id

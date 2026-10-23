@@ -16,7 +16,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::codec_reader::CodecReader;
 use crate::index::{FieldInfos, SegmentInfo};
 use crate::search::NO_MORE_DOCS;
-use crate::util::Bits;
+use crate::util::{Bits, InfoStream, NoOutputInfoStream};
 
 /// Maps document IDs from an old segment to the merged segment.
 ///
@@ -88,6 +88,12 @@ pub struct MergeState {
     pub max_docs: Vec<i32>,
     /// Whether the merged segment needs to preserve index sort order.
     pub needs_index_sort: bool,
+    /// The info stream merge components report to.
+    ///
+    /// Equivalent to `MergeState.infoStream`, which the merging codecs consult
+    /// with `isEnabled` before every diagnostic message — for example
+    /// `MatchingReaders` and `KnnVectorsWriter.merge`.
+    pub info_stream: Arc<dyn InfoStream>,
 }
 
 impl MergeState {
@@ -124,6 +130,7 @@ impl MergeState {
             knn_vectors_readers,
             max_docs,
             needs_index_sort,
+            info_stream: Arc::new(NoOutputInfoStream),
         }
     }
 
@@ -236,7 +243,6 @@ impl MergeState {
         Ok(())
     }
 
-    /// Returns the number of source segments.
     /// Creates a merge state carrying only the postings producers and document
     /// counts, for a codec that merges one kind of data.
     pub fn from_fields_producers(
@@ -259,6 +265,7 @@ impl MergeState {
             knn_vectors_readers: (0..n).map(|_| None).collect(),
             max_docs,
             needs_index_sort: false,
+            info_stream: Arc::new(NoOutputInfoStream),
         }
     }
 
@@ -286,15 +293,26 @@ impl MergeState {
     ///
     /// Equivalent to Lucene 10.5.0's package-private
     /// `MergeState(List<CodecReader> readers, SegmentInfo segmentInfo, InfoStream
-    /// infoStream, Executor intraMergeTaskExecutor)`: it pulls each producer off
-    /// the reader rather than making the caller thread fourteen parallel vectors
-    /// through by hand.
+    /// infoStream, Executor intraMergeTaskExecutor, OneMerge oneMerge)`: it pulls
+    /// each producer off the reader rather than making the caller thread
+    /// fourteen parallel vectors through by hand, and keeps the *merge
+    /// instance* of each one — the stored-fields, term-vectors, norms,
+    /// doc-values, postings, points and vectors readers alike — exactly as
+    /// `MergeState.java:134-168` replaces every non-null reader with its
+    /// `getMergeInstance()`. A merge therefore reads through instances built
+    /// for one sequential pass, never through the ones searches share.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever pulling a reader or building its merge instance
+    /// raises.
     pub fn from_readers(
         readers: &[Arc<dyn CodecReader>],
         doc_maps: Vec<DocMap>,
         segment_info: Option<SegmentInfo>,
         merge_field_infos: FieldInfos,
         needs_index_sort: bool,
+        info_stream: Arc<dyn InfoStream>,
     ) -> Result<Self> {
         let n = readers.len();
         let mut stored_fields_readers = Vec::with_capacity(n);
@@ -309,16 +327,40 @@ impl MergeState {
         let mut max_docs = Vec::with_capacity(n);
 
         for reader in readers {
-            stored_fields_readers.push(reader.get_fields_reader()?);
-            term_vectors_readers.push(reader.get_term_vectors_reader()?);
-            norms_producers.push(reader.get_norms_reader()?);
-            doc_values_producers.push(reader.get_doc_values_reader()?);
-            fields_producers.push(reader.get_postings_reader()?);
-            points_readers.push(reader.get_points_reader()?);
-            knn_vectors_readers.push(reader.get_vector_reader()?);
-            field_infos.push(reader.get_field_infos().clone());
-            live_docs.push(reader.get_live_docs());
             max_docs.push(reader.max_doc());
+            live_docs.push(reader.get_live_docs());
+            field_infos.push(reader.get_field_infos().clone());
+
+            norms_producers.push(match reader.get_norms_reader()? {
+                Some(producer) => Some(Arc::from(producer.get_merge_instance()?)),
+                None => None,
+            });
+            doc_values_producers.push(match reader.get_doc_values_reader()? {
+                Some(producer) => Some(Arc::from(producer.get_merge_instance()?)),
+                None => None,
+            });
+            stored_fields_readers.push(
+                reader
+                    .get_fields_reader()?
+                    .map(|fields_reader| fields_reader.get_merge_instance()),
+            );
+            term_vectors_readers.push(
+                reader
+                    .get_term_vectors_reader()?
+                    .map(|vectors_reader| vectors_reader.get_merge_instance()),
+            );
+            fields_producers.push(match reader.get_postings_reader()? {
+                Some(producer) => Some(Arc::from(producer.get_merge_instance()?)),
+                None => None,
+            });
+            points_readers.push(match reader.get_points_reader()? {
+                Some(points_reader) => Some(Arc::from(points_reader.get_merge_instance()?)),
+                None => None,
+            });
+            knn_vectors_readers.push(match reader.get_vector_reader()? {
+                Some(vectors_reader) => Some(Arc::from(vectors_reader.get_merge_instance()?)),
+                None => None,
+            });
         }
 
         Ok(Self {
@@ -336,9 +378,11 @@ impl MergeState {
             knn_vectors_readers,
             max_docs,
             needs_index_sort,
+            info_stream,
         })
     }
 
+    /// Returns the number of source segments.
     pub fn num_readers(&self) -> usize {
         self.max_docs.len()
     }

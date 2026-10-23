@@ -14,7 +14,7 @@ use crate::codecs::hnsw::flat_vectors::{
 };
 use crate::codecs::knn_vectors::{
     BufferingKnnVectorsWriter, FieldVectorWriter, KnnFieldVectorsWriter, KnnVectorsFormat,
-    KnnVectorsReader, KnnVectorsWriter,
+    KnnVectorsReader, KnnVectorsWriter, MergedVectorValues,
 };
 use crate::codecs::lucene95::{HasIndexSlice, OrdToDocDISIReaderConfiguration};
 use crate::codecs::lucene99::flat_vectors_format::read_ord_to_doc_data;
@@ -1892,10 +1892,12 @@ impl KnnVectorsReader for Lucene104ScalarQuantizedVectorsReader {
     /// Equivalent to `Lucene104ScalarQuantizedVectorsReader.getFloatVectorValues(String)`:
     /// when the delegate stored the raw vectors they are the ones handed back,
     /// paired with the quantized values so that `scorer` runs off the compressed
-    /// form; when the delegate stored none, the dequantized view stands in.
-    fn get_float_vector_values(&self, field: &str) -> Result<Box<dyn FloatVectorValues>> {
+    /// form; when the delegate stored none, the dequantized view stands in. A
+    /// field this reader holds no entry for answers `None`, Java's `null`
+    /// (`Lucene104ScalarQuantizedVectorsReader.java:230-234`).
+    fn get_float_vector_values(&self, field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
         let Some(entry) = self.fields.get(field) else {
-            return Ok(Box::new(EmptyFloatVectorValues));
+            return Ok(None);
         };
         if entry.vector_encoding != VectorEncoding::FLOAT32 {
             return Err(LuceneError::IllegalArgument(format!(
@@ -1903,24 +1905,32 @@ impl KnnVectorsReader for Lucene104ScalarQuantizedVectorsReader {
                 entry.vector_encoding
             )));
         }
-        let raw = self.raw_vectors_reader.get_float_vector_values(field)?;
+        // Java dereferences the delegate's answer without a `null` check.
+        let raw = self
+            .raw_vectors_reader
+            .get_float_vector_values(field)?
+            .ok_or_else(|| {
+                LuceneError::IllegalState(format!(
+                    "the raw vectors of field \"{field}\" are missing"
+                ))
+            })?;
         if raw.size() == 0 {
-            return self.quantized_float_vector_values(field, entry);
+            return self.quantized_float_vector_values(field, entry).map(Some);
         }
-        Ok(Box::new(ScalarQuantizedVectorValues::new(
+        Ok(Some(Box::new(ScalarQuantizedVectorValues::new(
             raw,
             Box::new(OffHeapScalarQuantizedVectorValues::load(
                 entry.clone(),
                 self.vector_data.clone_input()?,
             )),
-        )))
+        ))))
     }
 
     /// Byte-encoded fields are never quantized by this format, so the delegate
     /// answers.
     ///
     /// Equivalent to `Lucene104ScalarQuantizedVectorsReader.getByteVectorValues(String)`.
-    fn get_byte_vector_values(&self, field: &str) -> Result<Box<dyn ByteVectorValues>> {
+    fn get_byte_vector_values(&self, field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
         self.raw_vectors_reader.get_byte_vector_values(field)
     }
 
@@ -2452,7 +2462,7 @@ impl KnnVectorsFormat for Lucene104HnswScalarQuantizedVectorsFormat {
         let flat_writer = self.flat.fields_writer_flat(&borrowed)?;
         Ok(Box::new(
             crate::codecs::lucene99::hnsw_vectors_format::Lucene99HnswVectorsWriter::with_flat_format(
-                &borrowed,
+                state,
                 self.max_conn,
                 self.beam_width,
                 crate::codecs::lucene99::hnsw_vectors_format::DEFAULT_NUM_MERGE_WORKER,
@@ -2943,11 +2953,12 @@ impl Lucene104ScalarQuantizedVectorsWriter {
         )
     }
 
-    /// Copies already quantized vectors straight into `output`, one entry per
-    /// document that has a vector, and returns those documents.
+    /// Writes the quantized vectors `quantized_byte_vector_values` yields into
+    /// `output`, one entry per document that has a vector, and returns those
+    /// documents.
     ///
-    /// This is the merge path: the vectors arrive quantized, so nothing is
-    /// re-quantized here.
+    /// This is the merge path, fed by [`QuantizedFloatVectorValues`], which
+    /// quantizes each vector as it is asked for.
     ///
     /// # Errors
     ///
@@ -2981,21 +2992,25 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     }
 
     /// Returns the centroid a reader already computed for `field_name`, or
-    /// `None` when it has none.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java narrows the reader with two
-    /// `instanceof` tests — through `PerFieldKnnVectorsFormat.FieldsReader` and
-    /// then to `Lucene104ScalarQuantizedVectorsReader` — and asks it for its
-    /// stored centroid (`Lucene104ScalarQuantizedVectorsWriter.java:389-397`).
-    /// `dyn KnnVectorsReader` in this crate carries no `Any`, so neither test
-    /// can be written, and this always answers `None`. The only caller,
-    /// [`merge_and_recalculate_centroids`](Self::merge_and_recalculate_centroids),
-    /// then takes the branch Java takes for a reader that stores no centroid:
-    /// it recomputes the centroid from the vectors themselves, which is the
-    /// same value the weighted average of per-segment centroids approximates.
+    /// `None` when the reader is not a quantized one.
     ///
     /// Equivalent to
-    /// `Lucene104ScalarQuantizedVectorsWriter.getCentroid(KnnVectorsReader, String)`.
+    /// `Lucene104ScalarQuantizedVectorsWriter.getCentroid(KnnVectorsReader, String)`
+    /// (`Lucene104ScalarQuantizedVectorsWriter.java:388-396`).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java narrows the reader with two
+    /// `instanceof` tests — through `PerFieldKnnVectorsFormat.FieldsReader` to
+    /// the field's own reader, then to `Lucene104ScalarQuantizedVectorsReader` —
+    /// and reads that reader's stored centroid. Rust cannot narrow a trait
+    /// object, so each test is asked of the reader instead:
+    /// [`KnnVectorsReader::get_field_reader`] answers for the per-field reader,
+    /// and [`KnnVectorsReader::as_flat_vectors_reader`] followed by
+    /// [`FlatVectorsReader::as_quantized_vectors_reader`] for the quantized
+    /// one. Each answers `None` exactly where Java's `instanceof` fails, so a
+    /// reader of another format still yields `None` and
+    /// [`merge_and_recalculate_centroids`](Self::merge_and_recalculate_centroids)
+    /// recomputes the centroid, as in Java. Where the centroid itself is read
+    /// from is the inline note below.
     pub fn get_centroid(
         vectors_reader: &dyn KnnVectorsReader,
         field_name: &str,
@@ -3044,10 +3059,17 @@ impl Lucene104ScalarQuantizedVectorsWriter {
         let mut recalculate = false;
         let mut total_vector_count = 0i32;
         for (i, reader_opt) in merge_state.knn_vectors_readers.iter().enumerate() {
+            // `Lucene104ScalarQuantizedVectorsWriter.java:404-406`: a segment
+            // with no reader, or whose reader has no vectors for the field —
+            // the per-field reader of a segment without it — is skipped.
             let Some(knn_vectors_reader) = reader_opt else {
                 continue;
             };
-            let vector_values = knn_vectors_reader.get_float_vector_values(&field_info.name)?;
+            let Some(vector_values) =
+                knn_vectors_reader.get_float_vector_values(&field_info.name)?
+            else {
+                continue;
+            };
             let centroid = Self::get_centroid(knn_vectors_reader.as_ref(), &field_info.name)?;
             let vector_count = vector_values.size();
             if vector_count == 0 {
@@ -3105,7 +3127,12 @@ impl Lucene104ScalarQuantizedVectorsWriter {
             let Some(knn_vectors_reader) = reader_opt else {
                 continue;
             };
-            let vector_values = knn_vectors_reader.get_float_vector_values(&field_info.name)?;
+            // `Lucene104ScalarQuantizedVectorsWriter.java:449-452`.
+            let Some(vector_values) =
+                knn_vectors_reader.get_float_vector_values(&field_info.name)?
+            else {
+                continue;
+            };
             let mut iterator = vector_values.iterator()?;
             loop {
                 let doc = iterator.next_doc()?;
@@ -3293,11 +3320,11 @@ impl KnnVectorsWriter for Lucene104ScalarQuantizedVectorsWriter {
         Ok(())
     }
 
-    fn merge_one_field(
+    fn merge_one_field<'m>(
         &mut self,
         field_info: &FieldInfo,
-        merge_state: &MergeState,
-    ) -> Result<Option<Box<dyn crate::codecs::knn_vectors::IORunnable>>> {
+        merge_state: &'m MergeState,
+    ) -> Result<Option<Box<dyn crate::codecs::knn_vectors::IORunnable + 'm>>> {
         self.merge_one_flat_vector_field(field_info, merge_state)?;
         Ok(None)
     }
@@ -3390,63 +3417,320 @@ impl FlatVectorsWriter for Lucene104ScalarQuantizedVectorsWriter {
     /// centroid is computed and every merged vector is quantized against it.
     ///
     /// Equivalent to
-    /// `Lucene104ScalarQuantizedVectorsWriter.mergeOneFlatVectorField(FieldInfo, MergeState)`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java builds the merged view with
-    /// `MergedVectorValues.mergeFloatVectorValues`, which is not ported; the
-    /// segments are walked directly here, as
-    /// `Lucene99FlatVectorsWriter::merge_one_flat_vector_field` already does in
-    /// this crate.
+    /// `Lucene104ScalarQuantizedVectorsWriter.mergeOneFlatVectorField(FieldInfo, MergeState)`
+    /// (`Lucene104ScalarQuantizedVectorsWriter.java:322-363`): the merged view
+    /// [`MergedVectorValues::merge_float_vector_values`] builds — every
+    /// surviving document, in merged order, under its merged document id — is
+    /// wrapped in [`NormalizedFloatVectorValues`] for cosine and in
+    /// [`QuantizedFloatVectorValues`], and streamed through
+    /// [`write_vector_data`](Lucene104ScalarQuantizedVectorsWriter::write_vector_data),
+    /// one vector quantized at a time.
     fn merge_one_flat_vector_field(
         &mut self,
         field_info: &FieldInfo,
         merge_state: &MergeState,
     ) -> Result<()> {
+        // Don't need access to the random vectors, we can just use the merged
         self.delegate()?
             .merge_one_flat_vector_field(field_info, merge_state)?;
         if field_info.vector_encoding != VectorEncoding::FLOAT32 {
             return Ok(());
         }
-        let dims = field_info.vector_dimension.max(0) as usize;
-        let mut centroid = vec![0f32; dims];
-        Self::merge_and_recalculate_centroids(merge_state, field_info, &mut centroid)?;
-
-        let mut vectors: Vec<Vec<f32>> = Vec::new();
-        let mut docs_with_field = DocsWithFieldSet::new();
-        let mut doc_base = 0i32;
-        for (reader_idx, reader_opt) in merge_state.knn_vectors_readers.iter().enumerate() {
-            let segment_max_doc = merge_state.max_docs.get(reader_idx).copied().unwrap_or(0);
-            if let Some(reader) = reader_opt {
-                let values = reader.get_float_vector_values(&field_info.name)?;
-                let mut iter = values.iterator()?;
-                while iter.next_doc()? != NO_MORE_DOCS {
-                    let mapped = iter
-                        .doc_id()
-                        .checked_add(doc_base)
-                        .ok_or_else(|| LuceneError::IllegalState("doc id overflow".to_string()))?;
-                    vectors.push(values.vector_value(iter.index())?);
-                    docs_with_field.add(mapped)?;
-                }
-            }
-            doc_base += segment_max_doc;
+        let mut merged_centroid = vec![0f32; field_info.vector_dimension.max(0) as usize];
+        let vector_count =
+            Self::merge_and_recalculate_centroids(merge_state, field_info, &mut merged_centroid)?;
+        let centroid = merged_centroid;
+        // `Lucene104ScalarQuantizedVectorsWriter.java:333-336` reports on the
+        // write state's info stream, which `SegmentMerger` builds from the
+        // merge state's.
+        if merge_state
+            .info_stream
+            .is_enabled(QUANTIZED_VECTOR_COMPONENT)
+        {
+            merge_state.info_stream.message(
+                QUANTIZED_VECTOR_COMPONENT,
+                &format!("Vectors' count:{vector_count}"),
+            );
         }
+        let mut float_vector_values =
+            MergedVectorValues::merge_float_vector_values(field_info, merge_state)?;
         if field_info.vector_similarity_function == VectorSimilarityFunction::COSINE {
-            for vector in vectors.iter_mut() {
-                vector_util::l2normalize(vector, true)?;
-            }
+            float_vector_values = Box::new(NormalizedFloatVectorValues::new(float_vector_values)?);
         }
-        let quantizer = OptimizedScalarQuantizer::new(field_info.vector_similarity_function);
+        let mut quantized_vector_values = QuantizedFloatVectorValues::new(
+            float_vector_values,
+            OptimizedScalarQuantizer::new(field_info.vector_similarity_function),
+            self.encoding,
+            centroid.clone(),
+        )?;
         let max_doc = self
             .segment_max_doc
             .ok_or_else(|| LuceneError::IllegalState("maxDoc isn't set yet".to_string()))?;
-        self.write_field(
+        let encoding = self.encoding;
+        let (meta, vector_data) = self.outputs()?;
+        let vector_data_offset =
+            vector_data.align_file_pointer(std::mem::size_of::<f32>() as i32)?;
+        let docs_with_field = Self::write_vector_data(vector_data, &mut quantized_vector_values)?;
+        let vector_data_length = vector_data.file_pointer() - vector_data_offset;
+        let centroid_dp = if docs_with_field.cardinality() > 0 {
+            vector_util::dot_product_f32(&centroid, &centroid)?
+        } else {
+            0.0
+        };
+        write_meta_entry(
+            encoding,
             field_info,
-            &mut vectors,
-            &docs_with_field,
-            &centroid,
             max_doc,
-            &quantizer,
+            vector_data_offset,
+            vector_data_length,
+            &centroid,
+            centroid_dp,
+            docs_with_field.cardinality(),
+            &docs_with_field,
+            meta,
+            vector_data,
         )
+    }
+}
+
+/// Quantizes the vectors of the wrapped values against a centroid, one
+/// ordinal at a time, as they are read.
+///
+/// Equivalent to `Lucene104ScalarQuantizedVectorsWriter.QuantizedFloatVectorValues`
+/// (`Lucene104ScalarQuantizedVectorsWriter.java:583-696`). The quantized and
+/// packed forms and the corrective terms are those of the last ordinal asked
+/// for; [`get_corrective_terms`](QuantizedByteVectorValues::get_corrective_terms)
+/// answers only for that ordinal. Java's `getQuantizer()` throws
+/// `UnsupportedOperationException`; the port's getter keeps its default, which
+/// answers that there is none.
+pub struct QuantizedFloatVectorValues {
+    corrections: Option<QuantizationResult>,
+    quantized: Vec<u8>,
+    /// The packed form, for the encodings that pack; for the others Java makes
+    /// `packed` the same array as `quantized`, which `vector_value` reproduces
+    /// by answering `quantized`.
+    packed: Vec<u8>,
+    centroid: Vec<f32>,
+    centroid_dp: f32,
+    values: Box<dyn FloatVectorValues>,
+    quantizer: OptimizedScalarQuantizer,
+    encoding: ScalarEncoding,
+    last_ord: i32,
+}
+
+impl QuantizedFloatVectorValues {
+    /// Wraps `delegate`, whose vectors are quantized with `quantizer` and
+    /// `encoding` against `centroid`.
+    ///
+    /// Equivalent to `QuantizedFloatVectorValues(FloatVectorValues,
+    /// OptimizedScalarQuantizer, ScalarEncoding, float[])`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of [`KnnVectorValues::try_dimension`] when `delegate`
+    /// is a merged view without subs, where Java's `delegate.dimension()`
+    /// (`Lucene104ScalarQuantizedVectorsWriter.java:603`) throws
+    /// `IndexOutOfBoundsException`. The centroid's dot product with itself
+    /// cannot fail: `VectorUtil.dotProduct` rejects only vectors of unequal
+    /// length.
+    pub fn new(
+        delegate: Box<dyn FloatVectorValues>,
+        quantizer: OptimizedScalarQuantizer,
+        encoding: ScalarEncoding,
+        centroid: Vec<f32>,
+    ) -> Result<Self> {
+        let quantized = vec![
+            0u8;
+            encoding
+                .get_discrete_dimensions(delegate.try_dimension()?)
+                .max(0) as usize
+        ];
+        let packed = match encoding {
+            ScalarEncoding::UnsignedByte | ScalarEncoding::SevenBit => Vec::new(),
+            ScalarEncoding::PackedNibble => {
+                vec![
+                    0u8;
+                    encoding
+                        .get_doc_packed_length(quantized.len() as i32)
+                        .max(0) as usize
+                ]
+            }
+        };
+        let centroid_dp = vector_util::dot_product_f32(&centroid, &centroid)?;
+        Ok(Self {
+            corrections: None,
+            quantized,
+            packed,
+            centroid,
+            centroid_dp,
+            values: delegate,
+            quantizer,
+            encoding,
+            last_ord: -1,
+        })
+    }
+
+    /// Quantizes the vector at `ord` into `quantized`, and packs it.
+    ///
+    /// Equivalent to the private `QuantizedFloatVectorValues.quantize(int)`.
+    fn quantize(&mut self, ord: i32) -> Result<()> {
+        let mut vector = self.values.vector_value(ord)?;
+        self.corrections = Some(self.quantizer.scalar_quantize(
+            &mut vector,
+            &mut self.quantized,
+            self.encoding.get_bits(),
+            &self.centroid,
+        )?);
+        match self.encoding {
+            ScalarEncoding::PackedNibble => {
+                OffHeapScalarQuantizedVectorValues::pack_nibbles(&self.quantized, &mut self.packed)?
+            }
+            ScalarEncoding::UnsignedByte | ScalarEncoding::SevenBit => {}
+        }
+        Ok(())
+    }
+}
+
+impl QuantizedByteVectorValues for QuantizedFloatVectorValues {
+    /// Equivalent to `QuantizedFloatVectorValues.vectorValue(int)`.
+    fn vector_value(&mut self, ord: i32) -> Result<&[u8]> {
+        if ord != self.last_ord {
+            self.quantize(ord)?;
+            self.last_ord = ord;
+        }
+        Ok(match self.encoding {
+            ScalarEncoding::UnsignedByte | ScalarEncoding::SevenBit => &self.quantized,
+            ScalarEncoding::PackedNibble => &self.packed,
+        })
+    }
+
+    /// Equivalent to `QuantizedFloatVectorValues.getCorrectiveTerms(int)`.
+    fn get_corrective_terms(&mut self, ord: i32) -> Result<QuantizationResult> {
+        match self.corrections {
+            Some(corrections) if ord == self.last_ord => Ok(corrections),
+            _ => Err(LuceneError::IllegalState(format!(
+                "attempt to retrieve corrective terms for different ord {ord} than the \
+                 quantization was done for: {}",
+                self.last_ord
+            ))),
+        }
+    }
+
+    /// The port's trait requires this accessor, which
+    /// `QuantizedByteVectorValues` in Lucene 10.5.0 does not declare
+    /// (`QuantizedByteVectorValues.java:205-234`); this view has no such value.
+    fn get_score_correction_constant(&mut self, _ord: i32) -> Result<f32> {
+        Err(LuceneError::UnsupportedOperation(
+            "QuantizedFloatVectorValues has no score correction constant".to_string(),
+        ))
+    }
+
+    fn size(&self) -> i32 {
+        self.values.size()
+    }
+
+    fn dimension(&self) -> i32 {
+        self.values.dimension()
+    }
+
+    /// Equivalent to `QuantizedFloatVectorValues.copy()`.
+    fn copy(&self) -> Result<Box<dyn QuantizedByteVectorValues>> {
+        Ok(Box::new(Self::new(
+            self.values.copy_float()?,
+            self.quantizer,
+            self.encoding,
+            self.centroid.clone(),
+        )?))
+    }
+
+    fn get_scalar_encoding(&self) -> ScalarEncoding {
+        self.encoding
+    }
+
+    fn get_centroid(&self) -> Option<&[f32]> {
+        Some(&self.centroid)
+    }
+
+    fn get_centroid_dp(&self) -> f32 {
+        self.centroid_dp
+    }
+
+    /// Equivalent to `QuantizedFloatVectorValues.iterator()`: the wrapped
+    /// values' iterator.
+    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
+        self.values.iterator()
+    }
+}
+
+/// Normalises each vector of the wrapped values to unit length as it is read.
+///
+/// Equivalent to `Lucene104ScalarQuantizedVectorsWriter.NormalizedFloatVectorValues`
+/// (`Lucene104ScalarQuantizedVectorsWriter.java:698-738`).
+pub struct NormalizedFloatVectorValues {
+    values: Box<dyn FloatVectorValues>,
+}
+
+impl NormalizedFloatVectorValues {
+    /// Wraps `values`.
+    ///
+    /// Equivalent to `NormalizedFloatVectorValues(FloatVectorValues)`, which
+    /// sizes its scratch vector with `values.dimension()`
+    /// (`Lucene104ScalarQuantizedVectorsWriter.java:702-705`). The port needs
+    /// no scratch vector but keeps the lookup, so that the merge fails at the
+    /// same point.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of [`KnnVectorValues::try_dimension`] when `values` is
+    /// a merged view without subs, where Java's `dimension()` throws
+    /// `IndexOutOfBoundsException`.
+    pub fn new(values: Box<dyn FloatVectorValues>) -> Result<Self> {
+        values.try_dimension()?;
+        Ok(Self { values })
+    }
+}
+
+impl KnnVectorValues for NormalizedFloatVectorValues {
+    fn dimension(&self) -> i32 {
+        self.values.dimension()
+    }
+
+    fn try_dimension(&self) -> Result<i32> {
+        self.values.try_dimension()
+    }
+
+    fn size(&self) -> i32 {
+        self.values.size()
+    }
+
+    fn ord_to_doc(&self, ord: i32) -> i32 {
+        self.values.ord_to_doc(ord)
+    }
+
+    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
+        Ok(Box::new(Self::new(self.values.copy_float()?)?))
+    }
+
+    fn encoding(&self) -> VectorEncoding {
+        VectorEncoding::FLOAT32
+    }
+
+    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
+        self.values.iterator()
+    }
+}
+
+impl FloatVectorValues for NormalizedFloatVectorValues {
+    /// Equivalent to `NormalizedFloatVectorValues.vectorValue(int)`: a copy of
+    /// the wrapped vector, normalised with `VectorUtil.l2normalize(float[])`.
+    fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
+        let mut normalized_vector = self.values.vector_value(ord)?;
+        vector_util::l2normalize(&mut normalized_vector, true)?;
+        Ok(normalized_vector)
+    }
+
+    fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
+        Ok(Box::new(Self::new(self.values.copy_float()?)?))
     }
 }
 
@@ -3817,5 +4101,51 @@ impl std::fmt::Display for Lucene104HnswScalarQuantizedVectorsFormat {
             crate::codecs::lucene99::hnsw_vectors_format::HNSW_GRAPH_THRESHOLD,
             self.flat
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codecs::knn_vectors::MergedFloat32VectorValues;
+    use crate::index::vector_values::from_floats;
+
+    /// Wrapping a merged view without subs fails where Java's constructors
+    /// call `dimension()` on it and throw: `NormalizedFloatVectorValues`
+    /// (`Lucene104ScalarQuantizedVectorsWriter.java:702-705`) and
+    /// `QuantizedFloatVectorValues` (`:603`); over values that have vectors,
+    /// both wrappers build.
+    #[test]
+    fn the_merge_wrappers_refuse_an_empty_merged_view() {
+        let state = MergeState::from_fields_producers(Vec::new(), Vec::new());
+        let empty = || {
+            Box::new(MergedFloat32VectorValues::new(Vec::new(), &state).unwrap())
+                as Box<dyn FloatVectorValues>
+        };
+        let quantize = |values: Box<dyn FloatVectorValues>| {
+            QuantizedFloatVectorValues::new(
+                values,
+                OptimizedScalarQuantizer::new(VectorSimilarityFunction::EUCLIDEAN),
+                ScalarEncoding::UnsignedByte,
+                vec![0.0, 0.0],
+            )
+        };
+        assert!(matches!(
+            NormalizedFloatVectorValues::new(empty()),
+            Err(LuceneError::IllegalArgument(_))
+        ));
+        assert!(matches!(
+            quantize(empty()),
+            Err(LuceneError::IllegalArgument(_))
+        ));
+
+        // Positive control: one vector of two dimensions.
+        let values =
+            || Box::new(from_floats(vec![vec![3.0, 4.0]], 2)) as Box<dyn FloatVectorValues>;
+        let normalized = NormalizedFloatVectorValues::new(values()).unwrap();
+        let mut expected = vec![3.0, 4.0];
+        vector_util::l2normalize(&mut expected, true).unwrap();
+        assert_eq!(normalized.vector_value(0).unwrap(), expected);
+        assert_eq!(quantize(values()).unwrap().dimension(), 2);
     }
 }

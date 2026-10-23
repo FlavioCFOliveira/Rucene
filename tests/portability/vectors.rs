@@ -613,7 +613,8 @@ fn read_with_rucene(
             VectorEncoding::FLOAT32 => {
                 let values = reader
                     .get_float_vector_values(&info.name)
-                    .expect("float vector values");
+                    .expect("float vector values")
+                    .expect("the field has vectors");
                 let mut iter = values.iterator().expect("iterator");
                 while iter.next_doc().expect("next doc") != rucene::search::NO_MORE_DOCS {
                     let ord = iter.index();
@@ -635,7 +636,8 @@ fn read_with_rucene(
             VectorEncoding::BYTE => {
                 let values = reader
                     .get_byte_vector_values(&info.name)
-                    .expect("byte vector values");
+                    .expect("byte vector values")
+                    .expect("the field has vectors");
                 let mut iter = values.iterator().expect("iterator");
                 while iter.next_doc().expect("next doc") != rucene::search::NO_MORE_DOCS {
                     let ord = iter.index();

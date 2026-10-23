@@ -3466,20 +3466,25 @@ fn check_fields(
                     let mut doc = impacts_enum.doc_id();
                     let advance;
                     let target;
+                    // Java's `int` arithmetic wraps here (`CheckIndex.java:2094-2115`):
+                    // before the first document `doc` is -1, so
+                    // `NO_MORE_DOCS - doc` overflows to `Integer.MIN_VALUE` and the
+                    // target wraps round to `NO_MORE_DOCS`. The same wrapping is
+                    // reproduced rather than letting a debug build abort.
                     if ((field_hash.wrapping_add(doc)) & 1) == 1 {
                         advance = false;
-                        target = doc + 1;
+                        target = doc.wrapping_add(1);
                     } else {
                         advance = true;
                         let delta = (1 + ((field_hash.wrapping_mul(31).wrapping_add(doc)) & 0x1ff))
-                            .min(NO_MORE_DOCS - doc);
-                        target = impacts_enum.doc_id() + delta;
+                            .min(NO_MORE_DOCS.wrapping_sub(doc));
+                        target = impacts_enum.doc_id().wrapping_add(delta);
                     }
 
                     if target > max && target % 2 == 1 {
                         let delta = ((field_hash.wrapping_mul(31).wrapping_add(target)) & 0x1ff)
-                            .min(NO_MORE_DOCS - target);
-                        max = target + delta;
+                            .min(NO_MORE_DOCS.wrapping_sub(target));
+                        max = target.wrapping_add(delta);
                         impacts_enum.advance_shallow(target)?;
                         let impacts = impacts_enum.get_impacts()?;
                         check_impacts(impacts.as_ref(), doc)?;

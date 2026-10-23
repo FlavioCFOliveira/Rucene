@@ -25,7 +25,7 @@ use crate::codecs::hnsw::flat_vectors::{
 use crate::codecs::hnsw::graph_provider::HnswGraphProvider;
 use crate::codecs::knn_vectors::{
     FieldVectorWriter, KnnFieldVectorsWriter, KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
-    SorterDocMap,
+    MergedVectorValues, SorterDocMap,
 };
 use crate::codecs::lucene99::flat_vectors_format::Lucene99FlatVectorsFormat;
 use crate::codecs::postings::MergeState;
@@ -168,7 +168,7 @@ impl KnnVectorsFormat for Lucene99HnswVectorsFormat {
     fn fields_writer(&self, state: &OwnedSegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>> {
         ensure_registered();
         Ok(Box::new(Lucene99HnswVectorsWriter::new(
-            &state.borrow(),
+            state,
             self.max_conn,
             self.beam_width,
             self.num_merge_workers,
@@ -198,7 +198,28 @@ impl KnnVectorsFormat for Lucene99HnswVectorsFormat {
 /// Writer for the Lucene 9.9 HNSW vector format.
 ///
 /// Equivalent to `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsWriter`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `mergeOneField` returns an
+/// `IORunnable` closure that captures the writer itself, and
+/// `KnnVectorsWriter.merge` runs it only after every field has been through
+/// its first phase (`Lucene99HnswVectorsWriter.java:423-461`). A Rust closure
+/// cannot hold the writer while the merge still calls it, so the writer's state
+/// lives behind an `Arc<Mutex<_>>` that the writer and its deferred merge work
+/// share; every method locks it for its own duration. The work done, and its
+/// order, are Java's.
 pub struct Lucene99HnswVectorsWriter {
+    state: Arc<Mutex<HnswWriterState>>,
+}
+
+/// Everything a [`Lucene99HnswVectorsWriter`] holds: the fields of Java's
+/// writer, which its deferred merge work reaches as well.
+struct HnswWriterState {
+    /// The state the writer was created with.
+    ///
+    /// Equivalent to Lucene's `final SegmentWriteState segmentWriteState`,
+    /// held so that the deferred merge work can reopen the flat vectors it
+    /// wrote (`Lucene99HnswVectorsWriter.java:499-511`).
+    segment_write_state: OwnedSegmentWriteState,
     meta: Option<Box<dyn IndexOutput>>,
     vector_index: Option<Box<dyn IndexOutput>>,
     flat_vector_writer: Box<dyn FlatVectorsWriter>,
@@ -228,11 +249,15 @@ pub struct Lucene99HnswVectorsWriter {
 
 impl fmt::Debug for Lucene99HnswVectorsWriter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         f.debug_struct("Lucene99HnswVectorsWriter")
-            .field("m", &self.m)
-            .field("beam_width", &self.beam_width)
-            .field("finished", &self.finished)
-            .field("fields", &self.fields.len())
+            .field("m", &state.m)
+            .field("beam_width", &state.beam_width)
+            .field("finished", &state.finished)
+            .field("fields", &state.fields.len())
             .finish_non_exhaustive()
     }
 }
@@ -285,7 +310,7 @@ impl Lucene99HnswVectorsWriter {
     /// Creates a new HNSW vector writer that stores its vectors with the
     /// default Lucene 9.9 flat format.
     pub fn new(
-        state: &SegmentWriteState<'_>,
+        state: &OwnedSegmentWriteState,
         m: i32,
         beam_width: i32,
         num_merge_workers: i32,
@@ -293,7 +318,7 @@ impl Lucene99HnswVectorsWriter {
         version: i32,
     ) -> Result<Self> {
         let flat_vectors_format = Lucene99FlatVectorsFormat::new(DefaultFlatVectorScorer::INSTANCE);
-        let flat_vector_writer = flat_vectors_format.fields_writer_flat(state)?;
+        let flat_vector_writer = flat_vectors_format.fields_writer_flat(&state.borrow())?;
         Self::with_flat_format(
             state,
             m,
@@ -315,7 +340,7 @@ impl Lucene99HnswVectorsWriter {
     /// quantized flat format share this graph writer.
     #[allow(clippy::too_many_arguments)]
     pub fn with_flat_format(
-        state: &SegmentWriteState<'_>,
+        state: &OwnedSegmentWriteState,
         m: i32,
         beam_width: i32,
         num_merge_workers: i32,
@@ -324,6 +349,44 @@ impl Lucene99HnswVectorsWriter {
         flat_vectors_format: Box<dyn FlatVectorsFormat>,
         flat_vector_writer: Box<dyn FlatVectorsWriter>,
     ) -> Result<Self> {
+        Ok(Self {
+            state: Arc::new(Mutex::new(HnswWriterState::new(
+                state,
+                m,
+                beam_width,
+                num_merge_workers,
+                tiny_segments_threshold,
+                version,
+                flat_vectors_format,
+                flat_vector_writer,
+            )?)),
+        })
+    }
+
+    /// Locks the writer's state for one operation.
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, HnswWriterState>> {
+        self.state.lock().map_err(|_| {
+            LuceneError::IllegalState("Lucene99HnswVectorsWriter state lock poisoned".to_string())
+        })
+    }
+}
+
+impl HnswWriterState {
+    /// Opens the writer's two files and writes their headers.
+    ///
+    /// The body of Lucene's constructor.
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        owned_state: &OwnedSegmentWriteState,
+        m: i32,
+        beam_width: i32,
+        num_merge_workers: i32,
+        tiny_segments_threshold: i32,
+        version: i32,
+        flat_vectors_format: Box<dyn FlatVectorsFormat>,
+        flat_vector_writer: Box<dyn FlatVectorsWriter>,
+    ) -> Result<Self> {
+        let state = &owned_state.borrow();
         let meta_file_name = segment_file_name(
             &state.segment_info.name,
             &state.segment_suffix,
@@ -368,6 +431,8 @@ impl Lucene99HnswVectorsWriter {
                 &state.segment_suffix,
             )?;
             Ok(Self {
+                segment_write_state: owned_state
+                    .with_new_suffix(owned_state.segment_suffix.clone()),
                 meta: meta_opt.take(),
                 vector_index: vector_index_opt.take(),
                 flat_vector_writer,
@@ -691,12 +756,6 @@ impl Lucene99HnswVectorsWriter {
     /// exactly as Java treats one that is not a provider, and rebuilds. The
     /// divergence is the merger's, already recorded on that trait; this method
     /// only inherits it.
-    ///
-    /// Nothing calls this yet: Java reaches it from the `IORunnable` that
-    /// `mergeOneField` returns, and that closure captures the writer itself,
-    /// which a `Box<dyn IORunnable>` cannot own while
-    /// [`KnnVectorsWriter::finish`] still needs the same outputs.
-    #[allow(dead_code)]
     fn build_and_write_graph(
         &mut self,
         field_info: &FieldInfo,
@@ -715,15 +774,8 @@ impl Lucene99HnswVectorsWriter {
         let mut merger =
             self.create_graph_merger(field_info, scorer_supplier, self.num_merge_workers);
         for i in 0..merge_state.live_docs.len() {
-            // `KnnVectorsWriter.MergedVectorValues.hasVectorValues(FieldInfos,
-            // String)`, inlined: that helper belongs to a type this port has
-            // not brought over, and its body is these three tests.
-            let field_infos = &merge_state.field_infos[i];
-            let has_vector_values = field_infos.has_vector_values()
-                && field_infos
-                    .field_info(&field_info.name)
-                    .is_some_and(|info| info.has_vector_values());
-            if !has_vector_values {
+            if !MergedVectorValues::has_vector_values(&merge_state.field_infos[i], &field_info.name)
+            {
                 continue;
             }
             let Some(reader) = merge_state
@@ -804,29 +856,19 @@ impl Lucene99HnswVectorsWriter {
     /// raises.
     ///
     /// Equivalent to
-    /// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsWriter#ensureFlatReaderOpen`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java builds the `SegmentReadState`
-    /// out of the `segmentWriteState` field it kept from its constructor
-    /// (`Lucene99HnswVectorsWriter.java:499-511`). This port's writer outlives
-    /// the borrowed [`SegmentWriteState`] it was built from — the indexing
-    /// chain creates it on the first vector of the first document and keeps it
-    /// until the segment flushes — so it cannot hold one, and the state is
-    /// passed in instead. It is the same state Java stored.
-    ///
-    /// Nothing calls this yet, for the reason recorded on
-    /// [`build_and_write_graph`](Self::build_and_write_graph).
-    #[allow(dead_code)]
-    fn ensure_flat_reader_open(&mut self, state: &SegmentWriteState<'_>) -> Result<()> {
+    /// `org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsWriter#ensureFlatReaderOpen`
+    /// (`Lucene99HnswVectorsWriter.java:499-511`).
+    fn ensure_flat_reader_open(&mut self) -> Result<()> {
         if self.flat_vectors_reader.is_none() {
             self.flat_vector_writer.finish()?;
             self.flat_vector_writer.close()?;
             self.flat_writer_closed = true;
+            let state = &self.segment_write_state;
             let read_state = SegmentReadState::with_suffix(
-                state.directory,
-                state.segment_info,
-                state.field_infos,
-                state.context,
+                &*state.directory,
+                &state.segment_info,
+                &state.field_infos,
+                &*state.context,
                 state.segment_suffix.clone(),
             );
             self.flat_vectors_reader =
@@ -864,7 +906,7 @@ impl Lucene99HnswVectorsWriter {
     }
 }
 
-impl KnnVectorsWriter for Lucene99HnswVectorsWriter {
+impl HnswWriterState {
     fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
         if self.finished {
             return Err(LuceneError::IllegalState(
@@ -1011,14 +1053,20 @@ impl KnnVectorsWriter for Lucene99HnswVectorsWriter {
         Ok(())
     }
 
+    /// Writes the end-of-fields marker and both footers.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsWriter.finish()`
+    /// (`Lucene99HnswVectorsWriter.java:221-238`): the flat writer is finished
+    /// here only when a merge's deferred work has not already finished and
+    /// closed it to reopen its vectors.
     fn finish(&mut self) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
-                "Lucene99HnswVectorsWriter is already finished".to_string(),
-            ));
+            return Err(LuceneError::IllegalState("already finished".to_string()));
         }
         self.finished = true;
-        self.flat_vector_writer.finish()?;
+        if !self.flat_writer_closed {
+            self.flat_vector_writer.finish()?;
+        }
         if let Some(meta) = self.meta.as_mut() {
             meta.write_int(-1)?;
             write_footer(meta.as_mut())?;
@@ -1029,14 +1077,129 @@ impl KnnVectorsWriter for Lucene99HnswVectorsWriter {
         Ok(())
     }
 
-    fn merge_one_field(
+    /// The second phase of merging one field, which
+    /// [`HnswDeferredMerge`] runs once every field has been through the first.
+    ///
+    /// Equivalent to the body of the `IORunnable` that
+    /// `Lucene99HnswVectorsWriter.mergeOneField` returns
+    /// (`Lucene99HnswVectorsWriter.java:425-460`): reopen the flat vectors just
+    /// written, then either build the field's graph and write it with its
+    /// metadata, or — when there are no vectors or too few to be worth a graph
+    /// — write a metadata entry with no graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever reopening the flat vectors, scoring them, building the
+    /// graph or writing it raises.
+    fn merge_one_field_deferred(
         &mut self,
         field_info: &FieldInfo,
         merge_state: &MergeState,
-    ) -> Result<Option<Box<dyn crate::codecs::knn_vectors::IORunnable>>> {
-        self.flat_vector_writer
-            .merge_one_flat_vector_field(field_info, merge_state)?;
-        Ok(None)
+    ) -> Result<()> {
+        // Lazily finish flat writer and open a reader for the written segment
+        self.ensure_flat_reader_open()?;
+        let flat_vectors_reader = self
+            .flat_vectors_reader
+            .as_ref()
+            .expect("ensure_flat_reader_open opened the reader");
+        // Get the vector values and scorer supplier from the written segment
+        let vector_values: Option<Box<dyn crate::index::vector_values::KnnVectorValues>> =
+            match field_info.vector_encoding {
+                VectorEncoding::BYTE => flat_vectors_reader
+                    .get_byte_vector_values(&field_info.name)?
+                    .map(|values| values as Box<dyn crate::index::vector_values::KnnVectorValues>),
+                VectorEncoding::FLOAT32 => flat_vectors_reader
+                    .get_float_vector_values(&field_info.name)?
+                    .map(|values| values as Box<dyn crate::index::vector_values::KnnVectorValues>),
+            };
+        let total_vector_count = vector_values.as_ref().map_or(0, |values| values.size());
+        if let Some(vector_values) = vector_values.filter(|_| {
+            total_vector_count > 0
+                && should_create_graph(self.tiny_segments_threshold, total_vector_count)
+        }) {
+            let quantized_vectors_reader = match field_info.vector_encoding {
+                VectorEncoding::FLOAT32 => flat_vectors_reader.as_quantized_vectors_reader(),
+                VectorEncoding::BYTE => None,
+            };
+            if let Some(quantized_vectors_reader) = quantized_vectors_reader {
+                let mut scorer_supplier: Arc<dyn CloseableRandomVectorScorerSupplier> = Arc::from(
+                    quantized_vectors_reader
+                        .get_random_vector_scorer_supplier_for_merge(
+                            field_info,
+                            &self.segment_write_state.borrow(),
+                        )?
+                        .ok_or_else(|| {
+                            LuceneError::IllegalState(format!(
+                                "the quantized reader has no vectors for merged field \"{}\"",
+                                field_info.name
+                            ))
+                        })?,
+                );
+                let built = self.build_and_write_graph(
+                    field_info,
+                    merge_state,
+                    vector_values.as_ref(),
+                    Arc::clone(&scorer_supplier)
+                        as Arc<dyn crate::util::hnsw::RandomVectorScorerSupplier>,
+                    total_vector_count,
+                );
+                // `IOUtils.close(scorerSupplier)`, also on failure, where Java
+                // closes it while suppressing its own error. The graph merger
+                // that shared it is gone by now.
+                let closed = match Arc::get_mut(&mut scorer_supplier) {
+                    Some(supplier) => supplier.close(),
+                    None => Err(LuceneError::IllegalState(
+                        "the merge's scorer supplier is still shared after the graph was built"
+                            .to_string(),
+                    )),
+                };
+                built?;
+                closed?;
+            } else {
+                let scorer = flat_vectors_reader.get_flat_vector_scorer(&field_info.name)?;
+                let scorer_supplier: Box<dyn crate::util::hnsw::RandomVectorScorerSupplier> =
+                    match field_info.vector_encoding {
+                        VectorEncoding::FLOAT32 => scorer.get_random_vector_scorer_supplier_float(
+                            field_info.vector_similarity_function,
+                            flat_vectors_reader
+                                .get_float_vector_values(&field_info.name)?
+                                .ok_or_else(|| missing_vectors(field_info))?,
+                        )?,
+                        VectorEncoding::BYTE => scorer.get_random_vector_scorer_supplier_byte(
+                            field_info.vector_similarity_function,
+                            flat_vectors_reader
+                                .get_byte_vector_values(&field_info.name)?
+                                .ok_or_else(|| missing_vectors(field_info))?,
+                        )?,
+                    };
+                self.build_and_write_graph(
+                    field_info,
+                    merge_state,
+                    vector_values.as_ref(),
+                    Arc::from(scorer_supplier),
+                    total_vector_count,
+                )?;
+            }
+        } else {
+            let vector_index_offset = self
+                .vector_index
+                .as_ref()
+                .ok_or_else(|| {
+                    LuceneError::IllegalState(
+                        "Lucene99HnswVectorsWriter is already closed".to_string(),
+                    )
+                })?
+                .file_pointer();
+            self.write_meta(
+                field_info,
+                vector_index_offset,
+                0,
+                total_vector_count,
+                None,
+                &[],
+            )?;
+        }
+        Ok(())
     }
 
     /// Equivalent to `Lucene99HnswVectorsWriter.ramBytesUsed()`
@@ -1100,6 +1263,86 @@ impl KnnVectorsWriter for Lucene99HnswVectorsWriter {
         } else {
             Ok(())
         }
+    }
+}
+
+/// The error for flat vectors that vanished between counting them and scoring
+/// them, where Java would dereference `null`.
+fn missing_vectors(field_info: &FieldInfo) -> LuceneError {
+    LuceneError::IllegalState(format!(
+        "the merged flat vectors of field \"{}\" are missing",
+        field_info.name
+    ))
+}
+
+impl KnnVectorsWriter for Lucene99HnswVectorsWriter {
+    fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
+        self.lock()?.add_field(field_info)
+    }
+
+    fn flush(&mut self, max_doc: i32, sort_map: Option<&SorterDocMap>) -> Result<()> {
+        self.lock()?.flush(max_doc, sort_map)
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        self.lock()?.finish()
+    }
+
+    /// Writes the field's flat vectors now and returns the work that builds
+    /// its graph, to be run once every field has been merged.
+    ///
+    /// Equivalent to `Lucene99HnswVectorsWriter.mergeOneField(FieldInfo, MergeState)`
+    /// (`Lucene99HnswVectorsWriter.java:422-461`), which always returns the
+    /// deferred `IORunnable`; [`HnswDeferredMerge`] is that runnable.
+    fn merge_one_field<'m>(
+        &mut self,
+        field_info: &FieldInfo,
+        merge_state: &'m MergeState,
+    ) -> Result<Option<Box<dyn crate::codecs::knn_vectors::IORunnable + 'm>>> {
+        self.lock()?
+            .flat_vector_writer
+            .merge_one_flat_vector_field(field_info, merge_state)?;
+        Ok(Some(Box::new(HnswDeferredMerge {
+            state: Arc::clone(&self.state),
+            field_info: field_info.clone(),
+            merge_state,
+        })))
+    }
+
+    fn ram_bytes_used(&self) -> i64 {
+        match self.state.lock() {
+            Ok(state) => state.ram_bytes_used(),
+            Err(poisoned) => poisoned.into_inner().ram_bytes_used(),
+        }
+    }
+
+    fn close(&mut self) -> Result<()> {
+        self.lock()?.close()
+    }
+}
+
+/// The deferred second phase of merging one field into an HNSW segment.
+///
+/// Equivalent to the lambda `Lucene99HnswVectorsWriter.mergeOneField` returns
+/// (`Lucene99HnswVectorsWriter.java:425-460`), which captures the writer, the
+/// field and the merge state; this holds the writer's shared state instead of
+/// the writer.
+struct HnswDeferredMerge<'m> {
+    state: Arc<Mutex<HnswWriterState>>,
+    field_info: FieldInfo,
+    merge_state: &'m MergeState,
+}
+
+impl crate::codecs::knn_vectors::IORunnable for HnswDeferredMerge<'_> {
+    fn run(&mut self) -> Result<()> {
+        self.state
+            .lock()
+            .map_err(|_| {
+                LuceneError::IllegalState(
+                    "Lucene99HnswVectorsWriter state lock poisoned".to_string(),
+                )
+            })?
+            .merge_one_field_deferred(&self.field_info, self.merge_state)
     }
 }
 
@@ -1889,11 +2132,11 @@ impl KnnVectorsReader for Lucene99HnswVectorsReader {
         Ok(())
     }
 
-    fn get_float_vector_values(&self, field: &str) -> Result<Box<dyn FloatVectorValues>> {
+    fn get_float_vector_values(&self, field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
         self.flat_vectors_reader.get_float_vector_values(field)
     }
 
-    fn get_byte_vector_values(&self, field: &str) -> Result<Box<dyn ByteVectorValues>> {
+    fn get_byte_vector_values(&self, field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
         self.flat_vectors_reader.get_byte_vector_values(field)
     }
 
@@ -2600,7 +2843,9 @@ mod tests {
         }
 
         let mut reader = format.fields_reader(&read_state)?;
-        let values = reader.get_float_vector_values("float_field")?;
+        let values = reader
+            .get_float_vector_values("float_field")?
+            .expect("the field has vectors");
         assert_eq!(values.size(), 3);
         assert_eq!(values.dimension(), 2);
 
@@ -2644,7 +2889,9 @@ mod tests {
         }
 
         let reader = format.fields_reader(&read_state)?;
-        let values = reader.get_byte_vector_values("byte_field")?;
+        let values = reader
+            .get_byte_vector_values("byte_field")?
+            .expect("the field has vectors");
         assert_eq!(values.size(), 3);
         assert_eq!(values.dimension(), 2);
         assert_eq!(values.vector_value(0)?, vec![10, 20]);

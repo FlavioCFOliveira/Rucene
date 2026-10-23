@@ -272,7 +272,10 @@ fn read_with_rucene(
     let reader = format.fields_reader_flat(&read_state).expect("reader");
     reader.check_integrity().expect("check integrity");
 
-    let values = reader.get_float_vector_values(FIELD).expect("float values");
+    let values = reader
+        .get_float_vector_values(FIELD)
+        .expect("float values")
+        .expect("the field has vectors");
     let mut iter = values.iterator().expect("iterator");
     let mut out = Vec::new();
     loop {

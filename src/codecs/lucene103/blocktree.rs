@@ -2376,10 +2376,25 @@ impl FieldsProducer for Lucene103BlockTreeTermsReader {
         self.postings_reader.check_integrity()
     }
 
+    /// Returns a reader over the same terms dictionary.
+    ///
+    /// `Lucene103BlockTreeTermsReader` does not override `getMergeInstance()`,
+    /// so Java inherits `FieldsProducer.getMergeInstance()`, which returns
+    /// `this` (`FieldsProducer.java:50-53`). Rust hands out an owned box, so
+    /// this shares everything the reader holds — the postings reader and the
+    /// `.tim`/`.tip` inputs are already behind `Arc`s, and each per-field
+    /// [`FieldReader`] is a cheap handle onto them — which is the closest owned
+    /// equivalent of returning the reader itself.
     fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
-        Err(LuceneError::UnsupportedOperation(
-            "Lucene103BlockTreeTermsReader does not build a separate merge instance".to_string(),
-        ))
+        Ok(Box::new(Self {
+            postings_reader: Arc::clone(&self.postings_reader),
+            shared: Arc::clone(&self.shared),
+            fields: self.fields.clone(),
+            field_list: self.field_list.clone(),
+            segment: self.segment.clone(),
+            segment_suffix: self.segment_suffix.clone(),
+            version: self.version,
+        }))
     }
 
     fn close(&mut self) -> Result<()> {

@@ -496,11 +496,17 @@ impl PointsReader for Lucene90PointsReader {
         }
     }
 
+    /// Returns a reader over the same trees.
+    ///
+    /// `Lucene90PointsReader` does not override `getMergeInstance()`, so Java
+    /// inherits `PointsReader.getMergeInstance()`, which returns `this`
+    /// (`PointsReader.java:56-58`). Rust hands out an owned box, so this shares the
+    /// per-field trees — each [`BkdPointValues`] clone reads the same bytes —
+    /// and clones the two inputs, which is the closest owned equivalent of
+    /// returning the reader itself.
     fn get_merge_instance(&self) -> Result<Box<dyn PointsReader>> {
-        // PointValues is not cloneable, so we return a fresh empty reader for the
-        // skeleton implementation.  A full implementation will build a merge view.
         Ok(Box::new(Self {
-            readers: HashMap::new(),
+            readers: self.readers.clone(),
             field_infos: self.field_infos.clone(),
             index_in: self.index_in.clone_input()?,
             data_in: self.data_in.clone_input()?,

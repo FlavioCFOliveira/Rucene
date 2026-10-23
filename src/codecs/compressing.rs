@@ -967,6 +967,20 @@ impl MatchingReaders {
             matched_count += 1;
         }
 
+        // `MatchingReaders.java:67-72`.
+        if merge_state.info_stream.is_enabled("SM") {
+            merge_state.info_stream.message(
+                "SM",
+                &format!("merge store matchedCount={matched_count} vs {num_readers}"),
+            );
+            if matched_count as usize != num_readers {
+                merge_state.info_stream.message(
+                    "SM",
+                    &format!("{} non-bulk merges", num_readers - matched_count as usize),
+                );
+            }
+        }
+
         Self {
             matching_readers,
             count: matched_count,
@@ -1250,5 +1264,65 @@ mod tests {
         let matching = MatchingReaders::new(&merge_state);
         assert_eq!(matching.count, 0);
         assert!(!matching.matching_readers[0]);
+    }
+
+    /// An info stream that keeps every message of the components it enables.
+    struct RecordingInfoStream {
+        component: &'static str,
+        messages: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl crate::util::InfoStream for RecordingInfoStream {
+        fn java_class_name(&self) -> &'static str {
+            "org.apache.lucene.tests.util.RecordingInfoStream"
+        }
+
+        fn message(&self, component: &str, message: &str) {
+            assert_eq!(component, self.component, "only enabled components log");
+            self.messages.lock().unwrap().push(message.to_string());
+        }
+
+        fn is_enabled(&self, component: &str) -> bool {
+            component == self.component
+        }
+
+        fn close(&self) {}
+    }
+
+    /// `MatchingReaders` reports how many readers can be bulk-merged on the
+    /// `SM` component, and how many cannot when that is not all of them, with
+    /// Java's exact text (`MatchingReaders.java:67-72`).
+    #[test]
+    fn matching_readers_reports_the_matched_count_on_the_info_stream() {
+        let fields = || FieldInfos::new(vec![FieldInfo::new("a", 0), FieldInfo::new("b", 1)]);
+        let renumbered = FieldInfos::new(vec![FieldInfo::new("b", 0)]).unwrap();
+
+        let run = |field_infos: Vec<FieldInfos>| {
+            let stream = std::sync::Arc::new(RecordingInfoStream {
+                component: "SM",
+                messages: std::sync::Mutex::new(Vec::new()),
+            });
+            let max_docs = vec![0; field_infos.len()];
+            let mut merge_state = MergeState::from_fields_producers(vec![], max_docs);
+            merge_state.field_infos = field_infos;
+            merge_state.merge_field_infos = fields().unwrap();
+            merge_state.info_stream = stream.clone();
+            MatchingReaders::new(&merge_state);
+            let messages = stream.messages.lock().unwrap().clone();
+            messages
+        };
+
+        assert_eq!(
+            run(vec![fields().unwrap(), fields().unwrap()]),
+            vec!["merge store matchedCount=2 vs 2".to_string()],
+            "every reader matches, so there is nothing more to say"
+        );
+        assert_eq!(
+            run(vec![fields().unwrap(), renumbered.clone(), renumbered]),
+            vec![
+                "merge store matchedCount=1 vs 3".to_string(),
+                "2 non-bulk merges".to_string()
+            ]
+        );
     }
 }

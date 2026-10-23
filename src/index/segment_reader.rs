@@ -1753,7 +1753,7 @@ impl LeafReader for SegmentReader {
             LuceneError::IllegalState("knn vectors reader lock poisoned".to_string())
         })?;
         if let Some(reader) = guard.as_ref() {
-            Ok(Some(reader.get_float_vector_values(field)?))
+            reader.get_float_vector_values(field)
         } else {
             Ok(None)
         }
@@ -1772,7 +1772,7 @@ impl LeafReader for SegmentReader {
             LuceneError::IllegalState("knn vectors reader lock poisoned".to_string())
         })?;
         if let Some(reader) = guard.as_ref() {
-            Ok(Some(reader.get_byte_vector_values(field)?))
+            reader.get_byte_vector_values(field)
         } else {
             Ok(None)
         }
@@ -2323,19 +2323,26 @@ mod tests {
     struct RecordingFieldsProducer {
         inner: Box<dyn FieldsProducer>,
         closed: Arc<AtomicBool>,
+        /// Whether this wrapper came out of `get_merge_instance`.
+        merge_instance: bool,
     }
 
     impl Debug for RecordingFieldsProducer {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.debug_struct("RecordingFieldsProducer")
                 .field("closed", &self.closed.load(Ordering::SeqCst))
+                .field("merge_instance", &self.merge_instance)
                 .finish_non_exhaustive()
         }
     }
 
     impl RecordingFieldsProducer {
         fn new(inner: Box<dyn FieldsProducer>, closed: Arc<AtomicBool>) -> Self {
-            Self { inner, closed }
+            Self {
+                inner,
+                closed,
+                merge_instance: false,
+            }
         }
     }
 
@@ -2359,10 +2366,11 @@ mod tests {
         }
 
         fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
-            Ok(Box::new(RecordingFieldsProducer::new(
-                self.inner.get_merge_instance()?,
-                self.closed.clone(),
-            )))
+            Ok(Box::new(RecordingFieldsProducer {
+                inner: self.inner.get_merge_instance()?,
+                closed: self.closed.clone(),
+                merge_instance: true,
+            }))
         }
 
         fn close(&mut self) -> Result<()> {
@@ -2375,11 +2383,19 @@ mod tests {
     struct RecordingNormsProducer {
         inner: Box<dyn NormsProducer>,
         closed: Arc<AtomicBool>,
+        /// Whether this wrapper came out of `get_merge_instance`. Tests read it
+        /// through `Debug`, which dead-code analysis does not count.
+        #[allow(dead_code)]
+        merge_instance: bool,
     }
 
     impl RecordingNormsProducer {
         fn new(inner: Box<dyn NormsProducer>, closed: Arc<AtomicBool>) -> Self {
-            Self { inner, closed }
+            Self {
+                inner,
+                closed,
+                merge_instance: false,
+            }
         }
     }
 
@@ -2393,10 +2409,11 @@ mod tests {
         }
 
         fn get_merge_instance(&self) -> Result<Box<dyn NormsProducer>> {
-            Ok(Box::new(RecordingNormsProducer::new(
-                self.inner.get_merge_instance()?,
-                self.closed.clone(),
-            )))
+            Ok(Box::new(RecordingNormsProducer {
+                inner: self.inner.get_merge_instance()?,
+                closed: self.closed.clone(),
+                merge_instance: true,
+            }))
         }
 
         fn close(&mut self) -> Result<()> {
@@ -2409,11 +2426,19 @@ mod tests {
     struct RecordingStoredFieldsReader {
         inner: Box<dyn StoredFieldsReader>,
         closed: Arc<AtomicBool>,
+        /// Whether this wrapper came out of `get_merge_instance`. Tests read it
+        /// through `Debug`, which dead-code analysis does not count.
+        #[allow(dead_code)]
+        merge_instance: bool,
     }
 
     impl RecordingStoredFieldsReader {
         fn new(inner: Box<dyn StoredFieldsReader>, closed: Arc<AtomicBool>) -> Self {
-            Self { inner, closed }
+            Self {
+                inner,
+                closed,
+                merge_instance: false,
+            }
         }
     }
 
@@ -2434,10 +2459,11 @@ mod tests {
         }
 
         fn get_merge_instance(&self) -> Box<dyn StoredFieldsReader> {
-            Box::new(RecordingStoredFieldsReader::new(
-                self.inner.get_merge_instance(),
-                self.closed.clone(),
-            ))
+            Box::new(RecordingStoredFieldsReader {
+                inner: self.inner.get_merge_instance(),
+                closed: self.closed.clone(),
+                merge_instance: true,
+            })
         }
 
         fn prefetch(&self, doc_id: i32) -> Result<()> {
@@ -2454,11 +2480,19 @@ mod tests {
     struct RecordingTermVectorsReader {
         inner: Box<dyn TermVectorsReader>,
         closed: Arc<AtomicBool>,
+        /// Whether this wrapper came out of `get_merge_instance`. Tests read it
+        /// through `Debug`, which dead-code analysis does not count.
+        #[allow(dead_code)]
+        merge_instance: bool,
     }
 
     impl RecordingTermVectorsReader {
         fn new(inner: Box<dyn TermVectorsReader>, closed: Arc<AtomicBool>) -> Self {
-            Self { inner, closed }
+            Self {
+                inner,
+                closed,
+                merge_instance: false,
+            }
         }
     }
 
@@ -2475,10 +2509,11 @@ mod tests {
         }
 
         fn get_merge_instance(&self) -> Box<dyn TermVectorsReader> {
-            Box::new(RecordingTermVectorsReader::new(
-                self.inner.get_merge_instance(),
-                self.closed.clone(),
-            ))
+            Box::new(RecordingTermVectorsReader {
+                inner: self.inner.get_merge_instance(),
+                closed: self.closed.clone(),
+                merge_instance: true,
+            })
         }
 
         fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
@@ -2499,11 +2534,19 @@ mod tests {
     struct RecordingPointsReader {
         inner: Box<dyn PointsReader>,
         closed: Arc<AtomicBool>,
+        /// Whether this wrapper came out of `get_merge_instance`. Tests read it
+        /// through `Debug`, which dead-code analysis does not count.
+        #[allow(dead_code)]
+        merge_instance: bool,
     }
 
     impl RecordingPointsReader {
         fn new(inner: Box<dyn PointsReader>, closed: Arc<AtomicBool>) -> Self {
-            Self { inner, closed }
+            Self {
+                inner,
+                closed,
+                merge_instance: false,
+            }
         }
     }
 
@@ -2517,10 +2560,11 @@ mod tests {
         }
 
         fn get_merge_instance(&self) -> Result<Box<dyn PointsReader>> {
-            Ok(Box::new(RecordingPointsReader::new(
-                self.inner.get_merge_instance()?,
-                self.closed.clone(),
-            )))
+            Ok(Box::new(RecordingPointsReader {
+                inner: self.inner.get_merge_instance()?,
+                closed: self.closed.clone(),
+                merge_instance: true,
+            }))
         }
 
         fn close(&mut self) -> Result<()> {
@@ -2533,11 +2577,19 @@ mod tests {
     struct RecordingKnnVectorsReader {
         inner: Box<dyn KnnVectorsReader>,
         closed: Arc<AtomicBool>,
+        /// Whether this wrapper came out of `get_merge_instance`. Tests read it
+        /// through `Debug`, which dead-code analysis does not count.
+        #[allow(dead_code)]
+        merge_instance: bool,
     }
 
     impl RecordingKnnVectorsReader {
         fn new(inner: Box<dyn KnnVectorsReader>, closed: Arc<AtomicBool>) -> Self {
-            Self { inner, closed }
+            Self {
+                inner,
+                closed,
+                merge_instance: false,
+            }
         }
     }
 
@@ -2546,11 +2598,14 @@ mod tests {
             self.inner.check_integrity()
         }
 
-        fn get_float_vector_values(&self, field: &str) -> Result<Box<dyn FloatVectorValues>> {
+        fn get_float_vector_values(
+            &self,
+            field: &str,
+        ) -> Result<Option<Box<dyn FloatVectorValues>>> {
             self.inner.get_float_vector_values(field)
         }
 
-        fn get_byte_vector_values(&self, field: &str) -> Result<Box<dyn ByteVectorValues>> {
+        fn get_byte_vector_values(&self, field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
             self.inner.get_byte_vector_values(field)
         }
 
@@ -2576,10 +2631,11 @@ mod tests {
         }
 
         fn get_merge_instance(&self) -> Result<Box<dyn KnnVectorsReader>> {
-            Ok(Box::new(RecordingKnnVectorsReader::new(
-                self.inner.get_merge_instance()?,
-                self.closed.clone(),
-            )))
+            Ok(Box::new(RecordingKnnVectorsReader {
+                inner: self.inner.get_merge_instance()?,
+                closed: self.closed.clone(),
+                merge_instance: true,
+            }))
         }
 
         fn finish_merge(&mut self) -> Result<()> {
@@ -2600,11 +2656,19 @@ mod tests {
     struct RecordingDocValuesProducer {
         inner: Box<dyn DocValuesProducer>,
         closed: Arc<AtomicBool>,
+        /// Whether this wrapper came out of `get_merge_instance`. Tests read it
+        /// through `Debug`, which dead-code analysis does not count.
+        #[allow(dead_code)]
+        merge_instance: bool,
     }
 
     impl RecordingDocValuesProducer {
         fn new(inner: Box<dyn DocValuesProducer>, closed: Arc<AtomicBool>) -> Self {
-            Self { inner, closed }
+            Self {
+                inner,
+                closed,
+                merge_instance: false,
+            }
         }
     }
 
@@ -2638,10 +2702,11 @@ mod tests {
         }
 
         fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-            Ok(Box::new(RecordingDocValuesProducer::new(
-                self.inner.get_merge_instance()?,
-                self.closed.clone(),
-            )))
+            Ok(Box::new(RecordingDocValuesProducer {
+                inner: self.inner.get_merge_instance()?,
+                closed: self.closed.clone(),
+                merge_instance: true,
+            }))
         }
 
         fn close(&mut self) -> Result<()> {
@@ -3224,6 +3289,107 @@ mod tests {
         assert!(
             recorder.is_closed("compound"),
             "compound directory should be closed"
+        );
+    }
+
+    /// `MergeState` holds the merge instance of every reader it pulls off a
+    /// segment, never the instance a search shares.
+    ///
+    /// Lucene's `MergeState` constructor replaces each non-null producer with
+    /// its `getMergeInstance()` (`MergeState.java:134-168`): norms, doc values,
+    /// stored fields, term vectors, postings, points and vectors alike. Every
+    /// producer of the recording codec marks the wrapper its
+    /// `get_merge_instance` returns, so each of the seven slots must hold a
+    /// marked one while the segment reader keeps handing out unmarked ones.
+    #[test]
+    fn merge_state_holds_the_merge_instance_of_every_reader() {
+        use crate::index::codec_reader::CodecReader;
+        use crate::index::merge::{identity_doc_map, MergeState};
+
+        let recorder = CloseRecorder::default();
+        let info = recording_segment_commit_info("_0", 5, &recorder);
+        let reader = Arc::new(
+            SegmentReader::new(info, Version::LATEST.major as i32, &*DEFAULT_IO_CONTEXT)
+                .expect("segment reader should open"),
+        );
+        let readers: Vec<Arc<dyn CodecReader>> = vec![reader.clone()];
+        let merge_state = MergeState::from_readers(
+            &readers,
+            vec![identity_doc_map(5, 0)],
+            None,
+            LeafReader::get_field_infos(reader.as_ref()).clone(),
+            false,
+            Arc::new(crate::util::NoOutputInfoStream),
+        )
+        .expect("merge state");
+
+        let merge_instance = |debug: String| debug.contains("merge_instance: true");
+        let slots = [
+            (
+                "norms",
+                format!("{:?}", merge_state.norms_producers[0].as_ref().unwrap()),
+                format!("{:?}", reader.get_norms_reader().unwrap().unwrap()),
+            ),
+            (
+                "doc values",
+                format!(
+                    "{:?}",
+                    merge_state.doc_values_producers[0].as_ref().unwrap()
+                ),
+                format!("{:?}", reader.get_doc_values_reader().unwrap().unwrap()),
+            ),
+            (
+                "stored fields",
+                format!(
+                    "{:?}",
+                    merge_state.stored_fields_readers[0].as_ref().unwrap()
+                ),
+                format!("{:?}", reader.get_fields_reader().unwrap().unwrap()),
+            ),
+            (
+                "term vectors",
+                format!(
+                    "{:?}",
+                    merge_state.term_vectors_readers[0].as_ref().unwrap()
+                ),
+                format!("{:?}", reader.get_term_vectors_reader().unwrap().unwrap()),
+            ),
+            (
+                "points",
+                format!("{:?}", merge_state.points_readers[0].as_ref().unwrap()),
+                format!("{:?}", reader.get_points_reader().unwrap().unwrap()),
+            ),
+            (
+                "vectors",
+                format!("{:?}", merge_state.knn_vectors_readers[0].as_ref().unwrap()),
+                format!("{:?}", reader.get_vector_reader().unwrap().unwrap()),
+            ),
+        ];
+        for (kind, in_merge_state, from_reader) in slots {
+            assert!(
+                merge_instance(in_merge_state.clone()),
+                "the merge state must hold the {kind} merge instance, got {in_merge_state}"
+            );
+            assert!(
+                !merge_instance(from_reader.clone()),
+                "the segment reader must still hand out the {kind} search instance, got {from_reader}"
+            );
+        }
+
+        // `FieldsProducer` carries no `Debug`, so the postings slot is told
+        // apart by identity: the segment reader hands out one shared producer,
+        // and the merge state must not hold that one.
+        let search_postings = reader.get_postings_reader().unwrap().unwrap();
+        assert!(Arc::ptr_eq(
+            &search_postings,
+            &reader.get_postings_reader().unwrap().unwrap()
+        ));
+        assert!(
+            !Arc::ptr_eq(
+                &search_postings,
+                merge_state.fields_producers[0].as_ref().unwrap()
+            ),
+            "the merge state must hold the postings merge instance, not the search one"
         );
     }
 

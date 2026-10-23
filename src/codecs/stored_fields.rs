@@ -166,21 +166,36 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
 
     /// Copies every document's stored fields from the segments being merged.
     ///
-    /// Equivalent to `StoredFieldsWriter.merge(MergeState)`. The documents come
-    /// out in merged order through a [`DocIDMerger`], each one read back through
-    /// its own reader and written straight out again; the return value is the
-    /// number of documents written, which the caller checks against the merged
-    /// segment's `max_doc`.
+    /// Equivalent to `StoredFieldsWriter.merge(MergeState)`
+    /// (`StoredFieldsWriter.java:122-160`). The documents come out in merged
+    /// order through a [`DocIDMerger`], each one read back through the merge
+    /// state's own reader and written straight out again; the return value is
+    /// the number of documents written, which the caller checks against the
+    /// merged segment's `max_doc`.
+    ///
+    /// Every source segment must have a stored-fields reader: Java calls
+    /// `checkIntegrity()` on each slot unconditionally, so a missing reader
+    /// stops the merge there rather than leaving that segment's documents out.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`](crate::error::LuceneError::IllegalState)
+    /// when a source segment has no stored-fields reader — where Java's
+    /// `storedFieldsReader.checkIntegrity()` throws `NullPointerException` —
+    /// and propagates abort, integrity, read and write errors.
     fn merge(&mut self, merge_state: &MergeState) -> Result<i32> {
         // The readers stay outside the merger: the sub carries only the index
-        // of the one it walks, so the reader can be used while the merger is
-        // borrowed, and no reader is cloned per document.
-        let mut readers: Vec<Box<dyn StoredFieldsReader>> = Vec::new();
+        // of the one it walks, and the document is read through the merge
+        // state's reader itself, as Java's `sub.reader` is that same object.
+        let mut readers: Vec<&dyn StoredFieldsReader> = Vec::new();
         let mut remappers: Vec<Option<FieldInfos>> = Vec::new();
         let mut subs: Vec<StoredFieldsMergeSub> = Vec::new();
         for (i, reader) in merge_state.stored_fields_readers.iter().enumerate() {
-            let Some(reader) = reader.as_ref() else {
-                continue;
+            merge_state.check_aborted()?;
+            let Some(reader) = reader.as_deref() else {
+                return Err(crate::error::LuceneError::IllegalState(format!(
+                    "source segment {i} of the merge has no stored-fields reader"
+                )));
             };
             reader.check_integrity()?;
             subs.push(StoredFieldsMergeSub {
@@ -190,15 +205,17 @@ pub trait StoredFieldsWriter: Accountable + Send + fmt::Debug {
                 doc_id: -1,
                 mapped_doc_id: -1,
             });
-            readers.push(reader.clone_reader());
+            readers.push(reader);
             remappers.push(merge_visitor_remapper(merge_state, i));
         }
 
         let mut merger = DocIDMerger::new(subs, merge_state.needs_index_sort)?;
         let mut doc_count = 0i32;
-        while let Some((reader_index, doc_id)) =
-            merger.next_sub()?.map(|sub| (sub.reader_index, sub.doc_id))
+        while let Some((reader_index, doc_id, mapped_doc_id)) = merger
+            .next_sub()?
+            .map(|sub| (sub.reader_index, sub.doc_id, sub.mapped_doc_id))
         {
+            debug_assert_eq!(mapped_doc_id, doc_count);
             self.start_document()?;
             let mut visitor = MergeVisitor {
                 writer: self,
@@ -361,6 +378,184 @@ mod tests {
         ) -> Result<super::super::stub::StoredFieldVisitorStatus> {
             Ok(super::super::stub::StoredFieldVisitorStatus::Yes)
         }
+    }
+
+    /// A segment whose every document stores its own doc id in field `value`,
+    /// and which counts the documents read through this very instance.
+    #[derive(Debug)]
+    struct CountingStoredFieldsReader {
+        field: FieldInfo,
+        reads: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl StoredFieldsReader for CountingStoredFieldsReader {
+        fn document(&self, doc_id: i32, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if visitor.needs_field(&self.field)? == StoredFieldVisitorStatus::Yes {
+                visitor.int_field(&self.field, doc_id)?;
+            }
+            Ok(())
+        }
+
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+
+        /// A clone counts its reads apart, so a merge that read through a
+        /// clone instead of the merge state's own reader is visible.
+        fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
+            Box::new(Self {
+                field: self.field.clone(),
+                reads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            })
+        }
+    }
+
+    /// A writer that keeps the default `merge` and records what it was given.
+    #[derive(Debug, Default)]
+    struct RecordingStoredFieldsWriter {
+        values: Vec<i32>,
+        finished_with: Option<i32>,
+    }
+
+    impl Accountable for RecordingStoredFieldsWriter {
+        fn ram_bytes_used(&self) -> i64 {
+            0
+        }
+    }
+
+    impl StoredFieldsWriter for RecordingStoredFieldsWriter {
+        fn start_document(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn write_field_i32(&mut self, _info: &FieldInfo, value: i32) -> Result<()> {
+            self.values.push(value);
+            Ok(())
+        }
+
+        fn write_field_i64(&mut self, _info: &FieldInfo, _value: i64) -> Result<()> {
+            Ok(())
+        }
+
+        fn write_field_f32(&mut self, _info: &FieldInfo, _value: f32) -> Result<()> {
+            Ok(())
+        }
+
+        fn write_field_f64(&mut self, _info: &FieldInfo, _value: f64) -> Result<()> {
+            Ok(())
+        }
+
+        fn write_field_bytes(&mut self, _info: &FieldInfo, _value: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        fn write_field_string(&mut self, _info: &FieldInfo, _value: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn finish(&mut self, num_docs: i32) -> Result<()> {
+            self.finished_with = Some(num_docs);
+            Ok(())
+        }
+
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A merge state over two segments of `max_docs` documents, laid end to
+    /// end, holding the given stored-fields readers.
+    fn two_segment_merge_state(
+        readers: Vec<Option<Box<dyn StoredFieldsReader>>>,
+        max_docs: Vec<i32>,
+    ) -> MergeState {
+        let field = FieldInfo::new("value", 0);
+        let field_infos = FieldInfos::new(vec![field]).unwrap();
+        let mut doc_maps = Vec::new();
+        let mut doc_base = 0;
+        for &max_doc in &max_docs {
+            doc_maps.push(crate::index::merge::identity_doc_map(max_doc, doc_base));
+            doc_base += max_doc;
+        }
+        let n = readers.len();
+        MergeState::new(
+            doc_maps,
+            crate::codecs::tests::test_segment_info("_m", doc_base),
+            field_infos.clone(),
+            readers,
+            (0..n).map(|_| None).collect(),
+            (0..n).map(|_| None).collect(),
+            (0..n).map(|_| None).collect(),
+            (0..n).map(|_| field_infos.clone()).collect(),
+            (0..n).map(|_| None).collect(),
+            (0..n).map(|_| None).collect(),
+            (0..n).map(|_| None).collect(),
+            (0..n).map(|_| None).collect(),
+            max_docs,
+            false,
+        )
+    }
+
+    /// A segment without a stored-fields reader stops the default merge with
+    /// an error; it does not merge the other segments and leave its own
+    /// documents out.
+    ///
+    /// `StoredFieldsWriter.merge` calls `storedFieldsReader.checkIntegrity()`
+    /// on every slot (`StoredFieldsWriter.java:131-135`), so a missing reader
+    /// raises `NullPointerException` there.
+    #[test]
+    fn the_default_merge_refuses_a_segment_without_a_reader() {
+        let reader = CountingStoredFieldsReader {
+            field: FieldInfo::new("value", 0),
+            reads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+        let merge_state = two_segment_merge_state(vec![Some(Box::new(reader)), None], vec![3, 2]);
+        let mut writer = RecordingStoredFieldsWriter::default();
+        match writer.merge(&merge_state) {
+            Err(crate::error::LuceneError::IllegalState(message)) => assert_eq!(
+                message,
+                "source segment 1 of the merge has no stored-fields reader"
+            ),
+            other => panic!("a missing reader must fail the merge, got {other:?}"),
+        }
+        assert_eq!(
+            writer.finished_with, None,
+            "the merge stops before any document is written"
+        );
+        assert!(writer.values.is_empty());
+    }
+
+    /// The default merge reads every document through the merge state's own
+    /// reader, as Java's `sub.reader` is that object, and writes them in
+    /// merged order.
+    #[test]
+    fn the_default_merge_reads_through_the_merge_states_readers() {
+        let reads: Vec<Arc<std::sync::atomic::AtomicUsize>> = (0..2)
+            .map(|_| Arc::new(std::sync::atomic::AtomicUsize::new(0)))
+            .collect();
+        let readers = reads
+            .iter()
+            .map(|reads| {
+                Some(Box::new(CountingStoredFieldsReader {
+                    field: FieldInfo::new("value", 0),
+                    reads: Arc::clone(reads),
+                }) as Box<dyn StoredFieldsReader>)
+            })
+            .collect();
+        let merge_state = two_segment_merge_state(readers, vec![3, 2]);
+        let mut writer = RecordingStoredFieldsWriter::default();
+        assert_eq!(writer.merge(&merge_state).unwrap(), 5);
+        assert_eq!(writer.finished_with, Some(5));
+        assert_eq!(writer.values, vec![0, 1, 2, 0, 1]);
+        assert_eq!(
+            reads
+                .iter()
+                .map(|reads| reads.load(std::sync::atomic::Ordering::SeqCst))
+                .collect::<Vec<_>>(),
+            vec![3, 2],
+            "every document is read through the reader the merge state holds"
+        );
     }
 }
 

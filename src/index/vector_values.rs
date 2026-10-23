@@ -42,7 +42,15 @@ use crate::util::Bits;
 /// associated with each doc.
 ///
 /// Equivalent to `KnnVectorValues.DocIndexIterator`.
-pub trait DocIndexIterator: DocIdSetIterator {
+///
+/// The `Send` bound has no Java counterpart, because Java has no notion of a
+/// type that may not cross threads. It is required here because Lucene keeps
+/// a values object's iterator *inside* another values object: the merged
+/// view `KnnVectorsWriter.MergedVectorValues` builds holds one iterator per
+/// segment (`KnnVectorsWriter.java:161-215`), and every [`KnnVectorValues`]
+/// is `Send + Sync`. Every iterator in this crate already owns its state, so
+/// the bound only states what was already true.
+pub trait DocIndexIterator: DocIdSetIterator + Send {
     /// Returns the value index (ordinal) corresponding to the current doc.
     fn index(&self) -> i32;
 }
@@ -126,13 +134,16 @@ impl DocIndexIterator for DenseDocIndexIterator {
 /// iterator sequentially. Only sequential access is valid; the behaviour is
 /// reproduced rather than "fixed" because functional parity is the contract.
 pub struct FromDisiDocIndexIterator {
-    docs: Box<dyn DocIdSetIterator>,
+    docs: Box<dyn DocIdSetIterator + Send>,
     ord: i32,
 }
 
 impl FromDisiDocIndexIterator {
     /// Creates an iterator from a doc-id iterator.
-    pub fn new(docs: Box<dyn DocIdSetIterator>) -> Self {
+    ///
+    /// The iterator must be `Send` because [`DocIndexIterator`] is; see the
+    /// note on that trait.
+    pub fn new(docs: Box<dyn DocIdSetIterator + Send>) -> Self {
         Self { docs, ord: -1 }
     }
 }
@@ -259,6 +270,24 @@ impl DocIndexIterator for SparseDocIndexIterator {
 pub trait KnnVectorValues: Send + Sync {
     /// Returns the vector dimension.
     fn dimension(&self) -> i32;
+
+    /// Returns the vector dimension, or the error Java's `dimension()` would
+    /// throw instead.
+    ///
+    /// Equivalent to `KnnVectorValues.dimension()` where it can throw: the
+    /// merged views of `KnnVectorsWriter.MergedVectorValues` read it from their
+    /// first sub (`KnnVectorsWriter.java:440, 542`), which an empty view does
+    /// not have. [`dimension`](Self::dimension) has no error channel, so the
+    /// views that can fail override this method, and the merge paths call it
+    /// wherever Java calls `dimension()` on such a view. The default is
+    /// `Ok(self.dimension())`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the implementation reports; the default never fails.
+    fn try_dimension(&self) -> Result<i32> {
+        Ok(self.dimension())
+    }
 
     /// Returns the number of vectors for this field.
     fn size(&self) -> i32;

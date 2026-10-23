@@ -18,11 +18,10 @@ use crate::index::{DocValuesType, IndexOptions};
 
 use super::doc_values::{
     doc_values_for_name, DocValuesConsumer, DocValuesFormat, DocValuesProducer,
-    EmptyDocValuesProducer,
 };
 use super::knn_vectors::{
-    knn_vectors_for_name, ByteVectorValues, EmptyKnnVectorsReader, FieldVectorWriter,
-    FloatVectorValues, KnnCollector, KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
+    knn_vectors_for_name, ByteVectorValues, FieldVectorWriter, FloatVectorValues, KnnCollector,
+    KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
 };
 use super::postings::{
     postings_for_name, Fields, FieldsConsumer, FieldsProducer, MergeState, PostingsFormat,
@@ -317,37 +316,6 @@ impl FieldsConsumer for NoOpFieldsConsumer {
     }
 }
 
-#[derive(Debug, Default, Clone)]
-struct NoOpFieldsProducer;
-
-impl Fields for NoOpFieldsProducer {
-    fn size(&self) -> i32 {
-        0
-    }
-
-    fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
-        Ok(None)
-    }
-
-    fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
-        Box::new(std::iter::empty())
-    }
-}
-
-impl FieldsProducer for NoOpFieldsProducer {
-    fn check_integrity(&self) -> Result<()> {
-        Ok(())
-    }
-
-    fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
-        Ok(Box::new(NoOpFieldsProducer))
-    }
-
-    fn close(&mut self) -> Result<()> {
-        Ok(())
-    }
-}
-
 struct FieldsReader {
     formats: HashMap<String, Box<dyn FieldsProducer>>,
     fields: BTreeMap<String, String>,
@@ -448,11 +416,24 @@ impl FieldsProducer for FieldsReader {
         Ok(())
     }
 
+    /// Returns a reader whose every format is that format's merge instance.
+    ///
+    /// Equivalent to `PerFieldPostingsFormat.FieldsReader.getMergeInstance()`,
+    /// which is `new FieldsReader(this)`: the copy constructor
+    /// (`PerFieldPostingsFormat.java:276-294`) replaces each format's producer
+    /// with its `getMergeInstance()` and points every field at the replacement
+    /// of the producer it used. Fields are keyed by segment suffix here, so
+    /// keeping the field-to-suffix map is that same remapping.
     fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
-        // TODO: return a real merge-optimized clone that shares the underlying
-        // producers once concrete producers can provide one. For now the stub
-        // merge path only needs a valid object.
-        Ok(Box::new(NoOpFieldsProducer))
+        let mut formats: HashMap<String, Box<dyn FieldsProducer>> =
+            HashMap::with_capacity(self.formats.len());
+        for (suffix, producer) in &self.formats {
+            formats.insert(suffix.clone(), producer.get_merge_instance()?);
+        }
+        Ok(Box::new(FieldsReader {
+            formats,
+            fields: self.fields.clone(),
+        }))
     }
 
     fn close(&mut self) -> Result<()> {
@@ -923,10 +904,24 @@ impl DocValuesProducer for DvFieldsReader {
         Ok(())
     }
 
+    /// Returns a reader whose every format is that format's merge instance.
+    ///
+    /// Equivalent to `PerFieldDocValuesFormat.FieldsReader.getMergeInstance()`,
+    /// which is `new FieldsReader(this)`: the copy constructor
+    /// (`PerFieldDocValuesFormat.java:263-279`) replaces each format's producer
+    /// with its `getMergeInstance()` and points every field at the replacement
+    /// of the producer it used. Fields are keyed by segment suffix here, so
+    /// keeping the field-to-suffix map is that same remapping.
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-        // TODO: return a real merge-optimized clone once concrete producers can
-        // provide one. For now the per-field merge path only needs a valid object.
-        Ok(Box::new(EmptyDocValuesProducer))
+        let mut formats: HashMap<String, Box<dyn DocValuesProducer>> =
+            HashMap::with_capacity(self.formats.len());
+        for (suffix, producer) in &self.formats {
+            formats.insert(suffix.clone(), producer.get_merge_instance()?);
+        }
+        Ok(Box::new(DvFieldsReader {
+            formats,
+            fields: self.fields.clone(),
+        }))
     }
 
     fn close(&mut self) -> Result<()> {
@@ -1122,11 +1117,11 @@ impl KnnVectorsWriter for KnnFieldsWriter {
         Ok(())
     }
 
-    fn merge_one_field(
+    fn merge_one_field<'m>(
         &mut self,
         field_info: &FieldInfo,
-        merge_state: &MergeState,
-    ) -> Result<Option<Box<dyn super::knn_vectors::IORunnable>>> {
+        merge_state: &'m MergeState,
+    ) -> Result<Option<Box<dyn super::knn_vectors::IORunnable + 'm>>> {
         self.get_instance(field_info)?
             .merge_one_field(field_info, merge_state)
     }
@@ -1157,6 +1152,10 @@ struct KnnFieldsReader {
     /// looks the number up through it (`PerFieldKnnVectorsFormat.java:269-274`);
     /// this map holds exactly the pairs that lookup would produce.
     field_names: HashMap<String, String>,
+    /// Field number to field name, for every field with vectors. Java reads
+    /// the same pairs from the `FieldInfos` it keeps; the merge copy needs
+    /// them to give each field its own merge instance.
+    names: HashMap<i32, String>,
 }
 
 impl KnnFieldsReader {
@@ -1164,6 +1163,7 @@ impl KnnFieldsReader {
         let mut formats: HashMap<String, Box<dyn KnnVectorsReader>> = HashMap::new();
         let mut fields: HashMap<i32, String> = HashMap::new();
         let mut field_names: HashMap<String, String> = HashMap::new();
+        let mut names: HashMap<i32, String> = HashMap::new();
 
         let result = (|| -> Result<()> {
             for fi in read_state.field_infos.iter() {
@@ -1204,6 +1204,7 @@ impl KnnFieldsReader {
                         formats.insert(segment_suffix.clone(), format.fields_reader(&state)?);
                     }
                     field_names.insert(fi.name.clone(), segment_suffix.clone());
+                    names.insert(fi.number, fi.name.clone());
                     fields.insert(fi.number, segment_suffix);
                 }
             }
@@ -1221,6 +1222,7 @@ impl KnnFieldsReader {
             formats,
             fields,
             field_names,
+            names,
         })
     }
 
@@ -1231,29 +1233,6 @@ impl KnnFieldsReader {
                 field.name
             ))
         })?;
-        self.formats.get(suffix).map(|b| b.as_ref()).ok_or_else(|| {
-            LuceneError::IllegalState(format!("missing KNN-vectors reader for suffix {suffix}"))
-        })
-    }
-
-    /// Resolves the delegate reader that holds `field`, by name.
-    ///
-    /// Equivalent to the field lookup
-    /// `PerFieldKnnVectorsFormat.FieldsReader` performs before delegating:
-    /// Java resolves the name through `fieldInfos` and then indexes its
-    /// number-keyed map, which is the same association this reader records
-    /// directly by name when it opens the segment.
-    fn suffix_for_name(&self, field: &str) -> Result<&str> {
-        self.field_names
-            .get(field)
-            .map(String::as_str)
-            .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!("field \"{field}\" has no KNN-vectors reader"))
-            })
-    }
-
-    fn reader_for_name(&self, field: &str) -> Result<&(dyn KnnVectorsReader + '_)> {
-        let suffix = self.suffix_for_name(field)?;
         self.formats.get(suffix).map(|b| b.as_ref()).ok_or_else(|| {
             LuceneError::IllegalState(format!("missing KNN-vectors reader for suffix {suffix}"))
         })
@@ -1288,14 +1267,27 @@ impl KnnVectorsReader for KnnFieldsReader {
         Ok(())
     }
 
-    fn get_float_vector_values(&self, field: &str) -> Result<Box<dyn FloatVectorValues>> {
-        let reader = self.reader_for_name(field)?;
-        reader.get_float_vector_values(field)
+    /// Returns the field's vectors from the reader the field was written
+    /// with, or `None` for a field this segment holds no vectors for.
+    ///
+    /// Equivalent to `PerFieldKnnVectorsFormat.FieldsReader.getFloatVectorValues(String)`
+    /// (`PerFieldKnnVectorsFormat.java:285-293`), which answers `null` when the
+    /// field is unknown or has no reader.
+    fn get_float_vector_values(&self, field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
+        match self.get_field_reader(field) {
+            Some(reader) => reader.get_float_vector_values(field),
+            None => Ok(None),
+        }
     }
 
-    fn get_byte_vector_values(&self, field: &str) -> Result<Box<dyn ByteVectorValues>> {
-        let reader = self.reader_for_name(field)?;
-        reader.get_byte_vector_values(field)
+    /// Equivalent to `PerFieldKnnVectorsFormat.FieldsReader.getByteVectorValues(String)`
+    /// (`PerFieldKnnVectorsFormat.java:295-303`); see
+    /// [`get_float_vector_values`](Self::get_float_vector_values).
+    fn get_byte_vector_values(&self, field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
+        match self.get_field_reader(field) {
+            Some(reader) => reader.get_byte_vector_values(field),
+            None => Ok(None),
+        }
     }
 
     fn search(
@@ -1305,7 +1297,11 @@ impl KnnVectorsReader for KnnFieldsReader {
         knn_collector: &mut dyn KnnCollector,
         accept_docs: &mut dyn crate::search::AcceptDocs,
     ) -> Result<()> {
-        let reader = self.reader_for_name(field)?;
+        // `PerFieldKnnVectorsFormat.java:304-314`: a field this segment holds no
+        // vectors for collects nothing.
+        let Some(reader) = self.get_field_reader(field) else {
+            return Ok(());
+        };
         reader.search(field, target, knn_collector, accept_docs)
     }
 
@@ -1316,14 +1312,44 @@ impl KnnVectorsReader for KnnFieldsReader {
         knn_collector: &mut dyn KnnCollector,
         accept_docs: &mut dyn crate::search::AcceptDocs,
     ) -> Result<()> {
-        let reader = self.reader_for_name(field)?;
+        // `PerFieldKnnVectorsFormat.java:316-326`.
+        let Some(reader) = self.get_field_reader(field) else {
+            return Ok(());
+        };
         reader.search_byte(field, target, knn_collector, accept_docs)
     }
 
+    /// Returns a reader that dispatches every field to a merge instance of the
+    /// reader that field used.
+    ///
+    /// Equivalent to `PerFieldKnnVectorsFormat.FieldsReader.getMergeInstance()`,
+    /// which is `new FieldsReader(this)`. That copy constructor
+    /// (`PerFieldKnnVectorsFormat.java:243-250`) asks the delegate for a merge
+    /// instance once *per field*, not once per format, so two fields of one
+    /// format get two instances; each field is therefore its own entry here,
+    /// keyed by the field's name.
     fn get_merge_instance(&self) -> Result<Box<dyn KnnVectorsReader>> {
-        // TODO: return a real merge-optimized clone once concrete readers can
-        // provide one. For now the per-field merge path only needs a valid object.
-        Ok(Box::new(EmptyKnnVectorsReader))
+        let mut formats: HashMap<String, Box<dyn KnnVectorsReader>> =
+            HashMap::with_capacity(self.fields.len());
+        let mut fields: HashMap<i32, String> = HashMap::with_capacity(self.fields.len());
+        let mut field_names: HashMap<String, String> = HashMap::with_capacity(self.fields.len());
+        for (&number, name) in &self.names {
+            let Some(suffix) = self.fields.get(&number) else {
+                continue;
+            };
+            let reader = self.formats.get(suffix).ok_or_else(|| {
+                LuceneError::IllegalState(format!("missing KNN-vectors reader for suffix {suffix}"))
+            })?;
+            formats.insert(name.clone(), reader.get_merge_instance()?);
+            fields.insert(number, name.clone());
+            field_names.insert(name.clone(), name.clone());
+        }
+        Ok(Box::new(KnnFieldsReader {
+            formats,
+            fields,
+            field_names,
+            names: self.names.clone(),
+        }))
     }
 
     fn finish_merge(&mut self) -> Result<()> {

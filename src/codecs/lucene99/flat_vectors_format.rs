@@ -26,7 +26,7 @@ use crate::codecs::hnsw::flat_vectors::{
 };
 use crate::codecs::knn_vectors::{
     BufferingKnnVectorsWriter, FieldVectorWriter, KnnFieldVectorsWriter, KnnVectorsFormat,
-    KnnVectorsReader, KnnVectorsWriter, SorterDocMap,
+    KnnVectorsReader, KnnVectorsWriter, MergedVectorValues, SorterDocMap,
 };
 use crate::codecs::lucene90::indexed_disi::IndexedDISI;
 use crate::codecs::lucene95::OrdToDocDISIReaderConfiguration;
@@ -437,13 +437,10 @@ impl Lucene99FlatVectorsWriter {
     /// carried a vector.
     ///
     /// Equivalent to
-    /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsWriter#writeByteVectorData`.
-    /// Java calls it from `mergeOneFlatVectorField` with the merged view
-    /// `KnnVectorsWriter.MergedVectorValues.mergeByteVectorValues` builds
-    /// (`Lucene99FlatVectorsWriter.java:495-499`); that view is not ported, so
-    /// [`FlatVectorsWriter::merge_one_flat_vector_field`] still walks the
-    /// segments itself and nothing calls this yet.
-    #[allow(dead_code)]
+    /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsWriter#writeByteVectorData`
+    /// (`Lucene99FlatVectorsWriter.java:319-331`), which
+    /// [`FlatVectorsWriter::merge_one_flat_vector_field`] calls with the merged
+    /// view [`MergedVectorValues::merge_byte_vector_values`] builds.
     fn write_byte_vector_data(
         output: &mut dyn IndexOutput,
         byte_vector_values: &dyn ByteVectorValues,
@@ -466,17 +463,25 @@ impl Lucene99FlatVectorsWriter {
     /// carried a vector.
     ///
     /// Equivalent to
-    /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsWriter#writeVectorData`.
-    /// Java calls it from `mergeOneFlatVectorField` with the merged view
-    /// `KnnVectorsWriter.MergedVectorValues.mergeFloatVectorValues` builds
-    /// (`Lucene99FlatVectorsWriter.java:500-505`); that view is not ported, so
-    /// [`FlatVectorsWriter::merge_one_flat_vector_field`] still walks the
-    /// segments itself and nothing calls this yet.
-    #[allow(dead_code)]
+    /// `org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsWriter#writeVectorData`
+    /// (`Lucene99FlatVectorsWriter.java:336-351`), which
+    /// [`FlatVectorsWriter::merge_one_flat_vector_field`] calls with the merged
+    /// view [`MergedVectorValues::merge_float_vector_values`] builds. Java funnels
+    /// each vector through a little-endian `ByteBuffer` sized from
+    /// `dimension()`; [`IndexOutput::write_floats`] writes the same bytes
+    /// without one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of [`KnnVectorValues::try_dimension`] for a merged
+    /// view without subs, where Java's `dimension()` call that sizes the buffer
+    /// (`Lucene99FlatVectorsWriter.java:339-341`) throws, and whatever reading
+    /// the values or writing the output raises.
     fn write_vector_data(
         output: &mut dyn IndexOutput,
         float_vector_values: &dyn FloatVectorValues,
     ) -> Result<DocsWithFieldSet> {
+        float_vector_values.try_dimension()?;
         let mut docs_with_field = DocsWithFieldSet::new();
         let mut iter = float_vector_values.iterator()?;
         loop {
@@ -639,11 +644,11 @@ impl KnnVectorsWriter for Lucene99FlatVectorsWriter {
         Ok(())
     }
 
-    fn merge_one_field(
+    fn merge_one_field<'m>(
         &mut self,
         field_info: &FieldInfo,
-        merge_state: &MergeState,
-    ) -> Result<Option<Box<dyn crate::codecs::knn_vectors::IORunnable>>> {
+        merge_state: &'m MergeState,
+    ) -> Result<Option<Box<dyn crate::codecs::knn_vectors::IORunnable + 'm>>> {
         self.merge_one_flat_vector_field(field_info, merge_state)?;
         Ok(None)
     }
@@ -719,6 +724,14 @@ impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
         &self.vector_scorer
     }
 
+    /// Writes one field's merged vectors straight into the new segment: the
+    /// flat format has no further index to build, so no deferred work is left.
+    ///
+    /// Equivalent to `Lucene99FlatVectorsWriter.mergeOneFlatVectorField(FieldInfo, MergeState)`
+    /// (`Lucene99FlatVectorsWriter.java:265-292`): align the data file, write
+    /// the vectors of the merged view
+    /// [`MergedVectorValues`] builds — every surviving document, in merged
+    /// order, under its merged document id — then the field's metadata.
     fn merge_one_flat_vector_field(
         &mut self,
         field_info: &FieldInfo,
@@ -727,43 +740,19 @@ impl FlatVectorsWriter for Lucene99FlatVectorsWriter {
         let vector_data = self.vector_data.as_mut().ok_or_else(|| {
             LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
         })?;
-        let vector_data_offset = align_output(vector_data.as_mut(), field_info.vector_encoding)?;
-        let mut docs_with_field = DocsWithFieldSet::new();
-
-        let mut doc_base = 0i32;
-        for (reader_idx, reader_opt) in merge_state.knn_vectors_readers.iter().enumerate() {
-            let segment_max_doc = merge_state.max_docs.get(reader_idx).copied().unwrap_or(0);
-            if let Some(reader) = reader_opt {
-                match field_info.vector_encoding {
-                    VectorEncoding::FLOAT32 => {
-                        let values = reader.get_float_vector_values(&field_info.name)?;
-                        let mut iter = values.iterator()?;
-                        while iter.next_doc()? != NO_MORE_DOCS {
-                            let mapped = iter.doc_id().checked_add(doc_base).ok_or_else(|| {
-                                LuceneError::IllegalState("doc id overflow".to_string())
-                            })?;
-                            let vector = values.vector_value(iter.index())?;
-                            vector_data.write_floats(&vector, 0, vector.len())?;
-                            docs_with_field.add(mapped)?;
-                        }
-                    }
-                    VectorEncoding::BYTE => {
-                        let values = reader.get_byte_vector_values(&field_info.name)?;
-                        let mut iter = values.iterator()?;
-                        while iter.next_doc()? != NO_MORE_DOCS {
-                            let mapped = iter.doc_id().checked_add(doc_base).ok_or_else(|| {
-                                LuceneError::IllegalState("doc id overflow".to_string())
-                            })?;
-                            let vector = values.vector_value(iter.index())?;
-                            vector_data.write_bytes(&vector, 0, vector.len())?;
-                            docs_with_field.add(mapped)?;
-                        }
-                    }
-                }
-            }
-            doc_base += segment_max_doc;
-        }
-
+        let encoding = field_info.vector_encoding;
+        let vector_data_offset = align_output(vector_data.as_mut(), encoding)?;
+        // No need to use temporary file as we don't have to re-open for reading
+        let docs_with_field = match encoding {
+            VectorEncoding::BYTE => Self::write_byte_vector_data(
+                vector_data.as_mut(),
+                MergedVectorValues::merge_byte_vector_values(field_info, merge_state)?.as_ref(),
+            )?,
+            VectorEncoding::FLOAT32 => Self::write_vector_data(
+                vector_data.as_mut(),
+                MergedVectorValues::merge_float_vector_values(field_info, merge_state)?.as_ref(),
+            )?,
+        };
         let vector_data_length = vector_data.file_pointer() - vector_data_offset;
         let meta = self.meta.as_mut().ok_or_else(|| {
             LuceneError::IllegalState("Lucene99FlatVectorsWriter is already closed".to_string())
@@ -1050,7 +1039,7 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
         Ok(())
     }
 
-    fn get_float_vector_values(&self, field: &str) -> Result<Box<dyn FloatVectorValues>> {
+    fn get_float_vector_values(&self, field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
         let entry = self.get_field_entry(field, VectorEncoding::FLOAT32)?;
         OffHeapFloatVectorValues::load(
             &entry.ord_to_doc,
@@ -1059,9 +1048,10 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
             entry.vector_data_length,
             self.vector_data.as_ref(),
         )
+        .map(Some)
     }
 
-    fn get_byte_vector_values(&self, field: &str) -> Result<Box<dyn ByteVectorValues>> {
+    fn get_byte_vector_values(&self, field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
         let entry = self.get_field_entry(field, VectorEncoding::BYTE)?;
         OffHeapByteVectorValues::load(
             &entry.ord_to_doc,
@@ -1070,6 +1060,7 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
             entry.vector_data_length,
             self.vector_data.as_ref(),
         )
+        .map(Some)
     }
 
     /// Collects nothing, whatever the query and whatever the accept docs.
@@ -1687,6 +1678,41 @@ mod tests {
     /// one, `Enum.ordinal()`, so the tables must agree with the declaration
     /// order of the Rust enums and therefore with each other; a divergence here
     /// silently writes an unreadable index.
+    /// The flat writer's merge data writer fails, before writing a byte, on a
+    /// merged view without subs: Java's `writeVectorData` sizes its buffer with
+    /// `dimension()`, which throws there (`Lucene99FlatVectorsWriter.java:339-341`).
+    /// Lucene 10.5.0 fails a merge of such an index at exactly this call
+    /// (`SqMergeProbe`).
+    #[test]
+    fn write_vector_data_refuses_an_empty_merged_view() {
+        use crate::codecs::knn_vectors::{FloatVectorValuesSub, MergedFloat32VectorValues};
+        use crate::index::merge::MergeState;
+        use crate::index::vector_values::from_floats;
+        use crate::store::Directory;
+
+        let dir = RamDirectory::new();
+        let context = DefaultIOContext::new(Vec::new()).unwrap();
+        let mut output = dir.create_output("data", &context).unwrap();
+        let state = MergeState::from_fields_producers(Vec::new(), Vec::new());
+        let empty = MergedFloat32VectorValues::new(Vec::new(), &state).unwrap();
+        assert!(matches!(
+            Lucene99FlatVectorsWriter::write_vector_data(output.as_mut(), &empty),
+            Err(LuceneError::IllegalArgument(_))
+        ));
+        assert_eq!(output.file_pointer(), 0);
+
+        // Positive control: a view with one two-dimension vector is written.
+        let sub = FloatVectorValuesSub::new(
+            Arc::new(|doc: i32| doc),
+            Box::new(from_floats(vec![vec![1.0, 2.0]], 2)),
+        )
+        .unwrap();
+        let one = MergedFloat32VectorValues::new(vec![sub], &state).unwrap();
+        let docs = Lucene99FlatVectorsWriter::write_vector_data(output.as_mut(), &one).unwrap();
+        assert_eq!(docs.cardinality(), 1);
+        assert_eq!(output.file_pointer(), 8);
+    }
+
     #[test]
     fn vector_ordinals_match_the_enum_declaration_order() {
         use crate::index::{VectorEncoding, VectorSimilarityFunction};
@@ -1845,7 +1871,9 @@ mod tests {
         }
 
         let reader = format.fields_reader_flat(&read_state)?;
-        let values = reader.get_float_vector_values("float_field")?;
+        let values = reader
+            .get_float_vector_values("float_field")?
+            .expect("the field has vectors");
         assert_eq!(values.size(), 3);
         assert_eq!(values.dimension(), 2);
         assert_eq!(values.vector_value(0)?, vec![1.0, 2.0]);
@@ -1894,7 +1922,9 @@ mod tests {
         }
 
         let reader = format.fields_reader_flat(&read_state)?;
-        let values = reader.get_byte_vector_values("byte_field")?;
+        let values = reader
+            .get_byte_vector_values("byte_field")?
+            .expect("the field has vectors");
         assert_eq!(values.size(), 2);
         assert_eq!(values.dimension(), 2);
         assert_eq!(values.vector_value(0)?, vec![10, 20]);

@@ -21,6 +21,7 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fmt;
+use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 
 use crate::codecs::codec_util::{
@@ -1614,6 +1615,16 @@ fn at(what: &str, values: &[i32], index: i32) -> Result<i32> {
 // Reader
 // -----------------------------------------------------------------------------
 
+/// Number of block ids the reader remembers having prefetched.
+///
+/// Equivalent to `Lucene90CompressingTermVectorsReader.PREFETCH_CACHE_SIZE`.
+const PREFETCH_CACHE_SIZE: usize = 1 << 4;
+
+/// Mask that turns the running prefetch counter into a cache slot.
+///
+/// Equivalent to `Lucene90CompressingTermVectorsReader.PREFETCH_CACHE_MASK`.
+const PREFETCH_CACHE_MASK: i32 = PREFETCH_CACHE_SIZE as i32 - 1;
+
 /// Reader for the compressing term-vectors format.
 ///
 /// Lucene Core equivalent:
@@ -1640,6 +1651,20 @@ pub struct Lucene90CompressingTermVectorsReader {
     /// read inside the same chunk skips the index lookup and a bulk merge can
     /// tell whether a document's chunk is already in flight.
     block_state: Mutex<BlockState>,
+    /// The last [`PREFETCH_CACHE_SIZE`] blocks
+    /// [`prefetch`](TermVectorsReader::prefetch) asked the `.tvd` input for,
+    /// overwritten round-robin; `-1` marks a free slot.
+    ///
+    /// Equivalent to Lucene's `long[] prefetchedBlockIDCache`
+    /// (`Lucene90CompressingTermVectorsReader.java:104`). `prefetch` takes
+    /// `&self`, so the array sits behind a lock.
+    prefetched_block_id_cache: Mutex<[i64; PREFETCH_CACHE_SIZE]>,
+    /// How many blocks have been prefetched, which picks the next slot.
+    ///
+    /// Equivalent to Lucene's `int prefetchedBlockIDCacheIndex`
+    /// (`Lucene90CompressingTermVectorsReader.java:105`); it wraps as Java's
+    /// `int` does.
+    prefetched_block_id_cache_index: AtomicI32,
     /// Whether [`close`](TermVectorsReader::close) has already run, so that a
     /// later read reports `AlreadyClosed` instead of touching a closed file.
     ///
@@ -1761,6 +1786,8 @@ impl Lucene90CompressingTermVectorsReader {
             max_pointer,
             vectors_stream,
             block_state: Mutex::new(BlockState::new()),
+            prefetched_block_id_cache: Mutex::new([-1; PREFETCH_CACHE_SIZE]),
+            prefetched_block_id_cache_index: AtomicI32::new(0),
             closed: false,
         })
     }
@@ -1800,6 +1827,8 @@ impl Clone for Lucene90CompressingTermVectorsReader {
                 .clone_input()
                 .expect("INVARIANT: cloning an open IndexInput never fails"),
             block_state: Mutex::new(BlockState::new()),
+            prefetched_block_id_cache: Mutex::new([-1; PREFETCH_CACHE_SIZE]),
+            prefetched_block_id_cache_index: AtomicI32::new(0),
             closed: false,
         }
     }
@@ -1808,6 +1837,33 @@ impl Clone for Lucene90CompressingTermVectorsReader {
 impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
+    }
+
+    /// Asks the `.tvd` input to load the block that holds `doc_id`, unless it
+    /// was one of the last sixteen blocks prefetched.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.prefetch(int)`
+    /// (`Lucene90CompressingTermVectorsReader.java:347-361`).
+    fn prefetch(&self, doc_id: i32) -> Result<()> {
+        let block_id = self.index_reader.get_block_id(doc_id)?;
+
+        let mut prefetched_block_id_cache = self.prefetched_block_id_cache.lock().unwrap();
+        for &prefetched_block_id in prefetched_block_id_cache.iter() {
+            if prefetched_block_id == block_id {
+                return Ok(());
+            }
+        }
+
+        let block_start_pointer = self.index_reader.get_block_start_pointer(block_id)?;
+        let block_length = self.index_reader.get_block_length(block_id)?;
+        self.vectors_stream
+            .prefetch(block_start_pointer, block_length)?;
+
+        let index = self
+            .prefetched_block_id_cache_index
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        prefetched_block_id_cache[(index & PREFETCH_CACHE_MASK) as usize] = block_id;
+        Ok(())
     }
 
     #[allow(clippy::needless_range_loop)]
@@ -4956,6 +5012,150 @@ mod tests {
         let reencoded = run_term_vectors_merge(&state(opaque_tv));
         assert_eq!(reencoded.documents, expected);
         assert_eq!(reencoded.counters, (5, 0, 0));
+    }
+
+    /// An input that records every `prefetch` request and otherwise reads
+    /// through to the input it wraps.
+    struct PrefetchRecordingInput {
+        inner: Box<dyn IndexInput>,
+        requests: Arc<Mutex<Vec<(i64, i64)>>>,
+    }
+
+    impl fmt::Debug for PrefetchRecordingInput {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("PrefetchRecordingInput")
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl DataInput for PrefetchRecordingInput {
+        fn read_byte(&mut self) -> Result<u8> {
+            self.inner.read_byte()
+        }
+
+        fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+            self.inner.read_bytes(b, offset, len)
+        }
+
+        fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+            self.inner.skip_bytes(num_bytes)
+        }
+    }
+
+    impl IndexInput for PrefetchRecordingInput {
+        fn close(&mut self) -> Result<()> {
+            self.inner.close()
+        }
+
+        fn file_pointer(&self) -> i64 {
+            self.inner.file_pointer()
+        }
+
+        fn length(&self) -> i64 {
+            self.inner.length()
+        }
+
+        fn seek(&mut self, pos: i64) -> Result<()> {
+            self.inner.seek(pos)
+        }
+
+        fn slice(
+            &self,
+            slice_description: &str,
+            offset: i64,
+            length: i64,
+        ) -> Result<Box<dyn IndexInput>> {
+            self.inner.slice(slice_description, offset, length)
+        }
+
+        fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+            self.inner.clone_input()
+        }
+
+        fn resource_description(&self) -> &str {
+            self.inner.resource_description()
+        }
+
+        fn prefetch(&self, offset: i64, length: i64) -> Result<()> {
+            self.requests.lock().unwrap().push((offset, length));
+            self.inner.prefetch(offset, length)
+        }
+    }
+
+    /// A `.tvm` whose fields index declares no chunks for a non-empty segment
+    /// opens, `prefetch` answers from the cache, and reading the document's
+    /// vectors is a corrupt-index error rather than a panic.
+    ///
+    /// Lucene 10.5.0 shares `FieldsIndexReader` between both formats:
+    /// `getBlockID` answers `-1` (`FieldsIndexReader.java:119-127`), the
+    /// `-1`-filled prefetch cache holds it
+    /// (`Lucene90CompressingTermVectorsReader.java:125, 347-361`), and `get(0)`
+    /// throws from `getBlockStartPointer(-1)`.
+    #[test]
+    fn a_term_vectors_index_without_chunks_is_a_corrupt_index_not_a_panic() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let source = write_tv_merge_source(&dir, "_h", 0, 3);
+        // Positive control: the intact index serves the same calls.
+        {
+            let reader = concrete_tv_merge_source(&dir, &source);
+            reader.prefetch(0).unwrap();
+            reader.get(0).unwrap();
+        }
+
+        crate::codecs::lucene90::stored_fields::declare_no_fields_index_chunks(
+            dir.as_ref(),
+            "_h.tvm",
+            2,
+        );
+        let reader = concrete_tv_merge_source(&dir, &source);
+        assert_eq!(reader.index_reader.get_block_id(0).unwrap(), -1);
+        reader.prefetch(0).unwrap();
+        assert!(matches!(reader.get(0), Err(LuceneError::CorruptIndex(_))));
+    }
+
+    /// `prefetch` asks the `.tvd` input for the whole block that holds the
+    /// document — from `getBlockStartPointer` for `getBlockLength` bytes, the
+    /// last block ending at `maxPointer` — and asks once while it is cached.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.prefetch(int)`
+    /// (`Lucene90CompressingTermVectorsReader.java:347-361`).
+    #[test]
+    fn term_vectors_prefetch_asks_for_the_whole_block_once_while_it_is_cached() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        // Two full blocks and a last partial one.
+        let source = write_tv_merge_source(&dir, "_p", 0, 2 * MERGE_TEST_DOCS_PER_CHUNK + 1);
+        let mut reader = concrete_tv_merge_source(&dir, &source);
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let inner = reader.vectors_stream.clone_input().unwrap();
+        reader.vectors_stream = Box::new(PrefetchRecordingInput {
+            inner,
+            requests: Arc::clone(&requests),
+        });
+
+        let block = |b: i64| {
+            let start = reader.index_reader.get_block_start_pointer(b).unwrap();
+            let end = if b == 2 {
+                reader.max_pointer
+            } else {
+                reader.index_reader.get_block_start_pointer(b + 1).unwrap()
+            };
+            assert_eq!(
+                reader.index_reader.get_block_length(b).unwrap(),
+                end - start
+            );
+            (start, end - start)
+        };
+
+        reader.prefetch(1).unwrap();
+        reader.prefetch(0).unwrap(); // same block: cached
+        reader.prefetch(2 * MERGE_TEST_DOCS_PER_CHUNK).unwrap(); // the last block
+        reader.prefetch(MERGE_TEST_DOCS_PER_CHUNK).unwrap();
+        reader.prefetch(2 * MERGE_TEST_DOCS_PER_CHUNK).unwrap(); // cached
+
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![block(0), block(2), block(1)]
+        );
     }
 }
 

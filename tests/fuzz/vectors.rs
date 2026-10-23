@@ -425,7 +425,7 @@ fn read_everything(
     for spec in &fixture.fields {
         match spec.encoding {
             VectorEncoding::FLOAT32 => {
-                if let Ok(values) = reader.get_float_vector_values(spec.name) {
+                if let Ok(Some(values)) = reader.get_float_vector_values(spec.name) {
                     if let Ok(mut iter) = values.iterator() {
                         while let Ok(doc) = iter.next_doc() {
                             if doc == NO_MORE_DOCS {
@@ -437,7 +437,7 @@ fn read_everything(
                 }
             }
             VectorEncoding::BYTE => {
-                if let Ok(values) = reader.get_byte_vector_values(spec.name) {
+                if let Ok(Some(values)) = reader.get_byte_vector_values(spec.name) {
                     if let Ok(mut iter) = values.iterator() {
                         while let Ok(doc) = iter.next_doc() {
                             if doc == NO_MORE_DOCS {
@@ -668,7 +668,8 @@ fn every_fixture_reads_back_exactly() {
                 VectorEncoding::FLOAT32 => {
                     let values = reader
                         .get_float_vector_values(spec.name)
-                        .expect("float values");
+                        .expect("float values")
+                        .expect("the field has vectors");
                     let mut iter = values.iterator().expect("iterator");
                     while iter.next_doc().expect("next doc") != NO_MORE_DOCS {
                         let value = values.vector_value(iter.index()).expect("value");
@@ -678,7 +679,8 @@ fn every_fixture_reads_back_exactly() {
                 VectorEncoding::BYTE => {
                     let values = reader
                         .get_byte_vector_values(spec.name)
-                        .expect("byte values");
+                        .expect("byte values")
+                        .expect("the field has vectors");
                     let mut iter = values.iterator().expect("iterator");
                     while iter.next_doc().expect("next doc") != NO_MORE_DOCS {
                         let value = values.vector_value(iter.index()).expect("value");

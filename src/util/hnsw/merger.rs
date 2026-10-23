@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::codecs::hnsw::graph_provider::HnswGraphProvider;
 use crate::codecs::knn_vectors::KnnVectorsReader;
-use crate::error::Result;
+use crate::error::{LuceneError, Result};
 use crate::index::field_infos::FieldInfo;
 use crate::index::merge::DocMap;
 use crate::index::vector_values::KnnVectorValues;
@@ -154,10 +154,21 @@ impl ConcurrentHnswMerger {
         merged_vector_values: &dyn KnnVectorValues,
         initialized_nodes: &mut FixedBitSet,
     ) -> Result<Vec<i32>> {
+        // Java dereferences the answer without a `null` check.
         let values: Box<dyn KnnVectorValues> = match field_info.get_vector_encoding() {
-            VectorEncoding::BYTE => init_reader.get_byte_vector_values(&field_info.name)?,
-            VectorEncoding::FLOAT32 => init_reader.get_float_vector_values(&field_info.name)?,
-        };
+            VectorEncoding::BYTE => init_reader
+                .get_byte_vector_values(&field_info.name)?
+                .map(|values| values as Box<dyn KnnVectorValues>),
+            VectorEncoding::FLOAT32 => init_reader
+                .get_float_vector_values(&field_info.name)?
+                .map(|values| values as Box<dyn KnnVectorValues>),
+        }
+        .ok_or_else(|| {
+            LuceneError::IllegalState(format!(
+                "the initializing reader has no vectors for field \"{}\"",
+                field_info.name
+            ))
+        })?;
         let mut initializer_iterator = values.iterator()?;
 
         let mut new_id_to_old_ordinal: HashMap<i32, i32> =

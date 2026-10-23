@@ -119,11 +119,24 @@ impl IncrementalHnswGraphMerger {
 
     /// Returns the vector values of `reader` for the merged field, following the
     /// field's encoding.
+    ///
+    /// Java dereferences the answer without a `null` check, so a reader without
+    /// vectors for the field fails here, as Java's `NullPointerException` does.
     fn vector_values(&self, reader: &dyn KnnVectorsReader) -> Result<Box<dyn KnnVectorValues>> {
-        match self.field_info.get_vector_encoding() {
-            VectorEncoding::BYTE => Ok(reader.get_byte_vector_values(&self.field_info.name)?),
-            VectorEncoding::FLOAT32 => Ok(reader.get_float_vector_values(&self.field_info.name)?),
-        }
+        let values: Option<Box<dyn KnnVectorValues>> = match self.field_info.get_vector_encoding() {
+            VectorEncoding::BYTE => reader
+                .get_byte_vector_values(&self.field_info.name)?
+                .map(|values| values as Box<dyn KnnVectorValues>),
+            VectorEncoding::FLOAT32 => reader
+                .get_float_vector_values(&self.field_info.name)?
+                .map(|values| values as Box<dyn KnnVectorValues>),
+        };
+        values.ok_or_else(|| {
+            LuceneError::IllegalState(format!(
+                "the merged reader has no vectors for field \"{}\"",
+                self.field_info.name
+            ))
+        })
     }
 
     /// Builds the graph builder that produces the merged graph.

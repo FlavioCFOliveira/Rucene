@@ -41,8 +41,8 @@ use crate::index::segment_reader::SegmentReader;
 use crate::index::{DocValuesType, IndexableFieldType, Term};
 use crate::search::Sort;
 use crate::store::{
-    BufferedChecksumIndexInput, DefaultIOContext, Directory, IOContext, IndexInput, IndexOutput,
-    Lock, DEFAULT_IO_CONTEXT,
+    BufferedChecksumIndexInput, Directory, IOContext, IndexInput, IndexOutput, Lock,
+    DEFAULT_IO_CONTEXT,
 };
 use crate::util::extra::Version;
 use crate::util::string_helper::StringHelper;
@@ -2339,7 +2339,9 @@ impl IndexWriter {
         self.test_point("mergeMiddleStart");
         merge.check_aborted()?;
 
-        let context: Arc<dyn IOContext> = Arc::new(DefaultIOContext::new(Vec::new())?);
+        // `IndexWriter.java:5256`.
+        let context: Arc<dyn IOContext> =
+            Arc::from(crate::store::merge_io_context(merge.get_store_merge_info()));
         let dir_wrapper = Arc::new(crate::store::TrackingDirectoryWrapper::new(Box::new(
             SharedDirectory(Arc::clone(&self.directory)),
         )));
@@ -2538,15 +2540,26 @@ impl IndexWriter {
             }
         }
 
-        // `_merge_init` created `merge.info` and named the segment; take the
-        // `SegmentInfo` out of it, as Java's `merge.info.info` is what
-        // `SegmentMerger` writes into.
-        // Java shares one `SegmentInfo` object between `merge.info.info` and the
-        // merger's `MergeState`, and `MergeState`'s constructor stamps `maxDoc`
-        // on it — which is why `merge.info.setSoftDelCount(...)`, a few lines
-        // below in Java, can already read it. This port's `SegmentMerger` owns
-        // its copy, so the count is stamped on the writer's copy here and the
-        // merged copy is assigned back once the merge has run.
+        // `_merge_init` created `merge.info` and named the segment. Java hands
+        // `merge.info.info` itself to `SegmentMerger`, and the merge mutates that
+        // one object: `MergeState`'s constructor stamps `maxDoc`
+        // (`MergeState.java:173`), `SegmentMerger` records `minVersion`
+        // (`SegmentMerger.java:89`), the stored-fields format records its mode
+        // (`Lucene90StoredFieldsFormat.java:142`).
+        //
+        // **Divergence from Lucene 10.5.0.** A `SegmentCommitInfo` owns its
+        // `SegmentInfo` by value, so the merger receives a clone, and the
+        // `SegmentInfo` it mutated is moved back into `merge.info` as soon as
+        // the merge has run, before anything else touches it. Every change the
+        // merge makes therefore reaches the committed segment. In between,
+        // nothing mutates or reads `merge.info.info`: this thread holds the
+        // `OneMerge` mutably for the whole merge, and Java makes no change to
+        // that object in the same window. `maxDoc` is the exception that keeps
+        // the two copies equal: it is stamped here, before the clone, rather
+        // than by `MergeState`, so that `merge.info.set_soft_del_count` below
+        // can check against it as Java's `setSoftDelCount` does; the value is
+        // the one `MergeState`'s constructor computes, the sum of the readers'
+        // live documents.
         let merged_info = {
             let commit_info = merge.info.as_mut().ok_or_else(|| {
                 LuceneError::IllegalState("mergeMiddle ran before mergeInit".to_string())
@@ -2826,7 +2839,14 @@ impl IndexWriter {
         // Best-effort up-front check.
         self.test_reserve_docs(num_docs)?;
 
-        let context: Arc<dyn IOContext> = Arc::new(DefaultIOContext::new(Vec::new())?);
+        // `IndexWriter.java:3509-3511`. `Math.toIntExact` throws
+        // `ArithmeticException("integer overflow")`; the crate has no
+        // arithmetic-error variant, so the nearest one carries the message.
+        let total_max_doc = i32::try_from(num_docs)
+            .map_err(|_| LuceneError::IllegalArgument("integer overflow".to_string()))?;
+        let context: Arc<dyn IOContext> = Arc::from(crate::store::merge_io_context(
+            crate::store::MergeInfo::new(total_max_doc, -1, false, UNBOUNDED_MAX_MERGE_SEGMENTS),
+        ));
         let tracking_dir = Arc::new(crate::store::TrackingDirectoryWrapper::new(Box::new(
             SharedDirectory(Arc::clone(&self.directory)),
         )));

@@ -2690,16 +2690,16 @@ impl KnnVectorsReader for SlowKnnVectorsReader {
         Ok(())
     }
 
-    fn get_float_vector_values(&self, field: &str) -> Result<Box<dyn FloatVectorValues>> {
-        self.reader.get_float_vector_values(field)?.ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("field \"{field}\" has no float vectors"))
-        })
+    /// Equivalent to the vectors reader of `SlowCodecReaderWrapper`, which
+    /// answers `reader.getFloatVectorValues(field)` as it is, `null` included.
+    fn get_float_vector_values(&self, field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
+        self.reader.get_float_vector_values(field)
     }
 
-    fn get_byte_vector_values(&self, field: &str) -> Result<Box<dyn ByteVectorValues>> {
-        self.reader.get_byte_vector_values(field)?.ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("field \"{field}\" has no byte vectors"))
-        })
+    /// Equivalent to the vectors reader of `SlowCodecReaderWrapper`, which
+    /// answers `reader.getByteVectorValues(field)` as it is, `null` included.
+    fn get_byte_vector_values(&self, field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
+        self.reader.get_byte_vector_values(field)
     }
 
     fn search(

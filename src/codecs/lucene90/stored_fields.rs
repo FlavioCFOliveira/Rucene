@@ -53,6 +53,7 @@
 
 use std::cmp;
 use std::fmt;
+use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 
 use crate::codecs::codec_util::{
@@ -398,18 +399,36 @@ impl StoredFieldsInts {
 /// Doc-id to block-offset mapping used by the stored-fields reader.
 pub(crate) trait FieldsIndex: Send + Sync {
     /// Returns the block that contains `doc_id`.
+    ///
+    /// Equivalent to `FieldsIndex.getBlockID(int)`.
     fn get_block_id(&self, doc_id: i32) -> Result<i64>;
 
     /// Returns the file pointer where the given block starts.
-    fn get_block_start_pointer(&self, block_id: i64) -> i64;
+    ///
+    /// Equivalent to `FieldsIndex.getBlockStartPointer(long)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::CorruptIndex`] when the index holds no such
+    /// block, where Java's monotonic reader throws an unchecked
+    /// `ArrayIndexOutOfBoundsException`.
+    fn get_block_start_pointer(&self, block_id: i64) -> Result<i64>;
 
     /// Returns the byte length of the given block.
-    fn get_block_length(&self, block_id: i64) -> i64;
+    ///
+    /// Equivalent to `FieldsIndex.getBlockLength(long)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`get_block_start_pointer`](Self::get_block_start_pointer).
+    fn get_block_length(&self, block_id: i64) -> Result<i64>;
 
     /// Returns the file pointer where the block containing `doc_id` starts.
+    ///
+    /// Equivalent to `FieldsIndex.getStartPointer(int)` (`FieldsIndex.java:34-36`).
     fn get_start_pointer(&self, doc_id: i32) -> Result<i64> {
         let block_id = self.get_block_id(doc_id)?;
-        Ok(self.get_block_start_pointer(block_id))
+        self.get_block_start_pointer(block_id)
     }
 
     /// Validates the integrity of the index.
@@ -572,7 +591,34 @@ impl FieldsIndexReader {
     }
 }
 
+impl FieldsIndexReader {
+    /// Returns the value `values` holds for `block_id`, or a corrupt-index
+    /// error for a block this index does not hold.
+    ///
+    /// Java reads it through `DirectMonotonicReader.get(long)`, which throws an
+    /// unchecked `ArrayIndexOutOfBoundsException` for such a block — a hostile
+    /// `.fdm` that declares no chunks for a non-empty segment reaches it with
+    /// block `-1` — so Rust's indexing would panic where Java throws.
+    fn block_value(&self, values: &[i64], block_id: i64) -> Result<i64> {
+        usize::try_from(block_id)
+            .ok()
+            .and_then(|block| values.get(block))
+            .copied()
+            .ok_or_else(|| {
+                LuceneError::CorruptIndex(format!(
+                    "block {block_id} is outside the {} blocks of the fields index",
+                    self.num_blocks
+                ))
+            })
+    }
+}
+
 impl FieldsIndex for FieldsIndexReader {
+    /// Equivalent to `FieldsIndexReader.getBlockID(int)`
+    /// (`FieldsIndexReader.java:119-127`): `docs.binarySearch(0, numChunks,
+    /// docID)`, an exact match or `-2 - (-1 - insertionPoint)`, the block
+    /// before the insertion point. An index without chunks answers `-1`, as
+    /// Java's does.
     fn get_block_id(&self, doc_id: i32) -> Result<i64> {
         if doc_id < 0 || doc_id >= self.max_doc {
             return Err(LuceneError::IllegalArgument(format!(
@@ -581,34 +627,48 @@ impl FieldsIndex for FieldsIndexReader {
             )));
         }
 
-        // Binary search for the largest index with docs[idx] <= doc_id.
+        // `DirectMonotonicReader.binarySearch(long, long, long)` over the
+        // decoded values; `num_blocks` is at most `maxDoc + 1`, so neither the
+        // bounds nor their sum overflow.
+        let key = i64::from(doc_id);
         let mut lo: i64 = 0;
-        let mut hi: i64 = (self.num_blocks - 1) as i64;
-        let mut ans: i64 = 0;
+        let mut hi: i64 = self.num_blocks as i64 - 1;
+        let mut block_index: i64 = -1;
         while lo <= hi {
-            let mid = (lo + hi) / 2;
-            let v = self.docs[mid as usize];
-            if v <= doc_id as i64 {
-                ans = mid;
-                lo = mid + 1;
-            } else {
-                hi = mid - 1;
+            let mid = (lo + hi) >> 1;
+            match self.docs[mid as usize].cmp(&key) {
+                std::cmp::Ordering::Less => lo = mid + 1,
+                std::cmp::Ordering::Greater => hi = mid - 1,
+                std::cmp::Ordering::Equal => {
+                    block_index = mid;
+                    break;
+                }
             }
         }
-        Ok(ans)
+        if lo > hi {
+            block_index = -1 - lo;
+        }
+        if block_index < 0 {
+            block_index = -2 - block_index;
+        }
+        Ok(block_index)
     }
 
-    fn get_block_start_pointer(&self, block_id: i64) -> i64 {
-        self.start_pointers[block_id as usize]
+    /// Equivalent to `FieldsIndexReader.getBlockStartPointer(long)`
+    /// (`FieldsIndexReader.java:129-132`).
+    fn get_block_start_pointer(&self, block_id: i64) -> Result<i64> {
+        self.block_value(&self.start_pointers, block_id)
     }
 
-    fn get_block_length(&self, block_id: i64) -> i64 {
-        let end = if block_id as usize == self.num_blocks - 1 {
+    /// Equivalent to `FieldsIndexReader.getBlockLength(long)`
+    /// (`FieldsIndexReader.java:134-143`).
+    fn get_block_length(&self, block_id: i64) -> Result<i64> {
+        let end_pointer = if block_id == self.num_blocks as i64 - 1 {
             self.max_pointer
         } else {
-            self.start_pointers[block_id as usize + 1]
+            self.block_value(&self.start_pointers, block_id + 1)?
         };
-        end - self.get_block_start_pointer(block_id)
+        Ok(end_pointer - self.get_block_start_pointer(block_id)?)
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -636,6 +696,59 @@ impl FieldsIndex for FieldsIndexReader {
     fn close(&mut self) -> Result<()> {
         Ok(())
     }
+}
+
+/// Rewrites the metadata file `meta_file` so that its fields index declares no
+/// chunks, and recomputes the footer checksum: the hostile `.fdm`/`.tvm` that
+/// reaches `FieldsIndexReader.getBlockID(int)` with `numChunks == 0` for a
+/// non-empty segment, which Lucene opens.
+///
+/// `vints_before` is how many variable-length ints the format writes between
+/// the index header and the fields-index metadata: one (`chunkSize`) for stored
+/// fields, two (`packedIntsVersion`, `chunkSize`) for term vectors. Each
+/// monotonic array must fit one 21-byte block of `DirectMonotonicWriter`
+/// metadata (`min`, `avgInc`, `offset`, `bitsRequired`), which is removed.
+#[cfg(test)]
+pub(crate) fn declare_no_fields_index_chunks(
+    dir: &dyn Directory,
+    meta_file: &str,
+    vints_before: usize,
+) {
+    const MONOTONIC_BLOCK_META: usize = 8 + 4 + 8 + 1;
+    let ctx = &*crate::store::DEFAULT_IO_CONTEXT;
+    let len = dir.file_length(meta_file).unwrap() as usize;
+    let mut bytes = vec![0u8; len];
+    dir.open_input(meta_file, ctx)
+        .unwrap()
+        .read_bytes(&mut bytes, 0, len)
+        .unwrap();
+    // Index header: magic, codec name, version, segment id, suffix.
+    let mut at = 4;
+    at += 1 + bytes[at] as usize;
+    at += 4 + 16;
+    at += 1 + bytes[at] as usize;
+    for _ in 0..vints_before {
+        while bytes[at] & 0x80 != 0 {
+            at += 1;
+        }
+        at += 1;
+    }
+    let int_at = |at: usize| i32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    let (max_doc, block_shift, num_values) = (int_at(at), int_at(at + 4), int_at(at + 8));
+    assert!(max_doc > 0 && num_values > 0 && num_values <= 1 << block_shift);
+    let num_values_at = at + 8;
+    let docs_meta_at = num_values_at + 4 + 8;
+    bytes.drain(docs_meta_at..docs_meta_at + MONOTONIC_BLOCK_META);
+    let start_pointers_meta_at = docs_meta_at + 8;
+    bytes.drain(start_pointers_meta_at..start_pointers_meta_at + MONOTONIC_BLOCK_META);
+    bytes[num_values_at..num_values_at + 4].copy_from_slice(&0i32.to_le_bytes());
+    let body = bytes.len() - 8;
+    let checksum = u64::from(crc32fast::hash(&bytes[..body]));
+    bytes[body..].copy_from_slice(&checksum.to_be_bytes());
+    dir.delete_file(meta_file).unwrap();
+    let mut out = dir.create_output(meta_file, ctx).unwrap();
+    out.write_bytes(&bytes, 0, bytes.len()).unwrap();
+    out.close().unwrap();
 }
 
 // -----------------------------------------------------------------------------
@@ -1028,8 +1141,15 @@ impl Lucene90CompressingStoredFieldsWriter {
             .write_v_int(((num_buffered_docs as i32) << 2) | dirty_bit | sliced_bit)
     }
 
+    /// Compresses and writes the buffered documents as one chunk.
+    ///
+    /// Equivalent to `Lucene90CompressingStoredFieldsWriter.flush(boolean)`.
+    /// `force` is the caller's statement that the chunk is *not* full — the
+    /// end of a segment, or a bulk merge about to copy whole chunks — so it
+    /// must be exactly the opposite of [`trigger_flush`](Self::trigger_flush),
+    /// which is what Java asserts (`Lucene90CompressingStoredFieldsWriter.java:235`).
     fn flush(&mut self, force: bool) -> Result<()> {
-        debug_assert!(self.trigger_flush() || force);
+        debug_assert!(self.trigger_flush() != force);
         self.num_chunks += 1;
         if force {
             self.num_dirty_chunks += 1;
@@ -1199,7 +1319,7 @@ impl Lucene90CompressingStoredFieldsWriter {
         let mut doc_id = from_doc_id;
 
         // copy docs that belong to the previous chunk
-        while doc_id < to_doc_id && reader.is_loaded(doc_id) {
+        while doc_id < to_doc_id && reader.is_loaded(doc_id)? {
             self.copy_one_doc(reader, doc_id)?;
             doc_id += 1;
         }
@@ -1265,7 +1385,7 @@ impl Lucene90CompressingStoredFieldsWriter {
         }
 
         // copy leftover docs that don't form a complete chunk
-        debug_assert!(!reader.is_loaded(doc_id));
+        debug_assert!(!reader.is_loaded(doc_id)?);
         while doc_id < to_doc_id {
             self.copy_one_doc(reader, doc_id)?;
             doc_id += 1;
@@ -1657,11 +1777,35 @@ pub struct Lucene90CompressingStoredFieldsReader {
     fields_stream: Box<dyn IndexInput>,
     merging: bool,
     state: Mutex<BlockState>,
+    /// The last [`PREFETCH_CACHE_SIZE`] blocks
+    /// [`prefetch`](StoredFieldsReader::prefetch) asked the `.fdt` input for,
+    /// overwritten round-robin; `-1` marks a free slot.
+    ///
+    /// Equivalent to Lucene's `long[] prefetchedBlockIDCache`
+    /// (`Lucene90CompressingStoredFieldsReader.java:98`). `prefetch` takes
+    /// `&self`, so the array sits behind a lock.
+    prefetched_block_id_cache: Mutex<[i64; PREFETCH_CACHE_SIZE]>,
+    /// How many blocks have been prefetched, which picks the next slot.
+    ///
+    /// Equivalent to Lucene's `int prefetchedBlockIDCacheIndex`
+    /// (`Lucene90CompressingStoredFieldsReader.java:99`); it wraps as Java's
+    /// `int` does.
+    prefetched_block_id_cache_index: AtomicI32,
     /// Whether [`close`](StoredFieldsReader::close) has already run.
     ///
     /// Equivalent to Lucene's `private boolean closed`.
     closed: bool,
 }
+
+/// Number of block ids the reader remembers having prefetched.
+///
+/// Equivalent to `Lucene90CompressingStoredFieldsReader.PREFETCH_CACHE_SIZE`.
+const PREFETCH_CACHE_SIZE: usize = 1 << 4;
+
+/// Mask that turns the running prefetch counter into a cache slot.
+///
+/// Equivalent to `Lucene90CompressingStoredFieldsReader.PREFETCH_CACHE_MASK`.
+const PREFETCH_CACHE_MASK: i32 = PREFETCH_CACHE_SIZE as i32 - 1;
 
 #[derive(Debug)]
 struct BlockState {
@@ -2041,6 +2185,8 @@ impl Lucene90CompressingStoredFieldsReader {
             fields_stream,
             merging: false,
             state: Mutex::new(BlockState::new()),
+            prefetched_block_id_cache: Mutex::new([-1; PREFETCH_CACHE_SIZE]),
+            prefetched_block_id_cache_index: AtomicI32::new(0),
             closed: false,
         })
     }
@@ -2123,6 +2269,8 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             fields_stream: self.fields_stream.clone_input().expect("clone failed"),
             merging: false,
             state: Mutex::new(BlockState::new()),
+            prefetched_block_id_cache: Mutex::new([-1; PREFETCH_CACHE_SIZE]),
+            prefetched_block_id_cache_index: AtomicI32::new(0),
             closed: false,
         })
     }
@@ -2147,6 +2295,8 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             fields_stream: self.fields_stream.clone_input().expect("clone failed"),
             merging: true,
             state: Mutex::new(BlockState::new()),
+            prefetched_block_id_cache: Mutex::new([-1; PREFETCH_CACHE_SIZE]),
+            prefetched_block_id_cache_index: AtomicI32::new(0),
             closed: false,
         })
     }
@@ -2170,6 +2320,33 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
+    }
+
+    /// Asks the `.fdt` input to load the block that holds `doc_id`, unless it
+    /// was one of the last sixteen blocks prefetched.
+    ///
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.prefetch(int)`
+    /// (`Lucene90CompressingStoredFieldsReader.java:629-643`).
+    fn prefetch(&self, doc_id: i32) -> Result<()> {
+        let block_id = self.index_reader.get_block_id(doc_id)?;
+
+        let mut prefetched_block_id_cache = self.prefetched_block_id_cache.lock().unwrap();
+        for &prefetched_block_id in prefetched_block_id_cache.iter() {
+            if prefetched_block_id == block_id {
+                return Ok(());
+            }
+        }
+
+        let block_start_pointer = self.index_reader.get_block_start_pointer(block_id)?;
+        let block_length = self.index_reader.get_block_length(block_id)?;
+        self.fields_stream
+            .prefetch(block_start_pointer, block_length)?;
+
+        let index = self
+            .prefetched_block_id_cache_index
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        prefetched_block_id_cache[(index & PREFETCH_CACHE_MASK) as usize] = block_id;
+        Ok(())
     }
 }
 
@@ -2264,9 +2441,29 @@ impl Lucene90CompressingStoredFieldsReader {
     /// Returns whether the chunk that holds `doc_id` is the one already
     /// decoded, so that reading the document costs no decompression.
     ///
-    /// Equivalent to `Lucene90CompressingStoredFieldsReader.isLoaded`.
-    fn is_loaded(&self, doc_id: i32) -> bool {
-        self.state.lock().unwrap().contains(doc_id)
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.isLoaded`
+    /// (`Lucene90CompressingStoredFieldsReader.java:655-664`). Only the bulk
+    /// merge asks, and only of the merge instance of a reader on the current
+    /// format version: the answer is about the block a *merge* instance keeps
+    /// decoded, which a search instance does not keep in the same way.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] with Java's message when this is
+    /// not a merge instance, or when the reader is not on the current version.
+    fn is_loaded(&self, doc_id: i32) -> Result<bool> {
+        if !self.merging {
+            return Err(LuceneError::IllegalState(
+                "isLoaded should only ever get called on a merge instance".to_string(),
+            ));
+        }
+        if self.version != DATA_VERSION_CURRENT {
+            return Err(LuceneError::IllegalState(
+                "isLoaded should only ever get called when the reader is on the current version"
+                    .to_string(),
+            ));
+        }
+        Ok(self.state.lock().unwrap().contains(doc_id))
     }
 
     /// Returns one document as it sits inside its decompressed chunk: the raw
@@ -3913,7 +4110,8 @@ mod tests {
         segment_info
     }
 
-    /// Opens one source segment for merging.
+    /// Opens one source segment for merging: its merge instance, which is
+    /// what `MergeState` holds for every reader (`MergeState.java:134-168`).
     fn open_merge_source(
         dir: &Arc<dyn Directory>,
         segment_info: &SegmentInfo,
@@ -3926,6 +4124,7 @@ mod tests {
                 &*DEFAULT_IO_CONTEXT,
             )
             .unwrap()
+            .get_merge_instance()
     }
 
     /// Opens one source segment as this format's concrete reader, whose
@@ -4572,6 +4771,271 @@ mod tests {
         let visitor = run_stored_fields_merge(&state(opaque));
         assert_eq!(visitor.documents, expected);
         assert_eq!(visitor.counters, (5, 0, 0));
+    }
+
+    /// Visits every field of a document and keeps nothing.
+    struct SkipAllVisitor;
+
+    impl StoredFieldVisitor for SkipAllVisitor {
+        fn needs_field(&mut self, _info: &FieldInfo) -> Result<StoredFieldVisitorStatus> {
+            Ok(StoredFieldVisitorStatus::Yes)
+        }
+    }
+
+    /// `isLoaded` only answers a merge instance of a reader on the current
+    /// format version, and then answers for exactly the block that instance
+    /// last decoded.
+    ///
+    /// Java throws `IllegalStateException` with two distinct messages for the
+    /// two guards (`Lucene90CompressingStoredFieldsReader.java:655-664`).
+    #[test]
+    fn is_loaded_answers_only_a_merge_instance_on_the_current_version() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let source = write_merge_source(&dir, "_a", 0, 10);
+
+        let search = concrete_merge_source(&dir, &source);
+        let merge_box = search.get_merge_instance();
+        let merge = merge_box
+            .as_any()
+            .and_then(|any| any.downcast_ref::<Lucene90CompressingStoredFieldsReader>())
+            .expect("the merge instance is this format's reader");
+        assert!(
+            !merge.is_loaded(0).unwrap(),
+            "nothing is decoded before the first read"
+        );
+        merge.document(1, &mut SkipAllVisitor).unwrap();
+        for doc in 0..MERGE_TEST_DOCS_PER_CHUNK as i32 {
+            assert!(merge.is_loaded(doc).unwrap(), "doc {doc} is in block 0");
+        }
+        assert!(
+            !merge.is_loaded(MERGE_TEST_DOCS_PER_CHUNK as i32).unwrap(),
+            "the next block has not been decoded"
+        );
+
+        match search.is_loaded(0) {
+            Err(LuceneError::IllegalState(message)) => assert_eq!(
+                message,
+                "isLoaded should only ever get called on a merge instance"
+            ),
+            other => panic!("a search instance must refuse, got {other:?}"),
+        }
+
+        let mut old_version = concrete_merge_source(&dir, &source);
+        old_version.merging = true;
+        old_version.version = DATA_VERSION_CURRENT - 1;
+        match old_version.is_loaded(0) {
+            Err(LuceneError::IllegalState(message)) => assert_eq!(
+                message,
+                "isLoaded should only ever get called when the reader is on the current version"
+            ),
+            other => panic!("a reader on another version must refuse, got {other:?}"),
+        }
+    }
+
+    /// An input that records every `prefetch` request and otherwise reads
+    /// through to the input it wraps.
+    struct PrefetchRecordingInput {
+        inner: Box<dyn IndexInput>,
+        requests: Arc<Mutex<Vec<(i64, i64)>>>,
+    }
+
+    impl fmt::Debug for PrefetchRecordingInput {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("PrefetchRecordingInput")
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl DataInput for PrefetchRecordingInput {
+        fn read_byte(&mut self) -> Result<u8> {
+            self.inner.read_byte()
+        }
+
+        fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
+            self.inner.read_bytes(b, offset, len)
+        }
+
+        fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+            self.inner.skip_bytes(num_bytes)
+        }
+    }
+
+    impl IndexInput for PrefetchRecordingInput {
+        fn close(&mut self) -> Result<()> {
+            self.inner.close()
+        }
+
+        fn file_pointer(&self) -> i64 {
+            self.inner.file_pointer()
+        }
+
+        fn length(&self) -> i64 {
+            self.inner.length()
+        }
+
+        fn seek(&mut self, pos: i64) -> Result<()> {
+            self.inner.seek(pos)
+        }
+
+        fn slice(
+            &self,
+            slice_description: &str,
+            offset: i64,
+            length: i64,
+        ) -> Result<Box<dyn IndexInput>> {
+            self.inner.slice(slice_description, offset, length)
+        }
+
+        fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
+            self.inner.clone_input()
+        }
+
+        fn resource_description(&self) -> &str {
+            self.inner.resource_description()
+        }
+
+        fn prefetch(&self, offset: i64, length: i64) -> Result<()> {
+            self.requests.lock().unwrap().push((offset, length));
+            self.inner.prefetch(offset, length)
+        }
+    }
+
+    /// A `.fdm` whose fields index declares no chunks for a non-empty segment
+    /// opens, `prefetch` answers from the cache, and reading the document is a
+    /// corrupt-index error rather than a panic.
+    ///
+    /// Lucene 10.5.0 behaves the same way up to the read: `getBlockID` answers
+    /// `-1` (`FieldsIndexReader.java:119-127`), which the `-1`-filled prefetch
+    /// cache already holds (`Lucene90CompressingStoredFieldsReader.java:118,
+    /// 629-643`), and `document(0)` throws `ArrayIndexOutOfBoundsException`
+    /// from `getBlockStartPointer(-1)` (measured with `StoredProbe` on the same
+    /// patched index: "open ok", "prefetch ok", "document threw").
+    #[test]
+    fn a_fields_index_without_chunks_is_a_corrupt_index_not_a_panic() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let source = write_merge_source(&dir, "_h", 0, 3);
+        // Positive control: the intact index serves the same calls.
+        {
+            let reader = concrete_merge_source(&dir, &source);
+            assert_eq!(reader.index_reader().get_block_id(0).unwrap(), 0);
+            reader.prefetch(0).unwrap();
+            reader.serialized_document(0).unwrap();
+        }
+
+        super::declare_no_fields_index_chunks(dir.as_ref(), "_h.fdm", 1);
+        let reader = concrete_merge_source(&dir, &source);
+        let index = reader.index_reader();
+        assert_eq!(index.get_block_id(0).unwrap(), -1);
+        assert!(matches!(
+            index.get_block_start_pointer(-1),
+            Err(LuceneError::CorruptIndex(_))
+        ));
+        assert!(matches!(
+            index.get_block_length(-1),
+            Err(LuceneError::CorruptIndex(_))
+        ));
+        reader.prefetch(0).unwrap();
+        assert!(matches!(
+            reader.serialized_document(0),
+            Err(LuceneError::CorruptIndex(_))
+        ));
+    }
+
+    /// `prefetch` asks the `.fdt` input for the whole block that holds the
+    /// document — from `getBlockStartPointer` for `getBlockLength` bytes — and
+    /// asks only once while that block is among the last sixteen prefetched.
+    ///
+    /// Equivalent to `Lucene90CompressingStoredFieldsReader.prefetch(int)`
+    /// (`Lucene90CompressingStoredFieldsReader.java:629-643`) over
+    /// `FieldsIndexReader.getBlockLength(long)`
+    /// (`FieldsIndexReader.java:135-143`), whose last block ends at the
+    /// reader's `maxPointer`. Eighteen blocks overflow the sixteen-slot cache,
+    /// so the round-robin overwrite is pinned too.
+    #[test]
+    fn prefetch_asks_for_the_whole_block_once_while_it_is_cached() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let per_block = MERGE_TEST_DOCS_PER_CHUNK as i32;
+        // Seventeen full blocks and a last partial one.
+        let source = write_merge_source(&dir, "_p", 0, 17 * per_block + 1);
+        let mut reader = concrete_merge_source(&dir, &source);
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let inner = reader.fields_stream.clone_input().unwrap();
+        reader.fields_stream = Box::new(PrefetchRecordingInput {
+            inner,
+            requests: Arc::clone(&requests),
+        });
+
+        let index = reader.index_reader();
+        let block = |b: i64| {
+            let start = index.get_block_start_pointer(b).unwrap();
+            let end = if b == 17 {
+                reader.max_pointer()
+            } else {
+                index.get_block_start_pointer(b + 1).unwrap()
+            };
+            assert_eq!(index.get_block_length(b).unwrap(), end - start);
+            (start, end - start)
+        };
+
+        reader.prefetch(0).unwrap();
+        reader.prefetch(per_block - 1).unwrap(); // same block: cached
+        reader.prefetch(17 * per_block).unwrap(); // the last, partial block
+        for b in 1..=16 {
+            reader.prefetch(b * per_block + 1).unwrap();
+        }
+        // Eighteen distinct blocks went through sixteen slots, filled in
+        // order: blocks 15 and 16 overwrote blocks 0 and 17 in slots 0 and 1.
+        // Block 0 is therefore asked for again, and takes slot 2 from block 1;
+        // block 2, in slot 3, is still cached; block 1 is asked for again.
+        reader.prefetch(2).unwrap();
+        reader.prefetch(2 * per_block + 1).unwrap();
+        reader.prefetch(per_block + 2).unwrap();
+
+        let mut expected = vec![block(0), block(17)];
+        expected.extend((1..=16).map(block));
+        expected.push(block(0));
+        expected.push(block(1));
+        assert_eq!(*requests.lock().unwrap(), expected);
+    }
+
+    /// A forced flush is the statement that the chunk is *not* full, so Java
+    /// asserts `triggerFlush() != force`
+    /// (`Lucene90CompressingStoredFieldsWriter.java:235`): forcing a chunk that
+    /// has already reached its size limit is a bug in the caller.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "self.trigger_flush() != force")]
+    fn forcing_the_flush_of_a_full_chunk_trips_the_assertion() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let mut writer =
+            merge_test_writer(&dir, "_f", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let field_infos = make_field_infos();
+        let info = field_infos.field_info("text").unwrap();
+        writer.start_document().unwrap();
+        writer
+            .write_field_bytes(info, &vec![7u8; MERGE_TEST_CHUNK_SIZE])
+            .unwrap();
+        assert!(writer.trigger_flush(), "the chunk is full");
+        let _ = writer.flush(true);
+    }
+
+    /// The other half of the same assertion: an unforced flush of a chunk that
+    /// is not full.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "self.trigger_flush() != force")]
+    fn an_unforced_flush_of_a_partial_chunk_trips_the_assertion() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let mut writer =
+            merge_test_writer(&dir, "_g", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let field_infos = make_field_infos();
+        writer.start_document().unwrap();
+        writer
+            .write_field_i32(field_infos.field_info("value").unwrap(), 1)
+            .unwrap();
+        writer.finish_document().unwrap();
+        assert!(!writer.trigger_flush(), "one small document fills nothing");
+        let _ = writer.flush(false);
     }
 }
 
