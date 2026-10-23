@@ -607,7 +607,10 @@ fn dump(reader: &dyn PointsReader, field_infos: &FieldInfos, case: &str) -> Vec<
         if info.point_dimension_count == 0 {
             continue;
         }
-        let values = reader.get_values(&info.name).expect("point values");
+        let values = reader
+            .get_values(&info.name)
+            .expect("point values")
+            .expect("the field has a tree");
         lines.push(format!(
             "pointstats field={} size={} docCount={} numDims={} numIndexDims={} bytesPerDim={} min={} max={}",
             info.name,
@@ -1070,7 +1073,9 @@ impl PointsWriter for FastPathProbe {
         field_info: &rucene::index::FieldInfo,
         values: &dyn PointsReader,
     ) -> rucene::error::Result<()> {
-        let values = values.get_values(&field_info.name)?;
+        let values = values
+            .get_values(&field_info.name)?
+            .expect("the flushing reader has values");
         let mut tree = values.point_tree()?;
         self.mutable = tree.as_mutable().is_some();
         Ok(())

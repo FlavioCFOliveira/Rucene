@@ -2234,7 +2234,7 @@ mod tests {
             infos,
             false,
         );
-        state.segment_info = Some(crate::codecs::tests::test_segment_info("_m", 2));
+        state.segment_info = Some(Arc::new(crate::codecs::tests::test_segment_info("_m", 2)));
         let stream = Arc::new(VvInfoStream(std::sync::Mutex::new(Vec::new())));
         state.info_stream = stream.clone();
 

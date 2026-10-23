@@ -4855,7 +4855,9 @@ pub fn test_points(
             if field_info.point_dimension_count <= 0 {
                 continue;
             }
-            let values = points_reader.get_values(&field_info.name)?;
+            let Some(values) = points_reader.get_values(&field_info.name)? else {
+                continue;
+            };
             status.total_value_fields += 1;
 
             let size = values.size()?;

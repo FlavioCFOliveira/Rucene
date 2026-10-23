@@ -4,18 +4,9 @@
 //! writer produces the `.psm` (metadata), `.doc`, `.pos` and `.pay` files for
 //! the Lucene 10.4 postings format.
 //!
-//! # Current simplification
-//!
-//! The Java implementation reads per-document norms from the
-//! `NumericDocValues` passed to `startTerm` in order to build competitive
-//! `(freq, norm)` impact lists. The current Rust push API only passes that
-//! reference for the duration of `start_term`, so the writer cannot safely
-//! retain it across `start_doc` calls without either an API change or unsafe
-//! lifetime extension. As a documented simplification, norms are currently
-//! treated as the constant value `1` for impact accumulation, which matches the
-//! Java output for fields that have no norms. Fields that actually store norms
-//! will produce impact bytes that differ from Java until norm plumbing is
-//! wired through the push API.
+//! As in Java, the norms handed to `start_term` are kept for the term's
+//! documents, and each document's `(freq, norm)` pair feeds the competitive
+//! impacts written with the skip data (`Lucene104PostingsWriter.java:240-299`).
 
 #![deny(unsafe_code)]
 
@@ -27,13 +18,13 @@ use crate::codecs::lucene104::{
     postings_util::write_v_int_block,
     BLOCK_SIZE, DOC_CODEC, LEVEL1_MASK, META_CODEC, PAY_CODEC, POS_CODEC, VERSION_CURRENT,
 };
-use crate::codecs::postings::{
-    PostingsNumericDocValues, PushPostingsWriterBase, PushPostingsWriterState,
-};
+use crate::codecs::postings::{PushPostingsWriterBase, PushPostingsWriterState};
 use crate::codecs::state::SegmentWriteState;
 use crate::codecs::term_state::{BlockTermState, CompetitiveImpactAccumulator, Impact};
 use crate::error::{LuceneError, Result};
-use crate::index::{index_file_names::segment_file_name, FieldInfo, IndexOptions};
+use crate::index::{
+    index_file_names::segment_file_name, FieldInfo, IndexOptions, NumericDocValues,
+};
 use crate::store::{DataOutput, IndexOutput};
 use crate::util::{BitUtil, FixedBitSet};
 
@@ -174,6 +165,10 @@ pub struct Lucene104PostingsWriter {
 
     last_state: BlockTermState,
     field_has_norms: bool,
+    /// The norms of the current term's field, from `start_term`.
+    ///
+    /// Equivalent to `Lucene104PostingsWriter.norms`.
+    norms: Option<Box<dyn NumericDocValues>>,
 
     doc_start_fp: i64,
     pos_start_fp: i64,
@@ -301,6 +296,7 @@ impl Lucene104PostingsWriter {
             level1_output: ResettableOutput::new(),
             last_state: BlockTermState::default(),
             field_has_norms: false,
+            norms: None,
             doc_start_fp: 0,
             pos_start_fp: 0,
             pay_start_fp: 0,
@@ -395,7 +391,7 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         Ok(BlockTermState::default())
     }
 
-    fn start_term(&mut self, _norms: Option<&dyn PostingsNumericDocValues>) -> Result<()> {
+    fn start_term(&mut self, norms: Option<Box<dyn NumericDocValues>>) -> Result<()> {
         self.doc_start_fp = self.doc_out.file_pointer();
         if self.push_state.write_positions {
             let pos_out = self.pos_out.as_mut().expect("pos output must exist");
@@ -412,6 +408,7 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         self.last_doc_id = -1;
         self.level0_last_doc_id = -1;
         self.level1_last_doc_id = -1;
+        self.norms = norms;
         if self.push_state.write_freqs {
             self.level0_freq_norm_accumulator.clear();
         }
@@ -443,8 +440,27 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         self.last_start_offset = 0;
 
         if self.push_state.write_freqs {
-            // Norms are treated as 1; see module-level note.
-            let norm = 1i64;
+            // `Lucene104PostingsWriter.java:282-299`.
+            let norm = if self.field_has_norms {
+                let norms = self.norms.as_mut().ok_or_else(|| {
+                    LuceneError::IllegalState(
+                        "a field with norms started a term without them".to_string(),
+                    )
+                })?;
+                if norms.advance_exact(doc_id)? {
+                    let norm = norms.long_value()?;
+                    debug_assert!(norm != 0, "{doc_id}");
+                    norm
+                } else {
+                    // This can happen if indexing hits a problem after adding
+                    // a doc to the postings but before buffering the norm.
+                    // Such documents are written deleted and will go away on
+                    // the first merge.
+                    1
+                }
+            } else {
+                1
+            };
             self.level0_freq_norm_accumulator.add(term_doc_freq, norm);
         }
 
@@ -917,9 +933,7 @@ mod tests {
     use crate::codecs::lucene104::{
         Lucene104PostingsFormat, DOC_CODEC, META_CODEC, PAY_CODEC, POS_CODEC,
     };
-    use crate::codecs::postings::{
-        PostingsFormat, PostingsNormsProducer, PostingsNumericDocValues,
-    };
+    use crate::codecs::postings::PostingsFormat;
     use crate::codecs::state::SegmentWriteState;
     use crate::index::{FieldInfo, FieldInfos, Fields, PostingsEnum, SeekStatus, Terms, TermsEnum};
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
@@ -927,21 +941,9 @@ mod tests {
     use crate::util::{AttributeSource, BytesRef};
     use base64::Engine as _;
 
-    struct TestNorms;
-
-    impl PostingsNumericDocValues for TestNorms {
-        fn get(&self, _doc_id: i32) -> crate::error::Result<i64> {
-            Ok(1)
-        }
-    }
-
-    impl PostingsNormsProducer for TestNorms {
-        fn get_norms(
-            &self,
-            _field_info: &FieldInfo,
-        ) -> crate::error::Result<Box<dyn PostingsNumericDocValues>> {
-            Ok(Box::new(TestNorms))
-        }
+    /// A norm of one for every document, as the flush hands the writer.
+    fn test_norms(max_doc: i32) -> crate::index::EmptyNormsProducer {
+        crate::index::EmptyNormsProducer::new(max_doc)
     }
 
     fn test_segment_info(name: &str, max_doc: i32) -> crate::index::SegmentInfo {
@@ -1247,6 +1249,168 @@ mod tests {
             .expect("footer checksum should be valid");
     }
 
+    /// How often the postings writer read a norms producer.
+    #[derive(Debug, Default)]
+    struct NormsReads {
+        get_norms: std::sync::atomic::AtomicUsize,
+        advance_exact: std::sync::atomic::AtomicUsize,
+        long_value: std::sync::atomic::AtomicUsize,
+        scans: std::sync::atomic::AtomicUsize,
+    }
+
+    impl NormsReads {
+        fn get(counter: &std::sync::atomic::AtomicUsize) -> usize {
+            counter.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn bump(counter: &std::sync::atomic::AtomicUsize) {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// Norms of seven for every document, counting every read.
+    #[derive(Debug, Clone)]
+    struct CountingNorms {
+        max_doc: i32,
+        reads: std::sync::Arc<NormsReads>,
+    }
+
+    #[derive(Debug)]
+    struct CountingNormValues {
+        max_doc: i32,
+        doc: i32,
+        reads: std::sync::Arc<NormsReads>,
+    }
+
+    impl DocIdSetIterator for CountingNormValues {
+        fn doc_id(&self) -> i32 {
+            self.doc
+        }
+
+        fn next_doc(&mut self) -> crate::error::Result<i32> {
+            self.advance(self.doc + 1)
+        }
+
+        fn advance(&mut self, target: i32) -> crate::error::Result<i32> {
+            NormsReads::bump(&self.reads.scans);
+            self.doc = if target >= self.max_doc {
+                NO_MORE_DOCS
+            } else {
+                target
+            };
+            Ok(self.doc)
+        }
+
+        fn cost(&self) -> i64 {
+            i64::from(self.max_doc)
+        }
+    }
+
+    impl crate::index::doc_values::DocValuesIterator for CountingNormValues {
+        fn advance_exact(&mut self, target: i32) -> crate::error::Result<bool> {
+            NormsReads::bump(&self.reads.advance_exact);
+            assert!(target > self.doc, "norms are read forward only");
+            self.doc = target;
+            Ok(true)
+        }
+    }
+
+    impl NumericDocValues for CountingNormValues {
+        fn long_value(&self) -> crate::error::Result<i64> {
+            NormsReads::bump(&self.reads.long_value);
+            Ok(7)
+        }
+    }
+
+    impl crate::codecs::norms::NormsProducer for CountingNorms {
+        fn get_norms(&self, _field: &FieldInfo) -> crate::error::Result<Box<dyn NumericDocValues>> {
+            NormsReads::bump(&self.reads.get_norms);
+            Ok(Box::new(CountingNormValues {
+                max_doc: self.max_doc,
+                doc: -1,
+                reads: std::sync::Arc::clone(&self.reads),
+            }))
+        }
+
+        fn check_integrity(&self) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        fn get_merge_instance(
+            &self,
+        ) -> crate::error::Result<Box<dyn crate::codecs::norms::NormsProducer>> {
+            Ok(Box::new(self.clone()))
+        }
+
+        fn close(&mut self) -> crate::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The writer reads a field's norms lazily, as Java's does: one fresh
+    /// iterator per term (`PushPostingsWriterBase.java:118-124`) and one
+    /// `advanceExact` plus `longValue` per document of that term
+    /// (`Lucene104PostingsWriter.java:282-299`), never a pass over the whole
+    /// segment. Reading every norm for every term made a merge
+    /// Θ(terms × maxDoc).
+    #[test]
+    fn norms_are_read_only_for_each_terms_documents() {
+        let dir = RamDirectory::default();
+        let dir_ref: &dyn Directory = &dir;
+        let max_doc = 1_000_000;
+        let segment_info = test_segment_info("_0", max_doc);
+        let field_infos = FieldInfos::new(vec![FieldInfo::new("body", 0).with_postings_options(
+            IndexOptions::DOCS_AND_FREQS,
+            true,
+            false,
+        )])
+        .expect("valid field infos");
+        assert!(field_infos.field_info("body").unwrap().has_norms());
+        let write_state = test_write_state(dir_ref, &segment_info, &field_infos);
+
+        let postings = TestFields {
+            terms: vec![
+                (
+                    BytesRef::new(b"a".to_vec()),
+                    TestPostingsEnum::new(vec![3, 70_000], vec![1, 2], vec![vec![], vec![]]),
+                ),
+                (
+                    BytesRef::new(b"b".to_vec()),
+                    TestPostingsEnum::new(vec![5, 999_998], vec![4, 1], vec![vec![], vec![]]),
+                ),
+                (
+                    BytesRef::new(b"c".to_vec()),
+                    TestPostingsEnum::new(vec![42], vec![1], vec![vec![]]),
+                ),
+            ],
+        };
+        let reads = std::sync::Arc::new(NormsReads::default());
+        let norms = CountingNorms {
+            max_doc,
+            reads: std::sync::Arc::clone(&reads),
+        };
+        let mut consumer = Lucene104PostingsFormat::new()
+            .fields_consumer(&write_state)
+            .expect("consumer builds");
+        consumer
+            .write(&postings, Some(&norms))
+            .expect("write succeeds");
+        consumer.close().expect("close succeeds");
+
+        assert_eq!(
+            NormsReads::get(&reads.get_norms),
+            3,
+            "one iterator per term"
+        );
+        assert_eq!(
+            NormsReads::get(&reads.advance_exact),
+            5,
+            "one advanceExact per document of a term"
+        );
+        assert_eq!(NormsReads::get(&reads.long_value), 5);
+        assert_eq!(NormsReads::get(&reads.scans), 0, "no pass over the segment");
+    }
+
     #[test]
     fn writes_postings_files_with_headers_and_footers() {
         let dir = RamDirectory::default();
@@ -1290,7 +1454,7 @@ mod tests {
             ],
         };
         consumer
-            .write(&postings, &TestNorms)
+            .write(&postings, Some(&test_norms(10)))
             .expect("write succeeds");
         consumer.close().expect("close succeeds");
 
@@ -1345,7 +1509,7 @@ mod tests {
             .fields_consumer(&write_state)
             .expect("consumer builds");
         consumer
-            .write(&TestFields { terms }, &TestNorms)
+            .write(&TestFields { terms }, Some(&test_norms(max_doc)))
             .expect("write succeeds");
         consumer.close().expect("close succeeds");
     }

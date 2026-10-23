@@ -34,6 +34,7 @@ use crate::index::{FreqAndNormBuffer, Impacts, ImpactsSource};
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{DataInput, IndexInput};
 use crate::util::{BitUtil, FixedBitSet};
+use std::cell::{Cell, RefCell};
 
 use crate::index::index_file_names::segment_file_name;
 
@@ -420,7 +421,6 @@ pub struct BlockPostingsEnum {
     doc_buffer: [i32; BS],
     doc_bit_set: FixedBitSet,
     doc_bit_set_base: i32,
-    doc_cumulative_word_pop_counts: [i32; BS / 64],
 
     level0_last_doc_id: i32,
     level0_doc_end_fp: i64,
@@ -439,7 +439,10 @@ pub struct BlockPostingsEnum {
 
     doc_in: Option<Box<dyn IndexInput>>,
 
-    freq_buffer: [i32; BS],
+    /// The frequencies of the current block. A full block's are decoded on
+    /// the first [`freq`](PostingsEnum::freq), which takes `&self`, hence the
+    /// cell; everything else reaches them through `get_mut`.
+    freq_buffer: RefCell<[i32; BS]>,
     pos_delta_buffer: Option<[i32; BS]>,
     payload_length_buffer: Option<[i32; BS]>,
     offset_start_delta_buffer: Option<[i32; BS]>,
@@ -471,7 +474,12 @@ pub struct BlockPostingsEnum {
     needs_offsets_or_payloads: bool,
     needs_impacts: bool,
 
-    freq_fp: i64,
+    /// Where the current full block's frequencies start, or `-1` once they
+    /// are decoded. Equivalent to `BlockPostingsEnum.freqFP`.
+    freq_fp: Cell<i64>,
+    /// The input the frequencies are decoded from on the first `freq()`; see
+    /// [`freq`](PostingsEnum::freq).
+    freq_in: RefCell<Option<Box<dyn IndexInput>>>,
     position: i32,
     pos_doc_buffer_upto: i32,
     pos_pending_count: i32,
@@ -602,7 +610,6 @@ impl BlockPostingsEnum {
             doc_buffer: [0i32; BS],
             doc_bit_set: FixedBitSet::new(BS * 32),
             doc_bit_set_base: 0,
-            doc_cumulative_word_pop_counts: [0i32; BS / 64],
             level0_last_doc_id: -1,
             level0_doc_end_fp: 0,
             level1_last_doc_id: -1,
@@ -616,7 +623,7 @@ impl BlockPostingsEnum {
             doc_buffer_size: BS_I32,
             doc_buffer_upto: BS_I32,
             doc_in,
-            freq_buffer,
+            freq_buffer: RefCell::new(freq_buffer),
             pos_delta_buffer,
             payload_length_buffer,
             offset_start_delta_buffer,
@@ -641,7 +648,8 @@ impl BlockPostingsEnum {
             needs_payloads,
             needs_offsets_or_payloads,
             needs_impacts,
-            freq_fp: -1,
+            freq_fp: Cell::new(-1),
+            freq_in: RefCell::new(None),
             position: 0,
             pos_doc_buffer_upto: BS_I32,
             pos_pending_count: 0,
@@ -681,7 +689,7 @@ impl BlockPostingsEnum {
         self.level0_doc_end_fp = 0;
         self.level1_doc_count_upto = 0;
         self.doc = -1;
-        self.freq_fp = -1;
+        self.freq_fp.set(-1);
         self.pos_buffer_upto = BS_I32;
         self.level0_serialized_impacts.fill(0);
         self.level1_serialized_impacts.fill(0);
@@ -803,7 +811,9 @@ impl BlockPostingsEnum {
 
     fn refill_full_block(&mut self) -> Result<()> {
         let doc_in = unsafe { Self::input_ref(self.doc_in_ptr()?) };
-        let bits_per_value = doc_in.read_byte()? as i32;
+        // Java's `readByte()` is signed (`Lucene104PostingsReader.java:594`): a
+        // negative value is the number of longs of a bit-set block.
+        let bits_per_value = i32::from(doc_in.read_byte()? as i8);
         if bits_per_value > 0 {
             let mut pdu = PostingDecodingUtil::new(doc_in);
             self.for_util
@@ -819,8 +829,12 @@ impl BlockPostingsEnum {
                     self.doc_bit_set.set(i);
                 }
                 if self.needs_freq {
+                    // The cumulative pop counts of the words of the bit set,
+                    // written over `docBuffer` as Java's
+                    // `docCumulativeWordPopCounts = docBuffer` does
+                    // (`Lucene104PostingsReader.java:312, 614-622`).
                     for i in 0..BS / 64 {
-                        self.doc_cumulative_word_pop_counts[i] = ((i + 1) * 64) as i32;
+                        self.doc_buffer[i] = ((i + 1) * 64) as i32;
                     }
                 }
             } else {
@@ -836,11 +850,12 @@ impl BlockPostingsEnum {
                     }
                 }
                 if self.needs_freq {
+                    // The cumulative pop counts, over `docBuffer` as in Java.
                     for (i, &l) in longs.iter().take(num_longs - 1).enumerate() {
-                        self.doc_cumulative_word_pop_counts[i] = (l as u64).count_ones() as i32;
+                        self.doc_buffer[i] = (l as u64).count_ones() as i32;
                     }
-                    prefix_sum(&mut self.doc_cumulative_word_pop_counts, num_longs - 1, 0);
-                    self.doc_cumulative_word_pop_counts[num_longs - 1] = BS_I32;
+                    prefix_sum(&mut self.doc_buffer, num_longs - 1, 0);
+                    self.doc_buffer[num_longs - 1] = BS_I32;
                 }
             }
             self.encoding = DeltaEncoding::Unary;
@@ -848,7 +863,9 @@ impl BlockPostingsEnum {
 
         if self.index_has_freq {
             if self.needs_freq {
-                self.freq_fp = doc_in.file_pointer();
+                // Decoded lazily, on the first `freq()` of the block
+                // (`Lucene104PostingsReader.java:628-633`).
+                self.freq_fp.set(doc_in.file_pointer());
             }
             PForUtil::skip(doc_in)?;
         }
@@ -860,28 +877,36 @@ impl BlockPostingsEnum {
         Ok(())
     }
 
+    /// The error a bit-set block with no document where one must be answers.
+    fn corrupt_bit_set_block(&self) -> LuceneError {
+        LuceneError::CorruptIndex(format!(
+            "postings bit-set block starting at doc {} has no document after doc {}",
+            self.doc_bit_set_base, self.doc
+        ))
+    }
+
     fn refill_remainder(&mut self) -> Result<()> {
         if self.doc_freq == 1 {
             self.doc_buffer[0] = self.singleton_doc_id;
-            self.freq_buffer[0] = self.total_term_freq as i32;
+            self.freq_buffer.get_mut()[0] = self.total_term_freq as i32;
             self.doc_buffer[1] = NO_MORE_DOCS;
             self.doc_count_left = 0;
             self.doc_buffer_size = 1;
-            self.freq_fp = -1;
+            debug_assert_eq!(self.freq_fp.get(), -1);
         } else {
             let doc_in = unsafe { Self::input_ref(self.doc_in_ptr()?) };
             let count = self.doc_count_left as usize;
             read_v_int_block(
                 doc_in,
                 &mut self.doc_buffer,
-                &mut self.freq_buffer,
+                self.freq_buffer.get_mut(),
                 count,
                 self.index_has_freq,
                 self.needs_freq,
             )?;
             prefix_sum(&mut self.doc_buffer, count, self.prev_doc_id);
             self.doc_buffer[count] = NO_MORE_DOCS;
-            self.freq_fp = -1;
+            self.freq_fp.set(-1);
             self.doc_buffer_size = count as i32;
             self.doc_count_left = 0;
         }
@@ -965,9 +990,12 @@ impl BlockPostingsEnum {
                 }
                 self.pos_buffer_upto = BS_I32;
             } else {
-                debug_assert_eq!(self.freq_fp, -1);
-                self.pos_pending_count +=
-                    sum_over_range(&self.freq_buffer, self.pos_doc_buffer_upto as usize, BS);
+                debug_assert_eq!(self.freq_fp.get(), -1);
+                self.pos_pending_count += sum_over_range(
+                    self.freq_buffer.get_mut(),
+                    self.pos_doc_buffer_upto as usize,
+                    BS,
+                );
             }
         }
 
@@ -1040,8 +1068,11 @@ impl BlockPostingsEnum {
             }
             self.pos_buffer_upto = BS_I32;
         } else {
-            self.pos_pending_count +=
-                sum_over_range(&self.freq_buffer, self.pos_doc_buffer_upto as usize, BS);
+            self.pos_pending_count += sum_over_range(
+                self.freq_buffer.get_mut(),
+                self.pos_doc_buffer_upto as usize,
+                BS,
+            );
         }
         Ok(())
     }
@@ -1290,9 +1321,10 @@ impl BlockPostingsEnum {
     }
 
     fn accumulate_pending_positions(&mut self) -> Result<()> {
+        // Trigger the lazy decoding of the frequencies.
         let freq = self.freq()?;
         self.pos_pending_count += sum_over_range(
-            &self.freq_buffer,
+            self.freq_buffer.get_mut(),
             self.pos_doc_buffer_upto as usize,
             self.doc_buffer_upto as usize,
         );
@@ -1356,8 +1388,11 @@ impl DocIdSetIterator for BlockPostingsEnum {
                 self.doc = self.doc_buffer[self.doc_buffer_upto as usize];
             }
             DeltaEncoding::Unary => {
+                // Java only asserts that the bit set has a next document
+                // (`Lucene104PostingsReader.java:916`); a corrupt block is an
+                // error here, not a panic.
                 let next = next_set_bit(&self.doc_bit_set, self.doc - self.doc_bit_set_base + 1)
-                    .expect("UNARY block must have next set bit");
+                    .ok_or_else(|| self.corrupt_bit_set_block())?;
                 self.doc = self.doc_bit_set_base + next;
             }
         }
@@ -1387,15 +1422,18 @@ impl DocIdSetIterator for BlockPostingsEnum {
                 self.doc_buffer_upto = next as i32 + 1;
             }
             DeltaEncoding::Unary => {
+                // Java only asserts this (`Lucene104PostingsReader.java:946`).
                 let next = next_set_bit(&self.doc_bit_set, target - self.doc_bit_set_base)
-                    .expect("UNARY block must have next set bit");
+                    .ok_or_else(|| self.corrupt_bit_set_block())?;
                 self.doc = self.doc_bit_set_base + next;
                 if self.needs_freq {
                     let word_index = next >> 6;
                     let word = self.doc_bit_set.get_bits()[word_index as usize];
                     let bits_on_left = (word >> (next & 0x3f)).count_ones() as i32;
-                    self.doc_buffer_upto =
-                        1 + self.doc_cumulative_word_pop_counts[word_index as usize] - bits_on_left;
+                    // Take the cumulative pop count for the given word, held in
+                    // `docBuffer`, and subtract the bits on the left of the
+                    // current doc.
+                    self.doc_buffer_upto = 1 + self.doc_buffer[word_index as usize] - bits_on_left;
                 } else {
                     self.doc_buffer_upto = 1;
                 }
@@ -1425,35 +1463,44 @@ impl std::fmt::Display for BlockPostingsEnum {
 }
 
 impl PostingsEnum for BlockPostingsEnum {
+    /// Equivalent to `BlockPostingsEnum.freq()` (`Lucene104PostingsReader.java:584-591`):
+    /// a full block's frequencies are decoded on the first call, from where
+    /// `refill_full_block` recorded them.
+    ///
+    /// Java seeks `docIn` there and decodes, which leaves `docIn` where the
+    /// block's skip had already left it, at the end of the frequencies. This
+    /// method takes `&self`, so it reads through its own clone of `docIn`
+    /// instead; `docIn` keeps the position Java's ends at, and the decoded
+    /// values are the same.
+    ///
+    /// A document position that a corrupt bit-set block put outside the block
+    /// is an error, where Java would throw `ArrayIndexOutOfBoundsException`.
     fn freq(&self) -> Result<i32> {
-        if self.freq_fp != -1 {
-            // Lazily decode frequencies. We cannot do this in a &self method in
-            // Rust, so we require that callers decode frequencies by other means
-            // when needed. To keep the public contract, we return the cached
-            // frequency if available, otherwise we decode on the spot using a
-            // temporary clone of the input.
-            //
-            // This branch is normally reached because `next_doc` / `advance` do
-            // not eagerly decode frequencies. The Java implementation decodes
-            // lazily in `freq()` via a mutable self. Since our trait is &self,
-            // we store the frequency at `doc_buffer_upto - 1` after a prior
-            // decode. If it has not been decoded, we decode now.
-            //
-            // Because we cannot mutate self here, we rely on the fact that
-            // callers that need frequencies should request POSTINGS_ENUM_FREQS.
-            // In that mode, `needs_freq` is true and `freq_buffer` is filled by
-            // `refill_full_block` / `refill_remainder` except for packed full
-            // blocks, where `freq_fp` is set. The next call that can mutate
-            // (next_position / advance) will decode it. For safety, if the
-            // current `freq_buffer` entry is zero we decode on a clone.
-            if self.freq_buffer[self.doc_buffer_upto as usize - 1] == 0 {
-                return Err(LuceneError::IllegalState(
-                    "frequency not decoded yet; call next_position or ensure POSTINGS_ENUM_FREQS"
-                        .to_string(),
-                ));
+        let freq_fp = self.freq_fp.get();
+        if freq_fp != -1 {
+            let mut freq_in = self.freq_in.borrow_mut();
+            if freq_in.is_none() {
+                let doc_in = self.doc_in.as_ref().ok_or_else(|| {
+                    LuceneError::IllegalState("BlockPostingsEnum has no doc input".to_string())
+                })?;
+                *freq_in = Some(doc_in.clone_input()?);
             }
+            let input = freq_in
+                .as_mut()
+                .expect("INVARIANT: the input was set one statement above");
+            input.seek(freq_fp)?;
+            let mut pdu = PostingDecodingUtil::new(input.as_mut());
+            PForUtil::new().decode(&mut pdu, &mut self.freq_buffer.borrow_mut())?;
+            self.freq_fp.set(-1);
         }
-        Ok(self.freq_buffer[self.doc_buffer_upto as usize - 1])
+        let upto = self.doc_buffer_upto;
+        if !(1..=BS_I32).contains(&upto) {
+            return Err(LuceneError::CorruptIndex(format!(
+                "postings block position {} is outside the {BS}-document block",
+                upto - 1
+            )));
+        }
+        Ok(self.freq_buffer.borrow()[upto as usize - 1])
     }
 
     fn next_position(&mut self) -> Result<i32> {
@@ -1594,21 +1641,13 @@ impl Impacts for BlockImpacts {
 mod tests {
     use super::*;
     use crate::codecs::lucene104::Lucene104PostingsWriter;
-    use crate::codecs::postings::{PostingsNumericDocValues, PushPostingsWriterBase};
+    use crate::codecs::postings::PushPostingsWriterBase;
     use crate::codecs::state::SegmentWriteState;
     use crate::index::{FieldInfo, FieldInfos, IndexOptions};
     use crate::search::DocIdSetIterator;
     use crate::store::{
         ByteBuffersDataOutput, ByteBuffersIndexOutput, Directory, MockIndexInput, RamDirectory,
     };
-
-    struct TestNorms;
-
-    impl PostingsNumericDocValues for TestNorms {
-        fn get(&self, _doc_id: i32) -> Result<i64> {
-            Ok(1)
-        }
-    }
 
     fn test_segment_info(name: &str, max_doc: i32) -> crate::index::SegmentInfo {
         crate::codecs::tests::test_segment_info(name, max_doc)
@@ -1698,7 +1737,12 @@ mod tests {
         writer.set_field(field_info)?;
 
         let mut state = writer.new_term_state()?;
-        writer.start_term(Some(&TestNorms))?;
+        // A norm of one for every document, as the flush hands the writer.
+        let norms = crate::codecs::norms::NormsProducer::get_norms(
+            &crate::index::EmptyNormsProducer::new(max_doc),
+            field_info,
+        )?;
+        writer.start_term(Some(norms))?;
         for (doc_idx, &doc_id) in postings.docs.iter().enumerate() {
             writer.start_doc(doc_id, postings.freqs[doc_idx])?;
             for &(pos, payload, start, end) in &postings.positions[doc_idx] {

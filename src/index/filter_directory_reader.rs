@@ -2658,10 +2658,11 @@ impl PointsReader for SlowPointsReader {
         Ok(())
     }
 
-    fn get_values(&self, field: &str) -> Result<Box<dyn PointValues>> {
-        self.reader.get_point_values(field)?.ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("field \"{field}\" has no point values"))
-        })
+    /// Equivalent to `SlowCodecReaderWrapper`'s `getValues`
+    /// (`SlowCodecReaderWrapper.java:151-154`): the reader's own answer,
+    /// `null` included.
+    fn get_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
+        self.reader.get_point_values(field)
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn PointsReader>> {

@@ -26,11 +26,11 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use crate::codecs::codec_util::{
-    check_footer, check_index_header, retrieve_checksum, retrieve_checksum_expected_length,
-    write_footer, write_index_header,
+    check_footer, check_index_header, checksum_entire_file, retrieve_checksum,
+    retrieve_checksum_expected_length, write_footer, write_index_header,
 };
 use crate::codecs::points::{
-    DocValuesVisitor, EmptyPointValues, PointValues, PointsFormat, PointsReader, PointsWriter,
+    IntersectVisitor, PointValues, PointsFormat, PointsReader, PointsWriter, Relation,
 };
 use crate::codecs::postings::MergeState;
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
@@ -38,7 +38,7 @@ use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, Result};
 use crate::index::{segment_file_name, FieldInfos};
 use crate::store::{DataInput, Directory, IndexInput, IndexOutput, RamDirectory};
-use crate::util::bkd::{BKDConfig, BKDReader, BKDWriter};
+use crate::util::bkd::{BKDConfig, BKDFinalizer, BKDReader, BKDWriter};
 
 // -----------------------------------------------------------------------------
 // Format constants
@@ -239,98 +239,226 @@ impl fmt::Debug for Lucene90PointsWriter {
     }
 }
 
-impl PointsWriter for Lucene90PointsWriter {
-    fn write_field(&mut self, field_info: &FieldInfo, values: &dyn PointsReader) -> Result<()> {
-        if field_info.point_dimension_count == 0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "field='{}' does not index point values",
-                field_info.name
-            )));
-        }
-
-        let values = values.get_values(&field_info.name)?;
-        if values.size()? == 0 {
-            // No points for this field; do not write a metadata entry.
-            return Ok(());
-        }
-
+impl Lucene90PointsWriter {
+    /// Creates the BKD writer for one field of the segment being written.
+    ///
+    /// Java creates it inline, in `writeField` and in `merge`
+    /// (`Lucene90PointsWriter.java:149-157, 249-257`).
+    fn bkd_writer(&self, field_info: &FieldInfo, total_point_count: i64) -> Result<BKDWriter> {
         let config = BKDConfig::of(
             field_info.point_dimension_count,
             field_info.point_index_dimension_count,
             field_info.point_num_bytes,
             self.max_points_in_leaf_node,
         )?;
-
+        // **Divergence from Lucene 10.5.0.** Java gives `BKDWriter` the
+        // segment's own directory for its temporary files
+        // (`Lucene90PointsWriter.java:152` in `writeField`, `:252` in
+        // `merge`), which it spills to once a field's points exceed
+        // `maxMBSortInHeap` (`BKDWriter.java:222-232, 930-1034, 1922-2126`).
+        // This writer only receives a borrowed `&dyn Directory`, while the
+        // offline point writers need an owned `Arc<dyn Directory>`, so it
+        // hands over a `RamDirectory` and `BKDWriter` keeps every point in
+        // heap (see `BKDWriter::init_point_writer`); giving the points writer
+        // an owned handle on the segment directory is an architecture
+        // decision pending with the user (`OwnedSegmentWriteState`, which the
+        // vectors writers receive, already holds one). Consequence: the whole
+        // buffer of `total_point_count` points is allocated at the first
+        // `add`, not grown; in a merge that count is the sum of the source
+        // segments' `.kdm` point counts, deleted points included, so a
+        // checksum-valid but inflated count decides the allocation, and a
+        // failed allocation aborts instead of spilling.
         let temp_dir: Box<dyn Directory> = Box::new(RamDirectory::new());
-        let mut writer = BKDWriter::new(
+        BKDWriter::new(
             self.max_doc,
             temp_dir,
             &self.segment_name,
             config,
             self.max_mb_sort_in_heap,
-            values.size()?,
+            total_point_count,
             Lucene90PointsFormat::with_version(self.version)?.bkd_version(),
-        )?;
+        )
+    }
 
-        let meta_out = self.meta_out.as_mut().unwrap();
-        let index_out = self.index_out.as_mut().unwrap();
-        let data_out = self.data_out.as_mut().unwrap();
+    /// Writes the field number and then runs `finalizer`, or writes nothing
+    /// when there is no finalizer because the field ended up with no point.
+    ///
+    /// Equivalent to the three `if (finalizer != null) { metaOut.writeInt(
+    /// fieldInfo.number); finalizer.run(); }` blocks of
+    /// `Lucene90PointsWriter` (`:163-166, 190-193, 287-290`).
+    fn write_finalizer(
+        &mut self,
+        field_number: i32,
+        finalizer: Option<BKDFinalizer>,
+    ) -> Result<()> {
+        if let Some(finalizer) = finalizer {
+            let meta_out = self
+                .meta_out
+                .as_mut()
+                .expect("INVARIANT: open until finish");
+            meta_out.write_int(field_number)?;
+            let index_out = self
+                .index_out
+                .as_mut()
+                .expect("INVARIANT: open until finish");
+            finalizer.run(meta_out.as_mut(), index_out.as_mut())?;
+        }
+        Ok(())
+    }
+}
+
+impl PointsWriter for Lucene90PointsWriter {
+    /// Equivalent to `Lucene90PointsWriter.writeField(FieldInfo, PointsReader)`
+    /// (`Lucene90PointsWriter.java:137-195`).
+    fn write_field(&mut self, field_info: &FieldInfo, reader: &dyn PointsReader) -> Result<()> {
+        // Java dereferences `reader.getValues(fieldInfo.name)` unguarded; every
+        // caller hands it a reader that has values for the field.
+        let values = reader.get_values(&field_info.name)?.ok_or_else(|| {
+            LuceneError::IllegalState(format!(
+                "field=\"{}\" has no point values to write",
+                field_info.name
+            ))
+        })?;
+        let mut tree = values.point_tree()?;
+
+        let mut writer = self.bkd_writer(field_info, tree.size()?)?;
 
         // Java tests `values instanceof MutablePointTree` and, when it holds,
         // hands the tree straight to `BKDWriter.writeField`, which sorts and
         // partitions the points in place rather than buffering them through
         // `BKDWriter.add` and re-sorting them offline
-        // (`Lucene90PointsWriter.java:157-167`). `PointTree::as_mutable` is
+        // (`Lucene90PointsWriter.java:159-168`). `PointTree::as_mutable` is
         // this port's `instanceof`: it answers `Some` for the indexing
-        // buffer's tree and `None` for the BKD-backed cursor, which reads from
-        // immutable files.
-        let mut tree = values.point_tree()?;
-        if tree.as_mutable().is_some() {
-            if tree.size()? == 0 {
-                // Java's `writeField` returns a null finalizer for an empty
-                // tree and the caller then writes nothing at all — no field
-                // number, no meta block (`Lucene90PointsWriter.java:159-167`).
-                // The field number must therefore be written only once the
-                // tree is known to be non-empty.
-                return Ok(());
-            }
-            // The field number precedes the BKD meta block so the reader can
-            // read one tree per field number in the same order. Java writes it
-            // after `writeField` returns and before running the finalizer that
-            // writes the meta block; this port writes the meta block inline, so
-            // the field number goes first. The bytes land in the same order.
-            meta_out.write_int(field_info.number)?;
-            let mutable = tree
-                .as_mutable()
-                .expect("INVARIANT: as_mutable answered Some one line above");
-            writer.write_field(
-                meta_out.as_mut(),
-                index_out.as_mut(),
-                data_out.as_mut(),
-                mutable,
-            )?;
-            writer.close()?;
-            return Ok(());
+        // buffer's tree and `None` for every other tree.
+        if let Some(mutable) = tree.as_mutable() {
+            let data_out = self
+                .data_out
+                .as_mut()
+                .expect("INVARIANT: open until finish");
+            let finalizer = writer.write_field(data_out.as_mut(), mutable)?;
+            self.write_finalizer(field_info.number, finalizer)?;
+            return writer.close();
         }
 
-        // Otherwise collect the points through the visitor API, which is the
-        // Rust equivalent of Java's `PointValues.visitDocValues`.
-        let mut add_visitor = AddToBkdWriter {
+        tree.visit_doc_values(&mut AddToBkdWriter {
             writer: &mut writer,
-        };
-        values.visit_doc_values(&mut add_visitor)?;
+        })?;
 
-        // Write the field number before the BKD meta block so that the reader
-        // can read one BKD tree per field number in the same order.
-        meta_out.write_int(field_info.number)?;
-        writer.finish(meta_out.as_mut(), index_out.as_mut(), data_out.as_mut())?;
-
-        writer.close()?;
-        Ok(())
+        // We could have 0 points on merge since all docs with dimensional
+        // fields may be deleted.
+        let data_out = self
+            .data_out
+            .as_mut()
+            .expect("INVARIANT: open until finish");
+        let finalizer = writer.finish(data_out.as_mut())?;
+        self.write_finalizer(field_info.number, finalizer)?;
+        writer.close()
     }
 
-    fn merge(&mut self, _merge_state: &MergeState) -> Result<()> {
-        Ok(())
+    /// Equivalent to `Lucene90PointsWriter.merge(MergeState)`
+    /// (`Lucene90PointsWriter.java:197-299`).
+    ///
+    /// When every incoming reader is a `Lucene90PointsReader` — a segment with
+    /// no points has none, and so does not qualify — each one-dimensional
+    /// field is merged by [`BKDWriter::merge`], a single merge sort of the
+    /// already sorted segments; every other field takes the default
+    /// [`merge_one_field`](PointsWriter::merge_one_field). Otherwise the whole
+    /// merge is the default [`PointsWriter`] one.
+    fn merge(&mut self, merge_state: &MergeState) -> Result<()> {
+        // If index sorting is active and some of the leaves are not sorted,
+        // the test below catches it and the non-optimized merge runs. If the
+        // readers are all sorted then it is safe to bulk-merge the points.
+        let all_lucene90 = merge_state.points_readers.iter().all(|reader| {
+            reader
+                .as_ref()
+                .and_then(|reader| reader.as_any())
+                .is_some_and(|any| any.is::<Lucene90PointsReader>())
+        });
+        if !all_lucene90 {
+            // We can only bulk merge when all to-be-merged segments use our
+            // format.
+            #[cfg(test)]
+            for field_info in merge_state.merge_field_infos.iter() {
+                if field_info.point_dimension_count != 0 {
+                    merge_path_probe::record(&field_info.name, merge_path_probe::DEFAULT_MERGE);
+                }
+            }
+            return merge_default(self, merge_state);
+        }
+        for reader in merge_state.points_readers.iter().flatten() {
+            merge_state.check_aborted()?;
+            reader.check_integrity()?;
+        }
+
+        for field_info in merge_state.merge_field_infos.iter() {
+            if field_info.point_dimension_count == 0 {
+                continue;
+            }
+            if field_info.point_dimension_count != 1 {
+                #[cfg(test)]
+                merge_path_probe::record(&field_info.name, merge_path_probe::MERGE_ONE_FIELD);
+                self.merge_one_field(merge_state, field_info)?;
+                continue;
+            }
+
+            // Worst case total maximum size (if none of the points are
+            // deleted).
+            let mut tot_max_size = 0i64;
+            for (i, reader) in merge_state.points_readers.iter().enumerate() {
+                let Some(reader) = reader else {
+                    continue;
+                };
+                let has_points = merge_state.field_infos[i]
+                    .field_info(&field_info.name)
+                    .is_some_and(|reader_field_info| reader_field_info.point_dimension_count > 0);
+                if has_points {
+                    if let Some(values) = reader.get_values(&field_info.name)? {
+                        tot_max_size += values.size()?;
+                    }
+                }
+            }
+
+            // Optimize the 1D case to use BKDWriter.merge, which does a single
+            // merge sort of the already sorted incoming segments, instead of
+            // trying to sort all points again as if we were simply reindexing
+            // them.
+            let mut writer = self.bkd_writer(field_info, tot_max_size)?;
+            let mut point_values: Vec<Box<dyn PointValues>> = Vec::new();
+            let mut doc_maps: Vec<crate::index::merge::DocMap> = Vec::new();
+            for (i, reader) in merge_state.points_readers.iter().enumerate() {
+                let Some(reader) = reader else {
+                    continue;
+                };
+                // NOTE: we cannot just use the merged field number (instead of
+                // resolving to this reader's field info as we do below)
+                // because field numbers can easily be different when
+                // `addIndexes(Directory...)` copies over segments from
+                // another index.
+                let Some(reader_field_info) =
+                    merge_state.field_infos[i].field_info(&field_info.name)
+                else {
+                    continue;
+                };
+                if reader_field_info.point_dimension_count > 0 {
+                    if let Some(values) = reader.get_values(&reader_field_info.name)? {
+                        point_values.push(values);
+                        doc_maps.push(Arc::clone(&merge_state.doc_maps[i]));
+                    }
+                }
+            }
+            let readers: Vec<&dyn PointValues> = point_values.iter().map(|v| v.as_ref()).collect();
+            let data_out = self
+                .data_out
+                .as_mut()
+                .expect("INVARIANT: open until finish");
+            #[cfg(test)]
+            merge_path_probe::record(&field_info.name, merge_path_probe::BKD_MERGE);
+            let finalizer = writer.merge(data_out.as_mut(), Some(&doc_maps), &readers)?;
+            self.write_finalizer(field_info.number, finalizer)?;
+            writer.close()?;
+        }
+
+        self.finish()
     }
 
     fn finish(&mut self) -> Result<()> {
@@ -369,6 +497,72 @@ impl PointsWriter for Lucene90PointsWriter {
             out.close()?;
         }
         Ok(())
+    }
+}
+
+/// Runs the default [`PointsWriter::merge`] on `writer`: Java's
+/// `super.merge(mergeState)` from `Lucene90PointsWriter.merge`
+/// (`Lucene90PointsWriter.java:207`).
+///
+/// A Rust override cannot call the trait's default body it replaces, so the
+/// default is reached through a wrapper that forwards every method except
+/// `merge`, which it leaves to the trait.
+fn merge_default(writer: &mut Lucene90PointsWriter, merge_state: &MergeState) -> Result<()> {
+    struct Default<'w>(&'w mut Lucene90PointsWriter);
+
+    impl fmt::Debug for Default<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+
+    impl PointsWriter for Default<'_> {
+        fn write_field(&mut self, field_info: &FieldInfo, values: &dyn PointsReader) -> Result<()> {
+            self.0.write_field(field_info, values)
+        }
+
+        fn finish(&mut self) -> Result<()> {
+            self.0.finish()
+        }
+
+        fn close(&mut self) -> Result<()> {
+            self.0.close()
+        }
+    }
+
+    Default(writer).merge(merge_state)
+}
+
+/// Which branch of [`Lucene90PointsWriter::merge`] each field took, recorded
+/// for the tests only: the bulk `BKDWriter.merge` path and the default
+/// re-indexing path write the same bytes for most inputs, so the files alone
+/// cannot tell them apart.
+#[cfg(test)]
+pub(crate) mod merge_path_probe {
+    use std::sync::Mutex;
+
+    /// `BKDWriter.merge` (`Lucene90PointsWriter.java:246-291`).
+    pub(crate) const BKD_MERGE: &str = "BKDWriter.merge";
+    /// `mergeOneField` from the bulk loop (`Lucene90PointsWriter.java:292-294`).
+    pub(crate) const MERGE_ONE_FIELD: &str = "mergeOneField";
+    /// `super.merge` (`Lucene90PointsWriter.java:204-209`).
+    pub(crate) const DEFAULT_MERGE: &str = "PointsWriter.merge";
+
+    static PATHS: Mutex<Vec<(String, &'static str)>> = Mutex::new(Vec::new());
+
+    pub(crate) fn record(field: &str, path: &'static str) {
+        PATHS.lock().unwrap().push((field.to_string(), path));
+    }
+
+    /// The paths recorded for `field`, in order.
+    pub(crate) fn paths_of(field: &str) -> Vec<&'static str> {
+        PATHS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name == field)
+            .map(|&(_, path)| path)
+            .collect()
     }
 }
 
@@ -477,23 +671,35 @@ impl fmt::Debug for Lucene90PointsReader {
 }
 
 impl PointsReader for Lucene90PointsReader {
+    /// Equivalent to `Lucene90PointsReader.checkIntegrity()`
+    /// (`Lucene90PointsReader.java:148-152`): checksums the whole index and
+    /// data files.
     fn check_integrity(&self) -> Result<()> {
+        checksum_entire_file(self.index_in.clone_input()?.as_mut())?;
+        checksum_entire_file(self.data_in.clone_input()?.as_mut())?;
         Ok(())
     }
 
-    fn get_values(&self, field: &str) -> Result<Box<dyn PointValues>> {
+    /// Equivalent to `Lucene90PointsReader.getValues(String)`
+    /// (`Lucene90PointsReader.java:135-146`): `None`, Java's `null`, for a
+    /// field that indexes points but has no tree in this segment.
+    fn get_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
         let field_info = self.field_infos.field_info(field).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("field='{field}' is unrecognized"))
+            LuceneError::IllegalArgument(format!("field=\"{field}\" is unrecognized"))
         })?;
         if field_info.point_dimension_count == 0 {
             return Err(LuceneError::IllegalArgument(format!(
-                "field='{field}' did not index point values"
+                "field=\"{field}\" did not index point values"
             )));
         }
-        match self.readers.get(&field_info.number) {
-            Some(values) => Ok(Box::new(values.clone())),
-            None => Ok(Box::new(EmptyPointValues)),
-        }
+        Ok(self
+            .readers
+            .get(&field_info.number)
+            .map(|values| Box::new(values.clone()) as Box<dyn PointValues>))
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     /// Returns a reader over the same trees.
@@ -595,13 +801,24 @@ impl PointValues for BkdPointValues {
 
 /// Visitor used while writing a field: it forwards every point to the
 /// [`BKDWriter`].
+/// The visitor `Lucene90PointsWriter.writeField` runs over a tree that is not
+/// a `MutablePointTree` (`Lucene90PointsWriter.java:170-186`): every value is
+/// added to the BKD writer, and every cell is visited.
 struct AddToBkdWriter<'a> {
     writer: &'a mut BKDWriter,
 }
 
-impl DocValuesVisitor for AddToBkdWriter<'_> {
-    fn visit(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
+impl IntersectVisitor for AddToBkdWriter<'_> {
+    fn visit(&mut self, _doc_id: i32) -> Result<()> {
+        Err(LuceneError::IllegalState(String::new()))
+    }
+
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
         self.writer.add(packed_value, doc_id)
+    }
+
+    fn compare(&self, _min_packed_value: &[u8], _max_packed_value: &[u8]) -> Result<Relation> {
+        Ok(Relation::CellCrossesQuery)
     }
 }
 
@@ -615,6 +832,7 @@ mod tests {
 
     use super::*;
     use crate::codecs::tests::test_segment_info;
+    use crate::index::point_values::DocValuesVisitor;
     use crate::index::{FieldInfo, FieldInfos};
     use crate::store::RamDirectory;
     use crate::util::bkd::BKDUtil;
@@ -678,6 +896,11 @@ mod tests {
 
     impl PointValues for VecPointValues {
         fn point_tree(&self) -> Result<Box<dyn crate::index::point_values::PointTree>> {
+            if self.points.is_empty() {
+                // An in-memory leaf must hold a point; a source with none is a
+                // tree with nothing to visit.
+                return crate::index::point_values::EmptyPointValues.point_tree();
+            }
             // Build an in-memory tree over a single leaf so the generic
             // traversal algorithms can run on test fixtures. The points are
             // handed to `InMemoryPointValues` which validates the 1-D ordering
@@ -759,11 +982,11 @@ mod tests {
             Ok(())
         }
 
-        fn get_values(&self, field: &str) -> Result<Box<dyn PointValues>> {
-            match self.values.get(field) {
-                Some(v) => Ok(Box::new(v.clone())),
-                None => Ok(Box::new(EmptyPointValues)),
-            }
+        fn get_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
+            Ok(self
+                .values
+                .get(field)
+                .map(|v| Box::new(v.clone()) as Box<dyn PointValues>))
         }
 
         fn get_merge_instance(&self) -> Result<Box<dyn PointsReader>> {
@@ -838,7 +1061,7 @@ mod tests {
             &*crate::store::DEFAULT_IO_CONTEXT,
         );
         let points_reader = Lucene90PointsReader::new(&read_state).unwrap();
-        let read_values = points_reader.get_values("int_point").unwrap();
+        let read_values = points_reader.get_values("int_point").unwrap().unwrap();
 
         assert_eq!(read_values.size().unwrap(), 6);
         assert_eq!(read_values.num_dimensions().unwrap(), 1);
@@ -895,10 +1118,10 @@ mod tests {
         );
         let points_reader = Lucene90PointsReader::new(&read_state).unwrap();
 
-        let read_f1 = points_reader.get_values("f1").unwrap();
+        let read_f1 = points_reader.get_values("f1").unwrap().unwrap();
         assert_eq!(read_f1.size().unwrap(), 5);
 
-        let read_f2 = points_reader.get_values("f2").unwrap();
+        let read_f2 = points_reader.get_values("f2").unwrap().unwrap();
         assert_eq!(read_f2.size().unwrap(), 3);
 
         let mut found1 = Vec::new();
@@ -920,6 +1143,61 @@ mod tests {
             .unwrap();
         found2.sort_by_key(|(d, _)| *d);
         assert_eq!(found2, points2);
+    }
+
+    /// Force-merges two segments with a one-dimensional field and a
+    /// two-dimensional one, each name unique to the caller.
+    /// `third_without_points` adds a third segment that indexes no point,
+    /// whose points reader is therefore null.
+    fn force_merge_points(one_dim: &str, two_dims: &str, third_without_points: bool) {
+        use crate::document::{Document, IntPoint, Store, StringField};
+        use crate::index::index_writer::IndexWriter;
+        use crate::index::index_writer_config::IndexWriterConfig;
+
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for segment in 0..2 {
+            for i in 0..600 {
+                let i = segment * 600 + i;
+                let mut doc = Document::new();
+                doc.add(Box::new(IntPoint::new(one_dim, &[i * 7 % 1013]).unwrap()));
+                doc.add(Box::new(
+                    IntPoint::new(two_dims, &[i % 97, i % 89]).unwrap(),
+                ));
+                writer.add_document(&doc).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        if third_without_points {
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                StringField::new("id", "no-points".to_string(), Store::NO).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        writer.force_merge(1).unwrap();
+        writer.close().unwrap();
+    }
+
+    /// When every source segment has a `Lucene90PointsReader`, a
+    /// one-dimensional field merges through `BKDWriter.merge` and a
+    /// multi-dimensional one through `mergeOneField`
+    /// (`Lucene90PointsWriter.java:204-299`); a source without points sends
+    /// every field down the default `PointsWriter.merge`. The two paths write
+    /// the same bytes here, so only the probe can tell them apart.
+    #[test]
+    fn a_merge_takes_the_bkd_merge_path_only_when_every_reader_is_lucene90() {
+        use merge_path_probe::{paths_of, BKD_MERGE, DEFAULT_MERGE, MERGE_ONE_FIELD};
+
+        force_merge_points("probe_bulk_1d", "probe_bulk_2d", false);
+        assert_eq!(paths_of("probe_bulk_1d"), vec![BKD_MERGE]);
+        assert_eq!(paths_of("probe_bulk_2d"), vec![MERGE_ONE_FIELD]);
+
+        force_merge_points("probe_default_1d", "probe_default_2d", true);
+        assert_eq!(paths_of("probe_default_1d"), vec![DEFAULT_MERGE]);
+        assert_eq!(paths_of("probe_default_2d"), vec![DEFAULT_MERGE]);
     }
 
     #[test]
@@ -953,8 +1231,8 @@ mod tests {
             &*crate::store::DEFAULT_IO_CONTEXT,
         );
         let points_reader = Lucene90PointsReader::new(&read_state).unwrap();
-        let read_values = points_reader.get_values("int_point").unwrap();
-        assert_eq!(read_values.size().unwrap(), 0);
+        // Java's `getValues` answers `null` for a field with no tree.
+        assert!(points_reader.get_values("int_point").unwrap().is_none());
     }
 
     #[test]
@@ -989,7 +1267,7 @@ mod tests {
             &*crate::store::DEFAULT_IO_CONTEXT,
         );
         let points_reader = Lucene90PointsReader::new(&read_state).unwrap();
-        let read_values = points_reader.get_values("int_point").unwrap();
+        let read_values = points_reader.get_values("int_point").unwrap().unwrap();
         assert_eq!(read_values.size().unwrap(), 1);
 
         let mut found = Vec::new();
@@ -1039,7 +1317,7 @@ mod tests {
             &*crate::store::DEFAULT_IO_CONTEXT,
         );
         let points_reader = Lucene90PointsReader::new(&read_state).unwrap();
-        let read_values = points_reader.get_values("int_point").unwrap();
+        let read_values = points_reader.get_values("int_point").unwrap().unwrap();
 
         assert_eq!(read_values.size().unwrap(), 4);
         assert_eq!(read_values.doc_count().unwrap(), 3);
@@ -1130,7 +1408,7 @@ mod tests {
             &*crate::store::DEFAULT_IO_CONTEXT,
         );
         let points_reader = Lucene90PointsReader::new(&read_state).unwrap();
-        let read_values = points_reader.get_values("int_point").unwrap();
+        let read_values = points_reader.get_values("int_point").unwrap().unwrap();
 
         struct RangeVisitor {
             min: i32,
@@ -1208,7 +1486,7 @@ mod tests {
             &*crate::store::DEFAULT_IO_CONTEXT,
         );
         let points_reader = Lucene90PointsReader::new(&read_state).unwrap();
-        let read_values = points_reader.get_values("box_point").unwrap();
+        let read_values = points_reader.get_values("box_point").unwrap().unwrap();
 
         struct BoxVisitor {
             min_x: i32,

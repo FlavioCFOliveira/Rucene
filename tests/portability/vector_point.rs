@@ -628,13 +628,17 @@ fn bkd_reader_from_java_points(java: &JavaPoints) -> BKDReader {
         .create_output("_0.kdd", &*DEFAULT_IO_CONTEXT)
         .expect("create data output");
 
-    // `finish` consumes the outputs by value through `&mut dyn IndexOutput`.
+    // `finish` writes the leaf blocks and returns the index write, which the
+    // caller runs, as `BKDWriter.finish` returns its `IORunnable`.
     let mut meta_out = meta_out;
     let mut index_out = index_out;
     let mut data_out = data_out;
     writer
-        .finish(meta_out.as_mut(), index_out.as_mut(), data_out.as_mut())
-        .expect("finish BKD tree");
+        .finish(data_out.as_mut())
+        .expect("finish BKD tree")
+        .expect("the tree has points")
+        .run(meta_out.as_mut(), index_out.as_mut())
+        .expect("write BKD index");
 
     // `RamIndexOutput` only persists its bytes to the directory on `close`,
     // so the outputs must be closed before they can be opened for reading.

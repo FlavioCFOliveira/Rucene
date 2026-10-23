@@ -1926,7 +1926,7 @@ impl RandomAccessInput for SlicedIndexInput {
 /// Equivalent to `org.apache.lucene.store.IndexOutput`. Implementations are not
 /// thread-safe; each thread must use its own instance.  The trait is marked
 /// `Send + Sync` so that `Box<dyn IndexOutput>` can be stored in codecs that
-/// require thread-safe trait objects (e.g. `PushPostingsWriterBase`).
+/// require thread-safe trait objects (e.g. `PointsWriter`).
 pub trait IndexOutput: DataOutput + Send + Sync {
     /// Closes this stream to further operations.
     fn close(&mut self) -> Result<()>;

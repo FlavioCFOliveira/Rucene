@@ -10,7 +10,7 @@
 #![deny(unsafe_code)]
 #![allow(clippy::type_complexity)]
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
@@ -23,9 +23,9 @@ use super::knn_vectors::{
     knn_vectors_for_name, ByteVectorValues, FieldVectorWriter, FloatVectorValues, KnnCollector,
     KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
 };
+use super::norms::NormsProducer;
 use super::postings::{
-    postings_for_name, Fields, FieldsConsumer, FieldsProducer, MergeState, PostingsFormat,
-    PostingsNormsProducer, Terms,
+    postings_for_name, Fields, FieldsConsumer, FieldsProducer, MergeState, PostingsFormat, Terms,
 };
 use super::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use super::stub::FieldInfo;
@@ -143,10 +143,16 @@ fn get_full_segment_suffix_postings(
     }
 }
 
+/// The fields one postings format writes, and the state its consumer is
+/// created with.
+///
+/// Equivalent to `PerFieldPostingsFormat.FieldsGroup` (`PerFieldPostingsFormat.java:87-111`),
+/// which also carries the format it maps from.
 struct FieldsGroup<'a> {
     suffix: i32,
     fields: Vec<String>,
-    consumer: Box<dyn FieldsConsumer + 'a>,
+    format: Arc<dyn PostingsFormat>,
+    state: SegmentWriteState<'a>,
 }
 
 struct FieldsWriter<'a> {
@@ -204,13 +210,13 @@ impl<'a> FieldsWriter<'a> {
                     &get_suffix(&format_name, suffix),
                 )?;
                 let state = self.write_state.with_new_suffix(segment_suffix);
-                let consumer = format.fields_consumer(&state)?;
                 groups.insert(
                     format_name.clone(),
                     FieldsGroup {
                         suffix,
                         fields: Vec::new(),
-                        consumer,
+                        format: Arc::clone(&format),
+                        state,
                     },
                 );
             }
@@ -229,43 +235,100 @@ impl<'a> FieldsWriter<'a> {
     }
 }
 
+impl<'a> FieldsWriter<'a> {
+    /// Creates each group's consumer, adds it to the consumers to close before
+    /// handing it its work, and on failure closes every consumer created so
+    /// far while keeping the original error.
+    ///
+    /// Equivalent to the loops of `FieldsWriter.write` and `FieldsWriter.merge`
+    /// (`PerFieldPostingsFormat.java:145-169, 185-201`): `toClose.add(consumer)`
+    /// precedes the call, and the `finally` block runs
+    /// `IOUtils.closeWhileHandlingException(toClose)` unless every call
+    /// succeeded.
+    fn run_groups(
+        &mut self,
+        groups: &HashMap<String, FieldsGroup<'a>>,
+        mut work: impl FnMut(&mut dyn FieldsConsumer, &FieldsGroup<'a>) -> Result<()>,
+    ) -> Result<()> {
+        let mut outcome = Ok(());
+        for group in groups.values() {
+            let consumer = match group.format.fields_consumer(&group.state) {
+                Ok(consumer) => consumer,
+                Err(error) => {
+                    outcome = Err(error);
+                    break;
+                }
+            };
+            self.to_close.push(consumer);
+            let consumer = self
+                .to_close
+                .last_mut()
+                .expect("INVARIANT: the consumer was pushed one line above");
+            if let Err(error) = work(consumer.as_mut(), group) {
+                outcome = Err(error);
+                break;
+            }
+        }
+        if outcome.is_err() {
+            for consumer in self.to_close.iter_mut() {
+                let _ = consumer.close();
+            }
+        }
+        outcome
+    }
+}
+
 impl<'a> FieldsConsumer for FieldsWriter<'a> {
-    fn write(&mut self, fields: &dyn Fields, norms: &dyn PostingsNormsProducer) -> Result<()> {
-        let mut groups = self.build_groups(fields.iterator())?;
-        for group in groups.values_mut() {
+    /// Equivalent to `PerFieldPostingsFormat.FieldsWriter.write(Fields,
+    /// NormsProducer)` (`PerFieldPostingsFormat.java:140-170`): each format's
+    /// consumer sees only its own fields.
+    fn write(&mut self, fields: &dyn Fields, norms: Option<&dyn NormsProducer>) -> Result<()> {
+        let groups = self.build_groups(fields.iterator())?;
+        self.run_groups(&groups, |consumer, group| {
+            // Exposes only the fields from this group.
             let masked = MaskedFields::new(fields, &group.fields);
-            group.consumer.write(&masked, norms)?;
-            self.to_close.push(std::mem::replace(
-                &mut group.consumer,
-                Box::new(NoOpFieldsConsumer) as Box<dyn FieldsConsumer + 'a>,
-            ));
-        }
-        Ok(())
+            consumer.write(&masked, norms)
+        })
     }
 
-    fn merge(&mut self, merge_state: &MergeState, norms: &dyn PostingsNormsProducer) -> Result<()> {
-        let field_names = merge_state
-            .merge_field_infos
-            .iter()
-            .filter(|fi| fi.index_options != IndexOptions::NONE)
-            .map(|fi| fi.name.clone());
-        let mut groups = self.build_groups(field_names)?;
-        for group in groups.values_mut() {
-            let restricted = PerFieldMergeState::restrict_fields(merge_state, &group.fields)?;
-            group.consumer.merge(&restricted, norms)?;
-            self.to_close.push(std::mem::replace(
-                &mut group.consumer,
-                Box::new(NoOpFieldsConsumer) as Box<dyn FieldsConsumer + 'a>,
-            ));
-        }
-        Ok(())
+    /// Equivalent to `PerFieldPostingsFormat.FieldsWriter.merge(MergeState,
+    /// NormsProducer)` (`PerFieldPostingsFormat.java:172-202`): the fields to
+    /// merge are those the source producers list — their sorted names merged
+    /// and deduplicated by a `MergedIterator` — and each format's consumer
+    /// merges a state restricted to its own fields.
+    fn merge(&mut self, merge_state: &MergeState, norms: Option<&dyn NormsProducer>) -> Result<()> {
+        let indexed_field_names = crate::util::MergedIterator::with_remove_duplicates(
+            true,
+            merge_state
+                .fields_producers
+                .iter()
+                .flatten()
+                .map(|producer| {
+                    let names: Vec<String> = producer.iterator().collect();
+                    Box::new(names.into_iter()) as Box<dyn Iterator<Item = String>>
+                })
+                .collect::<Vec<_>>(),
+        );
+        let groups = self.build_groups(indexed_field_names)?;
+        self.run_groups(&groups, |consumer, group| {
+            consumer.merge(
+                &PerFieldMergeState::restrict_fields(merge_state, &group.fields)?,
+                norms,
+            )
+        })
     }
 
+    /// Equivalent to `FieldsWriter.close()`, `IOUtils.close(toClose)`
+    /// (`PerFieldPostingsFormat.java:264-267`): every consumer is closed, and
+    /// the first error is raised once all of them have been.
     fn close(&mut self) -> Result<()> {
+        let mut first_error = None;
         for consumer in self.to_close.iter_mut() {
-            consumer.close()?;
+            if let Err(error) = consumer.close() {
+                first_error.get_or_insert(error);
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 }
 
@@ -295,18 +358,21 @@ impl Fields for MaskedFields<'_> {
     }
 }
 
+/// A consumer that writes nothing, for the tests' stand-in formats.
+#[cfg(test)]
 #[derive(Debug, Default, Clone)]
 struct NoOpFieldsConsumer;
 
+#[cfg(test)]
 impl FieldsConsumer for NoOpFieldsConsumer {
-    fn write(&mut self, _fields: &dyn Fields, _norms: &dyn PostingsNormsProducer) -> Result<()> {
+    fn write(&mut self, _fields: &dyn Fields, _norms: Option<&dyn NormsProducer>) -> Result<()> {
         Ok(())
     }
 
     fn merge(
         &mut self,
         _merge_state: &MergeState,
-        _norms: &dyn PostingsNormsProducer,
+        _norms: Option<&dyn NormsProducer>,
     ) -> Result<()> {
         Ok(())
     }
@@ -1379,74 +1445,83 @@ impl KnnVectorsReader for KnnFieldsReader {
 
 /// Restricts a [`MergeState`] to a subset of fields.
 ///
-/// Equivalent to `org.apache.lucene.codecs.perfield.PerFieldMergeState`.
+/// Equivalent to `org.apache.lucene.codecs.perfield.PerFieldMergeState`, a
+/// utility class Java declares package-private and never instantiates.
 pub struct PerFieldMergeState;
 
 impl PerFieldMergeState {
-    /// Returns a new merge state that exposes only the named fields.
+    /// Returns a merge state that exposes only `fields`.
     ///
-    /// The new state keeps all original field numbers so that any code that
-    /// looks up fields by number remains consistent; only iteration and
-    /// field-name lookup are filtered. The per-field fields producers are
-    /// cloned through their merge-optimized instance and wrapped so that only
-    /// the requested fields are visible.
+    /// Equivalent to `PerFieldMergeState.restrictFields(MergeState,
+    /// Collection<String>)` (`PerFieldMergeState.java:43-74`). Only three
+    /// things are restricted: every per-reader `FieldInfos` and the merged one
+    /// become filtered views ([`crate::index::FieldInfos::filter`], Java's
+    /// `FilterFieldInfos`), and every non-null postings producer is wrapped so
+    /// that it lists only `fields` (`FilterFieldsProducer`). Everything else — the doc maps, the
+    /// merged segment's `SegmentInfo`, every stored-fields, term-vectors, norms,
+    /// doc-values, points and vectors reader, the live docs, the document
+    /// counts, the info stream and the index-sort flag — is the original
+    /// state's own, because Java hands the original's references to the
+    /// `MergeState` constructor. The filtered views keep every field, so field
+    /// numbers stay consistent.
+    ///
+    /// The wrapped producers are the original's own, not their merge
+    /// instances: the merge state already holds merge instances
+    /// (`MergeState.java:155-158`), and Java wraps `in.fieldsProducers[i]`
+    /// as it is.
+    ///
+    /// `fields` keeps its order: a wrapped producer lists the fields in the
+    /// order of the collection it was given, as Java's iterates the list it
+    /// copied.
     pub fn restrict_fields(merge_state: &MergeState, fields: &[String]) -> Result<MergeState> {
-        let names: HashSet<String> = fields.iter().cloned().collect();
-
         let field_infos: Vec<super::stub::FieldInfos> = merge_state
             .field_infos
             .iter()
-            .map(|fi| fi.filter(names.iter().cloned()))
+            .map(|fi| fi.filter(fields.iter().cloned()))
             .collect();
-        let merge_field_infos = merge_state.merge_field_infos.filter(names.iter().cloned());
-
-        let fields_producers: Vec<Option<Box<dyn FieldsProducer>>> = merge_state
+        let fields_producers: Vec<Option<Arc<dyn FieldsProducer>>> = merge_state
             .fields_producers
             .iter()
             .map(|producer| {
-                producer
-                    .as_ref()
-                    .map(|p| {
-                        let merge_instance = p.get_merge_instance()?;
-                        Ok(Box::new(FilterFieldsProducer::new(merge_instance, &names))
-                            as Box<dyn FieldsProducer>)
-                    })
-                    .transpose()
+                producer.as_ref().map(|producer| {
+                    Arc::new(FilterFieldsProducer::new(Arc::clone(producer), fields))
+                        as Arc<dyn FieldsProducer>
+                })
             })
-            .collect::<Result<Vec<_>>>()?;
-
-        let mut restricted = MergeState::from_fields_producers(
-            fields_producers
-                .into_iter()
-                .map(|p| p.map(Arc::from))
-                .collect(),
-            merge_state.max_docs.clone(),
-        )
-        .with_field_infos(field_infos, merge_field_infos);
-        // The remaining reader arrays are not needed by the per-field postings
-        // merge path; concrete doc-values/points/vectors consumers that do need
-        // them are responsible for sharing the original merge state directly.
-        restricted.stored_fields_readers = Vec::new();
-        restricted.term_vectors_readers = Vec::new();
-        restricted.norms_producers = Vec::new();
-        restricted.doc_values_producers = Vec::new();
-        restricted.points_readers = Vec::new();
-        restricted.knn_vectors_readers = Vec::new();
-
-        Ok(restricted)
+            .collect();
+        let merge_field_infos = merge_state.merge_field_infos.filter(fields.iter().cloned());
+        Ok(MergeState {
+            field_infos,
+            fields_producers,
+            merge_field_infos,
+            ..merge_state.clone()
+        })
     }
 }
 
+/// A postings producer that lists only some of the fields of the producer it
+/// wraps.
+///
+/// Equivalent to the private `PerFieldMergeState.FilterFieldsProducer`
+/// (`PerFieldMergeState.java:230-271`).
+///
+/// **Divergence from Lucene 10.5.0.** Java's `close()` closes the wrapped
+/// producer. The wrapped producer is shared — with the merge state this view
+/// was derived from, exactly as in Java — and this port can only close a
+/// producer it owns (`FieldsProducer::close` takes `&mut self`), so `close`
+/// here releases nothing. No merge closes a restricted state's producers:
+/// they belong to the readers being merged, which close them.
 struct FilterFieldsProducer {
-    inner: Box<dyn FieldsProducer>,
-    filtered: HashSet<String>,
+    inner: Arc<dyn FieldsProducer>,
+    filtered: Vec<String>,
 }
 
 impl FilterFieldsProducer {
-    fn new(inner: Box<dyn FieldsProducer>, filtered: &HashSet<String>) -> Self {
+    /// Equivalent to `FilterFieldsProducer(FieldsProducer, Collection<String>)`.
+    fn new(inner: Arc<dyn FieldsProducer>, filter_fields: &[String]) -> Self {
         Self {
             inner,
-            filtered: filtered.clone(),
+            filtered: filter_fields.to_vec(),
         }
     }
 }
@@ -1457,18 +1532,18 @@ impl Fields for FilterFieldsProducer {
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
-        if !self.filtered.contains(field) {
+        if !self.filtered.iter().any(|name| name == field) {
             return Err(LuceneError::IllegalArgument(format!(
-                "field \"{field}\" is not accessible in the current merge context"
+                "The field named '{field}' is not accessible in the current merge context, \
+                 available ones are: [{}]",
+                self.filtered.join(", ")
             )));
         }
         self.inner.terms(field)
     }
 
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
-        let mut names: Vec<String> = self.filtered.iter().cloned().collect();
-        names.sort();
-        Box::new(names.into_iter())
+        Box::new(self.filtered.iter().cloned())
     }
 }
 
@@ -1477,22 +1552,24 @@ impl FieldsProducer for FilterFieldsProducer {
         self.inner.check_integrity()
     }
 
+    /// `FilterFieldsProducer` does not override `getMergeInstance()`, so Java
+    /// inherits `FieldsProducer.getMergeInstance()`, which returns `this`; the
+    /// owned equivalent is a view over the same producer and fields.
     fn get_merge_instance(&self) -> Result<Box<dyn FieldsProducer>> {
-        Ok(Box::new(FilterFieldsProducer::new(
-            self.inner.get_merge_instance()?,
-            &self.filtered,
-        )))
+        Ok(Box::new(FilterFieldsProducer {
+            inner: Arc::clone(&self.inner),
+            filtered: self.filtered.clone(),
+        }))
     }
 
     fn close(&mut self) -> Result<()> {
-        self.inner.close()
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codecs::postings::PostingsNumericDocValues;
     use crate::codecs::stub::FieldInfos;
     use crate::index::{IndexOptions, SegmentInfo};
 
@@ -1602,6 +1679,140 @@ mod tests {
         producer.close().unwrap();
     }
 
+    /// A postings format whose consumer records being closed, and fails to
+    /// write or to close when asked to.
+    #[derive(Debug, Clone)]
+    struct RecordingFormat {
+        name: &'static str,
+        fail_write: bool,
+        fail_close: bool,
+        closed: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[derive(Debug)]
+    struct RecordingConsumer(RecordingFormat);
+
+    impl FieldsConsumer for RecordingConsumer {
+        fn write(
+            &mut self,
+            _fields: &dyn Fields,
+            _norms: Option<&dyn NormsProducer>,
+        ) -> Result<()> {
+            if self.0.fail_write {
+                return Err(LuceneError::IllegalState(format!("{} write", self.0.name)));
+            }
+            Ok(())
+        }
+
+        fn close(&mut self) -> Result<()> {
+            self.0
+                .closed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            if self.0.fail_close {
+                return Err(LuceneError::IllegalState(format!("{} close", self.0.name)));
+            }
+            Ok(())
+        }
+    }
+
+    impl PostingsFormat for RecordingFormat {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn fields_consumer<'a>(
+            &self,
+            _state: &SegmentWriteState<'a>,
+        ) -> Result<Box<dyn FieldsConsumer + 'a>> {
+            Ok(Box::new(RecordingConsumer(self.clone())))
+        }
+
+        fn fields_producer<'a>(
+            &self,
+            _state: &SegmentReadState<'a>,
+        ) -> Result<Box<dyn FieldsProducer>> {
+            Ok(Box::new(NamedFieldsProducer(self.name)))
+        }
+    }
+
+    fn recording_format(
+        name: &'static str,
+        fail_write: bool,
+        fail_close: bool,
+    ) -> (Arc<RecordingFormat>, Arc<std::sync::atomic::AtomicBool>) {
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let format = RecordingFormat {
+            name,
+            fail_write,
+            fail_close,
+            closed: Arc::clone(&closed),
+        };
+        (Arc::new(format), closed)
+    }
+
+    /// Fields `body` and `title`, indexed.
+    #[derive(Debug, Default, Clone)]
+    struct BodyAndTitle;
+
+    impl Fields for BodyAndTitle {
+        fn size(&self) -> i32 {
+            2
+        }
+        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+            Ok(None)
+        }
+        fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+            Box::new(["body".to_string(), "title".to_string()].into_iter())
+        }
+    }
+
+    fn body_and_title_infos() -> FieldInfos {
+        let mut body = FieldInfo::new("body", 0);
+        body.index_options = IndexOptions::DOCS;
+        let mut title = FieldInfo::new("title", 1);
+        title.index_options = IndexOptions::DOCS;
+        FieldInfos::new(vec![body, title]).unwrap()
+    }
+
+    /// Each group's consumer is added to the consumers to close before it
+    /// writes, and a failed write closes it while keeping the write's error
+    /// (`PerFieldPostingsFormat.java:160-168`).
+    #[test]
+    fn a_failed_write_closes_the_consumer_that_failed() {
+        let (format, closed) = recording_format("Failing", true, false);
+        let per_field =
+            PerFieldPostingsFormat::new(move |_| Arc::clone(&format) as Arc<dyn PostingsFormat>);
+        let mut state = write_state();
+        state.field_infos = Box::leak(Box::new(body_and_title_infos()));
+        let mut consumer = per_field.fields_consumer(&state).unwrap();
+        let error = consumer.write(&BodyAndTitle, None).unwrap_err();
+        assert!(format!("{error:?}").contains("Failing write"), "{error:?}");
+        assert!(closed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// `close` closes every group's consumer and raises the first failure once
+    /// all are closed: `IOUtils.close(toClose)` (`PerFieldPostingsFormat.java:264-267`).
+    #[test]
+    fn close_closes_every_consumer_and_raises_the_first_failure() {
+        let (body_format, body_closed) = recording_format("BodyFormat", false, true);
+        let (title_format, title_closed) = recording_format("TitleFormat", false, true);
+        let per_field = PerFieldPostingsFormat::new(move |field| {
+            if field == "body" {
+                Arc::clone(&body_format) as Arc<dyn PostingsFormat>
+            } else {
+                Arc::clone(&title_format) as Arc<dyn PostingsFormat>
+            }
+        });
+        let mut state = write_state();
+        state.field_infos = Box::leak(Box::new(body_and_title_infos()));
+        let mut consumer = per_field.fields_consumer(&state).unwrap();
+        consumer.write(&BodyAndTitle, None).unwrap();
+        let error = consumer.close().unwrap_err();
+        assert!(format!("{error:?}").contains("Format close"), "{error:?}");
+        assert!(body_closed.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(title_closed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
     #[test]
     fn per_field_postings_writer_records_two_formats() {
         let mut body = FieldInfo::new("body", 0);
@@ -1639,18 +1850,7 @@ mod tests {
             }
         }
 
-        #[derive(Debug, Default, Clone)]
-        struct NoOpNorms;
-        impl PostingsNormsProducer for NoOpNorms {
-            fn get_norms(
-                &self,
-                _field_info: &FieldInfo,
-            ) -> Result<Box<dyn PostingsNumericDocValues>> {
-                unreachable!("no norms requested in this test")
-            }
-        }
-
-        consumer.write(&TwoFields, &NoOpNorms).unwrap();
+        consumer.write(&TwoFields, None).unwrap();
         consumer.close().unwrap();
 
         let body_info = state.field_infos.field_info("body").unwrap();
@@ -1671,6 +1871,121 @@ mod tests {
             title_info.get_attribute(PER_FIELD_POSTINGS_SUFFIX_KEY),
             Some("0".to_string())
         );
+    }
+
+    /// `PerFieldMergeState.restrictFields` restricts the field infos and the
+    /// postings producers, and nothing else: every other component of the
+    /// restricted state is the original's own object (`PerFieldMergeState.java:56-73`).
+    #[test]
+    fn restrict_fields_shares_everything_but_the_fields() {
+        use crate::codecs::norms::EmptyNormsProducer;
+        use crate::codecs::points::EmptyPointsReader;
+        use crate::codecs::{DocValuesProducer, NormsProducer, PointsReader};
+        use crate::index::doc_values::EmptyDocValuesProducer;
+        use crate::util::{Bits, FixedBitSet, InfoStream, NoOutputInfoStream};
+
+        let mut body = FieldInfo::new("body", 0);
+        body.index_options = IndexOptions::DOCS;
+        let mut title = FieldInfo::new("title", 1);
+        title.index_options = IndexOptions::DOCS;
+        let mut vector = FieldInfo::new("vector", 2);
+        vector.vector_dimension = 2;
+        let infos = || FieldInfos::new(vec![body.clone(), title.clone(), vector.clone()]).unwrap();
+
+        let doc_maps: Vec<crate::index::merge::DocMap> = vec![
+            crate::index::merge::identity_doc_map(10, 0),
+            crate::index::merge::identity_doc_map(5, 10),
+        ];
+        let mut deletions = FixedBitSet::new(5);
+        deletions.set(1);
+        let live_docs: Vec<Option<Arc<dyn Bits>>> = vec![None, Some(Arc::new(deletions))];
+        let info_stream: Arc<dyn InfoStream> = Arc::new(NoOutputInfoStream);
+        let norms: Arc<dyn NormsProducer> = Arc::new(EmptyNormsProducer);
+        let doc_values: Arc<dyn DocValuesProducer> = Arc::new(EmptyDocValuesProducer);
+        let points: Arc<dyn PointsReader> = Arc::new(EmptyPointsReader);
+        let postings: Arc<dyn FieldsProducer> = Arc::new(NamedFieldsProducer("A"));
+        let segment_info = Arc::new(crate::codecs::tests::test_segment_info("_m", 15));
+
+        let mut original =
+            MergeState::from_fields_producers(vec![Some(Arc::clone(&postings)), None], vec![10, 5])
+                .with_field_infos(vec![infos(), infos()], infos());
+        original.doc_maps = doc_maps.clone();
+        original.live_docs = live_docs.clone();
+        original.info_stream = Arc::clone(&info_stream);
+        original.needs_index_sort = true;
+        original.segment_info = Some(Arc::clone(&segment_info));
+        original.norms_producers = vec![Some(Arc::clone(&norms)), None];
+        original.doc_values_producers = vec![None, Some(Arc::clone(&doc_values))];
+        original.points_readers = vec![Some(Arc::clone(&points)), None];
+
+        let restricted =
+            PerFieldMergeState::restrict_fields(&original, &["title".to_string()]).unwrap();
+
+        // Shared, as Java passes the original's references.
+        for (restricted_map, original_map) in restricted.doc_maps.iter().zip(&doc_maps) {
+            assert!(Arc::ptr_eq(restricted_map, original_map), "doc maps");
+        }
+        assert!(restricted.live_docs[0].is_none());
+        assert!(
+            Arc::ptr_eq(
+                restricted.live_docs[1].as_ref().unwrap(),
+                live_docs[1].as_ref().unwrap()
+            ),
+            "live docs"
+        );
+        assert!(
+            Arc::ptr_eq(&restricted.info_stream, &info_stream),
+            "info stream"
+        );
+        assert!(restricted.needs_index_sort, "the index-sort flag");
+        assert!(Arc::ptr_eq(
+            restricted.segment_info.as_ref().unwrap(),
+            &segment_info
+        ));
+        assert_eq!(restricted.max_docs, vec![10, 5]);
+        assert!(Arc::ptr_eq(
+            restricted.norms_producers[0].as_ref().unwrap(),
+            &norms
+        ));
+        assert!(Arc::ptr_eq(
+            restricted.doc_values_producers[1].as_ref().unwrap(),
+            &doc_values
+        ));
+        assert!(Arc::ptr_eq(
+            restricted.points_readers[0].as_ref().unwrap(),
+            &points
+        ));
+        assert_eq!(restricted.stored_fields_readers.len(), 2);
+        assert_eq!(restricted.term_vectors_readers.len(), 2);
+        assert_eq!(restricted.knn_vectors_readers.len(), 2);
+
+        // Restricted: the fields, and the postings producers that list them.
+        let names: Vec<String> = restricted
+            .merge_field_infos
+            .iter()
+            .map(|fi| fi.name.clone())
+            .collect();
+        assert_eq!(names, vec!["title".to_string()]);
+        assert!(restricted.merge_field_infos.has_postings());
+        assert!(
+            restricted.merge_field_infos.has_vector_values(),
+            "FilterFieldInfos keeps the unfiltered hasVectorValues()"
+        );
+        for field_infos in &restricted.field_infos {
+            assert_eq!(field_infos.size(), 1);
+            assert_eq!(field_infos.field_info_by_number(1).unwrap().name, "title");
+        }
+        let producer = restricted.fields_producers[0].as_ref().unwrap();
+        assert_eq!(
+            producer.iterator().collect::<Vec<_>>(),
+            vec!["title".to_string()]
+        );
+        assert!(producer.terms("title").unwrap().is_none());
+        assert!(matches!(
+            producer.terms("body"),
+            Err(LuceneError::IllegalArgument(_))
+        ));
+        assert!(restricted.fields_producers[1].is_none());
     }
 
     #[test]

@@ -244,29 +244,12 @@ impl PostingsFormat for Lucene104PostingsFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codecs::postings::{PostingsNormsProducer, PostingsNumericDocValues};
-    use crate::codecs::stub::{FieldInfo, FieldInfos};
+    use crate::codecs::stub::FieldInfos;
     use crate::index::SegmentInfo;
     use crate::store::{Directory, RamDirectory};
     use crate::util::{StringHelper, Version};
     use std::collections::HashMap;
     use std::sync::Arc;
-
-    /// No-op norms producer for testing.
-    #[derive(Debug, Default, Clone)]
-    struct TestNormsProducer;
-
-    impl PostingsNumericDocValues for TestNormsProducer {
-        fn get(&self, _doc_id: i32) -> Result<i64> {
-            Ok(0)
-        }
-    }
-
-    impl PostingsNormsProducer for TestNormsProducer {
-        fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn PostingsNumericDocValues>> {
-            Ok(Box::new(TestNormsProducer))
-        }
-    }
 
     fn test_segment_info(name: &str, max_doc: i32) -> SegmentInfo {
         SegmentInfo::new(
@@ -384,7 +367,7 @@ mod tests {
             .expect("consumer should build");
 
         consumer
-            .write(&crate::index::EmptyFields::new(), &TestNormsProducer)
+            .write(&crate::index::EmptyFields::new(), None)
             .expect("write should succeed on skeleton");
         consumer.close().expect("close should succeed");
 
@@ -408,7 +391,7 @@ mod tests {
             .fields_consumer(&write_state)
             .expect("consumer should build");
         consumer
-            .write(&crate::index::EmptyFields::new(), &TestNormsProducer)
+            .write(&crate::index::EmptyFields::new(), None)
             .expect("write should succeed on empty fields");
         consumer.close().expect("close should succeed");
 

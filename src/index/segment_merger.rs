@@ -3,11 +3,10 @@
 //! Merges several segments into one by driving each codec's consumer over a
 //! [`MergeState`].
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use crate::codecs::postings::{PostingsNormsProducer, PostingsNumericDocValues};
 use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
-use crate::codecs::stub::{BufferedUpdates, FieldInfo};
+use crate::codecs::stub::BufferedUpdates;
 use crate::codecs::Codec;
 use crate::error::{LuceneError, Result};
 use crate::index::codec_reader::CodecReader;
@@ -20,77 +19,6 @@ use crate::util::{InfoStream, Version};
 
 /// Component name used in this merger's info-stream messages, as Java does.
 const SM: &str = "SM";
-
-/// Adapts a [`crate::codecs::norms::NormsProducer`] to the postings module's own
-/// [`PostingsNormsProducer`] trait.
-///
-/// **Divergence from Lucene 10.5.0.** Java has a single `NormsProducer`
-/// interface that both the norms format and the postings merge use. This port
-/// grew two: [`crate::codecs::norms::NormsProducer`], the faithful port, whose
-/// `get_norms` returns the iterator-shaped
-/// [`NumericDocValues`](crate::index::NumericDocValues) of the `index` module;
-/// and [`PostingsNormsProducer`], which corresponds to no Lucene type and whose
-/// `get_norms` returns the random-access [`PostingsNumericDocValues`]. Merging
-/// postings needs the second while the codec supplies the first, so this adapter
-/// materialises each field's norms into a dense vector once and serves random
-/// access from it. Unifying the two traits is the faithful fix and is tracked
-/// separately.
-struct PostingsNormsAdapter {
-    inner: Mutex<Box<dyn crate::codecs::norms::NormsProducer>>,
-    max_doc: i32,
-}
-
-impl PostingsNormsAdapter {
-    fn new(inner: Box<dyn crate::codecs::norms::NormsProducer>, max_doc: i32) -> Self {
-        Self {
-            inner: Mutex::new(inner),
-            max_doc,
-        }
-    }
-}
-
-/// A dense norms vector, indexed by document number.
-struct DenseNorms {
-    values: Vec<i64>,
-}
-
-impl PostingsNumericDocValues for DenseNorms {
-    fn get(&self, doc_id: i32) -> Result<i64> {
-        self.values.get(doc_id as usize).copied().ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("docID {doc_id} is out of range for norms"))
-        })
-    }
-}
-
-impl PostingsNormsProducer for PostingsNormsAdapter {
-    fn get_norms(&self, field_info: &FieldInfo) -> Result<Box<dyn PostingsNumericDocValues>> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(|_| LuceneError::IllegalState("norms producer lock poisoned".to_string()))?;
-        let mut source = guard.get_norms(field_info)?;
-        let mut values = vec![0i64; self.max_doc.max(0) as usize];
-        loop {
-            let doc_id = source.next_doc()?;
-            if doc_id == crate::search::NO_MORE_DOCS {
-                break;
-            }
-            if doc_id >= 0 && (doc_id as usize) < values.len() {
-                values[doc_id as usize] = source.long_value()?;
-            }
-        }
-        Ok(Box::new(DenseNorms { values }))
-    }
-}
-
-/// A norms producer for a segment that has no norms.
-struct NoNorms;
-
-impl PostingsNormsProducer for NoNorms {
-    fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn PostingsNumericDocValues>> {
-        Ok(Box::new(DenseNorms { values: Vec::new() }))
-    }
-}
 
 /// Merges several segments into one.
 ///
@@ -201,7 +129,8 @@ impl SegmentMerger {
         let segment_info = merge_state
             .segment_info
             .as_mut()
-            .expect("the merge state was built with the merged segment's info");
+            .and_then(Arc::get_mut)
+            .expect("the merge state was just built with the merged segment's info, unshared");
         debug_assert!(
             segment_info.min_version().is_none(),
             "The min version should be set by SegmentMerger for merged segments"
@@ -235,7 +164,7 @@ impl SegmentMerger {
     fn segment_info(&self) -> &SegmentInfo {
         self.merge_state
             .segment_info
-            .as_ref()
+            .as_deref()
             .expect("the merge state was built with the merged segment's info")
     }
 
@@ -311,9 +240,8 @@ impl SegmentMerger {
             self.merge_with_logging(Self::merge_norms, "norms", num_merged)?;
         }
 
-        // Lucene merges the postings unconditionally: the terms writer must run
-        // even for a segment with no indexed field, so that the empty terms
-        // files exist and the reader finds them.
+        // `mergeTerms` always runs; it creates the postings consumer only when
+        // the merged field infos have postings (`SegmentMerger.java:210-228`).
         let has_norms_for_terms = has_norms;
         self.merge_with_logging(
             move |merger| merger.merge_terms(has_norms_for_terms),
@@ -468,27 +396,49 @@ impl SegmentMerger {
     }
 
     /// Merges the postings, supplying the norms the terms writer needs.
+    ///
+    /// Equivalent to `SegmentMerger.mergeTerms(SegmentWriteState,
+    /// SegmentReadState)` (`SegmentMerger.java:210-228`): the merged
+    /// segment's own norms, just written by the norms phase, are read through
+    /// their merge instance — the postings writer takes a fresh iterator over
+    /// it for each term and reads only that term's documents — and the
+    /// postings consumer exists only when the merged field infos have
+    /// postings. The norms producer is closed afterwards, as Java's
+    /// try-with-resources closes it.
     fn merge_terms(&mut self, has_norms: bool) -> Result<()> {
-        let max_doc = self.segment_info().max_doc()?;
         let state = self.segment_write_state();
 
-        let norms: Box<dyn PostingsNormsProducer> = if has_norms {
+        let mut norms = if has_norms {
             let read_state = SegmentReadState::new(
                 &*self.directory,
                 self.segment_info(),
                 &self.merge_state.merge_field_infos,
                 &*self.context,
             );
-            let producer = self.codec.norms_format().norms_producer(&read_state)?;
-            Box::new(PostingsNormsAdapter::new(producer, max_doc))
+            Some(self.codec.norms_format().norms_producer(&read_state)?)
         } else {
-            Box::new(NoNorms)
+            None
         };
 
-        let mut consumer = self.codec.postings_format().fields_consumer(&state)?;
-        consumer.merge(self.merge_state(), norms.as_ref())?;
-        consumer.close()?;
-        Ok(())
+        let merged = (|| -> Result<()> {
+            // Use the merge instance in order to reuse the same input for all
+            // terms.
+            let norms_merge_instance = norms
+                .as_ref()
+                .map(|norms| norms.get_merge_instance())
+                .transpose()?;
+            if self.merge_state.merge_field_infos.has_postings() {
+                let mut consumer = self.codec.postings_format().fields_consumer(&state)?;
+                let merged = consumer.merge(self.merge_state(), norms_merge_instance.as_deref());
+                let closed = consumer.close();
+                merged?;
+                closed?;
+            }
+            Ok(())
+        })();
+        let closed = norms.as_mut().map_or(Ok(()), |norms| norms.close());
+        merged?;
+        closed
     }
 
     /// Consumes the merger and returns the merged segment's info, carrying
@@ -498,9 +448,14 @@ impl SegmentMerger {
     /// sees those changes in place; the merger owns it here, so this is how the
     /// caller gets it back.
     pub fn into_segment_info(self) -> SegmentInfo {
-        self.merge_state
+        let shared = self
+            .merge_state
             .segment_info
-            .expect("the merge state was built with the merged segment's info")
+            .expect("the merge state was built with the merged segment's info");
+        // Every state derived from this one during the merge has been dropped
+        // by now; should one survive, the object it shares carries the same
+        // changes, so a copy of it loses nothing.
+        Arc::try_unwrap(shared).unwrap_or_else(|shared| (*shared).clone())
     }
 
     /// Writes the merged field infos.
@@ -532,6 +487,7 @@ mod tests {
     use crate::index::{FieldInfosBuilder, FieldNumbers, SegmentCommitInfo};
     use crate::search::NO_MORE_DOCS;
     use crate::store::{RamDirectory, DEFAULT_IO_CONTEXT};
+    use std::sync::Mutex;
 
     /// Writes `segments` committed segments of one stored-only document each
     /// and returns the directory with their commit infos.
@@ -953,10 +909,23 @@ mod tests {
         // Points.
         let points = reader.get_points_reader().unwrap().unwrap();
         let merge_points = points.get_merge_instance().unwrap();
-        assert_eq!(merge_points.get_values("rank").unwrap().size().unwrap(), 5);
         assert_eq!(
-            merge_points.get_values("rank").unwrap().size().unwrap(),
-            points.get_values("rank").unwrap().size().unwrap()
+            merge_points
+                .get_values("rank")
+                .unwrap()
+                .unwrap()
+                .size()
+                .unwrap(),
+            5
+        );
+        assert_eq!(
+            merge_points
+                .get_values("rank")
+                .unwrap()
+                .unwrap()
+                .size()
+                .unwrap(),
+            points.get_values("rank").unwrap().unwrap().size().unwrap()
         );
 
         // Doc values.

@@ -86,7 +86,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
-use crate::codecs::postings::PostingsNormsProducer;
+use crate::codecs::norms::NormsProducer;
 use crate::codecs::state::SegmentWriteState;
 use crate::error::{LuceneError, Result};
 use crate::index::documents_writer::TermDelete;
@@ -2204,7 +2204,7 @@ impl FreqProxTermsWriter {
         &mut self,
         state: &mut SegmentWriteState<'_>,
         delete_terms: &[TermDelete],
-        norms: &dyn PostingsNormsProducer,
+        norms: &dyn NormsProducer,
     ) -> Result<()> {
         let fields = self.freeze();
         self.terms_hash.reset();
@@ -2223,7 +2223,7 @@ impl FreqProxTermsWriter {
             ))
         })?;
         let mut consumer = codec.postings_format().fields_consumer(state)?;
-        let outcome = consumer.write(&fields, norms);
+        let outcome = consumer.write(&fields, Some(norms));
         let closed = consumer.close();
         outcome?;
         closed

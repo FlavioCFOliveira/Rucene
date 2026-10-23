@@ -59,17 +59,31 @@ pub fn deletion_doc_map(max_doc: i32, live_docs: Box<dyn Bits>, doc_base: i32) -
 /// Common state used during segment merging.
 ///
 /// Equivalent to `org.apache.lucene.index.MergeState`.
+///
+/// Every reader, live-docs set, doc map and the merged segment's
+/// `SegmentInfo` sit behind an [`Arc`], because Java shares them: the public
+/// `MergeState(DocMap[], SegmentInfo, FieldInfos, …)` constructor
+/// (`MergeState.java:291-326`) stores the references it is given, and
+/// `PerFieldMergeState.restrictFields` (`PerFieldMergeState.java:56-73`) builds
+/// a restricted state out of the original's own arrays. [`Clone`] is that
+/// constructor called with every one of the original's fields: a shallow copy
+/// whose readers, live docs, doc maps and `SegmentInfo` are the original's
+/// objects, never copies of them.
+#[derive(Clone)]
 pub struct MergeState {
     /// Maps document IDs from each source segment to the merged segment.
     pub doc_maps: Vec<DocMap>,
     /// Segment info for the newly merged segment.
-    pub segment_info: Option<SegmentInfo>,
+    ///
+    /// Shared, as Java's `segmentInfo` reference is, with every state
+    /// `PerFieldMergeState::restrict_fields` derives from this one.
+    pub segment_info: Option<Arc<SegmentInfo>>,
     /// Field infos for the newly merged segment.
     pub merge_field_infos: FieldInfos,
     /// Stored-fields readers for each source segment.
-    pub stored_fields_readers: Vec<Option<Box<dyn StoredFieldsReader>>>,
+    pub stored_fields_readers: Vec<Option<Arc<dyn StoredFieldsReader>>>,
     /// Term-vectors readers for each source segment.
-    pub term_vectors_readers: Vec<Option<Box<dyn TermVectorsReader>>>,
+    pub term_vectors_readers: Vec<Option<Arc<dyn TermVectorsReader>>>,
     /// Norms producers for each source segment.
     pub norms_producers: Vec<Option<Arc<dyn NormsProducer>>>,
     /// Doc-values producers for each source segment.
@@ -77,7 +91,7 @@ pub struct MergeState {
     /// Field infos for each source segment.
     pub field_infos: Vec<FieldInfos>,
     /// Live docs for each source segment.
-    pub live_docs: Vec<Option<Box<dyn Bits>>>,
+    pub live_docs: Vec<Option<Arc<dyn Bits>>>,
     /// Postings producers for each source segment.
     pub fields_producers: Vec<Option<Arc<dyn FieldsProducer>>>,
     /// Points readers for each source segment.
@@ -117,14 +131,23 @@ impl MergeState {
     ) -> Self {
         Self {
             doc_maps,
-            segment_info: Some(segment_info),
+            segment_info: Some(Arc::new(segment_info)),
             merge_field_infos,
-            stored_fields_readers,
-            term_vectors_readers,
+            stored_fields_readers: stored_fields_readers
+                .into_iter()
+                .map(|reader| reader.map(Arc::from))
+                .collect(),
+            term_vectors_readers: term_vectors_readers
+                .into_iter()
+                .map(|reader| reader.map(Arc::from))
+                .collect(),
             norms_producers,
             doc_values_producers,
             field_infos,
-            live_docs,
+            live_docs: live_docs
+                .into_iter()
+                .map(|bits| bits.map(Arc::from))
+                .collect(),
             fields_producers,
             points_readers,
             knn_vectors_readers,
@@ -328,7 +351,7 @@ impl MergeState {
 
         for reader in readers {
             max_docs.push(reader.max_doc());
-            live_docs.push(reader.get_live_docs());
+            live_docs.push(reader.get_live_docs().map(Arc::from));
             field_infos.push(reader.get_field_infos().clone());
 
             norms_producers.push(match reader.get_norms_reader()? {
@@ -342,12 +365,12 @@ impl MergeState {
             stored_fields_readers.push(
                 reader
                     .get_fields_reader()?
-                    .map(|fields_reader| fields_reader.get_merge_instance()),
+                    .map(|fields_reader| Arc::from(fields_reader.get_merge_instance())),
             );
             term_vectors_readers.push(
                 reader
                     .get_term_vectors_reader()?
-                    .map(|vectors_reader| vectors_reader.get_merge_instance()),
+                    .map(|vectors_reader| Arc::from(vectors_reader.get_merge_instance())),
             );
             fields_producers.push(match reader.get_postings_reader()? {
                 Some(producer) => Some(Arc::from(producer.get_merge_instance()?)),
@@ -365,7 +388,7 @@ impl MergeState {
 
         Ok(Self {
             doc_maps,
-            segment_info,
+            segment_info: segment_info.map(Arc::new),
             merge_field_infos,
             stored_fields_readers,
             term_vectors_readers,

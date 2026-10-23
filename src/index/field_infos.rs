@@ -1417,7 +1417,21 @@ impl FieldInfos {
     /// Creates a filtered view that keeps all original fields for numbering
     /// but only exposes the given names through iteration and lookup.
     ///
-    /// Aggregate flags are recomputed for the visible subset.
+    /// Equivalent to the private `PerFieldMergeState.FilterFieldInfos`
+    /// (`PerFieldMergeState.java:76-228`). Its constructor recomputes nine
+    /// aggregate flags over the visible fields and overrides their accessors;
+    /// `hasVectorValues()` is not among them, so it keeps the value Java's
+    /// `FieldInfos` constructor computed over *every* field, and so does this
+    /// view.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `fieldInfo(String)` and
+    /// `fieldInfo(int)` throw `IllegalArgumentException` for a field outside
+    /// the view (`PerFieldMergeState.java:200-227`); this port's
+    /// [`field_info`](Self::field_info) and
+    /// [`field_info_by_number`](Self::field_info_by_number) answer `None`,
+    /// because they return an `Option` for every `FieldInfos` and have no error
+    /// to raise. A consumer that only asks for the fields it was given — every
+    /// merge does — sees the same answers.
     pub fn filter(&self, names: impl IntoIterator<Item = String>) -> Self {
         let filtered_names: HashSet<String> = names.into_iter().collect();
 
@@ -1434,7 +1448,6 @@ impl FieldInfos {
         result.has_norms = false;
         result.has_doc_values = false;
         result.has_point_values = false;
-        result.has_vector_values = false;
 
         // Collect visible field references first to avoid borrowing `result`
         // mutably while the filter closure holds an immutable borrow.
@@ -1459,7 +1472,6 @@ impl FieldInfos {
             result.has_doc_values |= fi.doc_values_type != DocValuesType::NONE;
             result.has_payloads |= fi.has_payloads();
             result.has_point_values |= fi.point_dimension_count != 0;
-            result.has_vector_values |= fi.vector_dimension != 0;
         }
 
         result

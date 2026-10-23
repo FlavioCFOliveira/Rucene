@@ -39,7 +39,7 @@ use crate::index::field_infos::{FieldInfo, FieldInfos, FieldNumbers};
 use crate::index::index_reader::IndexReader;
 use crate::index::leaf_reader::LeafReader;
 use crate::index::segment_info::SegmentCommitInfo;
-use crate::index::segment_reader::SegmentReader;
+use crate::index::segment_reader::{SegmentReader, SharedBits};
 use crate::index::DocValuesType;
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::DocIdSetIterator;
@@ -56,7 +56,13 @@ use crate::util::{Accountable, Bits, BytesRef, FixedBitSet, InfoStream, NoOutput
 ///
 /// Equivalent to `org.apache.lucene.index.PendingDeletes`.
 pub struct PendingDeletes {
-    live_docs: Option<Box<dyn Bits>>,
+    /// Read-only live docs: `None` until they are initialized, or when every
+    /// document is alive. Equivalent to `PendingDeletes.liveDocs`.
+    ///
+    /// Java hands this one object to every caller of `getLiveDocs()` and to the
+    /// readers built from it; [`SharedBits`] is that sharing, so each caller
+    /// receives a handle on the same bits rather than taking them away.
+    live_docs: Option<SharedBits>,
     writeable_live_docs: Option<FixedBitSet>,
     pending_delete_count: i32,
     live_docs_initialized: bool,
@@ -107,7 +113,7 @@ impl PendingDeletes {
     ///
     /// Equivalent to `PendingDeletes(SegmentReader, SegmentCommitInfo)`.
     pub fn from_reader(reader: &SegmentReader, info: &SegmentCommitInfo) -> Self {
-        let live_docs = LeafReader::get_live_docs(reader);
+        let live_docs = LeafReader::get_live_docs(reader).map(SharedBits::new);
         let pending_delete_count =
             LeafReader::max_doc(reader) - LeafReader::num_docs(reader) - info.get_del_count();
         Self {
@@ -149,7 +155,7 @@ impl PendingDeletes {
         if self.writeable_live_docs.is_none() {
             let max_doc = info.info.max_doc().expect("INVARIANT: max_doc valid") as usize;
             if let Some(ref live_docs) = self.live_docs {
-                self.writeable_live_docs = Some(FixedBitSet::copy_of(live_docs.as_ref()));
+                self.writeable_live_docs = Some(FixedBitSet::copy_of(live_docs));
             } else {
                 let mut bits = FixedBitSet::new(max_doc);
                 bits.set_range(0, max_doc);
@@ -187,22 +193,20 @@ impl PendingDeletes {
     /// Returns a snapshot of the current live docs and prevents further
     /// modifications to the returned bits.
     ///
-    /// In Java, `getLiveDocs()` sets `writeableLiveDocs = null` and returns
-    /// the `liveDocs` reference (which is a view of the same data).  In Rust,
-    /// if a writeable copy exists we move it to `live_docs` and return a
-    /// clone, so both the caller and `write_live_docs` see the same state.
-    ///
-    /// Equivalent to `PendingDeletes.getLiveDocs()`.
+    /// Equivalent to `PendingDeletes.getLiveDocs()` (`PendingDeletes.java:108-112`):
+    /// Java drops its writeable bit set (`writeableLiveDocs = null`) and
+    /// returns `liveDocs`, the read-only view of that set, which stays this
+    /// tracker's live docs. Nothing writes the set again — the next delete
+    /// copies it — so every caller, before and after, holds the same frozen
+    /// bits. Here the writeable set, when there is one, is frozen into
+    /// `live_docs` and every call hands out a handle on those same bits;
+    /// `live_docs` is never given away.
     pub fn get_live_docs(&mut self) -> Option<Box<dyn Bits>> {
-        if let Some(wd) = self.writeable_live_docs.take() {
-            // Move the writeable copy into live_docs (as the read-only snapshot)
-            // and return a clone so the caller gets an independent owned copy.
-            let snapshot: Box<dyn Bits> = Box::new(wd.clone());
-            self.live_docs = Some(Box::new(wd));
-            Some(snapshot)
-        } else {
-            self.live_docs.take()
-        }
+        // Prevent modifications to the returned live docs.
+        freeze_live_docs(&mut self.live_docs, &mut self.writeable_live_docs);
+        self.live_docs
+            .clone()
+            .map(|bits| Box::new(bits) as Box<dyn Bits>)
     }
 
     /// Returns a snapshot of the hard live docs.
@@ -233,8 +237,8 @@ impl PendingDeletes {
                     "pendingDeleteCount: {}",
                     self.pending_delete_count
                 );
-                self.live_docs = LeafReader::get_live_docs(reader);
-                debug_assert!(match self.live_docs.as_deref() {
+                self.live_docs = LeafReader::get_live_docs(reader).map(SharedBits::new);
+                debug_assert!(match self.live_docs.as_ref() {
                     None => true,
                     Some(bits) => Self::assert_check_live_docs(
                         bits,
@@ -305,7 +309,6 @@ impl PendingDeletes {
             self.live_docs
                 .as_ref()
                 .expect("live_docs must exist when pending_delete_count > 0")
-                .as_ref()
         };
         let max_doc = info.info.max_doc().expect("INVARIANT: max_doc valid") as usize;
         assert_eq!(live_docs.length(), max_doc);
@@ -441,6 +444,20 @@ impl PendingDeletes {
     }
 }
 
+/// Freezes the writeable live docs, when there are any, into the read-only
+/// `live_docs` every caller of `getLiveDocs()` shares.
+///
+/// Java's `liveDocs` is already the read-only view of `writeableLiveDocs`
+/// (`PendingDeletes.java:78`), so `getLiveDocs()` only has to drop the
+/// writeable reference (`:110`). This port keeps the writeable set as the one
+/// source of truth while it exists and has no view of it, so dropping the
+/// writeable set means moving it behind the shared handle.
+fn freeze_live_docs(live_docs: &mut Option<SharedBits>, writeable: &mut Option<FixedBitSet>) {
+    if let Some(bits) = writeable.take() {
+        *live_docs = Some(SharedBits::new(Box::new(bits)));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // PendingSoftDeletes
 // ---------------------------------------------------------------------------
@@ -469,7 +486,9 @@ pub struct PendingSoftDeletes {
     field: String,
     dv_generation: i64,
     hard_deletes: PendingDeletes,
-    live_docs: Option<Box<dyn Bits>>,
+    /// The live docs inherited from `PendingDeletes`; see
+    /// [`PendingDeletes`]'s field of the same name.
+    live_docs: Option<SharedBits>,
     writeable_live_docs: Option<FixedBitSet>,
     pending_delete_count: i32,
     live_docs_initialized: bool,
@@ -530,7 +549,7 @@ impl PendingSoftDeletes {
             field: field.into(),
             dv_generation: -2,
             hard_deletes: PendingDeletes::from_reader(reader, info),
-            live_docs: LeafReader::get_live_docs(reader),
+            live_docs: LeafReader::get_live_docs(reader).map(SharedBits::new),
             writeable_live_docs: None,
             pending_delete_count: LeafReader::max_doc(reader)
                 - LeafReader::num_docs(reader)
@@ -550,7 +569,7 @@ impl PendingSoftDeletes {
         if self.writeable_live_docs.is_none() {
             let max_doc = info.info.max_doc().expect("INVARIANT: max_doc valid") as usize;
             if let Some(ref live_docs) = self.live_docs {
-                self.writeable_live_docs = Some(FixedBitSet::copy_of(live_docs.as_ref()));
+                self.writeable_live_docs = Some(FixedBitSet::copy_of(live_docs));
             } else {
                 let mut bits = FixedBitSet::new(max_doc);
                 bits.set_range(0, max_doc);
@@ -584,15 +603,15 @@ impl PendingSoftDeletes {
     /// Returns a snapshot of the current live docs and freezes further
     /// modifications.
     ///
-    /// Equivalent to `PendingSoftDeletes.getLiveDocs()`.
+    /// `PendingSoftDeletes` inherits `PendingDeletes.getLiveDocs()`
+    /// (`PendingDeletes.java:108-112`); see [`PendingDeletes::get_live_docs`]
+    /// for how this port shares the frozen bits instead of handing them away.
     pub fn get_live_docs(&mut self) -> Option<Box<dyn Bits>> {
-        if let Some(wd) = self.writeable_live_docs.take() {
-            let snapshot: Box<dyn Bits> = Box::new(wd.clone());
-            self.live_docs = Some(Box::new(wd));
-            Some(snapshot)
-        } else {
-            self.live_docs.take()
-        }
+        // Prevent modifications to the returned live docs.
+        freeze_live_docs(&mut self.live_docs, &mut self.writeable_live_docs);
+        self.live_docs
+            .clone()
+            .map(|bits| Box::new(bits) as Box<dyn Bits>)
     }
 
     /// Returns a snapshot of the hard live docs (excluding soft deletes).
@@ -621,7 +640,7 @@ impl PendingSoftDeletes {
 
         if !self.live_docs_initialized {
             if LeafReader::max_doc(reader) != LeafReader::num_docs(reader) {
-                self.live_docs = LeafReader::get_live_docs(reader);
+                self.live_docs = LeafReader::get_live_docs(reader).map(SharedBits::new);
             }
             self.live_docs_initialized = true;
         }
@@ -3375,6 +3394,44 @@ mod tests {
             let expected = i != 2 && i != 5 && i != 7;
             assert_eq!(live.get(i), expected, "doc {i} live bit mismatch");
         }
+    }
+
+    /// `getLiveDocs()` hands out the tracker's live docs without giving them
+    /// away: every call answers the same deletions, and a snapshot is frozen —
+    /// a later delete copies the bits rather than changing the snapshot
+    /// (`PendingDeletes.java:63-81, 108-112`). Moving them out instead made the
+    /// second caller see "no deletions" (rmp #220).
+    #[test]
+    fn get_live_docs_shares_a_frozen_snapshot() {
+        let info = make_sci("_0", 6);
+        let mut pd = PendingDeletes::new(&info);
+        assert!(pd.get_live_docs().is_none(), "no deletion, no live docs");
+        assert!(pd.delete(1, &info).unwrap());
+
+        let live = |bits: &dyn Bits| (0..6).map(|doc| bits.get(doc)).collect::<Vec<_>>();
+        let first = pd.get_live_docs().expect("live docs after a delete");
+        let second = pd.get_live_docs().expect("asked twice, still there");
+        let expected = vec![true, false, true, true, true, true];
+        assert_eq!(live(first.as_ref()), expected);
+        assert_eq!(live(second.as_ref()), expected);
+        assert_eq!(
+            live(
+                pd.get_hard_live_docs()
+                    .expect("the hard live docs")
+                    .as_ref()
+            ),
+            expected
+        );
+
+        // The next delete copies the bits; the snapshots handed out keep
+        // theirs.
+        assert!(pd.delete(4, &info).unwrap());
+        assert_eq!(live(first.as_ref()), expected, "a snapshot is frozen");
+        assert_eq!(
+            live(pd.get_live_docs().unwrap().as_ref()),
+            vec![true, false, true, true, false, true]
+        );
+        assert_eq!(pd.num_pending_deletes(), 2);
     }
 
     /// Verifies `is_fully_deleted` when every document is deleted.

@@ -7,11 +7,9 @@
 //! | `PerField` (private) | `IndexingChain.PerField` |
 //! | [`EmptyNormsProducer`] | the `NormsProducer` the chain passes to the codec |
 //!
-//! The chain's `EmptyNormsProducer` implements
-//! [`PostingsNormsProducer`](crate::codecs::postings::PostingsNormsProducer),
-//! this port's narrower postings-side stand-in, not the full
-//! [`NormsProducer`](crate::codecs::norms::NormsProducer); see that trait's
-//! documentation for the divergence.
+//! The chain's `EmptyNormsProducer` is a
+//! [`NormsProducer`](crate::codecs::norms::NormsProducer) that reports a norm
+//! of one for every document; see its documentation for the divergence.
 //!
 //! The chain turns a [`Document`] into buffered postings, a stored-fields
 //! stream and a term-vectors stream: it registers each field in the segment's
@@ -85,8 +83,8 @@ use crate::analysis::Analyzer;
 use crate::analysis::TokenStream;
 use crate::codecs::doc_values::DocValuesConsumer;
 use crate::codecs::knn_vectors::FieldVectorWriter;
+use crate::codecs::norms::NormsProducer;
 use crate::codecs::points::PointsWriter;
-use crate::codecs::postings::{PostingsNormsProducer, PostingsNumericDocValues};
 use crate::codecs::state::SegmentWriteState;
 use crate::document::column::{
     create_column_field_adapter, BinaryColumn, ColumnBatch, ColumnFieldAdapter, ColumnValidation,
@@ -374,28 +372,90 @@ impl FieldInvertState {
 // Norms
 // ---------------------------------------------------------------------------
 
-/// Norms source handed to the postings format while norms are not written.
+/// Norms source the flush hands to the postings format.
 ///
 /// The Lucene 10.4 postings format reads norms only to compute the impact
-/// blocks that accompany skip data. Rucene's `Lucene104PostingsWriter` treats
-/// every norm as one (see its module documentation), so this producer reports
-/// the same constant and never allocates.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyNormsProducer;
+/// blocks that accompany skip data. Java hands the flush a producer over the
+/// norms it has just written (`IndexingChain.java:361-370`); this one reports
+/// a norm of one for every document instead, so a flushed segment's impacts
+/// for a field with norms differ from Lucene's (see the call site in
+/// `flush`).
+#[derive(Debug, Clone, Copy)]
+pub struct EmptyNormsProducer {
+    max_doc: i32,
+}
 
-/// Numeric doc values that report a norm of one for every document.
-#[derive(Debug, Default, Clone, Copy)]
-struct ConstantNorms;
+impl EmptyNormsProducer {
+    /// Creates the producer for a segment of `max_doc` documents.
+    pub fn new(max_doc: i32) -> Self {
+        Self { max_doc }
+    }
+}
 
-impl PostingsNumericDocValues for ConstantNorms {
-    fn get(&self, _doc_id: i32) -> Result<i64> {
+/// Dense norms that report a norm of one for every document.
+#[derive(Debug, Clone, Copy)]
+struct ConstantNorms {
+    max_doc: i32,
+    doc: i32,
+}
+
+impl DocIdSetIterator for ConstantNorms {
+    fn doc_id(&self) -> i32 {
+        self.doc
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.advance(self.doc + 1)
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.doc = if target >= self.max_doc {
+            NO_MORE_DOCS
+        } else {
+            target
+        };
+        Ok(self.doc)
+    }
+
+    fn cost(&self) -> i64 {
+        i64::from(self.max_doc)
+    }
+}
+
+impl crate::index::doc_values::DocValuesIterator for ConstantNorms {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        self.doc = target;
+        Ok(target < self.max_doc)
+    }
+}
+
+impl crate::index::NumericDocValues for ConstantNorms {
+    fn long_value(&self) -> Result<i64> {
         Ok(1)
     }
 }
 
-impl PostingsNormsProducer for EmptyNormsProducer {
-    fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn PostingsNumericDocValues>> {
-        Ok(Box::new(ConstantNorms))
+impl NormsProducer for EmptyNormsProducer {
+    fn get_norms(
+        &self,
+        _field_info: &FieldInfo,
+    ) -> Result<Box<dyn crate::index::NumericDocValues>> {
+        Ok(Box::new(ConstantNorms {
+            max_doc: self.max_doc,
+            doc: -1,
+        }))
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_merge_instance(&self) -> Result<Box<dyn NormsProducer>> {
+        Ok(Box::new(*self))
+    }
+
+    fn close(&mut self) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -3598,14 +3658,15 @@ impl IndexingChain for DefaultIndexingChain {
             consumer.flush(max_doc)?;
         }
 
-        // Java hands `termsHash.flush` the merge instance of a real norms
-        // producer opened over the files `write_norms` has just written
-        // (`IndexingChain.java:361-370`), because its postings writer folds the
-        // per-document norm into the impact blocks. Rucene's
-        // `Lucene104PostingsWriter` treats every norm as one — see its module
-        // documentation — so the real producer would be opened, read and
-        // ignored. The constant one stays until the postings writer can use it.
-        let norms = EmptyNormsProducer;
+        // **Divergence from Lucene 10.5.0.** Java hands `termsHash.flush` the
+        // merge instance of a real norms producer opened over the files
+        // `write_norms` has just written (`IndexingChain.java:361-370`),
+        // because its postings writer folds the per-document norm into the
+        // impact blocks. This flush still hands it a norm of one for every
+        // document, so the impacts of a field with norms differ from Lucene's.
+        // A merge reads the merged segment's real norms
+        // (`SegmentMerger::merge_terms`).
+        let norms = EmptyNormsProducer::new(max_doc);
         self.terms_writer
             .flush(&mut write_state, state.delete_terms, &norms)?;
 

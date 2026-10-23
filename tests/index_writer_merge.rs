@@ -33,19 +33,18 @@
 //!
 //! # What these tests deliberately do not exercise
 //!
-//! Three defects outside the tasks above stand in the way of a fuller test,
-//! and each is avoided rather than worked around:
+//! When they were written, three defects outside the tasks above stood in the
+//! way of a fuller test, and each was avoided rather than worked around:
 //!
-//! * The documents index no term. The block-tree terms writer's `merge` is
-//!   still a no-op, and its `close` then writes the postings header of
-//!   `.tmd` with an empty segment suffix, so a merged segment with an indexed
-//!   field cannot be reopened.
+//! * The documents index no term: the postings merge was a no-op (rmp #217).
+//!   Merges of indexed terms, points, doc values and deletions are now pinned
+//!   by `tests/index_writer_merge_fields.rs`.
 //! * The merges with deletions run `SegmentMerger` over the committed segments
 //!   rather than `IndexWriter::force_merge`: `PendingDeletes::get_live_docs`
-//!   moves the live docs out instead of sharing them, so `IndexWriter`'s merge
-//!   of a segment with committed deletions trips `verify_doc_counts`. The
-//!   segment merger and every codec underneath are the ones `force_merge`
-//!   runs.
+//!   moved the live docs out instead of sharing them (rmp #220), so
+//!   `IndexWriter`'s merge of a segment with committed deletions tripped
+//!   `verify_doc_counts`. The segment merger and every codec underneath are
+//!   the ones `force_merge` runs.
 //! * The merge into the HNSW scalar-quantized format starts from segments of
 //!   the flat scalar-quantized format (`SwitchingCodec`), as the Java fixture
 //!   `sq-then-hnswsq` does: a segment that format flushes cannot read its

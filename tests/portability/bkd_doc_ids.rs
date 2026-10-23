@@ -212,8 +212,11 @@ fn write_corpus(dir: &Path) {
                 .expect("add point");
         }
         writer
-            .finish(&mut *meta, &mut *index, &mut *data)
-            .expect("finish");
+            .finish(&mut *data)
+            .expect("finish")
+            .expect("the tree has points")
+            .run(&mut *meta, &mut *index)
+            .expect("write index");
         writer.close().expect("close writer");
         meta.close().expect("close meta");
         index.close().expect("close index");

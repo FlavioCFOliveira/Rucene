@@ -438,7 +438,7 @@ fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &Fixtu
             .field_info_by_number(*number)
             .expect("a known field")
             .name;
-        let Ok(values) = reader.get_values(name) else {
+        let Ok(Some(values)) = reader.get_values(name) else {
             continue;
         };
         let _ = values.size();
@@ -793,8 +793,10 @@ fn intersect_field(
         .field_info_by_number(number)
         .expect("a known field")
         .name;
-    let values = reader.get_values(name)?;
-    values.intersect(visitor)
+    match reader.get_values(name)? {
+        Some(values) => values.intersect(visitor),
+        None => Ok(()),
+    }
 }
 
 /// Replaces `patch.len()` bytes of one file, in place, keeping its length.
@@ -991,20 +993,21 @@ fn get_values_answers_exactly_as_lucene_does() {
         .expect("a valid segment opens");
     reader.check_integrity().expect("integrity");
 
-    let written = reader.get_values("one").unwrap_or_else(|error| {
-        panic!(
-            "[{}] the field the fixture wrote must be readable: {error}",
-            fixture.name
-        )
-    });
+    let written = reader
+        .get_values("one")
+        .unwrap_or_else(|error| {
+            panic!(
+                "[{}] the field the fixture wrote must be readable: {error}",
+                fixture.name
+            )
+        })
+        .expect("the field the fixture wrote has a tree");
     assert_eq!(written.size().unwrap(), i64::from(fixture.max_doc));
 
     let absent = reader
         .get_values("two")
         .expect("a field with no metadata entry is Java's null, not a throw");
-    assert_eq!(absent.size().unwrap(), 0);
-    assert_eq!(absent.doc_count().unwrap(), 0);
-    assert!(absent.min_packed_value().expect("no error").is_none());
+    assert!(absent.is_none(), "Java's `getValues` answers null");
 
     assert!(
         reader.get_values("nosuchfield").is_err(),

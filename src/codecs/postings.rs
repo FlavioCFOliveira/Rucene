@@ -25,13 +25,14 @@ use std::sync::{Arc, LazyLock, RwLock};
 
 use crate::codecs::doc_values::DocValuesProducer;
 use crate::codecs::knn_vectors::KnnVectorsReader;
+use crate::codecs::norms::NormsProducer;
 use crate::codecs::points::PointsReader;
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stored_fields::StoredFieldsReader;
 use crate::codecs::stub::FieldInfo;
 use crate::codecs::term_vectors::TermVectorsReader;
 use crate::error::{LuceneError, Result};
-use crate::index::IndexOptions;
+use crate::index::{IndexOptions, NumericDocValues};
 use crate::search::NO_MORE_DOCS;
 use crate::store::{DataInput, DataOutput, IndexInput, IndexOutput};
 use crate::util::{BytesRef, FixedBitSet};
@@ -56,49 +57,6 @@ pub use crate::codecs::term_state::{
 /// State passed to [`FieldsConsumer::merge`] describing the source segments.
 ///
 pub use crate::index::merge::MergeState;
-
-// -----------------------------------------------------------------------------
-// Doc-values / norms abstractions used by postings
-// -----------------------------------------------------------------------------
-
-/// Random-access view of one numeric doc-values field, used by the postings
-/// path to read norms.
-///
-/// **This is not a port of a Lucene type, and no Lucene type carries this
-/// name.** Java passes `org.apache.lucene.index.NumericDocValues` — a
-/// forward-only iterator, ported as [`crate::index::NumericDocValues`] — down
-/// the postings path, obtaining a fresh one from the `NormsProducer` for every
-/// term so that the iterator contract holds. This port instead grew a
-/// random-access shape for that same job, so the two cannot be the same trait.
-/// The name says so, rather than claiming a Lucene type this does not
-/// implement.
-///
-/// The divergence is described in full at
-/// `crate::index::segment_merger::PostingsNormsAdapter`, which bridges the two;
-/// unifying them is the faithful fix and is tracked separately.
-pub trait PostingsNumericDocValues {
-    /// Returns the value for the given document.
-    fn get(&self, doc_id: i32) -> Result<i64>;
-}
-
-/// Source of normalization values for the postings path.
-///
-/// **This is not a port of a Lucene type, and no Lucene type carries this
-/// name.** Java has a single `org.apache.lucene.codecs.NormsProducer`, ported
-/// as [`crate::codecs::norms::NormsProducer`], which the norms format and the
-/// postings path share. This port grew a second, narrower trait for the
-/// postings path, whose `get_norms` hands back the random-access
-/// [`PostingsNumericDocValues`] instead of the iterator Java returns, and which
-/// carries none of `check_integrity`, `get_merge_instance` or `close`. The name
-/// says so, rather than claiming a Lucene type this does not implement.
-///
-/// The divergence is described in full at
-/// `crate::index::segment_merger::PostingsNormsAdapter`, which bridges the two;
-/// unifying them is the faithful fix and is tracked separately.
-pub trait PostingsNormsProducer: Send + Sync {
-    /// Returns the numeric doc-values for the requested field.
-    fn get_norms(&self, field_info: &FieldInfo) -> Result<Box<dyn PostingsNumericDocValues>>;
-}
 
 // -----------------------------------------------------------------------------
 // Field / term / postings iteration (re-exported from the index module)
@@ -235,15 +193,90 @@ impl TermsEnum for SingleTermsEnum {
 /// Writes all fields, terms and postings for a segment.
 ///
 /// Equivalent to `org.apache.lucene.codecs.FieldsConsumer`.
-pub trait FieldsConsumer: Send + Sync {
+///
+/// `norms` is the segment's [`NormsProducer`], or `None` — Java's `null` — when
+/// no field has norms; the postings writer reads a field's norms from it,
+/// term by term, to compute the impacts it writes with its skip data.
+pub trait FieldsConsumer {
     /// Writes every field/term/posting in `fields`.
-    fn write(&mut self, fields: &dyn Fields, norms: &dyn PostingsNormsProducer) -> Result<()>;
+    ///
+    /// Equivalent to `FieldsConsumer.write(Fields, NormsProducer)`.
+    fn write(&mut self, fields: &dyn Fields, norms: Option<&dyn NormsProducer>) -> Result<()>;
 
-    /// Merges the source segments described by `merge_state`.
-    fn merge(&mut self, merge_state: &MergeState, norms: &dyn PostingsNormsProducer) -> Result<()>;
+    /// Merges in the fields from the readers in `merge_state`.
+    ///
+    /// Equivalent to `FieldsConsumer.merge(MergeState, NormsProducer)`
+    /// (`FieldsConsumer.java:72-96`): every non-null postings producer is
+    /// integrity-checked and given a slice of the composite doc-ID space —
+    /// starting at the sum of the `maxDoc`s before it, null producers
+    /// included — and the merged view of all of them, mapped around deleted
+    /// documents ([`MappedMultiFields`](crate::index::mapped_multi_fields::MappedMultiFields)
+    /// over [`MultiFields`](crate::index::multi_fields::MultiFields)), is
+    /// handed to [`write`](Self::write). A format that can do better — bulk-
+    /// copying bytes, say — overrides this.
+    ///
+    /// `MappedMultiFields` shares the merge state with every terms and
+    /// postings enum it hands out, as Java's reference does; it receives a
+    /// [`Clone`] of `merge_state`, which is that same state: every doc map,
+    /// reader and live-docs set in it is the original's own object.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the integrity checks, the merged view or
+    /// [`write`](Self::write) raise.
+    fn merge(&mut self, merge_state: &MergeState, norms: Option<&dyn NormsProducer>) -> Result<()> {
+        let mut fields: Vec<Box<dyn Fields>> = Vec::new();
+        let mut slices: Vec<crate::index::multi_reader::ReaderSlice> = Vec::new();
+
+        let mut doc_base = 0i32;
+
+        for (reader_index, producer) in merge_state.fields_producers.iter().enumerate() {
+            let max_doc = merge_state.max_docs[reader_index];
+            if let Some(producer) = producer {
+                merge_state.check_aborted()?;
+                producer.check_integrity()?;
+                slices.push(crate::index::multi_reader::ReaderSlice::new(
+                    doc_base,
+                    max_doc,
+                    reader_index as i32,
+                ));
+                fields.push(Box::new(SharedFieldsProducer(Arc::clone(producer))));
+            }
+            doc_base += max_doc;
+        }
+
+        let merged_fields = crate::index::mapped_multi_fields::MappedMultiFields::new(
+            Arc::new(merge_state.clone()),
+            crate::index::multi_fields::MultiFields::new(fields, slices),
+        );
+        self.write(&merged_fields, norms)
+    }
 
     /// Closes this consumer, releasing all resources.
     fn close(&mut self) -> Result<()>;
+}
+
+/// A postings producer of a merge state, seen as the [`Fields`] it is.
+///
+/// Java's `FieldsConsumer.merge` adds each `FieldsProducer` itself to the list
+/// it hands `MultiFields` (`FieldsConsumer.java:86`). `MultiFields` here owns
+/// boxed subs while the merge state shares its producers behind an [`Arc`], so
+/// this adapter forwards to the shared producer and is otherwise that same
+/// object.
+struct SharedFieldsProducer(Arc<dyn FieldsProducer>);
+
+impl Fields for SharedFieldsProducer {
+    fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        self.0.iterator()
+    }
+
+    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        self.0.terms(field)
+    }
+
+    fn size(&self) -> i32 {
+        self.0.size()
+    }
 }
 
 /// Reads all fields, terms and postings for a segment.
@@ -502,7 +535,7 @@ pub trait PostingsReaderBase: Send + Sync + fmt::Display {
 /// Low-level postings writer used by term dictionaries.
 ///
 /// Equivalent to `org.apache.lucene.codecs.PostingsWriterBase`.
-pub trait PostingsWriterBase: Send + Sync {
+pub trait PostingsWriterBase {
     /// Performs one-time initialization, typically writing a header.
     fn init(&mut self, terms_out: &mut dyn IndexOutput, state: &SegmentWriteState) -> Result<()>;
 
@@ -517,7 +550,7 @@ pub trait PostingsWriterBase: Send + Sync {
         term: &BytesRef,
         terms_enum: &mut dyn TermsEnum,
         docs_seen: &mut FixedBitSet,
-        norms: &dyn PostingsNormsProducer,
+        norms: Option<&dyn NormsProducer>,
     ) -> Result<Option<BlockTermState>>;
 
     /// Encodes term metadata to the provided output.
@@ -576,7 +609,12 @@ impl PushPostingsWriterState {
 /// implement this trait automatically implement [`PostingsWriterBase`] via the
 /// blanket implementation below; they only need to supply the lifecycle,
 /// metadata encoding and push callbacks.
-pub trait PushPostingsWriterBase: Send + Sync {
+///
+/// Like Java's, a writer keeps the norms iterator of the term it is writing
+/// (`startTerm(NumericDocValues)`); that iterator is not thread-safe, so this
+/// trait, [`PostingsWriterBase`] and [`FieldsConsumer`] are not `Send` or
+/// `Sync`. A postings writer lives on the thread that flushes or merges.
+pub trait PushPostingsWriterBase {
     /// Returns the shared mutable state.
     fn push_state(&self) -> &PushPostingsWriterState;
 
@@ -601,8 +639,14 @@ pub trait PushPostingsWriterBase: Send + Sync {
     /// Returns a newly created empty term state.
     fn new_term_state(&self) -> Result<BlockTermState>;
 
-    /// Starts a new term.
-    fn start_term(&mut self, norms: Option<&dyn PostingsNumericDocValues>) -> Result<()>;
+    /// Starts a new term; `norms` are the field's norms, or `None` when the
+    /// field has none.
+    ///
+    /// Equivalent to `PushPostingsWriterBase.startTerm(NumericDocValues)`,
+    /// whose implementations keep the reference for the term's documents
+    /// (`Lucene104PostingsWriter.java:240-257`); the writer receives them
+    /// here to keep until the next term.
+    fn start_term(&mut self, norms: Option<Box<dyn NumericDocValues>>) -> Result<()>;
 
     /// Finishes the current term.
     fn finish_term(&mut self, state: &mut BlockTermState) -> Result<()>;
@@ -670,7 +714,7 @@ pub trait PushPostingsWriterBase: Send + Sync {
         _term: &BytesRef,
         terms_enum: &mut dyn TermsEnum,
         docs_seen: &mut FixedBitSet,
-        norms: &dyn PostingsNormsProducer,
+        norms: Option<&dyn NormsProducer>,
     ) -> Result<Option<BlockTermState>> {
         let field_info = self
             .push_state()
@@ -679,12 +723,21 @@ pub trait PushPostingsWriterBase: Send + Sync {
             .ok_or_else(|| LuceneError::IllegalState("set_field not called".to_string()))?
             .clone();
 
-        let mut norms_values: Option<Box<dyn PostingsNumericDocValues>> = None;
-        if field_info.has_norms() {
-            norms_values = Some(norms.get_norms(&field_info)?);
-        }
-        let norms_ref = norms_values.as_deref();
-        self.start_term(norms_ref)?;
+        // A fresh, forward-only iterator over the field's norms for every term
+        // (`PushPostingsWriterBase.java:118-124`): the writer reads only this
+        // term's documents from it, with `advanceExact`.
+        let norm_values = if !field_info.has_norms() {
+            None
+        } else {
+            let norms = norms.ok_or_else(|| {
+                LuceneError::IllegalState(format!(
+                    "field \"{}\" has norms, but no norms producer was given",
+                    field_info.name
+                ))
+            })?;
+            Some(norms.get_norms(&field_info)?)
+        };
+        self.start_term(norm_values)?;
 
         let enum_flags = self.push_state().enum_flags;
         let write_freqs = self.push_state().write_freqs;
@@ -769,7 +822,7 @@ impl<T: PushPostingsWriterBase + ?Sized> PostingsWriterBase for T {
         term: &BytesRef,
         terms_enum: &mut dyn TermsEnum,
         docs_seen: &mut FixedBitSet,
-        norms: &dyn PostingsNormsProducer,
+        norms: Option<&dyn NormsProducer>,
     ) -> Result<Option<BlockTermState>> {
         PushPostingsWriterBase::write_term(self, term, terms_enum, docs_seen, norms)
     }
@@ -1022,25 +1075,6 @@ mod tests {
         }
     }
 
-    // Stub norms -----------------------------------------------------------
-    #[derive(Debug, Default, Clone)]
-    struct StubNumericDocValues;
-
-    impl PostingsNumericDocValues for StubNumericDocValues {
-        fn get(&self, _doc_id: i32) -> Result<i64> {
-            Ok(0)
-        }
-    }
-
-    #[derive(Debug, Default, Clone)]
-    struct StubNormsProducer;
-
-    impl PostingsNormsProducer for StubNormsProducer {
-        fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn PostingsNumericDocValues>> {
-            Ok(Box::new(StubNumericDocValues))
-        }
-    }
-
     // Stub FieldsConsumer ---------------------------------------------------
     #[derive(Debug, Default, Clone)]
     struct StubFieldsConsumer;
@@ -1049,7 +1083,7 @@ mod tests {
         fn write(
             &mut self,
             _fields: &dyn Fields,
-            _norms: &dyn PostingsNormsProducer,
+            _norms: Option<&dyn NormsProducer>,
         ) -> Result<()> {
             Ok(())
         }
@@ -1057,7 +1091,7 @@ mod tests {
         fn merge(
             &mut self,
             _merge_state: &MergeState,
-            _norms: &dyn PostingsNormsProducer,
+            _norms: Option<&dyn NormsProducer>,
         ) -> Result<()> {
             Ok(())
         }
@@ -1225,7 +1259,7 @@ mod tests {
             Ok(BlockTermState::default())
         }
 
-        fn start_term(&mut self, _norms: Option<&dyn PostingsNumericDocValues>) -> Result<()> {
+        fn start_term(&mut self, _norms: Option<Box<dyn NumericDocValues>>) -> Result<()> {
             Ok(())
         }
 
@@ -1270,7 +1304,7 @@ mod tests {
             _term: &BytesRef,
             _terms_enum: &mut dyn TermsEnum,
             _docs_seen: &mut FixedBitSet,
-            _norms: &dyn PostingsNormsProducer,
+            _norms: Option<&dyn NormsProducer>,
         ) -> Result<Option<BlockTermState>> {
             Ok(None)
         }
@@ -1331,11 +1365,11 @@ mod tests {
         let read_state = SegmentReadState::new(dir_ref, &segment_info, &field_infos, context);
 
         let mut consumer = format.fields_consumer(&write_state).unwrap();
-        consumer.write(&StubFields, &StubNormsProducer).unwrap();
+        consumer.write(&StubFields, None).unwrap();
         consumer
             .merge(
                 &MergeState::from_fields_producers(Vec::new(), Vec::new()),
-                &StubNormsProducer,
+                None,
             )
             .unwrap();
         consumer.close().unwrap();
@@ -1458,7 +1492,7 @@ mod tests {
             &BytesRef::default(),
             &mut StubTermsEnum::default(),
             &mut docs_seen,
-            &StubNormsProducer,
+            None,
         )
         .unwrap();
         assert!(result.is_none());
@@ -1522,7 +1556,7 @@ mod tests {
                 &BytesRef::default(),
                 &mut StubTermsEnum::default(),
                 &mut docs_seen,
-                &StubNormsProducer,
+                None,
             )
             .unwrap();
         assert!(result.is_none());

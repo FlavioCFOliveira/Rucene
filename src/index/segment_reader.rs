@@ -1852,12 +1852,11 @@ impl LeafReader for SegmentReader {
         let Some(guard) = self.get_points_reader()? else {
             return Ok(None);
         };
-        // `PointsReader::get_values` returns `Box<dyn PointValues>`; the codec
-        // layer re-exports the index-layer `PointValues`, so this is directly
-        // `Box<dyn IndexPointValues>`. The guard is dropped here; the returned
-        // box is owned and independent of the reader's lock.
-        let values = guard.get_values(field)?;
-        Ok(Some(values))
+        // The codec layer re-exports the index-layer `PointValues`, so the
+        // reader's answer — `None` for a field with no tree in this segment,
+        // Java's `null` — is directly this method's. The returned box is owned
+        // and independent of the reader's lock.
+        guard.get_values(field)
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -2555,7 +2554,7 @@ mod tests {
             self.inner.check_integrity()
         }
 
-        fn get_values(&self, field: &str) -> Result<Box<dyn PointValues>> {
+        fn get_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
             self.inner.get_values(field)
         }
 

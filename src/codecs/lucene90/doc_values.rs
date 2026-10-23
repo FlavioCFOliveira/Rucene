@@ -593,9 +593,14 @@ struct NumericStats {
 impl NumericStats {
     fn compute(values: &[i64], ords: bool) -> Self {
         if values.is_empty() {
+            // A field whose every value belongs to a deleted document has none
+            // left after a merge. Java's `MinMaxTracker` then still holds its
+            // initial bounds, and `writeValues` writes that `min`
+            // (`Lucene90DocValuesConsumer.java:172-181, 432-434, 505`), with
+            // the `gcd` it never updated.
             return Self {
-                min: 0,
-                max: 0,
+                min: i64::MAX,
+                max: i64::MIN,
                 gcd: 0,
                 unique_values: None,
                 do_blocks: false,
@@ -3410,6 +3415,15 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
 
     fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
         match self.entries.get(&field.number) {
+            // A field no document has a value for: `DocValues.emptyBinary()`,
+            // before anything else of the entry is looked at
+            // (`Lucene90DocValuesProducer.java:1210-1215`). Its lengths are
+            // the consumer's initial `Integer.MAX_VALUE` and `0`
+            // (`Lucene90DocValuesConsumer.java:616-617, 651-652`), which describe
+            // no value.
+            Some(FieldEntry::Binary(entry)) if entry.docs_with_field_offset == -2 => {
+                Ok(Box::new(EmptyBinaryDocValues::new()))
+            }
             Some(FieldEntry::Binary(entry)) => Ok(Box::new(LazyBinaryDocValues::new(
                 &*self.data,
                 self.max_doc,

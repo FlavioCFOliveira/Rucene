@@ -3363,7 +3363,9 @@ impl TemporalMergePolicy {
         let read_state =
             crate::codecs::state::SegmentReadState::new(reader_dir, si, &field_infos, context);
         let points_reader = codec.points_format().fields_reader(&read_state)?;
-        let point_values = points_reader.get_values(&self.temporal_field)?;
+        let Some(point_values) = points_reader.get_values(&self.temporal_field)? else {
+            return Ok(None);
+        };
         let (Some(min_packed), Some(max_packed)) = (
             point_values.min_packed_value()?,
             point_values.max_packed_value()?,

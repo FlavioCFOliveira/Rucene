@@ -656,16 +656,16 @@ impl PointsReader for BufferedPointsReader {
     ///
     /// Equivalent to the `fieldName.equals(fieldInfo.name) == false` guard,
     /// whose message Java words as "fieldName must be the same".
-    fn get_values(&self, field: &str) -> Result<Box<dyn PointValues>> {
+    fn get_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
         if field != self.field_name {
             return Err(LuceneError::IllegalArgument(format!(
                 "fieldName must be the same: asked for \"{field}\" but this reader serves \"{}\"",
                 self.field_name
             )));
         }
-        Ok(Box::new(BufferedPointValues {
+        Ok(Some(Box::new(BufferedPointValues {
             buffer: Arc::clone(&self.buffer),
-        }))
+        })))
     }
 
     /// Java does not override `getMergeInstance`, whose default returns `this`;
@@ -1099,7 +1099,10 @@ mod tests {
             field_name: "p".to_string(),
             buffer,
         };
-        let values = reader.get_values("p").expect("its own field");
+        let values = reader
+            .get_values("p")
+            .expect("its own field")
+            .expect("the buffer has values");
         assert_eq!(values.size().unwrap(), 1);
         assert_eq!(values.doc_count().unwrap(), 1);
         assert_eq!(values.num_dimensions().unwrap(), 1);

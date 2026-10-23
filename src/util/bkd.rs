@@ -3735,13 +3735,35 @@ impl BKDWriter {
         self.point_count
     }
 
+    /// Creates the writer [`add`](Self::add) buffers points into.
+    ///
+    /// Equivalent to `BKDWriter.initPointWriter()`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java buffers in a `HeapPointWriter`
+    /// only while `totalPointCount` fits in `maxPointsSortInHeap` (derived
+    /// from `maxMBSortInHeap`), and otherwise spills to an
+    /// `OfflinePointWriter` (`BKDWriter.java:222-232`); `finish` then builds
+    /// the tree over a `BKDRadixSelector.PathSlice`, partitioning offline
+    /// until a slice fits in heap (`:930-1034, 1922-2126`), with temporary
+    /// files in the segment's own directory (`Lucene90PointsWriter.java:152`
+    /// for `writeField`, `:252` for `merge`). This port keeps every point in
+    /// one `HeapPointWriter`, and `Lucene90PointsWriter` hands it a temporary
+    /// `RamDirectory`. Why: the points writer only receives a borrowed
+    /// `&dyn Directory`, while the offline writers need an owned
+    /// `Arc<dyn Directory>`; how to give the points writer an owned handle on
+    /// the segment directory is an architecture decision pending with the
+    /// user (`OwnedSegmentWriteState`, which the vectors writers receive,
+    /// already holds one). Consequence: the whole buffer — `totalPointCount`
+    /// points — is allocated here, at the first [`add`](Self::add), not grown
+    /// as points arrive. In a merge that count is the sum of the source
+    /// segments' point counts, read from their `.kdm` files, deleted points
+    /// included, so a checksum-valid but inflated count decides the
+    /// allocation; a failed allocation aborts the process instead of spilling
+    /// to disk.
     fn init_point_writer(&mut self) -> Result<()> {
         if self.point_writer.is_some() {
             return Ok(());
         }
-        // All points are kept in memory during the build. This matches the task
-        // allowance to switch any offline writer into a heap writer at finish
-        // time, and keeps directory ownership simple in safe Rust.
         self.point_writer = Some(Box::new(HeapPointWriter::new(
             self.config.clone(),
             self.total_point_count as usize,
@@ -3832,15 +3854,13 @@ impl BKDWriter {
     /// propagates whatever the outputs raise.
     pub fn write_field(
         &mut self,
-        meta_out: &mut dyn IndexOutput,
-        index_out: &mut dyn IndexOutput,
         data_out: &mut dyn IndexOutput,
         tree: &mut dyn MutablePointTree,
-    ) -> Result<()> {
+    ) -> Result<Option<BKDFinalizer>> {
         if self.config.num_dims == 1 {
-            self.write_field_1dim(meta_out, index_out, data_out, tree)
+            self.write_field_1dim(data_out, tree)
         } else {
-            self.write_field_n_dims(meta_out, index_out, data_out, tree)
+            self.write_field_n_dims(data_out, tree)
         }
     }
 
@@ -3882,11 +3902,9 @@ impl BKDWriter {
     /// Equivalent to `BKDWriter.writeFieldNDims` (`BKDWriter.java:524-596`).
     fn write_field_n_dims(
         &mut self,
-        meta_out: &mut dyn IndexOutput,
-        index_out: &mut dyn IndexOutput,
         data_out: &mut dyn IndexOutput,
         tree: &mut dyn MutablePointTree,
-    ) -> Result<()> {
+    ) -> Result<Option<BKDFinalizer>> {
         if self.point_count != 0 {
             return Err(LuceneError::IllegalState(
                 "cannot mix add and writeField".to_string(),
@@ -3900,7 +3918,7 @@ impl BKDWriter {
         self.finished = true;
         self.point_count = tree.size()?;
         if self.point_count == 0 {
-            return Ok(());
+            return Ok(None);
         }
         let point_count = self.point_count as usize;
         let num_leaves = point_count.div_ceil(self.config.max_points_in_leaf_node as usize) as i32;
@@ -3935,26 +3953,13 @@ impl BKDWriter {
             num_leaves,
         )?;
 
-        let leaf_nodes = BKDTreeLeafNodes {
-            leaf_block_fps,
-            split_packed_values,
+        Ok(Some(self.make_writer(
             split_dimension_values,
+            split_packed_values,
+            leaf_block_fps,
             num_leaves,
-        };
-        let packed_index = pack_index(&self.config, &leaf_nodes)?;
-        write_index(
-            meta_out,
-            index_out,
-            &self.config,
-            self.version,
-            num_leaves,
-            &self.min_packed_value,
-            &self.max_packed_value,
-            self.point_count,
-            self.docs_seen.len() as i32,
-            &packed_index,
             data_start_fp,
-        )
+        )))
     }
 
     /// The one-dimensional half of [`write_field`](Self::write_field): sort the
@@ -3970,11 +3975,9 @@ impl BKDWriter {
     /// buffer order **is** the sorted order.
     fn write_field_1dim(
         &mut self,
-        meta_out: &mut dyn IndexOutput,
-        index_out: &mut dyn IndexOutput,
         data_out: &mut dyn IndexOutput,
         tree: &mut dyn MutablePointTree,
-    ) -> Result<()> {
+    ) -> Result<Option<BKDFinalizer>> {
         let count = tree.size()? as usize;
         {
             let mut points = MutableTreePoints { tree };
@@ -3988,7 +3991,7 @@ impl BKDWriter {
             let doc_id = tree.doc_id(i as i32);
             one_dim.add(data_out, &scratch, doc_id, self.total_point_count)?;
         }
-        one_dim.finish(self, meta_out, index_out, data_out)
+        one_dim.finish(self, data_out)
     }
 
     /// More efficient bulk-add for incoming [`PointValues`].
@@ -3996,25 +3999,23 @@ impl BKDWriter {
     /// This does a merge sort of the already sorted values and currently only
     /// works when `numDims == 1`.
     ///
-    /// Equivalent to `org.apache.lucene.util.bkd.BKDWriter#merge`.
+    /// Equivalent to `org.apache.lucene.util.bkd.BKDWriter#merge`
+    /// (`BKDWriter.java:645-689`).
     ///
-    /// Java returns an `IORunnable` -- `null` when every document holding
-    /// dimensional values was deleted -- which the caller runs after writing
-    /// the field number; see [`make_writer`](Self::make_writer) for why this
-    /// port writes the index in place instead.
+    /// Returns the deferred index write, `None` — Java's `null` — when every
+    /// document holding dimensional values was deleted; the caller writes the
+    /// field number and then runs it. See [`BKDFinalizer`].
     ///
     /// # Errors
     ///
     /// Propagates the errors of walking the readers and of writing the leaf
-    /// blocks and the index.
+    /// blocks.
     pub fn merge(
         &mut self,
-        meta_out: &mut dyn IndexOutput,
-        index_out: &mut dyn IndexOutput,
         data_out: &mut dyn IndexOutput,
         doc_maps: Option<&[DocMap]>,
         readers: &[&dyn PointValues],
-    ) -> Result<()> {
+    ) -> Result<Option<BKDFinalizer>> {
         // `Option::is_none_or` would read better but is newer than this
         // crate's MSRV of 1.80.
         #[allow(clippy::unnecessary_map_or)]
@@ -4070,7 +4071,7 @@ impl BKDWriter {
             }
         }
 
-        one_dim_writer.finish(self, meta_out, index_out, data_out)
+        one_dim_writer.finish(self, data_out)
     }
 
     /// Sorts `[from, to)` by the whole packed value, then by doc ID.
@@ -4101,23 +4102,21 @@ impl BKDWriter {
         apply_permutation(points, from, &order);
     }
 
-    /// Finishes writing the BKD tree.
+    /// Finishes writing the BKD tree: the leaf data blocks go to `data_out`,
+    /// and the returned [`BKDFinalizer`] writes the meta header and the packed
+    /// index once the caller runs it.
     ///
-    /// The meta header is written to `meta_out`, the packed index tree to
-    /// `index_out`, and the leaf data blocks to `data_out`.
-    pub fn finish(
-        &mut self,
-        meta_out: &mut dyn IndexOutput,
-        index_out: &mut dyn IndexOutput,
-        data_out: &mut dyn IndexOutput,
-    ) -> Result<()> {
+    /// Equivalent to `org.apache.lucene.util.bkd.BKDWriter#finish`
+    /// (`BKDWriter.java:930-1034`), which returns `null` — `None` here — when
+    /// no point was added, writing nothing at all.
+    pub fn finish(&mut self, data_out: &mut dyn IndexOutput) -> Result<Option<BKDFinalizer>> {
         if self.finished {
             return Err(LuceneError::IllegalState(
                 "BKDWriter is already finished".to_string(),
             ));
         }
         if self.point_count == 0 {
-            return Ok(());
+            return Ok(None);
         }
         self.finished = true;
 
@@ -4152,66 +4151,44 @@ impl BKDWriter {
             num_leaves,
         )?;
 
-        self.make_writer(
-            meta_out,
-            index_out,
+        Ok(Some(self.make_writer(
             split_dimension_values,
             split_packed_values,
             leaf_block_fps,
             num_leaves,
             data_start_fp,
-        )
+        )))
     }
 
-    /// Writes the packed index of a finished tree.
+    /// Returns the deferred write of a finished tree's index.
     ///
-    /// Equivalent to `org.apache.lucene.util.bkd.BKDWriter#makeWriter`, which
-    /// wraps the split values and the leaf file pointers in a
-    /// `BKDTreeLeafNodes` view and returns an `IORunnable` that runs
-    /// `writeIndex` when the caller chooses to.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java defers the write: the caller
-    /// (`Lucene90PointsWriter.java:159-193`) writes the field number to
-    /// `metaOut` and only then runs the returned `IORunnable`, and writes
-    /// nothing at all when `finish` returned `null` for an empty tree. Holding
-    /// a `&mut IndexOutput` inside a returned closure would borrow both outputs
-    /// for the rest of the caller's body, so this port writes the index where
-    /// Java builds the runnable and `crate::codecs::lucene90` writes the field
-    /// number before calling in. The bytes land in the same order.
-    ///
-    /// # Errors
-    ///
-    /// Propagates the errors of packing and writing the index.
+    /// Equivalent to `org.apache.lucene.util.bkd.BKDWriter#makeWriter`
+    /// (`BKDWriter.java:1036-1069`), which wraps the split values and the leaf
+    /// file pointers in a `BKDTreeLeafNodes` view and returns an `IORunnable`
+    /// that runs `writeIndex` when the caller chooses to.
     fn make_writer(
         &self,
-        meta_out: &mut dyn IndexOutput,
-        index_out: &mut dyn IndexOutput,
         split_dimension_values: Vec<u8>,
         split_packed_values: Vec<u8>,
         leaf_block_fps: Vec<i64>,
         num_leaves: i32,
         data_start_fp: i64,
-    ) -> Result<()> {
-        let leaf_nodes = BKDTreeLeafNodes {
-            leaf_block_fps,
-            split_packed_values,
-            split_dimension_values,
-            num_leaves,
-        };
-        let packed_index = pack_index(&self.config, &leaf_nodes)?;
-        write_index(
-            meta_out,
-            index_out,
-            &self.config,
-            self.version,
-            num_leaves,
-            &self.min_packed_value,
-            &self.max_packed_value,
-            self.point_count,
-            self.docs_seen.len() as i32,
-            &packed_index,
+    ) -> BKDFinalizer {
+        BKDFinalizer {
+            config: self.config.clone(),
+            version: self.version,
+            leaf_nodes: BKDTreeLeafNodes {
+                leaf_block_fps,
+                split_packed_values,
+                split_dimension_values,
+                num_leaves,
+            },
+            min_packed_value: self.min_packed_value.clone(),
+            max_packed_value: self.max_packed_value.clone(),
+            point_count: self.point_count,
+            doc_count: self.docs_seen.len() as i32,
             data_start_fp,
-        )
+        }
     }
 
     /// Called on error, to check whether the checksum is also corrupt in this
@@ -5438,17 +5415,15 @@ impl OneDimensionBKDWriter {
     fn finish(
         mut self,
         writer: &mut BKDWriter,
-        meta_out: &mut dyn IndexOutput,
-        index_out: &mut dyn IndexOutput,
         data_out: &mut dyn IndexOutput,
-    ) -> Result<()> {
+    ) -> Result<Option<BKDFinalizer>> {
         if self.leaf_count > 0 {
             self.write_leaf_block(data_out)?;
             self.leaf_cardinality = 0;
             self.leaf_count = 0;
         }
         if self.value_count == 0 {
-            return Ok(());
+            return Ok(None);
         }
         writer.point_count = self.value_count;
         writer.min_packed_value = self.min_packed_value.clone();
@@ -5456,16 +5431,14 @@ impl OneDimensionBKDWriter {
         writer.docs_seen = self.docs_seen;
 
         let num_leaves = self.leaf_block_fps.len() as i32;
-        writer.make_writer(
-            meta_out,
-            index_out,
+        Ok(Some(writer.make_writer(
             // A one-dimensional tree splits on dimension 0 at every node.
             vec![0u8; (num_leaves as usize).saturating_sub(1)],
             self.leaf_block_start_values,
             self.leaf_block_fps,
             num_leaves,
             self.data_start_fp,
-        )
+        )))
     }
 }
 
@@ -5473,6 +5446,71 @@ impl OneDimensionBKDWriter {
 // Index packing / writing helpers
 // -----------------------------------------------------------------------------
 
+/// The index write a finished BKD tree leaves to its caller.
+///
+/// Equivalent to the `IORunnable` that `BKDWriter.makeWriter` returns
+/// (`BKDWriter.java:1036-1069`) from `writeField`, `merge` and `finish`: its
+/// [`run`](Self::run) is `writeIndex(metaOut, indexOut, maxPointsInLeafNode,
+/// leafNodes, dataStartFP)` — the meta header, the packed index and its file
+/// pointers. The leaf blocks are already in the data file by then. Java's
+/// caller writes the field number to the meta file between receiving the
+/// runnable and running it, and writes nothing at all when it receives `null`
+/// (`Lucene90PointsWriter.java:160-166, 189-193, 286-290`).
+///
+/// **Divergence from Lucene 10.5.0.** Java's runnable captures the two outputs
+/// it writes to. A Rust value holding them would keep both mutably borrowed
+/// until it ran, so the caller could not write the field number in between;
+/// [`run`](Self::run) receives them instead. Called with the outputs the tree
+/// was written for, it writes what Java's runnable writes. The values Java's
+/// `writeIndex` reads off the writer — the bounds, the point count and the
+/// number of documents seen — are captured when the tree is finished, after
+/// which the writer no longer changes them.
+#[derive(Debug)]
+pub struct BKDFinalizer {
+    config: BKDConfig,
+    version: i32,
+    leaf_nodes: BKDTreeLeafNodes,
+    min_packed_value: Vec<u8>,
+    max_packed_value: Vec<u8>,
+    point_count: i64,
+    doc_count: i32,
+    data_start_fp: i64,
+}
+
+impl BKDFinalizer {
+    /// Writes the tree's meta header to `meta_out` and its packed index to
+    /// `index_out`.
+    ///
+    /// Equivalent to running the `IORunnable` of `BKDWriter.makeWriter`, that
+    /// is `BKDWriter.writeIndex(IndexOutput, IndexOutput, int, BKDTreeLeafNodes,
+    /// long)` (`BKDWriter.java:1284-1293`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates the errors of packing and writing the index.
+    pub fn run(
+        self,
+        meta_out: &mut dyn IndexOutput,
+        index_out: &mut dyn IndexOutput,
+    ) -> Result<()> {
+        let packed_index = pack_index(&self.config, &self.leaf_nodes)?;
+        write_index(
+            meta_out,
+            index_out,
+            &self.config,
+            self.version,
+            self.leaf_nodes.num_leaves,
+            &self.min_packed_value,
+            &self.max_packed_value,
+            self.point_count,
+            self.doc_count,
+            &packed_index,
+            self.data_start_fp,
+        )
+    }
+}
+
+#[derive(Debug)]
 struct BKDTreeLeafNodes {
     leaf_block_fps: Vec<i64>,
     split_packed_values: Vec<u8>,
@@ -6399,7 +6437,12 @@ mod tests {
         let mut meta = MockIndexOutput::new("meta", "meta.bin");
         let mut index = MockIndexOutput::new("index", "index.bin");
         let mut data = MockIndexOutput::new("data", "data.bin");
-        writer.finish(&mut meta, &mut index, &mut data).unwrap();
+        writer
+            .finish(&mut data)
+            .unwrap()
+            .unwrap()
+            .run(&mut meta, &mut index)
+            .unwrap();
         writer.close().unwrap();
 
         let meta_bytes = meta.into_inner();
@@ -6462,7 +6505,12 @@ mod tests {
         let mut meta = MockIndexOutput::new("meta", "meta.bin");
         let mut index = MockIndexOutput::new("index", "index.bin");
         let mut data = MockIndexOutput::new("data", "data.bin");
-        writer.finish(&mut meta, &mut index, &mut data).unwrap();
+        writer
+            .finish(&mut data)
+            .unwrap()
+            .unwrap()
+            .run(&mut meta, &mut index)
+            .unwrap();
         writer.close().unwrap();
 
         let mut meta_in = MockIndexInput::new(meta.into_inner(), "meta.bin");
@@ -6840,7 +6888,12 @@ mod tests {
         let mut meta = MockIndexOutput::new("meta", "meta.bin");
         let mut index = MockIndexOutput::new("index", "index.bin");
         let mut data = MockIndexOutput::new("data", "data.bin");
-        writer.finish(&mut meta, &mut index, &mut data).unwrap();
+        writer
+            .finish(&mut data)
+            .unwrap()
+            .unwrap()
+            .run(&mut meta, &mut index)
+            .unwrap();
         writer.close().unwrap();
 
         let mut meta_in = MockIndexInput::new(meta.into_inner(), "meta.bin");
