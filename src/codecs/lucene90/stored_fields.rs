@@ -53,19 +53,24 @@
 
 use std::cmp;
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::codecs::codec_util::{
     check_footer, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
     write_index_header,
 };
 use crate::codecs::compressing::{CompressionMode, Compressor, Decompressor, MatchingReaders};
-use crate::codecs::stored_fields::{StoredFieldsFormat, StoredFieldsReader, StoredFieldsWriter};
+use crate::codecs::stored_fields::{
+    merge_visitor_remapper, MergeVisitor, StoredFieldsFormat, StoredFieldsReader,
+    StoredFieldsWriter,
+};
 use crate::codecs::stub::{
     FieldInfo, FieldInfos, SegmentInfo, StoredFieldVisitor, StoredFieldVisitorStatus,
 };
 use crate::error::{LuceneError, Result};
-use crate::index::{segment_file_name, DocIDMergerSub, DocMap, MergeState, StoredFieldDataInput};
+use crate::index::{
+    segment_file_name, DocIDMerger, DocIDMergerSub, DocMap, MergeState, StoredFieldDataInput,
+};
 use crate::store::{
     ByteArrayDataInput, ByteBuffersDataOutput, DataInput, DataOutput, Directory, IOContext,
     IndexInput, IndexOutput,
@@ -830,7 +835,6 @@ struct CompressingStoredFieldsMergeSub {
     doc_map: DocMap,
     reader_index: usize,
     max_doc: i32,
-    #[allow(dead_code)]
     merge_strategy: MergeStrategy,
     doc_id: i32,
     mapped_doc_id: i32,
@@ -857,6 +861,51 @@ impl DocIDMergerSub for CompressingStoredFieldsMergeSub {
     fn set_mapped_doc_id(&mut self, doc_id: i32) {
         self.mapped_doc_id = doc_id;
     }
+}
+
+/// What one step of `DocIDMerger` tells the merge loop.
+///
+/// Java holds the `CompressingStoredFieldsMergeSub` that `DocIDMerger.next()`
+/// returns and compares consecutive steps with `==`, that is by object
+/// identity, to find the run of documents that one segment contributes in a
+/// row (`Lucene90CompressingStoredFieldsWriter.java:625-634`). A `&mut`
+/// reference cannot be held across the next call here, so the loop keeps the
+/// sub's position in the merger — which is exactly its identity — together
+/// with the fields it reads.
+#[derive(Debug, Clone, Copy)]
+struct StoredFieldsMergeStep {
+    /// Position of the sub inside the merger; stands in for Java's identity
+    /// comparison of the sub itself.
+    sub_index: usize,
+    reader_index: usize,
+    doc_id: i32,
+    merge_strategy: MergeStrategy,
+    mapped_doc_id: i32,
+}
+
+/// Advances the merger one document and reports what it landed on, or `None`
+/// once every source segment is exhausted.
+///
+/// Equivalent to `DocIDMerger.next()` as `Lucene90CompressingStoredFieldsWriter#merge`
+/// uses it (`Lucene90CompressingStoredFieldsWriter.java:621`, `629`, `639`,
+/// `646`).
+fn next_stored_fields_step(
+    merger: &mut DocIDMerger<CompressingStoredFieldsMergeSub>,
+) -> Result<Option<StoredFieldsMergeStep>> {
+    if merger.next_sub()?.is_none() {
+        return Ok(None);
+    }
+    let sub_index = merger.current_index().ok_or_else(|| {
+        LuceneError::IllegalState("DocIDMerger returned a sub it cannot locate".to_string())
+    })?;
+    let sub = merger.sub(sub_index);
+    Ok(Some(StoredFieldsMergeStep {
+        sub_index,
+        reader_index: sub.reader_index,
+        doc_id: sub.doc_id,
+        merge_strategy: sub.merge_strategy,
+        mapped_doc_id: sub.mapped_doc_id,
+    }))
 }
 
 /// Compresses blocks of stored documents.
@@ -1428,6 +1477,140 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
         write_footer(self.meta_stream.as_mut())?;
         write_footer(self.fields_stream.as_mut())?;
         Ok(())
+    }
+
+    /// Copies every document's stored fields from the segments being merged,
+    /// picking for each source segment the cheapest route that is safe for it.
+    ///
+    /// [`get_merge_strategy`](Self::get_merge_strategy) makes that choice once
+    /// per segment:
+    ///
+    /// * [`MergeStrategy::Bulk`] copies whole compressed chunks byte for byte
+    ///   through [`copy_chunks`](Self::copy_chunks), so the documents are never
+    ///   decompressed. A run of consecutive documents from the same segment is
+    ///   gathered first, because a chunk can only be copied as a whole.
+    /// * [`MergeStrategy::Doc`] copies one document at a time in its serialized
+    ///   form through [`copy_one_doc`](Self::copy_one_doc), decompressing but
+    ///   not re-encoding it.
+    /// * [`MergeStrategy::Visitor`] decodes every field and writes it again,
+    ///   which is what the trait's own [`StoredFieldsWriter::merge`] does for
+    ///   every segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when a segment of the merge has no
+    /// stored-fields reader, or when a strategy that needs this format's own
+    /// reader is handed another one, and propagates every I/O and corruption
+    /// error raised while reading the source segments.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingStoredFieldsWriter#merge`
+    /// (`Lucene90CompressingStoredFieldsWriter.java:602-653`).
+    fn merge(&mut self, merge_state: &MergeState) -> Result<i32> {
+        let num_readers = merge_state.stored_fields_readers.len();
+        let matching_readers = MatchingReaders::new(merge_state);
+        // Java builds a `MergeVisitor` per segment that needs one and keeps it
+        // in a parallel array; the visitor's whole state is the remapping its
+        // constructor computes, so that is what is kept here. The visitor
+        // itself borrows the writer and cannot outlive one document.
+        let mut remappers: Vec<Option<FieldInfos>> = Vec::with_capacity(num_readers);
+        let mut subs: Vec<CompressingStoredFieldsMergeSub> = Vec::with_capacity(num_readers);
+        for i in 0..num_readers {
+            merge_state.check_aborted()?;
+            let Some(reader) = merge_state.stored_fields_readers[i].as_ref() else {
+                // Java dereferences the reader unconditionally, so a missing
+                // one is a broken merge state either way; this reports it
+                // instead of dropping the segment's documents silently.
+                return Err(LuceneError::IllegalState(format!(
+                    "segment {i} of the merge has no stored-fields reader"
+                )));
+            };
+            reader.check_integrity()?;
+            let merge_strategy = self.get_merge_strategy(merge_state, &matching_readers, i);
+            remappers.push(if merge_strategy == MergeStrategy::Visitor {
+                merge_visitor_remapper(merge_state, i)
+            } else {
+                None
+            });
+            subs.push(CompressingStoredFieldsMergeSub {
+                doc_map: Arc::clone(&merge_state.doc_maps[i]),
+                reader_index: i,
+                max_doc: merge_state.max_docs[i],
+                merge_strategy,
+                doc_id: -1,
+                mapped_doc_id: -1,
+            });
+        }
+
+        let mut doc_count = 0i32;
+        let mut merger = DocIDMerger::new(subs, merge_state.needs_index_sort)?;
+        let mut step = next_stored_fields_step(&mut merger)?;
+        while let Some(current) = step {
+            debug_assert_eq!(current.mapped_doc_id, doc_count);
+            match current.merge_strategy {
+                MergeStrategy::Bulk => {
+                    // Gather the run of documents this segment contributes in a
+                    // row: chunks can only be copied whole.
+                    let from_doc_id = current.doc_id;
+                    let mut to_doc_id = from_doc_id;
+                    loop {
+                        step = next_stored_fields_step(&mut merger)?;
+                        match step {
+                            Some(next) if next.sub_index == current.sub_index => {
+                                to_doc_id += 1;
+                                debug_assert_eq!(next.doc_id, to_doc_id);
+                            }
+                            _ => break,
+                        }
+                    }
+                    to_doc_id += 1; // exclusive bound
+                    self.copy_chunks(
+                        merge_state,
+                        merger.sub(current.sub_index),
+                        from_doc_id,
+                        to_doc_id,
+                    )?;
+                    doc_count += to_doc_id - from_doc_id;
+                }
+                MergeStrategy::Doc => {
+                    let reader = merge_state.stored_fields_readers[current.reader_index]
+                        .as_ref()
+                        .and_then(|reader| reader.as_any())
+                        .and_then(|any| any.downcast_ref::<Lucene90CompressingStoredFieldsReader>())
+                        .ok_or_else(|| {
+                            LuceneError::IllegalState(
+                                "document-by-document merge needs a \
+                                 Lucene90CompressingStoredFieldsReader"
+                                    .to_string(),
+                            )
+                        })?;
+                    self.copy_one_doc(reader, current.doc_id)?;
+                    doc_count += 1;
+                    step = next_stored_fields_step(&mut merger)?;
+                }
+                MergeStrategy::Visitor => {
+                    let Some(reader) =
+                        merge_state.stored_fields_readers[current.reader_index].as_ref()
+                    else {
+                        return Err(LuceneError::IllegalState(format!(
+                            "segment {} of the merge has no stored-fields reader",
+                            current.reader_index
+                        )));
+                    };
+                    self.start_document()?;
+                    let mut visitor = MergeVisitor {
+                        writer: self,
+                        remapper: remappers[current.reader_index].as_ref(),
+                    };
+                    reader.document(current.doc_id, &mut visitor)?;
+                    self.finish_document()?;
+                    doc_count += 1;
+                    step = next_stored_fields_step(&mut merger)?;
+                }
+            }
+        }
+        self.finish(doc_count)?;
+        Ok(doc_count)
     }
 
     /// Releases every resource of the writer.
@@ -2498,6 +2681,7 @@ mod tests {
     use crate::store::RamDirectory;
     use crate::store::DEFAULT_IO_CONTEXT;
     use crate::util::string_helper::ID_LENGTH;
+    use crate::util::Bits;
     use crate::util::Version;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -3612,6 +3796,782 @@ mod tests {
             10
         )
         .is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Bulk merge — Lucene90CompressingStoredFieldsWriter#merge
+    // -----------------------------------------------------------------------
+
+    /// The format the merge tests use: chunks of four documents, so that a
+    /// handful of tiny documents already makes several chunks and a merge has
+    /// real chunk boundaries to copy. The production formats hold 1024 or 4096
+    /// documents per chunk, which would take that many documents to exercise.
+    const MERGE_TEST_FORMAT_NAME: &str = "TestBulkMergeStoredFields";
+    const MERGE_TEST_CHUNK_SIZE: usize = 1024;
+    const MERGE_TEST_DOCS_PER_CHUNK: usize = 4;
+
+    fn merge_test_format() -> Lucene90CompressingStoredFieldsFormat {
+        Lucene90CompressingStoredFieldsFormat::new(
+            MERGE_TEST_FORMAT_NAME,
+            CompressionMode::FAST,
+            MERGE_TEST_CHUNK_SIZE,
+            MERGE_TEST_DOCS_PER_CHUNK,
+            10,
+        )
+        .unwrap()
+    }
+
+    /// A writer of the merge-test format with the given compression
+    /// parameters, writing segment `name` into `dir`.
+    fn merge_test_writer(
+        dir: &Arc<dyn Directory>,
+        name: &str,
+        compression_mode: CompressionMode,
+        chunk_size: usize,
+    ) -> Lucene90CompressingStoredFieldsWriter {
+        Lucene90CompressingStoredFieldsWriter::new(
+            dir.as_ref(),
+            &make_segment_info(Arc::clone(dir), name, 0),
+            "",
+            &*DEFAULT_IO_CONTEXT,
+            MERGE_TEST_FORMAT_NAME,
+            compression_mode,
+            chunk_size,
+            MERGE_TEST_DOCS_PER_CHUNK,
+            10,
+        )
+        .unwrap()
+    }
+
+    /// One merge-test document: every stored field, in stored order.
+    type MergeDoc = Vec<(String, StoredValue)>;
+
+    /// The stored fields of merge-test document `n`.
+    ///
+    /// Every value type the format encodes appears, as do a multi-valued field
+    /// and documents that lack the optional field altogether, so comparing two
+    /// merged segments document by document compares every kind of stored
+    /// field. The documents stay far below [`MERGE_TEST_CHUNK_SIZE`], so a
+    /// chunk closes on the document count alone.
+    fn merge_doc(n: i32) -> MergeDoc {
+        let text = |value: StoredValue| ("text".to_string(), value);
+        let mut fields = vec![("id".to_string(), StoredValue::String(format!("doc-{n}")))];
+        match n.rem_euclid(6) {
+            0 => {}
+            1 => fields.push(text(StoredValue::Long(i64::from(n) * 1_000_000_007))),
+            2 => fields.push(text(StoredValue::Float(n as f32 / 4.0))),
+            3 => fields.push(text(StoredValue::Double(-f64::from(n) / 3.0))),
+            4 => fields.push(text(StoredValue::Bytes(vec![
+                (n & 0xff) as u8;
+                (n % 17) as usize + 1
+            ]))),
+            _ => {
+                fields.push(text(StoredValue::String(format!("first of {n}"))));
+                fields.push(text(StoredValue::String(format!("second of {n}"))));
+            }
+        }
+        fields.push(("value".to_string(), StoredValue::Int(n)));
+        fields
+    }
+
+    /// The merge-test documents numbered by `numbers`, in that order.
+    fn merge_docs(numbers: impl IntoIterator<Item = i32>) -> Vec<MergeDoc> {
+        numbers.into_iter().map(merge_doc).collect()
+    }
+
+    /// Writes one source segment holding merge-test documents
+    /// `first..first + count`, and returns its segment info.
+    fn write_merge_source(
+        dir: &Arc<dyn Directory>,
+        name: &str,
+        first: i32,
+        count: i32,
+    ) -> SegmentInfo {
+        let field_infos = make_field_infos();
+        let segment_info = make_segment_info(Arc::clone(dir), name, count);
+        let mut writer = merge_test_format()
+            .fields_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+            .unwrap();
+        for n in first..first + count {
+            writer.start_document().unwrap();
+            for (name, value) in merge_doc(n) {
+                let info = field_infos.field_info(&name).unwrap();
+                match value {
+                    StoredValue::Int(v) => writer.write_field_i32(info, v),
+                    StoredValue::Long(v) => writer.write_field_i64(info, v),
+                    StoredValue::Float(v) => writer.write_field_f32(info, v),
+                    StoredValue::Double(v) => writer.write_field_f64(info, v),
+                    StoredValue::Bytes(v) => writer.write_field_bytes(info, &v),
+                    StoredValue::String(v) => writer.write_field_string(info, &v),
+                }
+                .unwrap();
+            }
+            writer.finish_document().unwrap();
+        }
+        writer.finish(count).unwrap();
+        writer.close().unwrap();
+        segment_info
+    }
+
+    /// Opens one source segment for merging.
+    fn open_merge_source(
+        dir: &Arc<dyn Directory>,
+        segment_info: &SegmentInfo,
+    ) -> Box<dyn StoredFieldsReader> {
+        merge_test_format()
+            .fields_reader(
+                dir.as_ref(),
+                segment_info,
+                &make_field_infos(),
+                &*DEFAULT_IO_CONTEXT,
+            )
+            .unwrap()
+    }
+
+    /// Opens one source segment as this format's concrete reader, whose
+    /// recorded metadata a test may then alter.
+    fn concrete_merge_source(
+        dir: &Arc<dyn Directory>,
+        segment_info: &SegmentInfo,
+    ) -> Lucene90CompressingStoredFieldsReader {
+        Lucene90CompressingStoredFieldsReader::new(
+            dir.as_ref(),
+            segment_info,
+            "",
+            &make_field_infos(),
+            &*DEFAULT_IO_CONTEXT,
+            MERGE_TEST_FORMAT_NAME,
+            CompressionMode::FAST,
+        )
+        .unwrap()
+    }
+
+    /// `(numChunks, numDirtyChunks, numDirtyDocs)` of a source segment, as its
+    /// own reader reports them.
+    fn source_chunk_counters(
+        dir: &Arc<dyn Directory>,
+        segment_info: &SegmentInfo,
+    ) -> (i64, i64, i64) {
+        let reader = concrete_merge_source(dir, segment_info);
+        (
+            reader.num_chunks(),
+            reader.num_dirty_chunks(),
+            reader.num_dirty_docs(),
+        )
+    }
+
+    /// A stored-fields reader that hides the concrete type it wraps.
+    ///
+    /// `get_merge_strategy` recognises this format's own reader through
+    /// [`StoredFieldsReader::as_any`], whose default answer is `None`; a reader
+    /// that keeps the default therefore takes the route Java takes for a
+    /// foreign codec's reader, the visitor
+    /// (`Lucene90CompressingStoredFieldsWriter.java:684-688`). That is what
+    /// makes the merge routes comparable over the very same documents.
+    #[derive(Debug)]
+    struct OpaqueStoredFieldsReader(Box<dyn StoredFieldsReader>);
+
+    impl StoredFieldsReader for OpaqueStoredFieldsReader {
+        fn document(&self, doc_id: i32, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
+            self.0.document(doc_id, visitor)
+        }
+
+        fn check_integrity(&self) -> Result<()> {
+            self.0.check_integrity()
+        }
+
+        fn clone_reader(&self) -> Box<dyn StoredFieldsReader> {
+            Box::new(Self(self.0.clone_reader()))
+        }
+
+        fn close(&mut self) -> Result<()> {
+            self.0.close()
+        }
+    }
+
+    /// Hides `reader`'s concrete type, forcing the visitor route for it.
+    fn opaque(reader: Box<dyn StoredFieldsReader>) -> Box<dyn StoredFieldsReader> {
+        Box::new(OpaqueStoredFieldsReader(reader))
+    }
+
+    /// The live documents of a `max_doc`-document segment whose `deleted`
+    /// documents are deleted.
+    fn live_docs_without(max_doc: i32, deleted: &[i32]) -> Box<dyn Bits> {
+        let mut live = crate::util::FixedBitSet::new(max_doc as usize);
+        for doc in 0..max_doc {
+            if !deleted.contains(&doc) {
+                live.set(doc as usize);
+            }
+        }
+        Box::new(live)
+    }
+
+    /// The doc map of a `max_doc`-document segment placed at `doc_base` in the
+    /// merged segment, its `deleted` documents dropped and the rest packed.
+    fn doc_map_without(max_doc: i32, doc_base: i32, deleted: &[i32]) -> DocMap {
+        let mut mapping = Vec::with_capacity(max_doc as usize);
+        let mut next = doc_base;
+        for doc in 0..max_doc {
+            if deleted.contains(&doc) {
+                mapping.push(-1);
+            } else {
+                mapping.push(next);
+                next += 1;
+            }
+        }
+        Arc::new(move |doc: i32| mapping[doc as usize])
+    }
+
+    /// The doc map that sends each `(from, to, merged)` run of a segment's
+    /// documents `from..to` to `merged..`, as an index-sorted merge does when
+    /// it interleaves segments.
+    fn interleaving_doc_map(runs: &[(i32, i32, i32)]) -> DocMap {
+        let runs = runs.to_vec();
+        Arc::new(move |doc: i32| {
+            runs.iter()
+                .find(|&&(from, to, _)| from <= doc && doc < to)
+                .map_or(-1, |&(from, _, merged)| merged + doc - from)
+        })
+    }
+
+    /// Builds the merge state for the given source readers.
+    fn stored_fields_merge_state_with(
+        readers: Vec<Box<dyn StoredFieldsReader>>,
+        doc_maps: Vec<DocMap>,
+        max_docs: Vec<i32>,
+        live_docs: Vec<Option<Box<dyn Bits>>>,
+        needs_index_sort: bool,
+    ) -> MergeState {
+        let n = readers.len();
+        let field_infos = make_field_infos();
+        let merged_info =
+            make_segment_info(Arc::new(RamDirectory::new()), "_m", max_docs.iter().sum());
+        MergeState::new(
+            doc_maps,
+            merged_info,
+            field_infos.clone(),
+            readers.into_iter().map(Some).collect(),
+            (0..n).map(|_| None).collect(),
+            (0..n).map(|_| None).collect(),
+            (0..n).map(|_| None).collect(),
+            (0..n).map(|_| field_infos.clone()).collect(),
+            live_docs,
+            (0..n).map(|_| None).collect(),
+            (0..n).map(|_| None).collect(),
+            (0..n).map(|_| None).collect(),
+            max_docs,
+            needs_index_sort,
+        )
+    }
+
+    /// Builds the merge state of a plain, unsorted merge of segments without
+    /// deletions, laid end to end.
+    fn stored_fields_merge_state(
+        readers: Vec<Box<dyn StoredFieldsReader>>,
+        max_docs: Vec<i32>,
+    ) -> MergeState {
+        let mut doc_maps = Vec::with_capacity(max_docs.len());
+        let mut doc_base = 0;
+        for &max_doc in &max_docs {
+            doc_maps.push(crate::index::identity_doc_map(max_doc, doc_base));
+            doc_base += max_doc;
+        }
+        let live_docs = max_docs.iter().map(|_| None).collect();
+        stored_fields_merge_state_with(readers, doc_maps, max_docs, live_docs, false)
+    }
+
+    /// What one merge produced.
+    struct MergeOutcome {
+        /// The directory holding the merged segment `_m`.
+        dir: Arc<dyn Directory>,
+        /// The merged segment's info.
+        info: SegmentInfo,
+        /// Every file of the merged segment, by name, sorted.
+        files: Vec<(String, Vec<u8>)>,
+        /// Every stored field of every merged document, in order.
+        documents: Vec<MergeDoc>,
+        /// `(numChunks, numDirtyChunks, numDirtyDocs)` as the merged segment
+        /// records them in its `.fdm`.
+        counters: (i64, i64, i64),
+    }
+
+    /// Runs one merge into a fresh directory and reports everything about it.
+    fn run_stored_fields_merge(merge_state: &MergeState) -> MergeOutcome {
+        let total_docs: i32 = merge_state
+            .max_docs
+            .iter()
+            .zip(&merge_state.live_docs)
+            .map(|(&max_doc, live)| match live {
+                None => max_doc,
+                Some(live) => (0..max_doc).filter(|&doc| live.get(doc as usize)).count() as i32,
+            })
+            .sum();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let info = make_segment_info(Arc::clone(&dir), "_m", total_docs);
+        let stored_fields = merge_test_format();
+        {
+            let mut writer = stored_fields
+                .fields_writer(dir.as_ref(), &info, &*DEFAULT_IO_CONTEXT)
+                .unwrap();
+            assert_eq!(
+                writer.merge(merge_state).unwrap(),
+                total_docs,
+                "the merge must write every live document of every source segment"
+            );
+            writer.close().unwrap();
+        }
+
+        let reader = concrete_merge_source(&dir, &info);
+        let documents = (0..total_docs)
+            .map(|doc_id| {
+                let mut visitor = CollectingVisitor::default();
+                reader.document(doc_id, &mut visitor).unwrap();
+                visitor.fields
+            })
+            .collect();
+        let counters = (
+            reader.num_chunks(),
+            reader.num_dirty_chunks(),
+            reader.num_dirty_docs(),
+        );
+
+        let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+        for name in dir.list_all().unwrap() {
+            let mut input = dir.open_input(&name, &*DEFAULT_IO_CONTEXT).unwrap();
+            let length = input.length() as usize;
+            let mut bytes = vec![0u8; length];
+            input.read_bytes(&mut bytes, 0, length).unwrap();
+            files.push((name, bytes));
+        }
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+
+        MergeOutcome {
+            dir,
+            info,
+            files,
+            documents,
+            counters,
+        }
+    }
+
+    /// `getMergeStrategy` picks BULK only for this format's own reader, at the
+    /// current version, written with the writer's compression mode and chunk
+    /// size, whose fields the merged segment numbers exactly as the source did,
+    /// which carries no deletions and is not too dirty; DOC for such a reader
+    /// that fails any of the last four conditions; and VISITOR otherwise
+    /// (`Lucene90CompressingStoredFieldsWriter.java:681-701`, `663-668`).
+    #[test]
+    fn the_stored_fields_merge_strategy_is_lucenes() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let source = write_merge_source(&dir, "_0", 0, 10);
+        let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let writer = merge_test_writer(&out, "_w0", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let strategy_for = |writer: &Lucene90CompressingStoredFieldsWriter,
+                            reader: Box<dyn StoredFieldsReader>,
+                            live_docs: Option<Box<dyn Bits>>| {
+            let state = stored_fields_merge_state_with(
+                vec![reader],
+                vec![crate::index::identity_doc_map(10, 0)],
+                vec![10],
+                vec![live_docs],
+                false,
+            );
+            writer.get_merge_strategy(&state, &MatchingReaders::new(&state), 0)
+        };
+
+        assert_eq!(
+            strategy_for(&writer, open_merge_source(&dir, &source), None),
+            MergeStrategy::Bulk,
+            "a matching, undeleted, clean segment of this very format is bulk merged"
+        );
+
+        // DOC: this format's reader, but the chunks cannot be reused as they are.
+        assert_eq!(
+            strategy_for(
+                &writer,
+                open_merge_source(&dir, &source),
+                Some(live_docs_without(10, &[3]))
+            ),
+            MergeStrategy::Doc,
+            "it's not worth fine-graining this if there are deletions"
+        );
+        let other_mode = merge_test_writer(
+            &out,
+            "_w1",
+            CompressionMode::HIGH_COMPRESSION,
+            MERGE_TEST_CHUNK_SIZE,
+        );
+        assert_eq!(
+            strategy_for(&other_mode, open_merge_source(&dir, &source), None),
+            MergeStrategy::Doc,
+            "chunks compressed another way cannot be copied"
+        );
+        let other_chunk_size = merge_test_writer(
+            &out,
+            "_w2",
+            CompressionMode::FAST,
+            MERGE_TEST_CHUNK_SIZE * 2,
+        );
+        assert_eq!(
+            strategy_for(&other_chunk_size, open_merge_source(&dir, &source), None),
+            MergeStrategy::Doc,
+            "chunks of another size cannot be copied"
+        );
+
+        // tooDirty: more dirty documents than one chunk holds AND more than one
+        // per cent of the chunks dirty; each boundary on its own is not enough.
+        for (dirty_docs, dirty_chunks, chunks, too_dirty) in [
+            (MERGE_TEST_DOCS_PER_CHUNK as i64, 100, 100, false),
+            (MERGE_TEST_DOCS_PER_CHUNK as i64 + 1, 1, 100, false),
+            (MERGE_TEST_DOCS_PER_CHUNK as i64 + 1, 2, 100, true),
+        ] {
+            let mut reader = concrete_merge_source(&dir, &source);
+            reader.num_dirty_docs = dirty_docs;
+            reader.num_dirty_chunks = dirty_chunks;
+            reader.num_chunks = chunks;
+            assert_eq!(writer.too_dirty(&reader), too_dirty);
+            assert_eq!(
+                strategy_for(&writer, Box::new(reader), None),
+                if too_dirty {
+                    MergeStrategy::Doc
+                } else {
+                    MergeStrategy::Bulk
+                },
+                "dirty docs {dirty_docs}, dirty chunks {dirty_chunks} of {chunks}"
+            );
+        }
+
+        // VISITOR: the documents have to be decoded field by field.
+        assert_eq!(
+            strategy_for(&writer, opaque(open_merge_source(&dir, &source)), None),
+            MergeStrategy::Visitor,
+            "a foreign reader has to be read field by field"
+        );
+        // The only format version there is today is the current one, so the
+        // version check is reached by altering what the reader recorded.
+        let mut old_version = concrete_merge_source(&dir, &source);
+        old_version.version = DATA_VERSION_CURRENT - 1;
+        assert_eq!(
+            strategy_for(&writer, Box::new(old_version), None),
+            MergeStrategy::Visitor,
+            "a segment of another format version is re-encoded"
+        );
+        let mut renumbered = RealFieldInfo::new("id", 7);
+        renumbered.index_options = crate::index::IndexOptions::DOCS;
+        let mut state = stored_fields_merge_state(vec![open_merge_source(&dir, &source)], vec![10]);
+        state.field_infos = vec![FieldInfos::new(vec![renumbered]).unwrap()];
+        let matching = MatchingReaders::new(&state);
+        assert!(!matching.matching_readers[0]);
+        assert_eq!(
+            writer.get_merge_strategy(&state, &matching, 0),
+            MergeStrategy::Visitor,
+            "a segment whose fields are numbered differently has to be remapped"
+        );
+    }
+
+    /// The bulk route is the one `merge` actually takes, and it leaves a mark
+    /// in the merged segment's `.fdm` that the other routes cannot leave.
+    ///
+    /// Copying chunks verbatim preserves the *source* chunk boundaries
+    /// (`Lucene90CompressingStoredFieldsWriter.java:555-592`): two segments of
+    /// ten and six documents, chunked four at a time, hold three and two
+    /// chunks, the last of each a partial one the writer had to force out. A
+    /// bulk merge therefore ends with five chunks, two of them dirty.
+    /// Re-encoding the same sixteen documents packs them four at a time with
+    /// nothing left over: four chunks, none dirty.
+    ///
+    /// The two merged segments differ on disk for that reason, yet must hold
+    /// exactly the same documents.
+    #[test]
+    fn a_bulk_stored_fields_merge_copies_the_source_chunks_verbatim() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let first = write_merge_source(&dir, "_0", 0, 10);
+        let second = write_merge_source(&dir, "_1", 100, 6);
+        assert_eq!(
+            source_chunk_counters(&dir, &first),
+            (3, 1, 2),
+            "ten documents chunked four at a time make three chunks, the last forced out"
+        );
+        assert_eq!(source_chunk_counters(&dir, &second), (2, 1, 2));
+
+        let bulk = run_stored_fields_merge(&stored_fields_merge_state(
+            vec![
+                open_merge_source(&dir, &first),
+                open_merge_source(&dir, &second),
+            ],
+            vec![10, 6],
+        ));
+        assert_eq!(
+            bulk.counters,
+            (5, 2, 4),
+            "the bulk merge must carry over both source segments' chunk boundaries"
+        );
+
+        let visitor = run_stored_fields_merge(&stored_fields_merge_state(
+            vec![
+                opaque(open_merge_source(&dir, &first)),
+                opaque(open_merge_source(&dir, &second)),
+            ],
+            vec![10, 6],
+        ));
+        assert_eq!(
+            visitor.counters,
+            (4, 0, 0),
+            "re-encoding the documents repacks them into full chunks"
+        );
+
+        // Same information by two routes.
+        let expected = merge_docs((0..10).chain(100..106));
+        assert_eq!(bulk.documents, expected);
+        assert_eq!(visitor.documents, expected);
+    }
+
+    /// Where the writer would have drawn the same chunk boundaries anyway, the
+    /// bulk and the visitor route must produce the same index, byte for byte.
+    /// This is the property Lucene's own comment says bulk merge broke in the
+    /// past: "bulk merge is scary: its caused corruption bugs"
+    /// (`Lucene90CompressingStoredFieldsWriter.java:493-495`).
+    ///
+    /// Two shapes are checked. A single source segment is copied chunk for
+    /// chunk, so re-encoding it lands on the same boundaries; and two segments
+    /// of exactly two full chunks each leave nothing buffered at the seam, so
+    /// the copied and the re-encoded segment agree there too.
+    #[test]
+    fn bulk_and_visitor_stored_fields_merges_produce_the_same_index() {
+        for sources in [vec![(0i32, 10i32)], vec![(0i32, 8i32), (100i32, 8i32)]] {
+            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let infos: Vec<SegmentInfo> = sources
+                .iter()
+                .enumerate()
+                .map(|(i, &(first, count))| {
+                    write_merge_source(&dir, &format!("_{i}"), first, count)
+                })
+                .collect();
+            let max_docs: Vec<i32> = sources.iter().map(|&(_, count)| count).collect();
+            let expected = merge_docs(
+                sources
+                    .iter()
+                    .flat_map(|&(first, count)| first..first + count),
+            );
+
+            // The comparison only means something if the first merge really
+            // copies chunks, so every source must be eligible for BULK.
+            let bulk_state = stored_fields_merge_state(
+                infos
+                    .iter()
+                    .map(|info| open_merge_source(&dir, info))
+                    .collect(),
+                max_docs.clone(),
+            );
+            let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+            let writer =
+                merge_test_writer(&out, "_w", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+            let matching = MatchingReaders::new(&bulk_state);
+            for i in 0..infos.len() {
+                assert_eq!(
+                    writer.get_merge_strategy(&bulk_state, &matching, i),
+                    MergeStrategy::Bulk,
+                    "sources {sources:?}: source {i} must be bulk merged"
+                );
+            }
+
+            let bulk = run_stored_fields_merge(&bulk_state);
+            let visitor = run_stored_fields_merge(&stored_fields_merge_state(
+                infos
+                    .iter()
+                    .map(|info| opaque(open_merge_source(&dir, info)))
+                    .collect(),
+                max_docs.clone(),
+            ));
+
+            assert_eq!(bulk.documents, expected, "sources {sources:?}");
+            assert_eq!(visitor.documents, expected, "sources {sources:?}");
+            assert_eq!(
+                bulk.counters, visitor.counters,
+                "sources {sources:?}: both routes must draw the same chunk boundaries here"
+            );
+            assert_eq!(
+                bulk.files.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+                visitor
+                    .files
+                    .iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+                "sources {sources:?}: both routes must write the same files"
+            );
+            for ((name, bulk_bytes), (_, visitor_bytes)) in
+                bulk.files.iter().zip(visitor.files.iter())
+            {
+                assert_eq!(
+                    bulk_bytes, visitor_bytes,
+                    "sources {sources:?}: {name} differs between the bulk and the visitor merge"
+                );
+            }
+        }
+    }
+
+    /// `merge` chooses a strategy per source segment and mixes them in one
+    /// merge (`Lucene90CompressingStoredFieldsWriter.java:608-650`).
+    ///
+    /// Four segments: a clean one (BULK), one with a deleted document (DOC),
+    /// one behind a foreign reader (VISITOR), and another clean one (BULK).
+    /// The first copy keeps its three chunks `[4][4][2]`; the five live
+    /// documents of the second and the six of the third are re-chunked as
+    /// `[4][4]` with three left over, which the last copy forces out as a dirty
+    /// chunk before carrying over its own `[4][2]`
+    /// (`Lucene90CompressingStoredFieldsWriter.java:550-552`): eight chunks,
+    /// three of them dirty, holding 2 + 3 + 2 documents.
+    #[test]
+    fn a_stored_fields_merge_picks_a_strategy_per_segment() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let a = write_merge_source(&dir, "_0", 0, 10);
+        let b = write_merge_source(&dir, "_1", 100, 6);
+        let c = write_merge_source(&dir, "_2", 200, 6);
+        let d = write_merge_source(&dir, "_3", 300, 6);
+        let state = || {
+            stored_fields_merge_state_with(
+                vec![
+                    open_merge_source(&dir, &a),
+                    open_merge_source(&dir, &b),
+                    opaque(open_merge_source(&dir, &c)),
+                    open_merge_source(&dir, &d),
+                ],
+                vec![
+                    crate::index::identity_doc_map(10, 0),
+                    doc_map_without(6, 10, &[2]),
+                    crate::index::identity_doc_map(6, 15),
+                    crate::index::identity_doc_map(6, 21),
+                ],
+                vec![10, 6, 6, 6],
+                vec![None, Some(live_docs_without(6, &[2])), None, None],
+                false,
+            )
+        };
+
+        let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let writer = merge_test_writer(&out, "_w", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        let probe = state();
+        let matching = MatchingReaders::new(&probe);
+        assert_eq!(
+            (0..4)
+                .map(|i| writer.get_merge_strategy(&probe, &matching, i))
+                .collect::<Vec<_>>(),
+            vec![
+                MergeStrategy::Bulk,
+                MergeStrategy::Doc,
+                MergeStrategy::Visitor,
+                MergeStrategy::Bulk
+            ]
+        );
+
+        let merged = run_stored_fields_merge(&state());
+        assert_eq!(merged.counters, (8, 3, 7));
+        assert_eq!(
+            merged.documents,
+            merge_docs(
+                (0..10)
+                    .chain([100, 101, 103, 104, 105])
+                    .chain(200..206)
+                    .chain(300..306)
+            )
+        );
+    }
+
+    /// A segment that is too dirty is recompressed instead of copied, so that
+    /// a run of tiny flushes cannot degrade the compression ratio for ever
+    /// (`Lucene90CompressingStoredFieldsWriter.java:655-668`).
+    ///
+    /// Bulk-merging three segments of two documents each carries over three
+    /// dirty chunks: six dirty documents, more than one chunk holds, in every
+    /// one of the chunks. Merging that segment again must take the DOC route,
+    /// which repacks the six documents as `[4][2]`.
+    #[test]
+    fn a_too_dirty_stored_fields_segment_is_recompressed() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let sources: Vec<SegmentInfo> = (0..3)
+            .map(|i| write_merge_source(&dir, &format!("_{i}"), 10 * i, 2))
+            .collect();
+        let expected = merge_docs([0, 1, 10, 11, 20, 21]);
+
+        let dirty = run_stored_fields_merge(&stored_fields_merge_state(
+            sources
+                .iter()
+                .map(|info| open_merge_source(&dir, info))
+                .collect(),
+            vec![2, 2, 2],
+        ));
+        assert_eq!(dirty.counters, (3, 3, 6), "each tiny chunk is carried over");
+        assert_eq!(dirty.documents, expected);
+        let out: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let writer = merge_test_writer(&out, "_w", CompressionMode::FAST, MERGE_TEST_CHUNK_SIZE);
+        assert!(writer.too_dirty(&concrete_merge_source(&dirty.dir, &dirty.info)));
+
+        let recompressed = run_stored_fields_merge(&stored_fields_merge_state(
+            vec![open_merge_source(&dirty.dir, &dirty.info)],
+            vec![6],
+        ));
+        assert_eq!(
+            recompressed.counters,
+            (2, 1, 2),
+            "a too dirty segment must be repacked, not copied"
+        );
+        assert_eq!(recompressed.documents, expected);
+    }
+
+    /// An index-sorted merge interleaves the source segments, so the bulk
+    /// route copies each segment in several runs, and a run may start inside
+    /// the chunk the previous run of the same segment ended in. Those documents
+    /// are copied one by one until the next chunk boundary, then whole chunks
+    /// are copied, then the leftovers one by one
+    /// (`Lucene90CompressingStoredFieldsWriter.java:538-599`); that relies on
+    /// the reader remembering the chunk it last decoded.
+    ///
+    /// Segments A and B of ten documents each, chunked `[4][4][2]`, are merged
+    /// as A0-2, B0-2, A3-8, B3-9, A9. The chunks the bulk route writes are
+    /// `[A0 A1 A2 B0]`, `[B1 B2 A3]` (forced), `[A4-A7]` (copied), `[A8 B3]`
+    /// (forced), `[B4-B7]` and `[B8 B9]` (both copied, the latter dirty) and
+    /// `[A9]` (forced at the end): seven chunks, four dirty, eight dirty
+    /// documents. Re-encoding packs the twenty documents into five full
+    /// chunks.
+    #[test]
+    fn an_index_sorted_stored_fields_merge_copies_interleaved_runs() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let a = write_merge_source(&dir, "_0", 0, 10);
+        let b = write_merge_source(&dir, "_1", 100, 10);
+        let state = |wrap: fn(Box<dyn StoredFieldsReader>) -> Box<dyn StoredFieldsReader>| {
+            stored_fields_merge_state_with(
+                vec![
+                    wrap(open_merge_source(&dir, &a)),
+                    wrap(open_merge_source(&dir, &b)),
+                ],
+                vec![
+                    interleaving_doc_map(&[(0, 3, 0), (3, 9, 6), (9, 10, 19)]),
+                    interleaving_doc_map(&[(0, 3, 3), (3, 10, 12)]),
+                ],
+                vec![10, 10],
+                vec![None, None],
+                true,
+            )
+        };
+        let expected = merge_docs(
+            (0..3)
+                .chain(100..103)
+                .chain(3..9)
+                .chain(103..110)
+                .chain(9..10),
+        );
+
+        let bulk = run_stored_fields_merge(&state(|reader| reader));
+        assert_eq!(bulk.documents, expected);
+        assert_eq!(
+            bulk.counters,
+            (7, 4, 8),
+            "the whole chunks between the runs' ends must be copied verbatim"
+        );
+
+        let visitor = run_stored_fields_merge(&state(opaque));
+        assert_eq!(visitor.documents, expected);
+        assert_eq!(visitor.counters, (5, 0, 0));
     }
 }
 

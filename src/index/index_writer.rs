@@ -771,10 +771,17 @@ impl IndexWriter {
 
     /// Fails when `info` was not produced by this writer's directory.
     ///
-    /// Equivalent to `IndexWriter.validate(SegmentCommitInfo)`.
+    /// Equivalent to `IndexWriter.validate(SegmentCommitInfo)`
+    /// (`IndexWriter.java:6608-6612`), which compares the segment's own
+    /// directory with the one the writer was opened on — reference equality in
+    /// Java, pointer equality of the `Arc` here.
+    ///
+    /// A segment that belongs to this directory but is not (yet) part of the
+    /// committed `SegmentInfos` passes, as it must: a merge asks the merge
+    /// policy about the segment it is *about to* add, which is exactly such a
+    /// segment.
     fn validate(&self, info: &SegmentCommitInfo) -> Result<()> {
-        let state = self.state()?;
-        if state.segment_infos.contains(info) {
+        if Arc::ptr_eq(&info.info.directory, &self.directory) {
             return Ok(());
         }
         Err(LuceneError::IllegalArgument(
@@ -3797,19 +3804,15 @@ impl IndexWriter {
     ///
     /// Java's `IndexWriter` guards its state with the object monitor, which is
     /// reentrant, so `segString(SegmentCommitInfo)` can call `numDeletedDocs`,
-    /// and through it `validate` and `readerPool.get`, while the caller is
-    /// already inside a `synchronized` block — which is exactly what
+    /// and through it `readerPool.get` and the segment infos, while the caller
+    /// is already inside a `synchronized` block — which is exactly what
     /// `startCommit` does when it renders the segments for the info stream
     /// (`IndexWriter.java:5687-5692`). A Rust `Mutex` is not reentrant, so
     /// re-locking there deadlocks the committing thread against itself. This
     /// variant reuses the caller's guard instead of taking a second one.
     fn num_deleted_docs_with(&self, state: &WriterState, info: &SegmentCommitInfo) -> Result<i32> {
         self.ensure_open_with(false)?;
-        if !state.segment_infos.contains(info) {
-            return Err(LuceneError::IllegalArgument(
-                "SegmentCommitInfo must be from the same directory".to_string(),
-            ));
-        }
+        self.validate(info)?;
         let created_version_major = state.segment_infos.index_created_version_major();
         if let Some(rld) = self.reader_pool.get(info, false, created_version_major)? {
             return Ok(rld.get_del_count());

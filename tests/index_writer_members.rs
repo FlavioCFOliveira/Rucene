@@ -206,3 +206,80 @@ fn the_backup_segment_list_is_independent_of_the_live_one() {
         "the live commit did advance, so the check above is not vacuous"
     );
 }
+
+/// `IndexWriter.validate(SegmentCommitInfo)` asks whether the segment belongs
+/// to *this writer's directory* — `info.info.dir != directoryOrig`
+/// (`IndexWriter.java:6608-6612`) — and nothing else. In particular it does not
+/// ask whether the segment is already part of the committed `SegmentInfos`,
+/// because the writer routinely asks the merge policy about a segment it is
+/// only *about to* add: `mergeMiddle` builds the merged `SegmentCommitInfo`,
+/// then consults `numDeletesToMerge` on it before it is committed.
+///
+/// Regression test: this port used to answer the membership question instead,
+/// which made every merge fail with "SegmentCommitInfo must be from the same
+/// directory" on a segment that had just been written into that very
+/// directory.
+#[test]
+fn a_segment_of_this_directory_validates_before_it_is_committed() {
+    use rucene::index::{SegmentCommitInfo, SegmentInfo};
+    use rucene::util::Version;
+    use std::collections::HashMap;
+
+    let (dir, writer) = writer_on_ram();
+    add_doc(&writer, "a");
+    writer.commit().unwrap();
+
+    let codec = rucene::codecs::for_name("Lucene104").unwrap();
+    let uncommitted = |directory: &Arc<dyn Directory>| {
+        SegmentCommitInfo::new(
+            SegmentInfo::new(
+                Arc::clone(directory),
+                Version::LATEST,
+                Some(Version::LATEST),
+                "_zz".to_string(),
+                1,
+                false,
+                false,
+                Arc::clone(&codec),
+                HashMap::new(),
+                [7u8; 16],
+                HashMap::new(),
+                Default::default(),
+            )
+            .unwrap(),
+            0,
+            0,
+            -1,
+            -1,
+            -1,
+            [8u8; 16],
+        )
+        .unwrap()
+    };
+
+    // Written into this writer's directory, but not in its SegmentInfos.
+    let mine = uncommitted(&dir);
+    assert!(
+        !SegmentInfos::read_latest_commit(Arc::clone(&dir))
+            .unwrap()
+            .contains(&mine),
+        "the segment must not be part of the commit, or the test proves nothing"
+    );
+    assert_eq!(
+        writer.num_deletes_to_merge_for(&mine).unwrap(),
+        0,
+        "a segment of this directory is valid even before it is committed"
+    );
+    assert_eq!(writer.num_deleted_docs(&mine).unwrap(), 0);
+
+    // A segment of a different directory is not.
+    let other: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let foreign = uncommitted(&other);
+    assert!(
+        writer.num_deletes_to_merge_for(&foreign).is_err(),
+        "a segment of another directory must still be rejected"
+    );
+    assert!(writer.num_deleted_docs(&foreign).is_err());
+
+    writer.close().unwrap();
+}
