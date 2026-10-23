@@ -196,7 +196,7 @@ def load(roadmap, claims, commit, date):
         sel = [r for r in rows if r["label"] == label]
         unwind(roadmap, "create", [{"name": r["name"], "file": r["file"]} for r in sel],
                f"MERGE (t:{label} {{name:row.name, file:row.file}})",
-               f"{label} nodes")
+               f"{label} nodes", batch=PER_ROW_SCAN_BATCH)
         unwind(roadmap, "create", [{"name": r["name"], "file": r["file"]} for r in sel],
                f"MATCH (f:File {{path:row.file}}), "
                f"(t:{label} {{name:row.name, file:row.file}}) "

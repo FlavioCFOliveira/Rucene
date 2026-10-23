@@ -39,16 +39,20 @@ import time
 # * a `MATCH` that binds an unlabelled node by property, `(t {name: row.name})`,
 #   or by `id(n) = row.id`, which scans every node for every row.
 #
-# Measured on 2026-10-23 against the `rucene` graph (52,134 nodes) with
-# read-only analogues of each shape -- for a `MERGE`, a lower bound, since its
-# per-node check also reads labels and properties through the transaction
-# view: 15.7 ms per row against `Method` (22,542
-# nodes), 10.4 ms against `RustFn` (15,296), 19 ms by `id(n)` and 27 ms for an
-# unlabelled match. At the 200-300 rows the loaders used, such statements took
-# from 1.8 s to over the budget; at 50 the slowest took 1.40 s. A labelled
-# `MATCH (n:L {k: row.k})` is hash-joined -- one label scan per statement,
-# 0.02-0.3 s at 300 rows -- and needs no cap.
-PER_ROW_SCAN_BATCH = 50
+# Size it on the WRITE path. A read runs on the lock-free snapshot path, a write
+# statement inside the writer transaction, and the same per-row scan costs about
+# ten times more there: the `PORTS_CANDIDATE` delete of `port_evidence_kg.py`
+# reads at 4.7 ms per row and writes at 50 ms per row. Sized on its read side, a
+# 200-row batch of it exceeded the budget in a real sync.
+#
+# Measured on 2026-10-23 by replaying the sync chain, statement for statement,
+# against a copy of the `rucene` store (52,324 nodes) opened with the engine rmp
+# 1.18.0 ships: an unlabelled match runs at 25-56 ms per row on the write path,
+# so at 20 rows the slowest statement took 1.07 s; a node `MERGE` walks its
+# label at 2.2 ms per row on `TestMethod` (5,746 nodes). A labelled
+# `MATCH (n:L {k: row.k})` is hash-joined -- one label scan per statement, at
+# most 0.04 s on the write path at 200 rows -- and needs no cap.
+PER_ROW_SCAN_BATCH = 20
 
 _ERROR_LINE = re.compile(r"^Error:.*$", re.MULTILINE)
 

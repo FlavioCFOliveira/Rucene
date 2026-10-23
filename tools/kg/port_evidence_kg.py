@@ -620,12 +620,12 @@ def load(roadmap, claims, commit, date):
         run_unwind(roadmap, "delete", dead,
                    "MATCH (t {name:row.name, file:row.file})-[e:PORTS]->"
                    "(c:Class {qualifiedName:row.lucene}) DELETE e",
-                   "PORTS edges retired")
+                   "PORTS edges retired", batch=PER_ROW_SCAN_BATCH)
 
     run_unwind(roadmap, "delete", uniq,
                "MATCH (t {name:row.name, file:row.file})-[e:PORTS_CANDIDATE]->"
                "(c:Class {qualifiedName:row.lucene}) DELETE e",
-               "superseded PORTS_CANDIDATE removed")
+               "superseded PORTS_CANDIDATE removed", batch=PER_ROW_SCAN_BATCH)
     run_unwind(roadmap, "create", uniq,
                "MATCH (t {name:row.name, file:row.file}) "
                "WITH t, row MATCH (c:Class {qualifiedName:row.lucene}) "
@@ -638,7 +638,7 @@ def load(roadmap, claims, commit, date):
                "e.declaredAt = row.file + ':' + toString(row.line), "
                "e.claimLevel = row.claimLevel, e.declaredMember = row.member, "
                "e.gitCommit = row.commit, e.gitDate = row.date",
-               "PORTS evidence stamped")
+               "PORTS evidence stamped", batch=PER_ROW_SCAN_BATCH)
     return uniq
 
 

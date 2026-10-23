@@ -46,6 +46,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from load_rucene_kg import esc, read, rmp, run_unwind  # noqa: E402
+from kgio import PER_ROW_SCAN_BATCH  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Extraccao
@@ -352,7 +353,7 @@ def phase_methods(roadmap, survey, commit, date, batch_size):
         roadmap,
         rows,
         "MERGE (c:TestMethod {qualifiedName: row.qn})",
-        batch_size,
+        min(batch_size, PER_ROW_SCAN_BATCH),
         "TestMethod create",
     )
     run_unwind(
@@ -616,7 +617,7 @@ def phase_rucene(roadmap, repo_root, commit, date, batch_size):
         roadmap,
         rows,
         "MERGE (f:File {path: row.p})",
-        batch_size,
+        min(batch_size, PER_ROW_SCAN_BATCH),
         "fixture File create",
     )
     run_unwind(

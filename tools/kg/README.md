@@ -208,9 +208,15 @@ git worktree remove /tmp/rucene-survey
   - `MATCH (n) WHERE id(n) = row.id`.
 
   The last two scan every node in the graph. Batches of these three shapes are
-  capped at `kgio.PER_ROW_SCAN_BATCH` (50 rows). Measured on 2026-10-23 with
-  read-only analogues of each shape: at the 200–300 rows the loaders used, they
-  took from 1.8 s to over the budget, and at 50 rows the slowest took 1.40 s. A second `MATCH` on an unlabelled node after `WITH`
+  capped at `kgio.PER_ROW_SCAN_BATCH` (20 rows). The cap is sized on the
+  **write** path, which runs the same per-row scan about ten times slower than a
+  read. The `PORTS_CANDIDATE` delete in `port_evidence_kg.py` reads at 4.7 ms per
+  row and writes at 50 ms per row. Sized on its read side, a 200-row batch of it
+  exceeded the budget in a real sync. On the write path, the unlabelled matches
+  cost 25–56 ms per row.
+  Measured on 2026-10-23 by replaying the sync chain against a copy of the store,
+  opened with the engine rmp 1.18.0 ships: at 20 rows the slowest statement took
+  1.07 s, and no uncapped statement took more than 0.44 s. A second `MATCH` on an unlabelled node after `WITH`
   (`… WITH DISTINCT c MATCH (b)-[:X]->(c)`) also scans every node per row, so
   `audit_kg.py` runs that check as two flat reads and intersects them in Python.
 - `rmp graph client` exits 1 for every failure and prints one published `Error:`
