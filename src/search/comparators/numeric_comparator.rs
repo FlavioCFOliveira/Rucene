@@ -20,7 +20,7 @@ use crate::search::doc_values_iteration::numeric_as_iterator;
 use crate::search::field_comparator::java_long_compare;
 use crate::search::pruning::Pruning;
 use crate::search::skip_block_range_iterator::SkipBlockRangeIterator;
-use crate::util::{DocIdSetBuilder, IntsRef, NumericUtils};
+use crate::util::{DocIdSetBuilder, IntsRef};
 
 /// The lower bound of the sampling interval; both bounds are powers of two.
 ///
@@ -31,61 +31,6 @@ const MIN_SKIP_INTERVAL: i32 = 32;
 ///
 /// Equivalent to `NumericComparator.MAX_SKIP_INTERVAL`.
 const MAX_SKIP_INTERVAL: i32 = 8192;
-
-/// How the packed bytes of the field's points decode into the comparable
-/// `long` the competitive iterator ranges over.
-///
-/// **Divergence from Lucene 10.5.0.** Java declares `sortableBytesToLong` as an
-/// abstract method that each subclass overrides with a one-line call into
-/// `NumericUtils`, and the inner `NumericLeafComparator` calls it back on the
-/// enclosing object. Rust cannot express that: [`NumericComparator`] is *owned*
-/// by the concrete comparator rather than inherited by it, so a call back into
-/// the owner from inside the state it owns would be a self-referential borrow.
-/// The two decoders are therefore modelled as data, and each concrete
-/// comparator passes the variant its own override would have used —
-/// [`IntComparator`](crate::search::comparators::IntComparator) and
-/// [`FloatComparator`](crate::search::comparators::FloatComparator) pass
-/// [`Int`](SortableBytes::Int), and
-/// [`LongComparator`](crate::search::comparators::LongComparator) and
-/// [`DoubleComparator`](crate::search::comparators::DoubleComparator) pass
-/// [`Long`](SortableBytes::Long). The portability test
-/// `comparator_sortable_bytes_to_long_matches_java` measures that mapping
-/// against the four real Java overrides.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortableBytes {
-    /// Four bytes decoded with `NumericUtils.sortableBytesToInt`, used by
-    /// [`IntComparator`](crate::search::comparators::IntComparator) and
-    /// [`FloatComparator`](crate::search::comparators::FloatComparator).
-    Int,
-    /// Eight bytes decoded with `NumericUtils.sortableBytesToLong`, used by
-    /// [`LongComparator`](crate::search::comparators::LongComparator) and
-    /// [`DoubleComparator`](crate::search::comparators::DoubleComparator).
-    Long,
-}
-
-impl SortableBytes {
-    /// The number of bytes used to encode one value.
-    ///
-    /// Equivalent to the `bytesCount` constructor argument, which is
-    /// `Integer.BYTES` or `Long.BYTES`.
-    pub fn bytes_count(self) -> i32 {
-        match self {
-            SortableBytes::Int => 4,
-            SortableBytes::Long => 8,
-        }
-    }
-
-    /// Decodes sortable bytes into a `long`, consistently with the codec the
-    /// field's [`PointValues`] use.
-    ///
-    /// Equivalent to `NumericComparator.sortableBytesToLong(byte[])`.
-    pub fn decode(self, bytes: &[u8]) -> i64 {
-        match self {
-            SortableBytes::Int => i64::from(NumericUtils::sortable_bytes_to_int(bytes, 0)),
-            SortableBytes::Long => NumericUtils::sortable_bytes_to_long(bytes, 0),
-        }
-    }
-}
 
 /// How a numeric comparator obtains the doc values of a segment.
 ///
@@ -211,7 +156,25 @@ pub struct NumericComparator {
     ///
     /// Equivalent to the `protected final boolean reverse` field.
     reverse: bool,
-    sortable_bytes: SortableBytes,
+    /// The number of bytes used to encode one point value.
+    ///
+    /// Equivalent to the `private final int bytesCount` field.
+    bytes_count: i32,
+    /// The concrete comparator's `sortableBytesToLong` override.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java declares
+    /// `protected abstract long sortableBytesToLong(byte[])`
+    /// (`NumericComparator.java:95`), which each subclass overrides with a
+    /// one-line call into `NumericUtils` and which the inner
+    /// `NumericLeafComparator` calls back on the enclosing object. Rust cannot
+    /// express that call: this struct is *owned* by the concrete comparator
+    /// rather than inherited by it, so calling back into the owner from inside
+    /// the state it owns would be a self-referential borrow. Every override in
+    /// Lucene is stateless, so the concrete comparator hands its override in
+    /// as a function pointer — for instance
+    /// [`IntComparator::sortable_bytes_to_long`](crate::search::comparators::IntComparator::sortable_bytes_to_long)
+    /// — and the call lands on exactly that code.
+    sortable_bytes_to_long: fn(&[u8]) -> i64,
     top_value_set: bool,
     single_sort: bool,
     hits_threshold_reached: bool,
@@ -226,7 +189,7 @@ impl std::fmt::Debug for NumericComparator {
         f.debug_struct("NumericComparator")
             .field("field", &self.field)
             .field("reverse", &self.reverse)
-            .field("sortable_bytes", &self.sortable_bytes)
+            .field("bytes_count", &self.bytes_count)
             .field("pruning", &self.pruning)
             .finish_non_exhaustive()
     }
@@ -236,19 +199,24 @@ impl NumericComparator {
     /// Creates the shared half of a numeric comparator.
     ///
     /// Equivalent to
-    /// `NumericComparator(String, T, boolean, Pruning, int)`.
+    /// `NumericComparator(String, T, boolean, Pruning, int)`, followed by the
+    /// subclass's `sortableBytesToLong` override, which the concrete
+    /// comparator passes here because the port cannot dispatch to it through
+    /// inheritance (see the `sortable_bytes_to_long` field).
     pub fn new(
         field: impl Into<String>,
         missing_value_as_long: i64,
         reverse: bool,
         pruning: Pruning,
-        sortable_bytes: SortableBytes,
+        bytes_count: i32,
+        sortable_bytes_to_long: fn(&[u8]) -> i64,
     ) -> Self {
         Self {
             missing_value_as_long,
             field: field.into(),
             reverse,
-            sortable_bytes,
+            bytes_count,
+            sortable_bytes_to_long,
             top_value_set: false,
             single_sort: false,
             hits_threshold_reached: false,
@@ -257,6 +225,16 @@ impl NumericComparator {
             doc_values_source: None,
             leaf: None,
         }
+    }
+
+    /// Decodes sortable bytes into a `long`, consistently with the codec the
+    /// field's [`PointValues`] use.
+    ///
+    /// Equivalent to the abstract `NumericComparator.sortableBytesToLong(byte[])`
+    /// (`NumericComparator.java:95`), dispatched to the override the concrete
+    /// comparator passed to [`new`](Self::new).
+    pub fn sortable_bytes_to_long(&self, bytes: &[u8]) -> i64 {
+        (self.sortable_bytes_to_long)(bytes)
     }
 
     /// Installs a replacement for the default doc-values lookup.
@@ -414,13 +392,13 @@ impl NumericComparator {
                         self.field
                     )));
                 }
-                Some(info) if info.get_point_num_bytes() != self.sortable_bytes.bytes_count() => {
+                Some(info) if info.get_point_num_bytes() != self.bytes_count => {
                     return Err(LuceneError::IllegalArgument(format!(
                         "Field {} is indexed with {} bytes per dimension, but {:?} expected {}",
                         self.field,
                         info.get_point_num_bytes(),
                         self,
-                        self.sortable_bytes.bytes_count()
+                        self.bytes_count
                     )));
                 }
                 Some(_) => {}
@@ -796,7 +774,7 @@ impl NumericComparator {
     /// Equivalent to the two `doUpdateCompetitiveIterator()` implementations.
     fn do_update_competitive_iterator(&mut self) -> Result<()> {
         let field = self.field.clone();
-        let sortable_bytes = self.sortable_bytes;
+        let sortable_bytes_to_long = self.sortable_bytes_to_long;
         let doc_values_source = self.doc_values_source.clone();
         let reader = match self.leaf.as_ref() {
             Some(leaf) => Arc::clone(&leaf.reader),
@@ -842,7 +820,7 @@ impl NumericComparator {
                         max_doc_visited: builder.common.max_doc_visited,
                         min_value_as_long: builder.common.min_value_as_long,
                         max_value_as_long: builder.common.max_value_as_long,
-                        sortable_bytes,
+                        sortable_bytes_to_long,
                     };
                     if point_tree.is_none() {
                         *point_tree = Some(point_values.point_tree()?);
@@ -886,7 +864,7 @@ impl NumericComparator {
                         max_doc_visited: builder.common.max_doc_visited,
                         min_value_as_long: builder.common.min_value_as_long,
                         max_value_as_long: builder.common.max_value_as_long,
-                        sortable_bytes,
+                        sortable_bytes_to_long,
                     };
                     point_values.intersect(&mut visitor)?;
                 }
@@ -938,7 +916,8 @@ struct CompetitiveVisitor<'a> {
     max_doc_visited: i32,
     min_value_as_long: i64,
     max_value_as_long: i64,
-    sortable_bytes: SortableBytes,
+    /// The enclosing comparator's `sortableBytesToLong`.
+    sortable_bytes_to_long: fn(&[u8]) -> i64,
 }
 
 impl CompetitiveVisitor<'_> {
@@ -968,7 +947,7 @@ impl IntersectVisitor for CompetitiveVisitor<'_> {
             // Already visited or skipped.
             return Ok(());
         }
-        let value = self.sortable_bytes.decode(packed_value);
+        let value = (self.sortable_bytes_to_long)(packed_value);
         if value >= self.min_value_as_long && value <= self.max_value_as_long {
             // The doc is competitive.
             self.add(doc_id);
@@ -992,8 +971,8 @@ impl IntersectVisitor for CompetitiveVisitor<'_> {
     }
 
     fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
-        let min = self.sortable_bytes.decode(min_packed_value);
-        let max = self.sortable_bytes.decode(max_packed_value);
+        let min = (self.sortable_bytes_to_long)(min_packed_value);
+        let max = (self.sortable_bytes_to_long)(max_packed_value);
 
         if min > self.max_value_as_long || max < self.min_value_as_long {
             // 1. When the comparison is 0 and pruning is

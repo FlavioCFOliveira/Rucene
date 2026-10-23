@@ -485,6 +485,15 @@ impl PointValue {
         Self { packed, doc_id }
     }
 
+    /// Returns the packed values for the dimensions.
+    ///
+    /// Equivalent to `PointValue#packedValue` (`PointValue.java:30`). Java
+    /// returns a `BytesRef` view over the point writer's storage; this port's
+    /// [`PointValue`] owns its packed bytes, so the view is a slice of them.
+    pub fn packed_value(&self) -> &[u8] {
+        &self.packed
+    }
+
     fn read_from_buffer(buffer: &[u8], packed_len: usize) -> Self {
         let packed = buffer[..packed_len].to_vec();
         let doc_id = BitUtil::read_be_int(buffer, packed_len);
@@ -5959,6 +5968,31 @@ fn run_len(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `PointValue.packedValue()` returns the packed dimensions of the point
+    /// a writer holds — for `HeapPointWriter.getPackedValueSlice(i)` the
+    /// first `packedBytesLength` bytes of slot `i`, without the doc ID that
+    /// follows them (`HeapPointWriter.java:57-61`, `PointValue.java:30`).
+    #[test]
+    fn packed_value_is_the_packed_dimensions_without_the_doc_id() {
+        let config = BKDConfig::new(2, 2, 4, BKDConfig::DEFAULT_MAX_POINTS_IN_LEAF_NODE).unwrap();
+        let mut writer = HeapPointWriter::new(config, 3).unwrap();
+        let points = [
+            (vec![0u8, 0, 0, 1, 0x80, 0, 0, 0], 7),
+            (vec![0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0], 0),
+            (vec![1, 2, 3, 4, 5, 6, 7, 8], i32::MAX),
+        ];
+        for (packed, doc_id) in &points {
+            writer
+                .append(&PointValue::new(packed.clone(), *doc_id))
+                .unwrap();
+        }
+        for (i, (packed, doc_id)) in points.iter().enumerate() {
+            let value = writer.get_packed_value_slice(i);
+            assert_eq!(value.packed_value(), packed.as_slice(), "slot {i}");
+            assert_eq!(value.doc_id, *doc_id, "slot {i}");
+        }
+    }
 
     /// Pins the BKD format version constants to the values declared by
     /// `BKDWriter` in Lucene Core 10.5.0 (`BKDWriter.java:86-92`).

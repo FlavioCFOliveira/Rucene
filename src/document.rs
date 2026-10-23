@@ -1577,6 +1577,13 @@ impl<'a> IntoIterator for &'a Document {
     type Item = &'a dyn IndexableField;
     type IntoIter = std::vec::IntoIter<&'a dyn IndexableField>;
 
+    /// Iterates over the fields of this document, in the order they were
+    /// added.
+    ///
+    /// Equivalent to `Document#iterator` (`Document.java:47-50`), which
+    /// returns `fields.iterator()`. Java's iterator also supports `remove()`,
+    /// an optional `java.util.Iterator` operation; removal here goes through
+    /// [`Document::remove_field`] and [`Document::remove_fields`].
     fn into_iter(self) -> Self::IntoIter {
         self.fields
             .iter()

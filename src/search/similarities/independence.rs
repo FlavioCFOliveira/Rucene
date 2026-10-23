@@ -12,6 +12,11 @@ use std::fmt::{self, Debug};
 /// Equivalent to `org.apache.lucene.search.similarities.Independence`. The
 /// three measures are compared in
 /// <http://trec.nist.gov/pubs/trec21/papers/irra.web.nb.pdf>.
+///
+/// The [`Display`](fmt::Display) supertrait is Java's abstract `toString()`
+/// (`Independence.java:42`): each implementation renders the name of its
+/// measure, which `DFISimilarity` wraps into its own name. Equivalent to the
+/// abstract `Independence#toString`.
 pub trait Independence: fmt::Display + Debug + Send + Sync {
     /// Computes the distance from independence.
     ///

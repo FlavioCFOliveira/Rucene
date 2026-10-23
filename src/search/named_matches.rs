@@ -93,6 +93,12 @@ impl Matches for NamedMatches {
         vec![Arc::clone(&self.inner)]
     }
 
+    /// Returns the fields of the wrapped [`Matches`].
+    ///
+    /// Equivalent to `NamedMatches#iterator` (`NamedMatches.java:64-66`),
+    /// which returns `in.iterator()`: Java's `Matches` is an
+    /// `Iterable<String>` over the field names, which
+    /// [`Matches::fields`] ports.
     fn fields(&self) -> Vec<String> {
         self.inner.fields()
     }

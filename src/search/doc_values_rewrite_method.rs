@@ -18,9 +18,7 @@ use crate::search::constant_score_weight::{ConstantScoreWeight, ConstantScoreWei
 use crate::search::doc_values_range_iterator::DocValuesRangeIterator;
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::matches::{owned_leaf_context, Matches, MatchesUtils};
-use crate::search::multi_term_query::{
-    get_terms_enum, rewrite_method_type_hash, MultiTermQuery, RewriteMethod,
-};
+use crate::search::multi_term_query::{get_terms_enum, MultiTermQuery, RewriteMethod};
 use crate::search::query::Query;
 use crate::search::query_visitor::QueryVisitor;
 use crate::search::score_mode::ScoreMode;
@@ -53,11 +51,25 @@ impl RewriteMethod for DocValuesRewriteMethod {
         self
     }
 
+    /// Two doc-values rewrite methods are always equal.
+    ///
+    /// Equivalent to `DocValuesRewriteMethod#equals`
+    /// (`DocValuesRewriteMethod.java:195-197`), which is
+    /// `other != null && getClass() == other.getClass()`. Unlike the
+    /// singletons of [`MultiTermQuery`], this class is instantiated freely, so
+    /// Java overrides `equals` to compare the class rather than the identity;
+    /// comparing the concrete type is the same test, and a `&dyn` reference
+    /// cannot be `null`.
+    fn method_eq(&self, other: &dyn RewriteMethod) -> bool {
+        other.as_any().is::<DocValuesRewriteMethod>()
+    }
+
+    /// Returns `641`, the constant every instance hashes to.
+    ///
+    /// Equivalent to `DocValuesRewriteMethod#hashCode`
+    /// (`DocValuesRewriteMethod.java:200-202`).
     fn method_hash(&self) -> u64 {
-        // Java answers the constant 641; the type hash keeps the value
-        // consistent with the rest of this port's rewrite methods, and the two
-        // are equally arbitrary.
-        rewrite_method_type_hash(self).wrapping_add(641)
+        641
     }
 }
 

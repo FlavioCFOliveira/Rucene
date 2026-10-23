@@ -284,6 +284,151 @@ impl AbstractAnalysisFactory {
         })
     }
 
+    /// Compiles a pattern for the value of the argument `name`, consuming it.
+    ///
+    /// Equivalent to `AbstractAnalysisFactory#getPattern`
+    /// (`AbstractAnalysisFactory.java:265-277`), which is
+    /// `Pattern.compile(require(args, name))`: a missing argument fails as
+    /// [`require`](Self::require) does, with
+    /// `Configuration Error: missing parameter '<name>'`, and a value that does
+    /// not compile fails with
+    /// `Configuration Error: '<name>' can not be parsed in <SimpleName>`, where
+    /// `<SimpleName>` is `factory_simple_name`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`], with the messages above.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Four:
+    ///
+    /// * **Iterating matches differs where an empty match starts at the end of
+    ///   a non-empty one.** Java's `Matcher.find()` resumes where the previous
+    ///   match ended, one character further only after an empty match
+    ///   (`Matcher.java:770-786`), so it reports an empty match that starts
+    ///   where a non-empty match ended, the one at the end of input included:
+    ///   `\s*` over `a b` finds `""`, `" "`, `""`, `""`.
+    ///   `fancy_regex::Regex::find_iter` drops such a match and finds `""`,
+    ///   `" "`, `""` (`fancy-regex-0.19.2/src/lib.rs:257-277`). After an empty
+    ///   match both move one character on, so a pattern whose matches are all
+    ///   empty — `(?m)^`, `$`, `\b`, the empty pattern — iterates alike: on
+    ///   each of its corpus rows `find_iter` and the loop below report the
+    ///   same matches, and the rows that differ from Java do so for the
+    ///   dialect reasons of the next item, or for the residue below. A caller
+    ///   that iterates matches — a `PatternTokenizer`-style loop — must
+    ///   reproduce Java's rule itself: loop over
+    ///   [`fancy_regex::Regex::find_from_pos`], resuming at each match's end
+    ///   and one character further after an empty match. Measured on the
+    ///   corpus below, that loop matches Java on every iteration row except
+    ///   one residue, which `find_iter` shares: Java steps one UTF-16 unit, so
+    ///   after an empty match just before a supplementary character it also
+    ///   reports an empty match between the character's two halves, a
+    ///   position UTF-8 text does not have.
+    /// * **The regular-expression dialect is `fancy-regex` 0.19's, not
+    ///   `java.util.regex`'s.** Rust has no `java.util.regex`, and an exact
+    ///   translation would have to reproduce Java's parser front end
+    ///   (`RemoveQEQuoting`, `clazz`, `group0`, `escape`, `ref`, and the
+    ///   comments-mode skipping inside each of them), so the pattern is
+    ///   compiled as written. The difference is measured, not assumed: the
+    ///   fixture `RuceneMemberContractsFixture.PATTERN_CORPUS` holds 207
+    ///   discriminating rows — every construct of `Pattern`'s summary table,
+    ///   every inline flag, the syntax the two dialects spell differently, and
+    ///   the audit's iteration, nesting and one-dialect-only cases — run
+    ///   through the real `getPattern` on the JDK 25.0.4 runtime and iterated
+    ///   with `find_iter`. The portability test
+    ///   `pattern_dialect_differences_are_exactly_the_declared_ones` fails if
+    ///   any row other than these 111 differs, or if one of these stops
+    ///   differing. Both sides use Unicode 16.0 character tables. The list is
+    ///   closed over the corpus; a construct outside it is unmeasured, and
+    ///   nothing here asserts that it agrees.
+    ///   1. *Iteration:* the nine rows of the first item above (`a*`, `a|`,
+    ///      `\s*`, `,?`, `x*`, `\d*`, `(?=b)|a`, and two over a supplementary
+    ///      character).
+    ///   2. *Characters:* octal escapes `\0n`, `\0nn`, `\0mnn` (rejected
+    ///      here); a surrogate pair written as two `\uhhhh` (rejected); `\N{name}`
+    ///      (accepted here, matching nothing); `\cX` (rejected); `\u{hh}` and
+    ///      `\U000000hh` (accepted here, rejected by Java).
+    ///   3. *Classes:* `[[:alpha:]]` and the other `[:…:]` forms (a POSIX class
+    ///      here, a union of literal characters in Java); `--` and `~~` (set
+    ///      difference and symmetric difference here; Java reads a range ending
+    ///      at `-`, an error, and literal tildes); a predefined class before
+    ///      `-`, as in `[\d-z]` (rejected here; Java reads the `-` literally);
+    ///      an intersection with nothing after `&&`, `[a&&]` (Java matches `a`;
+    ///      no match here).
+    ///   4. `.`, which Java also stops at `\r`, U+0085, U+2028 and U+2029.
+    ///   5. `\d`, `\D`, `\w`, `\W`, `\s`, `\S` (ASCII in Java, Unicode here);
+    ///      `\h` (horizontal whitespace in Java, a hex digit here); `\H` and
+    ///      `\V` (rejected here); `\v` (Java's vertical whitespace; only
+    ///      U+000B here).
+    ///   6. POSIX `\p{Lower}`, `Upper`, `Alpha`, `Digit`, `Alnum`, `Punct`,
+    ///      `Graph`, `Print`, `Blank`, `Cntrl`, `Space` and their `\P`
+    ///      complements (ASCII in Java, Unicode here); `\p{XDigit}` (rejected).
+    ///   7. `\p{javaLowerCase}`, `javaUpperCase`, `javaWhitespace`,
+    ///      `javaMirrored`, and the other `java…` classes (rejected); `\p{all}`
+    ///      (rejected here).
+    ///   8. Unicode blocks, `\p{InGreek}`, `\P{InGreek}`, `\p{blk=Greek}`
+    ///      (rejected); a script or binary property without `Is` or `sc=`,
+    ///      `\p{Latin}`, `\p{Lowercase}` (accepted here, rejected by Java).
+    ///   9. *Boundaries:* `^` in multi-line mode (Java also matches after `\r`,
+    ///      U+0085, U+2028 and U+2029, never between `\r` and `\n`, and never
+    ///      at the end of input); `$` and `\Z` (Java also matches before a final
+    ///      line terminator, `\r\n` included, and in multi-line mode before
+    ///      every line terminator); `\b` and `\B` (Java's word is the ASCII
+    ///      `\w` plus a non-spacing mark that follows a letter or digit);
+    ///      `\b{g}` (rejected); `\K` (accepted here, rejected by Java).
+    ///   10. `\R` followed by `\n` over `\r\n` (Java backtracks `\R` to the
+    ///       `\r` alone); `\X` (rejected).
+    ///   11. *Quantifiers:* `{,n}`, an unterminated `{` and `{x}` (rejected by
+    ///       Java; a repetition or a literal here); a pattern starting with
+    ///       `{n}` (Java repeats an empty atom; no match here); a quantified
+    ///       quantifier, `x{2}{3}` (Java finds `xx` three times over six `x`;
+    ///       no match here); a quantified look-ahead, `(?=a)*b` (rejected here).
+    ///   12. *Back references:* to a group that does not exist, `(a)\2` (Java
+    ///       compiles it, never matching; rejected here); `\11` with one group
+    ///       (Java reads `\1` and a literal `1`; rejected here).
+    ///   13. *Groups:* Java allows only `[a-zA-Z][a-zA-Z0-9]*` as a name and
+    ///       rejects a repeated name, both accepted here; `(?P<name>…)`,
+    ///       conditionals `(?(1)…|…)` and comments `(?#…)` (accepted here,
+    ///       rejected by Java).
+    ///   14. *Quotation:* `\Q…\E` (rejected here, inside a class too); `\<` and
+    ///       `\>` (literal characters in Java, word boundaries here).
+    ///   15. *Flags:* `(?i)` without `u` (Java folds ASCII only; here `é`/`É`,
+    ///       `k`/U+212A and `s`/U+017F fold too, and so does a class:
+    ///       `[à-ÿ]` matches `À`); `(?d)` (rejected here); `(?x)` (Java also
+    ///       ignores whitespace inside a class); `(?U)` (`UNICODE_CHARACTER_CLASS`
+    ///       in Java, swapped greediness here); `(?R)` (rejected by Java); `(?c)`
+    ///       (`CANON_EQ` in Java, rejected here).
+    ///
+    ///   The other 96 corpus rows agree match for match. They exercise
+    ///   literals, `\\`, `\xhh`, `\x{h…h}`, BMP `\uhhhh`, `\t \n \r \f \a \e`,
+    ///   simple, negated, range, union, intersection and subtraction classes,
+    ///   the anchors `^` (single-line), `\A`, `\G`, `\z`, greedy, reluctant
+    ///   and possessive quantifiers on single atoms and groups, alternation,
+    ///   numbered, named and forward back references, escaped punctuation and
+    ///   non-ASCII, look-ahead, look-behind (unbounded included), atomic
+    ///   groups, the `Is`, `gc=`, `sc=` and one-letter property forms, and the
+    ///   flags `s`, `u` and `iu` — each on the samples the corpus gives it.
+    /// * **The factory names itself.** Java reads the name off
+    ///   `this.getClass().getSimpleName()`; this struct is held by the
+    ///   concrete factory and cannot see its type, so the factory passes its
+    ///   Java simple name in.
+    /// * **The cause is not chained.** Java attaches the
+    ///   `PatternSyntaxException` as the cause of the
+    ///   `IllegalArgumentException`; [`LuceneError::IllegalArgument`] carries a
+    ///   message only, so the message is Java's and the parser's own
+    ///   diagnostic is dropped.
+    pub fn get_pattern(
+        args: &mut HashMap<String, String>,
+        name: &str,
+        factory_simple_name: &str,
+    ) -> Result<fancy_regex::Regex> {
+        let value = Self::require(args, name)?;
+        fancy_regex::Regex::new(&value).map_err(|_| {
+            LuceneError::IllegalArgument(format!(
+                "Configuration Error: '{name}' can not be parsed in {factory_simple_name}"
+            ))
+        })
+    }
+
     /// Consumes and returns a required argument, checking it against a list.
     ///
     /// Equivalent to `require(Map, String, Collection, boolean)`.
@@ -435,6 +580,17 @@ pub trait TokenizerFactory: Send + Sync + std::fmt::Debug {
     /// The SPI name this factory is registered under.
     fn name(&self) -> &str;
 
+    /// Returns the binary name of the Lucene class this factory ports.
+    ///
+    /// Stands in for `getClass().getName()`, which Rust cannot answer: there is
+    /// no runtime class object, and `std::any::type_name` names the Rust type,
+    /// not the Java one. `AnalysisSPILoader.reload` names a service by its
+    /// class when the service's SPI name is invalid, so the name has to be
+    /// carried by the factory itself. There is no default, as for
+    /// [`Analyzer::java_class_name`](crate::analysis::Analyzer::java_class_name):
+    /// every factory states its own.
+    fn java_class_name(&self) -> &'static str;
+
     /// Creates the tokenizer.
     ///
     /// Equivalent to `TokenizerFactory.create(AttributeFactory)`.
@@ -447,6 +603,17 @@ pub trait TokenizerFactory: Send + Sync + std::fmt::Debug {
 pub trait TokenFilterFactory: Send + Sync + std::fmt::Debug {
     /// The SPI name this factory is registered under.
     fn name(&self) -> &str;
+
+    /// Returns the binary name of the Lucene class this factory ports.
+    ///
+    /// Stands in for `getClass().getName()`, which Rust cannot answer: there is
+    /// no runtime class object, and `std::any::type_name` names the Rust type,
+    /// not the Java one. `AnalysisSPILoader.reload` names a service by its
+    /// class when the service's SPI name is invalid, so the name has to be
+    /// carried by the factory itself. There is no default, as for
+    /// [`Analyzer::java_class_name`](crate::analysis::Analyzer::java_class_name):
+    /// every factory states its own.
+    fn java_class_name(&self) -> &'static str;
 
     /// Wraps `input` in the filter.
     ///
@@ -477,6 +644,17 @@ pub trait TokenFilterFactory: Send + Sync + std::fmt::Debug {
 pub trait CharFilterFactory: Send + Sync + std::fmt::Debug {
     /// The SPI name this factory is registered under.
     fn name(&self) -> &str;
+
+    /// Returns the binary name of the Lucene class this factory ports.
+    ///
+    /// Stands in for `getClass().getName()`, which Rust cannot answer: there is
+    /// no runtime class object, and `std::any::type_name` names the Rust type,
+    /// not the Java one. `AnalysisSPILoader.reload` names a service by its
+    /// class when the service's SPI name is invalid, so the name has to be
+    /// carried by the factory itself. There is no default, as for
+    /// [`Analyzer::java_class_name`](crate::analysis::Analyzer::java_class_name):
+    /// every factory states its own.
+    fn java_class_name(&self) -> &'static str;
 
     /// Wraps `input` in the filter.
     ///
@@ -513,11 +691,19 @@ pub trait CharFilterFactory: Send + Sync + std::fmt::Debug {
 pub trait AnalysisFactorySPIName {
     /// Returns the name the factory declares.
     fn spi_name(&self) -> &str;
+
+    /// Returns the binary name of the factory's Lucene class, Java's
+    /// `service.getName()`.
+    fn java_class_name(&self) -> &str;
 }
 
 impl AnalysisFactorySPIName for dyn TokenizerFactory {
     fn spi_name(&self) -> &str {
         self.name()
+    }
+
+    fn java_class_name(&self) -> &str {
+        TokenizerFactory::java_class_name(self)
     }
 }
 
@@ -525,11 +711,19 @@ impl AnalysisFactorySPIName for dyn TokenFilterFactory {
     fn spi_name(&self) -> &str {
         self.name()
     }
+
+    fn java_class_name(&self) -> &str {
+        TokenFilterFactory::java_class_name(self)
+    }
 }
 
 impl AnalysisFactorySPIName for dyn CharFilterFactory {
     fn spi_name(&self) -> &str {
         self.name()
+    }
+
+    fn java_class_name(&self) -> &str {
+        CharFilterFactory::java_class_name(self)
     }
 }
 
@@ -570,37 +764,6 @@ impl<T: ?Sized> AnalysisSPILoader<T> {
             original_names: Vec::new(),
             kind,
         }
-    }
-
-    /// Registers `service` under `name`.
-    ///
-    /// This is what Java's `reload(ClassLoader)` does for one discovered
-    /// service: it refuses a name the pattern rejects, keys the map by the
-    /// lower-cased name, keeps the original spelling for
-    /// [`available_services`](Self::available_services), and ignores a name
-    /// that is already taken so that the first registration wins.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when `name` is not a valid SPI
-    /// name, standing in for Java's `ServiceConfigurationError`.
-    pub fn register(&mut self, name: impl Into<String>, service: Arc<T>) -> Result<()> {
-        let original_name = name.into();
-        if !Self::is_valid_name(&original_name) {
-            return Err(LuceneError::IllegalArgument(format!(
-                "The name {original_name} for {} is invalid: Allowed characters are (English) \
-                 alphabet, digits, and underscore. It should be started with an alphabet.",
-                self.kind
-            )));
-        }
-        let name = original_name.to_lowercase();
-        // Only the first service for each name is added; later ones are
-        // ignored, which is what lets one be placed ahead of another.
-        if !self.services.contains_key(&name) {
-            self.services.insert(name, service);
-            self.original_names.push(original_name);
-        }
-        Ok(())
     }
 
     /// Returns whether `name` is a valid SPI name.
@@ -699,6 +862,83 @@ impl<T: ?Sized> AnalysisSPILoader<T> {
 }
 
 impl<T: ?Sized + AnalysisFactorySPIName> AnalysisSPILoader<T> {
+    /// Registers `service` under `name`.
+    ///
+    /// This is [`reload`](Self::reload) over a single service: it refuses a
+    /// name the pattern rejects, keys the map by the lower-cased name, keeps
+    /// the original spelling for
+    /// [`available_services`](Self::available_services), and ignores a name
+    /// that is already taken so that the first registration wins.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `name` is not a valid SPI
+    /// name, standing in for Java's `ServiceConfigurationError`.
+    pub fn register(&mut self, name: impl Into<String>, service: Arc<T>) -> Result<()> {
+        self.reload([(name.into(), service)])
+    }
+
+    /// Adds every service in `services` whose name is not registered yet.
+    ///
+    /// Equivalent to `AnalysisSPILoader#reload` (`AnalysisSPILoader.java:76-133`).
+    /// Each service's name must match the SPI name pattern; the map is keyed
+    /// by the lower-cased name and the original spelling is kept for
+    /// [`available_services`](Self::available_services). Only new names are
+    /// added — a service placed earlier wins and an existing one is never
+    /// replaced — and, as in Java, the update is all or nothing: the new map
+    /// and name list are built on copies and installed only once every name
+    /// has been accepted, so a refused name leaves the registry unchanged.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java discovers the services by
+    /// scanning a `ClassLoader` with `ServiceLoader` and reads each name from
+    /// the class's `NAME` field. Rust has neither at run time, so the caller
+    /// supplies the `(name, service)` pairs, in the order the scan would have
+    /// produced them, as [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
+    /// does for the codec loaders.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`], standing in for Java's
+    /// `ServiceConfigurationError`, when a name is not a valid SPI name — with
+    /// Java's message, which names the service by its
+    /// [`java_class_name`](AnalysisFactorySPIName::java_class_name), Java's
+    /// `service.getName()` — or
+    /// when the lookup keys and the original names disagree in number — the
+    /// consistency check Java performs before installing the result.
+    pub fn reload<I, N>(&mut self, services: I) -> Result<()>
+    where
+        I: IntoIterator<Item = (N, Arc<T>)>,
+        N: Into<String>,
+    {
+        let mut new_services = self.services.clone();
+        let mut original_names = self.original_names.clone();
+        for (name, service) in services {
+            let original_name = name.into();
+            if !Self::is_valid_name(&original_name) {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "The name {original_name} for {} is invalid: Allowed characters are (English) \
+                     alphabet, digits, and underscore. It should be started with an alphabet.",
+                    service.java_class_name()
+                )));
+            }
+            let name = original_name.to_lowercase();
+            // Only the first service for each name is added; later ones are
+            // ignored, which is what lets one be placed ahead of another.
+            if !new_services.contains_key(&name) {
+                new_services.insert(name, service);
+                original_names.push(original_name);
+            }
+        }
+        if new_services.len() != original_names.len() {
+            return Err(LuceneError::IllegalArgument(
+                "Service lookup key set is inconsistent with original name set!".to_string(),
+            ));
+        }
+        self.services = new_services;
+        self.original_names = original_names;
+        Ok(())
+    }
+
     /// Returns the SPI name `service` declares.
     ///
     /// **Divergence from Lucene 10.5.0.** Java reads the class's
@@ -984,5 +1224,114 @@ mod get_lines_tests {
             vec!["#hash".to_string(), "a".to_string(), "b".to_string()],
             "'#hash' is a Snowball word, not a comment"
         );
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+
+    /// A service that states its SPI name and its Lucene class, as a factory
+    /// does through [`AnalysisFactorySPIName`].
+    #[derive(Debug)]
+    struct Service {
+        tag: &'static str,
+        class: &'static str,
+    }
+
+    impl AnalysisFactorySPIName for Service {
+        fn spi_name(&self) -> &str {
+            self.tag
+        }
+
+        fn java_class_name(&self) -> &str {
+            self.class
+        }
+    }
+
+    fn loader() -> AnalysisSPILoader<Service> {
+        AnalysisSPILoader::new("TokenFilterFactory")
+    }
+
+    fn service(tag: &'static str) -> Arc<Service> {
+        Arc::new(Service {
+            tag,
+            class: "org.example.ExampleFilterFactory",
+        })
+    }
+
+    /// `reload` adds only names it has not seen, keyed case-insensitively,
+    /// keeping the first service for a name and its original spelling —
+    /// `AnalysisSPILoader.java:116-120`, where a later service of the same
+    /// lower-cased name is ignored, whether it comes from an earlier reload or
+    /// from the same scan.
+    #[test]
+    fn reload_adds_new_names_and_keeps_the_first_service() {
+        let mut spi = loader();
+        spi.reload([
+            ("Lowercase", service("first")),
+            ("lowercase", service("same scan")),
+        ])
+        .unwrap();
+        spi.reload([
+            ("LOWERCASE", service("later scan")),
+            ("stop", service("stop")),
+        ])
+        .unwrap();
+
+        assert_eq!(spi.lookup_class("lowerCASE").unwrap().tag, "first");
+        assert_eq!(spi.lookup_class("Stop").unwrap().tag, "stop");
+        assert_eq!(
+            spi.available_services(),
+            vec!["Lowercase".to_string(), "stop".to_string()]
+        );
+    }
+
+    /// Java builds the new map and name set on copies and installs them only
+    /// at the end (`AnalysisSPILoader.java:78-79,131-132`), so a
+    /// `ServiceConfigurationError` thrown for one service leaves every
+    /// service of that scan out — including the valid ones before it. The
+    /// message is Java's, naming the offending service by its class
+    /// (`AnalysisSPILoader.java:91-96`).
+    #[test]
+    fn reload_is_all_or_nothing() {
+        let mut spi = loader();
+        spi.reload([("stop", service("stop"))]).unwrap();
+
+        let bad = Arc::new(Service {
+            tag: "invalid",
+            class: "org.example.BadFilterFactory",
+        });
+        let err = spi
+            .reload([("Lowercase", service("valid")), ("1bad", bad)])
+            .unwrap_err();
+        match err {
+            LuceneError::IllegalArgument(message) => assert_eq!(
+                message,
+                "The name 1bad for org.example.BadFilterFactory is invalid: Allowed characters \
+                 are (English) alphabet, digits, and underscore. It should be started with an \
+                 alphabet."
+            ),
+            other => panic!("expected an illegal-argument error, got {other:?}"),
+        }
+        assert!(
+            spi.lookup_class("lowercase").is_err(),
+            "the valid name was rolled back"
+        );
+        assert_eq!(spi.available_services(), vec!["stop".to_string()]);
+    }
+
+    /// `register` is `reload` over one service.
+    #[test]
+    fn register_is_reload_of_one_service() {
+        let mut spi = loader();
+        spi.register("Stop", service("a")).unwrap();
+        spi.register("STOP", service("b")).unwrap();
+        assert!(
+            spi.register("x", service("c")).is_err(),
+            "one character is too short"
+        );
+        assert_eq!(spi.lookup_class("stop").unwrap().tag, "a");
+        assert_eq!(spi.available_services(), vec!["Stop".to_string()]);
     }
 }

@@ -881,7 +881,7 @@ impl HnswWriterState {
         let scratch_capacity = (graph.max_conn() * 2).max(4) as usize;
         let mut offsets = Vec::with_capacity(graph.num_levels()? as usize);
         for level in 0..graph.num_levels()? {
-            let mut sorted_nodes = graph.get_sorted_nodes_on_level(level)?;
+            let mut sorted_nodes = graph.get_sorted_nodes(level)?;
             let mut level_offsets = Vec::with_capacity(sorted_nodes.size() as usize);
             while sorted_nodes.has_next() {
                 let node = sorted_nodes.next_int();

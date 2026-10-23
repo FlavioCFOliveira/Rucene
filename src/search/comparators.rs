@@ -22,6 +22,6 @@ pub use double_comparator::DoubleComparator;
 pub use float_comparator::FloatComparator;
 pub use int_comparator::IntComparator;
 pub use long_comparator::LongComparator;
-pub use numeric_comparator::{NumericComparator, NumericLeafState, SortableBytes};
+pub use numeric_comparator::{NumericComparator, NumericLeafState};
 pub use term_ord_val_comparator::TermOrdValComparator;
 pub use updateable_doc_id_set_iterator::UpdateableDocIdSetIterator;

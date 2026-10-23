@@ -7,10 +7,12 @@
 
 use std::f32;
 
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use crate::error::{LuceneError, Result};
+use crate::index::merge_scheduler::now_ns;
 use crate::internal::hppc::IntHashSet;
 use crate::search::knn::KnnCollector;
 use crate::search::NO_MORE_DOCS;
@@ -104,6 +106,17 @@ pub struct HnswGraphBuilder {
     /// Equivalent to `HnswGraphBuilder.infoStream`, which defaults to
     /// `InfoStream.getDefault()`.
     info_stream: Arc<dyn InfoStream>,
+    /// When the merge this builder works for began, as a [`now_ns`] reading,
+    /// or `-1` when it builds on its own; progress reports measure from it
+    /// when it is set.
+    ///
+    /// Equivalent to `HnswGraphBuilder.mergeStartTimeNs`.
+    merge_start_time_ns: i64,
+    /// The accumulator every concurrent merge worker adds its elapsed time
+    /// to, or `None` on the non-concurrent path.
+    ///
+    /// Equivalent to `HnswGraphBuilder.cumulativeWorkTimeNs`.
+    cumulative_work_time_ns: Option<Arc<AtomicI64>>,
 }
 
 /// The component name the builder logs under.
@@ -165,6 +178,8 @@ impl HnswGraphBuilder {
             frozen: false,
             hnsw_lock: None,
             info_stream: Arc::new(crate::util::NoOutputInfoStream),
+            merge_start_time_ns: -1,
+            cumulative_work_time_ns: None,
         })
     }
 
@@ -187,12 +202,32 @@ impl HnswGraphBuilder {
         self.info_stream = info_stream;
     }
 
-    /// Logs how long the build has taken to reach `node`.
+    /// Sets the merge-level start time, so that progress reports show the
+    /// time since the merge began rather than since this chunk began.
+    ///
+    /// Equivalent to `HnswGraphBuilder#setMergeStartTimeNs`
+    /// (`HnswGraphBuilder.java:102-104`). `merge_start_time_ns` is a
+    /// [`now_ns`] reading, the port's `System.nanoTime()`.
+    pub fn set_merge_start_time_ns(&mut self, merge_start_time_ns: i64) {
+        self.merge_start_time_ns = merge_start_time_ns;
+    }
+
+    /// Sets the shared accumulator that tracks the time spent adding vectors
+    /// across concurrent chunks.
+    ///
+    /// Equivalent to `HnswGraphBuilder#setCumulativeWorkTimeNs`
+    /// (`HnswGraphBuilder.java:107-109`); `None` is Java's `null`.
+    pub fn set_cumulative_work_time_ns(&mut self, cumulative_work_time_ns: Option<Arc<AtomicI64>>) {
+        self.cumulative_work_time_ns = cumulative_work_time_ns;
+    }
+
+    /// Logs how long the build has taken to reach `node`, measured from the
+    /// [`now_ns`] reading `start_ns`.
     ///
     /// Equivalent to the private
     /// `HnswGraphBuilder.printGraphBuildStatus(int, long)`.
-    fn print_graph_build_status(&self, node: i32, start: Instant) {
-        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+    fn print_graph_build_status(&self, node: i32, start_ns: i64) {
+        let elapsed_ms = (now_ns() - start_ns) as f64 / 1_000_000.0;
         self.info_stream.message(
             HNSW_COMPONENT,
             &format!("built {node} in {elapsed_ms:.2} ms"),
@@ -462,7 +497,12 @@ impl HnswGraphBuilder {
                 "This HnswGraphBuilder is frozen and cannot be updated".to_string(),
             ));
         }
-        let start = Instant::now();
+        let start_ns = now_ns();
+        let progress_start_ns = if self.merge_start_time_ns != -1 {
+            self.merge_start_time_ns
+        } else {
+            start_ns
+        };
         for node in min_ord..max_ord {
             if let Some(initialized) = skip {
                 if initialized.get(node as usize) {
@@ -471,10 +511,14 @@ impl HnswGraphBuilder {
             }
             self.add_graph_node(node)?;
             if node % 10000 == 0 && self.info_stream.is_enabled(HNSW_COMPONENT) {
-                self.print_graph_build_status(node, start);
+                self.print_graph_build_status(node, progress_start_ns);
             }
         }
-        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let chunked_elapsed_ns = now_ns() - start_ns;
+        if let Some(cumulative_work_time_ns) = &self.cumulative_work_time_ns {
+            cumulative_work_time_ns.fetch_add(chunked_elapsed_ns, Ordering::Relaxed);
+        }
+        let elapsed_ms = chunked_elapsed_ns as f64 / 1_000_000.0;
         if self.info_stream.is_enabled(HNSW_COMPONENT) {
             self.info_stream.message(
                 HNSW_COMPONENT,

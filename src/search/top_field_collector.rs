@@ -3,7 +3,7 @@
 
 #![deny(unsafe_code)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::error::{LuceneError, Result};
 use crate::index::{sub_index_from_leaves, LeafReaderContext};
@@ -79,8 +79,43 @@ fn can_early_terminate_on_prefix(search_sort: &Sort, index_sort: Option<&Sort>) 
 /// This port carries `after` as an [`Option`] and branches on it, exactly as
 /// [`TopScoreDocCollector`](crate::search::TopScoreDocCollector) already does
 /// for the same split; the collected hits are identical.
+///
+/// **Divergence from Lucene 10.5.0.** A Java collector is an object any number
+/// of references can reach: `TopFieldCollectorManager.getCollectors()` hands
+/// back the very collectors the search is filling. Rust forbids that alias
+/// for an owned value, so this type is a handle over shared state. Each
+/// handle the manager keeps (see
+/// [`TopFieldCollectorManager::get_collectors`](crate::search::TopFieldCollectorManager::get_collectors))
+/// sees what the search did through the handle it was given; a leaf
+/// collector locks the state for the leaf it collects, exactly as long as it
+/// borrowed the collector before. Using another handle to the same collector
+/// — one from `get_collectors()` — while such a leaf collector is alive
+/// waits for the lock: on another thread until the leaf collector is
+/// dropped, and on the same thread forever, because `std::sync::Mutex` is
+/// not re-entrant. `Mutex::lock` documents that a second lock on the
+/// holding thread never returns and leaves a deadlock or a panic
+/// unspecified; measured on Linux with rustc 1.99.1, it deadlocks.
+///
+/// Lucene runs each collector of a search on its own executor task and
+/// reduces them on the calling thread (`IndexSearcher.java:764-796`); only the
+/// manager's `newCollector()` is single-threaded
+/// (`TopFieldCollectorManager.java:66-69`). The state is therefore behind a
+/// `Mutex` in an `Arc`, so that a handle is `Send` and `Sync` exactly when the
+/// state is `Send`. Today it is not: [`FieldComparator`](crate::search::FieldComparator)
+/// carries no `Send` bound, so neither does the hit queue that holds the
+/// comparators — which was already true of this type before handles existed.
 #[derive(Debug)]
 pub struct TopFieldCollector {
+    state: SharedCollectorState<TopFieldCollectorState>,
+}
+
+/// How a [`TopFieldCollector`]'s state is shared between its handles: `Send`
+/// and `Sync` whenever the state is `Send`.
+pub(crate) type SharedCollectorState<S> = Arc<Mutex<S>>;
+
+/// The state of a [`TopFieldCollector`], shared by every handle to it.
+#[derive(Debug)]
+struct TopFieldCollectorState {
     sort: Sort,
     queue: FieldValueHitQueue,
     after: Option<FieldDoc>,
@@ -176,7 +211,7 @@ impl TopFieldCollector {
         }
         debug_assert!(num_comparators >= 1);
 
-        Self {
+        let state = TopFieldCollectorState {
             sort,
             queue,
             after,
@@ -194,21 +229,46 @@ impl TopFieldCollector {
             score_mode,
             total_hits: 0,
             total_hits_relation: TotalHitsRelation::EQUAL_TO,
+        };
+        // The state is not `Send` while `FieldComparator` lacks a `Send`
+        // bound, which `arc_with_non_send_sync` flags. The `Arc<Mutex<..>>` is
+        // deliberate: it is what makes this handle `Send` and `Sync` as soon as
+        // the comparators are, as Lucene's executor-driven search requires.
+        #[allow(clippy::arc_with_non_send_sync)]
+        let state = Arc::new(Mutex::new(state));
+        Self { state }
+    }
+
+    /// Returns another handle to this same collector.
+    ///
+    /// What a second Java reference to the collector is: the manager keeps
+    /// one for every collector it creates, so that
+    /// [`TopFieldCollectorManager::get_collectors`](crate::search::TopFieldCollectorManager::get_collectors)
+    /// can hand back the collectors the search filled.
+    pub(crate) fn share(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
         }
+    }
+
+    /// Locks the shared state. A panic while it was held leaves the state as
+    /// far as that collection got, which is still a valid collector state.
+    fn lock(&self) -> MutexGuard<'_, TopFieldCollectorState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The number of hits this collector counts accurately.
     ///
     /// Equivalent to reading the package-private `totalHitsThreshold` field.
     pub fn total_hits_threshold(&self) -> i32 {
-        self.total_hits_threshold
+        self.lock().total_hits_threshold
     }
 
     /// Returns whether collection terminated early.
     ///
     /// Equivalent to `TopFieldCollector.isEarlyTerminated()`.
     pub fn is_early_terminated(&self) -> bool {
-        self.total_hits_relation == TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO
+        self.lock().total_hits_relation == TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO
     }
 
     /// Populates the [`scores`](crate::search::ScoreDoc::score) of the given
@@ -286,7 +346,9 @@ impl TopFieldCollector {
         }
         Ok(())
     }
+}
 
+impl TopFieldCollectorState {
     /// Equivalent to `TopFieldCollector.updateGlobalMinCompetitiveScore(Scorable)`.
     fn update_global_min_competitive_score(&mut self, scorer: &mut dyn Scorable) -> Result<()> {
         let Some(acc) = self.min_score_acc.as_ref() else {
@@ -357,36 +419,39 @@ impl TopFieldCollector {
 
 impl Collector for TopFieldCollector {
     fn score_mode(&self) -> ScoreMode {
-        self.score_mode
+        self.lock().score_mode
     }
 
     fn get_leaf_collector<'a>(
         &'a mut self,
         context: &LeafReaderContext,
     ) -> CollectionResult<Box<dyn LeafCollector + 'a>> {
+        let mut parent = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = &mut *parent;
         // As all segments are sorted in the same way, it is enough to check
         // only the first segment for the index sort.
-        if self.search_sort_part_of_index_sort.is_none() {
+        if state.search_sort_part_of_index_sort.is_none() {
             let meta = context.leaf_reader().get_meta_data();
-            let part_of_index_sort = can_early_terminate(&self.sort, meta.sort());
-            self.search_sort_part_of_index_sort = Some(part_of_index_sort);
+            let part_of_index_sort = can_early_terminate(&state.sort, meta.sort());
+            state.search_sort_part_of_index_sort = Some(part_of_index_sort);
             if part_of_index_sort {
-                self.queue.get_comparators_mut()[0].disable_skipping();
+                state.queue.get_comparators_mut()[0].disable_skipping();
             }
         }
-        self.queue.set_next_leaf(context)?;
+        state.queue.set_next_leaf(context)?;
 
         // Reset the minimum competitive score.
-        self.min_competitive_score = 0.0;
-        self.doc_base = context.doc_base();
-        let after_doc = self
+        state.min_competitive_score = 0.0;
+        state.doc_base = context.doc_base();
+        let doc_base = state.doc_base;
+        let after_doc = state
             .after
             .as_ref()
-            .map(|after| after.score_doc.doc - self.doc_base);
+            .map(|after| after.score_doc.doc - doc_base);
 
-        let needs_scores = self.needs_scores;
+        let needs_scores = state.needs_scores;
         let collector = TopFieldLeafCollector {
-            parent: self,
+            parent,
             after_doc,
             collected_all_competitive_hits: false,
         };
@@ -406,22 +471,23 @@ impl TopDocsCollector for TopFieldCollector {
     type Docs = TopFieldDocs;
 
     fn total_hits(&self) -> i32 {
-        self.total_hits
+        self.lock().total_hits
     }
 
     fn total_hits_relation(&self) -> TotalHitsRelation {
-        self.total_hits_relation
+        self.lock().total_hits_relation
     }
 
     fn pq_size(&self) -> usize {
-        self.queue.size()
+        self.lock().queue.size()
     }
 
     /// Equivalent to `pq.pop()` followed by `queue.fillFields(...)`, which is
     /// what `TopFieldCollector.populateResults` does with each popped entry.
     fn pop(&mut self) -> Option<FieldDoc> {
-        let entry = self.queue.pop()?;
-        Some(self.queue.fill_fields(&entry))
+        let mut state = self.lock();
+        let entry = state.queue.pop()?;
+        Some(state.queue.fill_fields(&entry))
     }
 
     /// Equivalent to `TopFieldCollector.newTopDocs(ScoreDoc[], int)`, which
@@ -432,10 +498,11 @@ impl TopDocsCollector for TopFieldCollector {
     /// Propagates the [`TotalHits`] validation error, which cannot trigger for
     /// a non-negative hit count.
     fn new_top_docs(&self, results: Option<Vec<FieldDoc>>, _start: i32) -> Result<TopFieldDocs> {
+        let state = self.lock();
         Ok(TopFieldDocs::new(
-            TotalHits::new(i64::from(self.total_hits), self.total_hits_relation)?,
+            TotalHits::new(i64::from(state.total_hits), state.total_hits_relation)?,
             results.unwrap_or_default(),
-            self.queue.get_fields().to_vec(),
+            state.queue.get_fields().to_vec(),
         ))
     }
 }
@@ -447,7 +514,8 @@ impl TopDocsCollector for TopFieldCollector {
 /// subclasses that `SimpleFieldCollector.getLeafCollector` and
 /// `PagingFieldCollector.getLeafCollector` return.
 struct TopFieldLeafCollector<'a> {
-    parent: &'a mut TopFieldCollector,
+    /// The collector's state, locked for as long as this leaf is collected.
+    parent: MutexGuard<'a, TopFieldCollectorState>,
     /// The `after` hit rebased on the current leaf, when paging.
     ///
     /// Equivalent to `final int afterDoc = after.doc - docBase`.
@@ -612,5 +680,69 @@ impl LeafCollector for TopFieldLeafCollector<'_> {
 
     fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
         self.parent.queue.competitive_iterator()
+    }
+}
+
+/// Compile-time checks that [`TopFieldCollector`] and its state are `Send`
+/// but for the hit queue, which holds the comparators.
+#[cfg(test)]
+pub(crate) mod send_checks {
+    use super::{TopFieldCollector, TopFieldCollectorState};
+
+    fn assert_send<T: Send>(_: &T) {}
+
+    /// The collector is only its shared state, whose wrapper the manager's
+    /// test checks.
+    fn collector_fields(collector: &TopFieldCollector) {
+        let TopFieldCollector { state: _ } = collector;
+    }
+
+    /// Every field of the state but the hit queue is `Send`; the queue's
+    /// fields but the comparators are checked by
+    /// [`field_value_hit_queue::send_checks`](crate::search::field_value_hit_queue::send_checks).
+    fn state_fields(state: &TopFieldCollectorState) {
+        let TopFieldCollectorState {
+            sort,
+            queue: _,
+            after,
+            collected_hits,
+            num_hits,
+            total_hits_threshold,
+            can_set_min_score,
+            search_sort_part_of_index_sort,
+            min_score_acc,
+            min_competitive_score,
+            bottom,
+            queue_full,
+            doc_base,
+            needs_scores,
+            score_mode,
+            total_hits,
+            total_hits_relation,
+        } = state;
+        assert_send(sort);
+        assert_send(after);
+        assert_send(collected_hits);
+        assert_send(num_hits);
+        assert_send(total_hits_threshold);
+        assert_send(can_set_min_score);
+        assert_send(search_sort_part_of_index_sort);
+        assert_send(min_score_acc);
+        assert_send(min_competitive_score);
+        assert_send(bottom);
+        assert_send(queue_full);
+        assert_send(doc_base);
+        assert_send(needs_scores);
+        assert_send(score_mode);
+        assert_send(total_hits);
+        assert_send(total_hits_relation);
+    }
+
+    /// Forces the two checks above to compile. Each destructuring names every
+    /// field, so a field added later fails to compile until it is listed, and
+    /// a listed field that is not `Send` fails its assertion.
+    pub(crate) fn collector_is_send_but_for_its_queue() {
+        let _: fn(&TopFieldCollector) = collector_fields;
+        let _: fn(&TopFieldCollectorState) = state_fields;
     }
 }

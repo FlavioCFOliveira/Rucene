@@ -4141,6 +4141,102 @@ impl BufferedChecksum {
         Ok(())
     }
 
+    /// Updates the checksum with the two little-endian bytes of `val`.
+    ///
+    /// Equivalent to `BufferedChecksum#updateShort`
+    /// (`BufferedChecksum.java:67-71`): the bytes go into the buffer, which is
+    /// flushed first when they would not fit.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the buffer is shorter than two bytes, where Java's
+    /// `VarHandle` write throws `IndexOutOfBoundsException`.
+    pub fn update_short(&mut self, val: i16) {
+        self.update_le(&val.to_le_bytes());
+    }
+
+    /// Updates the checksum with the four little-endian bytes of `val`.
+    ///
+    /// Equivalent to `BufferedChecksum#updateInt`
+    /// (`BufferedChecksum.java:73-77`).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the buffer is shorter than four bytes, as
+    /// [`update_short`](Self::update_short) does for two.
+    pub fn update_int(&mut self, val: i32) {
+        self.update_le(&val.to_le_bytes());
+    }
+
+    /// Updates the checksum with the eight little-endian bytes of `val`.
+    ///
+    /// Equivalent to `BufferedChecksum#updateLong`
+    /// (`BufferedChecksum.java:79-83`).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the buffer is shorter than eight bytes, as
+    /// [`update_short`](Self::update_short) does for two.
+    pub fn update_long(&mut self, val: i64) {
+        self.update_le(&val.to_le_bytes());
+    }
+
+    /// Updates the checksum with `vals[offset..offset + len]`, each value as
+    /// its eight little-endian bytes.
+    ///
+    /// Equivalent to `BufferedChecksum#updateLongs`
+    /// (`BufferedChecksum.java:85-105`), step for step: it first tops up a
+    /// partly filled buffer one long at a time, then fills whole buffers of
+    /// longs, flushing before each. As in Lucene, the call never returns when
+    /// the buffer is shorter than eight bytes and `len > 0`: no long fits, so
+    /// the loop makes no progress (Lucene only ever builds the 1024-byte
+    /// default).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] if `offset + len` exceeds
+    /// `vals.len()`, as [`update_bytes`](Self::update_bytes) does for bytes.
+    /// The range is checked before anything is checksummed; Java raises its
+    /// `IndexOutOfBoundsException` from the array access itself, after it may
+    /// already have checksummed the values that precede the bad index.
+    pub fn update_longs(&mut self, vals: &[i64], mut offset: usize, mut len: usize) -> Result<()> {
+        check_from_index_size(offset, len, vals.len())?;
+        if self.buffer_pos > 0 {
+            let remaining_capacity_in_long = ((self.buffer.len() - self.buffer_pos) / 8).min(len);
+            for _ in 0..remaining_capacity_in_long {
+                self.update_long(vals[offset]);
+                offset += 1;
+                len -= 1;
+            }
+            if len == 0 {
+                return Ok(());
+            }
+        }
+
+        let capacity_in_long = self.buffer.len() / 8;
+        while len > 0 {
+            self.flush();
+            let l = capacity_in_long.min(len);
+            for (k, val) in vals[offset..offset + l].iter().enumerate() {
+                self.buffer[k * 8..k * 8 + 8].copy_from_slice(&val.to_le_bytes());
+            }
+            self.buffer_pos += l * 8;
+            offset += l;
+            len -= l;
+        }
+        Ok(())
+    }
+
+    /// The shared body of the fixed-width updates: flush when `bytes` would
+    /// not fit, then append them.
+    fn update_le(&mut self, bytes: &[u8]) {
+        if self.buffer_pos + bytes.len() > self.buffer.len() {
+            self.flush();
+        }
+        self.buffer[self.buffer_pos..self.buffer_pos + bytes.len()].copy_from_slice(bytes);
+        self.buffer_pos += bytes.len();
+    }
+
     /// Returns the current checksum value as if the internal buffer were flushed.
     ///
     /// This clones the inner hasher and feeds it the buffered bytes, so it does
@@ -4297,6 +4393,39 @@ impl DataInput for BufferedChecksumIndexInput {
         self.main.read_bytes(b, offset, len)?;
         self.digest.update_bytes(b, offset, len)?;
         Ok(())
+    }
+
+    /// Equivalent to `BufferedChecksumIndexInput.readShort()`
+    /// (`BufferedChecksumIndexInput.java:50-54`): reads through the wrapped
+    /// input's own `readShort` and checksums the value with
+    /// [`BufferedChecksum::update_short`].
+    fn read_short(&mut self) -> Result<i16> {
+        let v = self.main.read_short()?;
+        self.digest.update_short(v);
+        Ok(v)
+    }
+
+    /// Equivalent to `BufferedChecksumIndexInput.readInt()`
+    /// (`BufferedChecksumIndexInput.java:57-61`).
+    fn read_int(&mut self) -> Result<i32> {
+        let v = self.main.read_int()?;
+        self.digest.update_int(v);
+        Ok(v)
+    }
+
+    /// Equivalent to `BufferedChecksumIndexInput.readLong()`
+    /// (`BufferedChecksumIndexInput.java:64-68`).
+    fn read_long(&mut self) -> Result<i64> {
+        let v = self.main.read_long()?;
+        self.digest.update_long(v);
+        Ok(v)
+    }
+
+    /// Equivalent to `BufferedChecksumIndexInput.readLongs(long[], int, int)`
+    /// (`BufferedChecksumIndexInput.java:71-74`).
+    fn read_longs(&mut self, dst: &mut [i64], offset: usize, length: usize) -> Result<()> {
+        self.main.read_longs(dst, offset, length)?;
+        self.digest.update_longs(dst, offset, length)
     }
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {

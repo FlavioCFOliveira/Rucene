@@ -2480,6 +2480,15 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
 }
 
 impl Lucene90CompressingTermVectorsReader {
+    /// Returns the number of documents this reader covers, which is the
+    /// segment's `maxDoc`.
+    ///
+    /// Equivalent to the package-private `Lucene90CompressingTermVectorsReader#getNumDocs`
+    /// (`Lucene90CompressingTermVectorsReader.java:301-303`).
+    pub fn get_num_docs(&self) -> i32 {
+        self.num_docs
+    }
+
     /// Adds up the entries of `arr`.
     ///
     /// Equivalent to the private
@@ -4399,6 +4408,26 @@ mod tests {
             .and_then(|any| any.downcast_ref::<Lucene90CompressingTermVectorsReader>())
             .expect("the segment is written by this format")
             .clone()
+    }
+
+    /// `getNumDocs` is the segment's `maxDoc` — the constructor's
+    /// `numDocs = si.maxDoc()` — and a merge instance, which Java builds with
+    /// the copy constructor's `this.numDocs = reader.numDocs`, reports the same
+    /// (`Lucene90CompressingTermVectorsReader.java:116,143,301-303`).
+    #[test]
+    fn get_num_docs_is_the_segment_max_doc() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        for (name, count) in [("_t1", 1), ("_t3", 3), ("_t9", 9)] {
+            let source = write_tv_merge_source(&dir, name, 0, count);
+            let reader = concrete_tv_merge_source(&dir, &source);
+            assert_eq!(reader.get_num_docs(), count, "{name}");
+            let merge_box = reader.get_merge_instance();
+            let merge = merge_box
+                .as_any()
+                .and_then(|any| any.downcast_ref::<Lucene90CompressingTermVectorsReader>())
+                .expect("the merge instance is this format's reader");
+            assert_eq!(merge.get_num_docs(), count, "{name} merge instance");
+        }
     }
 
     /// `(numChunks, numDirtyChunks, numDirtyDocs)` of a term-vectors segment,

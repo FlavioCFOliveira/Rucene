@@ -2351,6 +2351,15 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
 }
 
 impl Lucene90CompressingStoredFieldsReader {
+    /// Returns the number of documents this reader covers, which is the
+    /// segment's `maxDoc`.
+    ///
+    /// Equivalent to the package-private `Lucene90CompressingStoredFieldsReader#getNumDocs`
+    /// (`Lucene90CompressingStoredFieldsReader.java:759-761`).
+    pub fn get_num_docs(&self) -> i32 {
+        self.num_docs
+    }
+
     /// Fails when this reader has already been closed.
     ///
     /// Equivalent to the private
@@ -2784,6 +2793,38 @@ impl Lucene90StoredFieldsFormat {
     pub fn with_mode(mode: Mode) -> Self {
         Self { mode }
     }
+
+    /// Returns the compressing format that implements `mode`.
+    ///
+    /// Equivalent to the package-private `Lucene90StoredFieldsFormat#impl`
+    /// (`Lucene90StoredFieldsFormat.java:157-172`); `impl` is a Rust keyword,
+    /// hence the name. Java's `default` branch throws `AssertionError`; the
+    /// `match` over [`Mode`] is exhaustive, so it has no counterpart. The
+    /// result does not depend on `self`, exactly as in Java, where the method
+    /// reads no field.
+    pub fn impl_for_mode(&self, mode: Mode) -> Lucene90CompressingStoredFieldsFormat {
+        match mode {
+            Mode::BestSpeed => Lucene90CompressingStoredFieldsFormat {
+                format_name: "Lucene90StoredFieldsFastData",
+                // `Lucene90StoredFieldsFormat.BEST_SPEED_MODE` is
+                // `LZ4WithPresetDictCompressionMode`, not plain LZ4: the chunk
+                // is split into ten sub blocks sharing one dictionary.
+                compression_mode: CompressionMode::LZ4_WITH_PRESET_DICT,
+                chunk_size: 10 * 8 * 1024,
+                max_docs_per_chunk: 1024,
+                block_shift: 10,
+            },
+            Mode::BestCompression => Lucene90CompressingStoredFieldsFormat {
+                format_name: "Lucene90StoredFieldsHighData",
+                // `Lucene90StoredFieldsFormat.BEST_COMPRESSION_MODE` is
+                // `DeflateWithPresetDictCompressionMode`, not plain deflate.
+                compression_mode: CompressionMode::DEFLATE_WITH_PRESET_DICT,
+                chunk_size: 10 * 48 * 1024,
+                max_docs_per_chunk: 4096,
+                block_shift: 10,
+            },
+        }
+    }
 }
 
 impl StoredFieldsFormat for Lucene90StoredFieldsFormat {
@@ -2817,7 +2858,8 @@ impl StoredFieldsFormat for Lucene90StoredFieldsFormat {
                 )))
             }
         };
-        impl_for_mode(mode).fields_reader(directory, segment_info, field_infos, context)
+        self.impl_for_mode(mode)
+            .fields_reader(directory, segment_info, field_infos, context)
     }
 
     fn fields_writer(
@@ -2838,31 +2880,8 @@ impl StoredFieldsFormat for Lucene90StoredFieldsFormat {
                 )));
             }
         }
-        impl_for_mode(self.mode).fields_writer(directory, segment_info, context)
-    }
-}
-
-fn impl_for_mode(mode: Mode) -> Lucene90CompressingStoredFieldsFormat {
-    match mode {
-        Mode::BestSpeed => Lucene90CompressingStoredFieldsFormat {
-            format_name: "Lucene90StoredFieldsFastData",
-            // `Lucene90StoredFieldsFormat.BEST_SPEED_MODE` is
-            // `LZ4WithPresetDictCompressionMode`, not plain LZ4: the chunk is
-            // split into ten sub blocks sharing one dictionary.
-            compression_mode: CompressionMode::LZ4_WITH_PRESET_DICT,
-            chunk_size: 10 * 8 * 1024,
-            max_docs_per_chunk: 1024,
-            block_shift: 10,
-        },
-        Mode::BestCompression => Lucene90CompressingStoredFieldsFormat {
-            format_name: "Lucene90StoredFieldsHighData",
-            // `Lucene90StoredFieldsFormat.BEST_COMPRESSION_MODE` is
-            // `DeflateWithPresetDictCompressionMode`, not plain deflate.
-            compression_mode: CompressionMode::DEFLATE_WITH_PRESET_DICT,
-            chunk_size: 10 * 48 * 1024,
-            max_docs_per_chunk: 4096,
-            block_shift: 10,
-        },
+        self.impl_for_mode(self.mode)
+            .fields_writer(directory, segment_info, context)
     }
 }
 
@@ -4779,6 +4798,28 @@ mod tests {
     impl StoredFieldVisitor for SkipAllVisitor {
         fn needs_field(&mut self, _info: &FieldInfo) -> Result<StoredFieldVisitorStatus> {
             Ok(StoredFieldVisitorStatus::Yes)
+        }
+    }
+
+    /// `getNumDocs` is the segment's `maxDoc` — the constructor's
+    /// `numDocs = si.maxDoc()` — and a merge instance, which Java builds with
+    /// the copy constructor's `this.numDocs = reader.numDocs`, reports the same
+    /// (`Lucene90CompressingStoredFieldsReader.java:113,138,759-761`). The
+    /// counts straddle the test format's chunk of four documents.
+    #[test]
+    fn get_num_docs_is_the_segment_max_doc() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let per_chunk = MERGE_TEST_DOCS_PER_CHUNK as i32;
+        for (name, count) in [("_n1", 1), ("_n4", per_chunk), ("_n5", per_chunk + 1)] {
+            let source = write_merge_source(&dir, name, 0, count);
+            let search = concrete_merge_source(&dir, &source);
+            assert_eq!(search.get_num_docs(), count, "{name}");
+            let merge_box = search.get_merge_instance();
+            let merge = merge_box
+                .as_any()
+                .and_then(|any| any.downcast_ref::<Lucene90CompressingStoredFieldsReader>())
+                .expect("the merge instance is this format's reader");
+            assert_eq!(merge.get_num_docs(), count, "{name} merge instance");
         }
     }
 

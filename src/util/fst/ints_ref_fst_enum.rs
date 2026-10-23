@@ -46,6 +46,10 @@ impl FSTEnumTarget for IntsRefEnumState {
         self.current.ints[upto] = label;
     }
 
+    /// Grows the current term so that it can hold `upto + 1` labels.
+    ///
+    /// Equivalent to `IntsRefFSTEnum#grow` (`IntsRefFSTEnum.java:112-114`), which is
+    /// `current.ints = ArrayUtil.grow(current.ints, upto + 1)`: Java's `upto` is a field of the enum, passed in here.
     fn grow(&mut self, upto: usize) {
         let min_size = upto + 1;
         if self.current.ints.len() < min_size {

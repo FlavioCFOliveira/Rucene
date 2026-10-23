@@ -854,6 +854,38 @@ impl TrieBuilder {
     fn entry_iterator(&self) -> Result<EntryIterator<'_>> {
         EntryIterator::new(self)
     }
+
+    /// Hands every entry of this trie to `consumer`: the empty key first, when
+    /// it has an output, then every other key in ascending order, each with a
+    /// fresh copy of its bytes.
+    ///
+    /// Equivalent to `TrieBuilder#visit` (`TrieBuilder.java:686-701`), which
+    /// Lucene uses for tests only. Java's `BiConsumer` receives the `Output`
+    /// object itself; the consumer here borrows it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error decoding the in-memory buffer raises, which Java
+    /// wraps in an `UncheckedIOException` ("should not happen on in-memory
+    /// buffer").
+    pub fn visit<F>(&self, mut consumer: F) -> Result<()>
+    where
+        F: FnMut(BytesRef, &Output),
+    {
+        if let Some(empty_output) = &self.empty_output {
+            consumer(BytesRef::new(Vec::new()), empty_output);
+        }
+        let mut iter = self.entry_iterator()?;
+        while iter.has_next() {
+            iter.read_header()?;
+            iter.read_body()?;
+            let output = iter.output.as_ref().ok_or_else(|| {
+                LuceneError::IllegalState("trie entry read without an output".to_string())
+            })?;
+            consumer(BytesRef::new(iter.key[..iter.key_len].to_vec()), output);
+        }
+        Ok(())
+    }
 }
 
 /// Walks the entries of a [`TrieBuilder`]: first the separately held minimum
@@ -2437,6 +2469,87 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    /// A `(key, fp, has terms, floor data)` row, as `visit` hands it out.
+    type VisitedEntry = (Vec<u8>, i64, bool, Option<Vec<u8>>);
+
+    fn trie_output(fp: i64, has_terms: bool, floor_data: Option<&[u8]>) -> Output {
+        Output {
+            fp,
+            has_terms,
+            floor_data: floor_data.map(|b| BytesRef::new(b.to_vec())),
+        }
+    }
+
+    fn visited(trie: &TrieBuilder) -> Vec<VisitedEntry> {
+        let mut seen = Vec::new();
+        trie.visit(|key, output| {
+            seen.push((
+                key.slice().to_vec(),
+                output.fp,
+                output.has_terms,
+                output.floor_data.as_ref().map(|b| b.slice().to_vec()),
+            ))
+        })
+        .unwrap();
+        seen
+    }
+
+    /// `visit` hands back exactly the entries a trie was built from — the
+    /// empty key's output first, then every other key in order — which is
+    /// the property `TestTrie.testTrieBuilder` asserts (`TestTrie.java:83-108`),
+    /// built the same way: `bytesRefToTrie` of the empty key, then one
+    /// `append` per key. The rows cover the shapes `EntryIterator` treats
+    /// separately: the minimum key held apart from the buffer, keys sharing a
+    /// prefix, an output with and without floor data, a byte above `0x7f`,
+    /// and a key longer than every earlier one.
+    #[test]
+    fn visit_returns_every_entry_in_key_order() {
+        let long_key = vec![0xffu8; 300];
+        let entries: Vec<(Vec<u8>, Output)> = vec![
+            (b"a".to_vec(), trie_output(1, true, None)),
+            (b"ab".to_vec(), trie_output(2, false, Some(b"x"))),
+            (b"abc".to_vec(), trie_output(1 << 40, true, Some(b"floor"))),
+            (b"b".to_vec(), trie_output(3, true, None)),
+            (vec![0xff, 0x00], trie_output(4, false, None)),
+            (long_key.clone(), trie_output(5, true, Some(&[0, 1, 2]))),
+        ];
+        let empty = trie_output(0, false, Some(b"emptyOutput"));
+
+        let mut trie = TrieBuilder::bytes_ref_to_trie(&BytesRef::new(Vec::new()), empty);
+        for (key, output) in &entries {
+            trie.append(&TrieBuilder::bytes_ref_to_trie(
+                &BytesRef::new(key.clone()),
+                output.clone(),
+            ))
+            .unwrap();
+        }
+
+        let mut expected: Vec<VisitedEntry> =
+            vec![(Vec::new(), 0, false, Some(b"emptyOutput".to_vec()))];
+        for (key, output) in &entries {
+            expected.push((
+                key.clone(),
+                output.fp,
+                output.has_terms,
+                output.floor_data.as_ref().map(|b| b.slice().to_vec()),
+            ));
+        }
+        assert_eq!(visited(&trie), expected);
+
+        // Without an empty key there is no first row; with a single key the
+        // buffer is empty and only the held-apart minimum key is visited.
+        let single = TrieBuilder::bytes_ref_to_trie(
+            &BytesRef::new(b"only".to_vec()),
+            trie_output(7, true, None),
+        );
+        assert_eq!(visited(&single), vec![(b"only".to_vec(), 7, true, None)]);
+        // And a trie holding nothing but the empty key visits just that.
+        assert_eq!(
+            visited(&TrieBuilder::new(9, true)),
+            vec![(Vec::new(), 9, true, None)]
+        );
+    }
+
     /// No-op postings writer used to satisfy the terms writer constructor.
     #[derive(Debug, Default, Clone)]
     struct StubPostingsWriter;
@@ -2833,6 +2946,135 @@ mod tests {
             tim_length
                 > (index_header_length(TERMS_CODEC_NAME, "") as i64 + footer_length() as i64),
             ".tim file should contain more than just header and footer"
+        );
+    }
+
+    /// Postings reader that decodes nothing, for a terms dictionary written
+    /// by the no-op postings writers above.
+    struct StubPostingsReader;
+
+    impl std::fmt::Display for StubPostingsReader {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("StubPostingsReader")
+        }
+    }
+
+    impl PostingsReaderBase for StubPostingsReader {
+        fn init(
+            &mut self,
+            _terms_in: &mut dyn IndexInput,
+            _state: &SegmentReadState,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn new_term_state(&self) -> Result<BlockTermState> {
+            Ok(BlockTermState::default())
+        }
+
+        fn decode_term(
+            &self,
+            _input: &mut dyn crate::store::DataInput,
+            _field_info: &FieldInfo,
+            _state: &mut BlockTermState,
+            _absolute: bool,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn postings(
+            &self,
+            _field_info: &FieldInfo,
+            _state: &BlockTermState,
+            _reuse: Option<Box<dyn PostingsEnum>>,
+            _flags: i32,
+        ) -> Result<Box<dyn PostingsEnum>> {
+            Err(LuceneError::UnsupportedOperation(
+                "stub postings reader".to_string(),
+            ))
+        }
+
+        fn impacts(
+            &self,
+            _field_info: &FieldInfo,
+            _state: &BlockTermState,
+            _flags: i32,
+        ) -> Result<Box<dyn crate::index::ImpactsEnum>> {
+            Err(LuceneError::UnsupportedOperation(
+                "stub postings reader".to_string(),
+            ))
+        }
+
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A cursor clones the `.tim` input only when it first loads a block, as
+    /// Java's does through `initIndexInput()` (`SegmentTermsEnum.java:81-85`,
+    /// called from `SegmentTermsEnumFrame.loadBlock`), so that a consumer that
+    /// never reads a block never pays for the clone.
+    #[test]
+    fn segment_terms_enum_clones_the_terms_input_lazily() {
+        let dir = RamDirectory::default();
+        let dir_ref: &dyn Directory = &dir;
+        let segment_info = test_segment_info("_0", 10);
+        let field_infos =
+            FieldInfos::new(vec![FieldInfo::new("body", 0)]).expect("valid field infos");
+        {
+            let state = test_write_state(dir_ref, &segment_info, &field_infos);
+            let fields = TestFields {
+                field: "body".to_string(),
+                terms: vec![
+                    BytesRef::new(b"a".to_vec()),
+                    BytesRef::new(b"ab".to_vec()),
+                    BytesRef::new(b"b".to_vec()),
+                ],
+            };
+            let mut writer = Lucene103BlockTreeTermsWriter::new(
+                &state,
+                Box::new(CountingPostingsWriter),
+                DEFAULT_MIN_BLOCK_SIZE,
+                DEFAULT_MAX_BLOCK_SIZE,
+            )
+            .expect("writer should be created");
+            writer
+                .write(&fields, &StubNormsProducer)
+                .expect("write should succeed");
+            writer.close().expect("close should succeed");
+        }
+
+        let read_state = SegmentReadState::new(
+            dir_ref,
+            &segment_info,
+            &field_infos,
+            &*crate::store::DEFAULT_IO_CONTEXT,
+        );
+        let reader = Lucene103BlockTreeTermsReader::new(Box::new(StubPostingsReader), &read_state)
+            .expect("reader should open");
+        let field = reader
+            .fields
+            .get("body")
+            .expect("the field was written")
+            .clone();
+
+        let mut terms = crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(field)
+            .expect("cursor should open");
+        assert!(
+            !terms.index_input_initialized(),
+            "opening a cursor must not clone the terms input"
+        );
+        assert_eq!(
+            terms.next().expect("next should succeed"),
+            Some(BytesRef::new(b"a".to_vec()))
+        );
+        assert!(
+            terms.index_input_initialized(),
+            "loading the first block clones the terms input"
         );
     }
 }

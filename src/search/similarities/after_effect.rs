@@ -16,6 +16,11 @@ use super::{BasicStats, Explanation};
 /// *Inf₂ = 1 - Prob₂*, where *Prob₂* measures the information gain.
 ///
 /// See [`DFRSimilarity`](super::DFRSimilarity).
+///
+/// The [`Display`](fmt::Display) supertrait is Java's abstract `toString()`
+/// (`AfterEffect.java:49`): each implementation renders the code of its
+/// formula, which `DFRSimilarity` concatenates into its own name. Equivalent
+/// to the abstract `AfterEffect#toString`.
 pub trait AfterEffect: fmt::Display + Debug + Send + Sync {
     /// Returns the name this after effect puts into its explanations.
     ///

@@ -14,9 +14,9 @@
 //!
 //! | Lucene 10.5.0 | Rucene |
 //! |---|---|
-//! | `DisjunctionScorer.score()` and `score(DisiWrapper)` | `Scorable::score` of each concrete disjunction scorer |
+//! | `DisjunctionScorer.score()` and `score(DisiWrapper)` | `DisjunctionScorer::score` over each scorer's `DisjunctionScorerImpl::score_top_list` |
 //! | `DisjunctionScorer.twoPhaseIterator()` | `Scorer::two_phase_iterator` of each concrete disjunction scorer |
-//! | `DoubleComparator/FloatComparator/IntComparator/LongComparator.sortableBytesToLong` | `SortableBytes::decode` |
+//! | `DoubleComparator/FloatComparator/IntComparator/LongComparator.sortableBytesToLong` | the `sortable_bytes_to_long` of each comparator |
 //! | `LateInteractionRescorer.combine` | `LateInteractionFallback::combine` |
 //! | `BooleanQuery.equalsTo` | the second conjunct of `BooleanQuery::query_eq` |
 //! | `DisjunctionMaxQuery.equalsTo` | the second conjunct of `DisjunctionMaxQuery::query_eq` |
@@ -41,13 +41,15 @@ use std::sync::{Arc, Mutex, OnceLock};
 use rucene::document::{IntPoint, LongPoint};
 use rucene::error::Result;
 use rucene::index::Term;
-use rucene::search::comparators::SortableBytes;
+use rucene::search::comparators::{
+    DoubleComparator, FloatComparator, IntComparator, LongComparator,
+};
 use rucene::search::doc_id_set_iterator::{all, DocIdSetIterator};
 use rucene::search::{
     BooleanQueryBuilder, ConstantScoreScorer, DisjunctionMaxQuery, DisjunctionMaxScorer,
     DisjunctionSumScorer, DoubleValuesSourceRescorerImpl, LateInteractionFallback,
-    LogOddsFusionQuery, Occur, Query, Scorable, ScoreMode, Scorer, Sort, SortField, SortFieldType,
-    TermQuery, TwoPhaseIterator,
+    LogOddsFusionQuery, Occur, Pruning, Query, Scorable, ScoreMode, Scorer, Sort, SortField,
+    SortFieldType, TermQuery, TwoPhaseIterator,
 };
 use rucene::util::BytesRef;
 
@@ -341,24 +343,35 @@ fn comparator_sortable_bytes_to_long_matches_java() {
         let encoded = hex(&row[2]);
         let expected: i64 = row[3].parse().expect("decoded value");
 
-        // The variant each comparator carries; see `IntComparator::new` and
-        // friends, which pass exactly this.
-        let sortable = match name {
-            "Int" | "Float" => SortableBytes::Int,
-            "Long" | "Double" => SortableBytes::Long,
+        // The override each comparator declares, which is exactly what its
+        // constructor hands to `NumericComparator`.
+        let (decode, width): (fn(&[u8]) -> i64, usize) = match name {
+            "Int" => (IntComparator::sortable_bytes_to_long, 4),
+            "Float" => (FloatComparator::sortable_bytes_to_long, 4),
+            "Long" => (LongComparator::sortable_bytes_to_long, 8),
+            "Double" => (DoubleComparator::sortable_bytes_to_long, 8),
             other => panic!("unexpected comparator `{other}`"),
         };
-        assert_eq!(
-            sortable.bytes_count() as usize,
-            encoded.len(),
-            "byte width for {name}"
-        );
-        assert_eq!(
-            sortable.decode(&encoded),
-            expected,
-            "{name} decoding {}",
-            row[2]
-        );
+        assert_eq!(width, encoded.len(), "byte width for {name}");
+        assert_eq!(decode(&encoded), expected, "{name} decoding {}", row[2]);
+
+        // And the shared `NumericComparator` each one builds dispatches to
+        // that same override, as Java's virtual call does.
+        let via_base = match name {
+            "Int" => IntComparator::new(1, "f", None, false, Pruning::NONE)
+                .base()
+                .sortable_bytes_to_long(&encoded),
+            "Float" => FloatComparator::new(1, "f", None, false, Pruning::NONE)
+                .base()
+                .sortable_bytes_to_long(&encoded),
+            "Long" => LongComparator::new(1, "f", None, false, Pruning::NONE)
+                .base()
+                .sortable_bytes_to_long(&encoded),
+            _ => DoubleComparator::new(1, "f", None, false, Pruning::NONE)
+                .base()
+                .sortable_bytes_to_long(&encoded),
+        };
+        assert_eq!(via_base, expected, "{name} base decoding {}", row[2]);
     }
 }
 

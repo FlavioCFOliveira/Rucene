@@ -526,3 +526,38 @@ impl FieldValueHitQueue {
         self.heap[i] = Some(node);
     }
 }
+
+/// Compile-time check that [`FieldValueHitQueue`] is `Send` but for its
+/// comparators.
+#[cfg(test)]
+pub(crate) mod send_checks {
+    use super::FieldValueHitQueue;
+
+    fn assert_send<T: Send>(_: &T) {}
+
+    /// Every field of the queue but the comparators is `Send`.
+    fn queue_fields(queue: &FieldValueHitQueue) {
+        let FieldValueHitQueue {
+            fields,
+            comparators: _,
+            reverse_mul,
+            one_comparator,
+            heap,
+            size,
+            max_size,
+        } = queue;
+        assert_send(fields);
+        assert_send(reverse_mul);
+        assert_send(one_comparator);
+        assert_send(heap);
+        assert_send(size);
+        assert_send(max_size);
+    }
+
+    /// Forces the check above to compile. The destructuring names every
+    /// field, so a field added later fails to compile until it is listed, and
+    /// a listed field that is not `Send` fails its assertion.
+    pub(crate) fn queue_is_send_but_for_its_comparators() {
+        let _: fn(&FieldValueHitQueue) = queue_fields;
+    }
+}

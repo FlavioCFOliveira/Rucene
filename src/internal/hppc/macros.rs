@@ -920,6 +920,14 @@ macro_rules! define_primitive_hash_map {
         impl Iterator for EntryIterator<'_> {
             type Item = $cursor;
 
+            /// Returns the next element, or `None` once `fetch` has returned
+            /// `done()`.
+            ///
+            /// Equivalent to `AbstractIterator#next` (`AbstractIterator.java:51`),
+            /// which this iterator inherits in Java. Rust cannot implement
+            /// `Iterator` once for every `AbstractIterator`, so each
+            /// iterator forwards here; `Option` carries what Java's cached
+            /// `hasNext()` state and `NoSuchElementException` carry.
             fn next(&mut self) -> Option<$cursor> {
                 self.fetch()
             }
@@ -1018,6 +1026,14 @@ macro_rules! define_primitive_hash_map {
         impl Iterator for KeysIterator<'_> {
             type Item = super::$kcur;
 
+            /// Returns the next element, or `None` once `fetch` has returned
+            /// `done()`.
+            ///
+            /// Equivalent to `AbstractIterator#next` (`AbstractIterator.java:51`),
+            /// which this iterator inherits in Java. Rust cannot implement
+            /// `Iterator` once for every `AbstractIterator`, so each
+            /// iterator forwards here; `Option` carries what Java's cached
+            /// `hasNext()` state and `NoSuchElementException` carry.
             fn next(&mut self) -> Option<super::$kcur> {
                 self.fetch()
             }
@@ -1115,6 +1131,14 @@ macro_rules! define_primitive_hash_map {
         impl Iterator for ValuesIterator<'_> {
             type Item = super::$vcur;
 
+            /// Returns the next element, or `None` once `fetch` has returned
+            /// `done()`.
+            ///
+            /// Equivalent to `AbstractIterator#next` (`AbstractIterator.java:51`),
+            /// which this iterator inherits in Java. Rust cannot implement
+            /// `Iterator` once for every `AbstractIterator`, so each
+            /// iterator forwards here; `Option` carries what Java's cached
+            /// `hasNext()` state and `NoSuchElementException` carry.
             fn next(&mut self) -> Option<super::$vcur> {
                 self.fetch()
             }
@@ -2037,6 +2061,14 @@ macro_rules! define_object_hash_map {
         impl<'a, V> Iterator for EntryIterator<'a, V> {
             type Item = $cursor<&'a V>;
 
+            /// Returns the next element, or `None` once `fetch` has returned
+            /// `done()`.
+            ///
+            /// Equivalent to `AbstractIterator#next` (`AbstractIterator.java:51`),
+            /// which this iterator inherits in Java. Rust cannot implement
+            /// `Iterator` once for every `AbstractIterator`, so each
+            /// iterator forwards here; `Option` carries what Java's cached
+            /// `hasNext()` state and `NoSuchElementException` carry.
             fn next(&mut self) -> Option<$cursor<&'a V>> {
                 self.fetch()
             }
@@ -2135,6 +2167,14 @@ macro_rules! define_object_hash_map {
         impl<V> Iterator for KeysIterator<'_, V> {
             type Item = super::$kcur;
 
+            /// Returns the next element, or `None` once `fetch` has returned
+            /// `done()`.
+            ///
+            /// Equivalent to `AbstractIterator#next` (`AbstractIterator.java:51`),
+            /// which this iterator inherits in Java. Rust cannot implement
+            /// `Iterator` once for every `AbstractIterator`, so each
+            /// iterator forwards here; `Option` carries what Java's cached
+            /// `hasNext()` state and `NoSuchElementException` carry.
             fn next(&mut self) -> Option<super::$kcur> {
                 self.fetch()
             }
@@ -2227,6 +2267,14 @@ macro_rules! define_object_hash_map {
         impl<'a, V> Iterator for ValuesIterator<'a, V> {
             type Item = ObjectCursor<&'a V>;
 
+            /// Returns the next element, or `None` once `fetch` has returned
+            /// `done()`.
+            ///
+            /// Equivalent to `AbstractIterator#next` (`AbstractIterator.java:51`),
+            /// which this iterator inherits in Java. Rust cannot implement
+            /// `Iterator` once for every `AbstractIterator`, so each
+            /// iterator forwards here; `Option` carries what Java's cached
+            /// `hasNext()` state and `NoSuchElementException` carry.
             fn next(&mut self) -> Option<ObjectCursor<&'a V>> {
                 self.fetch()
             }
@@ -2613,6 +2661,12 @@ macro_rules! define_hash_set {
             }
 
             /// Returns an iterator over the elements of this set.
+            ///
+            /// One expansion per set, each the port of that set's
+            /// `iterator()`, which returns a fresh `EntryIterator`:
+            /// `IntHashSet#iterator` (`IntHashSet.java:379`),
+            /// `LongHashSet#iterator` (`LongHashSet.java:362`) and
+            /// `CharHashSet#iterator` (`CharHashSet.java:362`).
             pub fn iter(&self) -> EntryIterator<'_> {
                 EntryIterator::new(self)
             }
@@ -2888,6 +2942,11 @@ macro_rules! define_hash_set {
             /// Clones this set, reusing the same hash function and array
             /// resizing strategy but drawing a fresh iteration seed, exactly as
             /// Java's `clone()` does.
+            ///
+            /// One expansion per set, each the port of that set's override:
+            /// `IntHashSet#clone` (`IntHashSet.java:365`), `LongHashSet#clone`
+            /// (`LongHashSet.java:348`) and `CharHashSet#clone`
+            /// (`CharHashSet.java:348`).
             fn clone(&self) -> Self {
                 Self {
                     keys: self.keys.clone(),
@@ -2902,6 +2961,14 @@ macro_rules! define_hash_set {
         }
 
         impl PartialEq for $set {
+            /// Two sets are equal when they hold the same keys.
+            ///
+            /// One expansion per set, each the port of that set's override,
+            /// which is `this == obj` or, for an object of the same class,
+            /// `sameKeys`: `IntHashSet#equals` (`IntHashSet.java:344`),
+            /// `LongHashSet#equals` (`LongHashSet.java:327`) and
+            /// `CharHashSet#equals` (`CharHashSet.java:327`). The class check
+            /// is the `Self` parameter type.
             fn eq(&self, other: &Self) -> bool {
                 std::ptr::eq(self, other) || self.same_keys(other)
             }
@@ -3000,6 +3067,14 @@ macro_rules! define_hash_set {
         impl Iterator for EntryIterator<'_> {
             type Item = super::$cur;
 
+            /// Returns the next element, or `None` once `fetch` has returned
+            /// `done()`.
+            ///
+            /// Equivalent to `AbstractIterator#next` (`AbstractIterator.java:51`),
+            /// which this iterator inherits in Java. Rust cannot implement
+            /// `Iterator` once for every `AbstractIterator`, so each
+            /// iterator forwards here; `Option` carries what Java's cached
+            /// `hasNext()` state and `NoSuchElementException` carry.
             fn next(&mut self) -> Option<super::$cur> {
                 self.fetch()
             }
@@ -3049,7 +3124,6 @@ macro_rules! define_array_list {
         /// Indices and sizes are `i32` throughout, as in Java, so that the
         /// bounds checks and the `-1` returned by the search methods keep their
         /// original meaning.
-        #[derive(Clone)]
         pub struct $list {
             /// Internal array for storing the list.
             ///
@@ -3442,6 +3516,13 @@ macro_rules! define_array_list {
             }
 
             /// Returns an iterator over the elements of this list.
+            ///
+            /// One expansion per list, each the port of that list's
+            /// `iterator()`, which returns a fresh `ValueIterator` over the
+            /// first `size()` elements: `IntArrayList#iterator`
+            /// (`IntArrayList.java:438`), `LongArrayList#iterator`
+            /// (`LongArrayList.java:438`) and `FloatArrayList#iterator`
+            /// (`FloatArrayList.java:432`).
             pub fn iter(&self) -> ValueIterator<'_> {
                 ValueIterator::new(&self.buffer, self.size())
             }
@@ -3459,6 +3540,22 @@ macro_rules! define_array_list {
         impl Default for $list {
             fn default() -> Self {
                 Self::new()
+            }
+        }
+
+        impl Clone for $list {
+            /// Clones the list, copying its buffer at its current capacity.
+            ///
+            /// One expansion per list, each the port of that list's override,
+            /// which is `super.clone()` followed by `buffer.clone()`:
+            /// `IntArrayList#clone` (`IntArrayList.java:337`),
+            /// `LongArrayList#clone` (`LongArrayList.java:337`) and
+            /// `FloatArrayList#clone` (`FloatArrayList.java:336`).
+            fn clone(&self) -> Self {
+                Self {
+                    buffer: self.buffer.clone(),
+                    elements_count: self.elements_count,
+                }
             }
         }
 
@@ -3483,6 +3580,12 @@ macro_rules! define_array_list {
         impl Display for $list {
             /// Converts the contents of this list to a human-friendly string,
             /// the way `java.util.Arrays.toString` does.
+            ///
+            /// One expansion per list, each the port of that list's override,
+            /// which is `Arrays.toString(this.toArray())`:
+            /// `IntArrayList#toString` (`IntArrayList.java:384`),
+            /// `LongArrayList#toString` (`LongArrayList.java:384`) and
+            /// `FloatArrayList#toString` (`FloatArrayList.java:383`).
             fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
                 f.write_str("[")?;
                 for i in 0..self.elements_count as usize {
@@ -3557,6 +3660,14 @@ macro_rules! define_array_list {
         impl Iterator for ValueIterator<'_> {
             type Item = super::$cur;
 
+            /// Returns the next element, or `None` once `fetch` has returned
+            /// `done()`.
+            ///
+            /// Equivalent to `AbstractIterator#next` (`AbstractIterator.java:51`),
+            /// which this iterator inherits in Java. Rust cannot implement
+            /// `Iterator` once for every `AbstractIterator`, so each
+            /// iterator forwards here; `Option` carries what Java's cached
+            /// `hasNext()` state and `NoSuchElementException` carry.
             fn next(&mut self) -> Option<super::$cur> {
                 self.fetch()
             }

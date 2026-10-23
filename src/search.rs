@@ -327,7 +327,7 @@ pub use disjunction_max_scorer::DisjunctionMaxScorer;
 pub use disjunction_score_block_boundary_propagator::{
     DisjunctionScoreBlockBoundaryPropagator, SubScorers,
 };
-pub use disjunction_scorer::{ByMatchCost, DisjunctionScorer};
+pub use disjunction_scorer::{ByMatchCost, DisjunctionScorer, DisjunctionScorerImpl};
 pub use disjunction_sum_scorer::DisjunctionSumScorer;
 pub use doc_and_score_query::{find_segment_starts, DocAndScoreQuery};
 pub use doc_id_set_bulk_iterator::DocIdSetBulkIterator;

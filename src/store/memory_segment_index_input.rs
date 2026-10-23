@@ -222,6 +222,16 @@ impl MemorySegmentIndexInput {
 
     /// Returns the error Java's `handlePositionalIOOBE` produces, for a
     /// position already expressed in this input's own coordinates.
+    ///
+    /// Equivalent to `MemorySegmentIndexInput#handlePositionalIOOBE`
+    /// (`MemorySegmentIndexInput.java:136-143`): `IllegalArgumentException`
+    /// for a negative position, `EOFException` otherwise. Renamed because
+    /// there is no `IndexOutOfBoundsException` to handle here — the port checks
+    /// bounds before it reads, where Java catches the exception the segment
+    /// access throws — and Java's `unused` parameter is dropped. The
+    /// multi-segment override, which subtracts the slice offset first
+    /// (`MemorySegmentIndexInput.java:880-883`), is the callers passing the
+    /// already-adjusted position.
     fn positional_error(&self, action: &str, pos: i64) -> LuceneError {
         if pos < 0 {
             LuceneError::IllegalArgument(format!("{action} negative position (pos={pos}): {self}"))

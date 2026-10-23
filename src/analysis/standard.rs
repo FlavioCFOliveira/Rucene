@@ -946,6 +946,10 @@ impl crate::analysis::factories::TokenizerFactory for StandardTokenizerFactory {
         STANDARD_TOKENIZER_FACTORY_NAME
     }
 
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.analysis.standard.StandardTokenizerFactory"
+    }
+
     fn create(&self) -> crate::error::Result<Box<dyn crate::analysis::TokenizerLogic>> {
         let mut logic = StandardTokenizerLogic::new();
         logic.set_max_token_length(self.max_token_length)?;

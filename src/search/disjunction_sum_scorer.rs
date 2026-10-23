@@ -4,7 +4,7 @@
 #![deny(unsafe_code)]
 
 use crate::error::Result;
-use crate::search::disjunction_scorer::DisjunctionScorer;
+use crate::search::disjunction_scorer::{DisjunctionScorer, DisjunctionScorerImpl};
 use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::search::scorable::{ChildScorable, Scorable};
 use crate::search::score_mode::ScoreMode;
@@ -61,15 +61,28 @@ impl DocIdSetIterator for DisjunctionSumScorer {
     }
 }
 
-impl Scorable for DisjunctionSumScorer {
-    /// Equivalent to `DisjunctionScorer.score()`, which is
-    /// `score(getSubMatches())`, fused with the `score(DisiWrapper)` override.
-    fn score(&mut self) -> Result<f32> {
+impl DisjunctionScorerImpl for DisjunctionSumScorer {
+    fn disjunction_scorer(&mut self) -> &mut DisjunctionScorer {
+        &mut self.base
+    }
+
+    /// Sums the sub-scores in a `double` and narrows once.
+    ///
+    /// Equivalent to `DisjunctionSumScorer.score(DisiWrapper)`.
+    fn score_top_list(&mut self, top_list: &[usize]) -> Result<f32> {
         let mut score = 0.0f64;
-        for position in self.base.sub_matches()? {
+        for &position in top_list {
             score += f64::from(self.base.wrapper(position).scorable().score()?);
         }
         Ok(score as f32)
+    }
+}
+
+impl Scorable for DisjunctionSumScorer {
+    /// Equivalent to the inherited `DisjunctionScorer.score()`, which is
+    /// `score(getSubMatches())`.
+    fn score(&mut self) -> Result<f32> {
+        DisjunctionScorer::score(self)
     }
 
     fn children(&mut self) -> Result<Vec<ChildScorable<'_>>> {

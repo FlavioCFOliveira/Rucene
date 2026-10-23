@@ -5,7 +5,7 @@
 
 use crate::error::Result;
 use crate::search::disjunction_score_block_boundary_propagator::DisjunctionScoreBlockBoundaryPropagator;
-use crate::search::disjunction_scorer::DisjunctionScorer;
+use crate::search::disjunction_scorer::{DisjunctionScorer, DisjunctionScorerImpl};
 use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::search::scorable::{ChildScorable, Scorable};
 use crate::search::score_mode::ScoreMode;
@@ -230,13 +230,18 @@ impl DocIdSetIterator for LogOddsFusionScorer {
     }
 }
 
-impl Scorable for LogOddsFusionScorer {
-    /// Equivalent to `DisjunctionScorer.score()`, which is
-    /// `score(getSubMatches())`, fused with the `score(DisiWrapper)` override
-    /// `LogOddsFusionScorer` declares.
-    fn score(&mut self) -> Result<f32> {
+impl DisjunctionScorerImpl for LogOddsFusionScorer {
+    fn disjunction_scorer(&mut self) -> &mut DisjunctionScorer {
+        &mut self.base
+    }
+
+    /// Fuses the gated logits of the matching sub-scores.
+    ///
+    /// Equivalent to the `score(DisiWrapper)` override `LogOddsFusionScorer`
+    /// declares.
+    fn score_top_list(&mut self, top_list: &[usize]) -> Result<f32> {
         let mut logit_sum = 0f64;
-        for position in self.base.sub_matches()? {
+        for &position in top_list {
             let sub_score = self.base.wrapper(position).scorable().score()?;
             let idx = self.sorted_to_original[position];
             let gated = match &self.signal_weights {
@@ -255,6 +260,14 @@ impl Scorable for LogOddsFusionScorer {
         // `sum(w_i * gated_i)` already accounts for the `1/n` factor; without
         // them, dividing by total_clauses computes the mean.
         Ok(self.fuse(logit_sum))
+    }
+}
+
+impl Scorable for LogOddsFusionScorer {
+    /// Equivalent to the inherited `DisjunctionScorer.score()`, which is
+    /// `score(getSubMatches())`.
+    fn score(&mut self) -> Result<f32> {
+        DisjunctionScorer::score(self)
     }
 
     fn set_min_competitive_score(&mut self, min_score: f32) -> Result<()> {

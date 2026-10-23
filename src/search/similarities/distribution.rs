@@ -15,6 +15,11 @@ use super::{BasicStats, Explanation};
 /// Equivalent to `org.apache.lucene.search.similarities.Distribution`.
 ///
 /// See [`IBSimilarity`](super::IBSimilarity).
+///
+/// The [`Display`](fmt::Display) supertrait is Java's abstract `toString()`
+/// (`Distribution.java:45`): each implementation renders the code of its
+/// formula, which `IBSimilarity` concatenates into its own name. Equivalent
+/// to the abstract `Distribution#toString`.
 pub trait Distribution: fmt::Display + Debug + Send + Sync {
     /// Returns the name this distribution puts into its explanation.
     ///

@@ -265,14 +265,26 @@ pub trait HnswGraph {
     ///
     /// For level 0 this is a dense iterator; otherwise it materializes and
     /// sorts the node list.
-    fn get_sorted_nodes_on_level(&self, level: i32) -> Result<Box<dyn NodesIterator>> {
+    ///
+    /// Equivalent to `HnswGraph#getSortedNodes` (`HnswGraph.java:148-159`).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the level's iterator yields more nodes than its `size()`,
+    /// where Java's array store throws `ArrayIndexOutOfBoundsException`.
+    fn get_sorted_nodes(&self, level: i32) -> Result<Box<dyn NodesIterator>> {
         if level == 0 {
             return Ok(Box::new(DenseNodesIterator::new(self.size())));
         }
         let mut nodes_on_level = self.get_nodes_on_level(level)?;
         let mut sorted_nodes = vec![0i32; nodes_on_level.size() as usize];
-        for n in sorted_nodes.iter_mut() {
-            *n = nodes_on_level.next_int();
+        // Java fills the array while `hasNext()` holds, not `size()` times: an
+        // iterator that yields fewer nodes than it reports leaves zeros in the
+        // tail, and one that yields more overruns the array.
+        let mut n = 0;
+        while nodes_on_level.has_next() {
+            sorted_nodes[n] = nodes_on_level.next_int();
+            n += 1;
         }
         sorted_nodes.sort_unstable();
         Ok(Box::new(ArrayNodesIterator::new(sorted_nodes)))
@@ -552,5 +564,205 @@ mod tests {
         );
         // A frozen builder refuses to build again, exactly as Java's does.
         assert!(builder.build(vectors.len() as i32).is_err());
+    }
+
+    /// A level iterator that reports `size` nodes but yields only `nodes`.
+    struct ShortNodesIterator {
+        nodes: Vec<i32>,
+        size: i32,
+        cur: usize,
+    }
+
+    impl super::NodesIterator for ShortNodesIterator {
+        fn size(&self) -> i32 {
+            self.size
+        }
+
+        fn next_int(&mut self) -> i32 {
+            match self.nodes.get(self.cur) {
+                Some(&node) => {
+                    self.cur += 1;
+                    node
+                }
+                None => crate::search::NO_MORE_DOCS,
+            }
+        }
+
+        fn has_next(&self) -> bool {
+            self.cur < self.nodes.len()
+        }
+
+        fn consume(&mut self, _dest: &mut [i32]) -> usize {
+            unreachable!("getSortedNodes does not consume in bulk")
+        }
+    }
+
+    /// A graph whose upper level is served by [`ShortNodesIterator`].
+    struct ShortLevelGraph;
+
+    impl HnswGraph for ShortLevelGraph {
+        fn seek(&mut self, _level: i32, _target: i32) -> Result<()> {
+            Ok(())
+        }
+
+        fn size(&self) -> i32 {
+            8
+        }
+
+        fn next_neighbor(&mut self) -> Result<i32> {
+            Ok(crate::search::NO_MORE_DOCS)
+        }
+
+        fn num_levels(&self) -> Result<i32> {
+            Ok(2)
+        }
+
+        fn max_conn(&self) -> i32 {
+            4
+        }
+
+        fn entry_node(&self) -> Result<i32> {
+            Ok(7)
+        }
+
+        fn get_nodes_on_level(&self, _level: i32) -> Result<Box<dyn super::NodesIterator>> {
+            Ok(Box::new(ShortNodesIterator {
+                nodes: vec![7, 5],
+                size: 3,
+                cur: 0,
+            }))
+        }
+
+        fn neighbor_count(&self) -> i32 {
+            0
+        }
+    }
+
+    /// `getSortedNodes` fills its array while `hasNext()` holds
+    /// (`HnswGraph.java:152-155`): an iterator reporting three nodes but
+    /// yielding two leaves a zero in the third slot, which sorts first.
+    /// Calling `nextInt()` `size()` times instead would read past the end.
+    #[test]
+    fn get_sorted_nodes_stops_when_the_level_iterator_has_no_next() {
+        let mut sorted = ShortLevelGraph.get_sorted_nodes(1).expect("sorted nodes");
+        assert_eq!(sorted.size(), 3);
+        let nodes: Vec<i32> = (0..3).map(|_| sorted.next_int()).collect();
+        assert_eq!(nodes, vec![0, 5, 7]);
+    }
+
+    /// The number a message prints right before `unit`, e.g. the `12.34` of
+    /// `"... in 12.34 ms"`.
+    fn number_before(message: &str, unit: &str) -> f64 {
+        let end = message
+            .find(unit)
+            .unwrap_or_else(|| panic!("no `{unit}` in {message:?}"));
+        let start = message[..end].trim_end().rfind(' ').map_or(0, |i| i + 1);
+        message[start..end]
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| panic!("no number before `{unit}` in {message:?}"))
+    }
+
+    /// `setMergeStartTimeNs` moves the origin of the progress reports to the
+    /// start of the merge, and `setCumulativeWorkTimeNs` makes each
+    /// `addVectors` chunk add its elapsed time to the shared accumulator —
+    /// exactly the time its own `addVectors` message reports
+    /// (`HnswGraphBuilder.java:102-109,246-275`). Without either, the
+    /// progress origin is the chunk's own start and nothing is accumulated.
+    #[test]
+    fn merge_start_time_and_cumulative_work_time_reach_add_vectors() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        use std::sync::Arc;
+
+        let vectors = test_vectors();
+        let supplier = TestVectorScorerSupplier::new(vectors.clone());
+        let n = vectors.len() as i32;
+
+        let mut builder = HnswGraphBuilder::create(&supplier, 4, 20, 42, n).expect("builder");
+        let stream = Arc::new(RecordingInfoStream::default());
+        builder.set_info_stream(stream.clone());
+        builder.set_merge_start_time_ns(crate::index::merge_scheduler::now_ns() - 5_000_000_000);
+        let cumulative = Arc::new(AtomicI64::new(0));
+        builder.set_cumulative_work_time_ns(Some(Arc::clone(&cumulative)));
+        builder.add_vectors(0, n).expect("add vectors");
+
+        let messages = stream.messages.lock().expect("lock").clone();
+        let built = messages
+            .iter()
+            .find(|m| m.starts_with("HNSW: built 0 in "))
+            .unwrap_or_else(|| panic!("no progress report in {messages:?}"));
+        assert!(
+            number_before(built, " ms") >= 5000.0,
+            "progress must be measured from the merge start: {built}"
+        );
+        let added = messages
+            .iter()
+            .find(|m| m.starts_with(&format!("HNSW: addVectors [0 {n}): {n} vectors in ")))
+            .unwrap_or_else(|| panic!("no addVectors report in {messages:?}"));
+        let accumulated = cumulative.load(Ordering::Relaxed);
+        assert!(accumulated > 0, "the chunk's time must be accumulated");
+        assert_eq!(
+            format!("{:.2} ms", accumulated as f64 / 1_000_000.0),
+            added.rsplit(" in ").next().unwrap(),
+            "the accumulator holds exactly the time the chunk reports"
+        );
+
+        // The defaults: progress from the chunk's own start, no accumulator.
+        let mut plain = HnswGraphBuilder::create(&supplier, 4, 20, 42, n).expect("builder");
+        let plain_stream = Arc::new(RecordingInfoStream::default());
+        plain.set_info_stream(plain_stream.clone());
+        plain.add_vectors(0, n).expect("add vectors");
+        let plain_messages = plain_stream.messages.lock().expect("lock").clone();
+        let plain_built = plain_messages
+            .iter()
+            .find(|m| m.starts_with("HNSW: built 0 in "))
+            .expect("progress report");
+        assert!(number_before(plain_built, " ms") < 5000.0, "{plain_built}");
+    }
+
+    /// The concurrent merge sets both on its workers and reports the merge
+    /// as a whole, with the two messages of
+    /// `HnswConcurrentMergeBuilder.java:85-121`. All work runs on the calling
+    /// thread here, so the cumulative worker time cannot exceed the wall
+    /// clock and the effective concurrency is at most `1x`.
+    #[test]
+    fn concurrent_merge_reports_the_merge_with_its_cumulative_worker_time() {
+        let vectors = test_vectors();
+        let n = vectors.len() as i32;
+        let supplier = TestVectorScorerSupplier::new(vectors.clone());
+        let graph = OnHeapHnswGraph::new(4, n);
+        let mut builder =
+            HnswConcurrentMergeBuilder::new(2, &supplier, 4, 20, graph, None).expect("builder");
+        builder.set_batch_size(3);
+        let stream = std::sync::Arc::new(RecordingInfoStream::default());
+        builder.set_info_stream(stream.clone());
+        builder.build(n).expect("build");
+
+        let messages = stream.messages.lock().expect("lock").clone();
+        assert_eq!(
+            messages.first().map(String::as_str),
+            Some(format!("HNSW: build graph from {n} vectors, with 2 workers").as_str()),
+            "{messages:?}"
+        );
+        let completed = messages.last().expect("messages");
+        assert!(
+            completed.starts_with(&format!("HNSW: merge completed: {n} vectors, ")),
+            "{messages:?}"
+        );
+        let wall = number_before(completed, " ms wall clock");
+        let worker = number_before(completed, " ms cumulative worker time");
+        let concurrency = number_before(completed, "x effective concurrency");
+        assert!(worker > 0.0, "{completed}");
+        assert!(worker <= wall + 0.01, "{completed}");
+        assert!(concurrency <= 1.0, "{completed}");
+        // Four chunks of at most three vectors each, every one reported.
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| m.starts_with("HNSW: addVectors ["))
+                .count(),
+            4,
+            "{messages:?}"
+        );
     }
 }

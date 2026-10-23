@@ -195,6 +195,24 @@ impl<V> CharArrayMap<V> {
             .collect()
     }
 
+    /// Returns a view of the entries through which their values can be
+    /// replaced.
+    ///
+    /// Equivalent to `CharArrayMap#createEntrySet` (`CharArrayMap.java:322-324`),
+    /// which builds the `EntrySet` that `entrySet()` returns, together with
+    /// its override in `UnmodifiableCharArrayMap` (`CharArrayMap.java:598-601`):
+    /// Java picks `EntrySet(true)` or `EntrySet(false)` by subclass, this port
+    /// by [`is_unmodifiable`](Self::is_unmodifiable), so the entries of an
+    /// unmodifiable map refuse [`MapEntry::set_value`] exactly as Java's refuse
+    /// `setValue`. [`entry_set`](Self::entry_set) stays the read-only snapshot.
+    pub fn create_entry_set(&mut self) -> EntrySet<'_, V> {
+        let allow_modify = !self.unmodifiable;
+        EntrySet {
+            map: self,
+            allow_modify,
+        }
+    }
+
     /// Returns the number of entries.    /// Returns the number of entries.
     pub fn size(&self) -> usize {
         self.count
@@ -326,6 +344,131 @@ impl<'a, V> IntoIterator for &'a CharArrayMap<V> {
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
     }
+}
+
+/// The entries of a [`CharArrayMap`], with the right to replace their values
+/// when the map is modifiable.
+///
+/// Equivalent to `CharArrayMap.EntrySet` (`CharArrayMap.java:471-512`).
+/// `remove(Object)`, which Java refuses unconditionally, has no counterpart.
+#[derive(Debug)]
+pub struct EntrySet<'a, V> {
+    map: &'a mut CharArrayMap<V>,
+    allow_modify: bool,
+}
+
+impl<V> EntrySet<'_, V> {
+    /// Returns the number of entries.
+    ///
+    /// Equivalent to `EntrySet.size()`.
+    pub fn size(&self) -> usize {
+        self.map.count
+    }
+
+    /// Returns whether the map holds `key` mapped to `value`.
+    ///
+    /// Equivalent to `EntrySet.contains(Object)` for a `Map.Entry`, which
+    /// compares the value mapped to the entry's key with `equals`.
+    pub fn contains(&self, key: &[char], value: &V) -> bool
+    where
+        V: PartialEq,
+    {
+        self.map.get_chars(key, 0, key.len()) == Some(value)
+    }
+
+    /// Removes every entry.
+    ///
+    /// Equivalent to `EntrySet.clear()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation)
+    /// for the entries of an unmodifiable map, where Java throws
+    /// `UnsupportedOperationException`.
+    pub fn clear(&mut self) -> crate::error::Result<()> {
+        if !self.allow_modify {
+            return Err(unmodifiable_entry());
+        }
+        self.map.clear();
+        Ok(())
+    }
+
+    /// Iterates over the entries, in slot order.
+    ///
+    /// Equivalent to `EntrySet.iterator()`.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = MapEntry<'_, V>> {
+        let allow_modify = self.allow_modify;
+        self.map
+            .keys
+            .iter()
+            .zip(self.map.values.iter_mut())
+            .filter_map(move |(key, value)| match (key, value) {
+                (Some(key), Some(value)) => Some(MapEntry {
+                    key,
+                    value,
+                    allow_modify,
+                }),
+                _ => None,
+            })
+    }
+}
+
+/// One entry of an [`EntrySet`].
+///
+/// Equivalent to the private `CharArrayMap.MapEntry` (`CharArrayMap.java:433-469`).
+#[derive(Debug)]
+pub struct MapEntry<'a, V> {
+    key: &'a [char],
+    value: &'a mut V,
+    allow_modify: bool,
+}
+
+impl<V> MapEntry<'_, V> {
+    /// Returns a copy of the key.
+    ///
+    /// Equivalent to `MapEntry.getKey()`, which clones the key so that a
+    /// caller cannot corrupt the map.
+    pub fn get_key(&self) -> Vec<char> {
+        self.key.to_vec()
+    }
+
+    /// Returns the value.
+    ///
+    /// Equivalent to `MapEntry.getValue()`.
+    pub fn get_value(&self) -> &V {
+        self.value
+    }
+
+    /// Replaces the value, returning the previous one.
+    ///
+    /// Equivalent to `MapEntry.setValue(V)` (`CharArrayMap.java:455-460`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::UnsupportedOperation`](crate::error::LuceneError::UnsupportedOperation)
+    /// when the map is unmodifiable, where Java throws
+    /// `UnsupportedOperationException`.
+    pub fn set_value(&mut self, value: V) -> crate::error::Result<V> {
+        if !self.allow_modify {
+            return Err(unmodifiable_entry());
+        }
+        Ok(std::mem::replace(self.value, value))
+    }
+}
+
+impl<V: std::fmt::Display> std::fmt::Display for MapEntry<'_, V> {
+    /// Renders `key=value`, as `MapEntry.toString()` does for a value that is
+    /// not the map itself.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}={}", self.key.iter().collect::<String>(), self.value)
+    }
+}
+
+/// The `UnsupportedOperationException` an unmodifiable map's entries throw.
+fn unmodifiable_entry() -> crate::error::LuceneError {
+    crate::error::LuceneError::UnsupportedOperation(
+        "CharArrayMap is unmodifiable and its entries cannot be written to".to_string(),
+    )
 }
 
 /// Iterator over the entries of a [`CharArrayMap`].

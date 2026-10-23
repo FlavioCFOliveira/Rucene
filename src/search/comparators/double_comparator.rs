@@ -7,9 +7,7 @@ use std::any::Any;
 
 use crate::error::Result;
 use crate::index::LeafReaderContext;
-use crate::search::comparators::numeric_comparator::{
-    NumericComparator, NumericDocValuesSource, SortableBytes,
-};
+use crate::search::comparators::numeric_comparator::{NumericComparator, NumericDocValuesSource};
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::field_comparator::{java_double_compare, FieldComparator, SortValue};
 use crate::search::leaf_field_comparator::LeafFieldComparator;
@@ -65,13 +63,26 @@ impl DoubleComparator {
                 NumericUtils::double_to_sortable_long(missing_value),
                 reverse,
                 pruning,
-                SortableBytes::Long,
+                8, // `Double.BYTES`
+                Self::sortable_bytes_to_long,
             ),
             values: vec![0.0; num_hits],
             top_value: 0.0,
             bottom: 0.0,
             missing_value,
         }
+    }
+
+    /// Decodes the packed point bytes of this comparator's field into the
+    /// comparable `long` its competitive iterator ranges over.
+    ///
+    /// Equivalent to `DoubleComparator#sortableBytesToLong`
+    /// (`DoubleComparator.java:62-65`), which is
+    /// `NumericUtils.sortableBytesToLong(bytes, 0)`. It is an associated function
+    /// because the override reads no state; [`NumericComparator`] calls it through
+    /// the pointer [`new`](Self::new) hands over.
+    pub fn sortable_bytes_to_long(bytes: &[u8]) -> i64 {
+        NumericUtils::sortable_bytes_to_long(bytes, 0)
     }
 
     /// Returns this comparator's missing value in the comparable long

@@ -61,6 +61,12 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 unicode-segmentation = "1.12"
 # Date/time handling for DateTools, matching Java's GregorianCalendar in GMT.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+# Regular expressions for `AbstractAnalysisFactory.getPattern`, which compiles a
+# `java.util.regex.Pattern`. `fancy-regex` rather than `regex` because
+# `java.util.regex` supports backreferences and look-around, which `regex`
+# deliberately does not; the remaining dialect differences are declared on
+# `AbstractAnalysisFactory::get_pattern`.
+fancy-regex = "0.19"
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -128,6 +134,10 @@ path = "tests/portability/norms.rs"
 [[test]]
 name = "portability_search_domain"
 path = "tests/portability/search_domain.rs"
+
+[[test]]
+name = "portability_member_contracts"
+path = "tests/portability/member_contracts.rs"
 
 [[test]]
 name = "portability_doc_values"

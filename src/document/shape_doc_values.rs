@@ -12,7 +12,9 @@
 //! by walking that tree straight out of the stored bytes, skipping whole
 //! subtrees whose bounding box cannot match.
 
-use crate::document::shape_field::{DecodedTriangle, TriangleType};
+use std::sync::Arc;
+
+use crate::document::shape_field::{DecodedTriangle, QueryRelation, TriangleType};
 use crate::document::FieldType;
 use crate::error::{LuceneError, Result};
 use crate::geo::encoding::{GeoEncodingUtils, XYEncodingUtils};
@@ -20,6 +22,7 @@ use crate::geo::geometry::{Point, Rectangle, XYPoint, XYRectangle};
 use crate::geo::{Component2D, Geometry};
 use crate::index::point_values::Relation;
 use crate::index::{DocValuesType, IndexableField, IndexableFieldType};
+use crate::search::Query;
 use crate::store::{DataInput, DataOutput};
 use crate::util::selector::{intro_select, PivotOps};
 use crate::util::BytesRef;
@@ -854,6 +857,20 @@ pub struct ShapeDocValues {
 }
 
 impl ShapeDocValues {
+    /// Creates a geometry query over shape doc values; in Lucene 10.5.0 there
+    /// is none, so this always returns `None`.
+    ///
+    /// Equivalent to the static `ShapeDocValues#newGeometryQuery`
+    /// (`ShapeDocValues.java:156-161`), whose body is `return null;` followed
+    /// by a commented-out `ShapeDocValuesQuery` marked `TODO`. The arguments
+    /// are accepted and ignored, as they are in Java, except the
+    /// `Object... geometries` varargs, which has no Rust type and which Lucene
+    /// never reads. Contrast
+    /// [`ShapeDocValuesField::new_geometry_query`], which throws instead.
+    pub fn new_geometry_query(_field: &str, _relation: QueryRelation) -> Option<Arc<dyn Query>> {
+        None
+    }
+
     /// Creates the value from a shape tessellation.
     ///
     /// Equivalent to `ShapeDocValues(List<ShapeField.DecodedTriangle>)`.
@@ -1902,3 +1919,22 @@ shape_doc_values_field_delegates!(
     XYShapeDocValuesField,
     "org.apache.lucene.document.XYShapeDocValuesField"
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Lucene 10.5.0's `ShapeDocValues.newGeometryQuery` is `return null;`
+    /// for every field and relation (`ShapeDocValues.java:156-161`).
+    #[test]
+    fn new_geometry_query_returns_none_for_every_relation() {
+        for relation in [
+            QueryRelation::Intersects,
+            QueryRelation::Within,
+            QueryRelation::Disjoint,
+            QueryRelation::Contains,
+        ] {
+            assert!(ShapeDocValues::new_geometry_query("shape", relation).is_none());
+        }
+    }
+}

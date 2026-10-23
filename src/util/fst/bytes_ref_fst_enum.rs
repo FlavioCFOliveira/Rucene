@@ -51,6 +51,10 @@ impl FSTEnumTarget for BytesRefEnumState {
         self.current.bytes[upto] = label as u8;
     }
 
+    /// Grows the current term so that it can hold `upto + 1` labels.
+    ///
+    /// Equivalent to `BytesRefFSTEnum#grow` (`BytesRefFSTEnum.java:112-114`), which is
+    /// `current.bytes = ArrayUtil.grow(current.bytes, upto + 1)`: Java's `upto` is a field of the enum, passed in here.
     fn grow(&mut self, upto: usize) {
         let min_size = upto + 1;
         if self.current.bytes.len() < min_size {

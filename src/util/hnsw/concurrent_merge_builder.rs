@@ -1,13 +1,14 @@
 //! Port of `org.apache.lucene.util.hnsw.HnswConcurrentMergeBuilder`.
 
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
+use crate::index::merge_scheduler::now_ns;
 use crate::internal::hppc::IntHashSet;
 use crate::util::{FixedBitSet, InfoStream};
 
-use super::builder::{HnswBuilder, HnswGraphBuilder, DEFAULT_RAND_SEED};
+use super::builder::{HnswBuilder, HnswGraphBuilder, DEFAULT_RAND_SEED, HNSW_COMPONENT};
 use super::hnsw_lock::HnswLock;
 use super::on_heap::OnHeapHnswGraph;
 use super::scorer::RandomVectorScorerSupplier;
@@ -35,7 +36,9 @@ const DEFAULT_BATCH_SIZE: i32 = 2048;
 ///   scope. The batches are therefore reserved through the same shared
 ///   [`AtomicI32`] and executed on the calling thread, which produces a correct
 ///   graph and keeps the work-reservation protocol and the locking granularity;
-///   what it does not reproduce is the wall-clock speed-up. Note that Lucene's
+///   what it does not reproduce is the wall-clock speed-up, so the
+///   `merge completed` report — the same message, from the same two clocks —
+///   shows an effective concurrency close to `1x`. Note that Lucene's
 ///   concurrent merge is itself non-deterministic: the graph it produces depends on
 ///   how the threads interleave.
 /// * Java keeps one `ConcurrentMergeWorker` per thread, each its own
@@ -51,6 +54,12 @@ pub struct HnswConcurrentMergeBuilder {
     initialized_nodes: Option<FixedBitSet>,
     batch_size: i32,
     num_worker: i32,
+    /// Where this builder reports the merge as a whole.
+    ///
+    /// Equivalent to `HnswConcurrentMergeBuilder.infoStream`, which defaults
+    /// to `InfoStream.getDefault()`; [`set_info_stream`](HnswBuilder::set_info_stream)
+    /// also forwards it to the worker, as Java's does.
+    info_stream: Arc<dyn InfoStream>,
     frozen: bool,
 }
 
@@ -84,6 +93,7 @@ impl HnswConcurrentMergeBuilder {
             initialized_nodes,
             batch_size: DEFAULT_BATCH_SIZE,
             num_worker: num_worker.max(1),
+            info_stream: Arc::new(crate::util::NoOutputInfoStream),
             frozen: false,
         })
     }
@@ -152,11 +162,43 @@ impl HnswBuilder for HnswConcurrentMergeBuilder {
                 "graph has already been built".to_string(),
             ));
         }
+        let merge_start_time_ns = now_ns();
+        if self.info_stream.is_enabled(HNSW_COMPONENT) {
+            self.info_stream.message(
+                HNSW_COMPONENT,
+                &format!(
+                    "build graph from {max_ord} vectors, with {} workers",
+                    self.num_worker
+                ),
+            );
+        }
+        let cumulative_work_time_ns = Arc::new(AtomicI64::new(0));
+        self.builder.set_merge_start_time_ns(merge_start_time_ns);
+        self.builder
+            .set_cumulative_work_time_ns(Some(Arc::clone(&cumulative_work_time_ns)));
         let mut start = self.get_start_pos(max_ord);
         while start != -1 {
             let end = max_ord.min(start + self.batch_size);
             self.add_vectors(start, end)?;
             start = self.get_start_pos(max_ord);
+        }
+        if self.info_stream.is_enabled(HNSW_COMPONENT) {
+            let wall_clock_ms = (now_ns() - merge_start_time_ns) as f64 / 1_000_000.0;
+            let total_worker_ms =
+                cumulative_work_time_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+            let effective_concurrency = if wall_clock_ms > 0.0 {
+                total_worker_ms / wall_clock_ms
+            } else {
+                0.0
+            };
+            self.info_stream.message(
+                HNSW_COMPONENT,
+                &format!(
+                    "merge completed: {max_ord} vectors, {wall_clock_ms:.2} ms wall clock, \
+                     {total_worker_ms:.2} ms cumulative worker time, \
+                     {effective_concurrency:.2}x effective concurrency"
+                ),
+            );
         }
         self.get_completed_graph()
     }
@@ -178,6 +220,7 @@ impl HnswBuilder for HnswConcurrentMergeBuilder {
     }
 
     fn set_info_stream(&mut self, info_stream: Arc<dyn InfoStream>) {
+        self.info_stream = Arc::clone(&info_stream);
         self.builder.set_info_stream(info_stream);
     }
 

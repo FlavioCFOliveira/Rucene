@@ -346,10 +346,22 @@ pub trait PhraseMatcher {
     /// [`TwoPhaseIterator::match_cost`](crate::search::TwoPhaseIterator::match_cost).
     fn get_match_cost(&self) -> f32;
 
+    /// An approximation that is aware of impacts, used for early termination
+    /// in [`ScoreMode::TOP_SCORES`](crate::search::ScoreMode::TOP_SCORES) mode.
+    ///
+    /// Equivalent to the abstract `PhraseMatcher#impactsApproximation`
+    /// (`PhraseMatcher.java:43`). Java's `PhraseScorer` keeps the returned
+    /// object in a field; here the matcher owns it and lends it out, so the
+    /// three methods below reach it through this accessor every time.
+    fn impacts_approximation(&mut self) -> &mut PhraseImpactsDISI;
+
     /// Pushes a minimum competitive score into the impacts approximation.
     ///
     /// Equivalent to `impactsApproximation().setMinCompetitiveScore(float)`.
-    fn set_min_competitive_score(&mut self, min_score: f32);
+    fn set_min_competitive_score(&mut self, min_score: f32) {
+        self.impacts_approximation()
+            .set_min_competitive_score(min_score);
+    }
 
     /// Shallow-advances the impacts approximation.
     ///
@@ -359,7 +371,10 @@ pub trait PhraseMatcher {
     /// # Errors
     ///
     /// Propagates any I/O error raised while reading the impacts.
-    fn advance_shallow(&mut self, target: i32) -> Result<i32>;
+    fn advance_shallow(&mut self, target: i32) -> Result<i32> {
+        let (source, cache) = self.impacts_approximation().split_mut();
+        cache.advance_shallow(source, target)
+    }
 
     /// Returns the maximum score up to `up_to`, included.
     ///
@@ -369,7 +384,10 @@ pub trait PhraseMatcher {
     /// # Errors
     ///
     /// Propagates any I/O error raised while reading the impacts.
-    fn get_max_score(&mut self, up_to: i32) -> Result<f32>;
+    fn get_max_score(&mut self, up_to: i32) -> Result<f32> {
+        let (source, cache) = self.impacts_approximation().split_mut();
+        cache.get_max_score(source, up_to)
+    }
 }
 
 /// An [`ImpactsSource`] that reports a single, unbounded dummy impact.

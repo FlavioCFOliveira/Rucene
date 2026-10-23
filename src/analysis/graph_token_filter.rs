@@ -102,6 +102,15 @@ impl GraphTokenFilter {
         self.final_offsets
     }
 
+    /// Returns how many tokens the lookahead cache has allocated since the
+    /// last [`reset`](Self::reset); recycled tokens are not counted again.
+    ///
+    /// Equivalent to the package-private `GraphTokenFilter#cachedTokenCount`
+    /// (`GraphTokenFilter.java:177-179`), which returns `cacheSize`.
+    pub fn cached_token_count(&self) -> i32 {
+        self.cache_size as i32
+    }
+
     /// Captures the input's current token into the cache, reusing a slot when
     /// one is free.
     ///
@@ -322,5 +331,261 @@ impl GraphTokenFilter {
         self.stack_size = 0;
         self.cache_size = 0;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::default_token_attribute_factory;
+    use crate::analysis::tokenattributes::CharTermAttribute;
+    use crate::util::attribute::AttributeSource;
+
+    /// One token of the graph syntax: term, start and end offsets, position
+    /// increment and position length.
+    type GraphToken = (String, i32, i32, i32, i32);
+
+    /// Port of the test fixture `TestGraphTokenizers.GraphTokenizer`
+    /// (`TestGraphTokenizers.java:65-169`): tokens separated by spaces,
+    /// alternatives at one position separated by `/`, and `:n` giving a
+    /// token a position length of `n`.
+    #[derive(Debug)]
+    struct GraphTokenizer {
+        source: AttributeSource,
+        tokens: Vec<GraphToken>,
+        upto: usize,
+    }
+
+    impl GraphTokenizer {
+        fn new(text: &str) -> Self {
+            let mut source = AttributeSource::new_with_factory(default_token_attribute_factory());
+            source
+                .add_attribute::<PackedTokenAttributeImpl>()
+                .expect("packed token attribute");
+            let mut tokens = Vec::new();
+            let (mut pos, mut offset) = (0i32, 0i32);
+            for part in text.split(' ') {
+                let mut first_at_pos = true;
+                let mut min_pos_length = i32::MAX;
+                for part2 in part.split('/') {
+                    let (token, pos_length) = match part2.find(':') {
+                        Some(colon) => (&part2[..colon], part2[colon + 1..].parse().unwrap()),
+                        None => (part2, 1),
+                    };
+                    min_pos_length = min_pos_length.min(pos_length);
+                    let pos_inc = if first_at_pos { 1 } else { 0 };
+                    first_at_pos = false;
+                    tokens.push((
+                        token.to_string(),
+                        offset,
+                        offset + 2 * pos_length - 1,
+                        pos_inc,
+                        pos_length,
+                    ));
+                }
+                pos += min_pos_length;
+                offset = 2 * pos;
+            }
+            Self {
+                source,
+                tokens,
+                upto: 0,
+            }
+        }
+    }
+
+    impl TokenStream for GraphTokenizer {
+        fn increment_token(&mut self) -> Result<bool> {
+            if self.upto == self.tokens.len() {
+                return Ok(false);
+            }
+            let (term, start, end, pos_inc, pos_length) = self.tokens[self.upto].clone();
+            self.upto += 1;
+            self.source.clear_attributes();
+            let mut att = self
+                .source
+                .get_attribute_mut::<PackedTokenAttributeImpl>()
+                .expect("packed token attribute");
+            att.append_string(&term);
+            att.set_offset(start, end);
+            att.set_position_increment(pos_inc);
+            att.set_position_length(pos_length);
+            Ok(true)
+        }
+
+        fn reset(&mut self) -> Result<()> {
+            self.upto = 0;
+            Ok(())
+        }
+
+        fn end(&mut self) -> Result<()> {
+            self.source.end_attributes();
+            Ok(())
+        }
+
+        fn attribute_source(&self) -> &AttributeSource {
+            &self.source
+        }
+
+        fn attribute_source_mut(&mut self) -> &mut AttributeSource {
+            &mut self.source
+        }
+    }
+
+    /// The term the filter currently exposes.
+    fn term(graph: &GraphTokenFilter) -> String {
+        graph
+            .input
+            .attribute_source()
+            .get_attribute::<PackedTokenAttributeImpl>()
+            .expect("packed token attribute")
+            .term()
+    }
+
+    /// `cachedTokenCount` counts the tokens the lookahead cache has allocated,
+    /// and recycling keeps it from growing. This is Lucene's own
+    /// `TestGraphTokenFilter.testGraphTokenStream` (`TestGraphTokenFilter.java:42-164`),
+    /// assertion for assertion, over the same input.
+    #[test]
+    fn cached_token_count_follows_lucene_graph_token_stream_test() {
+        let mut graph =
+            GraphTokenFilter::new(Box::new(GraphTokenizer::new("a b/c d e/f:3 g/h i j k")));
+        graph.input.reset().unwrap();
+
+        let step = |graph: &mut GraphTokenFilter, op: &str, expected: Option<&str>| {
+            let moved = match op {
+                "base" => graph.increment_base_token(),
+                "token" => graph.increment_graph_token(),
+                _ => graph.increment_graph(),
+            }
+            .unwrap();
+            match expected {
+                Some(t) => {
+                    assert!(moved, "{op} should move to {t}");
+                    assert_eq!(term(graph), t, "after {op}");
+                }
+                None => assert!(!moved, "{op} should not move"),
+            }
+        };
+
+        step(&mut graph, "graph", None);
+        assert_eq!(graph.cached_token_count(), 0);
+
+        for (op, t) in [
+            ("base", "a"),
+            ("token", "b"),
+            ("token", "d"),
+            ("graph", "a"),
+            ("token", "c"),
+            ("token", "d"),
+        ] {
+            step(&mut graph, op, Some(t));
+        }
+        step(&mut graph, "graph", None);
+        assert_eq!(graph.cached_token_count(), 5);
+
+        for (op, t) in [
+            ("base", "b"),
+            ("token", "d"),
+            ("token", "e"),
+            ("graph", "b"),
+            ("token", "d"),
+            ("token", "f"),
+        ] {
+            step(&mut graph, op, Some(t));
+        }
+        step(&mut graph, "graph", None);
+        assert_eq!(graph.cached_token_count(), 6);
+
+        for (op, t) in [("base", "c"), ("token", "d")] {
+            step(&mut graph, op, Some(t));
+        }
+        step(&mut graph, "graph", None);
+        assert_eq!(graph.cached_token_count(), 6);
+
+        for (op, t) in [
+            ("base", "d"),
+            ("token", "e"),
+            ("token", "g"),
+            ("graph", "d"),
+            ("token", "e"),
+            ("token", "h"),
+            ("graph", "d"),
+            ("token", "f"),
+            ("token", "j"),
+        ] {
+            step(&mut graph, op, Some(t));
+        }
+        step(&mut graph, "graph", None);
+        assert_eq!(graph.cached_token_count(), 8);
+
+        for (op, t) in [
+            ("base", "e"),
+            ("token", "g"),
+            ("token", "i"),
+            ("token", "j"),
+            ("graph", "e"),
+            ("token", "h"),
+        ] {
+            step(&mut graph, op, Some(t));
+        }
+        step(&mut graph, "graph", None);
+        assert_eq!(graph.cached_token_count(), 8);
+
+        for (op, t) in [("base", "f"), ("token", "j"), ("token", "k")] {
+            step(&mut graph, op, Some(t));
+        }
+        step(&mut graph, "token", None);
+        step(&mut graph, "graph", None);
+        assert_eq!(graph.cached_token_count(), 8);
+
+        for (op, t) in [("base", "g"), ("token", "i")] {
+            step(&mut graph, op, Some(t));
+        }
+        step(&mut graph, "graph", None);
+        assert_eq!(graph.cached_token_count(), 8);
+
+        step(&mut graph, "base", Some("h"));
+        step(&mut graph, "graph", None);
+        assert_eq!(graph.cached_token_count(), 8);
+
+        step(&mut graph, "base", Some("i"));
+        step(&mut graph, "base", Some("j"));
+        step(&mut graph, "base", Some("k"));
+        step(&mut graph, "token", None);
+        assert_eq!(graph.get_trailing_positions(), 0);
+        step(&mut graph, "graph", None);
+        step(&mut graph, "base", None);
+        assert_eq!(graph.cached_token_count(), 8);
+    }
+
+    /// The count is capped at `MAX_TOKEN_CACHE_SIZE`, and `reset()` clears
+    /// it: Lucene's `TestGraphTokenFilter.testMaximumGraphCacheSize`
+    /// (`TestGraphTokenFilter.java:186-210`), plus the count it implies.
+    #[test]
+    fn cached_token_count_is_capped_and_cleared_by_reset() {
+        let text = vec!["a"; MAX_TOKEN_CACHE_SIZE + 5].join(" ");
+        let mut graph = GraphTokenFilter::new(Box::new(GraphTokenizer::new(&text)));
+        graph.reset().unwrap();
+        graph.increment_base_token().unwrap();
+        let err = loop {
+            if let Err(e) = graph.increment_graph_token() {
+                break e;
+            }
+        };
+        match err {
+            LuceneError::IllegalState(message) => {
+                assert_eq!(message, "Too many cached tokens (> 100)")
+            }
+            other => panic!("expected IllegalStateException, got {other:?}"),
+        }
+        assert_eq!(graph.cached_token_count(), MAX_TOKEN_CACHE_SIZE as i32 + 1);
+
+        graph.reset().unwrap();
+        assert_eq!(graph.cached_token_count(), 0);
+        // After reset the cache is clear, so the filter can read ahead again.
+        assert!(graph.increment_base_token().unwrap());
+        assert!(graph.increment_graph_token().unwrap());
+        assert_eq!(graph.cached_token_count(), 2);
     }
 }

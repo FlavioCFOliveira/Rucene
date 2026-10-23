@@ -2050,6 +2050,20 @@ impl<'a> StringSorter<'a> {
         Self { cmp }
     }
 
+    /// Compares the values at `i` and `j` with this sorter's comparator.
+    ///
+    /// Equivalent to `StringSorter#compare` (`StringSorter.java:44-49`), which
+    /// reads both values through the abstract `get` and hands them to `cmp`.
+    /// Java's scratch `BytesRefBuilder`/`BytesRef` pairs have no counterpart:
+    /// [`StringSorterOps::get`] returns the value itself (see that trait).
+    pub fn compare<O: StringSorterOps + ?Sized>(&self, ops: &O, i: usize, j: usize) -> i32 {
+        let (a, b) = (ops.get(i), ops.get(j));
+        match self.cmp {
+            StringSorterComparator::Radix(cmp) => cmp.compare(&a, &b),
+            StringSorterComparator::Generic(cmp) => cmp(&a, &b),
+        }
+    }
+
     /// Sorts `[from, to)`.
     pub fn sort<O: StringSorterOps + ?Sized>(&self, ops: &mut O, from: usize, to: usize) {
         match self.cmp {
@@ -2471,5 +2485,50 @@ mod msb_radix_sorter_tests {
         // the port of `MSBRadixSorter.getFallbackSorter(int)`.
         let values: Vec<Vec<u8>> = (0..10u8).rev().map(|b| vec![b, b + 1]).collect();
         sort_all(values, 2);
+    }
+}
+
+#[cfg(test)]
+mod string_sorter_tests {
+    use super::*;
+
+    struct Values(Vec<BytesRef>);
+
+    impl StringSorterOps for Values {
+        fn get(&self, i: usize) -> BytesRef {
+            self.0[i].clone()
+        }
+
+        fn swap(&mut self, i: usize, j: usize) {
+            self.0.swap(i, j);
+        }
+    }
+
+    /// `StringSorter.compare(i, j)` reads values `i` and `j` and hands them to
+    /// the sorter's comparator, in that order (`StringSorter.java:44-49`).
+    /// Natural order is unsigned, so `0xff` sorts after every ASCII byte, and a
+    /// prefix sorts first; a plain comparator is consulted as given.
+    #[test]
+    fn compare_reads_both_values_and_applies_the_comparator() {
+        let values = Values(vec![
+            BytesRef::new(b"b".to_vec()),
+            BytesRef::new(b"a".to_vec()),
+            BytesRef::new(b"ab".to_vec()),
+            BytesRef::new(vec![0xff]),
+        ]);
+        let natural = StringSorter::new(StringSorterComparator::Radix(&NaturalBytesRefComparator));
+        assert!(natural.compare(&values, 0, 1) > 0, "b > a");
+        assert!(natural.compare(&values, 1, 0) < 0, "a < b");
+        assert!(natural.compare(&values, 1, 2) < 0, "a < ab");
+        assert!(natural.compare(&values, 3, 0) > 0, "0xff > b, unsigned");
+        assert_eq!(natural.compare(&values, 2, 2), 0);
+
+        let reverse = |a: &BytesRef, b: &BytesRef| b.slice().cmp(a.slice()) as i32;
+        let reversed = StringSorter::new(StringSorterComparator::Generic(&reverse));
+        assert!(reversed.compare(&values, 0, 1) < 0, "reversed: b before a");
+        assert!(
+            reversed.compare(&values, 3, 0) < 0,
+            "reversed: 0xff before b"
+        );
     }
 }

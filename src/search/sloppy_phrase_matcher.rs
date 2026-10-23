@@ -935,18 +935,11 @@ impl PhraseMatcher for SloppyPhraseMatcher {
         self.match_cost
     }
 
-    fn set_min_competitive_score(&mut self, min_score: f32) {
-        self.impacts_approximation
-            .set_min_competitive_score(min_score);
-    }
-
-    fn advance_shallow(&mut self, target: i32) -> Result<i32> {
-        let (source, cache) = self.impacts_approximation.split_mut();
-        cache.advance_shallow(source, target)
-    }
-
-    fn get_max_score(&mut self, up_to: i32) -> Result<f32> {
-        let (source, cache) = self.impacts_approximation.split_mut();
-        cache.get_max_score(source, up_to)
+    /// Returns the impacts-aware approximation this matcher built.
+    ///
+    /// Equivalent to `SloppyPhraseMatcher#impactsApproximation` (`SloppyPhraseMatcher.java:149-151`), which
+    /// returns the `impactsApproximation` field.
+    fn impacts_approximation(&mut self) -> &mut PhraseImpactsDISI {
+        &mut self.impacts_approximation
     }
 }

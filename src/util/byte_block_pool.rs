@@ -45,7 +45,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
-use crate::util::{Accountable, ArrayUtil, RamUsageEstimator, StringHelper};
+use crate::util::{Accountable, ArrayUtil, BytesRefBuilder, RamUsageEstimator, StringHelper};
 
 /// Number of bits used to address a byte inside one block.
 ///
@@ -421,6 +421,51 @@ impl ByteBlockPool {
             bytes_offset += chunk;
             bytes_left -= chunk;
             pos = 0;
+        }
+    }
+
+    /// Returns the `length` bytes stored at the global `offset`, without
+    /// copying them when they live in a single block; otherwise it copies them
+    /// into `builder`, grown as needed, and returns those.
+    ///
+    /// Equivalent to `ByteBlockPool#setBytesRef`
+    /// (`ByteBlockPool.java:207-224`). Like Java, the common case references
+    /// the block directly and the uncommon one — a slice spanning at least two
+    /// blocks — goes through `builder` with `growNoCopy` and `readBytes`,
+    /// leaving the builder's own length untouched.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java fills a caller-supplied
+    /// `BytesRef result`, pointing its `bytes`/`offset`/`length` at the block
+    /// or at the builder's array. Rucene's [`BytesRef`](crate::util::BytesRef)
+    /// owns its buffer and cannot point into the pool, so the same view is
+    /// returned as a slice of exactly `length` bytes, borrowed from whichever
+    /// of the two Java would have pointed at.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `offset >> BYTE_BLOCK_SHIFT` does not fit an `int`, which is
+    /// Java's `ArithmeticException` from `Math.toIntExact`, or if the range
+    /// addresses a block that was never allocated.
+    pub fn set_bytes_ref<'a>(
+        &'a self,
+        builder: &'a mut BytesRefBuilder,
+        offset: i64,
+        length: usize,
+    ) -> &'a [u8] {
+        let buffer_index = i32::try_from(offset >> BYTE_BLOCK_SHIFT)
+            .expect("integer overflow: Math.toIntExact(offset >> BYTE_BLOCK_SHIFT)");
+        let buffer = &self.buffers[buffer_index as usize];
+        let pos = (offset as usize) & BYTE_BLOCK_MASK;
+        if pos + length <= BYTE_BLOCK_SIZE {
+            // Common case: the slice lives in a single block. Reference the
+            // buffer directly.
+            &buffer[pos..pos + length]
+        } else {
+            // Uncommon case: the slice spans at least two blocks, so the bytes
+            // must be copied.
+            builder.grow_no_copy(length);
+            self.read_bytes(offset, &mut builder.inner.bytes, 0, length);
+            &builder.inner.bytes[..length]
         }
     }
 

@@ -29,6 +29,32 @@ impl IndexOrder<DisiWrapper> for ByMatchCost {
     }
 }
 
+/// The part of a disjunction scorer that `DisjunctionScorer` leaves abstract.
+///
+/// Equivalent to the `protected abstract float score(DisiWrapper topList)` of
+/// `org.apache.lucene.search.DisjunctionScorer` (`DisjunctionScorer.java:188`),
+/// together with the subclass relationship that lets the `final score()`
+/// reach it. A Java subclass *is* a `DisjunctionScorer`; a Rust scorer *holds*
+/// one, which [`disjunction_scorer`](Self::disjunction_scorer) hands back.
+pub trait DisjunctionScorerImpl {
+    /// The disjunction machinery this scorer holds.
+    fn disjunction_scorer(&mut self) -> &mut DisjunctionScorer;
+
+    /// Computes the score for the clauses that match the current document.
+    ///
+    /// Equivalent to the abstract `DisjunctionScorer#score(DisiWrapper)`.
+    /// `top_list` holds the positions [`DisjunctionScorer::sub_matches`]
+    /// returns, in the order Java walks its linked list; each clause is reached
+    /// through [`DisjunctionScorer::wrapper`]. Java overloads the name `score`,
+    /// which Rust cannot, and [`Scorable::score`](crate::search::Scorable::score)
+    /// already holds it on every implementor.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while scoring the clauses.
+    fn score_top_list(&mut self, top_list: &[usize]) -> Result<f32>;
+}
+
 /// The machinery shared by the scorers that score disjunctions.
 ///
 /// Equivalent to the `abstract class
@@ -37,23 +63,23 @@ impl IndexOrder<DisiWrapper> for ByMatchCost {
 /// reads and writes the outer scorer's state, which Rust cannot express, so the
 /// state lives here once and this type is both.
 ///
-/// **Divergence from Lucene 10.5.0.** Java expresses "score the linked list of
-/// clauses positioned on the current doc" as an abstract method that a subclass
-/// overrides. Rust has no implementation inheritance, so
+/// **Divergence from Lucene 10.5.0.** Java's concrete disjunction scorers
+/// *extend* this class. Rust has no implementation inheritance, so
 /// [`DisjunctionSumScorer`](crate::search::DisjunctionSumScorer),
 /// [`DisjunctionMaxScorer`](crate::search::DisjunctionMaxScorer) and
-/// [`LogOddsFusionScorer`](crate::search::LogOddsFusionScorer) hold one of
-/// these and implement their own `score()` over the positions
-/// [`sub_matches`](Self::sub_matches) returns. The linked list itself becomes a
-/// vector of positions in the very order Java's list is traversed, so the order
-/// in which sub-scores are summed is unchanged.
+/// [`LogOddsFusionScorer`](crate::search::LogOddsFusionScorer) *hold* one of
+/// these, and the one method Java leaves abstract — `score(DisiWrapper)` — is
+/// the [`DisjunctionScorerImpl`] trait they implement. The linked list Java
+/// hands that method becomes a vector of positions in the very order Java's
+/// list is traversed, so the order in which sub-scores are combined is
+/// unchanged.
 ///
-/// Three inherited members of `DisjunctionScorer` therefore land on the
-/// concrete scorers rather than here:
+/// Two inherited members of `DisjunctionScorer` are therefore reached through
+/// the concrete scorers:
 ///
-/// * the `final score()`, which is `score(getSubMatches())`, and the abstract
-///   `score(DisiWrapper)` it delegates to, fuse into each scorer's
-///   [`Scorable::score`](crate::search::Scorable::score);
+/// * the `final score()`, which is `score(getSubMatches())`, is
+///   [`DisjunctionScorer::score`], which each scorer's
+///   [`Scorable::score`](crate::search::Scorable::score) calls;
 /// * `twoPhaseIterator()`, which returns the `twoPhase` field or `null`,
 ///   becomes each scorer's
 ///   [`Scorer::two_phase_iterator`](crate::search::Scorer::two_phase_iterator),
@@ -182,6 +208,24 @@ impl DisjunctionScorer {
     /// Equivalent to `DisjunctionScorer.TwoPhase.matchCost()`.
     pub fn match_cost(&self) -> f32 {
         self.match_cost
+    }
+
+    /// Scores the current document by handing the clauses that match it to
+    /// the concrete scorer's formula.
+    ///
+    /// Equivalent to the `final DisjunctionScorer#score()`
+    /// (`DisjunctionScorer.java:183-185`), which is `score(getSubMatches())`:
+    /// the list comes from [`sub_matches`](Self::sub_matches) and the formula
+    /// is [`DisjunctionScorerImpl::score_top_list`]. It takes the concrete
+    /// scorer rather than `&mut self` because Java's `this` is that scorer.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while confirming matches or scoring
+    /// them.
+    pub fn score<S: DisjunctionScorerImpl + ?Sized>(scorer: &mut S) -> Result<f32> {
+        let top_list = scorer.disjunction_scorer().sub_matches()?;
+        scorer.score_top_list(&top_list)
     }
 
     /// Returns the positions of the clauses that match the current doc, in the

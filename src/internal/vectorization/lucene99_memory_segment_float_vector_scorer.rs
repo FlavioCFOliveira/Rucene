@@ -57,11 +57,14 @@ pub(crate) fn normalize_raw_score(similarity: VectorSimilarityFunction, raw_scor
 /// Fills `scores[0..4]` with the raw similarities of four document vectors
 /// against an on-heap query.
 ///
-/// Equivalent to the `vectorOp(MemorySegment, float[], long, long, long, long, int)`
-/// method each subclass overrides, which picks the matching
-/// [`MemorySegmentBulkVectorOps`] instance.
+/// Equivalent to the abstract
+/// `Lucene99MemorySegmentFloatVectorScorer.vectorOp(MemorySegment, float[], long, long, long, long, int)`
+/// (`Lucene99MemorySegmentFloatVectorScorer.java:124-131`) together with the
+/// override each of its four subclasses declares, which picks the matching
+/// [`MemorySegmentBulkVectorOps`] instance; `similarity` selects the
+/// subclass (see the type's divergences).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn bulk_vector_op(
+pub(crate) fn vector_op(
     similarity: VectorSimilarityFunction,
     seg: &MemorySegment,
     scores: &mut [f32],
@@ -124,7 +127,7 @@ pub(crate) fn bulk_vector_op(
 /// * **One type instead of a sealed hierarchy.** Java's four subclasses differ
 ///   only in which bulk operation and which score normalisation they use, so
 ///   the port matches on [`VectorSimilarityFunction`] instead, in the
-///   crate-private `bulk_vector_op` and `normalize_raw_score` helpers of this
+///   crate-private `vector_op` and `normalize_raw_score` helpers of this
 ///   module.
 /// * **The caller narrows the input.** Java's `create` takes an `IndexInput`,
 ///   unwraps test filters and tests `instanceof MemorySegmentAccessInput`. Rust
@@ -247,7 +250,7 @@ impl RandomVectorScorer for Lucene99MemorySegmentFloatVectorScorer {
             let offset2 = i64::from(nodes[i + 1]) * self.vector_byte_size;
             let offset3 = i64::from(nodes[i + 2]) * self.vector_byte_size;
             let offset4 = i64::from(nodes[i + 3]) * self.vector_byte_size;
-            bulk_vector_op(
+            vector_op(
                 self.similarity,
                 &self.seg,
                 &mut self.scratch_scores,
@@ -278,7 +281,7 @@ impl RandomVectorScorer for Lucene99MemorySegmentFloatVectorScorer {
             } else {
                 addr1
             };
-            bulk_vector_op(
+            vector_op(
                 self.similarity,
                 &self.seg,
                 &mut self.scratch_scores,
