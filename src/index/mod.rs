@@ -210,8 +210,8 @@ pub use terms_enum_index::{
     prefix8_to_comparable_unsigned_long, TermsEnumIndex, TermsEnumIndexState,
 };
 pub use vector_values::{
-    accept_ords, check_byte_field, check_float_field, from_bytes, from_floats, AcceptOrds,
-    ByteVectorValues, DenseDocIndexIterator, DocIndexIterator, EmptyByteVectorValues,
+    accept_ords, accept_ords_with, check_byte_field, check_float_field, from_bytes, from_floats,
+    AcceptOrds, ByteVectorValues, DenseDocIndexIterator, DocIndexIterator, EmptyByteVectorValues,
     EmptyFloatVectorValues, EmptyKnnVectorValues, FloatVectorValues, FromDisiDocIndexIterator,
     KnnVectorValues, ListByteVectorValues, ListFloatVectorValues, SparseDocIndexIterator,
 };

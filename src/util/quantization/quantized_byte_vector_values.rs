@@ -7,11 +7,13 @@ use crate::index::field_infos::FieldInfo;
 use crate::index::vector_values::DocIndexIterator;
 use crate::search::VectorScorer;
 use crate::store::IndexInput;
+use crate::util::hnsw::scorer::BorrowedBits;
 use crate::util::hnsw::CloseableRandomVectorScorerSupplier;
 use crate::util::quantization::optimized_scalar_quantizer::{
     OptimizedScalarQuantizer, QuantizationResult,
 };
 use crate::util::quantization::scalar_quantizer::ScalarQuantizer;
+use crate::util::Bits;
 
 /// How many bits each quantized component occupies, and how they are packed.
 ///
@@ -215,6 +217,37 @@ pub trait QuantizedByteVectorValues: Send + Sync {
 
     /// Returns how many components each vector has.
     fn dimension(&self) -> i32;
+
+    /// Returns the document carrying the vector at `ord`.
+    ///
+    /// Equivalent to `KnnVectorValues.ordToDoc(int)`, which
+    /// `QuantizedByteVectorValues` and `LegacyQuantizedByteVectorValues`
+    /// inherit through `ByteVectorValues` (`KnnVectorValues.java:58-60`): the
+    /// default is the identity, which is right for a dense field, and a values
+    /// type that reads a sparse field overrides it with the stored mapping, as
+    /// the sparse `OffHeapScalarQuantizedVectorValues` does
+    /// (`OffHeapScalarQuantizedVectorValues.java:399-401`).
+    fn ord_to_doc(&self, ord: i32) -> i32 {
+        ord
+    }
+
+    /// Returns a [`Bits`] accepting the ordinals whose documents
+    /// `accept_docs` accepts, or `None` when `accept_docs` is `None`.
+    ///
+    /// Equivalent to `KnnVectorValues.getAcceptOrds(Bits)`
+    /// (`KnnVectorValues.java:75-91`), which these classes inherit, and to the
+    /// overrides of `OffHeapScalarQuantizedVectorValues`
+    /// (`OffHeapScalarQuantizedVectorValues.java:308, 404, 481`). The view
+    /// borrows only `accept_docs`, never `self`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** As for
+    /// [`KnnVectorValues::get_accept_ords`](crate::index::KnnVectorValues::get_accept_ords):
+    /// the default returns `accept_docs` unchanged, Java's answer whenever
+    /// `ord_to_doc` is the identity, and an implementation whose `ord_to_doc`
+    /// is not the identity overrides it.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        accept_docs.map(|bits| Box::new(BorrowedBits::new(bits)) as Box<dyn Bits + 'a>)
+    }
 
     /// Returns a scorer for `query`, or `None` when there is none.
     ///

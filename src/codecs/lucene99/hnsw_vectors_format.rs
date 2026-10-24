@@ -35,7 +35,9 @@ use crate::error::{LuceneError, Result};
 use crate::index::vector_values::{
     ByteVectorValues, DocIndexIterator, FloatVectorValues, KnnVectorValues,
 };
-use crate::index::{segment_file_name, FieldInfos, VectorEncoding, VectorSimilarityFunction};
+use crate::index::{
+    accept_ords_with, segment_file_name, FieldInfos, VectorEncoding, VectorSimilarityFunction,
+};
 use crate::search::knn::{KnnCollector, TopKnnCollector};
 use crate::search::{AcceptDocs, DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{DataInput, IndexInput, IndexOutput};
@@ -47,6 +49,7 @@ use crate::util::hnsw::{
 };
 use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMonotonicWriter};
 use crate::util::quantization::{QuantizedByteVectorValues, ScalarQuantizer};
+use crate::util::Bits;
 
 // -----------------------------------------------------------------------------
 // Format constants
@@ -1544,7 +1547,8 @@ fn read_vector_similarity(ordinal: i32) -> Result<VectorSimilarityFunction> {
 struct BufferedFloatVectorValues {
     dimension: i32,
     vectors: Vec<Vec<f32>>,
-    ord_to_doc: Vec<i32>,
+    /// Shared, so that the `getAcceptOrds` view can map through it.
+    ord_to_doc: Arc<Vec<i32>>,
 }
 
 impl BufferedFloatVectorValues {
@@ -1565,7 +1569,7 @@ impl BufferedFloatVectorValues {
         Ok(Self {
             dimension,
             vectors,
-            ord_to_doc,
+            ord_to_doc: Arc::new(ord_to_doc),
         })
     }
 }
@@ -1583,6 +1587,17 @@ impl KnnVectorValues for BufferedFloatVectorValues {
         self.ord_to_doc[ord as usize]
     }
 
+    /// Equivalent to the inherited `KnnVectorValues.getAcceptOrds(Bits)`,
+    /// which maps every ordinal through `ordToDoc`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        let ord_to_doc = Arc::clone(&self.ord_to_doc);
+        accept_ords_with(
+            self.size(),
+            move |ord| ord_to_doc[ord as usize],
+            accept_docs,
+        )
+    }
+
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
         Ok(Box::new(self.clone()))
     }
@@ -1592,7 +1607,9 @@ impl KnnVectorValues for BufferedFloatVectorValues {
     }
 
     fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        Ok(Box::new(VecDocIndexIterator::new(self.ord_to_doc.clone())))
+        Ok(Box::new(VecDocIndexIterator::new(
+            self.ord_to_doc.as_ref().clone(),
+        )))
     }
 }
 
@@ -1613,7 +1630,8 @@ impl FloatVectorValues for BufferedFloatVectorValues {
 struct BufferedByteVectorValues {
     dimension: i32,
     vectors: Vec<Vec<u8>>,
-    ord_to_doc: Vec<i32>,
+    /// Shared, so that the `getAcceptOrds` view can map through it.
+    ord_to_doc: Arc<Vec<i32>>,
 }
 
 impl BufferedByteVectorValues {
@@ -1634,7 +1652,7 @@ impl BufferedByteVectorValues {
         Ok(Self {
             dimension,
             vectors,
-            ord_to_doc,
+            ord_to_doc: Arc::new(ord_to_doc),
         })
     }
 }
@@ -1652,6 +1670,17 @@ impl KnnVectorValues for BufferedByteVectorValues {
         self.ord_to_doc[ord as usize]
     }
 
+    /// Equivalent to the inherited `KnnVectorValues.getAcceptOrds(Bits)`,
+    /// which maps every ordinal through `ordToDoc`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        let ord_to_doc = Arc::clone(&self.ord_to_doc);
+        accept_ords_with(
+            self.size(),
+            move |ord| ord_to_doc[ord as usize],
+            accept_docs,
+        )
+    }
+
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
         Ok(Box::new(self.clone()))
     }
@@ -1661,7 +1690,9 @@ impl KnnVectorValues for BufferedByteVectorValues {
     }
 
     fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        Ok(Box::new(VecDocIndexIterator::new(self.ord_to_doc.clone())))
+        Ok(Box::new(VecDocIndexIterator::new(
+            self.ord_to_doc.as_ref().clone(),
+        )))
     }
 }
 
@@ -1994,24 +2025,19 @@ impl Lucene99HnswVectorsReader {
     /// Equivalent to the private `Lucene99HnswVectorsReader.search(FieldEntry,
     /// KnnCollector, AcceptDocs, IOSupplier<RandomVectorScorer>)`.
     ///
-    /// # Divergences from Lucene 10.5.0
+    /// # Divergence from Lucene 10.5.0
     ///
-    /// * Java hands the graph search an `OrdinalTranslatedKnnCollector` that
-    ///   wraps the caller's collector and translates each ordinal as it is
-    ///   collected, and hands the exhaustive scan the caller's collector
-    ///   directly. This port collects ordinals into a [`TopKnnCollector`] of
-    ///   its own and translates them once the search is over, because
-    ///   `OrdinalTranslatedKnnCollector` owns the collector it wraps and the
-    ///   caller's arrives as a borrow. The collector is built with the caller's
-    ///   `k`, visit limit and search strategy, so it terminates early, reports
-    ///   the same minimum competitive similarity and selects the same searcher
-    ///   as the collector Java passes; only the visited count reaches the
-    ///   caller in one increment at the end rather than as the search goes.
-    /// * Acceptance is asked of the vector ordinal rather than of the document
-    ///   it maps to — see the divergence recorded on
-    ///   [`RandomVectorScorer::get_accept_ords`], which no scorer in this crate
-    ///   can override the way Java's `AbstractRandomVectorScorer` does. The two
-    ///   agree for a field whose documents all have a vector.
+    /// Java hands the graph search an `OrdinalTranslatedKnnCollector` that
+    /// wraps the caller's collector and translates each ordinal as it is
+    /// collected, and hands the exhaustive scan the caller's collector
+    /// directly. This port collects ordinals into a [`TopKnnCollector`] of its
+    /// own and translates them once the search is over, because
+    /// `OrdinalTranslatedKnnCollector` owns the collector it wraps and the
+    /// caller's arrives as a borrow. The collector is built with the caller's
+    /// `k`, visit limit and search strategy, so it terminates early, reports
+    /// the same minimum competitive similarity and selects the same searcher as
+    /// the collector Java passes; only the visited count reaches the caller in
+    /// one increment at the end rather than as the search goes.
     ///
     /// # Errors
     ///

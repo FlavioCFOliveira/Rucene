@@ -820,6 +820,11 @@ impl DataInput for MemorySegmentIndexInput {
 }
 
 impl IndexInput for MemorySegmentIndexInput {
+    /// A memory-mapped input is a `MemorySegmentAccessInput`.
+    fn as_memory_segment_access_input(&self) -> Option<&dyn MemorySegmentAccessInput> {
+        Some(self)
+    }
+
     fn close(&mut self) -> Result<()> {
         if self.cur_segment.is_none() {
             return Ok(());

@@ -21,6 +21,7 @@ use crate::util::hnsw::{
 };
 use crate::util::quantization::{LegacyQuantizedByteVectorValues, ScalarQuantizer};
 use crate::util::vector_util;
+use crate::util::Bits;
 
 /// Scores Lucene 9.9 scalar-quantized vectors straight out of a mapped segment.
 ///
@@ -32,30 +33,19 @@ use crate::util::vector_util;
 /// file instead of copying the vector to the heap, and only falls back to a
 /// scratch buffer for a node that straddles a segment boundary.
 ///
+/// Java tests `vectorValues instanceof LegacyQuantizedByteVectorValues
+/// quantized && quantized.getSlice() instanceof MemorySegmentAccessInput`
+/// inside the `FlatVectorsScorer` methods and delegates when either test fails.
+/// The first test is the pair of `*_legacy_quantized` [`FlatVectorsScorer`]
+/// methods, which this type overrides; the second is
+/// [`IndexInput::as_memory_segment_access_input`](crate::store::IndexInput::as_memory_segment_access_input).
+///
 /// # Divergences from Lucene 10.5.0
 ///
-/// * **The caller narrows the values and the input.** Java tests
-///   `vectorValues instanceof LegacyQuantizedByteVectorValues quantized &&
-///   quantized.getSlice() instanceof MemorySegmentAccessInput` inside the
-///   `FlatVectorsScorer` methods and delegates when either test fails. Rust
-///   cannot test one trait object for another trait, and this port's
-///   `QuantizedByteVectorValues` does not expose the backing slice, so the
-///   [`FlatVectorsScorer`] implementation always delegates — Lucene's own
-///   fallback branch — and the memory-segment path is reached through
-///   [`random_vector_scorer`](Self::random_vector_scorer) and
-///   [`random_vector_scorer_supplier`](Self::random_vector_scorer_supplier),
-///   which take the narrowed types.
 /// * **Enum dispatch instead of method references.** Java picks a `Scorer`
 ///   functional-interface implementation and a `FloatToFloatFunction` scaler in
 ///   the constructor; the port stores the same two choices as
 ///   [`VectorSimilarityFunction`] plus a private kernel discriminant.
-/// * **The vector byte length comes from the encoding.** Java reads
-///   `values.getVectorByteLength()` off `KnnVectorValues`; this port's
-///   `QuantizedByteVectorValues` is not a `KnnVectorValues`, so the length is
-///   `ScalarEncoding::get_doc_length(dimension)`, which is the same quantity.
-/// * **`ord_to_doc` is the identity.** Java keeps the values object to answer
-///   `ordToDoc` and `getAcceptOrds`; this port's `QuantizedByteVectorValues`
-///   exposes neither, so the default identity mapping applies.
 /// * **The kernels are scalar**, as explained on [`PanamaVectorUtilSupport`].
 #[derive(Debug, Clone, Copy)]
 pub struct Lucene99MemorySegmentScalarQuantizedVectorScorer;
@@ -88,8 +78,8 @@ impl Lucene99MemorySegmentScalarQuantizedVectorScorer {
     /// while quantizing the query or cloning the input.
     pub fn random_vector_scorer(
         similarity_function: VectorSimilarityFunction,
-        values: &dyn LegacyQuantizedByteVectorValues,
-        input: &dyn MemorySegmentAccessInput,
+        values: Box<dyn LegacyQuantizedByteVectorValues>,
+        input: Box<dyn MemorySegmentAccessInput>,
         target: &[f32],
     ) -> Result<Box<dyn RandomVectorScorer>> {
         let base = QuantizedScorerBase::new(similarity_function, values, input)?;
@@ -120,8 +110,8 @@ impl Lucene99MemorySegmentScalarQuantizedVectorScorer {
     /// while cloning the input.
     pub fn random_vector_scorer_supplier(
         similarity_function: VectorSimilarityFunction,
-        values: &dyn LegacyQuantizedByteVectorValues,
-        input: &dyn MemorySegmentAccessInput,
+        values: Box<dyn LegacyQuantizedByteVectorValues>,
+        input: Box<dyn MemorySegmentAccessInput>,
     ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
         Ok(Box::new(SegmentQuerySupplier {
             base: QuantizedScorerBase::new(similarity_function, values, input)?,
@@ -164,6 +154,65 @@ impl FlatVectorsScorer for Lucene99MemorySegmentScalarQuantizedVectorScorer {
         // Java routes the byte query straight to the delegate too.
         Self::delegate().get_random_vector_scorer_byte(similarity_function, vector_values, target)
     }
+
+    /// Equivalent to `getRandomVectorScorerSupplier` called with a
+    /// `LegacyQuantizedByteVectorValues`: the memory-segment supplier when the
+    /// values' slice is a `MemorySegmentAccessInput`, the delegate otherwise
+    /// (`Lucene99MemorySegmentScalarQuantizedVectorScorer.java:50-58`).
+    fn get_random_vector_scorer_supplier_legacy_quantized(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
+    ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        match memory_segment_input(vector_values.as_ref())? {
+            Some(input) => {
+                Self::random_vector_scorer_supplier(similarity_function, vector_values, input)
+            }
+            None => Self::delegate().get_random_vector_scorer_supplier_legacy_quantized(
+                similarity_function,
+                vector_values,
+            ),
+        }
+    }
+
+    /// Equivalent to `getRandomVectorScorer(…, float[])` called with a
+    /// `LegacyQuantizedByteVectorValues`: the memory-segment scorer when the
+    /// values' slice is a `MemorySegmentAccessInput`, the delegate otherwise
+    /// (`Lucene99MemorySegmentScalarQuantizedVectorScorer.java:61-69`).
+    fn get_random_vector_scorer_legacy_quantized(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
+        target: &[f32],
+    ) -> Result<Box<dyn RandomVectorScorer>> {
+        match memory_segment_input(vector_values.as_ref())? {
+            Some(input) => {
+                Self::random_vector_scorer(similarity_function, vector_values, input, target)
+            }
+            None => Self::delegate().get_random_vector_scorer_legacy_quantized(
+                similarity_function,
+                vector_values,
+                target,
+            ),
+        }
+    }
+}
+
+/// `quantized.getSlice() instanceof MemorySegmentAccessInput input`: returns a
+/// handle on the values' slice when it is a memory-segment input.
+///
+/// Java keeps the slice the values hold; the scorer here takes its own handle
+/// (`clone()`), because it then takes ownership of the values too.
+fn memory_segment_input(
+    values: &dyn LegacyQuantizedByteVectorValues,
+) -> Result<Option<Box<dyn MemorySegmentAccessInput>>> {
+    match values
+        .get_slice()
+        .and_then(|slice| slice.as_memory_segment_access_input())
+    {
+        Some(input) => Ok(Some(input.clone_access_input()?)),
+        None => Ok(None),
+    }
 }
 
 /// Which integer kernel scores one quantized vector against another.
@@ -200,6 +249,9 @@ struct QuantizedScorerBase {
     node_size: usize,
     max_ord: i32,
     scratch: Vec<u8>,
+    /// The values the scorer was built over, which answer `ordToDoc` and
+    /// `getAcceptOrds` as Java's `AbstractRandomVectorScorer` does.
+    values: Box<dyn LegacyQuantizedByteVectorValues>,
 }
 
 impl QuantizedScorerBase {
@@ -207,14 +259,13 @@ impl QuantizedScorerBase {
     /// `RandomVectorScorerBase(VectorSimilarityFunction, LegacyQuantizedByteVectorValues, MemorySegmentAccessInput)`.
     fn new(
         similarity_function: VectorSimilarityFunction,
-        values: &dyn LegacyQuantizedByteVectorValues,
-        input: &dyn MemorySegmentAccessInput,
+        values: Box<dyn LegacyQuantizedByteVectorValues>,
+        input: Box<dyn MemorySegmentAccessInput>,
     ) -> Result<Self> {
         let quantizer = *values.scalar_quantizer();
         let dimension = values.dimension();
-        let vector_byte_size = values
-            .get_scalar_encoding()
-            .get_doc_length(dimension as usize);
+        // Equivalent to `this.vectorByteSize = values.getVectorByteLength()`.
+        let vector_byte_size = values.vector_byte_length().max(0) as usize;
         let node_size = vector_byte_size + std::mem::size_of::<f32>();
         let max_ord = values.size();
 
@@ -256,12 +307,24 @@ impl QuantizedScorerBase {
             quantizer,
             similarity_function,
             kernel,
-            input: input.clone_access_input()?,
+            input,
             vector_byte_size,
             node_size,
             max_ord,
             scratch: Vec::new(),
+            values,
         })
+    }
+
+    /// Equivalent to `AbstractRandomVectorScorer.ordToDoc(int)`.
+    fn ord_to_doc(&self, ord: i32) -> i32 {
+        self.values.ord_to_doc(ord)
+    }
+
+    /// Equivalent to `AbstractRandomVectorScorer.getAcceptOrds(Bits)`,
+    /// `values.getAcceptOrds(acceptDocs)`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
     }
 
     /// Returns the quantized vector and corrective offset stored at `ord`.
@@ -374,6 +437,14 @@ impl RandomVectorScorer for HeapQueryScorer {
     fn max_ord(&self) -> i32 {
         self.base.max_ord
     }
+
+    fn ord_to_doc(&self, ord: i32) -> i32 {
+        self.base.ord_to_doc(ord)
+    }
+
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.base.get_accept_ords(accept_docs)
+    }
 }
 
 /// Supplies scorers that compare two stored vectors.
@@ -417,6 +488,7 @@ impl QuantizedScorerBase {
             node_size: self.node_size,
             max_ord: self.max_ord,
             scratch: Vec::new(),
+            values: self.values.copy_legacy()?,
         })
     }
 }
@@ -448,6 +520,14 @@ impl RandomVectorScorer for SegmentQueryScorer {
 
     fn max_ord(&self) -> i32 {
         self.base.max_ord
+    }
+
+    fn ord_to_doc(&self, ord: i32) -> i32 {
+        self.base.ord_to_doc(ord)
+    }
+
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.base.get_accept_ords(accept_docs)
     }
 }
 

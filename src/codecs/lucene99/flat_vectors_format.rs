@@ -34,16 +34,19 @@ use crate::codecs::postings::MergeState;
 use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, Result};
+use crate::index::accept_ords_with;
 use crate::index::vector_values::{
-    ByteVectorValues, DenseDocIndexIterator, DocIndexIterator, EmptyByteVectorValues,
-    EmptyFloatVectorValues, FloatVectorValues, KnnVectorValues,
+    ByteVectorValues, DenseDocIndexIterator, DocIndexIterator, FloatVectorValues, KnnVectorValues,
 };
 use crate::index::{segment_file_name, FieldInfos, VectorEncoding, VectorSimilarityFunction};
-use crate::search::{AcceptDocs, DocIdSetIterator, NO_MORE_DOCS};
+use crate::search::vector_scorer::OffHeapVectorScorer;
+use crate::search::{AcceptDocs, DocIdSetIterator, VectorScorer, NO_MORE_DOCS};
 use crate::store::{DataInput, IndexInput, IndexOutput};
 use crate::util::extra::LongValues;
+use crate::util::hnsw::scorer::BorrowedBits;
 use crate::util::hnsw::RandomVectorScorer;
-use crate::util::packed::DirectMonotonicReader;
+use crate::util::packed::SharedDirectMonotonicReader;
+use crate::util::Bits;
 
 // -----------------------------------------------------------------------------
 // Format constants
@@ -1042,6 +1045,8 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
     fn get_float_vector_values(&self, field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
         let entry = self.get_field_entry(field, VectorEncoding::FLOAT32)?;
         OffHeapFloatVectorValues::load(
+            entry.similarity_function,
+            Arc::new(self.vector_scorer),
             &entry.ord_to_doc,
             entry.dimension,
             entry.vector_data_offset,
@@ -1054,6 +1059,8 @@ impl KnnVectorsReader for Lucene99FlatVectorsReader {
     fn get_byte_vector_values(&self, field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
         let entry = self.get_field_entry(field, VectorEncoding::BYTE)?;
         OffHeapByteVectorValues::load(
+            entry.similarity_function,
+            Arc::new(self.vector_scorer),
             &entry.ord_to_doc,
             entry.dimension,
             entry.vector_data_offset,
@@ -1166,6 +1173,8 @@ impl FlatVectorsReader for Lucene99FlatVectorsReader {
     ) -> Result<Box<dyn RandomVectorScorer>> {
         let entry = self.get_field_entry(field, VectorEncoding::FLOAT32)?;
         let values = OffHeapFloatVectorValues::load(
+            entry.similarity_function,
+            Arc::new(self.vector_scorer),
             &entry.ord_to_doc,
             entry.dimension,
             entry.vector_data_offset,
@@ -1183,6 +1192,8 @@ impl FlatVectorsReader for Lucene99FlatVectorsReader {
     ) -> Result<Box<dyn RandomVectorScorer>> {
         let entry = self.get_field_entry(field, VectorEncoding::BYTE)?;
         let values = OffHeapByteVectorValues::load(
+            entry.similarity_function,
+            Arc::new(self.vector_scorer),
             &entry.ord_to_doc,
             entry.dimension,
             entry.vector_data_offset,
@@ -1275,6 +1286,12 @@ impl FieldEntry {
 // -----------------------------------------------------------------------------
 
 /// Port of `org.apache.lucene.codecs.lucene95.OffHeapFloatVectorValues`.
+///
+/// Java splits the class into `DenseOffHeapVectorValues` and
+/// `SparseOffHeapVectorValues`; they differ only in how an ordinal maps back
+/// to a document, in the iterator, and in which bulk scorer `scorer` builds,
+/// so this port carries the sparse configuration in an `Option`. The third
+/// subclass, `EmptyOffHeapVectorValues`, is [`EmptyOffHeapFloatVectorValues`].
 struct OffHeapFloatVectorValues {
     dimension: i32,
     size: i32,
@@ -1282,11 +1299,31 @@ struct OffHeapFloatVectorValues {
     slice: Mutex<Box<dyn IndexInput>>,
     config: Option<OrdToDocDISIReaderConfiguration>,
     data_input: Option<Box<dyn IndexInput>>,
-    ord_to_doc_data: Vec<u8>,
+    /// The ordinal-to-document reader of a sparse field, built once at load
+    /// and shared between copies; `None` when the field is dense.
+    ///
+    /// Equivalent to `SparseOffHeapVectorValues.ordToDoc`, the
+    /// `DirectMonotonicReader` the constructor builds
+    /// (`OffHeapFloatVectorValues.java:225`, `OffHeapByteVectorValues.java:229`).
+    ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+    /// Equivalent to the `protected final VectorSimilarityFunction
+    /// similarityFunction` field.
+    similarity_function: VectorSimilarityFunction,
+    /// Equivalent to the `protected final FlatVectorsScorer flatVectorsScorer`
+    /// field, which `scorer` scores through.
+    flat_vectors_scorer: Arc<dyn FlatVectorsScorer>,
 }
 
 impl OffHeapFloatVectorValues {
+    /// Opens one field's vectors.
+    ///
+    /// Equivalent to `OffHeapFloatVectorValues.load`: an empty configuration
+    /// answers the empty values, a dense one indexes ordinals directly, and a
+    /// sparse one reads the ordinal-to-document mapping.
+    #[allow(clippy::too_many_arguments)]
     fn load(
+        similarity_function: VectorSimilarityFunction,
+        flat_vectors_scorer: Arc<dyn FlatVectorsScorer>,
         config: &OrdToDocDISIReaderConfiguration,
         dimension: i32,
         vector_data_offset: i64,
@@ -1294,12 +1331,11 @@ impl OffHeapFloatVectorValues {
         vector_data: &dyn IndexInput,
     ) -> Result<Box<dyn FloatVectorValues>> {
         if config.is_empty() {
-            return Ok(Box::new(EmptyFloatVectorValues));
+            return Ok(Box::new(EmptyOffHeapFloatVectorValues { dimension }));
         }
         let byte_size = dimension * VectorEncoding::FLOAT32.byte_size();
         let slice =
             Mutex::new(vector_data.slice("vector-data", vector_data_offset, vector_data_length)?);
-        let ord_to_doc_data = read_ord_to_doc_data(vector_data, config)?;
         if config.is_dense() {
             Ok(Box::new(Self {
                 dimension,
@@ -1308,7 +1344,9 @@ impl OffHeapFloatVectorValues {
                 slice,
                 config: None,
                 data_input: None,
-                ord_to_doc_data,
+                ord_to_doc: None,
+                similarity_function,
+                flat_vectors_scorer: Arc::clone(&flat_vectors_scorer),
             }))
         } else {
             Ok(Box::new(Self {
@@ -1318,7 +1356,11 @@ impl OffHeapFloatVectorValues {
                 slice,
                 config: Some(config.clone()),
                 data_input: Some(vector_data.clone_input()?),
-                ord_to_doc_data,
+                // Built only for a sparse field, as Java builds it only in the
+                // sparse constructor (`OffHeapFloatVectorValues.java:225`).
+                ord_to_doc: Some(read_ord_to_doc_reader(vector_data, config)?),
+                similarity_function,
+                flat_vectors_scorer: Arc::clone(&flat_vectors_scorer),
             }))
         }
     }
@@ -1348,7 +1390,9 @@ impl OffHeapFloatVectorValues {
                 slice,
                 config: Some(config.clone()),
                 data_input: Some(data_input.clone_input()?),
-                ord_to_doc_data: self.ord_to_doc_data.clone(),
+                ord_to_doc: self.ord_to_doc.clone(),
+                similarity_function: self.similarity_function,
+                flat_vectors_scorer: Arc::clone(&self.flat_vectors_scorer),
             }),
             _ => Ok(Self {
                 dimension: self.dimension,
@@ -1357,7 +1401,9 @@ impl OffHeapFloatVectorValues {
                 slice,
                 config: None,
                 data_input: None,
-                ord_to_doc_data: Vec::new(),
+                ord_to_doc: None,
+                similarity_function: self.similarity_function,
+                flat_vectors_scorer: Arc::clone(&self.flat_vectors_scorer),
             }),
         }
     }
@@ -1373,15 +1419,17 @@ impl KnnVectorValues for OffHeapFloatVectorValues {
     }
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
-        match &self.config {
-            Some(config) => {
-                let reader =
-                    DirectMonotonicReader::new(config.meta.clone(), self.ord_to_doc_data.clone())
-                        .expect("INVARIANT: ord-to-doc data was validated at load time");
-                reader.get(ord as i64) as i32
-            }
+        match &self.ord_to_doc {
+            Some(reader) => reader.get(i64::from(ord)) as i32,
             None => ord,
         }
+    }
+
+    /// Equivalent to `DenseOffHeapVectorValues.getAcceptOrds` (`acceptDocs`)
+    /// and `SparseOffHeapVectorValues.getAcceptOrds`, a lazy view reading
+    /// `acceptDocs.get(ordToDoc(ord))`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        sparse_accept_ords(self.size, self.ord_to_doc.as_ref(), accept_docs)
     }
 
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
@@ -1449,9 +1497,103 @@ impl FloatVectorValues for OffHeapFloatVectorValues {
         slice.read_floats(&mut value, 0, self.dimension as usize)?;
         Ok(value)
     }
+
+    /// Scores `query` against a copy of these values, driven by the copy's
+    /// own iterator.
+    ///
+    /// Equivalent to `DenseOffHeapVectorValues.scorer(float[])` and
+    /// `SparseOffHeapVectorValues.scorer(float[])`
+    /// (`OffHeapFloatVectorValues.java:179-199, 277-297`): both take a
+    /// `copy()`, its `iterator()`, and
+    /// `flatVectorsScorer.getRandomVectorScorer(similarityFunction, copy, query)`.
+    fn scorer(&self, query: &[f32]) -> Result<Option<Box<dyn VectorScorer>>> {
+        let copy = self.clone_values()?;
+        let iterator = copy.iterator()?;
+        let dense = copy.config.is_none();
+        let random_vector_scorer = self.flat_vectors_scorer.get_random_vector_scorer_float(
+            self.similarity_function,
+            Box::new(copy),
+            query,
+        )?;
+        Ok(Some(Box::new(OffHeapVectorScorer::new(
+            random_vector_scorer,
+            iterator,
+            dense,
+        ))))
+    }
+}
+
+/// The values of a field that has no vector in this segment.
+///
+/// Equivalent to the private
+/// `org.apache.lucene.codecs.lucene95.OffHeapFloatVectorValues.EmptyOffHeapVectorValues`
+/// (`OffHeapFloatVectorValues.java:301-345`): it keeps the field's dimension,
+/// has no vector, refuses `copy()` and `vectorValue`, and has no scorer.
+pub(crate) struct EmptyOffHeapFloatVectorValues {
+    pub(crate) dimension: i32,
+}
+
+impl KnnVectorValues for EmptyOffHeapFloatVectorValues {
+    fn dimension(&self) -> i32 {
+        self.dimension
+    }
+
+    fn size(&self) -> i32 {
+        0
+    }
+
+    /// Java's `copy()` throws `UnsupportedOperationException`.
+    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
+        Err(LuceneError::UnsupportedOperation(
+            "EmptyOffHeapVectorValues::copy".to_string(),
+        ))
+    }
+
+    fn encoding(&self) -> VectorEncoding {
+        VectorEncoding::FLOAT32
+    }
+
+    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
+        Ok(self.create_dense_iterator())
+    }
+
+    /// Java's `getAcceptOrds(Bits)` returns `null`.
+    fn get_accept_ords<'a>(
+        &self,
+        _accept_docs: Option<&'a dyn Bits>,
+    ) -> Option<Box<dyn Bits + 'a>> {
+        None
+    }
+}
+
+impl FloatVectorValues for EmptyOffHeapFloatVectorValues {
+    /// Java's `vectorValue(int)` throws `UnsupportedOperationException`.
+    fn vector_value(&self, _ord: i32) -> Result<Vec<f32>> {
+        Err(LuceneError::UnsupportedOperation(
+            "EmptyOffHeapVectorValues::vector_value".to_string(),
+        ))
+    }
+
+    /// Java's `copy()` throws `UnsupportedOperationException`.
+    fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
+        Err(LuceneError::UnsupportedOperation(
+            "EmptyOffHeapVectorValues::copy".to_string(),
+        ))
+    }
+
+    /// Java's `scorer(float[])` returns `null`.
+    fn scorer(&self, _query: &[f32]) -> Result<Option<Box<dyn VectorScorer>>> {
+        Ok(None)
+    }
 }
 
 /// Port of `org.apache.lucene.codecs.lucene95.OffHeapByteVectorValues`.
+///
+/// Java splits the class into `DenseOffHeapVectorValues` and
+/// `SparseOffHeapVectorValues`; they differ only in how an ordinal maps back
+/// to a document, in the iterator, and in which bulk scorer `scorer` builds,
+/// so this port carries the sparse configuration in an `Option`. The third
+/// subclass, `EmptyOffHeapVectorValues`, is [`EmptyOffHeapByteVectorValues`].
 struct OffHeapByteVectorValues {
     dimension: i32,
     size: i32,
@@ -1459,11 +1601,31 @@ struct OffHeapByteVectorValues {
     slice: Mutex<Box<dyn IndexInput>>,
     config: Option<OrdToDocDISIReaderConfiguration>,
     data_input: Option<Box<dyn IndexInput>>,
-    ord_to_doc_data: Vec<u8>,
+    /// The ordinal-to-document reader of a sparse field, built once at load
+    /// and shared between copies; `None` when the field is dense.
+    ///
+    /// Equivalent to `SparseOffHeapVectorValues.ordToDoc`, the
+    /// `DirectMonotonicReader` the constructor builds
+    /// (`OffHeapFloatVectorValues.java:225`, `OffHeapByteVectorValues.java:229`).
+    ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+    /// Equivalent to the `protected final VectorSimilarityFunction
+    /// similarityFunction` field.
+    similarity_function: VectorSimilarityFunction,
+    /// Equivalent to the `protected final FlatVectorsScorer flatVectorsScorer`
+    /// field, which `scorer` scores through.
+    flat_vectors_scorer: Arc<dyn FlatVectorsScorer>,
 }
 
 impl OffHeapByteVectorValues {
+    /// Opens one field's vectors.
+    ///
+    /// Equivalent to `OffHeapByteVectorValues.load`: an empty configuration
+    /// answers the empty values, a dense one indexes ordinals directly, and a
+    /// sparse one reads the ordinal-to-document mapping.
+    #[allow(clippy::too_many_arguments)]
     fn load(
+        similarity_function: VectorSimilarityFunction,
+        flat_vectors_scorer: Arc<dyn FlatVectorsScorer>,
         config: &OrdToDocDISIReaderConfiguration,
         dimension: i32,
         vector_data_offset: i64,
@@ -1471,12 +1633,11 @@ impl OffHeapByteVectorValues {
         vector_data: &dyn IndexInput,
     ) -> Result<Box<dyn ByteVectorValues>> {
         if config.is_empty() {
-            return Ok(Box::new(EmptyByteVectorValues));
+            return Ok(Box::new(EmptyOffHeapByteVectorValues { dimension }));
         }
         let byte_size = dimension * VectorEncoding::BYTE.byte_size();
         let slice =
             Mutex::new(vector_data.slice("vector-data", vector_data_offset, vector_data_length)?);
-        let ord_to_doc_data = read_ord_to_doc_data(vector_data, config)?;
         if config.is_dense() {
             Ok(Box::new(Self {
                 dimension,
@@ -1485,7 +1646,9 @@ impl OffHeapByteVectorValues {
                 slice,
                 config: None,
                 data_input: None,
-                ord_to_doc_data,
+                ord_to_doc: None,
+                similarity_function,
+                flat_vectors_scorer: Arc::clone(&flat_vectors_scorer),
             }))
         } else {
             Ok(Box::new(Self {
@@ -1495,7 +1658,11 @@ impl OffHeapByteVectorValues {
                 slice,
                 config: Some(config.clone()),
                 data_input: Some(vector_data.clone_input()?),
-                ord_to_doc_data,
+                // Built only for a sparse field, as Java builds it only in the
+                // sparse constructor (`OffHeapFloatVectorValues.java:225`).
+                ord_to_doc: Some(read_ord_to_doc_reader(vector_data, config)?),
+                similarity_function,
+                flat_vectors_scorer: Arc::clone(&flat_vectors_scorer),
             }))
         }
     }
@@ -1525,7 +1692,9 @@ impl OffHeapByteVectorValues {
                 slice,
                 config: Some(config.clone()),
                 data_input: Some(data_input.clone_input()?),
-                ord_to_doc_data: self.ord_to_doc_data.clone(),
+                ord_to_doc: self.ord_to_doc.clone(),
+                similarity_function: self.similarity_function,
+                flat_vectors_scorer: Arc::clone(&self.flat_vectors_scorer),
             }),
             _ => Ok(Self {
                 dimension: self.dimension,
@@ -1534,7 +1703,9 @@ impl OffHeapByteVectorValues {
                 slice,
                 config: None,
                 data_input: None,
-                ord_to_doc_data: Vec::new(),
+                ord_to_doc: None,
+                similarity_function: self.similarity_function,
+                flat_vectors_scorer: Arc::clone(&self.flat_vectors_scorer),
             }),
         }
     }
@@ -1550,15 +1721,17 @@ impl KnnVectorValues for OffHeapByteVectorValues {
     }
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
-        match &self.config {
-            Some(config) => {
-                let reader =
-                    DirectMonotonicReader::new(config.meta.clone(), self.ord_to_doc_data.clone())
-                        .expect("INVARIANT: ord-to-doc data was validated at load time");
-                reader.get(ord as i64) as i32
-            }
+        match &self.ord_to_doc {
+            Some(reader) => reader.get(i64::from(ord)) as i32,
             None => ord,
         }
+    }
+
+    /// Equivalent to `DenseOffHeapVectorValues.getAcceptOrds` (`acceptDocs`)
+    /// and `SparseOffHeapVectorValues.getAcceptOrds`, a lazy view reading
+    /// `acceptDocs.get(ordToDoc(ord))`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        sparse_accept_ords(self.size, self.ord_to_doc.as_ref(), accept_docs)
     }
 
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
@@ -1643,15 +1816,151 @@ impl ByteVectorValues for OffHeapByteVectorValues {
         self.read_value(ord, &mut value)?;
         Ok(value)
     }
+
+    /// Scores `query` against a copy of these values, driven by the copy's
+    /// own iterator.
+    ///
+    /// Equivalent to `DenseOffHeapVectorValues.scorer(byte[])` and
+    /// `SparseOffHeapVectorValues.scorer(byte[])`
+    /// (`OffHeapByteVectorValues.java:177-197, 281-301`): both take a
+    /// `copy()`, its `iterator()`, and
+    /// `flatVectorsScorer.getRandomVectorScorer(similarityFunction, copy, query)`.
+    fn scorer(&self, query: &[u8]) -> Result<Option<Box<dyn VectorScorer>>> {
+        let copy = self.clone_values()?;
+        let iterator = copy.iterator()?;
+        let dense = copy.config.is_none();
+        let random_vector_scorer = self.flat_vectors_scorer.get_random_vector_scorer_byte(
+            self.similarity_function,
+            Box::new(copy),
+            query,
+        )?;
+        Ok(Some(Box::new(OffHeapVectorScorer::new(
+            random_vector_scorer,
+            iterator,
+            dense,
+        ))))
+    }
+}
+
+/// The values of a field that has no vector in this segment.
+///
+/// Equivalent to the private
+/// `org.apache.lucene.codecs.lucene95.OffHeapByteVectorValues.EmptyOffHeapVectorValues`
+/// (`OffHeapByteVectorValues.java:305-354`): it keeps the field's dimension,
+/// has no vector, refuses `copy()` and `vectorValue`, and has no scorer.
+struct EmptyOffHeapByteVectorValues {
+    dimension: i32,
+}
+
+impl KnnVectorValues for EmptyOffHeapByteVectorValues {
+    fn dimension(&self) -> i32 {
+        self.dimension
+    }
+
+    fn size(&self) -> i32 {
+        0
+    }
+
+    /// Java's `copy()` throws `UnsupportedOperationException`.
+    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
+        Err(LuceneError::UnsupportedOperation(
+            "EmptyOffHeapVectorValues::copy".to_string(),
+        ))
+    }
+
+    fn encoding(&self) -> VectorEncoding {
+        VectorEncoding::BYTE
+    }
+
+    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
+        Ok(self.create_dense_iterator())
+    }
+
+    /// Java's `getAcceptOrds(Bits)` returns `null`.
+    fn get_accept_ords<'a>(
+        &self,
+        _accept_docs: Option<&'a dyn Bits>,
+    ) -> Option<Box<dyn Bits + 'a>> {
+        None
+    }
+}
+
+impl ByteVectorValues for EmptyOffHeapByteVectorValues {
+    /// Java's `vectorValue(int)` throws `UnsupportedOperationException`.
+    fn vector_value(&self, _ord: i32) -> Result<Vec<u8>> {
+        Err(LuceneError::UnsupportedOperation(
+            "EmptyOffHeapVectorValues::vector_value".to_string(),
+        ))
+    }
+
+    /// Java's `copy()` throws `UnsupportedOperationException`.
+    fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
+        Err(LuceneError::UnsupportedOperation(
+            "EmptyOffHeapVectorValues::copy".to_string(),
+        ))
+    }
+
+    /// Java's `scorer(byte[])` returns `null`.
+    fn scorer(&self, _query: &[u8]) -> Result<Option<Box<dyn VectorScorer>>> {
+        Ok(None)
+    }
+}
+
+/// Builds a sparse field's ordinal-to-document reader, once per values object
+/// as Java's constructors do, to be shared by every copy.
+///
+/// Equivalent to `OrdToDocDISIReaderConfiguration.getDirectMonotonicReader`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's reader reads the addresses
+/// through a `RandomAccessInput` slice of the file. A file input cannot be
+/// shared across threads here, while vector values must be, so the addresses
+/// are copied into memory once, at load, and the shared
+/// [`SharedDirectMonotonicReader`] decodes them from there.
+///
+/// # Errors
+///
+/// Returns whatever reading the addresses raises.
+pub(crate) fn read_ord_to_doc_reader(
+    vector_data: &dyn IndexInput,
+    config: &OrdToDocDISIReaderConfiguration,
+) -> Result<Arc<SharedDirectMonotonicReader>> {
+    Ok(Arc::new(SharedDirectMonotonicReader::new(
+        config.meta.clone(),
+        Arc::from(read_ord_to_doc_data(vector_data, config)?),
+    )?))
+}
+
+/// The `getAcceptOrds(Bits)` of an off-heap values class: `acceptDocs` itself
+/// for a dense field, and for a sparse one a lazy view that asks
+/// `acceptDocs.get(ordToDoc(ord))` through a shared handle on the field's
+/// ordinal-to-document reader.
+///
+/// Equivalent to `DenseOffHeapVectorValues.getAcceptOrds` and
+/// `SparseOffHeapVectorValues.getAcceptOrds` (`OffHeapFloatVectorValues.java:169,
+/// 254-270`).
+pub(crate) fn sparse_accept_ords<'a>(
+    size: i32,
+    ord_to_doc: Option<&Arc<SharedDirectMonotonicReader>>,
+    accept_docs: Option<&'a dyn Bits>,
+) -> Option<Box<dyn Bits + 'a>> {
+    match ord_to_doc {
+        None => accept_docs.map(|bits| Box::new(BorrowedBits::new(bits)) as Box<dyn Bits + 'a>),
+        Some(reader) => {
+            let reader = Arc::clone(reader);
+            accept_ords_with(
+                size,
+                move |ord| reader.get(i64::from(ord)) as i32,
+                accept_docs,
+            )
+        }
+    }
 }
 
 /// Reads the ordinal-to-document addresses of a sparse field into memory.
 ///
-/// Java holds a `DirectMonotonicReader` over a `RandomAccessInput` slice
-/// (`OrdToDocDISIReaderConfiguration.getDirectMonotonicReader`); that reader is
-/// built on `Rc<RefCell<..>>` here and so is neither `Send` nor `Sync`, while
-/// vector values are shared across threads, so the addresses are copied once at
-/// load time and the reader is built per call from the copy.
+/// # Errors
+///
+/// Returns whatever reading the addresses raises.
 pub(crate) fn read_ord_to_doc_data(
     vector_data: &dyn IndexInput,
     config: &OrdToDocDISIReaderConfiguration,

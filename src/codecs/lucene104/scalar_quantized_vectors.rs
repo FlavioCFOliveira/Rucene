@@ -17,15 +17,18 @@ use crate::codecs::knn_vectors::{
     KnnVectorsReader, KnnVectorsWriter, MergedVectorValues,
 };
 use crate::codecs::lucene95::{HasIndexSlice, OrdToDocDISIReaderConfiguration};
-use crate::codecs::lucene99::flat_vectors_format::read_ord_to_doc_data;
+use crate::codecs::lucene99::flat_vectors_format::{
+    read_ord_to_doc_reader, sparse_accept_ords, EmptyOffHeapFloatVectorValues,
+};
 use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use crate::error::{LuceneError, Result};
 use crate::index::index_sorter::SorterDocMap;
 use crate::index::{
-    segment_file_name, ByteVectorValues, DenseDocIndexIterator, DocIndexIterator,
-    EmptyFloatVectorValues, FieldInfo, FloatVectorValues, KnnVectorValues, MergeState,
-    VectorEncoding, VectorSimilarityFunction,
+    accept_ords_with, segment_file_name, ByteVectorValues, DenseDocIndexIterator, DocIndexIterator,
+    FieldInfo, FloatVectorValues, KnnVectorValues, MergeState, VectorEncoding,
+    VectorSimilarityFunction,
 };
+use crate::search::vector_scorer::OffHeapVectorScorer;
 use crate::search::NO_MORE_DOCS;
 use crate::store::{IOContext, IndexInput, IndexOutput};
 use crate::util::extra::LongValues;
@@ -33,12 +36,13 @@ use crate::util::hnsw::scorer::{
     CloseableRandomVectorScorerSupplier, RandomVectorScorer, RandomVectorScorerSupplier,
     UpdateableRandomVectorScorer,
 };
-use crate::util::packed::DirectMonotonicReader;
+use crate::util::packed::SharedDirectMonotonicReader;
 use crate::util::quantization::{
     OptimizedScalarQuantizer, QuantizationResult, QuantizedByteVectorValues,
     QuantizedVectorsReader, ScalarEncoding, ScalarQuantizer,
 };
 use crate::util::vector_util;
+use crate::util::Bits;
 
 /// Info-stream component name this format reports under.
 pub const QUANTIZED_VECTOR_COMPONENT: &str = "QVEC";
@@ -175,9 +179,12 @@ pub struct OffHeapScalarQuantizedVectorValues {
     /// the reader builds as `new OptimizedScalarQuantizer(fi.similarityFunction)`
     /// and passes to `load`.
     quantizer: OptimizedScalarQuantizer,
-    /// The ordinal-to-document addresses of a sparse field, read once at load
-    /// time; `None` when the field is dense or empty.
-    ord_to_doc_data: Option<Vec<u8>>,
+    /// The ordinal-to-document reader of a sparse field, built once at load
+    /// and shared between copies; `None` when the field is dense or empty.
+    ///
+    /// Equivalent to `SparseOffHeapVectorValues.ordToDoc`
+    /// (`OffHeapScalarQuantizedVectorValues.java:377`).
+    ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
     byte_size: usize,
     /// Scratch holding the vector last read.
     vector: Vec<u8>,
@@ -204,17 +211,28 @@ impl OffHeapScalarQuantizedVectorValues {
     ///
     /// Java splits the result into a dense, a sparse and an empty subclass;
     /// they differ only in `ordToDoc` and in the iterator, both of which this
-    /// single type derives from the entry's configuration.
-    pub fn load(entry: FieldEntry, slice: Box<dyn IndexInput>) -> Self {
-        Self::load_with_ord_to_doc(entry, slice, None)
+    /// single type derives from the entry's configuration. A sparse field's
+    /// ordinal-to-document reader is built here, once, as the sparse
+    /// subclass's constructor builds it.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever reading the ordinal-to-document addresses raises.
+    pub fn load(entry: FieldEntry, slice: Box<dyn IndexInput>) -> Result<Self> {
+        let ord_to_doc = if entry.ord_to_doc.is_empty() || entry.ord_to_doc.is_dense() {
+            None
+        } else {
+            Some(read_ord_to_doc_reader(slice.as_ref(), &entry.ord_to_doc)?)
+        };
+        Ok(Self::load_with_ord_to_doc(entry, slice, ord_to_doc))
     }
 
-    /// As [`load`](Self::load), with the sparse ordinal-to-document addresses
-    /// already read from the data file.
-    pub fn load_with_ord_to_doc(
+    /// As [`load`](Self::load), with the sparse ordinal-to-document reader
+    /// already built; `copy()` shares it this way.
+    fn load_with_ord_to_doc(
         entry: FieldEntry,
         slice: Box<dyn IndexInput>,
-        ord_to_doc_data: Option<Vec<u8>>,
+        ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
     ) -> Self {
         let byte_size = entry.byte_size();
         let dim_bytes = entry
@@ -225,7 +243,7 @@ impl OffHeapScalarQuantizedVectorValues {
             entry,
             slice,
             quantizer,
-            ord_to_doc_data,
+            ord_to_doc,
             byte_size,
             vector: vec![0u8; dim_bytes],
             corrections: QuantizationResult {
@@ -272,18 +290,27 @@ impl OffHeapScalarQuantizedVectorValues {
     /// subclasses implement it: the ordinal itself when every document has a
     /// vector, and the stored monotonic mapping otherwise.
     pub fn ord_to_doc(&self, ord: i32) -> i32 {
-        if self.entry.ord_to_doc.is_empty() || self.entry.ord_to_doc.is_dense() {
-            return ord;
-        }
-        match &self.ord_to_doc_data {
-            Some(data) => {
-                let reader =
-                    DirectMonotonicReader::new(self.entry.ord_to_doc.meta.clone(), data.clone())
-                        .expect("INVARIANT: ord-to-doc data was validated at load time");
-                reader.get(i64::from(ord)) as i32
-            }
+        match &self.ord_to_doc {
+            Some(reader) => reader.get(i64::from(ord)) as i32,
             None => ord,
         }
+    }
+
+    /// Returns the accepted ordinals, given the accepted documents.
+    ///
+    /// Equivalent to the `getAcceptOrds(Bits)` overrides of
+    /// `OffHeapScalarQuantizedVectorValues`: `acceptDocs` for a dense field, a
+    /// lazy `acceptDocs.get(ordToDoc(ord))` view for a sparse one, and `null`
+    /// for an empty one (`OffHeapScalarQuantizedVectorValues.java:308, 404,
+    /// 481`).
+    pub fn get_accept_ords<'a>(
+        &self,
+        accept_docs: Option<&'a dyn Bits>,
+    ) -> Option<Box<dyn Bits + 'a>> {
+        if self.entry.ord_to_doc.is_empty() {
+            return None;
+        }
+        sparse_accept_ords(self.entry.size, self.ord_to_doc.as_ref(), accept_docs)
     }
 
     /// Returns how many bytes one *packed* vector occupies, without its three
@@ -311,7 +338,7 @@ impl OffHeapScalarQuantizedVectorValues {
         Ok(Self::load_with_ord_to_doc(
             self.entry.clone(),
             self.slice.clone_input()?,
-            self.ord_to_doc_data.clone(),
+            self.ord_to_doc.clone(),
         ))
     }
 
@@ -420,6 +447,45 @@ impl QuantizedByteVectorValues for OffHeapScalarQuantizedVectorValues {
         self.entry.dimension
     }
 
+    fn ord_to_doc(&self, ord: i32) -> i32 {
+        OffHeapScalarQuantizedVectorValues::ord_to_doc(self, ord)
+    }
+
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        OffHeapScalarQuantizedVectorValues::get_accept_ords(self, accept_docs)
+    }
+
+    /// Scores `target` against a copy of these quantized vectors, driven by
+    /// the copy's own iterator; a field with no vector has no scorer.
+    ///
+    /// Equivalent to the `scorer(float[])` overrides of
+    /// `OffHeapScalarQuantizedVectorValues.DenseOffHeapVectorValues`,
+    /// `SparseOffHeapVectorValues` and `EmptyOffHeapVectorValues`
+    /// (`OffHeapScalarQuantizedVectorValues.java:313-335, 427-449, 486-488`):
+    /// a `copy()`, its `iterator()`, and
+    /// `vectorsScorer.getRandomVectorScorer(similarityFunction, copy, target)`,
+    /// whose quantized branch is
+    /// [`Lucene104ScalarQuantizedVectorScorer::get_random_vector_scorer_quantized`].
+    fn scorer(&self, target: &[f32]) -> Result<Option<Box<dyn crate::search::VectorScorer>>> {
+        if self.entry.ord_to_doc.is_empty() {
+            return Ok(None);
+        }
+        let copy = OffHeapScalarQuantizedVectorValues::copy(self)?;
+        let iterator = QuantizedByteVectorValues::iterator(&copy)?;
+        let dense = self.entry.ord_to_doc.is_dense();
+        let random_vector_scorer =
+            Lucene104ScalarQuantizedVectorScorer::get_random_vector_scorer_quantized(
+                self.entry.similarity_function,
+                copy,
+                target,
+            )?;
+        Ok(Some(Box::new(OffHeapVectorScorer::new(
+            Box::new(random_vector_scorer),
+            iterator,
+            dense,
+        ))))
+    }
+
     fn get_scalar_encoding(&self) -> ScalarEncoding {
         self.entry.scalar_encoding
     }
@@ -491,7 +557,18 @@ pub struct OffHeapScalarQuantizedFloatVectorValues {
     slice: Mutex<Box<dyn IndexInput>>,
     config: Option<OrdToDocDISIReaderConfiguration>,
     data_input: Option<Box<dyn IndexInput>>,
-    ord_to_doc_data: Vec<u8>,
+    /// The ordinal-to-document reader of a sparse field, built once at load
+    /// and shared between copies; `None` when the field is dense.
+    ///
+    /// Equivalent to `SparseOffHeapVectorValues.ordToDoc`
+    /// (`OffHeapScalarQuantizedFloatVectorValues.java:294`).
+    ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+    /// Equivalent to the `final VectorSimilarityFunction similarityFunction`
+    /// field.
+    similarity_function: VectorSimilarityFunction,
+    /// Equivalent to the `final FlatVectorsScorer vectorsScorer` field, which
+    /// `scorer` scores through.
+    vectors_scorer: Arc<dyn FlatVectorsScorer>,
 }
 
 impl std::fmt::Debug for OffHeapScalarQuantizedFloatVectorValues {
@@ -519,13 +596,19 @@ impl OffHeapScalarQuantizedFloatVectorValues {
         dimension: i32,
         size: i32,
         encoding: ScalarEncoding,
+        similarity_function: VectorSimilarityFunction,
+        vectors_scorer: Arc<dyn FlatVectorsScorer>,
         centroid: Option<&[f32]>,
         vector_data_offset: i64,
         vector_data_length: i64,
         vector_data: &dyn IndexInput,
     ) -> Result<Box<dyn FloatVectorValues>> {
         if config.is_empty() {
-            return Ok(Box::new(EmptyFloatVectorValues));
+            // Java's `EmptyOffHeapVectorValues`
+            // (`OffHeapScalarQuantizedFloatVectorValues.java:367-401`) behaves
+            // exactly as the `lucene95` empty values: the field's dimension,
+            // no vector, no copy, no scorer.
+            return Ok(Box::new(EmptyOffHeapFloatVectorValues { dimension }));
         }
         // Java asserts `centroid != null` here: a non-empty configuration means
         // the metadata carried a centroid.
@@ -543,11 +626,14 @@ impl OffHeapScalarQuantizedFloatVectorValues {
             vector_data_offset,
             vector_data_length,
         )?);
-        let ord_to_doc_data = read_ord_to_doc_data(vector_data, config)?;
-        let (config, data_input) = if config.is_dense() {
-            (None, None)
+        let (config, data_input, ord_to_doc) = if config.is_dense() {
+            (None, None, None)
         } else {
-            (Some(config.clone()), Some(vector_data.clone_input()?))
+            (
+                Some(config.clone()),
+                Some(vector_data.clone_input()?),
+                Some(read_ord_to_doc_reader(vector_data, config)?),
+            )
         };
         let _ = dims;
         Ok(Box::new(Self {
@@ -560,7 +646,9 @@ impl OffHeapScalarQuantizedFloatVectorValues {
             slice,
             config,
             data_input,
-            ord_to_doc_data,
+            ord_to_doc,
+            similarity_function,
+            vectors_scorer,
         }))
     }
 
@@ -590,7 +678,9 @@ impl OffHeapScalarQuantizedFloatVectorValues {
                 Some(input) => Some(input.clone_input()?),
                 None => None,
             },
-            ord_to_doc_data: self.ord_to_doc_data.clone(),
+            ord_to_doc: self.ord_to_doc.clone(),
+            similarity_function: self.similarity_function,
+            vectors_scorer: Arc::clone(&self.vectors_scorer),
         })
     }
 
@@ -611,15 +701,17 @@ impl KnnVectorValues for OffHeapScalarQuantizedFloatVectorValues {
     }
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
-        match &self.config {
-            Some(config) => {
-                let reader =
-                    DirectMonotonicReader::new(config.meta.clone(), self.ord_to_doc_data.clone())
-                        .expect("INVARIANT: ord-to-doc data was validated at load time");
-                reader.get(i64::from(ord)) as i32
-            }
+        match &self.ord_to_doc {
+            Some(reader) => reader.get(i64::from(ord)) as i32,
             None => ord,
         }
+    }
+
+    /// Equivalent to the dense (`acceptDocs`) and sparse (lazy
+    /// `acceptDocs.get(ordToDoc(ord))`) `getAcceptOrds` overrides
+    /// (`OffHeapScalarQuantizedFloatVectorValues.java:238, 319`).
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        sparse_accept_ords(self.size, self.ord_to_doc.as_ref(), accept_docs)
     }
 
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
@@ -704,6 +796,33 @@ impl FloatVectorValues for OffHeapScalarQuantizedFloatVectorValues {
         // a `float[dimension]` and stops there.
         values.truncate(dims);
         Ok(values)
+    }
+
+    /// Scores `target` against a copy of these dequantized vectors, driven by
+    /// the copy's own iterator.
+    ///
+    /// Equivalent to `DenseOffHeapVectorValues.scorer(float[])` and
+    /// `SparseOffHeapVectorValues.scorer(float[])`
+    /// (`OffHeapScalarQuantizedFloatVectorValues.java:243-265, 342-364`): a
+    /// `copy()`, its `iterator()`, and
+    /// `vectorsScorer.getRandomVectorScorer(similarityFunction, copy, target)`.
+    /// The copy is float vector values, not quantized ones, so the reader's
+    /// `Lucene104ScalarQuantizedVectorScorer` hands it to its non-quantized
+    /// delegate.
+    fn scorer(&self, target: &[f32]) -> Result<Option<Box<dyn crate::search::VectorScorer>>> {
+        let copy = self.clone_values()?;
+        let iterator = copy.iterator()?;
+        let dense = copy.config.is_none();
+        let random_vector_scorer = self.vectors_scorer.get_random_vector_scorer_float(
+            self.similarity_function,
+            Box::new(copy),
+            target,
+        )?;
+        Ok(Some(Box::new(OffHeapVectorScorer::new(
+            random_vector_scorer,
+            iterator,
+            dense,
+        ))))
     }
 }
 
@@ -1033,6 +1152,10 @@ impl KnnVectorValues for ScalarQuantizedVectorValues {
         self.raw.ord_to_doc(ord)
     }
 
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.raw.get_accept_ords(accept_docs)
+    }
+
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
         Ok(Box::new(Self::new(
             self.raw.copy_float()?,
@@ -1227,6 +1350,19 @@ impl RandomVectorScorer for ScalarQuantizedUpdateableScorer {
     fn max_ord(&self) -> i32 {
         self.values.size()
     }
+
+    /// Equivalent to `AbstractUpdateableRandomVectorScorer.ordToDoc(int)`,
+    /// which forwards to the values the scorer was built over.
+    fn ord_to_doc(&self, ord: i32) -> i32 {
+        self.values.ord_to_doc(ord)
+    }
+
+    /// Equivalent to the `getAcceptOrds` Java's `AbstractUpdateableRandomVectorScorer` provides,
+    /// `values.getAcceptOrds(acceptDocs)`: the view shares the values'
+    /// ordinal-to-document reader and copies nothing.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
+    }
 }
 
 impl UpdateableRandomVectorScorer for ScalarQuantizedUpdateableScorer {
@@ -1322,6 +1458,13 @@ impl RandomVectorScorer for Lucene104ScalarQuantizedRandomVectorScorer {
     /// to the `KnnVectorValues` it was constructed with.
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.values.ord_to_doc(ord)
+    }
+
+    /// Equivalent to the `getAcceptOrds` Java's `AbstractRandomVectorScorer` provides,
+    /// `values.getAcceptOrds(acceptDocs)`: the view shares the values'
+    /// ordinal-to-document reader and copies nothing.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
     }
 }
 
@@ -1488,19 +1631,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
         &self,
         entry: &FieldEntry,
     ) -> Result<OffHeapScalarQuantizedVectorValues> {
-        let ord_to_doc_data = if entry.ord_to_doc.is_empty() || entry.ord_to_doc.is_dense() {
-            None
-        } else {
-            Some(read_ord_to_doc_data(
-                self.vector_data.as_ref(),
-                &entry.ord_to_doc,
-            )?)
-        };
-        Ok(OffHeapScalarQuantizedVectorValues::load_with_ord_to_doc(
-            entry.clone(),
-            self.vector_data.clone_input()?,
-            ord_to_doc_data,
-        ))
+        OffHeapScalarQuantizedVectorValues::load(entry.clone(), self.vector_data.clone_input()?)
     }
 
     /// Returns an independent view of this reader over the same files.
@@ -1540,6 +1671,8 @@ impl Lucene104ScalarQuantizedVectorsReader {
             entry.dimension,
             entry.size,
             entry.scalar_encoding,
+            entry.similarity_function,
+            Arc::clone(&self.scorer) as Arc<dyn FlatVectorsScorer>,
             entry.centroid.as_deref(),
             entry.vector_data_offset,
             entry.vector_data_length,
@@ -1728,11 +1861,7 @@ impl Lucene104ScalarQuantizedVectorsReader {
                 entry.vector_encoding
             )));
         }
-        let slice = self.vector_data.clone_input()?;
-        Ok(Some(OffHeapScalarQuantizedVectorValues::load(
-            entry.clone(),
-            slice,
-        )))
+        Ok(Some(self.quantized_byte_vector_values(entry)?))
     }
 
     /// Returns the metadata entry of `field`.
@@ -1919,10 +2048,7 @@ impl KnnVectorsReader for Lucene104ScalarQuantizedVectorsReader {
         }
         Ok(Some(Box::new(ScalarQuantizedVectorValues::new(
             raw,
-            Box::new(OffHeapScalarQuantizedVectorValues::load(
-                entry.clone(),
-                self.vector_data.clone_input()?,
-            )),
+            Box::new(self.quantized_byte_vector_values(entry)?),
         ))))
     }
 
@@ -3633,6 +3759,18 @@ impl QuantizedByteVectorValues for QuantizedFloatVectorValues {
         self.values.dimension()
     }
 
+    /// Equivalent to `QuantizedFloatVectorValues.ordToDoc(int)`, which forwards
+    /// to the values being quantized (`Lucene104ScalarQuantizedVectorsWriter.java:692-695`).
+    fn ord_to_doc(&self, ord: i32) -> i32 {
+        self.values.ord_to_doc(ord)
+    }
+
+    /// Equivalent to the inherited `KnnVectorValues.getAcceptOrds(Bits)`,
+    /// which maps through the forwarded `ordToDoc`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
+    }
+
     /// Equivalent to `QuantizedFloatVectorValues.copy()`.
     fn copy(&self) -> Result<Box<dyn QuantizedByteVectorValues>> {
         Ok(Box::new(Self::new(
@@ -3705,6 +3843,10 @@ impl KnnVectorValues for NormalizedFloatVectorValues {
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.values.ord_to_doc(ord)
+    }
+
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
     }
 
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
@@ -3893,7 +4035,8 @@ type BufferedByteField = (
 struct BufferedVectorValues<T> {
     dimension: i32,
     vectors: Vec<T>,
-    ord_to_doc: Vec<i32>,
+    /// Shared, so that the `getAcceptOrds` view can map through it.
+    ord_to_doc: Arc<Vec<i32>>,
 }
 
 impl<T> BufferedVectorValues<T> {
@@ -3901,7 +4044,7 @@ impl<T> BufferedVectorValues<T> {
         Ok(Self {
             dimension,
             vectors,
-            ord_to_doc: docs_with_field_to_docs(docs_with_field)?,
+            ord_to_doc: Arc::new(docs_with_field_to_docs(docs_with_field)?),
         })
     }
 }
@@ -3917,6 +4060,17 @@ impl<T: Send + Sync + Clone + 'static> KnnVectorValues for BufferedVectorValues<
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.ord_to_doc[ord as usize]
+    }
+
+    /// Equivalent to the inherited `KnnVectorValues.getAcceptOrds(Bits)`,
+    /// which maps every ordinal through `ordToDoc`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        let ord_to_doc = Arc::clone(&self.ord_to_doc);
+        accept_ords_with(
+            self.size(),
+            move |ord| ord_to_doc[ord as usize],
+            accept_docs,
+        )
     }
 
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
@@ -3938,7 +4092,7 @@ impl<T: Send + Sync + Clone + 'static> KnnVectorValues for BufferedVectorValues<
     fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
         Ok(Box::new(
             crate::codecs::lucene99::hnsw_vectors_format::VecDocIndexIterator::new(
-                self.ord_to_doc.clone(),
+                self.ord_to_doc.as_ref().clone(),
             ),
         ))
     }
@@ -4109,6 +4263,169 @@ mod tests {
     use super::*;
     use crate::codecs::knn_vectors::MergedFloat32VectorValues;
     use crate::index::vector_values::from_floats;
+
+    /// Writes `max_doc` documents of one three-dimensional field through this
+    /// format, every document when `dense`, every third otherwise, and opens
+    /// the segment's reader.
+    fn dequantized_values(
+        dense: bool,
+        max_doc: i32,
+    ) -> (
+        Box<dyn FloatVectorValues>,
+        Vec<i32>,
+        VectorSimilarityFunction,
+    ) {
+        use crate::codecs::knn_vectors::FieldVectorWriter;
+        use crate::codecs::stub::BufferedUpdates;
+        use crate::index::{FieldInfos, SegmentInfo};
+        use crate::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
+        use crate::util::{default_info_stream, Version};
+
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let similarity = VectorSimilarityFunction::EUCLIDEAN;
+        let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let info = SegmentInfo::new(
+            Arc::clone(&directory),
+            Version::LATEST,
+            Some(Version::LATEST),
+            "_dq".to_string(),
+            max_doc,
+            false,
+            false,
+            crate::codecs::default_codec().unwrap(),
+            HashMap::new(),
+            [7u8; 16],
+            HashMap::new(),
+            Default::default(),
+        )
+        .unwrap();
+        let mut field_info = FieldInfo::new("v", 0);
+        field_info.vector_dimension = 3;
+        field_info.vector_encoding = VectorEncoding::FLOAT32;
+        field_info.vector_similarity_function = similarity;
+        let infos = FieldInfos::new(vec![field_info.clone()]).unwrap();
+        let write_state = SegmentWriteState::new(
+            default_info_stream(),
+            directory.as_ref(),
+            &info,
+            &infos,
+            &BufferedUpdates,
+            &*DEFAULT_IO_CONTEXT,
+        );
+        let format = Lucene104ScalarQuantizedVectorsFormat::new();
+        let mut writer = format.fields_writer_flat(&write_state).unwrap();
+        let FieldVectorWriter::Float(mut field_writer) = writer.add_field(&field_info).unwrap()
+        else {
+            panic!("a float field writer");
+        };
+        let mut docs = Vec::new();
+        for doc in 0..max_doc {
+            if dense || doc % 3 == 0 {
+                let f = doc as f32;
+                field_writer
+                    .add_value(doc, vec![f * 0.5, 2.0 - f * 0.25, (doc % 4) as f32])
+                    .unwrap();
+                docs.push(doc);
+            }
+        }
+        writer.flush(max_doc, None).unwrap();
+        writer.finish().unwrap();
+        writer.close().unwrap();
+
+        let read_state =
+            SegmentReadState::new(directory.as_ref(), &info, &infos, &*DEFAULT_IO_CONTEXT);
+        let raw = raw_vector_format().fields_reader_flat(&read_state).unwrap();
+        let reader = Lucene104ScalarQuantizedVectorsReader::new(
+            &read_state,
+            raw,
+            Arc::new(Lucene104ScalarQuantizedVectorScorer::new(Arc::new(
+                crate::codecs::hnsw::flat_vectors::FlatVectorScorerUtil::get_lucene99_flat_vectors_scorer(),
+            ))),
+        )
+        .unwrap();
+        let entry = reader.fields.get("v").unwrap();
+        let values = reader.quantized_float_vector_values("v", entry).unwrap();
+        (values, docs, similarity)
+    }
+
+    /// The dequantized values of the 10.4 format — what Lucene hands back when
+    /// the raw vectors are absent (`Lucene104ScalarQuantizedVectorsReader.java:246-258`)
+    /// — score through `OffHeapScalarQuantizedFloatVectorValues.scorer`
+    /// (`OffHeapScalarQuantizedFloatVectorValues.java:243-265, 342-364`): the
+    /// reader's scorer hands the float copy to its unquantized delegate, so
+    /// every document scores `similarity(target, vectorValue(ord))`, one by one
+    /// and in bulk, dense and sparse; and `getAcceptOrds` maps through the
+    /// ordinal-to-document reader.
+    #[test]
+    fn the_dequantized_values_score_their_own_vectors() {
+        use crate::search::NO_MORE_DOCS;
+        let target = [3.0f32, 1.0, 2.0];
+        for dense in [true, false] {
+            let (values, docs, similarity) = dequantized_values(dense, 20);
+            assert_eq!(values.size() as usize, docs.len());
+            let expected: Vec<(i32, f32)> = (0..values.size())
+                .map(|ord| {
+                    let vector = values.vector_value(ord).unwrap();
+                    (
+                        docs[ord as usize],
+                        similarity.compare_f32(&target, &vector).unwrap(),
+                    )
+                })
+                .collect();
+
+            let mut scorer = values.scorer(&target).unwrap().expect("a scorer");
+            let mut one = Vec::new();
+            loop {
+                let doc = scorer.iterator().next_doc().unwrap();
+                if doc == NO_MORE_DOCS {
+                    break;
+                }
+                one.push((doc, scorer.score().unwrap()));
+            }
+            assert_eq!(one, expected, "dense={dense}: one by one");
+
+            let mut bulk = values.scorer(&target).unwrap().unwrap().bulk(None).unwrap();
+            let mut buffer = crate::index::DocAndFloatFeatureBuffer::new();
+            let mut all = Vec::new();
+            loop {
+                let max = bulk
+                    .next_docs_and_scores(NO_MORE_DOCS, None, &mut buffer)
+                    .unwrap();
+                if buffer.size == 0 {
+                    break;
+                }
+                let batch: Vec<(i32, f32)> = (0..buffer.size)
+                    .map(|i| (buffer.docs[i], buffer.features[i]))
+                    .collect();
+                let batch_max = batch
+                    .iter()
+                    .map(|(_, s)| *s)
+                    .fold(f32::NEG_INFINITY, f32::max);
+                assert_eq!(max, batch_max, "dense={dense}: bulk max");
+                all.extend(batch);
+            }
+            assert_eq!(all, expected, "dense={dense}: bulk");
+
+            let accept = crate::util::MatchAllBits::new(20);
+            let view = values.get_accept_ords(Some(&accept)).unwrap();
+            assert_eq!(view.length(), docs.len());
+            #[derive(Debug)]
+            struct Only(i32);
+            impl crate::util::Bits for Only {
+                fn get(&self, index: usize) -> bool {
+                    index as i32 == self.0
+                }
+                fn length(&self) -> usize {
+                    20
+                }
+            }
+            let last = *docs.last().unwrap();
+            let only_last = Only(last);
+            let view = values.get_accept_ords(Some(&only_last)).unwrap();
+            let accepted: Vec<usize> = (0..docs.len()).filter(|&ord| view.get(ord)).collect();
+            assert_eq!(accepted, vec![docs.len() - 1], "dense={dense}");
+        }
+    }
 
     /// Wrapping a merged view without subs fails where Java's constructors
     /// call `dimension()` on it and throw: `NormalizedFloatVectorValues`

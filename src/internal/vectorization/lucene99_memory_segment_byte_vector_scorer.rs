@@ -10,6 +10,7 @@ use crate::index::VectorSimilarityFunction;
 use crate::internal::vectorization::PanamaVectorUtilSupport;
 use crate::store::{IndexInput, MemorySegment, MemorySegmentAccessInput};
 use crate::util::hnsw::RandomVectorScorer;
+use crate::util::Bits;
 
 /// Where one vector's bytes were found.
 ///
@@ -225,5 +226,12 @@ impl RandomVectorScorer for Lucene99MemorySegmentByteVectorScorer {
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.values.ord_to_doc(ord)
+    }
+
+    /// Equivalent to the `getAcceptOrds` this scorer inherits from Java's
+    /// `AbstractRandomVectorScorer` / `AbstractUpdateableRandomVectorScorer`,
+    /// `values.getAcceptOrds(acceptDocs)`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
     }
 }

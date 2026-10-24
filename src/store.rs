@@ -718,6 +718,18 @@ pub trait IndexInput: DataInput + Send + Sync {
         Ok(Box::new(RandomAccessInputAdapter::new(slice)))
     }
 
+    /// Returns this input as a [`MemorySegmentAccessInput`] when it is one,
+    /// and `None` otherwise.
+    ///
+    /// Equivalent to Java's `input instanceof MemorySegmentAccessInput`, which
+    /// `Lucene99MemorySegmentScalarQuantizedVectorScorer` and its siblings ask
+    /// of a values object's slice. Rust cannot narrow a `dyn IndexInput` to
+    /// another trait, so the question is asked of the input itself; the
+    /// default answers `None`, the `false` branch of `instanceof`.
+    fn as_memory_segment_access_input(&self) -> Option<&dyn MemorySegmentAccessInput> {
+        None
+    }
+
     /// Builds the resource description for a slice of this input.
     fn full_slice_description(&self, slice_description: &str) -> String {
         if slice_description.is_empty() {

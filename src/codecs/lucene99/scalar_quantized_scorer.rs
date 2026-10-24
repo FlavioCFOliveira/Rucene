@@ -11,21 +11,23 @@ use crate::index::{ByteVectorValues, FloatVectorValues, VectorSimilarityFunction
 use crate::util::hnsw::scorer::{
     RandomVectorScorer, RandomVectorScorerSupplier, UpdateableRandomVectorScorer,
 };
-use crate::util::quantization::{
-    LegacyQuantizedByteVectorValues, ScalarQuantizedVectorSimilarity, ScalarQuantizer,
-};
+use crate::util::quantization::LegacyQuantizedByteVectorValues;
 use crate::util::vector_util;
+use crate::util::Bits;
 
 /// Scores against the vectors the Lucene 9.9 quantized format stores.
 ///
 /// Equivalent to
 /// `org.apache.lucene.codecs.lucene99.Lucene99ScalarQuantizedVectorScorer`.
 ///
-/// **Divergence from Lucene 10.5.0.** Java picks a vectorised inner loop
-/// through `VectorizationProvider` and decides at run time whether the values it
-/// was handed are quantized. This port keeps the scalar loop and is constructed
-/// by the reader that knows its vectors are quantized, for the same reason as
-/// `codecs::hnsw::ScalarQuantizedVectorScorer`.
+/// Java's `instanceof LegacyQuantizedByteVectorValues` branch is the pair of
+/// [`FlatVectorsScorer`] methods
+/// [`get_random_vector_scorer_supplier_legacy_quantized`](FlatVectorsScorer::get_random_vector_scorer_supplier_legacy_quantized)
+/// and
+/// [`get_random_vector_scorer_legacy_quantized`](FlatVectorsScorer::get_random_vector_scorer_legacy_quantized),
+/// which this type overrides; the four typed methods are Java's unquantized
+/// branch and forward to the delegate. The trait documents why the branch is a
+/// method of its own.
 pub struct Lucene99ScalarQuantizedVectorScorer {
     non_quantized_delegate: Arc<dyn FlatVectorsScorer>,
 }
@@ -43,40 +45,6 @@ impl Lucene99ScalarQuantizedVectorScorer {
         Self {
             non_quantized_delegate: delegate,
         }
-    }
-
-    /// Quantizes `query` the way the stored vectors were quantized, returning
-    /// the quantized form and its corrective offset.
-    pub fn quantize_query(
-        query: &[f32],
-        similarity_function: VectorSimilarityFunction,
-        quantizer: &ScalarQuantizer,
-    ) -> Result<(Vec<u8>, f32)> {
-        let mut quantized = vec![0u8; query.len()];
-        let offset = quantize_query(query, &mut quantized, similarity_function, quantizer)?;
-        Ok((quantized, offset))
-    }
-
-    /// Scores one quantized query against one stored quantized vector.
-    pub fn score(
-        similarity_function: VectorSimilarityFunction,
-        quantizer: &ScalarQuantizer,
-        query: &[u8],
-        query_offset: f32,
-        stored: &[u8],
-        stored_offset: f32,
-    ) -> Result<f32> {
-        ScalarQuantizedVectorSimilarity::from_vector_similarity(
-            similarity_function,
-            quantizer.get_bits(),
-        )
-        .score(
-            query,
-            query_offset,
-            stored,
-            stored_offset,
-            quantizer.get_constant_multiplier(),
-        )
     }
 
     /// Builds the scorer that matches `sim`, over vectors the Lucene 9.9 format
@@ -237,6 +205,14 @@ impl RandomVectorScorer for Euclidean {
     fn max_ord(&self) -> i32 {
         self.values.size()
     }
+
+    fn ord_to_doc(&self, ord: i32) -> i32 {
+        self.values.ord_to_doc(ord)
+    }
+
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
+    }
 }
 
 impl UpdateableRandomVectorScorer for Euclidean {
@@ -294,6 +270,14 @@ impl RandomVectorScorer for DotProduct {
 
     fn max_ord(&self) -> i32 {
         self.values.size()
+    }
+
+    fn ord_to_doc(&self, ord: i32) -> i32 {
+        self.values.ord_to_doc(ord)
+    }
+
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
     }
 }
 
@@ -377,6 +361,14 @@ impl RandomVectorScorer for CompressedInt4DotProduct {
     fn max_ord(&self) -> i32 {
         self.values.size()
     }
+
+    fn ord_to_doc(&self, ord: i32) -> i32 {
+        self.values.ord_to_doc(ord)
+    }
+
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
+    }
 }
 
 impl UpdateableRandomVectorScorer for CompressedInt4DotProduct {
@@ -435,6 +427,14 @@ impl RandomVectorScorer for Int4DotProduct {
     fn max_ord(&self) -> i32 {
         self.values.size()
     }
+
+    fn ord_to_doc(&self, ord: i32) -> i32 {
+        self.values.ord_to_doc(ord)
+    }
+
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
+    }
 }
 
 impl UpdateableRandomVectorScorer for Int4DotProduct {
@@ -489,6 +489,135 @@ impl FlatVectorsScorer for Lucene99ScalarQuantizedVectorScorer {
             similarity_function,
             vector_values,
             target,
+        )
+    }
+
+    /// Equivalent to the `instanceof LegacyQuantizedByteVectorValues` branch of
+    /// `getRandomVectorScorerSupplier`
+    /// (`Lucene99ScalarQuantizedVectorScorer.java:53-56`).
+    fn get_random_vector_scorer_supplier_legacy_quantized(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
+    ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        Self::legacy_supplier(similarity_function, vector_values)
+    }
+
+    /// Equivalent to the `instanceof LegacyQuantizedByteVectorValues` branch of
+    /// `getRandomVectorScorer(VectorSimilarityFunction, KnnVectorValues,
+    /// float[])` (`Lucene99ScalarQuantizedVectorScorer.java:65-76`).
+    fn get_random_vector_scorer_legacy_quantized(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
+        target: &[f32],
+    ) -> Result<Box<dyn RandomVectorScorer>> {
+        Self::legacy_scorer(similarity_function, vector_values, target)
+    }
+}
+
+impl Lucene99ScalarQuantizedVectorScorer {
+    /// The quantized branch of `getRandomVectorScorerSupplier`.
+    fn legacy_supplier(
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
+    ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        Ok(Box::new(ScalarQuantizedRandomVectorScorerSupplier::new(
+            vector_values,
+            similarity_function,
+        )?))
+    }
+
+    /// The quantized branch of `getRandomVectorScorer(…, float[])`.
+    fn legacy_scorer(
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
+        target: &[f32],
+    ) -> Result<Box<dyn RandomVectorScorer>> {
+        let scalar_quantizer = *vector_values.scalar_quantizer();
+        let mut target_bytes = vec![0u8; target.len()];
+        let offset_correction = quantize_query(
+            target,
+            &mut target_bytes,
+            similarity_function,
+            &scalar_quantizer,
+        )?;
+        let scorer: Box<dyn RandomVectorScorer> = Self::from_vector_similarity(
+            target_bytes,
+            offset_correction,
+            similarity_function,
+            scalar_quantizer.get_constant_multiplier(),
+            vector_values,
+        )?;
+        Ok(scorer)
+    }
+}
+
+/// Supplies scorers that score one stored quantized vector against the rest
+/// of the field.
+///
+/// Equivalent to the private
+/// `Lucene99ScalarQuantizedVectorScorer.ScalarQuantizedRandomVectorScorerSupplier`
+/// (`Lucene99ScalarQuantizedVectorScorer.java:300-337`).
+///
+/// **Divergence from Lucene 10.5.0.** Java hands every scorer the one
+/// `targetVectors` instance the supplier copied at construction. A scorer here
+/// owns the values it reads through `&mut self`, so each scorer gets its own
+/// copy of `targetVectors`; the vectors it reads are the same.
+struct ScalarQuantizedRandomVectorScorerSupplier {
+    vector_similarity_function: VectorSimilarityFunction,
+    values: Box<dyn LegacyQuantizedByteVectorValues>,
+    target_vectors: Box<dyn LegacyQuantizedByteVectorValues>,
+}
+
+impl ScalarQuantizedRandomVectorScorerSupplier {
+    /// Equivalent to the constructor, which keeps `values` and a copy of them
+    /// as `targetVectors`.
+    fn new(
+        values: Box<dyn LegacyQuantizedByteVectorValues>,
+        vector_similarity_function: VectorSimilarityFunction,
+    ) -> Result<Self> {
+        let target_vectors = values.copy_legacy()?;
+        Ok(Self {
+            vector_similarity_function,
+            values,
+            target_vectors,
+        })
+    }
+}
+
+impl RandomVectorScorerSupplier for ScalarQuantizedRandomVectorScorerSupplier {
+    /// Equivalent to `scorer()`: a scorer over `targetVectors` with an
+    /// all-zero query of the field's dimension and no offset, to be filled by
+    /// `setScoringOrdinal`.
+    fn scorer(&self) -> Result<Box<dyn UpdateableRandomVectorScorer>> {
+        let vector_value = vec![0u8; self.values.dimension().max(0) as usize];
+        let offset_correction = 0.0;
+        Lucene99ScalarQuantizedVectorScorer::from_vector_similarity(
+            vector_value,
+            offset_correction,
+            self.vector_similarity_function,
+            self.values.scalar_quantizer().get_constant_multiplier(),
+            self.target_vectors.copy_legacy()?,
+        )
+    }
+
+    /// Equivalent to `copy()`, which builds a supplier over `values.copy()`.
+    fn copy(&self) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        Ok(Box::new(Self::new(
+            self.values.copy_legacy()?,
+            self.vector_similarity_function,
+        )?))
+    }
+}
+
+impl std::fmt::Display for ScalarQuantizedRandomVectorScorerSupplier {
+    /// Port of `ScalarQuantizedRandomVectorScorerSupplier.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ScalarQuantizedRandomVectorScorerSupplier(vectorSimilarityFunction={:?})",
+            self.vector_similarity_function
         )
     }
 }

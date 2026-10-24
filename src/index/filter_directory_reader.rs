@@ -1932,6 +1932,13 @@ impl KnnVectorValues for ExitableFloatVectorValues {
         self.vector_values.ord_to_doc(ord)
     }
 
+    fn get_accept_ords<'a>(
+        &self,
+        accept_docs: Option<&'a dyn crate::util::Bits>,
+    ) -> Option<Box<dyn crate::util::Bits + 'a>> {
+        self.vector_values.get_accept_ords(accept_docs)
+    }
+
     /// Equivalent to `ExitableFloatVectorValues.copy()`, which throws
     /// `UnsupportedOperationException`.
     ///
@@ -2020,6 +2027,13 @@ impl KnnVectorValues for ExitableByteVectorValues {
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.vector_values.ord_to_doc(ord)
+    }
+
+    fn get_accept_ords<'a>(
+        &self,
+        accept_docs: Option<&'a dyn crate::util::Bits>,
+    ) -> Option<Box<dyn crate::util::Bits + 'a>> {
+        self.vector_values.get_accept_ords(accept_docs)
     }
 
     /// Equivalent to `ExitableByteVectorValues.copy()`, which throws

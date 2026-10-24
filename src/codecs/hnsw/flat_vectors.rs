@@ -27,7 +27,8 @@ use crate::index::{VectorEncoding, VectorSimilarityFunction};
 use crate::util::hnsw::{
     RandomVectorScorer, RandomVectorScorerSupplier, UpdateableRandomVectorScorer,
 };
-use crate::util::quantization::QuantizedVectorsReader;
+use crate::util::quantization::{LegacyQuantizedByteVectorValues, QuantizedVectorsReader};
+use crate::util::Bits;
 use crate::util::{FixedBitSet, RamUsageEstimator};
 
 // -----------------------------------------------------------------------------
@@ -518,6 +519,84 @@ pub trait FlatVectorsScorer: Send + Sync + fmt::Debug + fmt::Display {
         vector_values: Box<dyn ByteVectorValues>,
         target: &[u8],
     ) -> Result<Box<dyn RandomVectorScorer>>;
+
+    /// Returns a scorer supplier over vectors the Lucene 9.9 scalar-quantized
+    /// format stored.
+    ///
+    /// Equivalent to `getRandomVectorScorerSupplier(VectorSimilarityFunction,
+    /// KnnVectorValues)` called with a `LegacyQuantizedByteVectorValues`, the
+    /// case `Lucene99ScalarQuantizedVectorScorer` and
+    /// `ScalarQuantizedVectorScorer` test with `instanceof`
+    /// (`Lucene99ScalarQuantizedVectorScorer.java:50-59`,
+    /// `ScalarQuantizedVectorScorer.java:61-73`) and answer from the quantized
+    /// bytes.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java has one method per query kind,
+    /// taking any `KnnVectorValues`, and the quantized scorers narrow it at run
+    /// time. This port's methods take the typed [`FloatVectorValues`] and
+    /// [`ByteVectorValues`], and [`LegacyQuantizedByteVectorValues`] is
+    /// neither, so the `instanceof` branch is a method of its own: a reader of
+    /// the 9.9 format calls it where Java passes its quantized values.
+    /// A scorer with no quantized branch would, in Java, hand the values to its
+    /// unquantized path, which reads them as plain byte vectors; that path is
+    /// never taken by Lucene itself, so the default here reports
+    /// [`LuceneError::UnsupportedOperation`] instead of adapting the values to
+    /// [`ByteVectorValues`].
+    ///
+    /// # Errors
+    ///
+    /// The default always fails as above; an implementation propagates
+    /// whatever opening its supplier raises.
+    fn get_random_vector_scorer_supplier_legacy_quantized(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
+    ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        let _ = (similarity_function, vector_values);
+        Err(LuceneError::UnsupportedOperation(format!(
+            "{self} has no scorer supplier for Lucene 9.9 quantized vectors"
+        )))
+    }
+
+    /// Returns a one-off random scorer for a float `target` over vectors the
+    /// Lucene 9.9 scalar-quantized format stored.
+    ///
+    /// Equivalent to `getRandomVectorScorer(VectorSimilarityFunction,
+    /// KnnVectorValues, float[])` called with a
+    /// `LegacyQuantizedByteVectorValues`
+    /// (`Lucene99ScalarQuantizedVectorScorer.java:61-80`,
+    /// `ScalarQuantizedVectorScorer.java:75-102`): the target is quantized the
+    /// way the stored vectors were, and scored against them.
+    ///
+    /// **Divergence from Lucene 10.5.0.** As for
+    /// [`get_random_vector_scorer_supplier_legacy_quantized`](Self::get_random_vector_scorer_supplier_legacy_quantized).
+    /// In Java a scorer with no quantized branch hands byte values with a
+    /// float target to `DefaultFlatVectorScorer`, which rejects them
+    /// (`assert vectorValues instanceof FloatVectorValues` and the cast that
+    /// follows, `DefaultFlatVectorScorer.java:57-67`); the default reports
+    /// that rejection.
+    ///
+    /// # Errors
+    ///
+    /// The default always returns [`LuceneError::UnsupportedOperation`]. An
+    /// implementation propagates whatever quantizing the target or building
+    /// its scorer raises; whether it checks the query's dimension is its own
+    /// contract — `Lucene99ScalarQuantizedVectorScorer` does, through
+    /// `fromVectorSimilarity`'s `checkDimensions`
+    /// (`Lucene99ScalarQuantizedVectorScorer.java:99`), and
+    /// `ScalarQuantizedVectorScorer` does not
+    /// (`ScalarQuantizedVectorScorer.java:80-99`).
+    fn get_random_vector_scorer_legacy_quantized(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
+        target: &[f32],
+    ) -> Result<Box<dyn RandomVectorScorer>> {
+        let _ = (similarity_function, vector_values, target);
+        Err(LuceneError::UnsupportedOperation(format!(
+            "{self} cannot score a float query against Lucene 9.9 quantized vectors"
+        )))
+    }
 }
 
 /// Checks that a query vector and a field's vectors have the same dimension.
@@ -656,6 +735,13 @@ impl RandomVectorScorer for FloatVectorScorer {
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.values.ord_to_doc(ord)
     }
+
+    /// Equivalent to the `getAcceptOrds` this scorer inherits from Java's
+    /// `AbstractRandomVectorScorer` / `AbstractUpdateableRandomVectorScorer`,
+    /// `values.getAcceptOrds(acceptDocs)`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
+    }
 }
 
 struct ByteVectorScorer {
@@ -690,6 +776,13 @@ impl RandomVectorScorer for ByteVectorScorer {
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.values.ord_to_doc(ord)
+    }
+
+    /// Equivalent to the `getAcceptOrds` this scorer inherits from Java's
+    /// `AbstractRandomVectorScorer` / `AbstractUpdateableRandomVectorScorer`,
+    /// `values.getAcceptOrds(acceptDocs)`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
     }
 }
 
@@ -752,6 +845,13 @@ impl RandomVectorScorer for UpdateableFloatVectorScorer {
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.values.ord_to_doc(ord)
+    }
+
+    /// Equivalent to the `getAcceptOrds` this scorer inherits from Java's
+    /// `AbstractRandomVectorScorer` / `AbstractUpdateableRandomVectorScorer`,
+    /// `values.getAcceptOrds(acceptDocs)`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
     }
 }
 
@@ -822,6 +922,13 @@ impl RandomVectorScorer for UpdateableByteVectorScorer {
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.values.ord_to_doc(ord)
+    }
+
+    /// Equivalent to the `getAcceptOrds` this scorer inherits from Java's
+    /// `AbstractRandomVectorScorer` / `AbstractUpdateableRandomVectorScorer`,
+    /// `values.getAcceptOrds(acceptDocs)`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
     }
 }
 

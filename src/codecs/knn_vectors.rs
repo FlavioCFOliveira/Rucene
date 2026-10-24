@@ -764,6 +764,23 @@ impl KnnVectorValues for MergedFloat32VectorValues {
         panic!("UnsupportedOperationException: MergedFloat32VectorValues.ordToDoc")
     }
 
+    /// Equivalent to the inherited `KnnVectorValues.getAcceptOrds(Bits)`,
+    /// whose view calls `ordToDoc`, which throws.
+    ///
+    /// # Panics
+    ///
+    /// The returned view panics when queried, as `ord_to_doc` does.
+    fn get_accept_ords<'a>(
+        &self,
+        accept_docs: Option<&'a dyn crate::util::Bits>,
+    ) -> Option<Box<dyn crate::util::Bits + 'a>> {
+        crate::index::accept_ords_with(
+            self.size,
+            |_| panic!("UnsupportedOperationException: MergedFloat32VectorValues.ordToDoc"),
+            accept_docs,
+        )
+    }
+
     /// Java's `copy()` throws `UnsupportedOperationException`.
     fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
         Err(LuceneError::UnsupportedOperation(
@@ -904,6 +921,23 @@ impl KnnVectorValues for MergedByteVectorValues {
     /// this method has no error channel to report it through.
     fn ord_to_doc(&self, _ord: i32) -> i32 {
         panic!("UnsupportedOperationException: MergedByteVectorValues.ordToDoc")
+    }
+
+    /// Equivalent to the inherited `KnnVectorValues.getAcceptOrds(Bits)`,
+    /// whose view calls `ordToDoc`, which throws.
+    ///
+    /// # Panics
+    ///
+    /// The returned view panics when queried, as `ord_to_doc` does.
+    fn get_accept_ords<'a>(
+        &self,
+        accept_docs: Option<&'a dyn crate::util::Bits>,
+    ) -> Option<Box<dyn crate::util::Bits + 'a>> {
+        crate::index::accept_ords_with(
+            self.size,
+            |_| panic!("UnsupportedOperationException: MergedByteVectorValues.ordToDoc"),
+            accept_docs,
+        )
     }
 
     /// Java's `copy()` throws `UnsupportedOperationException`.

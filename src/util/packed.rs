@@ -10,6 +10,7 @@ use std::{
     cell::{Cell, RefCell},
     cmp,
     rc::Rc,
+    sync::Arc,
 };
 
 use crate::error::{LuceneError, Result};
@@ -823,8 +824,24 @@ impl DirectReader {
     }
 
     fn get_inner(&self, index: i64) -> Result<i64> {
-        let pos = self.offset
-            + match self.bits_per_value {
+        let mut input_ref = self.input.borrow_mut();
+        Self::decode(input_ref.as_mut(), self.bits_per_value, self.offset, index)
+    }
+
+    /// Decodes the `bits_per_value`-wide value at `index` of the block that
+    /// starts at `offset` in `input`.
+    ///
+    /// The body of `DirectReader`'s per-width `LongValues.get(long)`
+    /// implementations (`DirectReader.java:189-463`), shared by
+    /// [`DirectReader`] and [`SharedDirectMonotonicReader`].
+    fn decode<R: PositionalRead + ?Sized>(
+        input_ref: &mut R,
+        bits_per_value: i32,
+        offset: i64,
+        index: i64,
+    ) -> Result<i64> {
+        let pos = offset
+            + match bits_per_value {
                 1 => index >> 3,
                 2 => index >> 2,
                 4 => index >> 1,
@@ -842,8 +859,7 @@ impl DirectReader {
                 _ => unreachable!(),
             };
 
-        let mut input_ref = self.input.borrow_mut();
-        let value = match self.bits_per_value {
+        let value = match bits_per_value {
             1 => {
                 let b = input_ref.read_byte_at(pos)? as i64;
                 (b >> (index & 7)) & 0x1
@@ -1295,6 +1311,198 @@ impl MonotonicBlockReader {
     }
 }
 
+/// Positional little-endian reads over an in-memory byte slice.
+///
+/// It lets [`DirectReader::decode`] read a block held in a shared buffer the
+/// way it reads one through a file's `RandomAccessInput`; the reads and their
+/// end-of-input errors are those of `ByteBuffersDataInput`.
+struct SliceRandomAccess<'a>(&'a [u8]);
+
+impl SliceRandomAccess<'_> {
+    fn window(&self, pos: i64, len: usize) -> Result<&[u8]> {
+        let start = usize::try_from(pos).map_err(|_| {
+            LuceneError::IllegalArgument(format!("position must be non-negative (got: {pos})"))
+        })?;
+        self.0
+            .get(start..start.saturating_add(len))
+            .filter(|window| window.len() == len)
+            .ok_or_else(|| {
+                LuceneError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "read of {len} bytes at pos={pos} past EOF (length={})",
+                        self.0.len()
+                    ),
+                ))
+            })
+    }
+}
+
+/// The four positional reads [`DirectReader::decode`] needs, which both a
+/// file's [`RandomAccessInput`] and an in-memory slice answer.
+trait PositionalRead {
+    fn read_byte_at(&mut self, pos: i64) -> Result<u8>;
+    fn read_short_at(&mut self, pos: i64) -> Result<i16>;
+    fn read_int_at(&mut self, pos: i64) -> Result<i32>;
+    fn read_long_at(&mut self, pos: i64) -> Result<i64>;
+}
+
+impl PositionalRead for dyn RandomAccessInput + '_ {
+    fn read_byte_at(&mut self, pos: i64) -> Result<u8> {
+        RandomAccessInput::read_byte_at(self, pos)
+    }
+
+    fn read_short_at(&mut self, pos: i64) -> Result<i16> {
+        RandomAccessInput::read_short_at(self, pos)
+    }
+
+    fn read_int_at(&mut self, pos: i64) -> Result<i32> {
+        RandomAccessInput::read_int_at(self, pos)
+    }
+
+    fn read_long_at(&mut self, pos: i64) -> Result<i64> {
+        RandomAccessInput::read_long_at(self, pos)
+    }
+}
+
+impl PositionalRead for SliceRandomAccess<'_> {
+    fn read_byte_at(&mut self, pos: i64) -> Result<u8> {
+        Ok(self.window(pos, 1)?[0])
+    }
+
+    fn read_short_at(&mut self, pos: i64) -> Result<i16> {
+        let w = self.window(pos, 2)?;
+        Ok(i16::from_le_bytes([w[0], w[1]]))
+    }
+
+    fn read_int_at(&mut self, pos: i64) -> Result<i32> {
+        let w = self.window(pos, 4)?;
+        Ok(i32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+    }
+
+    fn read_long_at(&mut self, pos: i64) -> Result<i64> {
+        let w = self.window(pos, 8)?;
+        let mut le = [0u8; 8];
+        le.copy_from_slice(w);
+        Ok(i64::from_le_bytes(le))
+    }
+}
+
+/// A [`DirectMonotonicReader`] over a shared, immutable copy of its data, which
+/// can be read from any thread and handed to any number of owners.
+///
+/// Equivalent to the `LongValues` that
+/// `DirectMonotonicReader.getInstance(Meta, RandomAccessInput)` returns, as the
+/// off-heap vector values build it once in their constructor
+/// (`OffHeapFloatVectorValues.java:225`) and query it on every `ordToDoc`.
+///
+/// [`DirectMonotonicReader`] reads through an `Rc<RefCell<..>>` input, so it is
+/// neither `Send` nor `Sync` and cannot live in a vector values object, which
+/// must be both. This type holds the block metadata and an `Arc<[u8]>` of the
+/// encoded blocks instead, and decodes each value with the same arithmetic.
+#[derive(Debug)]
+pub struct SharedDirectMonotonicReader {
+    block_shift: i32,
+    block_mask: i64,
+    mins: Vec<i64>,
+    avgs: Vec<f32>,
+    offsets: Vec<i64>,
+    bpvs: Vec<i8>,
+    data: Arc<[u8]>,
+}
+
+impl SharedDirectMonotonicReader {
+    /// Builds the reader over `data`, the encoded blocks `meta` describes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when a block's width is not one
+    /// `DirectWriter` can produce, as [`DirectMonotonicReader`] does.
+    pub fn new(meta: DirectMonotonicMeta, data: Arc<[u8]>) -> Result<Self> {
+        count_monotonic_reader_construction();
+        for &bpv in &meta.bpvs {
+            if bpv != 0 {
+                DirectWriter::check_bits_per_value(i32::from(bpv))?;
+            }
+        }
+        let block_mask = ((1u64 << (meta.block_shift as u32)) - 1) as i64;
+        Ok(Self {
+            block_shift: meta.block_shift,
+            block_mask,
+            mins: meta.mins,
+            avgs: meta.avgs,
+            offsets: meta.offsets,
+            bpvs: meta.bpvs,
+            data,
+        })
+    }
+
+    /// Returns the value at `index`.
+    ///
+    /// Equivalent to `DirectMonotonicReader.get(long)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`DirectMonotonicReader::get_checked`].
+    pub fn get_checked(&self, index: i64) -> Result<i64> {
+        if index < 0 {
+            return Err(LuceneError::CorruptIndex(format!(
+                "negative index {index} into a monotonic block"
+            )));
+        }
+        let block = (index >> self.block_shift) as usize;
+        if block >= self.bpvs.len() {
+            return Err(LuceneError::CorruptIndex(format!(
+                "index {index} falls in block {block} of {}",
+                self.bpvs.len()
+            )));
+        }
+        let block_index = index & self.block_mask;
+        let delta = if self.bpvs[block] == 0 {
+            0
+        } else {
+            DirectReader::decode(
+                &mut SliceRandomAccess(&self.data),
+                i32::from(self.bpvs[block]),
+                self.offsets[block],
+                block_index,
+            )?
+        };
+        Ok(self.mins[block]
+            .wrapping_add((self.avgs[block] * block_index as f32) as i64)
+            .wrapping_add(delta))
+    }
+}
+
+impl LongValues for SharedDirectMonotonicReader {
+    fn get(&self, index: i64) -> i64 {
+        self.get_checked(index)
+            .expect("INVARIANT: index is within the encoded range")
+    }
+}
+
+thread_local! {
+    /// How many monotonic readers this thread has built.
+    static MONOTONIC_READER_CONSTRUCTIONS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Returns how many [`DirectMonotonicReader`]s and
+/// [`SharedDirectMonotonicReader`]s the calling thread has built so far.
+///
+/// Instrumentation with no Lucene counterpart and no effect on behaviour: it
+/// lets a test check, deterministically, that a search builds a constant
+/// number of ordinal-to-document readers rather than one per lookup, as
+/// Lucene builds them once per values object. The count is per thread, so
+/// tests running in parallel do not disturb each other.
+#[doc(hidden)]
+pub fn monotonic_reader_constructions() -> u64 {
+    MONOTONIC_READER_CONSTRUCTIONS.with(Cell::get)
+}
+
+fn count_monotonic_reader_construction() {
+    MONOTONIC_READER_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
+}
+
 pub struct DirectMonotonicReader {
     block_shift: i32,
     block_mask: i64,
@@ -1344,6 +1552,7 @@ impl DirectMonotonicReader {
         input: Rc<RefCell<Box<dyn RandomAccessInput>>>,
         merging: bool,
     ) -> Result<Self> {
+        count_monotonic_reader_construction();
         let mut readers = Vec::with_capacity(meta.num_blocks);
         for i in 0..meta.num_blocks {
             if meta.bpvs[i] == 0 {
@@ -2023,6 +2232,85 @@ mod tests {
                         "monotonic mismatch for block_shift={block_shift}, count={count}, index={i}"
                     );
                 }
+            }
+        }
+    }
+
+    /// Writes `values` with `DirectMonotonicWriter` and returns the metadata
+    /// and the encoded blocks.
+    fn write_monotonic(values: &[i64], block_shift: i32) -> (DirectMonotonicMeta, Vec<u8>) {
+        let mut meta_out =
+            ByteBuffersIndexOutput::new(crate::store::ByteBuffersDataOutput::new(), "meta", "meta");
+        let mut data_out =
+            ByteBuffersIndexOutput::new(crate::store::ByteBuffersDataOutput::new(), "data", "data");
+        {
+            let mut writer = DirectMonotonicWriter::new(
+                &mut meta_out,
+                &mut data_out,
+                values.len() as i64,
+                block_shift,
+            )
+            .unwrap();
+            for &v in values {
+                writer.add(v).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        let meta_bytes = meta_out.to_array_copy().unwrap();
+        let mut meta_input = ByteArrayDataInput::new(&meta_bytes);
+        let meta =
+            DirectMonotonicMeta::load(&mut meta_input, values.len() as i64, block_shift).unwrap();
+        (meta, data_out.to_array_copy().unwrap())
+    }
+
+    /// `SharedDirectMonotonicReader` answers every index exactly as
+    /// `DirectMonotonicReader` does over the same encoding: at every width
+    /// `DirectWriter` supports, for an all-zero field (`SINGLE_ZERO_BLOCK`), a
+    /// constant one, and random monotonic fields over several block sizes.
+    #[test]
+    fn shared_direct_monotonic_reader_matches_direct_monotonic_reader() {
+        let compare = |values: &[i64], block_shift: i32, widths: &mut BTreeSet<i8>| {
+            let (meta, data) = write_monotonic(values, block_shift);
+            widths.extend(meta.bpvs.iter().copied());
+            let reference = DirectMonotonicReader::new(meta.clone(), data.clone()).unwrap();
+            let shared = SharedDirectMonotonicReader::new(meta, Arc::from(data)).unwrap();
+            for i in 0..values.len() as i64 {
+                assert_eq!(
+                    shared.get_checked(i).unwrap(),
+                    reference.get(i),
+                    "index {i}"
+                );
+                assert_eq!(shared.get(i), values[i as usize], "index {i}");
+            }
+        };
+        use std::collections::BTreeSet;
+        let mut widths = BTreeSet::new();
+        // Two blocks of 16 values; inside each block the first value is the
+        // block's base and the other fifteen sit `m` above it, which leaves
+        // residuals spanning about `m` around the block's linear fit.
+        for bits in 1..=61u32 {
+            let m = (1i64 << bits) - 1;
+            let values: Vec<i64> = (0..32i64)
+                .map(|i| (i / 16) * (m + 1) + if i % 16 == 0 { 0 } else { m })
+                .collect();
+            compare(&values, 4, &mut widths);
+        }
+        let supported: BTreeSet<i8> = [1i8, 2, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            widths, supported,
+            "every width DirectWriter supports was encoded"
+        );
+
+        let mut zero_widths = BTreeSet::new();
+        compare(&[0i64; 100], 4, &mut zero_widths);
+        compare(&[42i64; 100], 4, &mut zero_widths);
+        assert_eq!(zero_widths, BTreeSet::from([0i8]), "zero-width blocks");
+        for &block_shift in &[2i32, 6, 10] {
+            for &count in &[1usize, 100, 3000] {
+                let values = monotonic_values(count, block_shift as u64 * 31 + count as u64);
+                compare(&values, block_shift, &mut widths);
             }
         }
     }

@@ -32,6 +32,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::leaf_reader::LeafReader;
 use crate::index::VectorEncoding;
 use crate::search::{DocIdSetIterator, VectorScorer, NO_MORE_DOCS};
+use crate::util::hnsw::scorer::BorrowedBits;
 use crate::util::Bits;
 
 // -----------------------------------------------------------------------------
@@ -300,6 +301,30 @@ pub trait KnnVectorValues: Send + Sync {
         ord
     }
 
+    /// Returns a [`Bits`] accepting the ordinals whose documents
+    /// `accept_docs` accepts, or `None` when `accept_docs` is `None`.
+    ///
+    /// Equivalent to `KnnVectorValues.getAcceptOrds(Bits)`
+    /// (`KnnVectorValues.java:75-91`), whose view reads
+    /// `acceptDocs.get(ordToDoc(ord))`, and to its overrides: a dense values
+    /// class answers `acceptDocs` itself and an empty one `null`
+    /// (`OffHeapFloatVectorValues.java:169, 254, 336`).
+    ///
+    /// The returned view borrows only `accept_docs`, never `self`, so that a
+    /// scorer can keep scoring through the values while the view is alive; a
+    /// sparse implementation hands the view a shared handle on its
+    /// ordinal-to-document mapping.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's default captures `this` and
+    /// so is right for any `ordToDoc`. A Rust default cannot capture `&self`
+    /// in a view that outlives the call, so the default returns `accept_docs`
+    /// unchanged, which is Java's answer whenever `ord_to_doc` is the identity
+    /// (the default); every implementation in this crate whose `ord_to_doc` is
+    /// not the identity overrides this method.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        accept_docs.map(|bits| Box::new(BorrowedBits::new(bits)) as Box<dyn Bits + 'a>)
+    }
+
     /// Hints that the vectors for the first `num_ords` entries of
     /// `ords_to_prefetch` are about to be read.
     ///
@@ -480,6 +505,75 @@ pub fn accept_ords<'a>(
     accept_docs.map(|accept_docs| {
         Box::new(AcceptOrds {
             values,
+            accept_docs,
+        }) as Box<dyn Bits + 'a>
+    })
+}
+
+/// [`Bits`] view mapping a vector ordinal onto the acceptance of its document,
+/// through an ordinal-to-document mapping the view owns.
+///
+/// Equivalent to the anonymous `Bits` returned by
+/// `KnnVectorValues.getAcceptOrds(Bits)` (`KnnVectorValues.java:75-91`) when it
+/// is reached through `RandomVectorScorer.AbstractRandomVectorScorer` or
+/// `UpdateableRandomVectorScorer.AbstractUpdateableRandomVectorScorer`, whose
+/// `getAcceptOrds` is `values.getAcceptOrds(acceptDocs)`.
+///
+/// [`AcceptOrds`] borrows the values it maps through. A scorer cannot lend its
+/// own values that way, because the search scores through `&mut scorer` while
+/// the view is alive, so this view owns its mapping instead: in practice a
+/// shared handle on the field's ordinal-to-document reader or array, which
+/// [`KnnVectorValues::get_accept_ords`] hands it. The view stays lazy: no
+/// ordinal is mapped until it is queried, and building it costs nothing
+/// proportional to the field.
+pub struct OrdToDocAcceptOrds<'a, F> {
+    size: i32,
+    ord_to_doc: F,
+    accept_docs: &'a dyn Bits,
+}
+
+impl<F> fmt::Debug for OrdToDocAcceptOrds<'_, F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OrdToDocAcceptOrds")
+            .field("length", &self.size)
+            .field("accept_docs", &self.accept_docs)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<F> Bits for OrdToDocAcceptOrds<'_, F>
+where
+    F: Fn(i32) -> i32 + Send + Sync,
+{
+    fn get(&self, index: usize) -> bool {
+        self.accept_docs
+            .get((self.ord_to_doc)(index as i32) as usize)
+    }
+
+    fn length(&self) -> usize {
+        self.size as usize
+    }
+}
+
+/// Returns a [`Bits`] accepting the ordinals whose documents `accept_docs`
+/// accepts, mapping each ordinal with `ord_to_doc`, or `None` when
+/// `accept_docs` is `None`.
+///
+/// Equivalent to `KnnVectorValues.getAcceptOrds(Bits)` for a values object of
+/// `size` vectors whose `ordToDoc` is `ord_to_doc`. See
+/// [`OrdToDocAcceptOrds`] for why the mapping is owned.
+pub fn accept_ords_with<'a, F>(
+    size: i32,
+    ord_to_doc: F,
+    accept_docs: Option<&'a dyn Bits>,
+) -> Option<Box<dyn Bits + 'a>>
+where
+    F: Fn(i32) -> i32 + Send + Sync + 'a,
+{
+    accept_docs.map(|accept_docs| {
+        Box::new(OrdToDocAcceptOrds {
+            size,
+            ord_to_doc,
             accept_docs,
         }) as Box<dyn Bits + 'a>
     })

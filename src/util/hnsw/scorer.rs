@@ -68,30 +68,24 @@ pub trait RandomVectorScorer {
         ord
     }
 
-    /// Returns the [`Bits`] representing the live ordinals.
+    /// Returns the [`Bits`] representing the accepted ordinals, given the
+    /// accepted documents.
     ///
-    /// This is the identity: the accept docs are returned unchanged.
+    /// Equivalent to `org.apache.lucene.util.hnsw.RandomVectorScorer#getAcceptOrds`
+    /// (`RandomVectorScorer.java:77-79`), whose default returns its argument:
+    /// the default here is that identity. Every scorer built over a field's
+    /// vector values — Java's `RandomVectorScorer.AbstractRandomVectorScorer`
+    /// and `UpdateableRandomVectorScorer.AbstractUpdateableRandomVectorScorer`
+    /// (`RandomVectorScorer.java:104-107`, `UpdateableRandomVectorScorer.java:63-66`)
+    /// — overrides it with `values.getAcceptOrds(acceptDocs)`, which asks
+    /// whether the *document* `ordToDoc(ord)` is accepted:
+    /// [`KnnVectorValues::get_accept_ords`](crate::index::KnnVectorValues::get_accept_ords)
+    /// here. That view borrows only `accept_docs`, never the values, so the
+    /// caller keeps scoring through `&mut self` while it is alive.
     ///
-    /// Equivalent to `org.apache.lucene.util.hnsw.RandomVectorScorer#getAcceptOrds`,
-    /// whose default implementation returns its argument.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java returns the very `Bits` it was
-    /// given, so the result is boxed here and the default wraps the argument in
-    /// [`BorrowedBits`], which forwards every query to it unchanged. Ownership
-    /// of the underlying bits stays with the caller.
-    ///
-    /// Java's `RandomVectorScorer.AbstractRandomVectorScorer` overrides this to
-    /// return the lazily mapped view `KnnVectorValues.getAcceptOrds(Bits)`
-    /// builds, which reads `acceptDocs.get(ordToDoc(ord))`. No implementation
-    /// in this crate can override it that way: such a view has to read the
-    /// scorer's own vector values, and the caller scores through `&mut` while
-    /// the view is alive, which Rust forbids. The receiver is therefore `&self`
-    /// with the result borrowing only `accept_docs`, and acceptance is asked of
-    /// the ordinal rather than of the document it maps to. The two agree
-    /// whenever every document of the field has a vector, which is the dense
-    /// case `ordToDoc` answers with the identity; they disagree for a sparse
-    /// field, so this is a divergence and not merely a different shape. See rmp
-    /// task #205.
+    /// Java returns the very `Bits` it was given by default; the result is
+    /// boxed here, so the default wraps the argument in [`BorrowedBits`], which
+    /// forwards every query to it unchanged.
     fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
         accept_docs.map(|bits| Box::new(BorrowedBits(bits)) as Box<dyn Bits + 'a>)
     }

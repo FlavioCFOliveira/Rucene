@@ -14,6 +14,7 @@ use crate::util::hnsw::scorer::{
     java_math_max, RandomVectorScorer, RandomVectorScorerSupplier, UpdateableRandomVectorScorer,
 };
 use crate::util::hnsw::{HasKnnVectorValues, HnswGraph};
+use crate::util::quantization::LegacyQuantizedByteVectorValues;
 use crate::util::Bits;
 
 /// A reader that can hand out the HNSW graph it stores for a field.
@@ -56,6 +57,10 @@ impl KnnVectorValues for SharedFloatVectorValues {
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.inner.ord_to_doc(ord)
+    }
+
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.inner.get_accept_ords(accept_docs)
     }
 
     fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
@@ -127,6 +132,10 @@ impl KnnVectorValues for SharedByteVectorValues {
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.inner.ord_to_doc(ord)
+    }
+
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.inner.get_accept_ords(accept_docs)
     }
 
     fn prefetch(&self, ords_to_prefetch: &[i32], num_ords: i32) -> Result<()> {
@@ -377,6 +386,42 @@ impl FlatVectorsScorer for PrefetchableFlatVectorScorer {
         Ok(Box::new(PrefetchableRandomVectorScorer::new(
             delegate, shared,
         )))
+    }
+
+    /// Equivalent to `getRandomVectorScorerSupplier` called with a
+    /// `LegacyQuantizedByteVectorValues`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java wraps whatever the delegate
+    /// returns in a `PrefetchableRandomVectorScorerSupplier` that prefetches
+    /// through the values (`PrefetchableFlatVectorScorer.java:53-59`). This
+    /// port's [`LegacyQuantizedByteVectorValues`] has no `prefetch`, which is a
+    /// no-op hint in `KnnVectorValues` and changes no score, so the delegate's
+    /// supplier is returned unwrapped. Lucene 10.5.0 constructs this scorer
+    /// only in its tests.
+    fn get_random_vector_scorer_supplier_legacy_quantized(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
+    ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        self.inner
+            .get_random_vector_scorer_supplier_legacy_quantized(similarity_function, vector_values)
+    }
+
+    /// Equivalent to `getRandomVectorScorer(…, float[])` called with a
+    /// `LegacyQuantizedByteVectorValues`; the delegate's scorer is returned
+    /// unwrapped, for the reason given on
+    /// [`get_random_vector_scorer_supplier_legacy_quantized`](Self::get_random_vector_scorer_supplier_legacy_quantized).
+    fn get_random_vector_scorer_legacy_quantized(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
+        target: &[f32],
+    ) -> Result<Box<dyn RandomVectorScorer>> {
+        self.inner.get_random_vector_scorer_legacy_quantized(
+            similarity_function,
+            vector_values,
+            target,
+        )
     }
 }
 

@@ -14,6 +14,7 @@ use crate::internal::vectorization::MemorySegmentBulkVectorOps;
 use crate::store::{IndexInput, MemorySegment, MemorySegmentAccessInput};
 use crate::util::hnsw::RandomVectorScorer;
 use crate::util::vector_util;
+use crate::util::Bits;
 
 /// `Math.max(float, float)` as specified by the JLS.
 ///
@@ -306,5 +307,12 @@ impl RandomVectorScorer for Lucene99MemorySegmentFloatVectorScorer {
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.values.ord_to_doc(ord)
+    }
+
+    /// Equivalent to the `getAcceptOrds` this scorer inherits from Java's
+    /// `AbstractRandomVectorScorer` / `AbstractUpdateableRandomVectorScorer`,
+    /// `values.getAcceptOrds(acceptDocs)`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
     }
 }

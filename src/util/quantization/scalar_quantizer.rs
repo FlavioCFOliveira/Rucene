@@ -68,7 +68,9 @@ impl ScalarQuantizer {
     /// Quantizes `src` into `dest`, returning the corrective offset the scorer
     /// needs, or `0` for Euclidean similarity which needs none.
     ///
-    /// Equivalent to `ScalarQuantizer.quantize`.
+    /// Equivalent to `ScalarQuantizer.quantize(float[], byte[],
+    /// VectorSimilarityFunction)` (`ScalarQuantizer.java:115-125`), which
+    /// delegates to `VectorUtil.minMaxScalarQuantize`.
     pub fn quantize(
         &self,
         src: &[f32],
@@ -82,37 +84,26 @@ impl ScalarQuantizer {
                 dest.len()
             )));
         }
-        let correction = self.min_max_scalar_quantize(src, dest);
+        let correction = vector_util::min_max_scalar_quantize(
+            src,
+            dest,
+            self.scale,
+            self.alpha,
+            self.min_quantile,
+            self.max_quantile,
+        )?;
         if similarity_function == VectorSimilarityFunction::EUCLIDEAN {
             return Ok(0.0);
         }
         Ok(correction)
     }
 
-    /// Clamps each component into the quantile range, rounds it onto the
-    /// integer grid, and accumulates the correction the dot-product scorers
-    /// apply.
-    ///
-    /// Equivalent to `VectorUtil.minMaxScalarQuantize`, which Lucene keeps in
-    /// `VectorUtil` so it can be vectorised; this port keeps it beside its only
-    /// caller until the crate has a vectorised counterpart.
-    fn min_max_scalar_quantize(&self, src: &[f32], dest: &mut [u8]) -> f32 {
-        let mut correction = 0.0f32;
-        for (i, &v) in src.iter().enumerate() {
-            let clamped = v.clamp(self.min_quantile, self.max_quantile);
-            let quantized = ((clamped - self.min_quantile) * self.scale + 0.5) as u8;
-            dest[i] = quantized;
-            // The residual is what rounding threw away; the scorer adds it back.
-            let dequantized = self.alpha * f32::from(quantized) + self.min_quantile;
-            correction += (v - dequantized) * dequantized;
-        }
-        correction
-    }
-
     /// Recomputes the corrective offset of an already quantized vector against
     /// a different quantizer.
     ///
-    /// Equivalent to `ScalarQuantizer.recalculateCorrectiveOffset`.
+    /// Equivalent to `ScalarQuantizer.recalculateCorrectiveOffset`
+    /// (`ScalarQuantizer.java:135-151`), which delegates to
+    /// `VectorUtil.recalculateOffset`.
     pub fn recalculate_corrective_offset(
         &self,
         quantized_vector: &[u8],
@@ -122,16 +113,15 @@ impl ScalarQuantizer {
         if similarity_function == VectorSimilarityFunction::EUCLIDEAN {
             return 0.0;
         }
-        let mut correction = 0.0f32;
-        for &q in quantized_vector {
-            // Undo the old quantizer, then measure what this one would lose.
-            let original = old_quantizer.alpha * f32::from(q) + old_quantizer.min_quantile;
-            let clamped = original.clamp(self.min_quantile, self.max_quantile);
-            let requantized = ((clamped - self.min_quantile) * self.scale + 0.5) as u8;
-            let dequantized = self.alpha * f32::from(requantized) + self.min_quantile;
-            correction += (original - dequantized) * dequantized;
-        }
-        correction
+        vector_util::recalculate_offset(
+            quantized_vector,
+            old_quantizer.alpha,
+            old_quantizer.min_quantile,
+            self.scale,
+            self.alpha,
+            self.min_quantile,
+            self.max_quantile,
+        )
     }
 
     /// Turns a quantized vector back into floats.

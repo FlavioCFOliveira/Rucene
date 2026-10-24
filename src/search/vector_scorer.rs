@@ -404,6 +404,81 @@ impl VectorScorerBulk for SparseRandomScorerBulk {
     }
 }
 
+/// The exact-search [`VectorScorer`] an off-heap vector values object returns
+/// from `scorer`: a [`RandomVectorScorer`] over a copy of the values, driven by
+/// the copy's own [`DocIndexIterator`].
+///
+/// Equivalent to the anonymous `VectorScorer` that each of
+/// `OffHeapFloatVectorValues`, `OffHeapByteVectorValues` (`lucene95`),
+/// `OffHeapScalarQuantizedVectorValues` and
+/// `OffHeapScalarQuantizedFloatVectorValues` (`lucene104`) builds in its dense
+/// and its sparse `scorer` override, e.g. `OffHeapFloatVectorValues.java:179-199`
+/// and `:277-297`. The eight bodies differ only in two places, which `dense`
+/// selects:
+///
+/// * `score()` scores the ordinal of the current document: the document id
+///   itself for a dense field and `iterator.index()` for a sparse one. (The
+///   dense `lucene104` bodies write `iterator.index()`, which the dense
+///   iterator answers with the document id, so they are the same call.)
+/// * `bulk` is `Bulk.fromRandomScorerDense` for a dense field and
+///   `Bulk.fromRandomScorerSparse` for a sparse one.
+pub(crate) struct OffHeapVectorScorer {
+    scorer: Box<dyn RandomVectorScorer>,
+    iterator: Box<dyn DocIndexIterator>,
+    dense: bool,
+}
+
+impl OffHeapVectorScorer {
+    /// Pairs `scorer` with `iterator`, both opened over the same copy of the
+    /// values; `dense` is whether every document of the field has a vector.
+    pub(crate) fn new(
+        scorer: Box<dyn RandomVectorScorer>,
+        iterator: Box<dyn DocIndexIterator>,
+        dense: bool,
+    ) -> Self {
+        Self {
+            scorer,
+            iterator,
+            dense,
+        }
+    }
+}
+
+impl VectorScorer for OffHeapVectorScorer {
+    fn score(&mut self) -> Result<f32> {
+        let ord = if self.dense {
+            self.iterator.doc_id()
+        } else {
+            self.iterator.index()
+        };
+        self.scorer.score(ord)
+    }
+
+    fn iterator(&mut self) -> &mut dyn DocIdSetIterator {
+        self.iterator.as_mut()
+    }
+
+    fn bulk(
+        self: Box<Self>,
+        matching_docs: Option<Box<dyn DocIdSetIterator>>,
+    ) -> Result<Box<dyn VectorScorerBulk>> {
+        let Self {
+            scorer,
+            iterator,
+            dense,
+        } = *self;
+        if dense {
+            bulk_from_random_scorer_dense(scorer, iterator, matching_docs)
+        } else {
+            bulk_from_random_scorer_sparse(scorer, iterator, matching_docs)
+        }
+    }
+
+    fn doc_index_iterator(&mut self) -> Option<&mut dyn DocIndexIterator> {
+        Some(self.iterator.as_mut())
+    }
+}
+
 /// `java.lang.Math.max(float, float)`, which propagates `NaN` where
 /// [`f32::max`] would discard it.
 fn java_max_f32(a: f32, b: f32) -> f32 {
