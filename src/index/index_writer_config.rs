@@ -800,8 +800,12 @@ impl IndexWriterConfig {
     /// Returns `LuceneError::IllegalArgument` if any sort field does not
     /// support index sorting.
     pub fn set_index_sort(&mut self, sort: Sort) -> Result<&mut Self> {
+        // `IndexWriterConfig.setIndexSort` (`IndexWriterConfig.java:475-485`)
+        // accepts exactly the sort fields that hand out an `IndexSorter`, which
+        // is what lets a `BinarySortField` — a `CUSTOM` sort with a sorter of
+        // its own — sort an index.
         for field in sort.fields() {
-            if !field.field_type().is_serializable() {
+            if field.get_index_sorter().is_none() {
                 return Err(LuceneError::IllegalArgument(format!(
                     "Cannot sort index with sort field {field}"
                 )));

@@ -37,6 +37,7 @@ use crate::index::doc_values::{
 use crate::index::doc_values_field_updates::DocValuesFieldUpdates;
 use crate::index::field_infos::{FieldInfo, FieldInfos, FieldNumbers};
 use crate::index::index_reader::IndexReader;
+use crate::index::index_sorter::SorterDocMap;
 use crate::index::leaf_reader::LeafReader;
 use crate::index::segment_info::SegmentCommitInfo;
 use crate::index::segment_reader::{SegmentReader, SharedBits};
@@ -46,6 +47,7 @@ use crate::search::DocIdSetIterator;
 use crate::store::{
     flush_io_context, Directory, FlushInfo, IOContext, DEFAULT_IO_CONTEXT, READONCE_IO_CONTEXT,
 };
+use crate::util::java_collections::JavaHashMap;
 use crate::util::{Accountable, Bits, BytesRef, FixedBitSet, InfoStream, NoOutputInfoStream};
 
 // ---------------------------------------------------------------------------
@@ -1189,9 +1191,20 @@ struct RauState {
     index_created_version_major: i32,
     reader: Option<Arc<SegmentReader>>,
     pending_deletes: PendingDeletesKind,
-    pending_dv_updates: HashMap<String, Vec<DocValuesFieldUpdates>>,
-    merging_dv_updates: HashMap<String, Vec<DocValuesFieldUpdates>>,
+    /// `pendingDVUpdates`, a `java.util.HashMap` (`ReadersAndUpdates.java:78`):
+    /// its iteration order is the order the update generations are written
+    /// in, so the map is the order-faithful [`JavaHashMap`].
+    pending_dv_updates: JavaHashMap<Vec<DocValuesFieldUpdates>>,
+    /// `mergingDVUpdates`, a `java.util.HashMap` (`ReadersAndUpdates.java:82`).
+    merging_dv_updates: JavaHashMap<Vec<DocValuesFieldUpdates>>,
     is_merging: bool,
+    /// The permutation the segment was sorted with when it was flushed, kept
+    /// while its segment-private updates are applied.
+    ///
+    /// Equivalent to the package-private `ReadersAndUpdates.sortMap` field
+    /// (`ReadersAndUpdates.java:86`), which `IndexWriter.publishFlushedSegment`
+    /// sets and `FrozenBufferedUpdates` reads.
+    sort_map: Option<Arc<SorterDocMap>>,
 }
 
 /// Holds open `SegmentReader` instances, pending deletes, and doc-values
@@ -1252,9 +1265,10 @@ impl ReadersAndUpdates {
                 index_created_version_major,
                 reader: None,
                 pending_deletes,
-                pending_dv_updates: HashMap::new(),
-                merging_dv_updates: HashMap::new(),
+                pending_dv_updates: JavaHashMap::new(),
+                merging_dv_updates: JavaHashMap::new(),
                 is_merging: false,
+                sort_map: None,
             }),
         }
     }
@@ -1278,9 +1292,10 @@ impl ReadersAndUpdates {
                 index_created_version_major,
                 reader: None,
                 pending_deletes,
-                pending_dv_updates: HashMap::new(),
-                merging_dv_updates: HashMap::new(),
+                pending_dv_updates: JavaHashMap::new(),
+                merging_dv_updates: JavaHashMap::new(),
                 is_merging: false,
+                sort_map: None,
             }),
         }
     }
@@ -1295,6 +1310,45 @@ impl ReadersAndUpdates {
     pub fn dec_ref(&self) {
         let rc = self.ref_count.fetch_sub(1, Ordering::SeqCst);
         assert!(rc >= 0, "seg: decRef below zero");
+    }
+
+    /// Records the permutation the segment was sorted with on flush.
+    ///
+    /// Equivalent to `IndexWriter.publishFlushedSegment`'s assignment
+    /// `rld.sortMap = sortMap`.
+    pub fn set_sort_map(&self, sort_map: Arc<SorterDocMap>) {
+        self.state.lock().expect("state mutex poisoned").sort_map = Some(sort_map);
+    }
+
+    /// Returns the permutation the segment was sorted with on flush, when one
+    /// was recorded.
+    ///
+    /// Equivalent to reading `ReadersAndUpdates.sortMap`.
+    pub fn sort_map(&self) -> Option<Arc<SorterDocMap>> {
+        self.state
+            .lock()
+            .expect("state mutex poisoned")
+            .sort_map
+            .clone()
+    }
+
+    /// For each pending update of `field`, whether it is the
+    /// [`SingleValueNumericDocValuesFieldUpdates`](crate::index::doc_values_field_updates::SingleValueNumericDocValuesFieldUpdates)
+    /// form; lets the writer's tests see which form `FrozenBufferedUpdates`
+    /// resolved an update to, which no file shows.
+    #[cfg(test)]
+    pub(crate) fn pending_dv_updates_single_valued(&self, field: &str) -> Vec<bool> {
+        let state = self.state.lock().expect("state mutex poisoned");
+        state
+            .pending_dv_updates
+            .get(field)
+            .map(|updates| {
+                updates
+                    .iter()
+                    .map(|update| update.as_single_value_numeric().is_some())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Returns the current reference count.
@@ -1493,7 +1547,9 @@ impl ReadersAndUpdates {
 
         {
             let segment_name = state.info.info.name.clone();
-            let updates = state.pending_dv_updates.entry(field.clone()).or_default();
+            // `pendingDVUpdates.computeIfAbsent(update.field, key -> new
+            // ArrayList<>())` (`ReadersAndUpdates.java:150-151`).
+            let updates = state.pending_dv_updates.compute_if_absent(&field, Vec::new);
             Self::assert_no_dup_gen(updates, &update, &segment_name)?;
             updates.push(update);
         }
@@ -1505,10 +1561,14 @@ impl ReadersAndUpdates {
                 .and_then(|v| v.last())
                 .expect("just pushed")
                 .clone_for_merge();
+            // `mergingDVUpdates.get` then `put` (`ReadersAndUpdates.java:159-164`).
+            if state.merging_dv_updates.get(&field).is_none() {
+                state.merging_dv_updates.insert(field.clone(), Vec::new());
+            }
             state
                 .merging_dv_updates
-                .entry(field)
-                .or_default()
+                .get_mut(&field)
+                .expect("INVARIANT: the field was just mapped")
                 .push(clone);
         }
         Ok(())
@@ -1547,7 +1607,7 @@ impl ReadersAndUpdates {
     }
 
     /// Returns the merging DV updates and clears the merging flag.
-    pub fn get_merging_dv_updates(&self) -> HashMap<String, Vec<DocValuesFieldUpdates>> {
+    pub fn get_merging_dv_updates(&self) -> JavaHashMap<Vec<DocValuesFieldUpdates>> {
         let mut state = self.state.lock().expect("state mutex poisoned");
         state.is_merging = false;
         std::mem::take(&mut state.merging_dv_updates)
@@ -1679,14 +1739,8 @@ impl ReadersAndUpdates {
             .into_iter()
             .collect::<HashSet<_>>();
 
-        let result = self.handle_dv_updates(
-            &mut state,
-            dir,
-            field_numbers,
-            max_del_gen,
-            info_stream,
-            &before,
-        );
+        let result =
+            self.handle_dv_updates(&mut state, dir, field_numbers, max_del_gen, info_stream);
 
         if result.is_err() {
             state.info.advance_next_write_field_infos_gen();
@@ -1709,7 +1763,6 @@ impl ReadersAndUpdates {
         field_numbers: &FieldNumbers,
         max_del_gen: i64,
         info_stream: &dyn InfoStream,
-        before: &HashSet<String>,
     ) -> Result<bool> {
         let codec = state
             .info
@@ -1785,7 +1838,7 @@ impl ReadersAndUpdates {
 
         let fields_data: Vec<FieldUpdateData> = {
             let mut result = Vec::new();
-            for (field, updates) in &state.pending_dv_updates {
+            for (field, updates) in state.pending_dv_updates.iter() {
                 let dv_type = updates[0].dv_type;
                 assert!(
                     dv_type == DocValuesType::NUMERIC || dv_type == DocValuesType::BINARY,
@@ -1852,7 +1905,19 @@ impl ReadersAndUpdates {
 
         // Phase 2: Write each field's DV updates.  `state.info` can be mutated
         // freely because `fields_data` is owned locally.
+        //
+        // Java sets `fieldInfo.setDocValuesGen(nextDocValuesGen)` on the very
+        // `FieldInfo` the segment's new `FieldInfos` holds
+        // (`ReadersAndUpdates.java:326-328`), so the field-infos generation
+        // written afterwards records each updated field's doc-values
+        // generation. The port's `FieldInfos` is immutable once built, so the
+        // generations are collected here and applied before it is written.
+        let mut written_dv_gens: HashMap<String, i64> = HashMap::new();
         for fd in &fields_data {
+            // `new TrackingDirectoryWrapper(dir)` per field: only the files
+            // this field's consumer creates belong to its generation.
+            let before_field: HashSet<String> =
+                dir.list_all().unwrap_or_default().into_iter().collect();
             let next_dv_gen = state.info.get_next_doc_values_gen();
             let segment_suffix = radix36(next_dv_gen as u64);
             let flush_context =
@@ -1900,21 +1965,40 @@ impl ReadersAndUpdates {
             }
 
             state.info.advance_doc_values_gen();
+            written_dv_gens.insert(fd.field.clone(), next_dv_gen);
 
             // Track files created for this field.
             let after = dir.list_all().unwrap_or_default();
-            let created: HashSet<String> =
-                after.into_iter().filter(|f| !before.contains(f)).collect();
+            let created: HashSet<String> = after
+                .into_iter()
+                .filter(|f| !before_field.contains(f))
+                .collect();
             new_dv_files.insert(field_number, created);
         }
+        let field_infos = if written_dv_gens.is_empty() {
+            field_infos
+        } else {
+            let mut updated = Vec::with_capacity(field_infos.len());
+            for fi in field_infos.iter() {
+                let mut fi = Self::clone_field_info(fi, fi.get_field_number());
+                if let Some(gen) = written_dv_gens.get(&fi.name) {
+                    fi.set_doc_values_gen(*gen);
+                }
+                updated.push(fi);
+            }
+            FieldInfos::new(updated)?
+        };
 
-        // Write the FieldInfos generation file.
+        // Write the FieldInfos generation file; only the files that write
+        // creates are the field-infos files (`ReadersAndUpdates.java:608-612`).
+        let before_infos: HashSet<String> =
+            dir.list_all().unwrap_or_default().into_iter().collect();
         let fi_files = Self::write_field_infos_gen(
             &mut *state,
             &field_infos,
             dir,
             codec.field_infos_format(),
-            &before,
+            &before_infos,
         )?;
         state.info.set_field_infos_files(fi_files);
 
@@ -2244,11 +2328,15 @@ impl ReadersAndUpdates {
                 )
             })
             .collect();
+        // `mergingDVUpdates.get` then `put` (`ReadersAndUpdates.java:846-852`).
         for (field, updates) in pending {
+            if state.merging_dv_updates.get(&field).is_none() {
+                state.merging_dv_updates.insert(field.clone(), Vec::new());
+            }
             state
                 .merging_dv_updates
-                .entry(field)
-                .or_default()
+                .get_mut(&field)
+                .expect("INVARIANT: the field was just mapped")
                 .extend(updates);
         }
 
@@ -2413,12 +2501,25 @@ impl<'a> DocValuesProducer for MergedDvProducer<'a> {
 }
 
 /// Merged numeric doc values: on-disk values overlaid with in-memory updates.
+///
+/// `next_doc` is the merge sort of `ReadersAndUpdates.MergedDocValues.nextDoc()`
+/// (`ReadersAndUpdates.java:512-540`): the next document is the smaller of the
+/// on-disk cursor and the update cursor; an update wins on a tie, and a
+/// document whose update clears the value is skipped — so a document that only
+/// an update gives a value to is visited, and a reset document is not.
 struct MergedNumericDocValues {
     on_disk: Option<Box<dyn NumericDocValues>>,
     updates: HashMap<i32, Option<i64>>,
     doc_id: i32,
     current_long: i64,
     has_current: bool,
+    /// The on-disk cursor's document, `docIDOnDisk`.
+    doc_on_disk: i32,
+    /// The updated documents, in increasing order, and the update cursor.
+    update_docs: Vec<i32>,
+    update_pos: usize,
+    /// The update cursor's document, `updateDocID`.
+    update_doc: i32,
 }
 
 impl MergedNumericDocValues {
@@ -2426,12 +2527,18 @@ impl MergedNumericDocValues {
         on_disk: Option<Box<dyn NumericDocValues>>,
         updates: &HashMap<i32, Option<i64>>,
     ) -> Self {
+        let mut update_docs: Vec<i32> = updates.keys().copied().collect();
+        update_docs.sort_unstable();
         Self {
             on_disk,
             updates: updates.clone(),
             doc_id: -1,
             current_long: 0,
             has_current: false,
+            doc_on_disk: -1,
+            update_docs,
+            update_pos: 0,
+            update_doc: -1,
         }
     }
 }
@@ -2442,69 +2549,57 @@ impl DocIdSetIterator for MergedNumericDocValues {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        // Advance the on-disk iterator, then check for updates.
-        let on_disk_doc = if let Some(ref mut ndv) = self.on_disk {
-            ndv.next_doc()?
-        } else {
-            NO_MORE_DOCS
-        };
-
-        if on_disk_doc == NO_MORE_DOCS {
-            self.doc_id = NO_MORE_DOCS;
-            self.has_current = false;
-            return Ok(NO_MORE_DOCS);
-        }
-
-        self.doc_id = on_disk_doc;
-        if let Some(update) = self.updates.get(&on_disk_doc) {
-            match update {
-                Some(v) => {
-                    self.current_long = *v;
-                    self.has_current = true;
-                }
-                None => {
-                    self.has_current = false;
-                }
+        loop {
+            if self.doc_on_disk == self.doc_id {
+                self.doc_on_disk = match self.on_disk.as_mut() {
+                    Some(on_disk) => on_disk.next_doc()?,
+                    None => NO_MORE_DOCS,
+                };
             }
-        } else if let Some(ref ndv) = self.on_disk {
-            self.current_long = ndv.long_value()?;
-            self.has_current = true;
-        }
-        Ok(on_disk_doc)
-    }
-
-    fn advance(&mut self, target: i32) -> Result<i32> {
-        if let Some(ref mut ndv) = self.on_disk {
-            let doc = ndv.advance(target)?;
-            self.doc_id = doc;
-            if doc == NO_MORE_DOCS {
-                self.has_current = false;
-                return Ok(NO_MORE_DOCS);
+            if self.update_doc == self.doc_id {
+                self.update_doc = match self.update_docs.get(self.update_pos) {
+                    Some(&doc) => {
+                        self.update_pos += 1;
+                        doc
+                    }
+                    None => NO_MORE_DOCS,
+                };
             }
-            if let Some(update) = self.updates.get(&doc) {
-                match update {
-                    Some(v) => {
-                        self.current_long = *v;
-                        self.has_current = true;
-                    }
-                    None => {
-                        self.has_current = false;
-                    }
-                }
-            } else {
+            let has_value = if self.doc_on_disk < self.update_doc {
+                // No update to this document: the on-disk value stands.
+                self.doc_id = self.doc_on_disk;
                 self.current_long = self
                     .on_disk
                     .as_ref()
-                    .expect("on_disk exists")
+                    .expect("INVARIANT: an on-disk document has an on-disk iterator")
                     .long_value()?;
-                self.has_current = true;
+                true
+            } else {
+                self.doc_id = self.update_doc;
+                if self.doc_id == NO_MORE_DOCS {
+                    true
+                } else {
+                    match self.updates.get(&self.doc_id).copied().flatten() {
+                        Some(value) => {
+                            self.current_long = value;
+                            true
+                        }
+                        None => false,
+                    }
+                }
+            };
+            if has_value {
+                self.has_current = self.doc_id != NO_MORE_DOCS;
+                return Ok(self.doc_id);
             }
-            Ok(doc)
-        } else {
-            self.doc_id = NO_MORE_DOCS;
-            self.has_current = false;
-            Ok(NO_MORE_DOCS)
         }
+    }
+
+    /// `MergedDocValues.advance(int)` throws `UnsupportedOperationException`
+    /// (`ReadersAndUpdates.java:497-500`): the doc-values consumer only walks
+    /// the merged view with `nextDoc`.
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(String::new()))
     }
 
     fn cost(&self) -> i64 {
@@ -2513,13 +2608,10 @@ impl DocIdSetIterator for MergedNumericDocValues {
 }
 
 impl DocValuesIterator for MergedNumericDocValues {
-    fn advance_exact(&mut self, target: i32) -> Result<bool> {
-        let doc = self.advance(target)?;
-        if doc == target {
-            Ok(self.has_current)
-        } else {
-            Ok(false)
-        }
+    /// `MergedDocValues.advanceExact(int)` throws
+    /// `UnsupportedOperationException` (`ReadersAndUpdates.java:502-505`).
+    fn advance_exact(&mut self, _target: i32) -> Result<bool> {
+        Err(LuceneError::UnsupportedOperation(String::new()))
     }
 }
 
@@ -2531,12 +2623,18 @@ impl NumericDocValues for MergedNumericDocValues {
 }
 
 /// Merged binary doc values: on-disk values overlaid with in-memory updates.
+///
+/// `next_doc` is the same merge sort as [`MergedNumericDocValues`]'s.
 struct MergedBinaryDocValues {
     on_disk: Option<Box<dyn BinaryDocValues>>,
     updates: HashMap<i32, Option<BytesRef>>,
     doc_id: i32,
     current_binary: BytesRef,
     has_current: bool,
+    doc_on_disk: i32,
+    update_docs: Vec<i32>,
+    update_pos: usize,
+    update_doc: i32,
 }
 
 impl MergedBinaryDocValues {
@@ -2544,12 +2642,18 @@ impl MergedBinaryDocValues {
         on_disk: Option<Box<dyn BinaryDocValues>>,
         updates: &HashMap<i32, Option<BytesRef>>,
     ) -> Self {
+        let mut update_docs: Vec<i32> = updates.keys().copied().collect();
+        update_docs.sort_unstable();
         Self {
             on_disk,
             updates: updates.clone(),
             doc_id: -1,
             current_binary: BytesRef::default(),
             has_current: false,
+            doc_on_disk: -1,
+            update_docs,
+            update_pos: 0,
+            update_doc: -1,
         }
     }
 }
@@ -2559,69 +2663,59 @@ impl DocIdSetIterator for MergedBinaryDocValues {
         self.doc_id
     }
 
+    /// The merge sort of `ReadersAndUpdates.MergedDocValues.nextDoc()`; see
+    /// [`MergedNumericDocValues`].
     fn next_doc(&mut self) -> Result<i32> {
-        let on_disk_doc = if let Some(ref mut bdv) = self.on_disk {
-            bdv.next_doc()?
-        } else {
-            NO_MORE_DOCS
-        };
-
-        if on_disk_doc == NO_MORE_DOCS {
-            self.doc_id = NO_MORE_DOCS;
-            self.has_current = false;
-            return Ok(NO_MORE_DOCS);
-        }
-
-        self.doc_id = on_disk_doc;
-        if let Some(update) = self.updates.get(&on_disk_doc) {
-            match update {
-                Some(v) => {
-                    self.current_binary = v.clone();
-                    self.has_current = true;
-                }
-                None => {
-                    self.has_current = false;
-                }
+        loop {
+            if self.doc_on_disk == self.doc_id {
+                self.doc_on_disk = match self.on_disk.as_mut() {
+                    Some(on_disk) => on_disk.next_doc()?,
+                    None => NO_MORE_DOCS,
+                };
             }
-        } else if let Some(ref bdv) = self.on_disk {
-            self.current_binary = bdv.binary_value()?;
-            self.has_current = true;
-        }
-        Ok(on_disk_doc)
-    }
-
-    fn advance(&mut self, target: i32) -> Result<i32> {
-        if let Some(ref mut bdv) = self.on_disk {
-            let doc = bdv.advance(target)?;
-            self.doc_id = doc;
-            if doc == NO_MORE_DOCS {
-                self.has_current = false;
-                return Ok(NO_MORE_DOCS);
+            if self.update_doc == self.doc_id {
+                self.update_doc = match self.update_docs.get(self.update_pos) {
+                    Some(&doc) => {
+                        self.update_pos += 1;
+                        doc
+                    }
+                    None => NO_MORE_DOCS,
+                };
             }
-            if let Some(update) = self.updates.get(&doc) {
-                match update {
-                    Some(v) => {
-                        self.current_binary = v.clone();
-                        self.has_current = true;
-                    }
-                    None => {
-                        self.has_current = false;
-                    }
-                }
-            } else {
+            let has_value = if self.doc_on_disk < self.update_doc {
+                self.doc_id = self.doc_on_disk;
                 self.current_binary = self
                     .on_disk
                     .as_ref()
-                    .expect("on_disk exists")
+                    .expect("INVARIANT: an on-disk document has an on-disk iterator")
                     .binary_value()?;
-                self.has_current = true;
+                true
+            } else {
+                self.doc_id = self.update_doc;
+                if self.doc_id == NO_MORE_DOCS {
+                    true
+                } else {
+                    match self.updates.get(&self.doc_id).cloned().flatten() {
+                        Some(value) => {
+                            self.current_binary = value;
+                            true
+                        }
+                        None => false,
+                    }
+                }
+            };
+            if has_value {
+                self.has_current = self.doc_id != NO_MORE_DOCS;
+                return Ok(self.doc_id);
             }
-            Ok(doc)
-        } else {
-            self.doc_id = NO_MORE_DOCS;
-            self.has_current = false;
-            Ok(NO_MORE_DOCS)
         }
+    }
+
+    /// `MergedDocValues.advance(int)` throws `UnsupportedOperationException`
+    /// (`ReadersAndUpdates.java:497-500`): the doc-values consumer only walks
+    /// the merged view with `nextDoc`.
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(String::new()))
     }
 
     fn cost(&self) -> i64 {
@@ -2630,13 +2724,10 @@ impl DocIdSetIterator for MergedBinaryDocValues {
 }
 
 impl DocValuesIterator for MergedBinaryDocValues {
-    fn advance_exact(&mut self, target: i32) -> Result<bool> {
-        let doc = self.advance(target)?;
-        if doc == target {
-            Ok(self.has_current)
-        } else {
-            Ok(false)
-        }
+    /// `MergedDocValues.advanceExact(int)` throws
+    /// `UnsupportedOperationException` (`ReadersAndUpdates.java:502-505`).
+    fn advance_exact(&mut self, _target: i32) -> Result<bool> {
+        Err(LuceneError::UnsupportedOperation(String::new()))
     }
 }
 
@@ -2659,6 +2750,11 @@ pub struct ReaderPool {
     reader_map: Mutex<HashMap<String, Arc<ReadersAndUpdates>>>,
     directory: Arc<dyn Directory>,
     field_numbers: Arc<FieldNumbers>,
+    /// `completedDelGenSupplier`: the largest packet generation every packet
+    /// up to which has been resolved. Field updates are written only up to it
+    /// (`ReaderPool.java:214, 251, 268, 354`), so an update a still-running
+    /// packet resolved is not written ahead of an older one.
+    completed_del_gen_supplier: Arc<dyn Fn() -> i64 + Send + Sync>,
     info_stream: Arc<dyn InfoStream>,
     soft_deletes_field: Option<String>,
     pool_readers: AtomicBool,
@@ -2678,9 +2774,16 @@ impl std::fmt::Debug for ReaderPool {
 
 impl ReaderPool {
     /// Creates a new `ReaderPool`.
+    ///
+    /// Equivalent to `ReaderPool(Directory, Directory, SegmentInfos,
+    /// FieldInfos.FieldNumbers, LongSupplier, InfoStream, String,
+    /// StandardDirectoryReader)` for the arguments the port uses;
+    /// `completed_del_gen_supplier` is Java's `completedDelGenSupplier`, which
+    /// `IndexWriter` binds to `bufferedUpdatesStream::getCompletedDelGen`.
     pub fn new(
         directory: Arc<dyn Directory>,
         field_numbers: Arc<FieldNumbers>,
+        completed_del_gen_supplier: Arc<dyn Fn() -> i64 + Send + Sync>,
         info_stream: Arc<dyn InfoStream>,
         soft_deletes_field: Option<String>,
     ) -> Self {
@@ -2688,6 +2791,7 @@ impl ReaderPool {
             reader_map: Mutex::new(HashMap::new()),
             directory,
             field_numbers,
+            completed_del_gen_supplier,
             info_stream,
             soft_deletes_field,
             pool_readers: AtomicBool::new(false),
@@ -2856,28 +2960,29 @@ impl ReaderPool {
         // Java walks the pooled readers, writes each one's live docs and field
         // updates, and returns whether any of them changed
         // (`ReaderPool.java:345-370`). Reporting that boolean — rather than
-        // merely "the call succeeded" — is what stops
-        // `IndexWriter.writeReaderPool` from checkpointing, and therefore from
-        // burning a commit generation, when nothing was written.
-        //
-        // **Divergence from Lucene 10.5.0.** Java also folds
-        // `rld.writeFieldUpdates(...)` into the same loop and into the same
-        // boolean. This port leaves the doc-values updates to
-        // [`write_all_doc_values_updates`](Self::write_all_doc_values_updates),
-        // which `IndexWriter.writeReaderPool` already calls immediately after
-        // this method, so they are still written on exactly the same call; only
-        // the `changed` flag they contribute is not observed here.
+        // merely "the call succeeded" — is what makes
+        // `IndexWriter.writeReaderPool` checkpoint when, and only when,
+        // something was written, so that the new `.liv` and doc-values
+        // generations are the ones the next commit records.
         let map = self.reader_map.lock().expect("reader_map mutex poisoned");
         let mut at_least_one_change = false;
         for info in infos {
             if let Some(rld) = map.get(&info.info.name) {
-                if rld.write_live_docs(&*self.directory)? {
-                    // Must checkpoint because a new `_X_N.liv` was just
-                    // created; the caller does it, and deliberately not through
-                    // `IndexWriter.checkpoint`, because that would also
-                    // increment the `SegmentInfos` version, which was already
-                    // done when the deletes were applied. All that happened
-                    // here is that the state moved to disk.
+                let mut changed = rld.write_live_docs(&*self.directory)?;
+                changed |= rld.write_field_updates(
+                    &*self.directory,
+                    &self.field_numbers,
+                    (self.completed_del_gen_supplier)(),
+                    &*self.info_stream,
+                )?;
+                if changed {
+                    // Must checkpoint because new `_X_N.liv` and field-updates
+                    // files were just created; the caller does it, and
+                    // deliberately not through `IndexWriter.checkpoint`,
+                    // because that would also increment the `SegmentInfos`
+                    // version, which was already done when the deletes were
+                    // applied. All that happened here is that the state moved
+                    // to disk.
                     at_least_one_change = true;
                 }
             }
@@ -2911,17 +3016,21 @@ impl ReaderPool {
     /// Writes all pending doc-values updates for all pooled segments.
     ///
     /// Equivalent to `ReaderPool.writeAllDocValuesUpdates()`.
-    pub fn write_all_doc_values_updates(&self) -> Result<()> {
+    ///
+    /// Returns whether any file was written (`ReaderPool.java:240-254`), which
+    /// is what tells `IndexWriter.writeReaderPool` to checkpoint.
+    pub fn write_all_doc_values_updates(&self) -> Result<bool> {
         let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let mut any = false;
         for rld in map.values() {
-            rld.write_field_updates(
+            any |= rld.write_field_updates(
                 &*self.directory,
                 &self.field_numbers,
-                i64::MAX,
+                (self.completed_del_gen_supplier)(),
                 &*self.info_stream,
             )?;
         }
-        Ok(())
+        Ok(any)
     }
 
     /// Writes doc-values updates for all segments participating in a merge.
@@ -2942,7 +3051,7 @@ impl ReaderPool {
                 rld.write_field_updates(
                     &*self.directory,
                     &self.field_numbers,
-                    i64::MAX,
+                    (self.completed_del_gen_supplier)(),
                     &*self.info_stream,
                 )?;
             }
@@ -3109,6 +3218,7 @@ mod reader_pool_accounting_tests {
         ReaderPool::new(
             dir,
             Arc::new(FieldNumbers::new(None, None).unwrap()),
+            Arc::new(|| i64::MAX),
             Arc::new(NoOutputInfoStream),
             None,
         )
@@ -3147,6 +3257,50 @@ mod reader_pool_accounting_tests {
         let more_bytes = more.ram_bytes_used();
         rld_b.add_dv_update(more).unwrap();
         assert_eq!(pool.ram_bytes_used(), packet_bytes + more_bytes);
+    }
+
+    /// `ReaderPool.commit`, `writeAllDocValuesUpdates` and
+    /// `writeDocValuesUpdatesForMerge` write field updates only up to
+    /// `completedDelGenSupplier.getAsLong()` (`ReaderPool.java:251, 268, 354`):
+    /// an update resolved by a packet newer than the last completed one stays
+    /// buffered, so it is never written ahead of an older packet still being
+    /// resolved.
+    #[test]
+    fn reader_pool_writes_field_updates_only_up_to_the_completed_generation() {
+        let completed = Arc::new(std::sync::atomic::AtomicI64::new(4));
+        let supplier = {
+            let completed = Arc::clone(&completed);
+            Arc::new(move || completed.load(Ordering::Acquire))
+        };
+        let pool = ReaderPool::new(
+            Arc::new(RamDirectory::default()),
+            Arc::new(FieldNumbers::new(None, None).unwrap()),
+            supplier,
+            Arc::new(NoOutputInfoStream),
+            None,
+        );
+        let a = make_sci("_a", 8);
+        let rld = pool.get(&a, true, 10).unwrap().unwrap();
+        let mut updates = DocValuesFieldUpdates::new(8, 5, "f", DocValuesType::NUMERIC);
+        updates.add_long(3, 7);
+        updates.finish().unwrap();
+        rld.add_dv_update(updates).unwrap();
+
+        assert!(!pool.commit(std::slice::from_ref(&a)).unwrap());
+        assert!(!pool.write_all_doc_values_updates().unwrap());
+        pool.write_doc_values_updates_for_merge(std::slice::from_ref(&a))
+            .unwrap();
+        assert_eq!(
+            rld.get_num_dv_updates(),
+            1,
+            "generation 5 is not completed yet"
+        );
+
+        // Once generation 5 completes, the pool writes the update. The test
+        // segment has no files to read the old values from, so the write
+        // fails — which is how the test sees that it was attempted.
+        completed.store(5, Ordering::Release);
+        assert!(pool.commit(std::slice::from_ref(&a)).is_err());
     }
 }
 
@@ -3695,10 +3849,12 @@ mod tests {
         // On-disk: docs 0..4 with values 10, 20, 30, 40, 50.
         let on_disk = MockNumericDv::new(&[(0, 10), (1, 20), (2, 30), (3, 40), (4, 50)]);
 
-        // Updates: doc 1 → 99, doc 3 → None (cleared).
+        // Updates: doc 1 → 99, doc 3 → None (cleared), doc 6 → 7 (a document
+        // with no value on disk).
         let mut updates = HashMap::new();
         updates.insert(1, Some(99_i64));
         updates.insert(3, None);
+        updates.insert(6, Some(7_i64));
 
         let mut m = MergedNumericDocValues::new(Some(Box::new(on_disk)), &updates);
 
@@ -3714,16 +3870,15 @@ mod tests {
         assert_eq!(m.next_doc().unwrap(), 2);
         assert_eq!(m.long_value().unwrap(), 30);
 
-        // Doc 3: update is None → no value.
-        assert_eq!(m.next_doc().unwrap(), 3);
-        assert!(
-            !m.has_current,
-            "doc 3 has no value (cleared by None update)"
-        );
-
-        // Doc 4: no update → on-disk value 50.
+        // Doc 3 is cleared by its update, so `MergedDocValues.nextDoc()`
+        // (`ReadersAndUpdates.java:512-540`) skips it: doc 4 is next, with its
+        // on-disk value 50.
         assert_eq!(m.next_doc().unwrap(), 4);
         assert_eq!(m.long_value().unwrap(), 50);
+
+        // Doc 6 has no on-disk value; its update gives it one.
+        assert_eq!(m.next_doc().unwrap(), 6);
+        assert_eq!(m.long_value().unwrap(), 7);
 
         // No more docs.
         assert_eq!(m.next_doc().unwrap(), NO_MORE_DOCS);
@@ -3752,13 +3907,8 @@ mod tests {
         let val = m.binary_value().unwrap();
         assert_eq!(&val.bytes[val.offset..val.offset + val.length], b"updated");
 
-        // Doc 2: None update → no value.
-        assert_eq!(m.next_doc().unwrap(), 2);
-        assert!(
-            !m.has_current,
-            "doc 2 has no value (cleared by None update)"
-        );
-
+        // Doc 2 is cleared by its update, so it is skipped
+        // (`ReadersAndUpdates.java:512-540`), and no document is left.
         assert_eq!(m.next_doc().unwrap(), NO_MORE_DOCS);
     }
 
@@ -3795,6 +3945,38 @@ mod tests {
         assert_eq!(orig_it.long_value(), clone_it.long_value());
         assert_eq!(orig_it.next_doc().unwrap(), clone_it.next_doc().unwrap());
         assert_eq!(orig_it.long_value(), clone_it.long_value());
+    }
+
+    /// `MergedDocValues.advance` and `advanceExact` throw
+    /// `UnsupportedOperationException` (`ReadersAndUpdates.java:497-505`): the
+    /// doc-values consumer walks the merged view with `nextDoc` only.
+    #[test]
+    fn merged_doc_values_refuse_advance() {
+        let on_disk = MockNumericDv::new(&[(0, 10), (2, 30)]);
+        let mut updates = HashMap::new();
+        updates.insert(1, Some(5_i64));
+        let mut numeric = MergedNumericDocValues::new(Some(Box::new(on_disk)), &updates);
+        assert!(matches!(
+            numeric.advance(1),
+            Err(LuceneError::UnsupportedOperation(_))
+        ));
+        assert!(matches!(
+            numeric.advance_exact(1),
+            Err(LuceneError::UnsupportedOperation(_))
+        ));
+
+        let on_disk = MockBinaryDv::new(&[(0, b"alpha")]);
+        let mut updates = HashMap::new();
+        updates.insert(1, Some(BytesRef::new(b"beta".to_vec())));
+        let mut binary = MergedBinaryDocValues::new(Some(Box::new(on_disk)), &updates);
+        assert!(matches!(
+            binary.advance(0),
+            Err(LuceneError::UnsupportedOperation(_))
+        ));
+        assert!(matches!(
+            binary.advance_exact(0),
+            Err(LuceneError::UnsupportedOperation(_))
+        ));
     }
 
     #[test]

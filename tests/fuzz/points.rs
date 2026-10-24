@@ -326,7 +326,7 @@ fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &F
                 .add_packed_value(*doc, &BytesRef::new(value.clone()))
                 .expect("a well-formed value");
         }
-        field.flush(&mut writer).expect("flush");
+        field.flush(&mut writer, None).expect("flush");
     }
     writer.finish().expect("finish");
     writer.close().expect("close");

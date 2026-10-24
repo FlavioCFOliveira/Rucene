@@ -643,6 +643,10 @@ impl TermVectorsConsumerPerField {
 /// documentation for the specification this type implements.
 pub struct TermVectorsConsumer {
     codec: Arc<dyn Codec>,
+    /// The format `init_term_vectors_writer` writes through, when it is not
+    /// the codec's: Java's `SortingTermVectorsConsumer` overrides
+    /// `initTermVectorsWriter` to use its temporary format.
+    format: Option<Arc<dyn crate::codecs::term_vectors::TermVectorsFormat>>,
     directory: Arc<dyn Directory>,
     info: SegmentInfo,
     writer: Option<Box<dyn TermVectorsWriter>>,
@@ -702,6 +706,7 @@ impl TermVectorsConsumer {
     ) -> Self {
         Self {
             codec,
+            format: None,
             directory,
             info,
             writer: None,
@@ -715,6 +720,25 @@ impl TermVectorsConsumer {
             last_doc_id: 0,
             aborted: false,
         }
+    }
+
+    /// Creates a consumer that writes through `format` rather than the codec's
+    /// term-vectors format.
+    ///
+    /// This is how [`SortingTermVectorsConsumer`](crate::index::sorting_consumers::SortingTermVectorsConsumer)
+    /// reproduces its `initTermVectorsWriter` override
+    /// (`SortingTermVectorsConsumer.java:86-94`), which opens the writer of its
+    /// temporary format instead.
+    pub fn with_format(
+        codec: Arc<dyn Codec>,
+        format: Arc<dyn crate::codecs::term_vectors::TermVectorsFormat>,
+        directory: Arc<dyn Directory>,
+        info: SegmentInfo,
+        bytes_used: Arc<AtomicI64>,
+    ) -> Self {
+        let mut consumer = Self::new(codec, directory, info, bytes_used);
+        consumer.format = Some(format);
+        consumer
     }
 
     /// Returns `true` once the codec writer has been created.
@@ -900,11 +924,17 @@ impl TermVectorsConsumer {
                 self.field_bytes_used
                     .load(std::sync::atomic::Ordering::Acquire),
             ));
-            self.writer = Some(self.codec.term_vectors_format().vectors_writer(
-                self.directory.as_ref(),
-                &self.info,
-                context.as_ref(),
-            )?);
+            let writer = match &self.format {
+                Some(format) => {
+                    format.vectors_writer(self.directory.as_ref(), &self.info, context.as_ref())
+                }
+                None => self.codec.term_vectors_format().vectors_writer(
+                    self.directory.as_ref(),
+                    &self.info,
+                    context.as_ref(),
+                ),
+            }?;
+            self.writer = Some(writer);
             self.last_doc_id = 0;
         }
         Ok(())

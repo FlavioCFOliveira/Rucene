@@ -3,9 +3,14 @@
 
 #![deny(unsafe_code)]
 
+use std::cmp::Ordering;
 use std::fmt;
+use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
+use crate::index::index_sorter::{
+    BinaryComparator, BinaryDocValuesProvider, BinarySorter, IndexSorter,
+};
 use crate::index::{BinaryDocValues, DocValues, LeafReader};
 use crate::search::sort::{MissingValue, SortField, SortFieldKind, SortFieldType};
 use crate::store::{DataInput, DataOutput};
@@ -162,6 +167,33 @@ impl BinarySortField {
         DocValues::get_binary(reader, self.get_field().unwrap_or(""))
     }
 
+    /// Returns the [`IndexSorter`] that sorts a segment by this field.
+    ///
+    /// Equivalent to `BinarySortField.getIndexSorter()`
+    /// (`BinarySortField.java:178-182`): an `IndexSorter.BinarySorter` under
+    /// this sort field's provider name and reverse flag, comparing with
+    /// [`comparator`](Self::comparator) and reading
+    /// [`get_sort_key_doc_values`](Self::get_sort_key_doc_values).
+    pub fn get_index_sorter(&self) -> Arc<dyn IndexSorter> {
+        binary_index_sorter(
+            self.get_field().unwrap_or(""),
+            self.sort_field.reverse(),
+            self.sort_field.missing_value(),
+            self.provider_name(),
+        )
+    }
+
+    /// Returns the unsigned byte-order comparator that treats a missing value
+    /// (`None`) as smaller than any value, or larger when the missing value is
+    /// [`MissingValue::StringLast`].
+    ///
+    /// Equivalent to the private `BinarySortField.comparator()`
+    /// (`BinarySortField.java:163-176`); `BytesRef.compareTo` is the unsigned
+    /// lexicographic order Rust's slice ordering gives.
+    pub fn comparator(&self) -> BinaryComparator {
+        binary_comparator(self.sort_field.missing_value())
+    }
+
     /// Writes this sort field's payload, without the provider name.
     ///
     /// Equivalent to the private `BinarySortField.serialize(DataOutput)`.
@@ -197,6 +229,52 @@ impl BinarySortField {
         };
         Self::with_missing_value(&field, reverse, missing_value)
     }
+}
+
+/// The comparator of a binary sort whose missing value is `missing_value`.
+///
+/// Equivalent to the body of the private `BinarySortField.comparator()`.
+fn binary_comparator(missing_value: Option<MissingValue>) -> BinaryComparator {
+    let missing_last = missing_value == Some(MissingValue::StringLast);
+    Arc::new(move |a: Option<&[u8]>, b: Option<&[u8]>| match (a, b) {
+        (Some(a), Some(b)) => a.cmp(b),
+        (None, None) => Ordering::Equal,
+        (a, _) => {
+            let c = if a.is_none() {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
+            if missing_last {
+                c.reverse()
+            } else {
+                c
+            }
+        }
+    })
+}
+
+/// Builds the index sorter of a binary sort field.
+///
+/// Shared by [`BinarySortField::get_index_sorter`] and
+/// [`SortField::get_index_sorter`], which dispatches on the subclass identity a
+/// [`SortField`] carries; see [`SortFieldKind`].
+pub(crate) fn binary_index_sorter(
+    field: &str,
+    reverse: bool,
+    missing_value: Option<MissingValue>,
+    provider_name: &str,
+) -> Arc<dyn IndexSorter> {
+    let field = field.to_string();
+    // `this::getSortKeyDocValues`, whose default is `DocValues.getBinary`.
+    let values_provider: BinaryDocValuesProvider =
+        Arc::new(move |reader: &dyn LeafReader| DocValues::get_binary(reader, &field));
+    Arc::new(BinarySorter::new(
+        provider_name,
+        reverse,
+        binary_comparator(missing_value),
+        values_provider,
+    ))
 }
 
 impl From<BinarySortField> for SortField {

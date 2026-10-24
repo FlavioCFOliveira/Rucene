@@ -26,7 +26,8 @@ use crate::index::doc_values::{
 use crate::index::field_infos::{FieldInfo, FieldInfos};
 use crate::index::filter_reader::{FilterLeafReader, FilterTerms, FilterTermsEnum};
 use crate::index::index_reader::{
-    CacheHelper, CompositeReader, IndexReader, IndexReaderCore, StoredFields,
+    CacheHelper, CacheKey, ClosedListener, CompositeReader, IndexReader, IndexReaderCore,
+    StoredFields,
 };
 use crate::index::index_utilities::QueryTimeout;
 use crate::index::leaf_reader::{LeafReader, TermVectors};
@@ -108,6 +109,180 @@ pub trait DirectoryReaderWrapper: Send + Sync {
     fn subclass_simple_name(&self) -> &'static str {
         "FilterDirectoryReader"
     }
+
+    /// Whether the `FilterDirectoryReader` subclass this wrapper stands for
+    /// answers `getReaderCacheHelper()` with a [`DelegatingCacheHelper`] it
+    /// builds once, over the wrapped reader's own helper, rather than with the
+    /// wrapped reader's helper itself.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java leaves `getReaderCacheHelper()`
+    /// abstract on `FilterDirectoryReader`, and each subclass implements it:
+    /// `ExitableDirectoryReader` returns `in.getReaderCacheHelper()`, while
+    /// `SoftDeletesDirectoryReaderWrapper` builds
+    /// `new DelegatingCacheHelper(in.getReaderCacheHelper())` in its
+    /// constructor (`SoftDeletesDirectoryReaderWrapper.java:61-64`), because
+    /// its live documents differ from `in`'s and so may not share `in`'s cache
+    /// entries. This port has a single [`FilterDirectoryReader`] struct, so the
+    /// choice the subclass would make is asked of the object that identifies
+    /// the subclass. The default is the forwarding choice.
+    fn uses_delegating_cache_helper(&self) -> bool {
+        false
+    }
+}
+
+/// A [`CacheHelper`] with its own [`CacheKey`] that forwards closed listeners
+/// to another helper.
+///
+/// Equivalent to
+/// `org.apache.lucene.index.FilterDirectoryReader.DelegatingCacheHelper`
+/// (`FilterDirectoryReader.java:171-202`): the long-lived cache identity a
+/// `FilterDirectoryReader` subclass — or a leaf it wraps — gives itself when it
+/// changes what the wrapped reader exposes. `getKey()` returns the helper's own
+/// key, created with it; `addClosedListener(listener)` registers on the
+/// delegate a listener that calls `listener` with *this* helper's key, so a
+/// cache keyed on the wrapper is released when the wrapped reader closes.
+///
+/// [`get_key`](CacheHelper::get_key) hands out a reference to the key this
+/// helper owns, so as long as one helper instance answers for a reader — the
+/// readers that use it build it once and share it through an [`Arc`], as Java
+/// builds it once in their constructors — every caller sees the same key, and
+/// a different key from the delegate's.
+///
+/// **Divergence from Lucene 10.5.0.** This port's [`CacheKey`] is a unit
+/// struct whose identity is its address (see
+/// [`LRUQueryCache`](crate::search::LRUQueryCache)), and
+/// [`ClosedListener::on_close`] takes the key by value. The forwarding listener
+/// therefore passes the listener a [`CacheKey`] value where Java passes the
+/// `cacheKey` reference; the two cannot be told apart in this port, so the
+/// listener observes the same thing.
+///
+/// Java's `cacheKey` is an object whose identity neither moves nor is reused
+/// while anything references it. The port gets the same two guarantees from a
+/// [`SharedCacheKey`]: the key lives in its own heap cell, so moving the helper
+/// does not move it, and [`cache_key`](Self::cache_key) hands out clones of
+/// that cell, so a holder that keeps one keeps the address from being reused
+/// by another key.
+pub struct DelegatingCacheHelper {
+    cache_key: SharedCacheKey,
+    delegate: Box<dyn CacheHelper>,
+}
+
+impl DelegatingCacheHelper {
+    /// Creates a helper with a fresh key that delegates its closed listeners to
+    /// `delegate`.
+    ///
+    /// Equivalent to the protected `DelegatingCacheHelper(CacheHelper)`.
+    pub fn new(delegate: Box<dyn CacheHelper>) -> Self {
+        Self {
+            cache_key: SharedCacheKey::new(),
+            delegate,
+        }
+    }
+
+    /// Returns a handle on this helper's key that keeps the key's identity
+    /// alive for as long as the handle is: no other key can take its address
+    /// in the meantime, as no other object can take a referenced Java object's
+    /// identity.
+    pub fn cache_key(&self) -> SharedCacheKey {
+        self.cache_key.clone()
+    }
+}
+
+/// A [`CacheKey`] whose identity — its address — is stable and is not reused
+/// while any clone of the handle is alive.
+///
+/// The key is the first field of a `#[repr(C)]` cell whose other field is not
+/// empty, so its address lies strictly inside the cell's own heap allocation;
+/// the allocation is shared by every clone and freed with the last one.
+#[derive(Clone)]
+pub struct SharedCacheKey(Arc<SharedCacheKeyCell>);
+
+#[repr(C)]
+struct SharedCacheKeyCell {
+    key: CacheKey,
+    /// Makes the cell non-empty, so the key's address is inside the
+    /// allocation rather than one past its end.
+    _non_empty: u8,
+}
+
+impl SharedCacheKey {
+    fn new() -> Self {
+        Self(Arc::new(SharedCacheKeyCell {
+            key: CacheKey,
+            _non_empty: 0,
+        }))
+    }
+
+    /// Returns the key, whose address is the identity every holder compares.
+    pub fn key(&self) -> &CacheKey {
+        &self.0.key
+    }
+}
+
+impl std::fmt::Debug for SharedCacheKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SharedCacheKey")
+            .field(&(self.key() as *const CacheKey))
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for DelegatingCacheHelper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DelegatingCacheHelper")
+            .field("delegate", &self.delegate)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The listener [`DelegatingCacheHelper::add_closed_listener`] registers on
+/// the delegate: the lambda `unused -> listener.onClose(cacheKey)`.
+struct DelegatingClosedListener {
+    listener: Box<dyn ClosedListener>,
+}
+
+impl ClosedListener for DelegatingClosedListener {
+    fn on_close(&self, _unused: CacheKey) -> Result<()> {
+        self.listener.on_close(CacheKey)
+    }
+}
+
+impl CacheHelper for DelegatingCacheHelper {
+    /// Equivalent to `DelegatingCacheHelper.getKey()`: this helper's own key,
+    /// never the delegate's.
+    fn get_key(&self) -> &CacheKey {
+        self.cache_key.key()
+    }
+
+    /// Equivalent to `DelegatingCacheHelper.addClosedListener(ClosedListener)`:
+    /// the listener is wrapped and registered on the delegate, so that it runs
+    /// when the delegate's resource closes, and is called with this helper's
+    /// key.
+    fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
+        self.delegate
+            .add_closed_listener(Box::new(DelegatingClosedListener { listener }));
+    }
+}
+
+impl CacheHelper for Arc<DelegatingCacheHelper> {
+    fn get_key(&self) -> &CacheKey {
+        self.as_ref().get_key()
+    }
+
+    fn add_closed_listener(&self, listener: Box<dyn ClosedListener>) {
+        self.as_ref().add_closed_listener(listener);
+    }
+}
+
+/// Builds the [`DelegatingCacheHelper`] a wrapper keeps over `delegate`, or
+/// `None` when the wrapped reader has no helper.
+///
+/// Equivalent to the expression every Java user of the class writes:
+/// `in.getReaderCacheHelper() == null ? null : new DelegatingCacheHelper(in.getReaderCacheHelper())`.
+fn delegating_cache_helper(
+    delegate: Option<Box<dyn CacheHelper>>,
+) -> Option<Arc<DelegatingCacheHelper>> {
+    delegate.map(|delegate| Arc::new(DelegatingCacheHelper::new(delegate)))
 }
 
 /// A [`DirectoryReader`] that forwards every call to a wrapped reader, with its
@@ -132,6 +307,13 @@ pub struct FilterDirectoryReader {
     /// Rust has no implementation inheritance, so the base is held here and
     /// those methods forward to it.
     base: BaseCompositeReader,
+    /// The helper `get_reader_cache_helper` answers with when the subclass
+    /// keeps its own; see
+    /// [`DirectoryReaderWrapper::uses_delegating_cache_helper`].
+    reader_cache_helper: Option<Arc<DelegatingCacheHelper>>,
+    /// Whether [`reader_cache_helper`](Self::reader_cache_helper) is the answer,
+    /// rather than the wrapped reader's helper.
+    owns_reader_cache_helper: bool,
 }
 
 impl std::fmt::Debug for FilterDirectoryReader {
@@ -182,12 +364,20 @@ impl FilterDirectoryReader {
             .map(|leaf| Arc::clone(leaf).as_index_reader())
             .collect();
         let base = BaseCompositeReader::new(sub_readers, true)?;
+        let owns_reader_cache_helper = directory_wrapper.uses_delegating_cache_helper();
+        let reader_cache_helper = if owns_reader_cache_helper {
+            delegating_cache_helper(inner.get_reader_cache_helper())
+        } else {
+            None
+        };
         Ok(Self {
             inner,
             wrapper,
             directory_wrapper,
             wrapped_leaves,
             base,
+            reader_cache_helper,
+            owns_reader_cache_helper,
         })
     }
 
@@ -306,8 +496,30 @@ impl IndexReader for FilterDirectoryReader {
         self.inner.do_close()
     }
 
+    /// Sends the notification the delegate's own close sends.
+    ///
+    /// Java's `doClose()` is `in.close()`, and `in.decRef()` runs `in`'s
+    /// `notifyReaderClosedListeners()` — which is how a listener registered
+    /// through a [`DelegatingCacheHelper`] over `in`'s helper learns that the
+    /// wrapped reader closed. This port shares `in`'s core (see
+    /// [`core`](IndexReader::core)), so [`do_close`](IndexReader::do_close)
+    /// calls `in`'s `do_close` directly and the notification is forwarded
+    /// here, where the wrapper's own close sends its (empty) one.
+    fn notify_reader_closed_listeners(&self) -> Result<()> {
+        self.inner.notify_reader_closed_listeners()
+    }
+
+    /// Equivalent to the subclass's `getReaderCacheHelper()`: the wrapped
+    /// reader's helper, or the [`DelegatingCacheHelper`] the subclass built over
+    /// it; see [`DirectoryReaderWrapper::uses_delegating_cache_helper`].
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
-        self.inner.get_reader_cache_helper()
+        if self.owns_reader_cache_helper {
+            self.reader_cache_helper
+                .as_ref()
+                .map(|helper| Box::new(Arc::clone(helper)) as Box<dyn CacheHelper>)
+        } else {
+            self.inner.get_reader_cache_helper()
+        }
     }
 
     fn doc_freq(&self, term: &Term) -> Result<i32> {
@@ -3156,18 +3368,19 @@ impl Bits for SoftDeletesBits {
 /// `bits`/`num_docs` in place of the wrapped reader's own.
 ///
 /// Equivalent to
-/// `SoftDeletesDirectoryReaderWrapper.SoftDeletesFilterLeafReader`.
-///
-/// **Divergence from Lucene 10.5.0.** Java also keeps the wrapped reader's
-/// cache identity alive through a `DelegatingCacheHelper`, which is not
-/// ported; this reader forwards `get_reader_cache_helper` to the wrapped
-/// reader directly instead of minting a new cache key for the wrap. See
+/// `SoftDeletesDirectoryReaderWrapper.SoftDeletesFilterLeafReader`
+/// (`SoftDeletesDirectoryReaderWrapper.java:189-225`). Its reader cache helper
+/// is a [`DelegatingCacheHelper`] over the wrapped reader's, built once in the
+/// constructor as Java builds it: the live documents differ from the wrapped
+/// reader's, so the wrap needs its own cache identity. Its core cache helper is
+/// the wrapped reader's, because the segment's data is unchanged. See
 /// [`SoftDeletesSubReaderWrapper::wrap_leaf_reader`] for the codec-reader
 /// divergence.
 struct SoftDeletesFilterLeafReader {
     inner: FilterLeafReader,
     bits: Arc<crate::util::FixedBitSet>,
     num_docs: i32,
+    reader_cache_helper: Option<Arc<DelegatingCacheHelper>>,
 }
 
 impl std::fmt::Display for SoftDeletesFilterLeafReader {
@@ -3181,10 +3394,12 @@ impl std::fmt::Display for SoftDeletesFilterLeafReader {
 
 impl SoftDeletesFilterLeafReader {
     fn new(reader: Arc<dyn LeafReader>, bits: crate::util::FixedBitSet, num_docs: i32) -> Self {
+        let reader_cache_helper = delegating_cache_helper(reader.get_reader_cache_helper());
         Self {
             inner: FilterLeafReader::new(reader),
             bits: Arc::new(bits),
             num_docs,
+            reader_cache_helper,
         }
     }
 }
@@ -3222,8 +3437,12 @@ impl LeafReader for SoftDeletesFilterLeafReader {
         LeafReader::do_close(&self.inner)
     }
 
+    /// Equivalent to `SoftDeletesFilterLeafReader.getReaderCacheHelper()`: the
+    /// [`DelegatingCacheHelper`] built in the constructor.
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
-        LeafReader::get_reader_cache_helper(&self.inner)
+        self.reader_cache_helper
+            .as_ref()
+            .map(|helper| Box::new(Arc::clone(helper)) as Box<dyn CacheHelper>)
     }
 
     fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
@@ -3325,12 +3544,14 @@ impl LeafReader for SoftDeletesFilterLeafReader {
 /// `SoftDeletesDirectoryReaderWrapper.doWrapDirectoryReader(DirectoryReader)`.
 ///
 /// **Divergence from Lucene 10.5.0.** Java's override first walks
-/// `getSequentialSubReaders()` to reuse an unchanged leaf's live-docs
-/// instance, keyed by its `CacheHelper`, instead of recomputing it. That
-/// reuse is not ported — `SoftDeletesFilterLeafReader::get_reader_cache_helper`
-/// forwards to the wrapped reader rather than minting its own key, so there is
-/// no independent key to reuse by — so every leaf is recomputed on each
-/// reopen. The wrapped result is identical either way, only slower to build.
+/// `getSequentialSubReaders()` and maps the reader cache key of each wrapped
+/// leaf's *inner* reader to the wrapping leaf, so that a reopened leaf whose
+/// key did not change reuses the previous wrap's live-docs instance instead of
+/// recomputing it (`SoftDeletesDirectoryReaderWrapper.java:70-82`). That reuse
+/// is not ported: it needs the previous leaves downcast back to
+/// `SoftDeletesFilterLeafReader`, which the `dyn LeafReader` this wrapper
+/// holds does not allow, so every leaf is recomputed on each reopen. The
+/// wrapped result is identical either way, only slower to build.
 pub struct SoftDeletesDirectoryReaderWrapper {
     field: String,
 }
@@ -3349,6 +3570,14 @@ impl DirectoryReaderWrapper for SoftDeletesDirectoryReaderWrapper {
     /// inherited `CompositeReader` rendering applies under this name.
     fn subclass_simple_name(&self) -> &'static str {
         "SoftDeletesDirectoryReaderWrapper"
+    }
+
+    /// `SoftDeletesDirectoryReaderWrapper`'s constructor builds a
+    /// [`DelegatingCacheHelper`] over `in.getReaderCacheHelper()`
+    /// (`SoftDeletesDirectoryReaderWrapper.java:61-64`), and
+    /// `getReaderCacheHelper()` returns it.
+    fn uses_delegating_cache_helper(&self) -> bool {
+        true
     }
 
     fn wrap(&self, inner: Arc<dyn DirectoryReader>) -> Result<Arc<dyn DirectoryReader>> {

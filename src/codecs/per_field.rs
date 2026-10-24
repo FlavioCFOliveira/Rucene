@@ -332,26 +332,41 @@ impl<'a> FieldsConsumer for FieldsWriter<'a> {
     }
 }
 
+/// The `Fields` one format group of [`FieldsWriter::write`] sees: only the
+/// fields of that group.
+///
+/// Equivalent to the anonymous `FilterFields` subclass
+/// `PerFieldPostingsFormat.FieldsWriter.write` builds
+/// (`PerFieldPostingsFormat.java:152-158`), which overrides `iterator()` alone.
+/// `terms(String)` and `size()` are inherited from
+/// [`FilterFields`](crate::index::filter_reader::FilterFields), so `size()`
+/// reports the size of the **whole** `Fields`, not of the group, exactly as in
+/// Java.
 struct MaskedFields<'a> {
-    inner: &'a dyn Fields,
+    base: crate::index::filter_reader::FilterFields<dyn Fields + 'a>,
     fields: &'a [String],
 }
 
 impl<'a> MaskedFields<'a> {
     fn new(inner: &'a dyn Fields, fields: &'a [String]) -> Self {
-        Self { inner, fields }
+        Self {
+            base: crate::index::filter_reader::FilterFields::new(Box::new(inner)),
+            fields,
+        }
     }
 }
 
 impl Fields for MaskedFields<'_> {
     fn size(&self) -> i32 {
-        self.fields.len() as i32
+        self.base.size()
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
-        self.inner.terms(field)
+        self.base.terms(field)
     }
 
+    /// Equivalent to the one method the anonymous subclass overrides:
+    /// `group.fields.iterator()`.
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
         let fields: Vec<String> = self.fields.to_vec();
         Box::new(fields.into_iter())

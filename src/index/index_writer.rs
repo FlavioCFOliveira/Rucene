@@ -29,8 +29,8 @@ use crate::index::index_file_deleter::{IndexFileDeleter, WRITE_LOCK_NAME};
 use crate::index::index_reader::IndexReader;
 use crate::index::index_writer_config::{IndexWriterConfig, LiveIndexWriterConfig, OpenMode};
 use crate::index::merge_policy::{
-    MergeContext, MergePolicy, MergeSpecification, MergeTrigger, OneMerge,
-    OneMergeWrappingMergePolicy,
+    CachingMergeContext, MergeContext, MergeObserver, MergePolicy, MergeSpecification,
+    MergeTrigger, OneMerge, OneMergeWrappingMergePolicy,
 };
 use crate::index::merge_scheduler::MergeSource;
 use crate::index::readers_and_updates::ReaderPool;
@@ -172,7 +172,11 @@ pub struct IndexWriter {
     /// The stream of frozen delete/update packets waiting to be applied.
     ///
     /// Equivalent to `IndexWriter.bufferedUpdatesStream`.
-    buffered_updates_stream: BufferedUpdatesStream,
+    ///
+    /// Shared with the reader pool, which reads its completed generation
+    /// through `bufferedUpdatesStream::getCompletedDelGen`
+    /// (`IndexWriter.java:1154-1162`).
+    buffered_updates_stream: Arc<BufferedUpdatesStream>,
     /// Set while one thread is closing the writer, before it is closed.
     ///
     /// Equivalent to `IndexWriter.closing`. It is what lets `close` keep
@@ -366,9 +370,14 @@ impl IndexWriter {
             live_config.parent_field().map(str::to_string),
         )?);
 
+        let buffered_updates_stream = Arc::new(BufferedUpdatesStream::with_info_stream(
+            Arc::clone(&info_stream),
+        ));
+        let completed_del_gen = Arc::clone(&buffered_updates_stream);
         let reader_pool = Arc::new(ReaderPool::new(
             Arc::clone(&directory),
             Arc::clone(&global_field_numbers),
+            Arc::new(move || completed_del_gen.get_completed_del_gen()),
             Arc::clone(&info_stream),
             live_config.soft_deletes_field().map(str::to_string),
         ));
@@ -419,7 +428,7 @@ impl IndexWriter {
             flush_deletes_count: AtomicI32::new(0),
             did_message_state: AtomicBool::new(false),
             soft_deletes_enabled,
-            buffered_updates_stream: BufferedUpdatesStream::with_info_stream(info_stream),
+            buffered_updates_stream,
             closing: AtomicBool::new(false),
             merge_finished_gen: AtomicI64::new(0),
             flush_notifications: notifications,
@@ -1377,6 +1386,7 @@ impl IndexWriter {
                         new_segment.segment_info,
                         new_segment.segment_updates,
                         buffered_updates,
+                        new_segment.sort_map,
                     )
                 }
             }
@@ -1794,20 +1804,18 @@ impl IndexWriter {
         self.execute_merge(MergeTrigger::Explicit)
     }
 
-    /// Merges away segments carrying deleted documents.
+    /// Merges away segments carrying deleted documents, and waits for the
+    /// merges to finish.
     ///
-    /// Equivalent to `IndexWriter.forceMergeDeletes()`.
-    pub fn force_merge_deletes(&self) -> Result<()> {
-        self.ensure_open()?;
-        self.do_flush()?;
-        {
-            let mut state = self.state()?;
-            let policy = self.config.merge_policy();
-            let infos = clone_infos(&state.segment_infos)?;
-            let spec = policy.find_forced_deletes_merges(&infos, self)?;
-            self.register_merges(&mut state, spec);
-        }
-        self.execute_merge(MergeTrigger::Explicit)
+    /// Equivalent to `IndexWriter.forceMergeDeletes()`, which is
+    /// `forceMergeDeletes(true)`: the returned observer's merges are already
+    /// complete.
+    ///
+    /// # Errors
+    ///
+    /// As [`force_merge_deletes_with`](Self::force_merge_deletes_with).
+    pub fn force_merge_deletes(&self) -> Result<MergeObserver> {
+        self.force_merge_deletes_with(true)
     }
 
     /// Hands whatever merges are currently queued off to the configured merge
@@ -2084,7 +2092,7 @@ impl IndexWriter {
                 "this writer hit an unrecoverable error; cannot merge: {tragedy}"
             )));
         }
-        if merge.info.is_some() {
+        if merge.info().is_some() {
             // `merge_init` already ran.
             return Ok(());
         }
@@ -2155,7 +2163,7 @@ impl IndexWriter {
 
         if self.info_stream.is_enabled(IW) {
             let name = merge
-                .info
+                .info()
                 .as_ref()
                 .map(|i| i.info.name.clone())
                 .unwrap_or_default();
@@ -2205,7 +2213,7 @@ impl IndexWriter {
                 self.info_stream
                     .message(IW, "commitMerge: skip: it was aborted");
             }
-            if let Some(info) = merge.info.as_ref() {
+            if let Some(info) = merge.info().as_ref() {
                 // Drop any reader pooled for this segment before its files are
                 // deleted.
                 let _ = ReaderPool::drop(&self.reader_pool, info);
@@ -2214,7 +2222,7 @@ impl IndexWriter {
             return Ok(false);
         }
 
-        let merged_max_doc = match merge.info.as_ref() {
+        let merged_max_doc = match merge.info().as_ref() {
             Some(info) => info.info.max_doc()?,
             None => 0,
         };
@@ -2249,7 +2257,7 @@ impl IndexWriter {
             // not live yet: only below is it committed to the segment infos.
             if let Err(err) = self.release(rld, false) {
                 rld.drop_changes();
-                if let Some(info) = merge.info.as_ref() {
+                if let Some(info) = merge.info().as_ref() {
                     let _ = ReaderPool::drop(&self.reader_pool, info);
                 }
                 return Err(err);
@@ -2261,7 +2269,7 @@ impl IndexWriter {
         // Must be done after releasing into the pool, in case an exception is
         // hit writing the live docs of the merged segment, in which case the
         // merge has to be aborted.
-        match merge.info.as_ref() {
+        match merge.info().as_ref() {
             Some(info) => {
                 state
                     .segment_infos
@@ -2284,7 +2292,7 @@ impl IndexWriter {
         self.adjust_pending_num_docs(-i64::from(del_doc_count));
 
         if drop_segment {
-            if let Some(info) = merge.info.as_ref() {
+            if let Some(info) = merge.info().as_ref() {
                 let _ = ReaderPool::drop(&self.reader_pool, info);
                 let files = info.files()?;
                 state.deleter.delete_new_files(files)?;
@@ -2561,7 +2569,8 @@ impl IndexWriter {
         // the one `MergeState`'s constructor computes, the sum of the readers'
         // live documents.
         let merged_info = {
-            let commit_info = merge.info.as_mut().ok_or_else(|| {
+            let mut merge_info = merge.info();
+            let commit_info = merge_info.as_mut().ok_or_else(|| {
                 LuceneError::IllegalState("mergeMiddle ran before mergeInit".to_string())
             })?;
             commit_info.info.set_max_doc(merged_max_doc)?;
@@ -2580,7 +2589,7 @@ impl IndexWriter {
             Arc::clone(context),
             Arc::clone(&self.info_stream),
         )?;
-        if let Some(info) = merge.info.as_mut() {
+        if let Some(info) = merge.info().as_mut() {
             info.set_soft_del_count(i32::try_from(soft_delete_count).map_err(|_| {
                 LuceneError::IllegalState(format!(
                     "soft-delete count {soft_delete_count} overflows"
@@ -2623,7 +2632,7 @@ impl IndexWriter {
         let merged_info = merger.into_segment_info();
         merged_info.set_files(dir_wrapper.get_created_files());
         let merged_max_doc = merged_info.max_doc()?;
-        if let Some(info) = merge.info.as_mut() {
+        if let Some(info) = merge.info().as_mut() {
             info.info = merged_info;
         }
 
@@ -2660,7 +2669,7 @@ impl IndexWriter {
             let state = self.state()?;
             let infos = clone_infos(&state.segment_infos)?;
             let info = merge
-                .info
+                .info()
                 .as_ref()
                 .expect("merge info was set by mergeInit")
                 .clone();
@@ -2670,7 +2679,7 @@ impl IndexWriter {
 
         if use_compound_file {
             let files_to_remove = merge
-                .info
+                .info()
                 .as_ref()
                 .expect("merge info was set by mergeInit")
                 .files()?;
@@ -2680,8 +2689,8 @@ impl IndexWriter {
                 SharedDirectory(Arc::clone(&self.directory)),
             ));
             let outcome = {
-                let info = &merge
-                    .info
+                let merge_info = merge.info();
+                let info = &merge_info
                     .as_ref()
                     .expect("merge info was set by mergeInit")
                     .info;
@@ -2713,7 +2722,7 @@ impl IndexWriter {
                 }
                 // Safe: these files must exist.
                 let files = merge
-                    .info
+                    .info()
                     .as_ref()
                     .expect("merge info was set by mergeInit")
                     .files()?;
@@ -2732,7 +2741,7 @@ impl IndexWriter {
                 }
                 // Safe: these files must exist.
                 let files = merge
-                    .info
+                    .info()
                     .as_ref()
                     .expect("merge info was set by mergeInit")
                     .files()?;
@@ -2741,7 +2750,7 @@ impl IndexWriter {
             }
 
             merge
-                .info
+                .info()
                 .as_mut()
                 .expect("merge info was set by mergeInit")
                 .info
@@ -2752,8 +2761,8 @@ impl IndexWriter {
         // the compound file, so that the `.si` is not slurped into it and so
         // that it records `useCompoundFile=true`.
         {
-            let info = &merge
-                .info
+            let merge_info = merge.info();
+            let info = &merge_info
                 .as_ref()
                 .expect("merge info was set by mergeInit")
                 .info;
@@ -2961,14 +2970,15 @@ impl IndexWriter {
             StringHelper::random_id(),
         )?);
         merge
-            .get_merge_info()
+            .info()
+            .as_ref()
             .expect("just set")
             .info
             .set_files(tracking_dir.get_created_files());
         tracking_dir.clear_created_files();
 
         Self::set_diagnostics(
-            &mut merge.info.as_mut().expect("just set").info,
+            &mut merge.info().as_mut().expect("just set").info,
             SOURCE_ADDINDEXES_READERS,
         );
 
@@ -3007,7 +3017,7 @@ impl IndexWriter {
             // tracked, so they are deleted directly.
             self.delete_new_files(files_to_delete)?;
             merge
-                .info
+                .info()
                 .as_mut()
                 .expect("just set")
                 .info
@@ -3102,7 +3112,7 @@ impl IndexWriter {
         let mut min_gen = i64::MAX;
 
         let merged_info = merge
-            .info
+            .info()
             .as_ref()
             .ok_or_else(|| LuceneError::IllegalState("merge has no merged segment".to_string()))?
             .clone();
@@ -3225,11 +3235,55 @@ impl IndexWriter {
             self.info_stream.message(IW, &msg);
         }
 
-        if let Some(info) = merge.info.as_mut() {
+        if let Some(info) = merge.info().as_mut() {
             info.set_buffered_deletes_gen(min_gen)?;
         }
 
         Ok(Some(merged_deletes_and_updates))
+    }
+}
+
+/// The writer seen as a [`MergeContext`] by a policy that runs while the
+/// writer's lock is held.
+///
+/// Java's merge policies call back into `IndexWriter` from inside its
+/// `synchronized` blocks, and the monitor is reentrant. The port's lock is not,
+/// so the context reads through the guard the caller already holds — as
+/// `num_deleted_docs_with` does for `startCommit` — instead of taking it again.
+struct LockedMergeContext<'a> {
+    writer: &'a IndexWriter,
+    state: &'a WriterState,
+}
+
+impl MergeContext for LockedMergeContext<'_> {
+    /// `IndexWriter.numDeletesToMerge(SegmentCommitInfo)`, read through the
+    /// held guard; the same answer as
+    /// [`IndexWriter::num_deletes_to_merge_for`].
+    fn num_deletes_to_merge(&self, info: &SegmentCommitInfo) -> Result<i32> {
+        self.writer.ensure_open_with(false)?;
+        self.writer.validate(info)?;
+        let created = self.state.segment_infos.index_created_version_major();
+        if let Some(rld) = self.writer.reader_pool.get(info, false, created)? {
+            return Ok(rld.get_del_count());
+        }
+        Ok(info.get_del_count())
+    }
+
+    /// `IndexWriter.numDeletedDocs(SegmentCommitInfo)`, read through the held
+    /// guard.
+    fn num_deleted_docs(&self, info: &SegmentCommitInfo) -> i32 {
+        self.writer
+            .num_deleted_docs_with(self.state, info)
+            .unwrap_or_else(|_| info.get_del_count())
+    }
+
+    /// `IndexWriter.getMergingSegments()`, read through the held guard.
+    fn get_merging_segments(&self) -> HashSet<String> {
+        self.state.merging_segments.clone()
+    }
+
+    fn get_info_stream(&self) -> Arc<dyn InfoStream> {
+        Arc::clone(&self.writer.info_stream)
     }
 }
 
@@ -4277,30 +4331,40 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.writeReaderPool(boolean)`.
     fn write_reader_pool(&self, write_deletes: bool) -> Result<()> {
         self.ensure_open_with(false)?;
-        if write_deletes {
+        // `IndexWriter.java:4100-4110`: with deletes, `readerPool.commit` writes
+        // every pooled reader's live docs and doc-values updates and the writer
+        // checkpoints without bumping the version; without them only the
+        // doc-values updates are written, followed by a full checkpoint.
+        let changed = if write_deletes {
             let infos: Vec<SegmentCommitInfo> = {
                 let state = self.state()?;
                 state.segment_infos.as_slice().to_vec()
             };
-            if self.reader_pool.commit(&infos)? {
-                let mut state = self.state()?;
-                // Java's `rld.info` is the very `SegmentCommitInfo` the
-                // writer's `SegmentInfos` holds, so writing a pooled reader's
-                // live docs updates the writer's copy through reference
-                // identity. This port keeps a clone in the pool, so the new
-                // deletion generation and count are copied back here; without
-                // it the commit would record a segment that still has every
-                // document and would not reference the `.liv` just written.
-                for info in state.segment_infos.iter_mut() {
-                    if let Some(rld) = self.reader_pool.peek(&info.info.name) {
-                        *info = rld.info();
-                    }
+            self.reader_pool.commit(&infos)?
+        } else {
+            self.reader_pool.write_all_doc_values_updates()?
+        };
+        if changed {
+            let mut state = self.state()?;
+            // Java's `rld.info` is the very `SegmentCommitInfo` the writer's
+            // `SegmentInfos` holds, so writing a pooled reader's live docs or
+            // doc-values updates updates the writer's copy through reference
+            // identity. This port keeps a clone in the pool, so the new
+            // deletion, field-infos and doc-values generations are copied back
+            // here; without it the commit would record a segment that still has
+            // every document and none of its updates, and would not reference
+            // the files just written.
+            for info in state.segment_infos.iter_mut() {
+                if let Some(rld) = self.reader_pool.peek(&info.info.name) {
+                    *info = rld.info();
                 }
+            }
+            if write_deletes {
                 self.checkpoint_no_sis(&mut state)?;
+            } else {
+                self.checkpoint(&mut state)?;
             }
         }
-        // Write all doc-values updates, whether or not deletes were written.
-        self.reader_pool.write_all_doc_values_updates()?;
         Ok(())
     }
 
@@ -4309,7 +4373,7 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.writeSomeDocValuesUpdates()`, the back-pressure
     /// valve that stops the reader pool from growing without bound.
     pub fn write_some_doc_values_updates(&self) -> Result<()> {
-        self.reader_pool.write_all_doc_values_updates()
+        self.reader_pool.write_all_doc_values_updates().map(|_| ())
     }
 
     /// Returns whether every document of `readers_and_updates` is deleted and
@@ -4876,10 +4940,11 @@ impl IndexWriter {
     ///
     /// Equivalent to `IndexWriter.forceMerge(int, boolean)`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java returns a `MergeObserver` the
-    /// caller can await; this port's merge scheduler runs the merges through
-    /// [`MergeSource`], so `do_wait` selects between running them here and
-    /// leaving them queued for the scheduler.
+    /// **Divergence from Lucene 10.5.0.** Java always hands the queued merges
+    /// to the merge scheduler and, when `doWait` is set, then waits for them;
+    /// this port's merge scheduler runs the merges through [`MergeSource`], so
+    /// `do_wait` selects between running them here and leaving them queued for
+    /// the scheduler.
     pub fn force_merge_with(&self, max_num_segments: i32, do_wait: bool) -> Result<()> {
         if max_num_segments < 1 {
             return Err(LuceneError::IllegalArgument(format!(
@@ -4905,26 +4970,105 @@ impl IndexWriter {
         Ok(())
     }
 
-    /// Merges away segments carrying deletions, optionally waiting.
+    /// Merges away segments carrying deletions, optionally waiting, and
+    /// returns an observer of the merges it started.
     ///
-    /// Equivalent to `IndexWriter.forceMergeDeletes(boolean)`.
-    pub fn force_merge_deletes_with(&self, do_wait: bool) -> Result<()> {
+    /// Equivalent to `IndexWriter.forceMergeDeletes(boolean)`
+    /// (`IndexWriter.java:2305-2366`): flush, ask the policy for
+    /// `findForcedDeletesMerges`, register every merge it returns, hand the
+    /// pending merges to the merge scheduler, and — when `do_wait` is set and
+    /// merges were found — wait until none of them is pending or running,
+    /// failing if the writer hit a tragedy or a merge failed. The returned
+    /// [`MergeObserver`] holds every merge the policy chose; it holds none when
+    /// the policy found nothing to merge.
+    ///
+    /// Java runs the policy and registers its merges under one hold of the
+    /// writer's monitor, which is reentrant; this port's state lock is not, so
+    /// it is released while the policy runs — a policy asks the writer which
+    /// segments are merging — and taken again to register what it returned,
+    /// as [`update_pending_merges_with_policy`](Self::update_pending_merges_with_policy)
+    /// does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::MergeAborted`] or [`LuceneError::Merge`] when the
+    /// writer refuses to register a merge, [`LuceneError::IllegalState`] when
+    /// the writer hit an unrecoverable error while waiting, and
+    /// [`LuceneError::Io`] when a merge it waited for failed; propagates
+    /// whatever flushing, the policy or the merge scheduler raises.
+    pub fn force_merge_deletes_with(&self, do_wait: bool) -> Result<MergeObserver> {
         self.ensure_open()?;
         self.flush_with(true, true)?;
         if self.info_stream.is_enabled(IW) {
-            self.info_stream.message(IW, "forceMergeDeletes: index now");
+            self.info_stream.message(
+                IW,
+                &format!("forceMergeDeletes: index now {}", self.seg_string()?),
+            );
         }
-        {
+
+        let merge_policy = self.config.merge_policy();
+        // The merges the writer registered, as the clones that share their
+        // completion state with the pending copies.
+        let mut registered: Vec<OneMerge> = Vec::new();
+        // `synchronized (this)` (`IndexWriter.java:2318-2325`): the policy reads
+        // the live segments and its merges are registered under one hold of
+        // the writer's lock, so no delete applied in between can make a
+        // selected segment differ from the one in the index.
+        let spec = {
             let mut state = self.state()?;
-            let policy = self.config.merge_policy();
-            let infos = clone_infos(&state.segment_infos)?;
-            let spec = policy.find_forced_deletes_merges(&infos, self)?;
-            self.register_merges(&mut state, spec);
+            let spec = {
+                let locked = LockedMergeContext {
+                    writer: self,
+                    state: &state,
+                };
+                let caching = CachingMergeContext::new(&locked);
+                merge_policy.find_forced_deletes_merges(&state.segment_infos, &caching)?
+            };
+            if let Some(spec) = spec.as_ref() {
+                for merge in &spec.merges {
+                    let before = state.pending_merges.len();
+                    if self.register_merge(&mut state, merge.clone())?
+                        && state.pending_merges.len() == before + 1
+                    {
+                        registered.push(state.pending_merges[before].clone());
+                    }
+                }
+            }
+            spec
+        };
+
+        self.execute_merge(MergeTrigger::Explicit)?;
+
+        if let (Some(spec), true) = (spec.as_ref(), do_wait) {
+            loop {
+                if let Some(tragedy) = self.get_tragic_exception() {
+                    return Err(LuceneError::IllegalState(format!(
+                        "this writer hit an unrecoverable error; cannot complete \
+                         forceMergeDeletes: {tragedy}"
+                    )));
+                }
+                // Check each merge the policy asked for: whether any of them
+                // is still pending or running, and whether any failed.
+                let running = registered.iter().any(|merge| !merge.has_finished());
+                for merge in &spec.merges {
+                    if let Some(error) = merge.get_error() {
+                        return Err(LuceneError::Io(std::io::Error::other(format!(
+                            "background merge hit exception: {}: {error}",
+                            merge.seg_string()
+                        ))));
+                    }
+                }
+                if !running {
+                    break;
+                }
+                self.do_wait();
+            }
         }
-        if do_wait {
-            self.execute_merge(MergeTrigger::Explicit)?;
-        }
-        Ok(())
+
+        // NOTE: in the ConcurrentMergeScheduler case, when `do_wait` is false,
+        // we can return immediately while background threads accomplish the
+        // merging.
+        Ok(MergeObserver::new(spec))
     }
 
     /// Asks `merge_policy` for merges under `trigger` and queues them.
@@ -5219,13 +5363,27 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.publishFlushedSegment(SegmentCommitInfo, FieldInfos, FrozenBufferedUpdates, FrozenBufferedUpdates, Sorter.DocMap)`.
     /// The segment and its private delete packet must be published together, so
     /// that no merge can prune the segment away between the two steps.
+    ///
+    /// `sort_map` is the permutation the index sort applied to the segment.
+    /// When the segment has segment-private updates and was sorted, it is
+    /// handed to the segment's pooled `ReadersAndUpdates`, so those updates
+    /// are resolved in the right doc space (`IndexWriter.java:2964-2970`).
     pub fn publish_flushed_segment(
         &self,
         mut new_segment: SegmentCommitInfo,
         packet: Option<crate::index::documents_writer::FrozenBufferedUpdates>,
         global_packet: Option<crate::index::documents_writer::FrozenBufferedUpdates>,
+        sort_map: Option<Arc<crate::index::index_sorter::SorterDocMap>>,
     ) -> Result<()> {
+        // `publishFlushedSegment` is `synchronized` (`IndexWriter.java:2924-2967`):
+        // the packets are pushed, the segment is added and its sort map is set
+        // under one hold of the writer's lock, so a concurrent `forceApply` —
+        // which reads the segments under the same lock — never sees the
+        // private packet without its segment, nor the segment without its sort
+        // map. Lock order IW -> BDS.
+        let mut state = self.state()?;
         self.ensure_open_with(false)?;
+        let packet_any = packet.as_ref().is_some_and(|packet| !packet.is_empty());
 
         if let Some(global_packet) = global_packet {
             if !global_packet.is_empty() {
@@ -5254,12 +5412,25 @@ impl IndexWriter {
         }
         new_segment.set_buffered_deletes_gen(next_gen)?;
 
-        let mut state = self.state()?;
-        state.segment_infos.add(new_segment)?;
+        state.segment_infos.add(new_segment.clone())?;
         // The name of the segment just added came from the atomic counter, so
         // the `SegmentInfos` that now holds it must record the counter too.
         self.publish_segment_counter(&mut state.segment_infos);
-        self.checkpoint(&mut state)
+        self.checkpoint(&mut state)?;
+        if let (true, Some(sort_map)) = (packet_any, sort_map) {
+            // Not great to do this heavyish op while holding the writer's
+            // lock, but it only applies when an index is sorted and doc values
+            // are updated. The pooled instance is kept: it must stick with
+            // that sort map. `getPooledInstance` re-enters Java's monitor; the
+            // port's lock is not reentrant, so the pool is asked directly with
+            // the guard's created-version.
+            let created = state.segment_infos.index_created_version_major();
+            if let Some(rld) = self.reader_pool.get(&new_segment, true, created)? {
+                rld.set_sort_map(sort_map);
+            }
+        }
+        drop(state);
+        Ok(())
     }
 }
 
@@ -6033,7 +6204,7 @@ impl IndexWriter {
                         && !merge.is_aborted()
                         && info.info.max_doc()? > 0
                     {
-                        consumer(info)?;
+                        consumer(&info)?;
                         // Clone the target info to make sure we have the
                         // original info without the updated del and update gens.
                         *orig_info.lock().map_err(|_| {
@@ -6437,5 +6608,255 @@ impl IndexWriterTrait for IndexWriter {
     /// Propagates whatever the merge policy raises.
     fn keep_fully_deleted_segment(&self) -> Result<bool> {
         self.config.merge_policy().keep_fully_deleted_segment()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{Document, NumericDocValuesField, Store, StringField};
+    use crate::store::RamDirectory;
+    use crate::util::InfoStream;
+
+    /// Indexes ten documents in one committed segment `_0`, each with a
+    /// `group` term `g0` or `g1` and a numeric `price`, then buffers one
+    /// numeric update of `price` per group, with the given values, and
+    /// resolves them against `_0`.
+    fn resolve_price_updates(values: [i64; 2]) -> Vec<bool> {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for i in 0..10 {
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                StringField::new("group", format!("g{}", i % 2), Store::NO).unwrap(),
+            ));
+            doc.add(Box::new(NumericDocValuesField::new("price", i64::from(i))));
+            writer.add_document(&doc).unwrap();
+        }
+        writer.commit().unwrap();
+        for (group, value) in ["g0", "g1"].into_iter().zip(values) {
+            let term = Term::new(
+                "group",
+                crate::util::BytesRef::new(group.as_bytes().to_vec()),
+            );
+            writer
+                .update_numeric_doc_value(term, "price", value)
+                .unwrap();
+        }
+        // Freeze the buffered updates into a packet and resolve it, as the
+        // commit does before it writes them.
+        writer.do_flush().unwrap();
+        writer.apply_all_deletes_and_updates().unwrap();
+        let rld = writer.reader_pool.peek("_0").expect("_0 is pooled");
+        let forms = rld.pending_dv_updates_single_valued("price");
+        writer.rollback().unwrap();
+        forms
+    }
+
+    /// `FrozenBufferedUpdates.applyDocValuesUpdates`
+    /// (`FrozenBufferedUpdates.java:284-298`) resolves the updates of a numeric
+    /// field whose buffer holds one value into
+    /// `SingleValueNumericDocValuesFieldUpdates`, and any other numeric updates
+    /// into the general form. The written files are the same either way, so
+    /// this is where the choice is visible.
+    #[test]
+    fn a_single_valued_numeric_update_resolves_to_the_single_value_form() {
+        assert_eq!(resolve_price_updates([42, 42]), vec![true]);
+        assert_eq!(resolve_price_updates([42, 7]), vec![false]);
+    }
+
+    fn term(field: &str, text: &str) -> Term {
+        Term::new(field, crate::util::BytesRef::new(text.as_bytes().to_vec()))
+    }
+
+    /// How long a test waits for a racing thread that the fixed code must keep
+    /// blocked; the old code let it finish well within it.
+    const RACE_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
+    /// An info stream that, the first time `publishFlushedSegment` reports the
+    /// buffered-deletes generation it gave the new segment — after the
+    /// segment's private packet was pushed and before the segment is added —
+    /// resolves every pending packet from another thread, and waits a bounded
+    /// time for it.
+    #[derive(Debug)]
+    struct ApplyOnPublish {
+        writer: std::sync::OnceLock<Arc<IndexWriter>>,
+        fired: std::sync::atomic::AtomicBool,
+        helper: Mutex<Option<std::thread::JoinHandle<()>>>,
+    }
+
+    impl InfoStream for ApplyOnPublish {
+        fn java_class_name(&self) -> &'static str {
+            "ApplyOnPublish"
+        }
+
+        fn is_enabled(&self, component: &str) -> bool {
+            component == IW
+        }
+
+        fn close(&self) {}
+
+        fn message(&self, _component: &str, message: &str) {
+            if !message.starts_with("publish sets newSegment") {
+                return;
+            }
+            let Some(writer) = self.writer.get() else {
+                return;
+            };
+            if self.fired.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            let writer = Arc::clone(writer);
+            let (done, finished) = std::sync::mpsc::channel();
+            let helper = std::thread::spawn(move || {
+                writer
+                    .buffered_updates_stream
+                    .wait_apply_all(&writer)
+                    .unwrap();
+                let _ = done.send(());
+            });
+            let _ = finished.recv_timeout(RACE_WAIT);
+            *self.helper.lock().unwrap() = Some(helper);
+        }
+    }
+
+    /// `publishFlushedSegment` is `synchronized` (`IndexWriter.java:2924-2967`):
+    /// a concurrent `forceApply` reads the segments under the same monitor
+    /// (`IndexWriter.java:6349-6361`), so it can never see the new segment's
+    /// private packet without the segment. Here a delete-by-query is buffered
+    /// while its documents are still in memory, which makes it private to the
+    /// flushed segment, and another thread resolves the pending packets in the
+    /// middle of the publication. Were the packet resolved before its segment
+    /// was added, it would be dropped as "private segment already gone" and
+    /// the deletion lost.
+    #[test]
+    fn a_private_packet_is_not_lost_to_a_concurrent_apply_during_publication() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let stream = Arc::new(ApplyOnPublish {
+            writer: std::sync::OnceLock::new(),
+            fired: std::sync::atomic::AtomicBool::new(false),
+            helper: Mutex::new(None),
+        });
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>)
+            .unwrap();
+        let writer = Arc::new(IndexWriter::new(Arc::clone(&dir), config).unwrap());
+        for i in 0..10 {
+            let mut doc = Document::new();
+            doc.add(Box::new(
+                StringField::new("id", format!("d{i}"), Store::NO).unwrap(),
+            ));
+            doc.add(Box::new(
+                StringField::new("group", format!("g{}", i % 2), Store::NO).unwrap(),
+            ));
+            writer.add_document(&doc).unwrap();
+        }
+        let query: Arc<dyn crate::search::Query> =
+            Arc::new(crate::search::TermQuery::new(term("group", "g1")));
+        writer.delete_documents_by_queries(vec![query]).unwrap();
+        stream.writer.set(Arc::clone(&writer)).unwrap();
+        writer.flush().unwrap();
+        let helper = stream.helper.lock().unwrap().take();
+        assert!(helper.is_some(), "the publication was observed");
+        helper.unwrap().join().unwrap();
+        writer.commit().unwrap();
+
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        assert_eq!(infos.size(), 1);
+        assert_eq!(
+            infos.info(0).get_del_count(),
+            5,
+            "the private delete-by-query removed the five g1 documents"
+        );
+        writer.rollback().unwrap();
+    }
+
+    /// `forceMergeDeletes` asks the policy for merges and registers them under
+    /// one hold of the writer's monitor (`IndexWriter.java:2318-2325`), so no
+    /// delete committed meanwhile can make a selected segment differ from the
+    /// one in the index. Here another thread deletes one more document of the
+    /// selected segment and commits it while the policy is still choosing; had
+    /// the policy run on an unlocked snapshot, the registration would find the
+    /// segment changed and silently drop the merge.
+    #[test]
+    fn a_forced_deletes_merge_is_not_dropped_by_a_concurrent_commit() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let writer_slot: Arc<std::sync::OnceLock<Arc<IndexWriter>>> =
+            Arc::new(std::sync::OnceLock::new());
+        let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let wrap = {
+            let writer_slot = Arc::clone(&writer_slot);
+            let armed = Arc::clone(&armed);
+            Arc::new(move |merge: OneMerge| -> OneMerge {
+                if armed.swap(false, Ordering::AcqRel) {
+                    let writer = Arc::clone(writer_slot.get().expect("set"));
+                    let (done, finished) = std::sync::mpsc::channel();
+                    std::thread::spawn(move || {
+                        writer
+                            .delete_documents_by_terms(vec![term("id", "s0d10")])
+                            .unwrap();
+                        writer.commit().unwrap();
+                        let _ = done.send(());
+                    });
+                    let _ = finished.recv_timeout(RACE_WAIT);
+                }
+                merge
+            }) as Arc<dyn Fn(OneMerge) -> OneMerge + Send + Sync>
+        };
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_merge_policy(Arc::new(OneMergeWrappingMergePolicy::new(
+                Arc::new(crate::index::merge_policy::TieredMergePolicy::new()),
+                wrap,
+            )))
+            .unwrap();
+        config
+            .set_merge_scheduler(Arc::new(
+                crate::index::merge_scheduler::SerialMergeScheduler::new(),
+            ))
+            .unwrap();
+        let writer = Arc::new(IndexWriter::new(Arc::clone(&dir), config).unwrap());
+        writer_slot.set(Arc::clone(&writer)).unwrap();
+        for segment in 0..2 {
+            for k in 0..20 {
+                let mut doc = Document::new();
+                doc.add(Box::new(
+                    StringField::new("id", format!("s{segment}d{k}"), Store::NO).unwrap(),
+                ));
+                // 15% deletions in the first segment, 10% in the second: only
+                // the first is above `forceMergeDeletesPctAllowed`.
+                let deleted = k < 3 - segment;
+                doc.add(Box::new(
+                    StringField::new(
+                        "del",
+                        if deleted { "yes" } else { "no" }.to_string(),
+                        Store::NO,
+                    )
+                    .unwrap(),
+                ));
+                writer.add_document(&doc).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        writer
+            .delete_documents_by_terms(vec![term("del", "yes")])
+            .unwrap();
+        armed.store(true, Ordering::Release);
+        let observer = writer.force_merge_deletes_with(true).unwrap();
+        assert_eq!(
+            observer.num_merges(),
+            1,
+            "the policy chose the first segment"
+        );
+        assert_eq!(
+            observer.num_completed_merges(),
+            1,
+            "the merge it chose was registered and ran"
+        );
+        writer.rollback().unwrap();
     }
 }

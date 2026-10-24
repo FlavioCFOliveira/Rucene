@@ -1118,7 +1118,7 @@ fn the_codec_takes_the_mutable_fast_path() {
     }
 
     let mut probe = FastPathProbe { mutable: false };
-    buffer.flush(&mut probe).expect("flush");
+    buffer.flush(&mut probe, None).expect("flush");
     assert!(
         probe.mutable,
         "the flushing tree must be the mutable one, or the codec silently \

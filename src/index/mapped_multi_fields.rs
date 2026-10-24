@@ -28,6 +28,7 @@
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
+use crate::index::filter_reader::FilterFields;
 use crate::index::mapping_multi_postings_enum::MappingMultiPostingsEnum;
 use crate::index::merge::MergeState;
 use crate::index::multi_fields::{MultiFields, MultiTerms, MultiTermsEnum, SlowImpactsEnum};
@@ -42,22 +43,25 @@ use crate::util::BytesRef;
 ///
 /// Equivalent to `org.apache.lucene.index.MappedMultiFields`.
 ///
-/// **Deliberate divergence**: Java derives this class from
-/// `FilterLeafReader.FilterFields`, a generic delegating base. Rucene has no
-/// `FilterLeafReader` yet, and this type only ever wraps a [`MultiFields`] —
-/// its constructor takes nothing else — so it holds one concretely and
-/// delegates the two inherited methods directly. That also removes the two
-/// downcasts (`(MultiTerms) in.terms(f)` and `(MultiTermsEnum) in.iterator()`)
-/// that the Java class needs to get back to the concrete types.
+/// Java derives this class from `FilterLeafReader.FilterFields` and inherits
+/// `iterator()` and `size()` from it; this port composes the same base, as a
+/// [`FilterFields`] over the [`MultiFields`] the constructor takes, and
+/// forwards those two methods to it.
+///
+/// **Deliberate divergence**: the base is typed over `MultiFields` — the only
+/// delegate the constructor accepts — rather than over any `Fields`, so the
+/// delegate is reached typed and the two downcasts the Java class needs to get
+/// back to the concrete types (`(MultiTerms) in.terms(f)` and
+/// `(MultiTermsEnum) in.iterator()`) disappear.
 pub struct MappedMultiFields {
     merge_state: Arc<MergeState>,
-    inner: MultiFields,
+    base: FilterFields<MultiFields>,
 }
 
 impl std::fmt::Debug for MappedMultiFields {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MappedMultiFields")
-            .field("num_subs", &self.inner.get_sub_fields().len())
+            .field("num_subs", &self.base.get_delegate().get_sub_fields().len())
             .field("merge_state", &self.merge_state)
             .finish_non_exhaustive()
     }
@@ -75,23 +79,26 @@ impl MappedMultiFields {
     pub fn new(merge_state: Arc<MergeState>, multi_fields: MultiFields) -> Self {
         Self {
             merge_state,
-            inner: multi_fields,
+            base: FilterFields::new(Box::new(multi_fields)),
         }
     }
 
     /// Returns the merged, unmapped view this instance wraps.
+    ///
+    /// Equivalent to reading the protected `FilterFields.in` field.
     pub fn inner(&self) -> &MultiFields {
-        &self.inner
+        self.base.get_delegate()
     }
 }
 
 impl Fields for MappedMultiFields {
+    /// Inherited from `FilterFields.iterator()`.
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
-        self.inner.iterator()
+        self.base.iterator()
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
-        Ok(self.inner.multi_terms(field)?.map(|terms| {
+        Ok(self.base.get_delegate().multi_terms(field)?.map(|terms| {
             Box::new(MappedMultiTerms::new(
                 field,
                 Arc::clone(&self.merge_state),
@@ -100,8 +107,9 @@ impl Fields for MappedMultiFields {
         }))
     }
 
+    /// Inherited from `FilterFields.size()`.
     fn size(&self) -> i32 {
-        self.inner.size()
+        self.base.size()
     }
 }
 

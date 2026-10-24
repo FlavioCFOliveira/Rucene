@@ -713,6 +713,27 @@ pub trait Fields {
     fn size(&self) -> i32;
 }
 
+/// A borrowed [`Fields`] is itself a [`Fields`].
+///
+/// Java holds every `Fields` by reference, so a filter such as
+/// `FilterLeafReader.FilterFields` can wrap one it was only lent for the length
+/// of a call — `PerFieldPostingsFormat.FieldsWriter.write` wraps the `Fields`
+/// it receives. This impl lets a borrowed instance be boxed into
+/// [`FilterFields`](crate::index::filter_reader::FilterFields) the same way.
+impl<T: Fields + ?Sized> Fields for &T {
+    fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        (**self).iterator()
+    }
+
+    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        (**self).terms(field)
+    }
+
+    fn size(&self) -> i32 {
+        (**self).size()
+    }
+}
+
 // -----------------------------------------------------------------------------
 // PrefixCodedTerms
 // -----------------------------------------------------------------------------

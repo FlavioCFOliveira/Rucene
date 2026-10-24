@@ -64,6 +64,15 @@ pub enum CompressionMode {
     /// different framing, so a segment written with one cannot be read with the
     /// other.
     LZ4_WITH_PRESET_DICT,
+    /// No compression at all: the compressor copies its input, the decompressor
+    /// reads the requested slice.
+    ///
+    /// Equivalent to the anonymous `CompressionMode`
+    /// `SortingStoredFieldsConsumer.NO_COMPRESSION`
+    /// (`SortingStoredFieldsConsumer.java:40-79`), which the temporary
+    /// stored-fields and term-vectors formats of an index-sorted flush use,
+    /// since their files are read back once and deleted.
+    NO_COMPRESSION,
 }
 
 impl CompressionMode {
@@ -77,6 +86,7 @@ impl CompressionMode {
             Self::DEFLATE_WITH_PRESET_DICT => Box::new(DeflateWithPresetDictCompressor::new(
                 DEFLATE_PRESET_DICT_LEVEL,
             )),
+            Self::NO_COMPRESSION => Box::new(NoCompressionCompressor),
         }
     }
 
@@ -87,6 +97,7 @@ impl CompressionMode {
             Self::HIGH_COMPRESSION => Box::new(DeflateDecompressor::new()),
             Self::LZ4_WITH_PRESET_DICT => Box::new(Lz4WithPresetDictDecompressor::new()),
             Self::DEFLATE_WITH_PRESET_DICT => Box::new(DeflateWithPresetDictDecompressor::new()),
+            Self::NO_COMPRESSION => Box::new(NoCompressionDecompressor),
         }
     }
 }
@@ -105,6 +116,14 @@ impl std::fmt::Display for CompressionMode {
             Self::FAST_DECOMPRESSION => write!(f, "FAST_DECOMPRESSION"),
             Self::LZ4_WITH_PRESET_DICT => write!(f, "BEST_SPEED"),
             Self::DEFLATE_WITH_PRESET_DICT => write!(f, "BEST_COMPRESSION"),
+            // The anonymous class declares no `toString()`, so `Object`'s
+            // applies; see `java_object_to_string` for the identity suffix.
+            Self::NO_COMPRESSION => {
+                f.write_str(&crate::index::index_reader::java_object_to_string(
+                    "org.apache.lucene.index.SortingStoredFieldsConsumer$1",
+                    self,
+                ))
+            }
         }
     }
 }
@@ -201,6 +220,48 @@ impl Compressor for Lz4HighCompressor {
         let len = input.size();
         let bytes = input.to_array_copy();
         Lz4::compress(&bytes, 0, len, out, &mut self.ht)
+    }
+}
+
+/// The compressor of [`CompressionMode::NO_COMPRESSION`]: `out.copyBytes(buffersInput,
+/// buffersInput.length())`.
+#[derive(Debug, Default, Clone, Copy)]
+struct NoCompressionCompressor;
+
+impl Compressor for NoCompressionCompressor {
+    fn compress(&mut self, input: &ByteBuffersDataOutput, out: &mut dyn DataOutput) -> Result<()> {
+        input.copy_to(out)
+    }
+}
+
+/// The decompressor of [`CompressionMode::NO_COMPRESSION`]: skip `offset`
+/// bytes and read `length`; `originalLength` is not needed.
+#[derive(Debug, Default, Clone, Copy)]
+struct NoCompressionDecompressor;
+
+impl Decompressor for NoCompressionDecompressor {
+    /// Java's `clone()` returns `this`; this returns an equal copy of the unit
+    /// struct.
+    fn clone_decompressor(&self) -> Box<dyn Decompressor> {
+        Box::new(*self)
+    }
+
+    fn decompress(
+        &mut self,
+        input: &mut dyn DataInput,
+        _original_length: usize,
+        offset: usize,
+        length: usize,
+        bytes: &mut BytesRef,
+    ) -> Result<()> {
+        if bytes.bytes.len() < length {
+            bytes.bytes = vec![0; length];
+        }
+        input.skip_bytes(offset as i64)?;
+        input.read_bytes(&mut bytes.bytes, 0, length)?;
+        bytes.offset = 0;
+        bytes.length = length;
+        Ok(())
     }
 }
 

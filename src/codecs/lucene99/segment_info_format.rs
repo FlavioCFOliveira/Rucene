@@ -157,27 +157,16 @@ fn parse_segment_info(
     Ok(info)
 }
 
+/// Reads the segment's index sort: a field count, then each sort field as its
+/// provider name followed by what that provider wrote.
+///
+/// Equivalent to the index-sort block of `Lucene99SegmentInfoFormat.read`,
+/// which resolves every provider name through `SortFieldProvider.forName` and
+/// lets it read its sort field — so a `BinarySortField`, a
+/// `SortedNumericSortField` or a `SortedSetSortField` index sort reads back as
+/// written. [`read_sort`](crate::search::read_sort) is that resolution.
 fn read_segment_sort(input: &mut dyn DataInput) -> Result<Option<crate::search::Sort>> {
-    let count = input.read_v_int()?;
-    if count < 0 {
-        return Err(LuceneError::CorruptIndex(format!(
-            "invalid index sort field count: {count}"
-        )));
-    }
-    if count == 0 {
-        return Ok(None);
-    }
-    let mut fields = Vec::with_capacity(count as usize);
-    for _ in 0..count {
-        let provider = input.read_string()?;
-        if provider != "SortField" {
-            return Err(LuceneError::IllegalArgument(format!(
-                "unknown sort field provider: {provider}"
-            )));
-        }
-        fields.push(crate::search::SortField::deserialize(input)?);
-    }
-    Ok(Some(crate::search::Sort::new_fields(fields)?))
+    crate::search::read_sort(input)
 }
 
 fn write_segment_info(output: &mut dyn IndexOutput, info: &SegmentInfo) -> Result<()> {

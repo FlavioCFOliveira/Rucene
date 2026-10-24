@@ -303,6 +303,12 @@ pub enum SortFieldKind {
         /// `BinarySortField` may replace.
         provider_name: String,
     },
+    /// `org.apache.lucene.document.FeatureSortField`: the value of one feature
+    /// of a `FeatureField`, decoded from the term frequency.
+    Feature {
+        /// The name of the feature whose value is sorted on.
+        feature_name: String,
+    },
 }
 
 /// Describes how to sort documents by terms in an individual field.
@@ -445,6 +451,16 @@ impl SortField {
     pub fn get_index_sorter(&self) -> Option<Arc<dyn crate::index::index_sorter::IndexSorter>> {
         use crate::index::index_sorter::{NumericSortKind, NumericSorter, StringSorter};
         let field = self.field.clone()?;
+        // `BinarySortField` overrides `getIndexSorter()`
+        // (`BinarySortField.java:178-182`).
+        if let SortFieldKind::Binary { provider_name } = &self.kind {
+            return Some(crate::search::binary_sort_field::binary_index_sorter(
+                &field,
+                self.reverse,
+                self.missing_value,
+                provider_name,
+            ));
+        }
         match self.field_type {
             SortFieldType::String => {
                 let name = field.clone();
@@ -590,6 +606,12 @@ impl SortField {
                 self.missing_value = missing_value;
                 return Ok(());
             }
+            // `FeatureSortField.setMissingValue(Object)` refuses every value.
+            SortFieldKind::Feature { .. } => {
+                return Err(LuceneError::IllegalArgument(
+                    "Missing value not supported for FeatureSortField".to_string(),
+                ));
+            }
             SortFieldKind::Binary { .. } | SortFieldKind::Plain => {}
         }
         match self.field_type {
@@ -713,6 +735,20 @@ impl SortField {
     ) -> Result<Box<dyn FieldComparator>> {
         let field = self.field.as_deref().unwrap_or("");
         let mut comparator: Box<dyn FieldComparator> = match &self.kind {
+            // `FeatureSortField.getComparator(int, Pruning)` returns its
+            // comparator directly, without the `disableSkipping()` call the
+            // base class makes.
+            SortFieldKind::Feature { feature_name } => {
+                return Ok(Box::new(
+                    crate::search::simple_field_comparator::SimpleFieldComparator::new(
+                        crate::document::feature_field::FeatureComparator::new(
+                            num_hits,
+                            field,
+                            feature_name,
+                        ),
+                    ),
+                ));
+            }
             SortFieldKind::SortedNumeric {
                 selector,
                 numeric_type,
@@ -926,9 +962,22 @@ impl SortField {
         missing_value: Option<MissingValue>,
         kind: SortFieldKind,
     ) -> Result<Self> {
-        let mut sort_field = Self::new_with_missing(field, field_type, reverse, missing_value)?;
-        sort_field.kind = kind;
-        Ok(sort_field)
+        // The subclasses call `super(field, Type.CUSTOM, reverse, missingValue)`,
+        // whose body stores the missing value as given and only runs
+        // `validateField` (`SortField.java:170-176`) — it never calls
+        // `setMissingValue`, which refuses any missing value on a `CUSTOM`
+        // sort. `BinarySortField` relies on that to carry `STRING_FIRST` or
+        // `STRING_LAST`, and checks the value itself.
+        validate_field(&field, field_type, missing_value)?;
+        Ok(Self {
+            field,
+            field_type,
+            reverse,
+            missing_value,
+            comparator_source: None,
+            optimize_sort_with_indexed_data: true,
+            kind,
+        })
     }
 
     /// Serializes this sort field to `output` using the Java `SortFieldProvider`
@@ -1087,6 +1136,14 @@ impl fmt::Display for SortField {
                     write!(f, " missingValue={missing}")?;
                 }
                 return write!(f, " selector={selector}");
+            }
+            // `FeatureSortField.toString()`.
+            SortFieldKind::Feature { feature_name } => {
+                return write!(
+                    f,
+                    "<feature:\"{}\" featureName={feature_name}>",
+                    self.field.as_deref().unwrap_or("")
+                );
             }
             SortFieldKind::Binary { .. } => {
                 write!(f, "<binary: \"{}\">", self.field.as_deref().unwrap_or(""))?;
@@ -1301,6 +1358,13 @@ pub fn write_sort(output: &mut dyn DataOutput, sort: &Sort) -> Result<()> {
             SortFieldKind::Binary { provider_name } => {
                 output.write_string(provider_name)?;
                 BinarySortField::from_sort_field(field.clone())?.serialize(output)?;
+            }
+            // `SortFieldProvider.write(SortField, DataOutput)` refuses a sort
+            // field without an `IndexSorter`, which `FeatureSortField` is.
+            SortFieldKind::Feature { .. } => {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "Cannot serialize sort field {field}"
+                )));
             }
         }
     }

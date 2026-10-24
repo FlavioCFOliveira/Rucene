@@ -50,12 +50,9 @@
 //!   plain `Vec<i64>`. `PackedLongValues` is not ported yet, and a norm is a
 //!   sign-extended byte in practice, so the compression Java gets from delta
 //!   packing is small. The RAM accounting reports what is actually held.
-//! * Java's `flush` takes a `Sorter.DocMap` and re-orders the values when the
-//!   segment has an index sort. Index sorting is not ported — `IndexingChain`
-//!   in this crate never builds a sorting consumer either — so [`NormValuesWriter::flush`]
-//!   takes no map. The one place the map would be threaded through is the same
-//!   place `DefaultIndexingChain::bind_segment` will choose the sorting
-//!   consumers.
+//!
+//! [`NormValuesWriter::flush`] takes the segment's `Sorter.DocMap`, as Java's
+//! does, and re-orders the norms when the segment has an index sort.
 
 #![deny(unsafe_code)]
 
@@ -67,6 +64,8 @@ use crate::codecs::norms::{NormsConsumer, NormsProducer};
 use crate::codecs::DocsWithFieldSet;
 use crate::error::{LuceneError, Result};
 use crate::index::doc_values::{DocValuesIterator, NumericDocValues};
+use crate::index::doc_values_writer::{NumericDVs, NumericDocValuesWriter, SortingNumeric};
+use crate::index::index_sorter::SorterDocMap;
 use crate::index::FieldInfo;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 
@@ -180,7 +179,10 @@ impl NormValuesWriter {
     /// Hands the buffered norms to `consumer`.
     ///
     /// Equivalent to `NormValuesWriter.flush(SegmentWriteState, Sorter.DocMap,
-    /// NormsConsumer)` without the doc map; see the module documentation.
+    /// NormsConsumer)` (`NormValuesWriter.java:70-105`): `sort_map` is the
+    /// permutation the index sort gave the segment, or `None` when it was not
+    /// sorted. Java declares the `SegmentWriteState` only to read `maxDoc`,
+    /// which is the sort map's size, so this port does not take one.
     ///
     /// Flushing consumes the buffers, so the heap they held is given back to
     /// the shared counter here rather than when the writer is dropped, and the
@@ -194,7 +196,11 @@ impl NormValuesWriter {
     /// `PackedLongValues.Builder`, which refuses to be built twice.
     /// Otherwise propagates whatever the consumer raises while writing the
     /// field.
-    pub fn flush(&mut self, consumer: &mut dyn NormsConsumer) -> Result<()> {
+    pub fn flush(
+        &mut self,
+        consumer: &mut dyn NormsConsumer,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<()> {
         if self.flushed {
             return Err(LuceneError::IllegalState(format!(
                 "the norms of field \"{}\" have already been flushed",
@@ -204,7 +210,22 @@ impl NormValuesWriter {
         self.flushed = true;
         let values = std::mem::take(&mut self.pending);
         let docs_with_field = std::mem::take(&mut self.docs_with_field);
-        let producer = BufferedNormsProducer::new(&self.field_info, &docs_with_field, values)?;
+        let mut producer = BufferedNormsProducer::new(&self.field_info, &docs_with_field, values)?;
+        // `NumericDocValuesWriter.sortDocValues(maxDoc, sortMap, new
+        // BufferedNorms(...), sortMap.size() == docsWithField.cardinality())`
+        // (`NormValuesWriter.java:73-83`); the producer then hands out
+        // `SortingNumericDocValues` over the sorted values.
+        if let Some(sort_map) = sort_map {
+            let mut old_norms =
+                BufferedNorms::new(Arc::clone(&producer.docs), Arc::clone(&producer.values));
+            let dense = sort_map.size() == docs_with_field.cardinality();
+            producer.sorted = Some(Arc::new(NumericDocValuesWriter::sort_doc_values(
+                sort_map.size(),
+                sort_map,
+                &mut old_norms,
+                dense,
+            )?));
+        }
         drop(docs_with_field);
         self.update_bytes_used();
         consumer.add_norms_field(&self.field_info, &producer)
@@ -243,6 +264,8 @@ struct BufferedNormsProducer {
     field_name: String,
     docs: Arc<Vec<i32>>,
     values: Arc<Vec<i64>>,
+    /// The values re-ordered by the index sort, when the segment is sorted.
+    sorted: Option<Arc<NumericDVs>>,
 }
 
 impl BufferedNormsProducer {
@@ -267,6 +290,7 @@ impl BufferedNormsProducer {
             field_name: field_info.name.clone(),
             docs: Arc::new(docs),
             values: Arc::new(values),
+            sorted: None,
         })
     }
 }
@@ -279,10 +303,13 @@ impl NormsProducer for BufferedNormsProducer {
                 self.field_name, self.field_number, field.name, field.number
             )));
         }
-        Ok(Box::new(BufferedNorms::new(
-            Arc::clone(&self.docs),
-            Arc::clone(&self.values),
-        )))
+        match &self.sorted {
+            None => Ok(Box::new(BufferedNorms::new(
+                Arc::clone(&self.docs),
+                Arc::clone(&self.values),
+            ))),
+            Some(sorted) => Ok(Box::new(SortingNumeric::new(Arc::clone(sorted)))),
+        }
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -295,6 +322,7 @@ impl NormsProducer for BufferedNormsProducer {
             field_name: self.field_name.clone(),
             docs: Arc::clone(&self.docs),
             values: Arc::clone(&self.values),
+            sorted: self.sorted.clone(),
         }))
     }
 
@@ -438,7 +466,7 @@ mod tests {
         }
         writer.finish(10);
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(
             consumer.fields,
             vec![("body".to_string(), vec![(0, 5), (3, -1), (7, 120)])]
@@ -461,7 +489,7 @@ mod tests {
         assert!(writer.add_value(3, 2).is_err());
         // The rejected values were not buffered.
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(consumer.fields[0].1, vec![(4, 1)]);
     }
 
@@ -474,7 +502,7 @@ mod tests {
         let mut writer = NormValuesWriter::new(field("body", 0), counter());
         writer.finish(10);
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(consumer.fields, vec![("body".to_string(), Vec::new())]);
     }
 
@@ -488,7 +516,7 @@ mod tests {
         writer.finish(1_000);
         assert_eq!(writer.num_docs_with_field(), 2);
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(consumer.fields[0].1, vec![(0, 1), (9, 2)]);
     }
 
@@ -521,7 +549,7 @@ mod tests {
         let mut writer = NormValuesWriter::new(field("body", 0), counter());
         writer.add_value(0, 1).unwrap();
         let mut consumer = WrongFieldConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         let error = consumer.error.expect("the guard must have fired");
         assert!(
             error.contains("wrong fieldInfo"),
@@ -568,7 +596,7 @@ mod tests {
             writer.add_value(doc * 2, doc as i64 + 1).unwrap();
         }
         let mut consumer = ThreePassConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(consumer.passes.len(), 3);
         assert_eq!(consumer.passes[0], consumer.passes[1]);
         assert_eq!(consumer.passes[1], consumer.passes[2]);
@@ -605,7 +633,7 @@ mod tests {
         }
 
         let mut consumer = ProbingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert!(consumer.advance.unwrap().contains("advance"));
         assert!(consumer.advance_exact.unwrap().contains("advance_exact"));
     }
@@ -639,7 +667,7 @@ mod tests {
         }
 
         let mut consumer = ExhaustionConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(consumer.after, vec![NO_MORE_DOCS; 4]);
     }
 
@@ -697,8 +725,8 @@ mod tests {
         let mut writer = NormValuesWriter::new(field("body", 0), counter());
         writer.add_value(0, 1).unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
-        let error = writer.flush(&mut consumer).unwrap_err();
+        writer.flush(&mut consumer, None).unwrap();
+        let error = writer.flush(&mut consumer, None).unwrap_err();
         assert!(
             matches!(error, LuceneError::IllegalState(ref m) if m.contains("already been flushed")),
             "unexpected error: {error:?}"
@@ -711,7 +739,7 @@ mod tests {
         let mut writer = NormValuesWriter::new(field("body", 0), counter());
         writer.add_value(0, 1).unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert!(writer.add_value(1, 2).is_err());
     }
 
@@ -724,7 +752,7 @@ mod tests {
         }
         let full = counter.load(Ordering::Acquire);
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         let after = counter.load(Ordering::Acquire);
         assert!(
             after < full,

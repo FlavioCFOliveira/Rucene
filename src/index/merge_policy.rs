@@ -14,6 +14,7 @@ use crate::index::codec_reader::CodecReader;
 use crate::index::segment_info::SegmentCommitInfo;
 use crate::index::segment_infos::SegmentInfos;
 use crate::index::segment_reader::SegmentReader;
+use crate::util::java_fmt::{double_to_string, format_fixed};
 use crate::util::{Bits, InfoStream};
 
 /// Why a merge is being considered.
@@ -227,8 +228,13 @@ pub struct OneMerge {
     error: Arc<Mutex<Option<String>>>,
     /// The merged segment, once the writer has built it.
     ///
-    /// Equivalent to `OneMerge.info`.
-    pub info: Option<SegmentCommitInfo>,
+    /// Equivalent to `OneMerge.info`. Java sets and mutates it on the one
+    /// `OneMerge` object the policy's `MergeSpecification` also holds, so the
+    /// specification — and the `MergeObserver` over it — renders the merged
+    /// segment's name (`MergePolicy.java:357-359`) and returns it from
+    /// `getMergeInfo()`. `OneMerge` is `Clone` here, so the slot is shared
+    /// through an `Arc<Mutex<_>>`, as [`error`](Self::get_error) is.
+    info: Arc<Mutex<Option<SegmentCommitInfo>>>,
     /// When the merge started, in nanoseconds.
     ///
     /// Equivalent to `OneMerge.mergeStartNS`.
@@ -321,7 +327,7 @@ impl OneMerge {
             aborted: Arc::new(AtomicBool::new(false)),
             merged: Arc::new(AtomicBool::new(false)),
             error: Arc::new(Mutex::new(None)),
-            info: None,
+            info: Arc::new(Mutex::new(None)),
             merge_start_ns: -1,
             merge_readers: Arc::new(Mutex::new(Vec::new())),
             wrap_for_merge: None,
@@ -362,7 +368,7 @@ impl OneMerge {
             aborted: Arc::new(AtomicBool::new(false)),
             merged: Arc::new(AtomicBool::new(false)),
             error: Arc::new(Mutex::new(None)),
-            info: None,
+            info: Arc::new(Mutex::new(None)),
             merge_start_ns: -1,
             merge_readers: Arc::new(Mutex::new(readers)),
             wrap_for_merge: None,
@@ -657,18 +663,30 @@ impl OneMerge {
         self.total_merge_bytes
     }
 
-    /// Records the merged segment this merge produced.
+    /// Records the merged segment this merge produced; every clone of this
+    /// merge sees it.
     ///
     /// Equivalent to `OneMerge.setMergeInfo(SegmentCommitInfo)`.
-    pub fn set_merge_info(&mut self, info: SegmentCommitInfo) {
-        self.info = Some(info);
+    pub fn set_merge_info(&self, info: SegmentCommitInfo) {
+        *self.info() = Some(info);
     }
 
     /// Returns the merged segment, once the writer has built it.
     ///
-    /// Equivalent to `OneMerge.getMergeInfo()`.
-    pub fn get_merge_info(&self) -> Option<&SegmentCommitInfo> {
-        self.info.as_ref()
+    /// Equivalent to `OneMerge.getMergeInfo()`. Java returns the shared object;
+    /// this returns a copy of it, and [`info`](Self::info) gives the writer
+    /// the shared slot itself.
+    pub fn get_merge_info(&self) -> Option<SegmentCommitInfo> {
+        self.info().clone()
+    }
+
+    /// Locks the shared merged-segment slot: Java's package-private
+    /// `OneMerge.info` field, which `IndexWriter` reads and mutates in place.
+    ///
+    /// The guard must not be held across a call that renders or locks this
+    /// merge again, such as [`seg_string`](Self::seg_string).
+    pub(crate) fn info(&self) -> std::sync::MutexGuard<'_, Option<SegmentCommitInfo>> {
+        self.info.lock().expect("OneMerge info mutex poisoned")
     }
 
     /// Returns how many documents the merged segment will hold, before deletes
@@ -680,14 +698,27 @@ impl OneMerge {
     }
 
     /// Renders the merge the way Lucene's `segString()` does.
+    ///
+    /// Equivalent to `OneMerge.segString()` (`MergePolicy.java:349-368`): each
+    /// segment's `toString()`, separated by spaces, then `" into "` and the
+    /// merged segment's name once it is known, the `maxNumSegments` of a forced
+    /// merge, and `" [ABORTED]"` for an aborted merge.
     pub fn seg_string(&self) -> String {
-        let names: Vec<String> = self.segments.iter().map(|s| s.info.name.clone()).collect();
-        let mut out = names.join(" ");
-        if self.is_external {
-            out.push_str(" [external]");
+        let mut out = self
+            .segments
+            .iter()
+            .map(|segment| segment.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if let Some(info) = self.info().as_ref() {
+            out.push_str(" into ");
+            out.push_str(&info.info.name);
         }
         if self.max_num_segments != -1 {
             out.push_str(&format!(" [maxNumSegments={}]", self.max_num_segments));
+        }
+        if self.is_aborted() {
+            out.push_str(" [ABORTED]");
         }
         out
     }
@@ -755,7 +786,197 @@ impl MergeSpecification {
     }
 }
 
+impl MergeSpecification {
+    /// Returns a handle that completes once every merge of this specification
+    /// has finished.
+    ///
+    /// Equivalent to the package-private
+    /// `MergePolicy.MergeSpecification.getMergeCompletedFutures()`, which is
+    /// `CompletableFuture.allOf` over each merge's `mergeCompleted`.
+    pub fn get_merge_completed_futures(&self) -> MergeCompletedFuture {
+        MergeCompletedFuture {
+            merges: self.merges.clone(),
+        }
+    }
+
+    /// Waits, without a time limit, for every merge of this specification to
+    /// finish, and returns `true`.
+    ///
+    /// Equivalent to the package-private `MergeSpecification.await()`, which
+    /// blocks on [`get_merge_completed_futures`](Self::get_merge_completed_futures)
+    /// and returns `true` unless the future fails — which it never does,
+    /// because each `mergeCompleted` is completed normally, with the merge's
+    /// success flag. The name differs from Java's because Rust has no
+    /// overloading and [`r#await`](Self::r#await) is the timed variant.
+    pub fn await_completion(&self) -> bool {
+        self.get_merge_completed_futures().join();
+        true
+    }
+}
+
+/// Completes once every merge of a [`MergeSpecification`] has finished.
+///
+/// **Divergence from Lucene 10.5.0.** Stands in for the JDK
+/// `CompletableFuture<Void>` that
+/// `MergeSpecification.getMergeCompletedFutures()` builds with
+/// `CompletableFuture.allOf` over each merge's `mergeCompleted` future, and
+/// that `MergeObserver.awaitAsync()` hands out. This port's [`OneMerge`]
+/// records its completion in a shared flag rather than in a future — the
+/// divergence its own documentation records — so this handle offers the
+/// operations a holder of that future uses, `isDone()`, `join()` and the timed
+/// `get`, over those flags, polling them as
+/// [`MergeSpecification::r#await`] does.
+#[derive(Debug, Clone)]
+pub struct MergeCompletedFuture {
+    merges: Vec<OneMerge>,
+}
+
+impl MergeCompletedFuture {
+    /// Returns whether every merge has finished.
+    ///
+    /// Equivalent to `CompletableFuture.isDone()`.
+    pub fn is_done(&self) -> bool {
+        self.merges.iter().all(OneMerge::has_finished)
+    }
+
+    /// Blocks until every merge has finished.
+    ///
+    /// Equivalent to `CompletableFuture.join()`.
+    pub fn join(&self) {
+        while !self.is_done() {
+            std::thread::sleep(MERGE_COMPLETION_POLL_INTERVAL);
+        }
+    }
+
+    /// Blocks for at most `timeout` until every merge has finished, and
+    /// returns whether they all did.
+    ///
+    /// Equivalent to `CompletableFuture.get(long, TimeUnit)`, whose
+    /// `TimeoutException` is the `false` answer.
+    pub fn join_timeout(&self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if self.is_done() {
+                return true;
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            std::thread::sleep(MERGE_COMPLETION_POLL_INTERVAL.min(deadline - now));
+        }
+    }
+}
+
+/// How long a wait on merge completion sleeps between two checks, as the
+/// future-based waits Java performs have no equivalent knob.
+const MERGE_COMPLETION_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
+
+/// Monitors the merges a call to `IndexWriter::force_merge_deletes` started,
+/// and waits for them.
+///
+/// Equivalent to `org.apache.lucene.index.MergePolicy.MergeObserver`
+/// (`MergePolicy.java:944-1032`), which `IndexWriter.forceMergeDeletes(boolean)`
+/// returns. When no merges were needed it holds no specification:
+/// [`num_merges`](Self::num_merges) is `0` and [`r#await`](Self::r#await)
+/// returns `true` at once.
+///
+/// It holds the merges the policy chose, sharing their completion, abort and
+/// merged-segment state with the writer's own copies, as Java shares the very
+/// `OneMerge` objects: [`num_completed_merges`] and the waits follow the merges
+/// as they run, and the [`Display`](std::fmt::Display) shows each merged
+/// segment's name (`" into _N"`) once `IndexWriter.mergeInit` has set it.
+///
+/// [`num_completed_merges`]: Self::num_completed_merges
+#[derive(Debug, Clone)]
+pub struct MergeObserver {
+    spec: Option<MergeSpecification>,
+}
+
+impl MergeObserver {
+    /// Observes `spec`, or nothing when no merges were needed.
+    ///
+    /// Equivalent to the package-private
+    /// `MergeObserver(MergePolicy.MergeSpecification)`.
+    pub(crate) fn new(spec: Option<MergeSpecification>) -> Self {
+        Self { spec }
+    }
+
+    /// Returns how many merges were scheduled, `0` when none were.
+    ///
+    /// Equivalent to `MergeObserver.numMerges()`.
+    pub fn num_merges(&self) -> i32 {
+        self.spec
+            .as_ref()
+            .map_or(0, |spec| spec.merges.len() as i32)
+    }
+
+    /// Returns how many of the scheduled merges have finished.
+    ///
+    /// Equivalent to `MergeObserver.numCompletedMerges()`.
+    pub fn num_completed_merges(&self) -> i32 {
+        self.spec.as_ref().map_or(0, |spec| {
+            spec.merges
+                .iter()
+                .filter(|merge| merge.has_finished())
+                .count() as i32
+        })
+    }
+
+    /// Waits for every scheduled merge to finish; returns `true` at once when
+    /// none was scheduled.
+    ///
+    /// Equivalent to `MergeObserver.await()`, which is
+    /// `spec == null || spec.await()`.
+    pub fn r#await(&self) -> bool {
+        match &self.spec {
+            None => true,
+            Some(spec) => spec.await_completion(),
+        }
+    }
+
+    /// Waits at most `timeout` for every scheduled merge to finish; returns
+    /// `true` at once when none was scheduled, and `false` when the time ran
+    /// out first.
+    ///
+    /// Equivalent to `MergeObserver.await(long, TimeUnit)`, which is
+    /// `spec == null || spec.await(timeout, unit)`; the `long` and `TimeUnit`
+    /// pair becomes a [`Duration`](std::time::Duration).
+    pub fn await_timeout(&self, timeout: std::time::Duration) -> bool {
+        match &self.spec {
+            None => true,
+            Some(spec) => spec.get_merge_completed_futures().join_timeout(timeout),
+        }
+    }
+
+    /// Returns a handle that completes once every scheduled merge has
+    /// finished — already complete when none was scheduled.
+    ///
+    /// Equivalent to `MergeObserver.awaitAsync()`; see
+    /// [`MergeCompletedFuture`] for what stands in for the
+    /// `CompletableFuture<Void>` Java returns.
+    pub fn await_async(&self) -> MergeCompletedFuture {
+        match &self.spec {
+            None => MergeCompletedFuture { merges: Vec::new() },
+            Some(spec) => spec.get_merge_completed_futures(),
+        }
+    }
+}
+
+impl std::fmt::Display for MergeObserver {
+    /// Equivalent to `MergeObserver.toString()`:
+    /// `"MergeObserver: no merges"`, or
+    /// `String.format(Locale.ROOT, "MergeObserver: %d merges\n%s", numMerges(), spec)`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.spec {
+            None => f.write_str("MergeObserver: no merges"),
+            Some(spec) => write!(f, "MergeObserver: {} merges\n{spec}", self.num_merges()),
+        }
+    }
+}
+
 impl std::fmt::Display for MergeSpecification {
+    /// Equivalent to `MergeSpecification.toString()`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "MergeSpec:")?;
         for (i, merge) in self.merges.iter().enumerate() {
@@ -1131,7 +1352,11 @@ pub fn seg_string<'a>(
     infos
         .into_iter()
         .map(|info| {
-            info.info.to_string_with_del_count(
+            // `info.toString(mergeContext.numDeletedDocs(info) - info.getDelCount())`
+            // (`MergePolicy.java:872-876`) is `SegmentCommitInfo.toString(int
+            // pendingDelCount)`, which adds the segment's own deletion count
+            // back: the segment renders with every deletion the context knows.
+            info.to_string_with_pending_del_count(
                 merge_context.num_deleted_docs(info) - info.get_del_count(),
             )
         })
@@ -1447,6 +1672,50 @@ impl MergePolicy for OneMergeWrappingMergePolicy {
 /// Default ratio above which `TieredMergePolicy` stops using compound files.
 pub const TIERED_DEFAULT_NO_CFS_RATIO: f64 = 0.1;
 
+/// The score of one candidate merge, and how it was reached.
+///
+/// Equivalent to the protected abstract class
+/// `org.apache.lucene.index.TieredMergePolicy.MergeScore`
+/// (`TieredMergePolicy.java:313-323`), whose two methods are package-private
+/// and abstract. `TieredMergePolicy.findMerges` and its forced variants score
+/// every candidate, keep the lowest score, and report each score with its
+/// explanation to the merge context's info stream.
+pub trait MergeScore {
+    /// Returns the score of this merge candidate; lower scores are better.
+    ///
+    /// Equivalent to `MergeScore.getScore()`.
+    fn get_score(&self) -> f64;
+
+    /// Returns a human-readable explanation of how the merge got its score.
+    ///
+    /// Equivalent to `MergeScore.getExplanation()`.
+    fn get_explanation(&self) -> String;
+}
+
+/// The anonymous [`MergeScore`] `TieredMergePolicy.score` returns.
+#[derive(Debug, Clone, Copy)]
+struct TieredMergeScore {
+    score: f64,
+    skew: f64,
+    non_del_ratio: f64,
+}
+
+impl MergeScore for TieredMergeScore {
+    fn get_score(&self) -> f64 {
+        self.score
+    }
+
+    /// `"skew=" + String.format(Locale.ROOT, "%.3f", skew) + " nonDelRatio=" +
+    /// String.format(Locale.ROOT, "%.3f", nonDelRatio)`.
+    fn get_explanation(&self) -> String {
+        format!(
+            "skew={} nonDelRatio={}",
+            format_fixed(self.skew, 3),
+            format_fixed(self.non_del_ratio, 3)
+        )
+    }
+}
+
 /// A segment's size and document counts, captured once so a concurrent delete
 /// cannot change them mid-sort.
 ///
@@ -1670,20 +1939,17 @@ impl TieredMergePolicy {
     ) -> Result<Vec<SegmentSizeAndDocs>> {
         let mut sorted = Vec::with_capacity(infos.size());
         for (index, info) in infos.iter().enumerate() {
+            // `new SegmentSizeAndDocs(info, size(info, mergeContext),
+            // mergeContext.numDeletesToMerge(info))`
+            // (`TieredMergePolicy.java:333-337`): the size is pro-rated by
+            // `MergePolicy.size`, with its `1.0 - delRatio` arithmetic.
+            let size_in_bytes = self.size(info, merge_context)?;
             let del_count = merge_context.num_deletes_to_merge(info)?;
             let max_doc = info.info.max_doc()?;
-            // Pro-rate the on-disk size by the fraction of documents still live,
-            // which is what `MergePolicy.size` does.
-            let raw = info.size_in_bytes_uncached()?;
-            let live_ratio = if max_doc <= 0 {
-                1.0
-            } else {
-                (max_doc - del_count).max(0) as f64 / max_doc as f64
-            };
             sorted.push(SegmentSizeAndDocs {
                 index,
                 name: info.info.name.clone(),
-                size_in_bytes: (raw as f64 * live_ratio) as i64,
+                size_in_bytes,
                 del_count,
                 max_doc,
             });
@@ -1698,38 +1964,67 @@ impl TieredMergePolicy {
 
     /// Scores a candidate merge; lower is better.
     ///
-    /// Equivalent to `TieredMergePolicy.score`.
-    fn score(&self, candidate: &[&SegmentSizeAndDocs], hit_too_large: bool) -> f64 {
+    /// Equivalent to the protected `TieredMergePolicy.score(List, boolean,
+    /// Map)` (`TieredMergePolicy.java:715-782`), which returns an anonymous
+    /// [`MergeScore`] carrying the score and an explanation naming its two
+    /// factors, `skew` and `nonDelRatio`. Each candidate's size *after* the
+    /// merge is the pro-rated size `candidate` carries; its size *before* is the
+    /// segment's full size on disk, `info.sizeInBytes()`, so `nonDelRatio`
+    /// measures the deletions the merge reclaims.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading a segment's size raises.
+    fn score(
+        &self,
+        infos: &SegmentInfos,
+        candidate: &[&SegmentSizeAndDocs],
+        hit_too_large: bool,
+    ) -> Result<TieredMergeScore> {
+        let mut tot_before_merge_bytes = 0i64;
         let mut tot_after_merge_bytes = 0i64;
         let mut tot_after_merge_bytes_floored = 0i64;
-        let mut tot_before_merge_bytes = 0i64;
         for segment in candidate {
-            tot_after_merge_bytes += segment.size_in_bytes;
-            tot_after_merge_bytes_floored += self.floor_size(segment.size_in_bytes);
-            // Java reads the un-prorated size here, which is the same value
-            // before deletes are taken out.
-            tot_before_merge_bytes += segment.size_in_bytes.max(1);
+            let seg_bytes = segment.size_in_bytes;
+            tot_after_merge_bytes += seg_bytes;
+            tot_after_merge_bytes_floored += self.floor_size(seg_bytes);
+            tot_before_merge_bytes += infos.info(segment.index).size_in_bytes_uncached()?;
         }
 
-        // Skew measures how lopsided the merge is, from 1/n (balanced, good) to
-        // 1.0 (one huge input, which costs O(N^2) over time).
+        // Roughly measure "skew" of the merge, i.e. how "balanced" the merge
+        // is (whether the segments are about the same size), which can range
+        // from 1.0/numSegsBeingMerged (good) to 1.0 (poor). Heavily lopsided
+        // merges (skew near 1.0) are no good; they mean O(N^2) merge cost over
+        // time.
         let skew = if hit_too_large {
-            // A merge that already hit the size cap will not cascade, so skew
-            // does not matter; pretend it is perfect.
-            let merge_factor = (self.max_merge_at_once as f64).min(self.segs_per_tier);
-            1.0 / merge_factor
+            // Pretend the merge has perfect skew; skew doesn't matter in this
+            // case because this merge will not "cascade" and so it cannot lead
+            // to N^2 merge cost over time.
+            let merge_factor = (self.max_merge_at_once as f64).min(self.segs_per_tier) as i32;
+            1.0 / f64::from(merge_factor)
         } else {
             self.floor_size(candidate[0].size_in_bytes) as f64
                 / tot_after_merge_bytes_floored as f64
         };
 
+        // Strongly favor merges with less skew (smaller mergeScore is better).
         let mut merge_score = skew;
-        // Gently favour smaller merges.
+
+        // Gently favor smaller merges over bigger ones. We don't want to make
+        // this exponent too large else we can end up doing poor merges of small
+        // segments in order to avoid the large merges.
         merge_score *= (tot_after_merge_bytes as f64).powf(0.05);
-        // Strongly favour merges that reclaim deletes.
+
+        // Strongly favor merges that reclaim deletes.
         let non_del_ratio = tot_after_merge_bytes as f64 / tot_before_merge_bytes as f64;
-        merge_score *= non_del_ratio.powi(2);
-        merge_score
+        // `Math.pow(nonDelRatio, 2)`, which HotSpot computes as the product.
+        merge_score *= non_del_ratio * non_del_ratio;
+
+        Ok(TieredMergeScore {
+            score: merge_score,
+            skew,
+            non_del_ratio,
+        })
     }
 
     /// The shared search Java performs for both natural and forced merges.
@@ -1739,6 +2034,7 @@ impl TieredMergePolicy {
     fn do_find_merges(
         &self,
         infos: &SegmentInfos,
+        merge_context: &dyn MergeContext,
         sorted_eligible: &[SegmentSizeAndDocs],
         merge_factor: i32,
         allowed_seg_count: i32,
@@ -1768,7 +2064,7 @@ impl TieredMergePolicy {
             }
 
             let mut best: Option<Vec<&SegmentSizeAndDocs>> = None;
-            let mut best_score = f64::MAX;
+            let mut best_score: Option<TieredMergeScore> = None;
             let mut best_too_large = false;
 
             for start_idx in 0..eligible.len() {
@@ -1837,9 +2133,26 @@ impl TieredMergePolicy {
                     break;
                 }
 
-                let score = self.score(&candidate, hit_too_large);
-                if score < best_score && (!hit_too_large || !max_merge_is_running) {
-                    best_score = score;
+                let score = self.score(infos, &candidate, hit_too_large)?;
+                if mp_verbose(merge_context) {
+                    let candidate_infos = candidate.iter().map(|s| infos.info(s.index));
+                    mp_message(
+                        &format!(
+                            "  maybe={} score={} {} tooLarge={hit_too_large} size={} MB",
+                            seg_string(merge_context, candidate_infos),
+                            double_to_string(score.get_score()),
+                            score.get_explanation(),
+                            format_fixed(bytes_this_merge as f64 / 1024. / 1024., 3),
+                        ),
+                        merge_context,
+                    );
+                }
+
+                if best_score.as_ref().map_or(true, |best_score| {
+                    score.get_score() < best_score.get_score()
+                }) && (!hit_too_large || !max_merge_is_running)
+                {
+                    best_score = Some(score);
                     best_too_large = hit_too_large;
                     best = Some(candidate);
                 }
@@ -1967,6 +2280,7 @@ impl MergePolicy for TieredMergePolicy {
 
         self.do_find_merges(
             segment_infos,
+            merge_context,
             &sorted,
             merge_factor,
             allowed_seg_count as i32,
@@ -1993,6 +2307,7 @@ impl MergePolicy for TieredMergePolicy {
         let merge_factor = (self.max_merge_at_once as f64).min(self.segs_per_tier) as i32;
         self.do_find_merges(
             segment_infos,
+            merge_context,
             &sorted,
             merge_factor,
             max_num_segments,
@@ -2025,6 +2340,7 @@ impl MergePolicy for TieredMergePolicy {
         let merge_factor = (self.max_merge_at_once as f64).min(self.segs_per_tier) as i32;
         self.do_find_merges(
             segment_infos,
+            merge_context,
             &sorted,
             merge_factor,
             i32::MAX,

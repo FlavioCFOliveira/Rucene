@@ -8,9 +8,10 @@ use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
 use crate::index::leaf_reader::LeafReader;
-use crate::index::{NumericDocValues, SortedDocValues};
+use crate::index::{BinaryDocValues, NumericDocValues, SortedDocValues};
 use crate::search::SortField;
 use crate::search::NO_MORE_DOCS;
+use crate::util::{BytesRef, FixedBitSet};
 
 /// Maps a document to a `long` that orders it against the other documents of a
 /// merge.
@@ -23,31 +24,59 @@ pub type ComparableProvider = Box<dyn Fn(i32) -> Result<i64>>;
 /// Equivalent to `IndexSorter.DocComparator`.
 pub type DocComparator = Box<dyn Fn(i32, i32) -> Ordering + Send + Sync>;
 
-/// Holds one comparable value per reader taking part in a merge.
+/// Caches the sort value of the current document of every segment being
+/// merged, and compares them.
 ///
-/// Equivalent to `IndexSorter.ComparableValues`.
-pub struct ComparableValues {
+/// Equivalent to `IndexSorter.ComparableValues` (`IndexSorter.java:65-112`),
+/// the merge-sort counterpart of [`DocComparator`]. Most sorts reduce a
+/// document to one sortable `long` and implement
+/// [`IndexSorter::get_comparable_providers`], which
+/// [`from_comparable_providers`] adapts to this interface; a sort whose value
+/// cannot be a `long` — [`BinarySorter`] — implements it directly.
+pub trait ComparableValues {
+    /// Reads the value of document `doc_id` of segment `reader_index`, so that
+    /// [`compare`](Self::compare) can later compare it.
+    ///
+    /// Equivalent to `ComparableValues.setTopValue(int, int)`. The merge sort
+    /// visits each segment's documents in increasing order, so `doc_id` never
+    /// decreases for a given `reader_index`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the value raises.
+    fn set_top_value(&mut self, reader_index: usize, doc_id: i32) -> Result<()>;
+
+    /// Compares the values last read for two segments, without applying the
+    /// sort's `reverse` flag, which the caller applies.
+    ///
+    /// Equivalent to `ComparableValues.compare(int, int)`.
+    fn compare(&self, reader_index_a: usize, reader_index_b: usize) -> Ordering;
+}
+
+/// Adapts one [`ComparableProvider`] per segment to [`ComparableValues`].
+///
+/// Equivalent to the static
+/// `IndexSorter.ComparableValues.fromComparableProviders(ComparableProvider[])`.
+pub fn from_comparable_providers(providers: Vec<ComparableProvider>) -> Box<dyn ComparableValues> {
+    let values = vec![0i64; providers.len()];
+    Box::new(ProvidersComparableValues { providers, values })
+}
+
+/// The anonymous `ComparableValues`
+/// `ComparableValues.fromComparableProviders` returns: one `long` per segment,
+/// compared with `Long.compare`.
+struct ProvidersComparableValues {
     providers: Vec<ComparableProvider>,
     values: Vec<i64>,
 }
 
-impl ComparableValues {
-    /// Builds the value holder from one provider per reader.
-    ///
-    /// Equivalent to `ComparableValues.fromComparableProviders`.
-    pub fn from_comparable_providers(providers: Vec<ComparableProvider>) -> Self {
-        let values = vec![0i64; providers.len()];
-        Self { providers, values }
-    }
-
-    /// Records the comparable value of `doc_id` in reader `reader_index`.
-    pub fn set_top_value(&mut self, reader_index: usize, doc_id: i32) -> Result<()> {
+impl ComparableValues for ProvidersComparableValues {
+    fn set_top_value(&mut self, reader_index: usize, doc_id: i32) -> Result<()> {
         self.values[reader_index] = (self.providers[reader_index])(doc_id)?;
         Ok(())
     }
 
-    /// Orders the values recorded for two readers.
-    pub fn compare(&self, reader_index_a: usize, reader_index_b: usize) -> Ordering {
+    fn compare(&self, reader_index_a: usize, reader_index_b: usize) -> Ordering {
         self.values[reader_index_a].cmp(&self.values[reader_index_b])
     }
 }
@@ -58,11 +87,31 @@ impl ComparableValues {
 pub trait IndexSorter: Send + Sync {
     /// Returns one comparable provider per reader, for merge-time ordering.
     ///
-    /// Equivalent to `IndexSorter.getComparableProviders(List<LeafReader>)`.
+    /// Equivalent to `IndexSorter.getComparableProviders(List<LeafReader>)`. As
+    /// in Java, a sorter whose value is a `long` implements it, and the default
+    /// [`get_comparable_values`](Self::get_comparable_values) adapts it; a
+    /// sorter that implements [`get_comparable_values`](Self::get_comparable_values)
+    /// itself need not, and inherits this default, which fails.
+    ///
+    /// # Errors
+    ///
+    /// The default returns [`LuceneError::UnsupportedOperation`] with Java's
+    /// message, `"<class> does not implement getComparableProviders"`.
+    /// **Divergence from Lucene 10.5.0.** Java names the class with
+    /// `getClass().getName()`; Rust has no runtime class name, so the default
+    /// names the implementing type with [`std::any::type_name`]. The one
+    /// Lucene class that inherits the default, `BinarySorter`, renders the
+    /// Java name; see [`BinarySorter`].
     fn get_comparable_providers(
         &self,
         readers: &[Arc<dyn LeafReader>],
-    ) -> Result<Vec<ComparableProvider>>;
+    ) -> Result<Vec<ComparableProvider>> {
+        let _ = readers;
+        Err(LuceneError::UnsupportedOperation(format!(
+            "{} does not implement getComparableProviders",
+            std::any::type_name::<Self>()
+        )))
+    }
 
     /// Returns the within-segment comparator, for flush-time ordering.
     ///
@@ -75,10 +124,20 @@ pub trait IndexSorter: Send + Sync {
     /// Equivalent to `IndexSorter.getProviderName()`.
     fn get_provider_name(&self) -> &str;
 
-    /// Builds the merge-time value holder. Defaults to wrapping the comparable
-    /// providers, as Java's default method does.
-    fn get_comparable_values(&self, readers: &[Arc<dyn LeafReader>]) -> Result<ComparableValues> {
-        Ok(ComparableValues::from_comparable_providers(
+    /// Builds the merge-time value holder.
+    ///
+    /// Equivalent to `IndexSorter.getComparableValues(List<LeafReader>)`, whose
+    /// default adapts [`get_comparable_providers`](Self::get_comparable_providers)
+    /// through [`from_comparable_providers`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the providers raises.
+    fn get_comparable_values(
+        &self,
+        readers: &[Arc<dyn LeafReader>],
+    ) -> Result<Box<dyn ComparableValues>> {
+        Ok(from_comparable_providers(
             self.get_comparable_providers(readers)?,
         ))
     }
@@ -95,6 +154,23 @@ pub type NumericDocValuesProvider =
 /// Equivalent to `IndexSorter.SortedDocValuesProvider`.
 pub type SortedDocValuesProvider =
     Arc<dyn Fn(&dyn LeafReader) -> Result<Option<Box<dyn SortedDocValues>>> + Send + Sync>;
+
+/// Supplies the binary doc values a sorter reads.
+///
+/// Equivalent to `IndexSorter.BinaryDocValuesProvider`
+/// (`IndexSorter.java:184-189`). As in Java — whose only provider is
+/// `BinarySortField::getSortKeyDocValues`, built on `DocValues.getBinary` — a
+/// reader without the field yields empty values rather than none.
+pub type BinaryDocValuesProvider =
+    Arc<dyn Fn(&dyn LeafReader) -> Result<Box<dyn BinaryDocValues>> + Send + Sync>;
+
+/// Compares two binary sort keys, either of which may be missing (`None`).
+///
+/// Equivalent to the `Comparator<BytesRef>` `IndexSorter.BinarySorter` takes,
+/// which Java documents as accepting `null` for a missing value and not
+/// applying the `reverse` flag. A key is handed over as the byte slice a
+/// `BytesRef` would view.
+pub type BinaryComparator = Arc<dyn Fn(Option<&[u8]>, Option<&[u8]>) -> Ordering + Send + Sync>;
 
 /// Reads every value of a numeric doc-values field into a dense array, filling
 /// the documents that have no value with `missing_value`.
@@ -336,6 +412,170 @@ impl IndexSorter for StringSorter {
     }
 }
 
+/// An [`IndexSorter`] over a binary doc-values field, comparing the raw bytes.
+///
+/// Equivalent to `org.apache.lucene.index.IndexSorter.BinarySorter`
+/// (`IndexSorter.java:537-654`), which `BinarySortField.getIndexSorter()`
+/// builds. Its values cannot be reduced to a `long`, so it implements
+/// [`get_comparable_values`](IndexSorter::get_comparable_values) directly and
+/// leaves [`get_comparable_providers`](IndexSorter::get_comparable_providers)
+/// to the failing default.
+pub struct BinarySorter {
+    provider_name: String,
+    reverse_mul: i32,
+    /// Compares two values, either of which may be missing; the reverse flag
+    /// is not applied by this comparator.
+    comparator: BinaryComparator,
+    values_provider: BinaryDocValuesProvider,
+}
+
+impl BinarySorter {
+    /// Creates a binary sorter.
+    ///
+    /// Equivalent to `new BinarySorter(String, boolean, Comparator<BytesRef>,
+    /// BinaryDocValuesProvider)`.
+    pub fn new(
+        provider_name: impl Into<String>,
+        reverse: bool,
+        comparator: BinaryComparator,
+        values_provider: BinaryDocValuesProvider,
+    ) -> Self {
+        Self {
+            provider_name: provider_name.into(),
+            reverse_mul: if reverse { -1 } else { 1 },
+            comparator,
+            values_provider,
+        }
+    }
+}
+
+/// The anonymous `ComparableValues` `BinarySorter.getComparableValues`
+/// returns: the sort key of each segment's current document, or `None` when
+/// that document has no value.
+///
+/// Java keeps each head as the `BytesRef` the doc values returned, without
+/// copying, since it stays valid until that segment's cursor moves; this port's
+/// [`BinaryDocValues::binary_value`] returns an owned [`BytesRef`], which is
+/// kept instead.
+struct BinaryComparableValues {
+    values: Vec<Box<dyn BinaryDocValues>>,
+    heads: Vec<Option<BytesRef>>,
+    last_doc: Vec<i32>,
+    comparator: BinaryComparator,
+}
+
+impl ComparableValues for BinaryComparableValues {
+    /// Equivalent to the anonymous class's `setTopValue(int, int)`: it only
+    /// ever scans forward with `nextDoc()`, never seeks, so reads stay
+    /// sequential even for block-compressed formats.
+    fn set_top_value(&mut self, reader_index: usize, doc_id: i32) -> Result<()> {
+        debug_assert!(
+            doc_id >= self.last_doc[reader_index],
+            "out of order access: docID={doc_id} < lastDoc={}",
+            self.last_doc[reader_index]
+        );
+        self.last_doc[reader_index] = doc_id;
+        let values = &mut self.values[reader_index];
+        let mut doc = values.doc_id();
+        while doc < doc_id {
+            doc = values.next_doc()?;
+        }
+        self.heads[reader_index] = if doc == doc_id {
+            Some(values.binary_value()?)
+        } else {
+            None
+        };
+        Ok(())
+    }
+
+    fn compare(&self, reader_index_a: usize, reader_index_b: usize) -> Ordering {
+        (self.comparator)(
+            self.heads[reader_index_a].as_ref().map(BytesRef::slice),
+            self.heads[reader_index_b].as_ref().map(BytesRef::slice),
+        )
+    }
+}
+
+impl IndexSorter for BinarySorter {
+    /// Equivalent to the `IndexSorter.getComparableProviders` default that
+    /// `BinarySorter` inherits, which throws
+    /// `UnsupportedOperationException(getClass().getName() + " does not
+    /// implement getComparableProviders")`. Java's class name for this type is
+    /// rendered here, which the trait default cannot do.
+    fn get_comparable_providers(
+        &self,
+        readers: &[Arc<dyn LeafReader>],
+    ) -> Result<Vec<ComparableProvider>> {
+        let _ = readers;
+        Err(LuceneError::UnsupportedOperation(
+            "org.apache.lucene.index.IndexSorter$BinarySorter does not implement \
+             getComparableProviders"
+                .to_string(),
+        ))
+    }
+
+    /// Equivalent to `BinarySorter.getComparableValues(List)`.
+    fn get_comparable_values(
+        &self,
+        readers: &[Arc<dyn LeafReader>],
+    ) -> Result<Box<dyn ComparableValues>> {
+        let mut values = Vec::with_capacity(readers.len());
+        for reader in readers {
+            values.push((self.values_provider)(reader.as_ref())?);
+        }
+        Ok(Box::new(BinaryComparableValues {
+            values,
+            heads: vec![None; readers.len()],
+            last_doc: vec![-1; readers.len()],
+            comparator: Arc::clone(&self.comparator),
+        }))
+    }
+
+    /// Equivalent to `BinarySorter.getDocComparator(LeafReader, int)`: the
+    /// values are materialised once, concatenated into one buffer with a
+    /// per-document offset array and a presence bitset, and compared in place.
+    fn get_doc_comparator(&self, reader: &dyn LeafReader, max_doc: i32) -> Result<DocComparator> {
+        let mut values = (self.values_provider)(reader)?;
+        let max_doc = max_doc.max(0) as usize;
+        let mut blob: Vec<u8> = Vec::with_capacity(max_doc.max(16));
+        let mut offsets = vec![0usize; max_doc + 1];
+        let mut present = FixedBitSet::new(max_doc);
+        let mut doc = values.next_doc()?;
+        for (i, offset) in offsets.iter_mut().enumerate().take(max_doc) {
+            *offset = blob.len();
+            if doc == i as i32 {
+                let value = values.binary_value()?;
+                blob.extend_from_slice(value.slice());
+                present.set(i);
+                doc = values.next_doc()?;
+            }
+        }
+        offsets[max_doc] = blob.len();
+        let comparator = Arc::clone(&self.comparator);
+        let reverse_mul = self.reverse_mul;
+        Ok(Box::new(move |doc_id1: i32, doc_id2: i32| {
+            let value = |doc_id: i32| -> Option<&[u8]> {
+                let doc_id = doc_id as usize;
+                if present.get(doc_id) {
+                    Some(&blob[offsets[doc_id]..offsets[doc_id + 1]])
+                } else {
+                    None
+                }
+            };
+            let ordering = comparator(value(doc_id1), value(doc_id2));
+            if reverse_mul < 0 {
+                ordering.reverse()
+            } else {
+                ordering
+            }
+        }))
+    }
+
+    fn get_provider_name(&self) -> &str {
+        &self.provider_name
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Sorter
 // -----------------------------------------------------------------------------
@@ -500,7 +740,7 @@ impl MultiSorter {
     ///
     /// Propagates whatever reading a document's sort value raised.
     fn set_comparable_values(
-        comparables: &mut [ComparableValues],
+        comparables: &mut [Box<dyn ComparableValues>],
         parents: Option<&dyn crate::util::bit_set::BitSet>,
         reader_index: usize,
         doc_id: i32,
@@ -538,7 +778,7 @@ impl MultiSorter {
         }
 
         let leaf_count = readers.len();
-        let mut comparables: Vec<ComparableValues> = Vec::with_capacity(sorters.len());
+        let mut comparables: Vec<Box<dyn ComparableValues>> = Vec::with_capacity(sorters.len());
         for sorter in sorters {
             comparables.push(sorter.get_comparable_values(readers)?);
         }

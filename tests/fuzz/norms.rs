@@ -253,7 +253,7 @@ fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &F
             writer.add_value(*doc, *value).expect("add value");
         }
         writer.finish(fixture.max_doc);
-        writer.flush(consumer.as_mut()).expect("flush");
+        writer.flush(consumer.as_mut(), None).expect("flush");
     }
     consumer.close().expect("close");
 }

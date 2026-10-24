@@ -124,6 +124,10 @@ use crate::store::{ByteArrayDataInput, Directory, DEFAULT_IO_CONTEXT};
 /// documentation for the specification this type implements.
 pub struct StoredFieldsConsumer {
     codec: Arc<dyn Codec>,
+    /// The format `init_stored_fields_writer` writes through, when it is not
+    /// the codec's: Java's `SortingStoredFieldsConsumer` overrides
+    /// `initStoredFieldsWriter` to use its temporary format.
+    format: Option<Arc<dyn crate::codecs::stored_fields::StoredFieldsFormat>>,
     directory: Arc<dyn Directory>,
     info: SegmentInfo,
     writer: Option<Box<dyn StoredFieldsWriter>>,
@@ -153,12 +157,31 @@ impl StoredFieldsConsumer {
     pub fn new(codec: Arc<dyn Codec>, directory: Arc<dyn Directory>, info: SegmentInfo) -> Self {
         Self {
             codec,
+            format: None,
             directory,
             info,
             writer: None,
             last_doc: -1,
             aborted: false,
         }
+    }
+
+    /// Creates a consumer that writes through `format` rather than the codec's
+    /// stored-fields format.
+    ///
+    /// This is how [`SortingStoredFieldsConsumer`](crate::index::sorting_consumers::SortingStoredFieldsConsumer)
+    /// reproduces its `initStoredFieldsWriter` override
+    /// (`SortingStoredFieldsConsumer.java:95-100`), which opens the writer of
+    /// its temporary format instead.
+    pub fn with_format(
+        codec: Arc<dyn Codec>,
+        format: Arc<dyn crate::codecs::stored_fields::StoredFieldsFormat>,
+        directory: Arc<dyn Directory>,
+        info: SegmentInfo,
+    ) -> Self {
+        let mut consumer = Self::new(codec, directory, info);
+        consumer.format = Some(format);
+        consumer
     }
 
     /// Returns `true` once the codec writer has been created.
@@ -216,11 +239,17 @@ impl StoredFieldsConsumer {
             )));
         }
         if self.writer.is_none() {
-            self.writer = Some(self.codec.stored_fields_format().fields_writer(
-                self.directory.as_ref(),
-                &self.info,
-                &*DEFAULT_IO_CONTEXT,
-            )?);
+            let writer = match &self.format {
+                Some(format) => {
+                    format.fields_writer(self.directory.as_ref(), &self.info, &*DEFAULT_IO_CONTEXT)
+                }
+                None => self.codec.stored_fields_format().fields_writer(
+                    self.directory.as_ref(),
+                    &self.info,
+                    &*DEFAULT_IO_CONTEXT,
+                ),
+            }?;
+            self.writer = Some(writer);
         }
         Ok(())
     }

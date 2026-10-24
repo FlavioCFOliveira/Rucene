@@ -5,11 +5,13 @@
 //! | [`FieldInvertState`] | `FieldInvertState` |
 //! | [`DefaultIndexingChain`] | `IndexingChain` |
 //! | `PerField` (private) | `IndexingChain.PerField` |
-//! | [`EmptyNormsProducer`] | the `NormsProducer` the chain passes to the codec |
+//! | [`EmptyNormsProducer`] | — (a norms producer reporting a norm of one) |
 //!
-//! The chain's `EmptyNormsProducer` is a
+//! At flush the chain hands the postings writer the segment's real norms, read
+//! back from the files it has just written, as Lucene does
+//! (`IndexingChain.java:358-370`). [`EmptyNormsProducer`] is a
 //! [`NormsProducer`](crate::codecs::norms::NormsProducer) that reports a norm
-//! of one for every document; see its documentation for the divergence.
+//! of one for every document, for callers that need a stand-in.
 //!
 //! The chain turns a [`Document`] into buffered postings, a stored-fields
 //! stream and a term-vectors stream: it registers each field in the segment's
@@ -60,11 +62,15 @@
 //! currently contains its postings files, its stored-fields files and — when a
 //! field asked for them — its term-vectors files, and nothing else.
 //!
-//! Lucene picks `SortingStoredFieldsConsumer` and `SortingTermVectorsConsumer`
-//! when the segment has an index sort. Index sorting is a separate port, so this
-//! chain always uses the plain [`StoredFieldsConsumer`] and
-//! [`TermVectorsConsumer`]; [`DefaultIndexingChain::bind_segment`] is the one
-//! place both choices will be made.
+//! # Index sorting
+//!
+//! When the segment has an index sort, [`DefaultIndexingChain::bind_segment`]
+//! picks `SortingStoredFieldsConsumer` and `SortingTermVectorsConsumer`, as
+//! `IndexingChain.java:136-156` does, and the flush computes the sort map
+//! before any file is written and hands it to every consumer — norms, doc
+//! values, points, vectors, stored fields, term vectors and postings
+//! (`IndexingChain.java:298-370`) — so every file of the segment is written in
+//! the sorted order.
 
 #![deny(unsafe_code)]
 
@@ -103,6 +109,7 @@ use crate::index::index_sorter::{Sorter, SorterDocMap};
 use crate::index::index_writer_config::LiveIndexWriterConfig;
 use crate::index::norms_writer::NormValuesWriter;
 use crate::index::point_values_writer::PointValuesWriter;
+use crate::index::sorting_consumers::{SortingStoredFieldsConsumer, SortingTermVectorsConsumer};
 use crate::index::stored_fields_consumer::StoredFieldsConsumer;
 use crate::index::term_vectors_consumer::TermVectorsConsumer;
 use crate::index::vector_values_consumer::VectorValuesConsumer;
@@ -372,14 +379,13 @@ impl FieldInvertState {
 // Norms
 // ---------------------------------------------------------------------------
 
-/// Norms source the flush hands to the postings format.
+/// A norms source that reports a norm of one for every document.
 ///
-/// The Lucene 10.4 postings format reads norms only to compute the impact
-/// blocks that accompany skip data. Java hands the flush a producer over the
-/// norms it has just written (`IndexingChain.java:361-370`); this one reports
-/// a norm of one for every document instead, so a flushed segment's impacts
-/// for a field with norms differ from Lucene's (see the call site in
-/// `flush`).
+/// The flush does not use it: like Java (`IndexingChain.java:358-370`), it
+/// hands the postings format a producer over the norms it has just written,
+/// because the postings writer folds each document's norm into its impact
+/// blocks. This producer remains for callers that need a stand-in, such as a
+/// test driving the postings writer without norms files.
 #[derive(Debug, Clone, Copy)]
 pub struct EmptyNormsProducer {
     max_doc: i32,
@@ -712,12 +718,12 @@ pub struct DefaultIndexingChain {
     /// segment it writes. Equivalent to `IndexingChain.storedFieldsConsumer`,
     /// which Lucene builds in the constructor because it already has the
     /// directory and the `SegmentInfo` there.
-    stored_fields_consumer: Option<StoredFieldsConsumer>,
+    stored_fields_consumer: Option<ChainStoredFields>,
     /// The term-vectors half of the chain, present once the chain knows which
     /// segment it writes. Equivalent to `IndexingChain.termVectorsWriter`,
     /// which Lucene builds in the constructor because it already has the
     /// directory and the `SegmentInfo` there.
-    term_vectors_consumer: Option<TermVectorsConsumer>,
+    term_vectors_consumer: Option<ChainTermVectors>,
     /// The KNN-vectors half of the chain, present once the chain knows which
     /// segment it writes. Equivalent to `IndexingChain.vectorValuesConsumer`,
     /// which Lucene builds in the constructor (`IndexingChain.java:134-135`).
@@ -856,12 +862,12 @@ impl DefaultIndexingChain {
 
     /// Returns the stored-fields consumer, if the chain is bound to a segment.
     pub fn stored_fields_consumer(&self) -> Option<&StoredFieldsConsumer> {
-        self.stored_fields_consumer.as_ref()
+        self.stored_fields_consumer.as_deref()
     }
 
     /// Returns the term-vectors consumer, if the chain is bound to a segment.
     pub fn term_vectors_consumer(&self) -> Option<&TermVectorsConsumer> {
-        self.term_vectors_consumer.as_ref()
+        self.term_vectors_consumer.as_deref()
     }
 
     /// Opens the stored-fields frame of `doc_id`.
@@ -1031,23 +1037,30 @@ impl DefaultIndexingChain {
         for sort_field in index_sort.fields() {
             if sort_field.get_index_sorter().is_none() {
                 return Err(LuceneError::IllegalState(format!(
-                    "Cannot sort index with sort order {sort_field:?}"
+                    "Cannot sort index with sort order {sort_field}"
                 )));
             }
             if sort_field.field() != Some(field_to_validate) {
                 continue;
             }
-            let expected = match sort_field.field_type() {
-                crate::search::SortFieldType::String => DocValuesType::SORTED,
-                crate::search::SortFieldType::Int
-                | crate::search::SortFieldType::Long
-                | crate::search::SortFieldType::Float
-                | crate::search::SortFieldType::Double => DocValuesType::NUMERIC,
+            // The accessor each sorter's `getDocComparator` calls decides the
+            // type: `BinarySorter` reads binary doc values, `StringSorter`
+            // sorted ones, the numeric sorters numeric ones.
+            let expected = match (sort_field.kind(), sort_field.field_type()) {
+                (crate::search::SortFieldKind::Binary { .. }, _) => DocValuesType::BINARY,
+                (_, crate::search::SortFieldType::String) => DocValuesType::SORTED,
+                (
+                    _,
+                    crate::search::SortFieldType::Int
+                    | crate::search::SortFieldType::Long
+                    | crate::search::SortFieldType::Float
+                    | crate::search::SortFieldType::Double,
+                ) => DocValuesType::NUMERIC,
                 _ => continue,
             };
             if dv_type != expected {
                 return Err(LuceneError::IllegalArgument(format!(
-                    "SortField {sort_field:?} expected field [{field_to_validate}] to be \
+                    "SortField {sort_field} expected field [{field_to_validate}] to be \
                      {expected:?} but it is [{dv_type:?}]"
                 )));
             }
@@ -1955,7 +1968,12 @@ impl DefaultIndexingChain {
     ///
     /// Returns [`LuceneError::IllegalState`] when a field that should have
     /// norms has no buffer, which would mean the chain never saw the field.
-    fn write_norms(&mut self, state: &SegmentWriteState<'_>, max_doc: i32) -> Result<()> {
+    fn write_norms(
+        &mut self,
+        state: &SegmentWriteState<'_>,
+        max_doc: i32,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<()> {
         if !state.field_infos.has_norms() {
             return Ok(());
         }
@@ -1984,7 +2002,7 @@ impl DefaultIndexingChain {
                     ))
                 })?;
                 norms.finish(max_doc);
-                norms.flush(consumer.as_mut())?;
+                norms.flush(consumer.as_mut(), sort_map)?;
             }
             Ok(())
         })();
@@ -2015,7 +2033,11 @@ impl DefaultIndexingChain {
     /// Returns [`LuceneError::IllegalState`] for a per-field state that
     /// disagrees with the segment's field infos, and propagates whatever the
     /// format's consumer raises while writing the fields.
-    fn write_doc_values(&mut self, state: &SegmentWriteState<'_>) -> Result<()> {
+    fn write_doc_values(
+        &mut self,
+        state: &SegmentWriteState<'_>,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<()> {
         if !state.field_infos.has_doc_values() {
             return Ok(());
         }
@@ -2053,7 +2075,7 @@ impl DefaultIndexingChain {
                 let consumer = consumer
                     .as_mut()
                     .expect("INVARIANT: the consumer was just created if it was missing");
-                writer.flush(&mut **consumer)?;
+                writer.flush(&mut **consumer, sort_map)?;
                 // Java nulls `perField.docValuesWriter` here; this port drops
                 // the whole per-field table at the end of `flush` instead.
             }
@@ -2115,7 +2137,11 @@ impl DefaultIndexingChain {
     ///
     /// Propagates whatever the points format raises while creating the writer,
     /// flushing a field, finishing or closing.
-    fn write_points(&mut self, state: &SegmentWriteState<'_>) -> Result<()> {
+    fn write_points(
+        &mut self,
+        state: &SegmentWriteState<'_>,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<()> {
         let mut writer: Option<Box<dyn PointsWriter>> = None;
         let outcome: Result<()> = (|| {
             for index in field_hash_flush_order(&self.per_fields) {
@@ -2137,7 +2163,7 @@ impl DefaultIndexingChain {
                 let writer = writer
                     .as_mut()
                     .expect("INVARIANT: the writer was just created if it was missing");
-                points.flush(&mut **writer)?;
+                points.flush(&mut **writer, sort_map)?;
             }
             if let Some(writer) = writer.as_mut() {
                 writer.finish()?;
@@ -2374,9 +2400,10 @@ impl DefaultIndexingChain {
                             }
                         }
                     }
-                    if let (Some(consumer), Some(vectors_index)) =
-                        (self.term_vectors_consumer.as_mut(), per_field.vectors_index)
-                    {
+                    if let (Some(consumer), Some(vectors_index)) = (
+                        self.term_vectors_consumer.as_deref_mut(),
+                        per_field.vectors_index,
+                    ) {
                         consumer.finish_field(vectors_index);
                     }
                 }
@@ -2453,7 +2480,7 @@ impl DefaultIndexingChain {
                 analyzer,
                 info_stream,
                 &mut self.terms_writer,
-                self.term_vectors_consumer.as_mut(),
+                self.term_vectors_consumer.as_deref_mut(),
                 &mut self.per_fields[pf],
                 doc_id,
                 field,
@@ -2964,17 +2991,149 @@ impl DefaultIndexingChain {
     }
 }
 
+/// Whether `index_sort` sorts the segment.
+///
+/// **Divergence from Lucene 10.5.0** (already declared on `maybe_sort_segment`):
+/// `SegmentInfo.getIndexSort()` is `null` for an unsorted segment; this port
+/// carries the relevance sort, or no field at all, there instead.
+fn is_index_sorted(index_sort: &crate::search::Sort) -> bool {
+    !index_sort.fields().is_empty() && *index_sort != crate::search::Sort::default()
+}
+
+/// The stored-fields consumer of the chain: Lucene's `StoredFieldsConsumer`,
+/// or its `SortingStoredFieldsConsumer` subclass when the segment has an index
+/// sort (`IndexingChain.java:136-156`).
+///
+/// **Divergence from Lucene 10.5.0.** Java holds the subclass through a
+/// `StoredFieldsConsumer` reference and dispatches the three methods it
+/// overrides virtually. This enum dereferences to the plain consumer for every
+/// method the subclass inherits, and dispatches the overridden ones —
+/// `write_field`, `flush`, `abort` — itself.
+#[derive(Debug)]
+enum ChainStoredFields {
+    Plain(StoredFieldsConsumer),
+    Sorting(SortingStoredFieldsConsumer),
+}
+
+impl std::ops::Deref for ChainStoredFields {
+    type Target = StoredFieldsConsumer;
+
+    fn deref(&self) -> &StoredFieldsConsumer {
+        match self {
+            Self::Plain(consumer) => consumer,
+            Self::Sorting(consumer) => consumer.get_delegate(),
+        }
+    }
+}
+
+impl std::ops::DerefMut for ChainStoredFields {
+    fn deref_mut(&mut self) -> &mut StoredFieldsConsumer {
+        match self {
+            Self::Plain(consumer) => consumer,
+            Self::Sorting(consumer) => consumer.get_delegate_mut(),
+        }
+    }
+}
+
+impl ChainStoredFields {
+    /// `StoredFieldsConsumer.writeField(FieldInfo, StoredValue)`, which the
+    /// sorting subclass overrides to remember that a field was stored.
+    fn write_field(&mut self, info: &FieldInfo, value: StoredValue) -> Result<()> {
+        match self {
+            Self::Plain(consumer) => consumer.write_field(info, value),
+            Self::Sorting(consumer) => consumer.write_field(info, value),
+        }
+    }
+
+    /// `StoredFieldsConsumer.flush(SegmentWriteState, Sorter.DocMap)`.
+    fn flush_segment(
+        &mut self,
+        segment_info: &SegmentInfo,
+        field_infos: &crate::index::FieldInfos,
+        context: &dyn crate::store::IOContext,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<()> {
+        match self {
+            Self::Plain(consumer) => consumer.flush(segment_info),
+            Self::Sorting(consumer) => consumer.flush(segment_info, field_infos, context, sort_map),
+        }
+    }
+
+    /// `StoredFieldsConsumer.abort()`.
+    fn abort(&mut self) {
+        match self {
+            Self::Plain(consumer) => consumer.abort(),
+            Self::Sorting(consumer) => consumer.abort(),
+        }
+    }
+}
+
+/// The term-vectors consumer of the chain: Lucene's `TermVectorsConsumer`, or
+/// its `SortingTermVectorsConsumer` subclass when the segment has an index sort
+/// (`IndexingChain.java:136-156`). Dispatched as [`ChainStoredFields`] is; the
+/// subclass overrides `flush` and `abort`.
+#[derive(Debug)]
+enum ChainTermVectors {
+    Plain(TermVectorsConsumer),
+    Sorting(SortingTermVectorsConsumer),
+}
+
+impl std::ops::Deref for ChainTermVectors {
+    type Target = TermVectorsConsumer;
+
+    fn deref(&self) -> &TermVectorsConsumer {
+        match self {
+            Self::Plain(consumer) => consumer,
+            Self::Sorting(consumer) => consumer.get_delegate(),
+        }
+    }
+}
+
+impl std::ops::DerefMut for ChainTermVectors {
+    fn deref_mut(&mut self) -> &mut TermVectorsConsumer {
+        match self {
+            Self::Plain(consumer) => consumer,
+            Self::Sorting(consumer) => consumer.get_delegate_mut(),
+        }
+    }
+}
+
+impl ChainTermVectors {
+    /// `TermVectorsConsumer.flush(Map, SegmentWriteState, Sorter.DocMap,
+    /// NormsProducer)`.
+    fn flush_segment(
+        &mut self,
+        segment_info: &SegmentInfo,
+        field_infos: &crate::index::FieldInfos,
+        context: &dyn crate::store::IOContext,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<()> {
+        match self {
+            Self::Plain(consumer) => consumer.flush(segment_info.max_doc()?),
+            Self::Sorting(consumer) => consumer.flush(segment_info, field_infos, context, sort_map),
+        }
+    }
+
+    /// `TermVectorsConsumer.abort()`.
+    fn abort(&mut self) {
+        match self {
+            Self::Plain(consumer) => consumer.abort(),
+            Self::Sorting(consumer) => consumer.abort(),
+        }
+    }
+}
+
 impl Accountable for DefaultIndexingChain {
     /// Equivalent to `IndexingChain.ramBytesUsed()`.
     fn ram_bytes_used(&self) -> i64 {
         self.bytes_used.load(Ordering::Acquire)
             + self
                 .stored_fields_consumer
-                .as_ref()
+                .as_deref()
                 .map_or(0, StoredFieldsConsumer::ram_bytes_used)
             + self
                 .term_vectors_consumer
-                .as_ref()
+                .as_deref()
                 .map_or(0, TermVectorsConsumer::ram_bytes_used)
             // `IndexingChain.ramBytesUsed` ends with
             // `vectorValuesConsumer.getAccountable().ramBytesUsed()`
@@ -3001,10 +3160,10 @@ impl Accountable for DefaultIndexingChain {
     /// reports zero either way.
     fn child_resources(&self) -> Vec<&dyn Accountable> {
         let mut resources: Vec<&dyn Accountable> = Vec::with_capacity(3);
-        if let Some(consumer) = self.stored_fields_consumer.as_ref() {
+        if let Some(consumer) = self.stored_fields_consumer.as_deref() {
             resources.push(consumer);
         }
-        if let Some(consumer) = self.term_vectors_consumer.as_ref() {
+        if let Some(consumer) = self.term_vectors_consumer.as_deref() {
             resources.push(consumer);
         }
         if let Some(consumer) = self.vector_values_consumer.as_ref() {
@@ -3348,7 +3507,7 @@ impl IndexingChain for DefaultIndexingChain {
                     analyzer.as_ref(),
                     info_stream.as_ref(),
                     &mut self.terms_writer,
-                    self.term_vectors_consumer.as_mut(),
+                    self.term_vectors_consumer.as_deref_mut(),
                     &mut self.per_fields[index],
                     doc_id,
                     field.as_ref(),
@@ -3515,9 +3674,10 @@ impl IndexingChain for DefaultIndexingChain {
                         }
                     }
                 }
-                if let (Some(consumer), Some(vectors_index)) =
-                    (self.term_vectors_consumer.as_mut(), per_field.vectors_index)
-                {
+                if let (Some(consumer), Some(vectors_index)) = (
+                    self.term_vectors_consumer.as_deref_mut(),
+                    per_field.vectors_index,
+                ) {
                     consumer.finish_field(vectors_index);
                 }
             }
@@ -3563,21 +3723,39 @@ impl IndexingChain for DefaultIndexingChain {
                 segment_info.name
             )));
         }
-        // Lucene chooses `SortingStoredFieldsConsumer` and
-        // `SortingTermVectorsConsumer` here when the segment has an index sort;
-        // index sorting is a separate port, so the plain consumers are the only
-        // option for now.
-        self.stored_fields_consumer = Some(StoredFieldsConsumer::new(
-            self.config.codec(),
-            Arc::clone(&directory) as Arc<dyn crate::store::Directory>,
-            segment_info.clone(),
-        ));
-        self.term_vectors_consumer = Some(TermVectorsConsumer::new(
-            self.config.codec(),
-            Arc::clone(&directory) as Arc<dyn crate::store::Directory>,
-            segment_info.clone(),
-            Arc::clone(&self.bytes_used),
-        ));
+        // `IndexingChain.java:136-156`: a segment with an index sort gets the
+        // sorting consumers, which buffer in arrival order and write the
+        // segment's files in the sorted order at flush.
+        let segment_directory = Arc::clone(&directory) as Arc<dyn crate::store::Directory>;
+        if is_index_sorted(segment_info.index_sort()) {
+            self.stored_fields_consumer = Some(ChainStoredFields::Sorting(
+                SortingStoredFieldsConsumer::new(
+                    self.config.codec(),
+                    Arc::clone(&segment_directory),
+                    segment_info.clone(),
+                )?,
+            ));
+            self.term_vectors_consumer =
+                Some(ChainTermVectors::Sorting(SortingTermVectorsConsumer::new(
+                    self.config.codec(),
+                    Arc::clone(&segment_directory),
+                    segment_info.clone(),
+                    Arc::clone(&self.bytes_used),
+                )?));
+        } else {
+            self.stored_fields_consumer =
+                Some(ChainStoredFields::Plain(StoredFieldsConsumer::new(
+                    self.config.codec(),
+                    Arc::clone(&segment_directory),
+                    segment_info.clone(),
+                )));
+            self.term_vectors_consumer = Some(ChainTermVectors::Plain(TermVectorsConsumer::new(
+                self.config.codec(),
+                Arc::clone(&segment_directory),
+                segment_info.clone(),
+                Arc::clone(&self.bytes_used),
+            )));
+        }
         // `IndexingChain`'s constructor builds the vectors consumer before the
         // stored-fields and term-vectors ones (`IndexingChain.java:134-135`);
         // none of the three writes anything here, so only the objects differ in
@@ -3639,9 +3817,9 @@ impl IndexingChain for DefaultIndexingChain {
         // consumer below needs the map to write its column in the sorted order
         // (`IndexingChain.java:302`).
         let sort_map = self.maybe_sort_segment(state.segment_info, state.field_infos)?;
-        self.write_norms(&write_state, max_doc)?;
-        self.write_doc_values(&write_state)?;
-        self.write_points(&write_state)?;
+        self.write_norms(&write_state, max_doc, sort_map.as_ref())?;
+        self.write_doc_values(&write_state, sort_map.as_ref())?;
+        self.write_points(&write_state, sort_map.as_ref())?;
 
         // `vectorValuesConsumer.flush(state, sortMap)` runs between the points
         // and the stored fields (`IndexingChain.java:333`).
@@ -3649,26 +3827,67 @@ impl IndexingChain for DefaultIndexingChain {
             consumer.flush(max_doc, sort_map.as_ref())?;
         }
 
+        // `storedFieldsConsumer.finish(maxDoc); storedFieldsConsumer.flush(state,
+        // sortMap)` (`IndexingChain.java:340-341`).
         if let Some(consumer) = self.stored_fields_consumer.as_mut() {
             consumer.finish(max_doc)?;
-            consumer.flush(state.segment_info)?;
+            consumer.flush_segment(
+                state.segment_info,
+                state.field_infos,
+                state.context,
+                sort_map.as_ref(),
+            )?;
         }
 
+        // `termsHash.flush` finishes the term vectors first, through its
+        // `nextTermsHash` (`TermsHash.java:63-69`).
         if let Some(consumer) = self.term_vectors_consumer.as_mut() {
-            consumer.flush(max_doc)?;
+            consumer.flush_segment(
+                state.segment_info,
+                state.field_infos,
+                state.context,
+                sort_map.as_ref(),
+            )?;
         }
 
-        // **Divergence from Lucene 10.5.0.** Java hands `termsHash.flush` the
-        // merge instance of a real norms producer opened over the files
-        // `write_norms` has just written (`IndexingChain.java:361-370`),
-        // because its postings writer folds the per-document norm into the
-        // impact blocks. This flush still hands it a norm of one for every
-        // document, so the impacts of a field with norms differ from Lucene's.
-        // A merge reads the merged segment's real norms
-        // (`SegmentMerger::merge_terms`).
-        let norms = EmptyNormsProducer::new(max_doc);
-        self.terms_writer
-            .flush(&mut write_state, state.delete_terms, &norms)?;
+        // `termsHash.flush(fieldsToFlush, state, sortMap, normsMergeInstance)`
+        // (`IndexingChain.java:358-370`): when the segment has norms, the
+        // postings writer reads them back through the merge instance of a
+        // norms producer opened over the files `write_norms` has just written,
+        // because it folds each document's norm into the impact blocks; the
+        // postings are written in the sorted order through
+        // `FreqProxTermsWriter.SortingTerms`.
+        let mut norms = if state.field_infos.has_norms() {
+            let read_state = crate::codecs::state::SegmentReadState::new(
+                state.directory,
+                state.segment_info,
+                state.field_infos,
+                &*crate::store::DEFAULT_IO_CONTEXT,
+            );
+            Some(
+                self.config
+                    .codec()
+                    .norms_format()
+                    .norms_producer(&read_state)?,
+            )
+        } else {
+            None
+        };
+        let flushed = (|| -> Result<()> {
+            let norms_merge_instance = norms
+                .as_ref()
+                .map(|norms| norms.get_merge_instance())
+                .transpose()?;
+            self.terms_writer.flush(
+                &mut write_state,
+                state.delete_terms,
+                sort_map.as_ref(),
+                norms_merge_instance.as_deref(),
+            )
+        })();
+        let closed = norms.as_mut().map_or(Ok(()), |norms| norms.close());
+        flushed?;
+        closed?;
 
         // Important to save after asking the consumers to flush, so that a
         // consumer can still alter a `FieldInfo` on its way out — Lucene's

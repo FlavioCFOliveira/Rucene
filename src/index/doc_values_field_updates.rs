@@ -15,6 +15,8 @@ use crate::error::{LuceneError, Result};
 use crate::index::DocValuesType;
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::DocIdSetIterator;
+use crate::util::bit_set::BitSet;
+use crate::util::bit_sets::SparseFixedBitSet;
 use crate::util::{Accountable, BytesRef, RamUsageEstimator};
 
 /// Page size for the internal doc-ID storage, matching Lucene's
@@ -60,6 +62,87 @@ pub struct DocValuesFieldUpdates {
     size: usize,
     /// Whether `finish()` has been called.
     finished: bool,
+    /// The subclass state when this instance is
+    /// `NumericDocValuesFieldUpdates.SingleValueNumericDocValuesFieldUpdates`;
+    /// see [`new_single_value_numeric`](Self::new_single_value_numeric).
+    single_value: Option<SingleValueNumericDocValuesFieldUpdates>,
+}
+
+/// The updates of a numeric doc-values field that write one value to every
+/// matched document.
+///
+/// Equivalent to
+/// `org.apache.lucene.index.NumericDocValuesFieldUpdates.SingleValueNumericDocValuesFieldUpdates`
+/// (`NumericDocValuesFieldUpdates.java:136-235`), which
+/// `FrozenBufferedUpdates.applyDocValuesUpdates` builds instead of the general
+/// packed form when the buffered updates of a field carry a single value
+/// (`FrozenBufferedUpdates.java:284-298`): the value is kept once, and the
+/// documents in a sparse bitset, with a second bitset marking the documents
+/// whose last update was a reset.
+///
+/// **Divergence from Lucene 10.5.0.** Java's class extends
+/// `DocValuesFieldUpdates`; this port's [`DocValuesFieldUpdates`] is one
+/// concrete type — it already stands for both `NumericDocValuesFieldUpdates`
+/// and `BinaryDocValuesFieldUpdates` — so the subclass's own state is this
+/// struct, which a [`DocValuesFieldUpdates`] holds and dispatches to, exactly
+/// where Java's overrides take over. Build one with
+/// [`DocValuesFieldUpdates::new_single_value_numeric`].
+#[derive(Clone, Debug)]
+pub struct SingleValueNumericDocValuesFieldUpdates {
+    value: i64,
+    bit_set: SparseFixedBitSet,
+    has_no_value: Option<SparseFixedBitSet>,
+    has_at_least_one_value: bool,
+}
+
+impl SingleValueNumericDocValuesFieldUpdates {
+    /// Equivalent to the subclass part of
+    /// `SingleValueNumericDocValuesFieldUpdates(long, String, int, long)`.
+    fn new(max_doc: i32, value: i64) -> Self {
+        Self {
+            value,
+            bit_set: SparseFixedBitSet::new(max_doc.max(0) as usize),
+            has_no_value: None,
+            has_at_least_one_value: false,
+        }
+    }
+
+    /// Returns the value every updated document receives.
+    ///
+    /// Equivalent to the package-private `longValue()`, which Java keeps for
+    /// testing.
+    pub fn long_value(&self) -> i64 {
+        self.value
+    }
+
+    /// Equivalent to `SingleValueNumericDocValuesFieldUpdates.add(int, long)`.
+    fn add(&mut self, doc: i32, value: i64) {
+        debug_assert_eq!(self.value, value);
+        self.bit_set.set(doc as usize);
+        self.has_at_least_one_value = true;
+        if let Some(has_no_value) = self.has_no_value.as_mut() {
+            has_no_value.clear(doc as usize);
+        }
+    }
+
+    /// Equivalent to `SingleValueNumericDocValuesFieldUpdates.reset(int)`.
+    fn reset(&mut self, doc: i32, max_doc: i32) {
+        self.bit_set.set(doc as usize);
+        self.has_at_least_one_value = true;
+        self.has_no_value
+            .get_or_insert_with(|| SparseFixedBitSet::new(max_doc.max(0) as usize))
+            .set(doc as usize);
+    }
+
+    /// The part of `ramBytesUsed()` the subclass adds to the base class's:
+    /// `bitSet.ramBytesUsed() + (hasNoValue == null ? 0 : hasNoValue.ramBytesUsed())`.
+    fn ram_bytes_used(&self) -> i64 {
+        self.bit_set.ram_bytes_used()
+            + self
+                .has_no_value
+                .as_ref()
+                .map_or(0, Accountable::ram_bytes_used)
+    }
 }
 
 impl fmt::Debug for DocValuesFieldUpdates {
@@ -93,7 +176,31 @@ impl DocValuesFieldUpdates {
             values: Vec::with_capacity(PAGE_SIZE),
             size: 0,
             finished: false,
+            single_value: None,
         }
+    }
+
+    /// Creates the updates of a numeric field that write `value` to every
+    /// matched document.
+    ///
+    /// Equivalent to `new SingleValueNumericDocValuesFieldUpdates(long delGen,
+    /// String field, int maxDoc, long value)`; see
+    /// [`SingleValueNumericDocValuesFieldUpdates`].
+    pub fn new_single_value_numeric(
+        del_gen: i64,
+        field: impl Into<String>,
+        max_doc: i32,
+        value: i64,
+    ) -> Self {
+        let mut updates = Self::new(max_doc, del_gen, field, DocValuesType::NUMERIC);
+        updates.single_value = Some(SingleValueNumericDocValuesFieldUpdates::new(max_doc, value));
+        updates
+    }
+
+    /// Returns the single-value state when this instance is a
+    /// [`SingleValueNumericDocValuesFieldUpdates`].
+    pub fn as_single_value_numeric(&self) -> Option<&SingleValueNumericDocValuesFieldUpdates> {
+        self.single_value.as_ref()
     }
 
     /// Returns `true` if `finish()` has been called.
@@ -102,8 +209,16 @@ impl DocValuesFieldUpdates {
     }
 
     /// Returns `true` if this instance contains any updates.
+    ///
+    /// Equivalent to `DocValuesFieldUpdates.any()`, and to the
+    /// `SingleValueNumericDocValuesFieldUpdates` override, which also answers
+    /// `true` once a document was added to its bitset.
     pub fn any(&self) -> bool {
         self.size > 0
+            || self
+                .single_value
+                .as_ref()
+                .is_some_and(|single| single.has_at_least_one_value)
     }
 
     /// Returns the number of buffered updates.
@@ -117,6 +232,14 @@ impl DocValuesFieldUpdates {
     ///
     /// Panics if this buffer is already finished or `doc >= max_doc`.
     pub fn add_long(&mut self, doc: i32, value: i64) {
+        // `SingleValueNumericDocValuesFieldUpdates.add(int, long)` neither
+        // checks `finished` nor records an entry: it only sets the document's
+        // bit.
+        if let Some(single) = self.single_value.as_mut() {
+            assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
+            single.add(doc, value);
+            return;
+        }
         assert!(!self.finished, "already finished");
         assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
         let idx = self.add_internal(doc, HAS_VALUE_MASK);
@@ -129,6 +252,12 @@ impl DocValuesFieldUpdates {
     ///
     /// Panics if this buffer is already finished or `doc >= max_doc`.
     pub fn add_binary(&mut self, doc: i32, value: &BytesRef) {
+        // `SingleValueNumericDocValuesFieldUpdates.add(int, BytesRef)` throws
+        // `UnsupportedOperationException`.
+        assert!(
+            self.single_value.is_none(),
+            "a single-value numeric update cannot take a binary value"
+        );
         assert!(!self.finished, "already finished");
         assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
         let idx = self.add_internal(doc, HAS_VALUE_MASK);
@@ -143,6 +272,13 @@ impl DocValuesFieldUpdates {
     ///
     /// Panics if this buffer is already finished or `doc >= max_doc`.
     pub fn reset(&mut self, doc: i32) {
+        // `SingleValueNumericDocValuesFieldUpdates.reset(int)` marks the
+        // document in both bitsets instead of recording an entry.
+        if let Some(single) = self.single_value.as_mut() {
+            assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
+            single.reset(doc, self.max_doc);
+            return;
+        }
         assert!(!self.finished, "already finished");
         assert!(doc < self.max_doc, "doc {doc} >= maxDoc {}", self.max_doc);
         let idx = self.add_internal(doc, HAS_NO_VALUE_MASK);
@@ -287,6 +423,12 @@ impl DocValuesFieldUpdates {
     ///
     /// Equivalent to `DocValuesFieldUpdates.iterator()`.
     pub fn iterator(&self) -> DocValuesFieldUpdatesIterator<'_> {
+        // `SingleValueNumericDocValuesFieldUpdates.iterator()` iterates its
+        // bitset with a `BitSetIterator(bitSet, maxDoc)` and, unlike the base
+        // class, does not call `ensureFinished()`.
+        if let Some(single) = self.single_value.as_ref() {
+            return DocValuesFieldUpdatesIterator::single_value(single, self.max_doc, self.del_gen);
+        }
         assert!(self.ensure_finished().is_ok(), "call finish() first");
         DocValuesFieldUpdatesIterator::new(self.size, &self.docs, &self.values, self.del_gen)
     }
@@ -305,6 +447,7 @@ impl DocValuesFieldUpdates {
             values: self.values.clone(),
             size: self.size,
             finished: true,
+            single_value: self.single_value.clone(),
         }
     }
 }
@@ -330,9 +473,16 @@ impl Accountable for DocValuesFieldUpdates {
         // NUM_BYTES_OBJECT_REF` (`DocValuesFieldUpdates.java:416-423`); it is
         // written out literally here so the constant does not drift with Rust's
         // own type sizes.
+        // `SingleValueNumericDocValuesFieldUpdates.ramBytesUsed()` adds its
+        // bitsets to the base class's figure.
+        let single_size = self
+            .single_value
+            .as_ref()
+            .map_or(0, SingleValueNumericDocValuesFieldUpdates::ram_bytes_used);
         docs_size
             + values_size
             + binary_size
+            + single_size
             + RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
             + 2 * 4
             + 2
@@ -348,6 +498,11 @@ impl Accountable for DocValuesFieldUpdates {
 ///
 /// Equivalent to `DocValuesFieldUpdates.Iterator`.
 pub struct DocValuesFieldUpdatesIterator<'a> {
+    /// The bitsets and value of a
+    /// [`SingleValueNumericDocValuesFieldUpdates`], whose iterator is the
+    /// anonymous `DocValuesFieldUpdates.Iterator` over a
+    /// `BitSetIterator(bitSet, maxDoc)` that it returns.
+    single: Option<(&'a SingleValueNumericDocValuesFieldUpdates, i32)>,
     size: usize,
     docs: &'a [u64],
     values: &'a [UpdateValue],
@@ -364,6 +519,7 @@ pub struct DocValuesFieldUpdatesIterator<'a> {
 impl<'a> DocValuesFieldUpdatesIterator<'a> {
     fn new(size: usize, docs: &'a [u64], values: &'a [UpdateValue], del_gen: i64) -> Self {
         Self {
+            single: None,
             size,
             docs,
             values,
@@ -375,6 +531,20 @@ impl<'a> DocValuesFieldUpdatesIterator<'a> {
             current_binary: BytesRef::default(),
             current_is_binary: false,
         }
+    }
+
+    /// The iterator of a [`SingleValueNumericDocValuesFieldUpdates`]: its
+    /// set bits below `max_doc`, each with the one value, and a value only
+    /// where the document's last update was not a reset.
+    fn single_value(
+        single: &'a SingleValueNumericDocValuesFieldUpdates,
+        max_doc: i32,
+        del_gen: i64,
+    ) -> Self {
+        let mut iterator = Self::new(0, &[], &[], del_gen);
+        iterator.single = Some((single, max_doc));
+        iterator.current_long = single.value;
+        iterator
     }
 
     /// Returns the delGen of this packet.
@@ -394,6 +564,11 @@ impl<'a> DocValuesFieldUpdatesIterator<'a> {
     /// Panics if this iterator is not a long iterator or the current doc has
     /// no value.
     pub fn long_value(&self) -> i64 {
+        // The single-value iterator's `longValue()` returns the value whatever
+        // `hasValue()` says.
+        if let Some((single, _)) = self.single {
+            return single.value;
+        }
         assert!(self.has_value, "no value for current doc");
         assert!(!self.current_is_binary, "not a numeric iterator");
         self.current_long
@@ -418,6 +593,22 @@ impl<'a> DocIdSetIterator for DocValuesFieldUpdatesIterator<'a> {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
+        if let Some((single, max_doc)) = self.single {
+            // `BitSetIterator.nextDoc()`, which is `advance(doc + 1)`.
+            let target = self.doc + 1;
+            self.doc = if target >= max_doc {
+                NO_MORE_DOCS
+            } else {
+                BitSet::next_set_bit(&single.bit_set, target)
+            };
+            // The anonymous iterator's `hasValue()`.
+            self.has_value = self.doc != NO_MORE_DOCS
+                && single
+                    .has_no_value
+                    .as_ref()
+                    .map_or(true, |has_no_value| !has_no_value.get(self.doc as usize));
+            return Ok(self.doc);
+        }
         if self.idx >= self.size {
             self.doc = NO_MORE_DOCS;
             return Ok(NO_MORE_DOCS);
@@ -463,8 +654,13 @@ impl<'a> DocIdSetIterator for DocValuesFieldUpdatesIterator<'a> {
         ))
     }
 
+    /// The packed iterator's cost is its entry count; the single-value one is
+    /// a `BitSetIterator(bitSet, maxDoc)`, whose cost is `maxDoc`.
     fn cost(&self) -> i64 {
-        self.size as i64
+        match self.single {
+            Some((_, max_doc)) => i64::from(max_doc),
+            None => self.size as i64,
+        }
     }
 }
 

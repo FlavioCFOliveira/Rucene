@@ -13,6 +13,10 @@
 //! | [`FreqProxTermsWriterPerField`] | `FreqProxTermsWriterPerField` |
 //! | [`FreqProxFields`] | `FreqProxFields` |
 //! | [`FreqProxTermsWriter`] | `FreqProxTermsWriter` |
+//! | [`SortingTerms`] | `FreqProxTermsWriter.SortingTerms` |
+//! | [`SortingTermsEnum`] | `FreqProxTermsWriter.SortingTermsEnum` |
+//! | [`SortingDocsEnum`] | `FreqProxTermsWriter.SortingDocsEnum` |
+//! | [`SortingPostingsEnum`] | `FreqProxTermsWriter.SortingPostingsEnum` |
 //!
 //! # How the postings are buffered
 //!
@@ -77,8 +81,9 @@
 //! [`TermsHashPerField::new_chained`] plus
 //! [`TermsHashPerField::intern_by_text_start`] are that secondary entry point.
 //!
-//! Index sorting (`Sorter.DocMap`, `FreqProxTermsWriter.SortingTerms`) is not
-//! ported.
+//! When the segment has an index sort, [`FreqProxTermsWriter::flush`] hands the
+//! codec the buffered postings through [`SortingTerms`], exactly as Lucene
+//! does, so the postings are written in the sorted document order.
 
 #![deny(unsafe_code)]
 
@@ -90,15 +95,19 @@ use crate::codecs::norms::NormsProducer;
 use crate::codecs::state::SegmentWriteState;
 use crate::error::{LuceneError, Result};
 use crate::index::documents_writer::TermDelete;
+use crate::index::filter_reader::{FilterFields, FilterTerms, FilterTermsEnum};
+use crate::index::index_sorter::SorterDocMap;
 use crate::index::indexing_chain::FieldInvertState;
 use crate::index::{
-    FieldInfo, Fields, ImpactsEnum, IndexOptions, PostingsEnum, SeekStatus, Terms, TermsEnum,
-    POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_POSITIONS,
+    FieldInfo, Fields, ImpactsEnum, IndexOptions, PostingsEnum, SeekStatus, TermState, Terms,
+    TermsEnum, POSTINGS_ENUM_FREQS, POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_POSITIONS,
 };
 use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
-use crate::store::{DataInput, DataOutput};
+use crate::store::{ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput};
+use crate::util::automaton::CompiledAutomaton;
 use crate::util::byte_block_pool::{ByteBlockPool, BYTE_BLOCK_MASK, BYTE_BLOCK_SHIFT};
 use crate::util::bytes_ref_hash::BytesRefHash;
+use crate::util::IOBooleanSupplier;
 use crate::util::{compare_utf16, ArrayUtil, AttributeSource, BytesRef, FixedBitSet};
 
 // ---------------------------------------------------------------------------
@@ -2200,11 +2209,18 @@ impl FreqProxTermsWriter {
     /// # Errors
     ///
     /// Propagates any I/O or consistency error raised while writing.
+    ///
+    /// `sort_map` is the permutation the index sort produced, or `None` when
+    /// the segment is not sorted. The deletions are applied to the unsorted
+    /// postings first; the codec then reads them through [`SortingTerms`], so
+    /// every document is written under its sorted number
+    /// (`FreqProxTermsWriter.java:112-128`).
     pub fn flush(
         &mut self,
         state: &mut SegmentWriteState<'_>,
         delete_terms: &[TermDelete],
-        norms: &dyn NormsProducer,
+        sort_map: Option<&SorterDocMap>,
+        norms: Option<&dyn NormsProducer>,
     ) -> Result<()> {
         let fields = self.freeze();
         self.terms_hash.reset();
@@ -2223,10 +2239,695 @@ impl FreqProxTermsWriter {
             ))
         })?;
         let mut consumer = codec.postings_format().fields_consumer(state)?;
-        let outcome = consumer.write(&fields, Some(norms));
+        let outcome = match sort_map {
+            None => consumer.write(&fields, norms),
+            Some(sort_map) => {
+                // The anonymous `FilterFields` Java wraps the buffered fields
+                // in when the segment is sorted.
+                let sorting = SortingFields {
+                    base: FilterFields::new(Box::new(fields)),
+                    infos: state.field_infos,
+                    doc_map: Arc::new(sort_map.clone()),
+                };
+                consumer.write(&sorting, norms)
+            }
+        };
         let closed = consumer.close();
         outcome?;
         closed
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Flush-time index sorting
+// ---------------------------------------------------------------------------
+
+/// The buffered fields of a sorted segment, each field's terms wrapped in
+/// [`SortingTerms`].
+///
+/// Equivalent to the anonymous `FilterLeafReader.FilterFields` subclass
+/// `FreqProxTermsWriter.flush` builds when `sortMap != null`
+/// (`FreqProxTermsWriter.java:116-128`), which overrides `terms(String)` alone
+/// and inherits `iterator()` and `size()`.
+struct SortingFields<'a> {
+    base: FilterFields<FreqProxFields>,
+    /// `state.fieldInfos`, whose index options [`SortingTerms`] is built with.
+    infos: &'a crate::index::FieldInfos,
+    doc_map: Arc<SorterDocMap>,
+}
+
+impl Fields for SortingFields<'_> {
+    fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        self.base.iterator()
+    }
+
+    /// Equivalent to the anonymous class's `terms(String)`: the buffered terms,
+    /// wrapped with the field's index options and the document map.
+    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+        let Some(terms) = self.base.get_delegate().terms(field)? else {
+            return Ok(None);
+        };
+        let index_options = self
+            .infos
+            .field_info(field)
+            .ok_or_else(|| {
+                LuceneError::IllegalState(format!(
+                    "field \"{field}\" has postings but no field info"
+                ))
+            })?
+            .index_options;
+        Ok(Some(Box::new(SortingTerms::new(
+            terms,
+            index_options,
+            Arc::clone(&self.doc_map),
+        ))))
+    }
+
+    fn size(&self) -> i32 {
+        self.base.size()
+    }
+}
+
+/// The terms of one buffered field, handing out postings in the index sort's
+/// document order.
+///
+/// Equivalent to `org.apache.lucene.index.FreqProxTermsWriter.SortingTerms`
+/// (`FreqProxTermsWriter.java:143-163`), a `FilterLeafReader.FilterTerms`
+/// subclass that overrides `iterator()` and `intersect(CompiledAutomaton,
+/// BytesRef)` to wrap the enum they return in a [`SortingTermsEnum`], and
+/// inherits everything else.
+pub struct SortingTerms {
+    base: FilterTerms,
+    doc_map: Arc<SorterDocMap>,
+    index_options: IndexOptions,
+}
+
+impl SortingTerms {
+    /// Wraps `inner`, whose postings are mapped through `doc_map`.
+    ///
+    /// Equivalent to `SortingTerms(Terms, IndexOptions, Sorter.DocMap)`.
+    pub fn new(
+        inner: Box<dyn Terms>,
+        index_options: IndexOptions,
+        doc_map: Arc<SorterDocMap>,
+    ) -> Self {
+        Self {
+            base: FilterTerms::new(inner),
+            doc_map,
+            index_options,
+        }
+    }
+}
+
+impl Terms for SortingTerms {
+    /// Equivalent to `SortingTerms.iterator()`.
+    fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
+        Ok(Box::new(SortingTermsEnum::new(
+            self.base.get_delegate().iterator()?,
+            Arc::clone(&self.doc_map),
+            self.index_options,
+        )))
+    }
+
+    /// Equivalent to `SortingTerms.intersect(CompiledAutomaton, BytesRef)`.
+    fn intersect(
+        &self,
+        compiled: &CompiledAutomaton,
+        start_term: Option<&BytesRef>,
+    ) -> Result<Box<dyn TermsEnum>> {
+        Ok(Box::new(SortingTermsEnum::new(
+            self.base.get_delegate().intersect(compiled, start_term)?,
+            Arc::clone(&self.doc_map),
+            self.index_options,
+        )))
+    }
+
+    fn size(&self) -> i64 {
+        self.base.size()
+    }
+
+    fn sum_total_term_freq(&self) -> i64 {
+        self.base.sum_total_term_freq()
+    }
+
+    fn sum_doc_freq(&self) -> i64 {
+        self.base.sum_doc_freq()
+    }
+
+    fn doc_count(&self) -> i32 {
+        self.base.doc_count()
+    }
+
+    fn has_freqs(&self) -> bool {
+        self.base.has_freqs()
+    }
+
+    fn has_offsets(&self) -> bool {
+        self.base.has_offsets()
+    }
+
+    fn has_positions(&self) -> bool {
+        self.base.has_positions()
+    }
+
+    fn has_payloads(&self) -> bool {
+        self.base.has_payloads()
+    }
+
+    fn stats(&self) -> String {
+        self.base.stats()
+    }
+}
+
+/// The terms enum of [`SortingTerms`], whose postings are re-ordered into the
+/// index sort's document order.
+///
+/// Equivalent to `org.apache.lucene.index.FreqProxTermsWriter.SortingTermsEnum`
+/// (`FreqProxTermsWriter.java:165-222`), a `FilterLeafReader.FilterTermsEnum`
+/// subclass that overrides `postings(PostingsEnum, int)` alone.
+pub struct SortingTermsEnum {
+    base: FilterTermsEnum,
+    doc_map: Arc<SorterDocMap>,
+    index_options: IndexOptions,
+}
+
+impl SortingTermsEnum {
+    /// Wraps `inner`.
+    ///
+    /// Equivalent to `SortingTermsEnum(TermsEnum, Sorter.DocMap, IndexOptions)`.
+    pub fn new(
+        inner: Box<dyn TermsEnum>,
+        doc_map: Arc<SorterDocMap>,
+        index_options: IndexOptions,
+    ) -> Self {
+        Self {
+            base: FilterTermsEnum::new(inner),
+            doc_map,
+            index_options,
+        }
+    }
+}
+
+impl std::fmt::Display for SortingTermsEnum {
+    /// `SortingTermsEnum` declares no `toString()`, so `java.lang.Object`'s
+    /// applies; see
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FreqProxTermsWriter$SortingTermsEnum",
+            self,
+        ))
+    }
+}
+
+impl TermsEnum for SortingTermsEnum {
+    fn attributes(&mut self) -> &mut AttributeSource {
+        self.base.attributes()
+    }
+
+    fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {
+        self.base.seek_ceil(text)
+    }
+
+    fn seek_exact(&mut self, text: &BytesRef) -> Result<bool> {
+        self.base.seek_exact(text)
+    }
+
+    fn seek_ord(&mut self, ord: i64) -> Result<()> {
+        self.base.seek_ord(ord)
+    }
+
+    fn next(&mut self) -> Result<Option<BytesRef>> {
+        self.base.next()
+    }
+
+    fn term(&self) -> Result<BytesRef> {
+        self.base.term()
+    }
+
+    fn ord(&self) -> Result<i64> {
+        self.base.ord()
+    }
+
+    fn doc_freq(&mut self) -> Result<i32> {
+        self.base.doc_freq()
+    }
+
+    fn total_term_freq(&mut self) -> Result<i64> {
+        self.base.total_term_freq()
+    }
+
+    /// Equivalent to `SortingTermsEnum.postings(PostingsEnum, int)`: a field
+    /// that indexes frequencies, asked for them, gets a
+    /// [`SortingPostingsEnum`] that buffers frequencies, positions, offsets
+    /// and payloads per document; anything else gets a [`SortingDocsEnum`].
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java reuses `reuse` when it is the
+    /// matching `Sorting*Enum`, handing the enum it wraps back to the delegate.
+    /// A `Box<dyn PostingsEnum>` cannot be downcast, so a fresh wrapper is
+    /// built for every term and `reuse` is passed to the delegate as is — the
+    /// branch Java takes for any other `reuse`. The postings returned are the
+    /// same; only the allocation differs.
+    fn postings(
+        &mut self,
+        reuse: Option<Box<dyn PostingsEnum>>,
+        flags: i32,
+    ) -> Result<Box<dyn PostingsEnum>> {
+        if self.index_options.subsumes(IndexOptions::DOCS_AND_FREQS)
+            && crate::index::feature_requested(flags, POSTINGS_ENUM_FREQS)
+        {
+            let in_docs_and_positions = self.base.postings(reuse, flags)?;
+            // We ignore the fact that positions/offsets may be stored but not
+            // asked for, since this code is expected to be used during
+            // addIndexes which will ask for everything.
+            let store_positions = self
+                .index_options
+                .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+            let store_offsets = self
+                .index_options
+                .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
+            let mut wrap = SortingPostingsEnum::new();
+            wrap.reset(
+                &self.doc_map,
+                in_docs_and_positions,
+                store_positions,
+                store_offsets,
+            )?;
+            return Ok(Box::new(wrap));
+        }
+
+        let in_docs = self.base.postings(reuse, flags)?;
+        let mut wrap = SortingDocsEnum::new();
+        wrap.reset(&self.doc_map, in_docs)?;
+        Ok(Box::new(wrap))
+    }
+
+    fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+        self.base.impacts(flags)
+    }
+
+    fn seek_term_state(&mut self, text: &BytesRef, state: &dyn TermState) -> Result<()> {
+        self.base.seek_term_state(text, state)
+    }
+
+    fn prepare_seek_exact<'a>(
+        &'a mut self,
+        text: &BytesRef,
+    ) -> Result<Option<Box<dyn IOBooleanSupplier + 'a>>> {
+        self.base.prepare_seek_exact(text)
+    }
+
+    fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        self.base.term_state()
+    }
+}
+
+/// The documents of one term in the index sort's order, without frequencies.
+///
+/// Equivalent to `org.apache.lucene.index.FreqProxTermsWriter.SortingDocsEnum`
+/// (`FreqProxTermsWriter.java:224-308`): `reset` drains the wrapped enum,
+/// maps every document through the doc map and sorts the new numbers.
+///
+/// Java sorts with an `LSBRadixSorter`; the documents of one term are distinct,
+/// so any correct sort yields the same sequence, and the standard library's is
+/// used.
+pub struct SortingDocsEnum {
+    in_: Option<Box<dyn PostingsEnum>>,
+    /// The sorted new document numbers, followed by `NO_MORE_DOCS`.
+    docs: Vec<i32>,
+    doc_it: i32,
+    up_to: i32,
+}
+
+impl Default for SortingDocsEnum {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SortingDocsEnum {
+    /// Creates an empty enum; [`reset`](Self::reset) fills it.
+    ///
+    /// Equivalent to `SortingDocsEnum()`.
+    pub fn new() -> Self {
+        Self {
+            in_: None,
+            docs: Vec::new(),
+            doc_it: -1,
+            up_to: 0,
+        }
+    }
+
+    /// Reads every document of `in_` and keeps their sorted new numbers.
+    ///
+    /// Equivalent to `SortingDocsEnum.reset(Sorter.DocMap, PostingsEnum)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever iterating `in_` raises.
+    pub fn reset(&mut self, doc_map: &SorterDocMap, mut in_: Box<dyn PostingsEnum>) -> Result<()> {
+        self.docs.clear();
+        let mut doc = in_.next_doc()?;
+        while doc != NO_MORE_DOCS {
+            self.docs.push(doc_map.old_to_new(doc));
+            doc = in_.next_doc()?;
+        }
+        self.up_to = self.docs.len() as i32;
+        self.docs.sort_unstable();
+        self.docs.push(NO_MORE_DOCS);
+        self.doc_it = -1;
+        self.in_ = Some(in_);
+        Ok(())
+    }
+
+    /// Returns the wrapped enum.
+    ///
+    /// Equivalent to `SortingDocsEnum.getWrapped()`.
+    pub fn get_wrapped(&self) -> Option<&dyn PostingsEnum> {
+        self.in_.as_deref()
+    }
+}
+
+impl std::fmt::Display for SortingDocsEnum {
+    /// `SortingDocsEnum` declares no `toString()`, so `java.lang.Object`'s
+    /// applies.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FreqProxTermsWriter$SortingDocsEnum",
+            self,
+        ))
+    }
+}
+
+impl DocIdSetIterator for SortingDocsEnum {
+    /// Equivalent to `SortingDocsEnum.docID()`.
+    fn doc_id(&self) -> i32 {
+        if self.doc_it < 0 {
+            -1
+        } else {
+            self.docs[self.doc_it as usize]
+        }
+    }
+
+    /// Equivalent to `SortingDocsEnum.nextDoc()`, `docs[++docIt]`: the entry
+    /// after the last document is `NO_MORE_DOCS`. Java's contract forbids a
+    /// further call; this port stays on that entry rather than reading past
+    /// it.
+    fn next_doc(&mut self) -> Result<i32> {
+        if self.doc_it < self.up_to {
+            self.doc_it += 1;
+        }
+        Ok(self.docs[self.doc_it as usize])
+    }
+
+    /// Equivalent to `SortingDocsEnum.advance(int)`, which is `slowAdvance`.
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.slow_advance(target)
+    }
+
+    fn cost(&self) -> i64 {
+        i64::from(self.up_to)
+    }
+}
+
+impl PostingsEnum for SortingDocsEnum {
+    fn freq(&self) -> Result<i32> {
+        Ok(1)
+    }
+
+    fn next_position(&mut self) -> Result<i32> {
+        Ok(-1)
+    }
+
+    fn start_offset(&self) -> i32 {
+        -1
+    }
+
+    fn end_offset(&self) -> i32 {
+        -1
+    }
+
+    fn get_payload(&self) -> Result<Option<&[u8]>> {
+        Ok(None)
+    }
+}
+
+/// The postings of one term in the index sort's order, with frequencies and,
+/// when the field indexes them, positions, offsets and payloads.
+///
+/// Equivalent to `org.apache.lucene.index.FreqProxTermsWriter.SortingPostingsEnum`
+/// (`FreqProxTermsWriter.java:310-535`): `reset` drains the wrapped enum into a
+/// buffer, one record per document — the frequency, then per position the
+/// delta-encoded position with a payload flag, the delta-encoded offsets and
+/// the payload — and sorts the new document numbers together with each
+/// record's offset in the buffer; iteration then seeks to each record in turn.
+///
+/// Java sorts the two parallel arrays with a `TimSorter`; the documents of one
+/// term are distinct, so any correct sort of the pairs by document yields the
+/// same sequence, and the standard library's is used.
+pub struct SortingPostingsEnum {
+    docs: Vec<i32>,
+    offsets: Vec<i64>,
+    upto: i32,
+    posting_input: Option<ByteBuffersDataInput>,
+    in_: Option<Box<dyn PostingsEnum>>,
+    store_positions: bool,
+    store_offsets: bool,
+    doc_it: i32,
+    pos: i32,
+    start_offset: i32,
+    end_offset: i32,
+    /// The current payload; empty stands for Java's zero-length `payload`,
+    /// which `getPayload()` reports as `null`.
+    payload: Vec<u8>,
+    curr_freq: i32,
+    buffer: ByteBuffersDataOutput,
+}
+
+impl Default for SortingPostingsEnum {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SortingPostingsEnum {
+    /// Creates an empty enum; [`reset`](Self::reset) fills it.
+    pub fn new() -> Self {
+        Self {
+            docs: Vec::new(),
+            offsets: Vec::new(),
+            upto: 0,
+            posting_input: None,
+            in_: None,
+            store_positions: false,
+            store_offsets: false,
+            doc_it: -1,
+            pos: 0,
+            start_offset: -1,
+            end_offset: -1,
+            payload: Vec::new(),
+            curr_freq: 0,
+            buffer: ByteBuffersDataOutput::new_resettable_instance(),
+        }
+    }
+
+    /// Reads every document of `in_` into the buffer and sorts the records by
+    /// new document number.
+    ///
+    /// Equivalent to `SortingPostingsEnum.reset(Sorter.DocMap, PostingsEnum,
+    /// boolean, boolean)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever iterating `in_` or writing the buffer raises.
+    pub fn reset(
+        &mut self,
+        doc_map: &SorterDocMap,
+        mut in_: Box<dyn PostingsEnum>,
+        store_positions: bool,
+        store_offsets: bool,
+    ) -> Result<()> {
+        self.store_positions = store_positions;
+        self.store_offsets = store_offsets;
+        self.doc_it = -1;
+        self.start_offset = -1;
+        self.end_offset = -1;
+
+        self.buffer.reset();
+        let mut records: Vec<(i32, i64)> = Vec::new();
+        let mut doc = in_.next_doc()?;
+        while doc != NO_MORE_DOCS {
+            records.push((doc_map.old_to_new(doc), self.buffer.size() as i64));
+            Self::add_positions(
+                in_.as_mut(),
+                &mut self.buffer,
+                store_positions,
+                store_offsets,
+            )?;
+            doc = in_.next_doc()?;
+        }
+        self.upto = records.len() as i32;
+        records.sort_unstable_by_key(|&(doc, _)| doc);
+        self.docs = records.iter().map(|&(doc, _)| doc).collect();
+        self.offsets = records.iter().map(|&(_, offset)| offset).collect();
+
+        self.posting_input = Some(self.buffer.to_data_input()?);
+        self.in_ = Some(in_);
+        Ok(())
+    }
+
+    /// Writes the current document's frequency and, when positions are
+    /// stored, its positions, offsets and payloads to `out`.
+    ///
+    /// Equivalent to the private
+    /// `SortingPostingsEnum.addPositions(PostingsEnum, DataOutput)`.
+    fn add_positions(
+        in_: &mut dyn PostingsEnum,
+        out: &mut dyn DataOutput,
+        store_positions: bool,
+        store_offsets: bool,
+    ) -> Result<()> {
+        let freq = in_.freq()?;
+        out.write_v_int(freq)?;
+        if store_positions {
+            let mut previous_position = 0;
+            let mut previous_end_offset = 0;
+            for _ in 0..freq {
+                let pos = in_.next_position()?;
+                let payload = in_.get_payload()?.map(<[u8]>::to_vec);
+                // The low-order bit of token is set only if there is a
+                // payload, the previous bits are the delta-encoded position.
+                let token = ((pos - previous_position) << 1) | i32::from(payload.is_some());
+                out.write_v_int(token)?;
+                previous_position = pos;
+                if store_offsets {
+                    // Don't encode offsets if they are not stored.
+                    let start_offset = in_.start_offset();
+                    let end_offset = in_.end_offset();
+                    out.write_v_int(start_offset - previous_end_offset)?;
+                    out.write_v_int(end_offset - start_offset)?;
+                    previous_end_offset = end_offset;
+                }
+                if let Some(payload) = payload {
+                    out.write_v_int(payload.len() as i32)?;
+                    out.write_bytes(&payload, 0, payload.len())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns the wrapped enum.
+    ///
+    /// Equivalent to `SortingPostingsEnum.getWrapped()`.
+    pub fn get_wrapped(&self) -> Option<&dyn PostingsEnum> {
+        self.in_.as_deref()
+    }
+
+    fn posting_input(&mut self) -> Result<&mut ByteBuffersDataInput> {
+        self.posting_input.as_mut().ok_or_else(|| {
+            LuceneError::IllegalState("SortingPostingsEnum was not reset".to_string())
+        })
+    }
+}
+
+impl std::fmt::Display for SortingPostingsEnum {
+    /// `SortingPostingsEnum` declares no `toString()`, so `java.lang.Object`'s
+    /// applies.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FreqProxTermsWriter$SortingPostingsEnum",
+            self,
+        ))
+    }
+}
+
+impl DocIdSetIterator for SortingPostingsEnum {
+    /// Equivalent to `SortingPostingsEnum.docID()`.
+    fn doc_id(&self) -> i32 {
+        if self.doc_it < 0 {
+            -1
+        } else if self.doc_it >= self.upto {
+            NO_MORE_DOCS
+        } else {
+            self.docs[self.doc_it as usize]
+        }
+    }
+
+    /// Equivalent to `SortingPostingsEnum.nextDoc()`.
+    fn next_doc(&mut self) -> Result<i32> {
+        self.doc_it += 1;
+        if self.doc_it >= self.upto {
+            return Ok(NO_MORE_DOCS);
+        }
+        let offset = self.offsets[self.doc_it as usize] as usize;
+        let input = self.posting_input()?;
+        input.seek(offset)?;
+        self.curr_freq = input.read_v_int()?;
+        // Reset the variables used in `next_position`.
+        self.pos = 0;
+        self.end_offset = 0;
+        Ok(self.docs[self.doc_it as usize])
+    }
+
+    /// Equivalent to `SortingPostingsEnum.advance(int)`, which is
+    /// `slowAdvance`.
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.slow_advance(target)
+    }
+
+    /// Equivalent to `SortingPostingsEnum.cost()`, the wrapped enum's.
+    fn cost(&self) -> i64 {
+        self.in_.as_ref().map_or(0, |in_| in_.cost())
+    }
+}
+
+impl PostingsEnum for SortingPostingsEnum {
+    fn freq(&self) -> Result<i32> {
+        Ok(self.curr_freq)
+    }
+
+    /// Equivalent to `SortingPostingsEnum.nextPosition()`.
+    fn next_position(&mut self) -> Result<i32> {
+        if !self.store_positions {
+            return Ok(-1);
+        }
+        let input = self.posting_input.as_mut().ok_or_else(|| {
+            LuceneError::IllegalState("SortingPostingsEnum was not reset".to_string())
+        })?;
+        let token = input.read_v_int()?;
+        // `pos += token >>> 1`.
+        self.pos += ((token as u32) >> 1) as i32;
+        if self.store_offsets {
+            self.start_offset = self.end_offset + input.read_v_int()?;
+            self.end_offset = self.start_offset + input.read_v_int()?;
+        }
+        if token & 1 != 0 {
+            let length = input.read_v_int()?.max(0) as usize;
+            self.payload.resize(length, 0);
+            input.read_bytes(&mut self.payload, 0, length)?;
+        } else {
+            self.payload.clear();
+        }
+        Ok(self.pos)
+    }
+
+    fn start_offset(&self) -> i32 {
+        self.start_offset
+    }
+
+    fn end_offset(&self) -> i32 {
+        self.end_offset
+    }
+
+    /// Equivalent to `SortingPostingsEnum.getPayload()`, which reports a
+    /// zero-length payload as `null`.
+    fn get_payload(&self) -> Result<Option<&[u8]>> {
+        Ok(if self.payload.is_empty() {
+            None
+        } else {
+            Some(&self.payload)
+        })
     }
 }
 

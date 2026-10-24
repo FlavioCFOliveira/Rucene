@@ -614,17 +614,14 @@ impl std::hash::Hash for SegmentInfo {
 
 /// Strips the leading segment name from a file name, leaving the extension suffix.
 ///
-/// Equivalent to `org.apache.lucene.index.IndexFileNames.stripSegmentName`.
+/// Equivalent to `org.apache.lucene.index.IndexFileNames.stripSegmentName`
+/// (`IndexFileNames.java:119-143`): the boundary is the first `'_'` found
+/// from the *second* character on — so a generation or codec suffix such as
+/// `_1_Lucene90_0.dvd` is kept — or else the first `'.'`. This forwards to
+/// [`index_file_names::strip_segment_name`](crate::index::index_file_names::strip_segment_name),
+/// which reproduces it.
 fn strip_segment_name(name: &str) -> &str {
-    // Match Lucene's IndexFileNames.stripSegmentName: the boundary is the first
-    // '_' after the leading segment underscore, or the first '.' if no such '_'.
-    match name.find('_').filter(|pos| *pos > 0) {
-        Some(pos) => &name[pos..],
-        None => match name.find('.') {
-            Some(pos) => &name[pos..],
-            None => name,
-        },
-    }
+    crate::index::index_file_names::strip_segment_name(name)
 }
 
 // -----------------------------------------------------------------------------
@@ -1491,6 +1488,18 @@ mod tests {
         let info = test_segment_info("_a", 5);
         assert_eq!(info.named_for_this_segment("_0.fnm"), "_a.fnm");
         assert_eq!(info.named_for_this_segment("fnm"), "_afnm");
+        // The doc-values update files of generation 1 keep their generation and
+        // codec suffix, as `IndexFileNames.stripSegmentName` keeps everything
+        // from the second `'_'` on.
+        assert_eq!(
+            info.named_for_this_segment("_0_1_Lucene90_0.dvd"),
+            "_a_1_Lucene90_0.dvd"
+        );
+        assert_eq!(info.named_for_this_segment("_0_1.fnm"), "_a_1.fnm");
+        assert_eq!(
+            info.named_for_this_segment("_0_Lucene104_0.doc"),
+            "_a_Lucene104_0.doc"
+        );
     }
 
     #[test]

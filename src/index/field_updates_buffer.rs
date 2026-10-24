@@ -81,8 +81,12 @@ impl FieldUpdatesBuffer {
             min_numeric: i64::MAX,
             max_numeric: i64::MIN,
         };
+        // `fields = new String[] {initialValue.term.field}`
+        // (`FieldUpdatesBuffer.java:73`): the field a buffered update records
+        // is the field its *term* is looked up in, not the doc-values field it
+        // updates.
         buffer.push(
-            initial_value.field.clone(),
+            initial_value.term.field().to_string(),
             initial_value.term.bytes().clone(),
             doc_up_to,
             initial_value.value,
@@ -171,7 +175,8 @@ impl FieldUpdatesBuffer {
     /// the term and then calls the private `add(String, int, int, boolean)`
     /// with `hasValue` false. Java reads the field off `term.field`; this port
     /// takes it separately because [`Term`] is shared with the query side and
-    /// the caller already has it.
+    /// the caller already has it — it must be `term.field()`, the field the
+    /// term is looked up in, not the doc-values field being cleared.
     pub fn add_reset(&mut self, field: &str, term: &Term, doc_up_to: i32) -> Result<()> {
         self.push(
             field.to_string(),
@@ -227,27 +232,29 @@ impl FieldUpdatesBuffer {
     /// value.
     ///
     /// Equivalent to `FieldUpdatesBuffer.hasSingleValue()`, which answers
-    /// `isNumeric && numericValues.length == 1` — its packed array stays at
-    /// length one for as long as every value written into it equals the first.
-    /// This port keeps one record per update (the divergence declared on the
-    /// type), so the same question is answered by comparing them; a buffer with
-    /// no numeric value at all answers `false`, exactly as Java's does, because
-    /// a binary buffer's `numericValues` is null and `isNumeric` is false.
+    /// `isNumeric && numericValues.length == 1`. Java seeds `numericValues` with
+    /// the initial update's value, or with `0` when the initial update carries
+    /// none (`FieldUpdatesBuffer.java:88-98`), and `addUpdate(Term, long, int)`
+    /// grows the array — for good — the first time a value differs from that
+    /// seed (`FieldUpdatesBuffer.java:178-188`); updates without a value never
+    /// touch it. This port keeps one record per update (the divergence declared
+    /// on the type), so the same question is answered by comparing every
+    /// numeric update with that seed: a buffer that starts with a reset and
+    /// later carries a non-zero value is *not* single-valued, exactly as in
+    /// Java. A binary buffer answers `false`, because its `numericValues` is
+    /// null and `isNumeric` is false.
     pub fn has_single_value(&self) -> bool {
         if !self.is_numeric {
             return false;
         }
-        let mut values = self.updates.iter().filter_map(|update| match update.value {
-            DocValuesUpdateValue::Numeric(value) => Some(value),
-            _ => None,
-        });
-        match values.next() {
-            Some(first) => values.all(|value| value == first),
-            // Java seeds `numericValues` with one slot from the constructor, so
-            // a buffer that has only ever been given no-value updates still has
-            // length one and answers `true`.
-            None => true,
-        }
+        let seed = match self.updates.first().map(|update| &update.value) {
+            Some(DocValuesUpdateValue::Numeric(value)) => *value,
+            _ => 0,
+        };
+        self.updates.iter().all(|update| match update.value {
+            DocValuesUpdateValue::Numeric(value) => value == seed,
+            _ => true,
+        })
     }
 
     /// Returns the numeric value of the update at `index`.

@@ -416,7 +416,9 @@ impl BufferedUpdates {
                 buffer.add_binary_update(&update.term, value.clone(), doc_id_upto)?;
             }
             DocValuesUpdateValue::None => {
-                buffer.add_reset(&update.field, &update.term, doc_id_upto)?;
+                // `addNoValue(update.term, docIDUpto)`, which records
+                // `term.field` (`FieldUpdatesBuffer.java:191-194`).
+                buffer.add_reset(update.term.field(), &update.term, doc_id_upto)?;
             }
         }
         self.field_updates_bytes_used += buffer.ram_bytes_used() - before;
@@ -946,14 +948,10 @@ impl FrozenBufferedUpdates {
     /// from live to deleted, so a document that is already deleted is simply
     /// not counted again.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java has a second loop for a segment
-    /// that was sorted on flush, which maps each matching document back through
-    /// `segState.rld.sortMap` before comparing it with the segment-private
-    /// limit. `ReadersAndUpdates` carries no sort map in this port — the flush
-    /// path does not produce one yet — so that branch has nothing to switch on
-    /// and only the unsorted loop is reproduced. It becomes reachable, and must
-    /// be restored, as soon as a flush can sort a segment. This is the same
-    /// declared divergence as in the doc-values pass.
+    /// A segment that was sorted on flush matches its documents under their
+    /// sorted numbers while the limit is in the pre-sort doc space, so each
+    /// match is mapped back through `segState.rld.sortMap` before it is
+    /// compared with the limit (`FrozenBufferedUpdates.java:397-409`).
     ///
     /// # Errors
     ///
@@ -1019,18 +1017,37 @@ impl FrozenBufferedUpdates {
                     continue;
                 };
                 let iterator = scorer.iterator();
-                loop {
-                    // Java writes `while ((docID = it.nextDoc()) < limit)`;
-                    // exhaustion is `NO_MORE_DOCS`, which is `i32::MAX` and so
-                    // never below a limit of at most `i32::MAX`.
-                    let doc_id = iterator.next_doc()?;
-                    if doc_id >= limit {
-                        break;
+                match seg_state.rld.sort_map() {
+                    Some(sort_map) if limit != i32::MAX => {
+                        debug_assert!(self.private_segment_name.is_some());
+                        // This segment was sorted on flush; we must apply
+                        // seg-private deletes carefully in this case.
+                        loop {
+                            let doc_id = iterator.next_doc()?;
+                            if doc_id == NO_MORE_DOCS {
+                                break;
+                            }
+                            // The limit is in the pre-sorted doc space.
+                            if sort_map.new_to_old(doc_id) < limit
+                                && seg_state.rld.delete(doc_id)?
+                            {
+                                del_count += 1;
+                            }
+                        }
                     }
-                    debug_assert_ne!(doc_id, NO_MORE_DOCS);
-                    if seg_state.rld.delete(doc_id)? {
-                        del_count += 1;
-                    }
+                    _ => loop {
+                        // Java writes `while ((docID = it.nextDoc()) < limit)`;
+                        // exhaustion is `NO_MORE_DOCS`, which is `i32::MAX` and
+                        // so never below a limit of at most `i32::MAX`.
+                        let doc_id = iterator.next_doc()?;
+                        if doc_id >= limit {
+                            break;
+                        }
+                        debug_assert_ne!(doc_id, NO_MORE_DOCS);
+                        if seg_state.rld.delete(doc_id)? {
+                            del_count += 1;
+                        }
+                    },
                 }
             }
         }
@@ -1081,13 +1098,10 @@ impl FrozenBufferedUpdates {
     /// `FrozenBufferedUpdates.applyDocValuesUpdates(
     /// BufferedUpdatesStream.SegmentState, Map, long, boolean)`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java has a second loop for a segment
-    /// that was sorted on flush, which maps each document back through
-    /// `segState.rld.sortMap` before comparing it with the segment-private
-    /// limit. `ReadersAndUpdates` carries no sort map in this port — the flush
-    /// path does not produce one yet — so that branch has nothing to switch on
-    /// and only the unsorted loop is reproduced. It becomes reachable, and must
-    /// be restored, as soon as a flush can sort a segment.
+    /// A segment that was sorted on flush is iterated in its sorted doc space
+    /// while a segment-private limit is in the pre-sort one, so each document
+    /// is mapped back through `segState.rld.sortMap` before it is compared
+    /// with the limit (`FrozenBufferedUpdates.java:315-327`).
     fn apply_doc_values_updates_to_segment(
         seg_state: &SegmentState,
         updates: &HashMap<String, FieldUpdatesBuffer>,
@@ -1124,32 +1138,58 @@ impl FrozenBufferedUpdates {
                 let index = match dv_updates {
                     Some(index) => index,
                     None => {
-                        let dv_type = if is_numeric {
-                            DocValuesType::NUMERIC
+                        // `FrozenBufferedUpdates.java:284-303`: a numeric
+                        // field whose buffered updates carry one value gets the
+                        // single-value specialisation.
+                        let updates = if is_numeric && value.has_single_value() {
+                            DocValuesFieldUpdates::new_single_value_numeric(
+                                del_gen,
+                                update_field.clone(),
+                                max_doc,
+                                value.get_numeric_value(0),
+                            )
                         } else {
-                            DocValuesType::BINARY
+                            let dv_type = if is_numeric {
+                                DocValuesType::NUMERIC
+                            } else {
+                                DocValuesType::BINARY
+                            };
+                            DocValuesFieldUpdates::new(
+                                max_doc,
+                                del_gen,
+                                update_field.clone(),
+                                dv_type,
+                            )
                         };
-                        resolved_updates.push(DocValuesFieldUpdates::new(
-                            max_doc,
-                            del_gen,
-                            update_field.clone(),
-                            dv_type,
-                        ));
+                        resolved_updates.push(updates);
                         let index = resolved_updates.len() - 1;
                         dv_updates = Some(index);
                         index
                     }
                 };
                 let accept_docs = seg_state.rld.get_live_docs();
+                let sort_map = seg_state.rld.sort_map().filter(|_| segment_private_deletes);
                 loop {
                     let doc = term_docs.docs()?.next_doc()?;
-                    if doc == NO_MORE_DOCS || doc >= limit {
-                        // no more docs that can be updated for this term
+                    if doc == NO_MORE_DOCS {
                         break;
                     }
-                    if accept_docs
-                        .as_ref()
-                        .map_or(true, |bits| bits.get(doc as usize))
+                    let within_limit = match sort_map.as_ref() {
+                        // This segment was sorted on flush; the limit is in the
+                        // pre-sorted doc space.
+                        Some(sort_map) => sort_map.new_to_old(doc) < limit,
+                        None => {
+                            if doc >= limit {
+                                // no more docs that can be updated for this term
+                                break;
+                            }
+                            true
+                        }
+                    };
+                    if within_limit
+                        && accept_docs
+                            .as_ref()
+                            .map_or(true, |bits| bits.get(doc as usize))
                     {
                         let update = &mut resolved_updates[index];
                         match buffered_update.value {
@@ -1402,6 +1442,15 @@ pub struct FlushedSegment {
     pub live_docs: Option<FixedBitSet>,
     /// Number of documents deleted while the segment was being indexed.
     pub del_count: i32,
+    /// The permutation the index sort applied to the segment, or `None` when
+    /// it was not sorted.
+    ///
+    /// Equivalent to `FlushedSegment.sortMap`
+    /// (`DocumentsWriterPerThread.java:71`), which
+    /// `IndexWriter.publishFlushedSegment` hands to the segment's
+    /// `ReadersAndUpdates` so its segment-private updates are resolved in the
+    /// right doc space.
+    pub sort_map: Option<Arc<crate::index::index_sorter::SorterDocMap>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -4059,14 +4108,16 @@ impl DwptGuard {
                 .message("DWPT", &format!("new segment has {del_count} deleted docs"));
         }
 
+        let sort_map = sort_map.map(Arc::new);
         let mut flushed = FlushedSegment {
             segment_info: segment_commit_info,
             field_infos,
             segment_updates,
             live_docs,
             del_count,
+            sort_map: sort_map.clone(),
         };
-        self.seal_flushed_segment(&mut flushed, sort_map.as_ref(), notifications)?;
+        self.seal_flushed_segment(&mut flushed, sort_map.as_deref(), notifications)?;
         Ok(Some(flushed))
     }
 

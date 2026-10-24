@@ -66,13 +66,12 @@
 //!   [`crate::index::doc_values_writer`], for the same reason.
 //! * Java's `flush` takes a `Sorter.DocMap` and, when the segment has an index
 //!   sort, wraps the mutable tree in `PointValuesWriter.MutableSortingPointValues`
-//!   so that every doc ID is mapped through `oldToNew`
-//!   (`PointValuesWriter.java:341-406`). Index sorting is not ported — neither
-//!   `Sorter` nor `Sorter.DocMap` exists in this crate, and `IndexingChain`
-//!   never builds a sorting consumer — so [`PointValuesWriter::flush`] takes no
-//!   map and `MutableSortingPointValues` is not ported either. It is the same
-//!   seam [`crate::index::NormValuesWriter`] and the doc-values writers leave
-//!   open, and it is the single place a doc map would be threaded through.
+//!   (`PointValuesWriter.java:341-406`), whose only change is that `getDocID`
+//!   and `visitDocValues` report `docMap.oldToNew(docID)`. This port's
+//!   [`PointValuesWriter::flush`] takes the same map and stores the mapped
+//!   document numbers in the frozen buffer instead of mapping on every read;
+//!   every value, every swap and every document number the codec sees is the
+//!   same.
 //! * Java stages the dense batch paths through the writer's shared
 //!   `SharedIndexingScratch.bytesScratch()` buffer; this port allocates the
 //!   staging buffer per call. The buffer never leaves the call, and its size
@@ -167,6 +166,7 @@ use std::sync::{Arc, OnceLock};
 use crate::codecs::points::{PointsReader, PointsWriter};
 use crate::document::column::{BytesRefValuesCursor, LongValuesCursor};
 use crate::error::{LuceneError, Result};
+use crate::index::index_sorter::SorterDocMap;
 use crate::index::point_values::{
     IntersectVisitor, MutablePointTree, PointTree, PointValues, Relation,
 };
@@ -515,7 +515,8 @@ impl PointValuesWriter {
     /// Hands the buffered points to `writer`, which builds the BKD tree.
     ///
     /// Equivalent to `PointValuesWriter.flush(SegmentWriteState, Sorter.DocMap,
-    /// PointsWriter)` without the doc map; see the module documentation. Java
+    /// PointsWriter)`, with `sort_map` the permutation the index sort gave the
+    /// segment, or `None`; see the module documentation. Java
     /// declares the `SegmentWriteState` parameter and never reads it, so this
     /// port does not take one.
     ///
@@ -529,7 +530,11 @@ impl PointValuesWriter {
     /// flushed — writing it twice would put two entries for one field into the
     /// same `.kdm`. Otherwise propagates whatever the codec raises while
     /// writing the field.
-    pub fn flush(&mut self, writer: &mut dyn PointsWriter) -> Result<()> {
+    pub fn flush(
+        &mut self,
+        writer: &mut dyn PointsWriter,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<()> {
         if self.flushed {
             return Err(LuceneError::IllegalState(format!(
                 "the point values of field \"{}\" have already been flushed",
@@ -538,7 +543,14 @@ impl PointValuesWriter {
         }
         self.flushed = true;
         let values = std::mem::take(&mut self.values);
-        let doc_ids = std::mem::take(&mut self.doc_ids);
+        let mut doc_ids = std::mem::take(&mut self.doc_ids);
+        // `new MutableSortingPointValues(points, sortMap)`
+        // (`PointValuesWriter.java:274-279`).
+        if let Some(sort_map) = sort_map {
+            for doc_id in doc_ids.iter_mut() {
+                *doc_id = sort_map.old_to_new(*doc_id);
+            }
+        }
         let buffer = self.freeze(values, doc_ids);
         self.update_bytes_used();
         let reader = BufferedPointsReader {
@@ -1043,7 +1055,7 @@ mod tests {
                 .unwrap();
         }
         let mut points_writer = EmptyPointsWriter;
-        writer.flush(&mut points_writer).expect("flush");
+        writer.flush(&mut points_writer, None).expect("flush");
         assert_eq!(
             bytes_used.load(Ordering::Acquire),
             0,
@@ -1057,9 +1069,9 @@ mod tests {
         let mut writer = writer_1d(&bytes_used);
         writer.add_packed_value(0, &packed(&[0, 0, 0, 1])).unwrap();
         let mut points_writer = EmptyPointsWriter;
-        writer.flush(&mut points_writer).expect("first flush");
+        writer.flush(&mut points_writer, None).expect("first flush");
         let error = writer
-            .flush(&mut points_writer)
+            .flush(&mut points_writer, None)
             .expect_err("two entries for one field would corrupt the .kdm");
         assert!(matches!(error, LuceneError::IllegalState(_)), "{error:?}");
         let error = writer
@@ -1075,7 +1087,7 @@ mod tests {
         let bytes_used = counter();
         let mut writer = writer_1d(&bytes_used);
         let mut points_writer = EmptyPointsWriter;
-        writer.flush(&mut points_writer).expect("flush");
+        writer.flush(&mut points_writer, None).expect("flush");
         assert_eq!(writer.num_points(), 0);
     }
 

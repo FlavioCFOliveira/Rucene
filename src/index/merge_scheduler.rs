@@ -875,7 +875,7 @@ impl ConcurrentMergeScheduler {
     /// Equivalent to `ConcurrentMergeScheduler.getSegmentName(OneMerge)`.
     pub fn get_segment_name(merge: &OneMerge) -> String {
         merge
-            .info
+            .info()
             .as_ref()
             .map(|info| info.info.name.clone())
             .unwrap_or_else(|| "_na_".to_string())

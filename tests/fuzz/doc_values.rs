@@ -534,21 +534,21 @@ fn write_field(
             for (doc, value) in pairs {
                 writer.add_value(*doc, *value).expect("add numeric");
             }
-            writer.flush(consumer).expect("flush numeric");
+            writer.flush(consumer, None).expect("flush numeric");
         }
         Values::Binary(pairs) => {
             let mut writer = BinaryDocValuesWriter::new(info, bytes_used);
             for (doc, value) in pairs {
                 writer.add_value(*doc, value).expect("add binary");
             }
-            writer.flush(consumer).expect("flush binary");
+            writer.flush(consumer, None).expect("flush binary");
         }
         Values::Sorted(pairs) => {
             let mut writer = SortedDocValuesWriter::new(info, bytes_used);
             for (doc, value) in pairs {
                 writer.add_value(*doc, value).expect("add sorted");
             }
-            writer.flush(consumer).expect("flush sorted");
+            writer.flush(consumer, None).expect("flush sorted");
         }
         Values::SortedNumeric(pairs) => {
             let mut writer = SortedNumericDocValuesWriter::new(info, bytes_used);
@@ -557,7 +557,7 @@ fn write_field(
                     writer.add_value(*doc, *value).expect("add sorted numeric");
                 }
             }
-            writer.flush(consumer).expect("flush sorted numeric");
+            writer.flush(consumer, None).expect("flush sorted numeric");
         }
         Values::SortedSet(pairs) => {
             let mut writer = SortedSetDocValuesWriter::new(info, bytes_used);
@@ -566,7 +566,7 @@ fn write_field(
                     writer.add_value(*doc, value).expect("add sorted set");
                 }
             }
-            writer.flush(consumer).expect("flush sorted set");
+            writer.flush(consumer, None).expect("flush sorted set");
         }
     }
 }

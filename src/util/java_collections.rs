@@ -3,7 +3,7 @@
 //!
 //! | Rucene | Apache Lucene Core 10.5.0 |
 //! | --- | --- |
-//! | [`JavaHashMap`] | the `java.util.HashMap` behind `FieldInfo.attributes`, `SegmentInfo.attributes` and `SegmentInfos.userData` |
+//! | [`JavaHashMap`] | the `java.util.HashMap` behind `FieldInfo.attributes`, `SegmentInfo.attributes`, `SegmentInfos.userData` and `ReadersAndUpdates.pendingDVUpdates` |
 //! | [`JavaHashSet`] | the `java.util.HashSet` behind `SegmentInfo.setFiles` |
 //!
 //! # Why the order is part of the file
@@ -149,9 +149,12 @@ struct Entry<V> {
 /// A `java.util.HashMap<String, V>` with Java's iteration order.
 ///
 /// Equivalent to `java.util.HashMap` for the operations Lucene performs on the
-/// maps it serialises. The type is deliberately `String`-keyed: every map whose
-/// order reaches an index file is a `Map<String, String>`, and a generic key
-/// would need a port of `Object.hashCode` per key type that nothing would call.
+/// maps whose order reaches an index file: the `Map<String, String>` maps it
+/// serialises, and `ReadersAndUpdates.pendingDVUpdates`, whose field order is
+/// the order the doc-values update generations are written in. The type is
+/// deliberately `String`-keyed: every such map is keyed by `String`, and a
+/// generic key would need a port of `Object.hashCode` per key type that nothing
+/// would call.
 ///
 /// The load factor is fixed at [`DEFAULT_LOAD_FACTOR`]; Lucene never constructs
 /// one of these maps with any other.
@@ -280,6 +283,72 @@ impl<V> JavaHashMap<V> {
         None
     }
 
+    /// `HashMap.get(Object)`, returning the value for in-place change.
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut V> {
+        if self.table.is_empty() {
+            return None;
+        }
+        let hash = spread(key);
+        let n = self.table.len();
+        self.table[index_for(hash, n)]
+            .iter_mut()
+            .find(|e| e.hash == hash && e.key == key)
+            .map(|e| &mut e.value)
+    }
+
+    /// `HashMap.computeIfAbsent(K, Function)` with a mapping function that
+    /// never returns `null`: returns the value mapped to `key`, inserting
+    /// `make()` first when there is none.
+    ///
+    /// Its insertion is not `put`'s, and the difference is visible in the
+    /// iteration order, so it is ported separately from JDK 21's
+    /// `HashMap.computeIfAbsent`:
+    ///
+    /// * the table is resized *before* the lookup when `size > threshold` (or
+    ///   when it is still unallocated), never after the insertion — so the
+    ///   entry that crosses the threshold does not trigger the resize itself;
+    /// * the new node becomes the head of its bucket
+    ///   (`tab[i] = newNode(hash, key, v, first)`), not its tail;
+    /// * `treeifyBin` runs when the bucket already held
+    ///   `TREEIFY_THRESHOLD - 1` nodes, one node earlier than in `putVal`.
+    pub fn compute_if_absent(&mut self, key: &str, make: impl FnOnce() -> V) -> &mut V {
+        if self.size as i32 > self.threshold || self.table.is_empty() {
+            self.resize();
+        }
+        let hash = spread(key);
+        let n = self.table.len();
+        let index = index_for(hash, n);
+        if let Some(position) = self.table[index]
+            .iter()
+            .position(|e| e.hash == hash && e.key == key)
+        {
+            return &mut self.table[index][position].value;
+        }
+        let bin_count = self.table[index].len();
+        self.table[index].insert(
+            0,
+            Entry {
+                hash,
+                key: key.to_string(),
+                value: make(),
+            },
+        );
+        if bin_count >= TREEIFY_THRESHOLD - 1 {
+            if n < MIN_TREEIFY_CAPACITY {
+                self.resize();
+            } else {
+                self.treeified = true;
+            }
+        }
+        self.size += 1;
+        let index = index_for(hash, self.table.len());
+        let position = self.table[index]
+            .iter()
+            .position(|e| e.hash == hash && e.key == key)
+            .expect("INVARIANT: the entry was just inserted");
+        &mut self.table[index][position].value
+    }
+
     /// `HashMap.remove(Object)`.
     pub fn remove(&mut self, key: &str) -> Option<V> {
         if self.table.is_empty() {
@@ -319,6 +388,20 @@ impl<V> JavaHashMap<V> {
     /// Iterates the values in `HashMap.values()` order.
     pub fn values(&self) -> impl Iterator<Item = &V> {
         self.iter().map(|(_, v)| v)
+    }
+
+    /// Iterates the entries in `HashMap.entrySet()` order, with each value
+    /// open to in-place change (`Map.Entry.setValue`).
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&String, &mut V)> {
+        self.table
+            .iter_mut()
+            .flat_map(|bucket| bucket.iter_mut().map(|e| (&e.key, &mut e.value)))
+    }
+
+    /// Iterates the values in `HashMap.values()` order, each open to in-place
+    /// change.
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
+        self.iter_mut().map(|(_, v)| v)
     }
 
     /// `HashMap.resize()`.
@@ -510,6 +593,21 @@ impl<V> JavaHashMap<V> {
         self.table
             .into_iter()
             .flat_map(|bucket| bucket.into_iter().map(|e| e.key))
+    }
+}
+
+impl<V> IntoIterator for JavaHashMap<V> {
+    type Item = (String, V);
+    type IntoIter = std::vec::IntoIter<(String, V)>;
+
+    /// Consumes the map and yields its entries in `HashMap.entrySet()` order.
+    fn into_iter(self) -> Self::IntoIter {
+        let entries: Vec<(String, V)> = self
+            .table
+            .into_iter()
+            .flat_map(|bucket| bucket.into_iter().map(|e| (e.key, e.value)))
+            .collect();
+        entries.into_iter()
     }
 }
 

@@ -72,18 +72,20 @@
 //!   [`BytesRefHash`]. Java shares to amortise block allocation; per-writer
 //!   pools keep ownership simple (the dictionary is materialised out of the
 //!   writer's own pool at flush) at the cost of one block per sorted field.
-//! * Java's `flush` takes a `Sorter.DocMap` and re-orders values for a segment
-//!   with an index sort. `NumericDocValuesWriter` and `SortedDocValuesWriter`
-//!   port `sortDocValues`/`getDocValuesProducer` faithfully, taking an
-//!   explicit `Option<&SorterDocMap>`; but `flush` and `get_doc_values()`
-//!   still call them with `None`, because wiring the segment's real
-//!   [`crate::index::index_sorter::SorterDocMap`] through requires changes to
-//!   `IndexingChain.writeDocValues`/`maybeSortSegment` that are out of scope
-//!   here. The `DocOrds`/`LongValues` index-sorting helpers of the
-//!   sorted-numeric and sorted-set writers, and `BinaryDocValuesWriter`'s
-//!   `BinaryDVs`/`SortingBinaryDocValues`, remain unported for the same
-//!   reason. The `maxCount` of the sorted-set writer is only consumed by
-//!   `DocOrds`, so it is not tracked either.
+//! * Java's `flush` takes a `Sorter.DocMap` and re-orders the values of a
+//!   segment with an index sort. `NumericDocValuesWriter` and
+//!   `SortedDocValuesWriter` port `sortDocValues`/`getDocValuesProducer`
+//!   faithfully. For the binary, sorted-numeric and sorted-set writers, Java
+//!   builds `BinaryDVs`, `LongValues` and `DocOrds` — the values of every
+//!   document laid out by its *new* number — and iterates them with
+//!   `SortingBinaryDocValues`, `SortingSortedNumericDocValues` and
+//!   `SortingSortedSetDocValues`. This port's buffered producers already hold
+//!   the values per document, so the same layout is produced by re-ordering
+//!   those per-document entries by new document number
+//!   ([`sort_per_document`]); the buffered iterators then visit the documents
+//!   in increasing new order with each document's own values, which is what
+//!   the `Sorting*` iterators visit. The `maxCount` of the sorted-set writer is
+//!   only consumed by `DocOrds`'s packed layout, so it is not tracked.
 //! * The batch paths (`addDenseValues`, `addOrdinalTuples`,
 //!   `addDenseOrdinalValues`) belong to the column-batch indexing row path,
 //!   which this crate does not have; the per-instance path is the only one.
@@ -273,21 +275,25 @@ impl DocValuesWriter {
     /// Hands the buffered values to `consumer`.
     ///
     /// Equivalent to `DocValuesWriter.flush(SegmentWriteState,
-    /// Sorter.DocMap, DocValuesConsumer)` without the doc map; see the module
-    /// documentation.
+    /// Sorter.DocMap, DocValuesConsumer)`: `sort_map` is the permutation the
+    /// index sort gave the segment, or `None` when it was not sorted.
     ///
     /// # Errors
     ///
     /// Propagates whatever the concrete writer raises; every concrete writer
     /// refuses a second flush, because two metadata entries for one field
     /// would make the segment unreadable.
-    pub fn flush(&mut self, consumer: &mut dyn DocValuesConsumer) -> Result<()> {
+    pub fn flush(
+        &mut self,
+        consumer: &mut dyn DocValuesConsumer,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<()> {
         match self {
-            Self::Numeric(writer) => writer.flush(consumer),
-            Self::Binary(writer) => writer.flush(consumer),
-            Self::Sorted(writer) => writer.flush(consumer),
-            Self::SortedNumeric(writer) => writer.flush(consumer),
-            Self::SortedSet(writer) => writer.flush(consumer),
+            Self::Numeric(writer) => writer.flush(consumer, sort_map),
+            Self::Binary(writer) => writer.flush(consumer, sort_map),
+            Self::Sorted(writer) => writer.flush(consumer, sort_map),
+            Self::SortedNumeric(writer) => writer.flush(consumer, sort_map),
+            Self::SortedSet(writer) => writer.flush(consumer, sort_map),
         }
     }
 
@@ -1181,7 +1187,11 @@ impl NumericDocValuesWriter {
     /// flushed — writing it twice would put two metadata entries for one field
     /// into the same segment. Otherwise propagates whatever the consumer
     /// raises while writing the field.
-    pub fn flush(&mut self, consumer: &mut dyn DocValuesConsumer) -> Result<()> {
+    pub fn flush(
+        &mut self,
+        consumer: &mut dyn DocValuesConsumer,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<()> {
         if self.flushed {
             return Err(LuceneError::IllegalState(format!(
                 "the doc values of field \"{}\" have already been flushed",
@@ -1192,7 +1202,7 @@ impl NumericDocValuesWriter {
         let values = std::mem::take(&mut self.pending);
         let docs_with_field = std::mem::take(&mut self.docs_with_field);
         let producer =
-            Self::get_doc_values_producer(&self.field_info, values, &docs_with_field, None)?;
+            Self::get_doc_values_producer(&self.field_info, values, &docs_with_field, sort_map)?;
         drop(docs_with_field);
         self.update_bytes_used();
         consumer.add_numeric_field(&self.field_info, &*producer)
@@ -1440,7 +1450,7 @@ impl NumericDVs {
 /// reordered the segment.
 ///
 /// Equivalent to `NumericDocValuesWriter.SortingNumericDocValues`.
-struct SortingNumeric {
+pub(crate) struct SortingNumeric {
     dvs: Arc<NumericDVs>,
     doc_id: i32,
     /// Lazily computed and cached, like Java's `cost` field (sentinel `-1`).
@@ -1448,7 +1458,7 @@ struct SortingNumeric {
 }
 
 impl SortingNumeric {
-    fn new(dvs: Arc<NumericDVs>) -> Self {
+    pub(crate) fn new(dvs: Arc<NumericDVs>) -> Self {
         Self {
             dvs,
             doc_id: -1,
@@ -1647,7 +1657,11 @@ impl BinaryDocValuesWriter {
     ///
     /// Returns [`LuceneError::IllegalState`] when the field has already been
     /// flushed; otherwise propagates whatever the consumer raises.
-    pub fn flush(&mut self, consumer: &mut dyn DocValuesConsumer) -> Result<()> {
+    pub fn flush(
+        &mut self,
+        consumer: &mut dyn DocValuesConsumer,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<()> {
         if self.flushed {
             return Err(LuceneError::IllegalState(format!(
                 "the doc values of field \"{}\" have already been flushed",
@@ -1658,8 +1672,16 @@ impl BinaryDocValuesWriter {
         let lengths = std::mem::take(&mut self.lengths);
         let data = std::mem::take(&mut self.data);
         let docs_with_field = std::mem::take(&mut self.docs_with_field);
-        let producer =
+        let mut producer =
             BufferedBinaryProducer::new(&self.field_info, &docs_with_field, &lengths, &data)?;
+        // `new BinaryDVs(maxDoc, sortMap, ...)` and `SortingBinaryDocValues`
+        // (`BinaryDocValuesWriter.java:135-157`).
+        if let Some(sort_map) = sort_map {
+            let (docs, values) =
+                sort_per_document(&producer.docs, producer.values.to_vec(), sort_map);
+            producer.docs = Arc::new(docs);
+            producer.values = Arc::new(values);
+        }
         drop((docs_with_field, lengths, data));
         self.update_bytes_used();
         consumer.add_binary_field(&self.field_info, &producer)
@@ -1775,6 +1797,54 @@ impl DocValuesProducer for BufferedBinaryProducer {
 
     fn close(&mut self) -> Result<()> {
         Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Index-sort re-ordering of the materialised per-document values
+// -----------------------------------------------------------------------------
+
+/// Re-orders one entry per document — `per_doc[i]` belongs to `docs[i]` — into
+/// the order the index sort gives the documents, returning the new document
+/// numbers in increasing order with their entries.
+///
+/// This is the layout `BinaryDocValuesWriter.BinaryDVs`,
+/// `SortedNumericDocValuesWriter.LongValues` and
+/// `SortedSetDocValuesWriter.DocOrds` build — every document's values filed
+/// under `sortMap.oldToNew(docID)` — so iterating the result visits exactly
+/// what the matching `Sorting*DocValues` iterator visits.
+fn sort_per_document<T>(
+    docs: &[i32],
+    per_doc: Vec<T>,
+    sort_map: &SorterDocMap,
+) -> (Vec<i32>, Vec<T>) {
+    debug_assert_eq!(docs.len(), per_doc.len());
+    let mut entries: Vec<(i32, T)> = docs
+        .iter()
+        .map(|&doc| sort_map.old_to_new(doc))
+        .zip(per_doc)
+        .collect();
+    entries.sort_unstable_by_key(|&(doc, _)| doc);
+    entries.into_iter().unzip()
+}
+
+/// Splits a flat value stream into one slice per document, using the
+/// per-document counts, or one value per document when there are none.
+fn split_per_document<T: Clone>(values: &[T], counts: Option<&Vec<i32>>) -> Vec<Vec<T>> {
+    match counts {
+        None => values.iter().map(|value| vec![value.clone()]).collect(),
+        Some(counts) => {
+            let mut cursor = 0usize;
+            counts
+                .iter()
+                .map(|&count| {
+                    let end = cursor + count as usize;
+                    let slice = values[cursor..end].to_vec();
+                    cursor = end;
+                    slice
+                })
+                .collect()
+        }
     }
 }
 
@@ -2467,7 +2537,11 @@ impl SortedDocValuesWriter {
     ///
     /// Returns [`LuceneError::IllegalState`] when the field has already been
     /// flushed; otherwise propagates whatever the consumer raises.
-    pub fn flush(&mut self, consumer: &mut dyn DocValuesConsumer) -> Result<()> {
+    pub fn flush(
+        &mut self,
+        consumer: &mut dyn DocValuesConsumer,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<()> {
         if self.flushed {
             return Err(LuceneError::IllegalState(format!(
                 "the doc values of field \"{}\" have already been flushed",
@@ -2489,7 +2563,7 @@ impl SortedDocValuesWriter {
             &docs_with_field,
             ords,
             dictionary.values,
-            None,
+            sort_map,
         )?;
         drop((docs_with_field, pending, dictionary.ord_map));
         self.update_bytes_used();
@@ -2835,7 +2909,11 @@ impl SortedNumericDocValuesWriter {
     ///
     /// Returns [`LuceneError::IllegalState`] when the field has already been
     /// flushed; otherwise propagates whatever the consumer raises.
-    pub fn flush(&mut self, consumer: &mut dyn DocValuesConsumer) -> Result<()> {
+    pub fn flush(
+        &mut self,
+        consumer: &mut dyn DocValuesConsumer,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<()> {
         if self.flushed {
             return Err(LuceneError::IllegalState(format!(
                 "the doc values of field \"{}\" have already been flushed",
@@ -2847,8 +2925,20 @@ impl SortedNumericDocValuesWriter {
         let values = std::mem::take(&mut self.pending);
         let counts = self.pending_counts.take();
         let docs_with_field = std::mem::take(&mut self.docs_with_field);
-        let producer =
+        let mut producer =
             BufferedSortedNumericProducer::new(&self.field_info, &docs_with_field, values, counts)?;
+        // `new LongValues(maxDoc, sortMap, ...)` and
+        // `SortingSortedNumericDocValues` (`SortedNumericDocValuesWriter.java:230-253`).
+        if let Some(sort_map) = sort_map {
+            let per_doc = split_per_document(&producer.values, producer.counts.as_deref());
+            let (docs, per_doc) = sort_per_document(&producer.docs, per_doc, sort_map);
+            producer.counts = producer
+                .counts
+                .as_ref()
+                .map(|_| Arc::new(per_doc.iter().map(|values| values.len() as i32).collect()));
+            producer.docs = Arc::new(docs);
+            producer.values = Arc::new(per_doc.concat());
+        }
         drop(docs_with_field);
         self.update_bytes_used();
         consumer.add_sorted_numeric_field(&self.field_info, &producer)
@@ -3127,7 +3217,11 @@ impl SortedSetDocValuesWriter {
     ///
     /// Returns [`LuceneError::IllegalState`] when the field has already been
     /// flushed; otherwise propagates whatever the consumer raises.
-    pub fn flush(&mut self, consumer: &mut dyn DocValuesConsumer) -> Result<()> {
+    pub fn flush(
+        &mut self,
+        consumer: &mut dyn DocValuesConsumer,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<()> {
         if self.flushed {
             return Err(LuceneError::IllegalState(format!(
                 "the doc values of field \"{}\" have already been flushed",
@@ -3158,7 +3252,7 @@ impl SortedSetDocValuesWriter {
         }
 
         let docs_with_field = std::mem::take(&mut self.docs_with_field);
-        let producer = BufferedSortedSetProducer::new(
+        let mut producer = BufferedSortedSetProducer::new(
             &self.field_info,
             &docs_with_field,
             ords,
@@ -3169,6 +3263,18 @@ impl SortedSetDocValuesWriter {
             },
             dictionary.values,
         )?;
+        // `new DocOrds(maxDoc, sortMap, ...)` and `SortingSortedSetDocValues`
+        // (`SortedSetDocValuesWriter.java:290-314`).
+        if let Some(sort_map) = sort_map {
+            let per_doc = split_per_document(&producer.ords, producer.ord_counts.as_deref());
+            let (docs, per_doc) = sort_per_document(&producer.docs, per_doc, sort_map);
+            producer.ord_counts = producer
+                .ord_counts
+                .as_ref()
+                .map(|_| Arc::new(per_doc.iter().map(|ords| ords.len() as i32).collect()));
+            producer.docs = Arc::new(docs);
+            producer.ords = Arc::new(per_doc.concat());
+        }
         drop(docs_with_field);
         self.update_bytes_used();
         consumer.add_sorted_set_field(&self.field_info, &producer)
@@ -3531,7 +3637,7 @@ mod tests {
             writer.add_value(doc, value).unwrap();
         }
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(
             consumer.fields,
             vec![(
@@ -3549,7 +3655,7 @@ mod tests {
         let mut writer =
             NumericDocValuesWriter::new(field("count", 0, DocValuesType::NUMERIC), counter());
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(
             consumer.fields,
             vec![("count".to_string(), Recorded::Numeric(Vec::new()))]
@@ -3571,7 +3677,7 @@ mod tests {
         // values were not buffered.
         assert!(writer.add_value(3, 2).is_err());
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(consumer.fields[0].1, Recorded::Numeric(vec![(4, 1)]));
     }
 
@@ -3581,8 +3687,8 @@ mod tests {
             NumericDocValuesWriter::new(field("count", 0, DocValuesType::NUMERIC), counter());
         writer.add_value(0, 1).unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
-        let error = writer.flush(&mut consumer).unwrap_err();
+        writer.flush(&mut consumer, None).unwrap();
+        let error = writer.flush(&mut consumer, None).unwrap_err();
         assert!(
             matches!(error, LuceneError::IllegalState(ref m) if m.contains("already been flushed")),
             "unexpected error: {error:?}"
@@ -3680,7 +3786,7 @@ mod tests {
             writer.add_value(doc * 2, doc as i64 + 1).unwrap();
         }
         let mut consumer = ProbingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(consumer.passes.len(), 3);
         assert_eq!(consumer.passes[0], consumer.passes[1]);
         assert_eq!(consumer.passes[1], consumer.passes[2]);
@@ -3763,7 +3869,7 @@ mod tests {
         }
 
         let mut consumer = ProbingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert!(consumer.advance.unwrap().contains("advance"));
         assert!(consumer.advance_exact.unwrap().contains("advance_exact"));
         assert_eq!(consumer.after, vec![NO_MORE_DOCS; 4]);
@@ -3787,7 +3893,7 @@ mod tests {
         writer.add_value(1, b"").unwrap();
         writer.add_value(5, b"tail").unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(
             consumer.fields,
             vec![(
@@ -3814,7 +3920,7 @@ mod tests {
         );
         assert!(writer.add_value(1, b"backwards").is_err());
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(
             consumer.fields[0].1,
             Recorded::Binary(vec![(2, b"one".to_vec())])
@@ -3837,7 +3943,7 @@ mod tests {
         writer.add_value(2, b"\x01").unwrap();
         writer.add_value(4, b"abc").unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         let Recorded::Sorted {
             docs_ords,
             dictionary,
@@ -3868,7 +3974,7 @@ mod tests {
         // A doc id that goes backwards is the same failure.
         assert!(writer.add_value(2, b"two").is_err());
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         let Recorded::Sorted { docs_ords, .. } = &consumer.fields[0].1 else {
             panic!("expected a sorted field");
         };
@@ -3895,7 +4001,7 @@ mod tests {
         writer.add_value(6, 9).unwrap();
         writer.add_value(6, 8).unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(
             consumer.fields,
             vec![(
@@ -3923,7 +4029,7 @@ mod tests {
             writer.add_value(doc, i64::from(doc) * 10).unwrap();
         }
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(
             consumer.fields[0].1,
             Recorded::SortedNumeric(vec![
@@ -3955,7 +4061,7 @@ mod tests {
         // The rejected document was not committed; the earlier document keeps
         // its values.
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(
             consumer.fields[0].1,
             Recorded::SortedNumeric(vec![(3, vec![1, 2])])
@@ -3979,7 +4085,7 @@ mod tests {
         writer.add_value(0, b"b").unwrap();
         writer.add_value(2, b"c").unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         let Recorded::SortedSet {
             docs_ords,
             dictionary,
@@ -4009,7 +4115,7 @@ mod tests {
         writer.add_value(1, b"y").unwrap();
         writer.add_value(3, b"x").unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         let Recorded::SortedSet {
             docs_ords,
             dictionary,
@@ -4036,7 +4142,7 @@ mod tests {
         // The rejected document was not committed; the earlier document keeps
         // both of its distinct values.
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         let Recorded::SortedSet { docs_ords, .. } = &consumer.fields[0].1 else {
             panic!("expected a sorted-set field");
         };
@@ -4063,7 +4169,7 @@ mod tests {
             )
             .unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(consumer.fields[0].1, Recorded::Numeric(vec![(0, 42)]));
     }
 
@@ -4090,7 +4196,7 @@ mod tests {
                 )
                 .unwrap();
             let mut consumer = RecordingConsumer::default();
-            writer.flush(&mut consumer).unwrap();
+            writer.flush(&mut consumer, None).unwrap();
             assert_eq!(
                 consumer.fields[0].1,
                 Recorded::Numeric(vec![(0, expected)]),
@@ -4148,7 +4254,7 @@ mod tests {
             )
             .unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         assert_eq!(
             consumer.fields[0].1,
             Recorded::SortedNumeric(vec![(0, vec![9])])
@@ -4195,7 +4301,7 @@ mod tests {
 
         let mut consumer = RecordingConsumer::default();
         for writer in [&mut numeric, &mut binary, &mut sorted, &mut sorted_set] {
-            writer.flush(&mut consumer).unwrap();
+            writer.flush(&mut consumer, None).unwrap();
         }
         assert!(matches!(consumer.fields[0].1, Recorded::Numeric(_)));
         assert!(matches!(consumer.fields[1].1, Recorded::Binary(_)));
@@ -4221,8 +4327,8 @@ mod tests {
             )
             .unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
-        let error = writer.flush(&mut consumer).unwrap_err();
+        writer.flush(&mut consumer, None).unwrap();
+        let error = writer.flush(&mut consumer, None).unwrap_err();
         assert!(
             matches!(error, LuceneError::IllegalState(ref m) if m.contains("already been flushed")),
             "unexpected error: {error:?}"
@@ -4313,7 +4419,7 @@ mod tests {
         }
         let full = counter.load(Ordering::Acquire);
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer).unwrap();
+        writer.flush(&mut consumer, None).unwrap();
         let after = counter.load(Ordering::Acquire);
         assert!(
             after < full,
