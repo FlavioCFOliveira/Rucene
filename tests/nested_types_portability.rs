@@ -1582,12 +1582,10 @@ fn assert_sorted_full_flush(variant: &str) {
 /// Two sorted segments merged into one: every document stays self-consistent —
 /// its `id` term, stored fields, doc values, norm, points and term vectors all
 /// belong to the same source document — and the merged segment holds exactly
-/// Lucene's documents, live and deleted.
-///
-/// The doc-id order is deliberately not compared. Lucene interleaves the two
-/// segments through `MultiSorter.sort` (`MergeState.java:214-228`); this port's
-/// `MergeState::build_doc_maps` builds deletion maps only, so the merge
-/// concatenates them. Merge-time sorting is outside this effort.
+/// Lucene's documents, live and deleted, each at Lucene's doc id: the two
+/// segments are interleaved through `MultiSorter.sort`
+/// (`MergeState.java:212-240`), with an `OrdinalMap` across the segments for
+/// the string sort (rmp #229).
 fn assert_sorted_merge(variant: &str) {
     let java = run_java("sorted-merge", variant);
     let dir = rust_sorted_full(variant, true);
@@ -1621,6 +1619,12 @@ fn assert_sorted_merge(variant: &str) {
         without_doc_id(&lines),
         without_doc_id(&expected),
         "{variant}: the merged segment's documents"
+    );
+    // rmp #229: `MergeState.buildDocMaps` merge-sorts the incoming segments
+    // through `MultiSorter`, so every document lands at Lucene's doc id.
+    assert_eq!(
+        lines, expected,
+        "{variant}: the merged segment's document order"
     );
 }
 

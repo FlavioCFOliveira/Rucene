@@ -34,12 +34,15 @@ use crate::index::doc_values::{
     EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
     EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues,
 };
-use crate::index::doc_values_field_updates::DocValuesFieldUpdates;
+use crate::index::doc_values_field_updates::{
+    merged_iterator, DocValuesFieldUpdates, MergedIterator,
+};
 use crate::index::field_infos::{FieldInfo, FieldInfos, FieldNumbers};
 use crate::index::index_reader::IndexReader;
 use crate::index::index_sorter::SorterDocMap;
 use crate::index::leaf_reader::LeafReader;
 use crate::index::segment_info::SegmentCommitInfo;
+use crate::index::segment_infos::SegmentInfos;
 use crate::index::segment_reader::{SegmentReader, SharedBits};
 use crate::index::DocValuesType;
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
@@ -351,7 +354,7 @@ impl PendingDeletes {
     pub fn on_doc_values_update(
         &mut self,
         _field_info: &FieldInfo,
-        _iterator: &mut crate::index::doc_values_field_updates::DocValuesFieldUpdatesIterator<'_>,
+        _iterator: &mut MergedIterator<'_>,
         _info: &mut SegmentCommitInfo,
     ) -> Result<()> {
         Ok(())
@@ -367,10 +370,20 @@ impl PendingDeletes {
         info.info.max_doc().unwrap_or(0) - self.get_del_count(info)
     }
 
-    /// Returns `true` if the given reader needs to be refreshed.
-    pub fn needs_refresh(&self, reader: &SegmentReader) -> bool {
-        LeafReader::max_doc(reader) - LeafReader::num_docs(reader)
-            != self.get_del_count(&reader.get_segment_info().clone())
+    /// Returns `true` if the given reader needs to be refreshed in order to see
+    /// the latest deletes.
+    ///
+    /// Equivalent to `PendingDeletes.needsRefresh(CodecReader)`
+    /// (`PendingDeletes.java:241-243`): the reader is stale when its live docs
+    /// are not the very bits this tracker hands out, or when its deletion count
+    /// differs. Asking for the bits freezes them, as Java's `getLiveDocs()`
+    /// does.
+    pub fn needs_refresh(&mut self, reader: &SegmentReader, info: &SegmentCommitInfo) -> bool {
+        let reader_live_docs = LeafReader::get_live_docs(reader);
+        let live_docs = self.get_live_docs();
+        !crate::util::same_bits(reader_live_docs.as_deref(), live_docs.as_deref())
+            || LeafReader::max_doc(reader) - LeafReader::num_docs(reader)
+                != self.get_del_count(info)
     }
 
     /// Checks that this tracker, the segment commit and `reader` agree on how
@@ -803,7 +816,7 @@ impl PendingSoftDeletes {
     pub fn on_doc_values_update(
         &mut self,
         field_info: &FieldInfo,
-        iterator: &mut crate::index::doc_values_field_updates::DocValuesFieldUpdatesIterator<'_>,
+        iterator: &mut MergedIterator<'_>,
         info: &mut SegmentCommitInfo,
     ) -> Result<()> {
         if self.field == field_info.name {
@@ -895,12 +908,19 @@ impl PendingSoftDeletes {
         true
     }
 
-    /// Returns `true` if the reader's live-doc count is stale.
+    /// Returns `true` if the given reader needs to be refreshed in order to see
+    /// the latest deletes.
     ///
-    /// Equivalent to `PendingSoftDeletes.needsRefresh()`.
-    pub fn needs_refresh(&self, reader: &SegmentReader) -> bool {
-        LeafReader::max_doc(reader) - LeafReader::num_docs(reader)
-            != self.get_del_count(&reader.get_segment_info().clone())
+    /// `PendingSoftDeletes` inherits the `final`
+    /// `PendingDeletes.needsRefresh(CodecReader)` (`PendingDeletes.java:241-243`):
+    /// the reader's live docs must be the very bits this tracker hands out, and
+    /// its deletion count must match.
+    pub fn needs_refresh(&mut self, reader: &SegmentReader, info: &SegmentCommitInfo) -> bool {
+        let reader_live_docs = LeafReader::get_live_docs(reader);
+        let live_docs = self.get_live_docs();
+        !crate::util::same_bits(reader_live_docs.as_deref(), live_docs.as_deref())
+            || LeafReader::max_doc(reader) - LeafReader::num_docs(reader)
+                != self.get_del_count(info)
     }
 
     /// Returns `true` if live docs must be re-initialised after a delete.
@@ -1158,6 +1178,21 @@ pub(crate) enum PendingDeletesKind {
 }
 
 impl PendingDeletesKind {
+    /// Dispatches `onDocValuesUpdate`, which `PendingSoftDeletes` overrides
+    /// and the base `PendingDeletes` leaves a no-op
+    /// (`PendingDeletes.java:232-233`, `PendingSoftDeletes.java:152-169`).
+    pub(crate) fn on_doc_values_update(
+        &mut self,
+        field_info: &FieldInfo,
+        iterator: &mut MergedIterator<'_>,
+        info: &mut SegmentCommitInfo,
+    ) -> Result<()> {
+        match self {
+            Self::Hard(deletes) => deletes.on_doc_values_update(field_info, iterator, info),
+            Self::Soft(deletes) => deletes.on_doc_values_update(field_info, iterator, info),
+        }
+    }
+
     /// Renders whichever tracker this is, the way Java's virtual dispatch on
     /// `PendingDeletes.toString()` would.
     pub(crate) fn to_string_with_info(&self, info: &SegmentCommitInfo) -> String {
@@ -1607,10 +1642,27 @@ impl ReadersAndUpdates {
     }
 
     /// Returns the merging DV updates and clears the merging flag.
+    ///
+    /// Equivalent to `ReadersAndUpdates.getMergingDVUpdates()`
+    /// (`ReadersAndUpdates.java:878-883`): we must atomically clear `isMerging`
+    /// when we return the DV updates, otherwise we can lose updates. Java hands
+    /// back the map itself and leaves it in place until `dropMergingUpdates`
+    /// clears it; this port returns a copy of each update and leaves the map,
+    /// which is equivalent, because the caller only reads it.
     pub fn get_merging_dv_updates(&self) -> JavaHashMap<Vec<DocValuesFieldUpdates>> {
         let mut state = self.state.lock().expect("state mutex poisoned");
         state.is_merging = false;
-        std::mem::take(&mut state.merging_dv_updates)
+        let mut copy = JavaHashMap::new();
+        for (field, updates) in state.merging_dv_updates.iter() {
+            copy.insert(
+                field.clone(),
+                updates
+                    .iter()
+                    .map(DocValuesFieldUpdates::clone_for_merge)
+                    .collect(),
+            );
+        }
+        copy
     }
 
     /// Returns `true` if the segment is fully deleted.
@@ -1627,20 +1679,21 @@ impl ReadersAndUpdates {
     ///
     /// Equivalent to `ReadersAndUpdates.keepFullyDeletedSegment(MergePolicy)`
     /// (`ReadersAndUpdates.java:897-899`), which is
-    /// `mergePolicy.keepFullyDeletedSegment(this::getLatestReader)`. The reader
-    /// supplier has no counterpart here for the reason already declared on
-    /// [`MergePolicy::keep_fully_deleted_segment`](crate::index::merge_policy::MergePolicy::keep_fully_deleted_segment):
-    /// no policy in this crate inspects the reader to decide retention, so the
-    /// seam takes none.
+    /// `mergePolicy.keepFullyDeletedSegment(this::getLatestReader)`.
     ///
     /// # Errors
     ///
-    /// Propagates whatever the policy raises.
+    /// Propagates whatever opening the latest reader or the policy raises.
     pub fn keep_fully_deleted_segment(
         &self,
         policy: &dyn crate::index::merge_policy::MergePolicy,
     ) -> Result<bool> {
-        policy.keep_fully_deleted_segment()
+        let mut state = self.state.lock().expect("state mutex poisoned");
+        let mut reader_supplier = || -> Result<Arc<dyn crate::index::codec_reader::CodecReader>> {
+            let reader = Self::get_latest_reader_locked(&mut state, self)?;
+            Ok(reader as Arc<dyn crate::index::codec_reader::CodecReader>)
+        };
+        policy.keep_fully_deleted_segment(&mut reader_supplier)
     }
 
     pub fn is_fully_deleted(&self) -> Result<bool> {
@@ -1806,15 +1859,28 @@ impl ReadersAndUpdates {
             }
         }
 
+        // Create new fields with the right DV type
+        // (`ReadersAndUpdates.java:669-685`).
         for updates in state.pending_dv_updates.values() {
             if let Some(update) = updates.first() {
-                if !by_name.contains_key(&update.field) {
-                    let fi = FieldInfo::new(update.field.clone(), max_field_number + 1);
-                    let number = field_numbers.add_or_get(&fi)?;
-                    let mut canonical = Self::clone_field_info(&fi, number);
-                    canonical.doc_values_type = update.dv_type;
-                    max_field_number = number;
-                    by_name.insert(canonical.name.clone(), canonical);
+                if let Some(fi) = by_name.get(&update.field) {
+                    // The field already exists in this segment.
+                    debug_assert_eq!(fi.doc_values_type, update.dv_type);
+                } else {
+                    // The field is not present in this segment, so we clone the
+                    // global field (which is guaranteed to exist) and remap its
+                    // field number locally.
+                    let fi = field_numbers
+                        .construct_field_info(&update.field, update.dv_type, max_field_number + 1)?
+                        .ok_or_else(|| {
+                            LuceneError::IllegalState(format!(
+                                "field [{}] with doc-values type {:?} is not in the global \
+                                 field numbers",
+                                update.field, update.dv_type
+                            ))
+                        })?;
+                    max_field_number += 1;
+                    by_name.insert(fi.name.clone(), fi);
                 }
             }
         }
@@ -1871,24 +1937,31 @@ impl ReadersAndUpdates {
                 let mut numeric_updates: HashMap<i32, Option<i64>> = HashMap::new();
                 let mut binary_updates: HashMap<i32, Option<BytesRef>> = HashMap::new();
 
-                for update in &updates_to_apply {
-                    let mut it = update.iterator();
-                    loop {
-                        let doc_id = it.next_doc()?;
-                        if doc_id == NO_MORE_DOCS {
-                            break;
-                        }
-                        if it.has_value() {
-                            if dv_type == DocValuesType::NUMERIC {
-                                numeric_updates.insert(doc_id, Some(it.long_value()));
-                            } else {
-                                binary_updates.insert(doc_id, Some(it.binary_value()));
-                            }
-                        } else if dv_type == DocValuesType::NUMERIC {
-                            numeric_updates.insert(doc_id, None);
+                // `DocValuesFieldUpdates.mergedIterator(subs)` over the updates
+                // to apply (`ReadersAndUpdates.java:333-345`): for a document
+                // several packets updated, the one with the highest delGen
+                // wins, whatever order the packets sit in the list — the
+                // updates a merge carried over arrive in hash order.
+                let subs = updates_to_apply
+                    .iter()
+                    .map(|update| update.iterator())
+                    .collect::<Vec<_>>();
+                let mut it = merged_iterator(subs);
+                loop {
+                    let doc_id = it.next_doc()?;
+                    if doc_id == NO_MORE_DOCS {
+                        break;
+                    }
+                    if it.has_value() {
+                        if dv_type == DocValuesType::NUMERIC {
+                            numeric_updates.insert(doc_id, Some(it.long_value()));
                         } else {
-                            binary_updates.insert(doc_id, None);
+                            binary_updates.insert(doc_id, Some(it.binary_value()));
                         }
+                    } else if dv_type == DocValuesType::NUMERIC {
+                        numeric_updates.insert(doc_id, None);
+                    } else {
+                        binary_updates.insert(doc_id, None);
                     }
                 }
 
@@ -1908,11 +1981,14 @@ impl ReadersAndUpdates {
         //
         // Java sets `fieldInfo.setDocValuesGen(nextDocValuesGen)` on the very
         // `FieldInfo` the segment's new `FieldInfos` holds
-        // (`ReadersAndUpdates.java:326-328`), so the field-infos generation
-        // written afterwards records each updated field's doc-values
-        // generation. The port's `FieldInfos` is immutable once built, so the
-        // generations are collected here and applied before it is written.
-        let mut written_dv_gens: HashMap<String, i64> = HashMap::new();
+        // (`ReadersAndUpdates.java:326-328`), and hands that same object to the
+        // doc-values consumer, so the field-infos generation written afterwards
+        // records each updated field's doc-values generation *and* the
+        // attributes the consumer put — `PerFieldDocValuesFormat` records its
+        // format and suffix there. The port's `FieldInfos` is immutable once
+        // built, so each field's info is collected here as the consumer left
+        // it and swapped in before the field infos are written.
+        let mut written_field_infos: HashMap<String, FieldInfo> = HashMap::new();
         for fd in &fields_data {
             // `new TrackingDirectoryWrapper(dir)` per field: only the files
             // this field's consumer creates belong to its generation.
@@ -1934,6 +2010,33 @@ impl ReadersAndUpdates {
             let single_field_infos = FieldInfos::new(vec![field_info_mut.clone()])?;
 
             let field_number = field_info_mut.get_field_number();
+            // `pendingDeletes.onDocValuesUpdate(fieldInfo, ...)`
+            // (`ReadersAndUpdates.java:349`), made before the consumer writes
+            // the field (Java makes it after opening the consumer, which does
+            // not read the counts it changes): an update to the soft-deletes
+            // field soft-deletes the documents it gives a value, and the
+            // segment's soft-delete count follows.
+            {
+                let RauState {
+                    info,
+                    pending_deletes,
+                    pending_dv_updates,
+                    ..
+                } = &mut *state;
+                let subs = pending_dv_updates
+                    .get(&fd.field)
+                    .map(|updates| {
+                        updates
+                            .iter()
+                            .filter(|u| u.del_gen <= max_del_gen)
+                            .map(DocValuesFieldUpdates::iterator)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let mut updates = merged_iterator(subs);
+                pending_deletes.on_doc_values_update(&field_info_mut, &mut updates, info)?;
+            }
+
             {
                 let empty_updates = crate::codecs::stub::BufferedUpdates;
                 let write_state = SegmentWriteState::with_suffix(
@@ -1965,7 +2068,7 @@ impl ReadersAndUpdates {
             }
 
             state.info.advance_doc_values_gen();
-            written_dv_gens.insert(fd.field.clone(), next_dv_gen);
+            written_field_infos.insert(fd.field.clone(), field_info_mut);
 
             // Track files created for this field.
             let after = dir.list_all().unwrap_or_default();
@@ -1975,15 +2078,15 @@ impl ReadersAndUpdates {
                 .collect();
             new_dv_files.insert(field_number, created);
         }
-        let field_infos = if written_dv_gens.is_empty() {
+        let field_infos = if written_field_infos.is_empty() {
             field_infos
         } else {
             let mut updated = Vec::with_capacity(field_infos.len());
             for fi in field_infos.iter() {
-                let mut fi = Self::clone_field_info(fi, fi.get_field_number());
-                if let Some(gen) = written_dv_gens.get(&fi.name) {
-                    fi.set_doc_values_gen(*gen);
-                }
+                let fi = match written_field_infos.remove(&fi.name) {
+                    Some(written) => written,
+                    None => Self::clone_field_info(fi, fi.get_field_number()),
+                };
                 updated.push(fi);
             }
             FieldInfos::new(updated)?
@@ -2195,9 +2298,10 @@ impl ReadersAndUpdates {
         }
         let _ = owner;
         let reader = Arc::clone(state.reader.as_ref().expect("just set"));
-        let needs_refresh = match &state.pending_deletes {
-            PendingDeletesKind::Hard(pd) => pd.needs_refresh(&reader),
-            PendingDeletesKind::Soft(pd) => pd.needs_refresh(&reader),
+        let info = state.info.clone();
+        let needs_refresh = match &mut state.pending_deletes {
+            PendingDeletesKind::Hard(pd) => pd.needs_refresh(&reader, &info),
+            PendingDeletesKind::Soft(pd) => pd.needs_refresh(&reader, &info),
         };
         if needs_refresh {
             // We have a reader but its live-docs are out of sync; create a
@@ -2221,29 +2325,26 @@ impl ReadersAndUpdates {
         policy: &dyn crate::index::merge_policy::MergePolicy,
     ) -> Result<i32> {
         let mut state = self.state.lock().expect("state mutex poisoned");
-        match &state.pending_deletes {
-            PendingDeletesKind::Hard(_) => {
-                let info = state.info.clone();
-                match &state.pending_deletes {
-                    PendingDeletesKind::Hard(pd) => pd.num_deletes_to_merge(policy, &info),
-                    PendingDeletesKind::Soft(_) => unreachable!("matched Hard above"),
-                }
-            }
-            PendingDeletesKind::Soft(_) => {
-                // The soft-delete path has to initialise its counts first, and
-                // that may need a reader, so the state is split apart here:
-                // `ensure_initialized` borrows the pending deletes mutably while
-                // the supplier needs the rest of the state.
-                Self::ensure_soft_deletes_initialized(&mut state, self)?;
-                let info = state.info.clone();
-                match &state.pending_deletes {
-                    PendingDeletesKind::Soft(pd) => {
-                        Ok(policy.num_deletes_to_merge_default(&info, pd.get_del_count(&info)))
-                    }
-                    PendingDeletesKind::Hard(_) => unreachable!("matched Soft above"),
-                }
-            }
+        if let PendingDeletesKind::Soft(_) = &state.pending_deletes {
+            // `PendingSoftDeletes.numDeletesToMerge` initialises its counts
+            // first, and that may need a reader, so the state is split apart
+            // here: `ensure_initialized` borrows the pending deletes mutably
+            // while the supplier needs the rest of the state.
+            Self::ensure_soft_deletes_initialized(&mut state, self)?;
         }
+        let info = state.info.clone();
+        let del_count = match &state.pending_deletes {
+            PendingDeletesKind::Hard(pd) => pd.get_del_count(&info),
+            PendingDeletesKind::Soft(pd) => pd.get_del_count(&info),
+        };
+        // `policy.numDeletesToMerge(info, getDelCount(), readerIOSupplier)`
+        // (`PendingDeletes.java:236-238`), the supplier being
+        // `this::getLatestReader`.
+        let mut reader_supplier = || -> Result<Arc<dyn crate::index::codec_reader::CodecReader>> {
+            let reader = Self::get_latest_reader_locked(&mut state, self)?;
+            Ok(reader as Arc<dyn crate::index::codec_reader::CodecReader>)
+        };
+        policy.num_deletes_to_merge_with_reader(&info, del_count, &mut reader_supplier)
     }
 
     /// Runs `PendingSoftDeletes.ensureInitialized` against the pooled reader.
@@ -2353,9 +2454,10 @@ impl ReadersAndUpdates {
         let mut reader = Arc::clone(state.reader.as_ref().expect("just set"));
         reader.inc_ref()?;
 
-        let needs_refresh = match &state.pending_deletes {
-            PendingDeletesKind::Hard(pd) => pd.needs_refresh(&reader),
-            PendingDeletesKind::Soft(pd) => pd.needs_refresh(&reader),
+        let info = state.info.clone();
+        let needs_refresh = match &mut state.pending_deletes {
+            PendingDeletesKind::Hard(pd) => pd.needs_refresh(&reader, &info),
+            PendingDeletesKind::Soft(pd) => pd.needs_refresh(&reader, &info),
         };
         let del_gen_differs = reader.get_segment_info().get_del_gen() != state.info.get_del_gen();
         if needs_refresh || del_gen_differs {
@@ -2850,40 +2952,119 @@ impl ReaderPool {
         Ok(Some(rld))
     }
 
-    /// Releases a `ReadersAndUpdates` back to the pool.
+    /// Releases a `ReadersAndUpdates` back to the pool, and returns whether any
+    /// file was written.
     ///
-    /// Equivalent to `ReaderPool.release(ReadersAndUpdates, boolean)`.
-    pub fn release(&self, rld: &Arc<ReadersAndUpdates>, assert_info_live: bool) -> Result<()> {
-        if assert_info_live {
-            debug_assert!(self.assert_info_is_live(&rld.info()));
-        }
+    /// Equivalent to `ReaderPool.release(ReadersAndUpdates, boolean)`
+    /// (`ReaderPool.java:183-230`). This should only be called after
+    /// [`get`](Self::get) with `create` set. When readers are not pooled and the
+    /// caller held the last reference besides the pool's own, the segment's
+    /// live docs and doc-values updates are written and the entry leaves the
+    /// pool — unless doc-values updates remain that cannot be written yet, in
+    /// which case the segment stays pooled until its deletes fully apply.
+    ///
+    /// `live_infos` is the writer's `SegmentInfos`, which Java's pool holds as a
+    /// field and checks in `assertInfoIsLive`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever writing the live docs, the doc-values updates or
+    /// dropping the readers raises.
+    pub fn release(
+        &self,
+        rld: &Arc<ReadersAndUpdates>,
+        assert_info_live: bool,
+        live_infos: &SegmentInfos,
+    ) -> Result<bool> {
+        let mut map = self.reader_map.lock().expect("reader_map mutex poisoned");
+        let mut changed = false;
+        // Matches incRef in get:
         rld.dec_ref();
-        Ok(())
+
+        let name = rld.info().info.name;
+        let pooled = map.get(&name).is_some_and(|held| Arc::ptr_eq(held, rld));
+        if rld.ref_count() == 0 {
+            // This happens if the segment was just merged away, while a buffered
+            // deletes packet was still applying deletes/updates to it.
+            debug_assert!(
+                !pooled,
+                "seg={name} has refCount 0 but still unexpectedly exists in the reader pool"
+            );
+        } else {
+            // Pool still holds a ref:
+            debug_assert!(
+                rld.ref_count() > 0,
+                "refCount={} reader={name}",
+                rld.ref_count()
+            );
+
+            if !self.pool_readers.load(Ordering::Relaxed) && rld.ref_count() == 1 && pooled {
+                // This is the last ref to this RLD, and we're not pooling, so
+                // remove it:
+                if rld.write_live_docs(&*self.directory)? {
+                    // Make sure we only write del docs for a live segment:
+                    debug_assert!(
+                        !assert_info_live || Self::assert_info_is_live(&map, rld, live_infos)
+                    );
+                    // Must checkpoint because we just created new _X_N.del and
+                    // field updates files; the caller does it, without bumping
+                    // the segment infos' version.
+                    changed = true;
+                }
+                if rld.write_field_updates(
+                    &*self.directory,
+                    &self.field_numbers,
+                    (self.completed_del_gen_supplier)(),
+                    &*self.info_stream,
+                )? {
+                    changed = true;
+                }
+                if rld.get_num_dv_updates() == 0 {
+                    rld.drop_readers()?;
+                    map.remove(&name);
+                } else {
+                    // We are forced to pool this segment until its deletes fully
+                    // apply (no delGen gaps).
+                }
+            }
+        }
+        Ok(changed)
     }
 
-    /// Checks that `info` is one of the segments this pool is tracking.
+    /// Checks that `rld` is the pooled entry of a segment the writer's index
+    /// still holds.
     ///
-    /// Equivalent to the private `org.apache.lucene.index.ReaderPool#assertInfoIsLive`,
-    /// which looks the segment up in the writer's live `SegmentInfos` and
-    /// asserts that the instance found is the very one passed in.
+    /// Equivalent to the private `org.apache.lucene.index.ReaderPool#assertInfoIsLive`
+    /// (`ReaderPool.java:115-121`), which finds `rld.info` in the writer's
+    /// `SegmentInfos` and asserts that the instance found is the very one the
+    /// entry carries. Java's identity check becomes two here: the segment must
+    /// be in `live_infos` — found by name, the identity `SegmentInfos` uses in
+    /// this port — and the pool's entry for it must be this very
+    /// `ReadersAndUpdates`, since the pool, not the `SegmentCommitInfo`, is what
+    /// this port shares by reference.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java's `ReaderPool` holds the writer's
-    /// `SegmentInfos` and checks reference identity against it. This pool is
-    /// keyed by segment name and holds no `SegmentInfos`, so the check is that
-    /// the pool itself still holds an entry for the segment — the property the
-    /// assertion exists to protect (a reader being released for a segment the
-    /// writer has already dropped). Identity of the `SegmentCommitInfo` itself
-    /// is not checked, because this crate's `SegmentCommitInfo` is a value type
-    /// and the pool holds its own copy.
+    /// It takes the map rather than the pool because the caller already holds
+    /// the pool's lock.
     ///
     /// # Panics
     ///
-    /// Panics with Java's message when the segment is not live.
-    pub(crate) fn assert_info_is_live(&self, info: &SegmentCommitInfo) -> bool {
-        let map = self.reader_map.lock().expect("reader_map mutex poisoned");
+    /// Panics with Java's messages when the segment is not live, or when the
+    /// pooled entry is not `rld`.
+    fn assert_info_is_live(
+        map: &HashMap<String, Arc<ReadersAndUpdates>>,
+        rld: &Arc<ReadersAndUpdates>,
+        live_infos: &SegmentInfos,
+    ) -> bool {
+        let info = rld.info();
         assert!(
-            map.contains_key(&info.info.name),
+            live_infos.index_of(&info).is_some(),
             "info={} isn't live",
+            info.info.name
+        );
+        assert!(
+            map.get(&info.info.name)
+                .is_some_and(|held| Arc::ptr_eq(held, rld)),
+            "info={} doesn't match live info in segmentInfos",
             info.info.name
         );
         true
@@ -3074,13 +3255,24 @@ impl ReaderPool {
         readers
     }
 
-    /// Drops the entry for `info` from the pool.
+    /// Drops the reader for `info` if it is pooled, and returns whether it was.
     ///
-    /// Equivalent to `ReaderPool.drop(SegmentCommitInfo)`.
-    pub fn drop(&self, info: &SegmentCommitInfo) -> Result<()> {
+    /// Equivalent to `ReaderPool.drop(SegmentCommitInfo)`
+    /// (`ReaderPool.java:128-138`), which removes the entry and drops its
+    /// readers.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever dropping the readers raises.
+    pub fn drop(&self, info: &SegmentCommitInfo) -> Result<bool> {
         let mut map = self.reader_map.lock().expect("reader_map mutex poisoned");
-        map.remove(&info.info.name);
-        Ok(())
+        match map.remove(&info.info.name) {
+            Some(rld) => {
+                rld.drop_readers()?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     /// Enables or disables reader pooling.
@@ -3342,6 +3534,23 @@ mod tests {
         .expect("test SegmentInfo should be valid");
         SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, [0u8; 16])
             .expect("test SegmentCommitInfo should be valid")
+    }
+
+    /// `getMergingDVUpdates` hands the merging updates back without clearing
+    /// them; only `dropMergingUpdates` does (`ReadersAndUpdates.java:870-883`).
+    #[test]
+    fn merging_dv_updates_survive_until_dropped() {
+        let rld = ReadersAndUpdates::new(10, make_sci("_0", 4), None);
+        rld.set_is_merging();
+        let mut update =
+            DocValuesFieldUpdates::new(4, 1, "f", crate::index::DocValuesType::NUMERIC);
+        update.add_long(2, 9);
+        update.finish().unwrap();
+        rld.add_dv_update(update).unwrap();
+        assert_eq!(rld.get_merging_dv_updates().get("f").map(Vec::len), Some(1));
+        assert_eq!(rld.get_merging_dv_updates().get("f").map(Vec::len), Some(1));
+        rld.drop_merging_updates();
+        assert!(rld.get_merging_dv_updates().is_empty());
     }
 
     // -----------------------------------------------------------------
@@ -3768,7 +3977,7 @@ mod tests {
 
         let mut field_info = FieldInfo::new("soft_field", 0);
         field_info.doc_values_gen = 1; // generation 1 > dv_generation (-1)
-        let mut it = updates.iterator();
+        let mut it = merged_iterator(vec![updates.iterator()]);
         psd.on_doc_values_update(&field_info, &mut it, &mut info)
             .unwrap();
 
@@ -3991,5 +4200,80 @@ mod tests {
         let updates = HashMap::new();
         let mut m = MergedBinaryDocValues::new(None, &updates);
         assert_eq!(m.next_doc().unwrap(), NO_MORE_DOCS);
+    }
+}
+
+#[cfg(test)]
+mod needs_refresh_tests {
+    use super::*;
+    use crate::document::{Document, Store, StringField};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::store::{Directory, RamDirectory, READONCE_IO_CONTEXT};
+
+    /// A committed segment of three documents and a reader over it.
+    fn segment() -> (SegmentCommitInfo, SegmentReader) {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for i in 0..3 {
+            let mut d = Document::new();
+            d.add(Box::new(
+                StringField::new("id", format!("{i}"), Store::NO).unwrap(),
+            ));
+            writer.add_document(&d).unwrap();
+        }
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let infos = SegmentInfos::read_latest_commit(dir).unwrap();
+        let info = infos.info(0).clone();
+        let reader = SegmentReader::new(
+            info.clone(),
+            infos.index_created_version_major(),
+            &*READONCE_IO_CONTEXT,
+        )
+        .unwrap();
+        (info, reader)
+    }
+
+    /// `PendingDeletes.needsRefresh` compares the reader's live docs by
+    /// reference, not only the deletion counts (`PendingDeletes.java:241-243`):
+    /// a reader with as many deletions but other live docs is stale.
+    #[test]
+    fn a_reader_with_as_many_deletes_but_other_live_docs_needs_a_refresh() {
+        let (info, reader) = segment();
+        let mut pending = PendingDeletes::new(&info);
+        pending.on_new_reader(&reader, &info).unwrap();
+        assert!(
+            !pending.needs_refresh(&reader, &info),
+            "nothing changed yet"
+        );
+
+        assert!(pending.delete(1, &info).unwrap());
+        // A reader over the very live docs the tracker hands out is current.
+        let current = SegmentReader::new_shared(
+            info.clone(),
+            &reader,
+            pending.get_live_docs(),
+            None,
+            2,
+            true,
+        )
+        .unwrap();
+        assert!(!pending.needs_refresh(&current, &info));
+
+        // A reader with one deletion too, of another document, is stale.
+        let mut other = FixedBitSet::new(3);
+        other.set(0);
+        other.set(1);
+        let stale =
+            SegmentReader::new_shared(info.clone(), &reader, Some(Box::new(other)), None, 2, true)
+                .unwrap();
+        assert_eq!(
+            LeafReader::max_doc(&stale) - LeafReader::num_docs(&stale),
+            pending.get_del_count(&info),
+            "the counts agree"
+        );
+        assert!(pending.needs_refresh(&stale, &info), "the live docs do not");
     }
 }

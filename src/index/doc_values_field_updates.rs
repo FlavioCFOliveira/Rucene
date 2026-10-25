@@ -801,7 +801,13 @@ impl<'a> DocIdSetIterator for MergedIterator<'a> {
                         let next = self.subs[i].it.next_doc().unwrap_or(NO_MORE_DOCS);
                         self.subs[i].doc = next;
                         if next == NO_MORE_DOCS {
-                            self.subs.swap_remove(i);
+                            // `remove`, not `swap_remove`: the subs after `i`
+                            // shift down by one, which is what keeps `min_idx`
+                            // naming the top sub. `swap_remove` would move the
+                            // last sub into `i` and leave `min_idx` pointing at
+                            // the wrong one, so the value read for this
+                            // document would come from a lower generation.
+                            self.subs.remove(i);
                             if min_idx > i {
                                 min_idx -= 1;
                             }
@@ -930,6 +936,32 @@ mod tests {
         assert_eq!(merged.next_doc().unwrap(), 2);
         assert_eq!(merged.long_value(), 200);
 
+        assert_eq!(merged.next_doc().unwrap(), NO_MORE_DOCS);
+    }
+
+    /// Five generations, in no particular order, update the same two
+    /// documents; the subs run out together on the last one. The highest
+    /// generation must win for both, as Java's priority queue picks it
+    /// (`DocValuesFieldUpdates.java:162-178`), however the exhausted subs are
+    /// removed.
+    #[test]
+    fn merged_iterator_keeps_the_highest_generation_when_subs_run_out_together() {
+        let gens = [6i64, 4, 7, 3, 5];
+        let updates: Vec<DocValuesFieldUpdates> = gens
+            .iter()
+            .map(|&gen| {
+                let mut u = DocValuesFieldUpdates::new(2, gen, "f", DocValuesType::NUMERIC);
+                u.add_long(0, gen * 10);
+                u.add_long(1, gen * 10 + 1);
+                u.finish().unwrap();
+                u
+            })
+            .collect();
+        let mut merged = merged_iterator(updates.iter().map(|u| u.iterator()).collect());
+        assert_eq!(merged.next_doc().unwrap(), 0);
+        assert_eq!((merged.del_gen(), merged.long_value()), (7, 70));
+        assert_eq!(merged.next_doc().unwrap(), 1);
+        assert_eq!((merged.del_gen(), merged.long_value()), (7, 71));
         assert_eq!(merged.next_doc().unwrap(), NO_MORE_DOCS);
     }
 

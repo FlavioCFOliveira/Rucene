@@ -247,7 +247,7 @@ impl BufferedUpdatesStream {
     /// Appends `packet` to the stream and returns the generation it was given.
     ///
     /// Equivalent to `BufferedUpdatesStream.push`.
-    pub fn push(&self, packet: FrozenBufferedUpdates) -> Result<i64> {
+    pub fn push(&self, packet: Arc<FrozenBufferedUpdates>) -> Result<i64> {
         let mut guard = self.updates.lock().map_err(|_| {
             LuceneError::IllegalState("buffered updates stream lock poisoned".to_string())
         })?;
@@ -262,7 +262,7 @@ impl BufferedUpdatesStream {
         debug_assert!(self.check_delete_stats(&guard));
 
         let bytes = Self::packet_bytes_used(&packet);
-        guard.push(Arc::new(packet));
+        guard.push(packet);
         self.bytes_used.fetch_add(bytes, Ordering::Relaxed);
         if self.info_stream.is_enabled(BD) {
             self.info_stream.message(

@@ -368,18 +368,60 @@ impl StringSorter {
 }
 
 impl IndexSorter for StringSorter {
+    /// Equivalent to `IndexSorter.StringSorter.getComparableProviders(List)`
+    /// (`IndexSorter.java:478-509`): an `OrdinalMap` over every reader's sorted
+    /// values makes the ordinals comparable across segments, and each
+    /// document compares by its global ordinal.
+    ///
+    /// Java reads the ordinals map's terms and the per-document ordinals from
+    /// the same `SortedDocValues` objects. This port's `OrdinalMap::build_sorted`
+    /// consumes the values it walks, so each reader's values are asked for
+    /// twice: once for the map, once for the documents. Java's provider never
+    /// answers `null` (`DocValues.getSorted` hands back an empty instance), so
+    /// a reader without the field contributes empty values here too.
     fn get_comparable_providers(
         &self,
         readers: &[Arc<dyn LeafReader>],
     ) -> Result<Vec<ComparableProvider>> {
-        // Lucene builds an OrdinalMap so that ordinals are comparable across
-        // segments. `OrdinalMap` is not ported yet, so merge-time string sorting
-        // is refused rather than silently ordering by per-segment ordinal, which
-        // would produce a different document order from Lucene's.
-        let _ = readers;
-        Err(LuceneError::UnsupportedOperation(
-            "merge-time string sorting needs OrdinalMap, which is not ported yet".to_string(),
-        ))
+        let sorted_values = |reader: &Arc<dyn LeafReader>| -> Result<Box<dyn SortedDocValues>> {
+            Ok((self.values_provider)(reader.as_ref())?.unwrap_or_else(|| {
+                Box::new(crate::index::doc_values::DocValues::empty_sorted())
+                    as Box<dyn SortedDocValues>
+            }))
+        };
+        let mut map_values = Vec::with_capacity(readers.len());
+        for reader in readers {
+            map_values.push(sorted_values(reader)?);
+        }
+        let ordinal_map = Arc::new(crate::index::doc_values::OrdinalMap::build_sorted(
+            map_values,
+            crate::util::packed::PackedInts::DEFAULT,
+        )?);
+        // `Integer.MAX_VALUE` for `SortField.STRING_LAST`, `Integer.MIN_VALUE`
+        // otherwise.
+        let missing_ord = if self.missing_value_is_last {
+            i64::from(i32::MAX)
+        } else {
+            i64::from(i32::MIN)
+        };
+        let mut providers: Vec<ComparableProvider> = Vec::with_capacity(readers.len());
+        for (reader_index, reader) in readers.iter().enumerate() {
+            let reader_values = std::cell::RefCell::new(sorted_values(reader)?);
+            let ordinal_map = Arc::clone(&ordinal_map);
+            providers.push(Box::new(move |doc_id: i32| {
+                let mut values = reader_values.borrow_mut();
+                if values.advance_exact(doc_id)? {
+                    // Translate the segment's ord to the global ord space.
+                    let ord = values.ord_value()?;
+                    Ok(ordinal_map
+                        .get_global_ords(reader_index)
+                        .get(i64::from(ord)))
+                } else {
+                    Ok(missing_ord)
+                }
+            }));
+        }
+        Ok(providers)
     }
 
     fn get_doc_comparator(&self, reader: &dyn LeafReader, max_doc: i32) -> Result<DocComparator> {
@@ -730,12 +772,6 @@ impl MultiSorter {
     /// Equivalent to the private static
     /// `MultiSorter.setComparableValues(IndexSorter.ComparableValues[], BitSet, int, int)`.
     ///
-    /// **Divergence from Lucene 10.5.0.** `parents` is always `None` at this
-    /// port's two call sites, because the ported `LeafMetaData` does not yet
-    /// expose the parent field a block-sorted segment needs; see the note on
-    /// [`MultiSorter::sort`]. The block branch is written out all the same, so
-    /// that supplying the bitset is all that is left to do.
-    ///
     /// # Errors
     ///
     /// Propagates whatever reading a document's sort value raised.
@@ -760,12 +796,19 @@ impl MultiSorter {
     ///
     /// Equivalent to `MultiSorter.sort(Sort, List<CodecReader>)`.
     ///
+    /// A segment that uses document blocks sorts each block by the value of
+    /// its parent (last) document, found through the parent field
+    /// (`MultiSorter.java:47-66`).
+    ///
     /// **Divergence from Lucene 10.5.0.** Java keeps the remapped document
-    /// numbers in `PackedLongValues`, and honours a parent bitset so a document
-    /// block sorts by its parent's value. `PackedLongValues` is not ported, so
-    /// the remapping is a plain `Vec<i32>`; block-aware sorting needs the parent
-    /// field, which the ported `LeafMetaData` does not yet expose, so a reader
-    /// using blocks is refused rather than sorted wrongly.
+    /// numbers in `PackedLongValues`, which is not ported, so the remapping is
+    /// a plain `Vec<i32>`; the numbers are the same.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::CorruptIndex`] when a segment created by Lucene
+    /// 10 or later has blocks but the index declares no parent field, and
+    /// propagates whatever reading the sort values raises.
     pub fn sort(
         sorters: &[Arc<dyn IndexSorter>],
         reverse_muls: &[i32],
@@ -778,6 +821,54 @@ impl MultiSorter {
         }
 
         let leaf_count = readers.len();
+
+        // Per-reader parent bitset (used when index sorting with document
+        // blocks). Shared across all sort fields; `None` when the reader does
+        // not use blocks. A document's sort value is the value of the parent
+        // (last) document of its block.
+        let mut parents: Vec<Option<crate::util::FixedBitSet>> = Vec::with_capacity(leaf_count);
+        for reader in readers {
+            let field_infos = reader.get_field_infos();
+            let meta_data = reader.get_meta_data();
+            let mut reader_parents = None;
+            if meta_data.has_blocks() {
+                match field_infos.get_parent_field() {
+                    Some(parent_field) => {
+                        let mut parent_docs = reader
+                            .get_numeric_doc_values(parent_field)?
+                            .ok_or_else(|| {
+                                LuceneError::IllegalState(format!(
+                                    "parent field: {parent_field} must be present if index \
+                                     sorting is used with blocks"
+                                ))
+                            })?;
+                        // `BitSet.of(parentDocs, codecReader.maxDoc())`.
+                        let mut bits = crate::util::FixedBitSet::new(reader.max_doc() as usize);
+                        loop {
+                            let doc = parent_docs.next_doc()?;
+                            if doc == NO_MORE_DOCS {
+                                break;
+                            }
+                            bits.set(doc as usize);
+                        }
+                        reader_parents = Some(bits);
+                    }
+                    None if meta_data.created_version_major() >= 10 => {
+                        return Err(LuceneError::corrupt_index(
+                            format!(
+                                "parent field is not set but the index has blocks and uses \
+                                 index sorting. indexCreatedVersionMajor: {}",
+                                meta_data.created_version_major()
+                            ),
+                            "IndexingChain",
+                        ));
+                    }
+                    None => {}
+                }
+            }
+            parents.push(reader_parents);
+        }
+
         let mut comparables: Vec<Box<dyn ComparableValues>> = Vec::with_capacity(sorters.len());
         for sorter in sorters {
             comparables.push(sorter.get_comparable_values(readers)?);
@@ -792,7 +883,14 @@ impl MultiSorter {
             }
             // Java: `setComparableValues(comparables, parents[i], i, leaf.docID)`
             // (`MultiSorter.java:112`), with `leaf.docID` still 0.
-            Self::set_comparable_values(&mut comparables, None, reader_index, 0)?;
+            Self::set_comparable_values(
+                &mut comparables,
+                parents[reader_index]
+                    .as_ref()
+                    .map(|bits| bits as &dyn crate::util::bit_set::BitSet),
+                reader_index,
+                0,
+            )?;
             cursors.push(LeafAndDocId {
                 reader_index,
                 doc_id: 0,
@@ -865,7 +963,14 @@ impl MultiSorter {
                 let next = cursors[top].doc_id;
                 // Java: `setComparableValues(comparables, parents[top.readerIndex],
                 // top.readerIndex, top.docID)` (`MultiSorter.java:134`).
-                Self::set_comparable_values(&mut comparables, None, reader_index, next)?;
+                Self::set_comparable_values(
+                    &mut comparables,
+                    parents[reader_index]
+                        .as_ref()
+                        .map(|bits| bits as &dyn crate::util::bit_set::BitSet),
+                    reader_index,
+                    next,
+                )?;
             } else {
                 cursors.remove(top);
             }

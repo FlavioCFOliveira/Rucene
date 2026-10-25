@@ -1728,6 +1728,61 @@ impl FieldNumbers {
         self.lock().field_properties.keys().cloned().collect()
     }
 
+    /// Builds a doc-values-only [`FieldInfo`] for an existing global field, under
+    /// a segment-local number.
+    ///
+    /// Equivalent to `FieldInfos.FieldNumbers.constructFieldInfo(String,
+    /// DocValuesType, int)` (`FieldInfos.java:659-688`), which
+    /// `ReadersAndUpdates.writeFieldUpdates` uses to add an updated field to a
+    /// segment that does not carry it yet. The soft-deletes and parent flags
+    /// come from the names this registry was configured with, so the field
+    /// keeps the role the index gave it.
+    ///
+    /// Returns `None`, as Java returns `null`, when the field is unknown or its
+    /// doc-values type is not `dv_type`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error [`FieldInfo::new_full`] raises for an invalid
+    /// combination; the one built here is always valid.
+    pub fn construct_field_info(
+        &self,
+        field_name: &str,
+        dv_type: DocValuesType,
+        new_field_number: i32,
+    ) -> Result<Option<FieldInfo>> {
+        let dv_type0 = match self.lock().field_properties.get(field_name) {
+            Some(properties) => properties.doc_values_type,
+            None => return Ok(None),
+        };
+        if dv_type != dv_type0 {
+            return Ok(None);
+        }
+        let is_soft_deletes_field = self.soft_deletes_field_name.as_deref() == Some(field_name);
+        let is_parent_field = self.parent_field_name.as_deref() == Some(field_name);
+        FieldInfo::new_full(
+            field_name,
+            new_field_number,
+            false,
+            false,
+            false,
+            IndexOptions::NONE,
+            dv_type,
+            DocValuesSkipIndexType::NONE,
+            -1,
+            JavaStringMap::default(),
+            0,
+            0,
+            0,
+            0,
+            VectorEncoding::FLOAT32,
+            VectorSimilarityFunction::EUCLIDEAN,
+            is_soft_deletes_field,
+            is_parent_field,
+        )
+        .map(Some)
+    }
+
     /// Checks that `field_name` may carry `dv_type` doc-values updates, creating
     /// a doc-values-only field when it does not exist yet.
     ///

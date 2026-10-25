@@ -62,6 +62,14 @@ pub struct FieldUpdatesBuffer {
     /// narrowest encoding when the buffer is written.
     min_numeric: i64,
     max_numeric: i64,
+    /// RAM the buffered records occupy, kept up to date by every append.
+    ///
+    /// Equivalent to the share of `FieldUpdatesBuffer.bytesUsed` — the
+    /// `Counter` Java increments in `add` and `append` — that the records
+    /// account for; [`ram_bytes_used`](Accountable::ram_bytes_used) adds the
+    /// shallow size to it, so the answer costs O(1) however many updates are
+    /// buffered.
+    bytes_used: i64,
 }
 
 impl FieldUpdatesBuffer {
@@ -80,6 +88,7 @@ impl FieldUpdatesBuffer {
             finished: false,
             min_numeric: i64::MAX,
             max_numeric: i64::MIN,
+            bytes_used: 0,
         };
         // `fields = new String[] {initialValue.term.field}`
         // (`FieldUpdatesBuffer.java:73`): the field a buffered update records
@@ -121,6 +130,7 @@ impl FieldUpdatesBuffer {
             self.min_numeric = self.min_numeric.min(v);
             self.max_numeric = self.max_numeric.max(v);
         }
+        self.bytes_used += Self::record_bytes(&field, &term, &value);
         self.updates.push(BufferedUpdate {
             field,
             term,
@@ -128,6 +138,12 @@ impl FieldUpdatesBuffer {
             value,
         });
         Ok(())
+    }
+
+    /// What one record is charged: the per-record header plus the bytes its
+    /// field name, term and value occupy.
+    fn record_bytes(field: &str, term: &BytesRef, value: &DocValuesUpdateValue) -> i64 {
+        BYTES_PER_UPDATE + field.len() as i64 + term.length as i64 + value.value_size_in_bytes()
     }
 
     /// Buffers a numeric update.
@@ -290,22 +306,13 @@ impl FieldUpdatesBuffer {
 impl Accountable for FieldUpdatesBuffer {
     /// Equivalent to `FieldUpdatesBuffer.ramBytesUsed()`.
     ///
-    /// Java sums a shallow size with the RAM of its `BytesRefArray` and its
-    /// packed value arrays. This port charges the same shallow size plus, per
-    /// record, a fixed header cost and the bytes the field name, the term and
-    /// the value actually occupy.
+    /// Java charges a shallow size plus the RAM of its `BytesRefArray` and its
+    /// packed value arrays to a `Counter` as each update is appended. This port
+    /// charges the same shallow size plus, per record, a fixed header cost and
+    /// the bytes the field name, the term and the value actually occupy, and
+    /// keeps that sum incrementally as Java does, so reading it is O(1).
     fn ram_bytes_used(&self) -> i64 {
-        SELF_SHALLOW_SIZE
-            + self
-                .updates
-                .iter()
-                .map(|update| {
-                    BYTES_PER_UPDATE
-                        + update.field.len() as i64
-                        + update.term.length as i64
-                        + update.value.value_size_in_bytes()
-                })
-                .sum::<i64>()
+        SELF_SHALLOW_SIZE + self.bytes_used
     }
 }
 
@@ -322,4 +329,61 @@ pub struct BufferedUpdateRef<'a> {
     pub doc_up_to: i32,
     /// The value written, or `None` to clear the field.
     pub value: &'a DocValuesUpdateValue,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sum the buffer charged before rmp #235, recomputed record by record.
+    fn summed(buffer: &FieldUpdatesBuffer) -> i64 {
+        SELF_SHALLOW_SIZE
+            + buffer
+                .updates
+                .iter()
+                .map(|u| FieldUpdatesBuffer::record_bytes(&u.field, &u.term, &u.value))
+                .sum::<i64>()
+    }
+
+    fn term(field: &str, value: &str) -> Term {
+        Term::new(field, BytesRef::new(value.as_bytes().to_vec()))
+    }
+
+    #[test]
+    fn incremental_ram_matches_the_record_by_record_sum() {
+        let first = DocValuesUpdate {
+            doc_values_type: crate::index::DocValuesType::NUMERIC,
+            term: term("id", "a"),
+            field: "price".to_string(),
+            doc_id_up_to: 3,
+            value: DocValuesUpdateValue::Numeric(7),
+        };
+        let mut numeric = FieldUpdatesBuffer::new(first, 3).unwrap();
+        assert_eq!(numeric.ram_bytes_used(), summed(&numeric));
+        for i in 0..50 {
+            let t = term(if i % 3 == 0 { "id" } else { "group" }, &format!("t{i}"));
+            if i % 5 == 0 {
+                numeric.add_reset(t.field(), &t, i).unwrap();
+            } else {
+                numeric.add_numeric_update(&t, i64::from(i), i).unwrap();
+            }
+            assert_eq!(numeric.ram_bytes_used(), summed(&numeric));
+        }
+
+        let first = DocValuesUpdate {
+            doc_values_type: crate::index::DocValuesType::BINARY,
+            term: term("id", "b"),
+            field: "blob".to_string(),
+            doc_id_up_to: 1,
+            value: DocValuesUpdateValue::Binary(BytesRef::new(vec![1, 2, 3])),
+        };
+        let mut binary = FieldUpdatesBuffer::new(first, 1).unwrap();
+        for i in 0..20 {
+            let t = term("id", &format!("b{i}"));
+            binary
+                .add_binary_update(&t, BytesRef::new(vec![0; i as usize]), i)
+                .unwrap();
+            assert_eq!(binary.ram_bytes_used(), summed(&binary));
+        }
+    }
 }

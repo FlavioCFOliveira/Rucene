@@ -213,13 +213,88 @@ impl MergeState {
         doc_maps
     }
 
+    /// Builds the doc maps of a merge over `readers`, and reports whether the
+    /// merged segment needs its documents reordered by the index sort.
+    ///
+    /// Equivalent to the private `MergeState.buildDocMaps(List<CodecReader>,
+    /// Sort)` (`MergeState.java:212-240`), together with the `needsIndexSort`
+    /// flag it sets. Without an index sort the readers are only remapped around
+    /// their deletions. With one, `MultiSorter.sort` merge-sorts the incoming
+    /// leaves; when concatenating them already yields the sorted order it
+    /// answers no maps, and the deletion maps are used, with `needsIndexSort`
+    /// left `false`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when a sort field cannot sort
+    /// an index, and propagates whatever reading the sort values raises.
+    pub fn build_doc_maps_for(
+        readers: &[Arc<dyn CodecReader>],
+        index_sort: Option<&crate::search::Sort>,
+        info_stream: &dyn InfoStream,
+    ) -> Result<(Vec<DocMap>, bool)> {
+        let deletion_doc_maps = || -> Vec<DocMap> {
+            let live_docs: Vec<Option<Box<dyn Bits>>> = readers
+                .iter()
+                .map(|reader| reader.get_live_docs())
+                .collect();
+            let max_docs: Vec<i32> = readers.iter().map(|reader| reader.max_doc()).collect();
+            let num_docs: Vec<i32> = readers.iter().map(|reader| reader.num_docs()).collect();
+            Self::build_deletion_doc_maps(&live_docs, &max_docs, &num_docs)
+        };
+        // `SegmentInfo` spells the absent sort as the empty `Sort`.
+        let Some(index_sort) = index_sort.filter(|sort| !sort.fields().is_empty()) else {
+            // No index sort ... we only must map around deletions, and rebase
+            // to the merged segment's docID space.
+            return Ok((deletion_doc_maps(), false));
+        };
+        // Do a merge sort of the incoming leaves.
+        let t0 = std::time::Instant::now();
+        let mut sorters = Vec::with_capacity(index_sort.fields().len());
+        let mut reverse_muls = Vec::with_capacity(index_sort.fields().len());
+        for field in index_sort.fields() {
+            let sorter = field.get_index_sorter().ok_or_else(|| {
+                LuceneError::IllegalArgument(format!(
+                    "Cannot use sort field {field} for index sorting"
+                ))
+            })?;
+            sorters.push(sorter);
+            reverse_muls.push(if field.reverse() { -1 } else { 1 });
+        }
+        // `MultiSorter.sort` takes the codec readers themselves; the port's
+        // sorters read through `LeafReader`, which a delegating
+        // `FilterCodecReader` provides without trait upcasting.
+        let leaves: Vec<Arc<dyn crate::index::LeafReader>> = readers
+            .iter()
+            .map(|reader| {
+                Arc::new(crate::index::filter_reader::FilterCodecReader::new(
+                    Arc::clone(reader),
+                )) as Arc<dyn crate::index::LeafReader>
+            })
+            .collect();
+        let Some(doc_maps) =
+            crate::index::index_sorter::MultiSorter::sort(&sorters, &reverse_muls, &leaves)?
+        else {
+            // Already sorted so we can switch back to map around deletions.
+            return Ok((deletion_doc_maps(), false));
+        };
+        if info_stream.is_enabled("SM") {
+            info_stream.message(
+                "SM",
+                &format!(
+                    "{:.2} msec to build merge sorted DocMaps",
+                    t0.elapsed().as_secs_f64() * 1000.0
+                ),
+            );
+        }
+        Ok((doc_maps, true))
+    }
+
     /// Builds the doc maps of a merge that has no index sort.
     ///
     /// Equivalent to `MergeState.buildDocMaps(List, Sort)` with a null sort:
-    /// the readers only need remapping around deletions. Java's sorted branch
-    /// calls `MultiSorter.sort`, which is not reachable from here — the merge
-    /// state does not hold the readers themselves — so a caller with an index
-    /// sort builds the maps and passes them to [`new`](Self::new).
+    /// the readers only need remapping around deletions; see
+    /// [`build_doc_maps_for`](Self::build_doc_maps_for) for the sorted case.
     pub fn build_doc_maps(
         live_docs: &[Option<Box<dyn Bits>>],
         max_docs: &[i32],

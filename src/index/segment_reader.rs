@@ -2040,6 +2040,11 @@ impl Bits for SharedBits {
     fn length(&self) -> usize {
         self.0.length()
     }
+
+    /// The identity of the shared bits, not of this handle.
+    fn identity(&self) -> *const () {
+        self.0.identity()
+    }
 }
 
 /// `StoredFields` implementation used by `SegmentReader` that performs

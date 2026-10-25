@@ -207,11 +207,21 @@ impl SegmentInfos {
 
     /// Removes the provided `SegmentCommitInfo`.
     ///
+    /// Equivalent to `SegmentInfos.remove(SegmentCommitInfo)`, which finds the
+    /// segment by `List.remove(Object)`. `SegmentCommitInfo` does not override
+    /// `equals`, so Java matches the very instance the writer holds, whatever
+    /// its delete counts and generations are at the time. This port hands out
+    /// clones (the reader pool keeps its own copy of each segment), so the
+    /// instance is recognised by its segment name, which is unique within one
+    /// `SegmentInfos`. Comparing by value instead would miss a segment whose
+    /// pooled copy has a different delete count than the writer's, and leave it
+    /// in the index after its reader was dropped.
+    ///
     /// # Warning
     ///
     /// O(N) cost.
     pub fn remove(&mut self, si: &SegmentCommitInfo) -> bool {
-        if let Some(pos) = self.segments.iter().position(|s| s == si) {
+        if let Some(pos) = self.index_of(si) {
             self.segments.remove(pos);
             true
         } else {
@@ -230,20 +240,28 @@ impl SegmentInfos {
 
     /// Returns `true` if the provided `SegmentCommitInfo` is contained.
     ///
+    /// Equivalent to `SegmentInfos.contains(SegmentCommitInfo)`; the segment is
+    /// recognised by its name, as [`remove`](Self::remove) explains.
+    ///
     /// # Warning
     ///
     /// O(N) cost.
     pub fn contains(&self, si: &SegmentCommitInfo) -> bool {
-        self.segments.iter().any(|s| s == si)
+        self.index_of(si).is_some()
     }
 
     /// Returns the index of the provided `SegmentCommitInfo`, or `None`.
+    ///
+    /// Equivalent to `SegmentInfos.indexOf(SegmentCommitInfo)`; the segment is
+    /// recognised by its name, as [`remove`](Self::remove) explains.
     ///
     /// # Warning
     ///
     /// O(N) cost.
     pub fn index_of(&self, si: &SegmentCommitInfo) -> Option<usize> {
-        self.segments.iter().position(|s| s == si)
+        self.segments
+            .iter()
+            .position(|s| s.info.name == si.info.name)
     }
 
     /// Returns an iterator over the contained segments.

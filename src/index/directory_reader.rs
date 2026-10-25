@@ -77,7 +77,7 @@ pub trait IndexWriter: Send + Sync + Debug {
     /// # Errors
     ///
     /// Propagates whatever asking the merge policy raises.
-    fn keep_fully_deleted_segment(&self) -> Result<bool> {
+    fn keep_fully_deleted_segment(&self, _reader: &Arc<SegmentReader>) -> Result<bool> {
         Ok(false)
     }
 }
@@ -266,6 +266,7 @@ impl StandardDirectoryReader {
         reader_function: &mut dyn FnMut(
             &crate::index::segment_info::SegmentCommitInfo,
         ) -> Result<Arc<SegmentReader>>,
+        inc_ref_deleter: &mut dyn FnMut(&SegmentInfos) -> Result<()>,
         infos: &SegmentInfos,
         apply_all_deletes: bool,
         write_all_deletes: bool,
@@ -290,7 +291,7 @@ impl StandardDirectoryReader {
                 let info = infos.info(i);
                 let reader = reader_function(info)?;
                 if LeafReader::num_docs(reader.as_ref()) > 0
-                    || writer.keep_fully_deleted_segment()?
+                    || writer.keep_fully_deleted_segment(&reader)?
                 {
                     // Steal the ref:
                     readers.push(reader);
@@ -306,7 +307,11 @@ impl StandardDirectoryReader {
             return Err(Self::dec_ref_while_suppressing_exception(error, &readers));
         }
 
-        if let Err(error) = writer.inc_ref_deleter(&segment_infos) {
+        // `writer.incRefDeleter(segmentInfos)`. The writer calls this method
+        // while holding its own lock, as Java does (`IndexWriter.java:593-609`),
+        // and that lock is not reentrant here, so the writer hands in the
+        // increment to run under the hold it already has.
+        if let Err(error) = inc_ref_deleter(&segment_infos) {
             return Err(Self::dec_ref_while_suppressing_exception(error, &readers));
         }
 
@@ -1397,7 +1402,7 @@ mod tests {
     use crate::store::{Directory, RamDirectory};
     use crate::util::string_helper::StringHelper;
     use crate::util::Version;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
 
     fn test_codec() -> Arc<dyn crate::codecs::Codec> {
         static REGISTER: std::sync::Once = std::sync::Once::new();

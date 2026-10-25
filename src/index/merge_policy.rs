@@ -166,7 +166,17 @@ pub type MergeReorderer = Arc<
 /// `IndexWriter.preparePointInTimeMerge` prepares installs one. The merge is
 /// handed to the hook because Java's override reads the fields of the very
 /// `OneMerge` it is attached to.
-pub type MergeFinishedHook = Arc<dyn Fn(&OneMerge, bool, bool) -> Result<()> + Send + Sync>;
+///
+/// Java calls `mergeFinished` while holding the writer's monitor, and the
+/// commit's override changes the deleter's reference counts through it. The
+/// port's writer lock is not reentrant, so the writer hands the hook its
+/// deleter, borrowed from the guard it holds; it is `None` when the merge is
+/// finished outside the writer.
+pub type MergeFinishedHook = Arc<
+    dyn Fn(&OneMerge, bool, bool, Option<&mut crate::index::IndexFileDeleter>) -> Result<()>
+        + Send
+        + Sync,
+>;
 
 /// Runs just before a merge is applied to the writer's `SegmentInfos`.
 ///
@@ -395,11 +405,19 @@ impl OneMerge {
     {
         // Equivalent to the `onlyOnce.compareAndSet(false, true)` guard the
         // point-in-time merge wrapper puts in front of `super.initMergeReaders`.
+        // The writer claims it and opens every reader under one hold of its
+        // lock, before any merge thread can take the merge
+        // (`IndexWriter.java:3940-4072`); a later caller therefore finds the
+        // readers in place, or a merge the failed claim aborted.
         if let Some(once) = self.init_merge_readers_once.as_ref() {
             if once
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_err()
             {
+                debug_assert!(
+                    self.is_aborted() || !self.get_merge_reader().is_empty(),
+                    "the point-in-time merge's readers were claimed but never opened"
+                );
                 return Ok(());
             }
         }
@@ -531,9 +549,14 @@ impl OneMerge {
     /// # Errors
     ///
     /// Propagates whatever the installed hook raises.
-    pub fn merge_finished(&self, success: bool, segment_dropped: bool) -> Result<()> {
+    pub fn merge_finished(
+        &self,
+        success: bool,
+        segment_dropped: bool,
+        deleter: Option<&mut crate::index::IndexFileDeleter>,
+    ) -> Result<()> {
         match &self.merge_finished {
-            Some(hook) => hook(self, success, segment_dropped),
+            Some(hook) => hook(self, success, segment_dropped, deleter),
             None => Ok(()),
         }
     }
@@ -1100,6 +1123,13 @@ impl CfsSettings {
     }
 }
 
+/// Hands out a segment's latest reader on demand.
+///
+/// Equivalent to the `IOSupplier<CodecReader>` Java's merge policies are given
+/// by `keepFullyDeletedSegment` and `numDeletesToMerge`.
+pub type CodecReaderSupplier<'a> =
+    dyn FnMut() -> Result<Arc<dyn crate::index::codec_reader::CodecReader>> + 'a;
+
 /// Decides which segments to merge and when.
 ///
 /// Equivalent to `org.apache.lucene.index.MergePolicy`.
@@ -1239,21 +1269,21 @@ pub trait MergePolicy: Send + Sync + std::fmt::Display {
                 == info.info.get_use_compound_file())
     }
 
-    /// Returns whether a fully deleted segment must be kept anyway.
+    /// Returns whether a segment whose documents are all deleted must be kept.
     ///
-    /// Equivalent to `MergePolicy.keepFullyDeletedSegment(IOSupplier<CodecReader>)`.
+    /// Equivalent to `MergePolicy.keepFullyDeletedSegment(IOSupplier<CodecReader>)`
+    /// (`MergePolicy.java:845-848`), which answers `false`. `reader_supplier`
+    /// hands out the segment's latest reader, for a policy that must look at
+    /// the documents — `SoftDeletesRetentionMergePolicy` keeps a segment whose
+    /// documents its retention query still matches.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java passes an `IOSupplier<CodecReader>`
-    /// so a policy can inspect the reader (soft-deletes retention needs the
-    /// live doc values). `CodecReader` is not yet a trait object this crate can
-    /// hand out lazily from a `SegmentCommitInfo` alone, so the default and
-    /// every override that does not need the reader take none; a caller that
-    /// does — [`SoftDeletesRetentionMergePolicy`] — reaches the reader through
-    /// its own reader pool argument instead. Every concrete policy in this
-    /// module answers independently of the reader, so the divergence has no
-    /// observable effect yet; it will need to be revisited once a policy that
-    /// inspects live docs to decide retention is ported.
-    fn keep_fully_deleted_segment(&self) -> Result<bool> {
+    /// # Errors
+    ///
+    /// Propagates whatever obtaining or searching the reader raises.
+    fn keep_fully_deleted_segment(
+        &self,
+        _reader_supplier: &mut CodecReaderSupplier<'_>,
+    ) -> Result<bool> {
         Ok(false)
     }
 
@@ -1264,6 +1294,31 @@ pub trait MergePolicy: Send + Sync + std::fmt::Display {
     /// overrides it to exclude deletes that must survive the merge.
     fn num_deletes_to_merge_default(&self, _info: &SegmentCommitInfo, del_count: i32) -> i32 {
         del_count
+    }
+
+    /// Returns the number of deletes a merge would claim back for `info`,
+    /// given a supplier of the segment's latest reader.
+    ///
+    /// Equivalent to `MergePolicy.numDeletesToMerge(SegmentCommitInfo, int,
+    /// IOSupplier<CodecReader>)`, as `ReadersAndUpdates.numDeletesToMerge` calls
+    /// it. The default answers
+    /// [`num_deletes_to_merge_default`](Self::num_deletes_to_merge_default)
+    /// without opening the reader; a policy that must look at the documents —
+    /// `SoftDeletesRetentionMergePolicy` — overrides it, and a filtering policy
+    /// forwards it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever obtaining or searching the reader raises.
+    fn num_deletes_to_merge_with_reader(
+        &self,
+        info: &SegmentCommitInfo,
+        del_count: i32,
+        _reader_supplier: &mut dyn FnMut() -> Result<
+            Arc<dyn crate::index::codec_reader::CodecReader>,
+        >,
+    ) -> Result<i32> {
+        Ok(self.num_deletes_to_merge_default(info, del_count))
     }
 
     /// Returns the ratio above which a merged segment is not a compound file.
@@ -1575,12 +1630,26 @@ impl MergePolicy for FilterMergePolicy {
         self.inner.size(info, merge_context)
     }
 
-    fn keep_fully_deleted_segment(&self) -> Result<bool> {
-        self.inner.keep_fully_deleted_segment()
+    fn keep_fully_deleted_segment(
+        &self,
+        reader_supplier: &mut CodecReaderSupplier<'_>,
+    ) -> Result<bool> {
+        self.inner.keep_fully_deleted_segment(reader_supplier)
     }
 
     fn num_deletes_to_merge_default(&self, info: &SegmentCommitInfo, del_count: i32) -> i32 {
         self.inner.num_deletes_to_merge_default(info, del_count)
+    }
+
+    fn num_deletes_to_merge_with_reader(
+        &self,
+        info: &SegmentCommitInfo,
+        del_count: i32,
+        reader_supplier: &mut dyn FnMut()
+            -> Result<Arc<dyn crate::index::codec_reader::CodecReader>>,
+    ) -> Result<i32> {
+        self.inner
+            .num_deletes_to_merge_with_reader(info, del_count, reader_supplier)
     }
 
     fn max_full_flush_merge_size(&self) -> i64 {
@@ -1662,6 +1731,67 @@ impl MergePolicy for OneMergeWrappingMergePolicy {
             segment_infos,
             merge_context,
         )?))
+    }
+
+    // `OneMergeWrappingMergePolicy` extends `FilterMergePolicy` in Lucene, so every method it does
+    // not override forwards to the wrapped policy.
+    fn use_compound_file(
+        &self,
+        infos: &SegmentInfos,
+        merged_info: &SegmentCommitInfo,
+        merge_context: &dyn MergeContext,
+    ) -> Result<bool> {
+        self.inner
+            .use_compound_file(infos, merged_info, merge_context)
+    }
+
+    fn get_no_cfs_ratio(&self) -> f64 {
+        self.inner.get_no_cfs_ratio()
+    }
+
+    fn get_max_cfs_segment_size(&self) -> i64 {
+        self.inner.get_max_cfs_segment_size()
+    }
+
+    fn get_max_cfs_segment_size_mb(&self) -> f64 {
+        self.inner.get_max_cfs_segment_size_mb()
+    }
+
+    fn set_no_cfs_ratio(&self, no_cfs_ratio: f64) -> Result<()> {
+        self.inner.set_no_cfs_ratio(no_cfs_ratio)
+    }
+
+    fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
+        self.inner.set_max_cfs_segment_size_mb(v)
+    }
+
+    fn size(&self, info: &SegmentCommitInfo, merge_context: &dyn MergeContext) -> Result<i64> {
+        self.inner.size(info, merge_context)
+    }
+
+    fn keep_fully_deleted_segment(
+        &self,
+        reader_supplier: &mut CodecReaderSupplier<'_>,
+    ) -> Result<bool> {
+        self.inner.keep_fully_deleted_segment(reader_supplier)
+    }
+
+    fn num_deletes_to_merge_default(&self, info: &SegmentCommitInfo, del_count: i32) -> i32 {
+        self.inner.num_deletes_to_merge_default(info, del_count)
+    }
+
+    fn num_deletes_to_merge_with_reader(
+        &self,
+        info: &SegmentCommitInfo,
+        del_count: i32,
+        reader_supplier: &mut CodecReaderSupplier<'_>,
+    ) -> Result<i32> {
+        self.inner
+            .num_deletes_to_merge_with_reader(info, del_count, reader_supplier)
+    }
+
+    fn max_full_flush_merge_size(&self) -> i64 {
+        self.inner.max_full_flush_merge_size()
     }
 }
 
@@ -2351,6 +2481,14 @@ impl MergePolicy for TieredMergePolicy {
         )
     }
 
+    /// Full-flush merges only take segments below the floor segment size.
+    ///
+    /// Equivalent to `TieredMergePolicy.maxFullFlushMergeSize()`
+    /// (`TieredMergePolicy.java:225-228`).
+    fn max_full_flush_merge_size(&self) -> i64 {
+        self.floor_segment_bytes
+    }
+
     fn get_no_cfs_ratio(&self) -> f64 {
         self.cfs.get_no_cfs_ratio()
     }
@@ -2394,7 +2532,9 @@ pub enum LogSizeKind {
 /// A segment paired with its quantised level.
 struct SegmentInfoAndLevel {
     index: usize,
-    level: f64,
+    /// Java keeps the level as a `float`; the levels are compared in `f32`
+    /// so that segments at a level boundary quantize as Lucene's do.
+    level: f32,
 }
 
 /// Merges segments of roughly equal size, in levels.
@@ -2833,8 +2973,9 @@ impl MergePolicy for LogMergePolicy {
         }
         let merging = merge_context.get_merging_segments();
 
-        // A segment's level is the log of its size, base mergeFactor.
-        let norm = f64::from(self.merge_factor).ln();
+        // A segment's level is the log of its size, base mergeFactor. Java
+        // computes it in `float` (`LogMergePolicy.java:94-110`).
+        let norm = f64::from(self.merge_factor).ln() as f32;
         let mut levels: Vec<SegmentInfoAndLevel> = Vec::with_capacity(num_segments);
         let mut total_doc_count = 0i64;
         for index in 0..num_segments {
@@ -2843,20 +2984,20 @@ impl MergePolicy for LogMergePolicy {
             let size = self.size(info, merge_context)?.max(1);
             levels.push(SegmentInfoAndLevel {
                 index,
-                level: (size as f64).ln() / norm,
+                level: (size as f64).ln() as f32 / norm,
             });
         }
 
         let level_floor = if self.min_merge_size <= 0 {
-            0.0
+            0.0f32
         } else {
-            (self.min_merge_size as f64).ln() / norm
+            ((self.min_merge_size as f64).ln() / f64::from(norm)) as f32
         };
 
         let n = levels.len();
         // The maximum level to the right of each position, so a level can be
         // defined by looking forward only once.
-        let mut max_levels = vec![-1.0f64; n + 1];
+        let mut max_levels = vec![-1.0f32; n + 1];
         for i in (0..n).rev() {
             max_levels[i] = levels[i].level.max(max_levels[i + 1]);
         }
@@ -2866,10 +3007,15 @@ impl MergePolicy for LogMergePolicy {
         while start < n {
             let max_level = max_levels[start];
             let level_bottom = if max_level > level_floor {
-                max_level - LEVEL_LOG_SPAN
+                // With a merge factor of 10, this means that the biggest
+                // segment and the smallest segment that take part of a merge
+                // have a size difference of at most 5.6x.
+                (f64::from(max_level) - LEVEL_LOG_SPAN) as f32
             } else {
-                // Below the floor size, allow more unbalanced merges.
-                f64::MIN
+                // For segments below the floor size, we allow more unbalanced
+                // merges, but still somewhat balanced to avoid running into
+                // O(n^2) merging: at most 31.6x with a merge factor of 10.
+                (f64::from(max_level) - 2.0 * LEVEL_LOG_SPAN) as f32
             };
 
             let mut upto = n as i64 - 1;
@@ -2926,7 +3072,7 @@ impl MergePolicy for LogMergePolicy {
                         }
                         let segment_size = self.size(info, merge_context)?;
                         let segment_docs = self.size_docs(info, merge_context)?;
-                        if merge_size + segment_size > self.max_merge_size
+                        if merge_size + segment_size > self.min_merge_size
                             || merge_docs + segment_docs > max_merge_docs
                         {
                             break;
@@ -3063,6 +3209,20 @@ impl MergePolicy for LogMergePolicy {
             spec.add(OneMerge::new(batch)?);
         }
         Ok(if spec.is_empty() { None } else { Some(spec) })
+    }
+
+    /// Equivalent to `LogDocMergePolicy.size` / `LogByteSizeMergePolicy.size`,
+    /// the subclasses' overrides of `MergePolicy.size`.
+    fn size(&self, info: &SegmentCommitInfo, merge_context: &dyn MergeContext) -> Result<i64> {
+        LogMergePolicy::size(self, info, merge_context)
+    }
+
+    /// Full-flush merges only take segments below the minimum merge size.
+    ///
+    /// Equivalent to `LogMergePolicy.maxFullFlushMergeSize()`
+    /// (`LogMergePolicy.java:215-218`).
+    fn max_full_flush_merge_size(&self) -> i64 {
+        self.min_merge_size
     }
 
     fn get_no_cfs_ratio(&self) -> f64 {
@@ -3245,6 +3405,47 @@ impl MergePolicy for UpgradeIndexMergePolicy {
 
     fn set_max_cfs_segment_size_mb(&self, v: f64) -> Result<()> {
         self.inner.set_max_cfs_segment_size_mb(v)
+    }
+
+    // `UpgradeIndexMergePolicy` extends `FilterMergePolicy` in Lucene, so every method it does
+    // not override forwards to the wrapped policy.
+    fn use_compound_file(
+        &self,
+        infos: &SegmentInfos,
+        merged_info: &SegmentCommitInfo,
+        merge_context: &dyn MergeContext,
+    ) -> Result<bool> {
+        self.inner
+            .use_compound_file(infos, merged_info, merge_context)
+    }
+
+    fn size(&self, info: &SegmentCommitInfo, merge_context: &dyn MergeContext) -> Result<i64> {
+        self.inner.size(info, merge_context)
+    }
+
+    fn keep_fully_deleted_segment(
+        &self,
+        reader_supplier: &mut CodecReaderSupplier<'_>,
+    ) -> Result<bool> {
+        self.inner.keep_fully_deleted_segment(reader_supplier)
+    }
+
+    fn num_deletes_to_merge_default(&self, info: &SegmentCommitInfo, del_count: i32) -> i32 {
+        self.inner.num_deletes_to_merge_default(info, del_count)
+    }
+
+    fn num_deletes_to_merge_with_reader(
+        &self,
+        info: &SegmentCommitInfo,
+        del_count: i32,
+        reader_supplier: &mut CodecReaderSupplier<'_>,
+    ) -> Result<i32> {
+        self.inner
+            .num_deletes_to_merge_with_reader(info, del_count, reader_supplier)
+    }
+
+    fn max_full_flush_merge_size(&self) -> i64 {
+        self.inner.max_full_flush_merge_size()
     }
 }
 
@@ -4242,37 +4443,16 @@ impl MergePolicy for SoftDeletesRetentionMergePolicy {
         self.inner.set_max_cfs_segment_size_mb(v)
     }
 
-    /// Equivalent to `SoftDeletesRetentionMergePolicy.keepFullyDeletedSegment(IOSupplier<CodecReader>)`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java is handed the reader and keeps
-    /// the segment when the retention query still matches one of its documents.
-    /// This port's [`MergePolicy::keep_fully_deleted_segment`] takes no reader —
-    /// see the note on that method — so the answer here can only fall back to
-    /// the wrapped policy. Callers that hold a reader should ask
-    /// [`keep_fully_deleted_segment_for`](Self::keep_fully_deleted_segment_for)
-    /// instead, which is the full port.
-    fn keep_fully_deleted_segment(&self) -> Result<bool> {
-        self.inner.keep_fully_deleted_segment()
-    }
-
-    fn num_deletes_to_merge_default(&self, info: &SegmentCommitInfo, del_count: i32) -> i32 {
-        self.inner.num_deletes_to_merge_default(info, del_count)
-    }
-}
-
-impl SoftDeletesRetentionMergePolicy {
-    /// Returns whether a fully deleted segment must be kept because the
-    /// retention query still matches one of its documents.
-    ///
-    /// Equivalent to `SoftDeletesRetentionMergePolicy.keepFullyDeletedSegment(IOSupplier<CodecReader>)`,
-    /// with the reader passed directly rather than through an `IOSupplier`.
-    /// A single hit is enough, so the soft-deletes field itself is not
-    /// consulted: the search runs over a view with no deletions at all.
-    ///
-    /// # Errors
-    ///
-    /// Propagates whatever building or running the retention scorer raises.
-    pub fn keep_fully_deleted_segment_for(&self, reader: Arc<dyn CodecReader>) -> Result<bool> {
+    /// Equivalent to `SoftDeletesRetentionMergePolicy.keepFullyDeletedSegment(
+    /// IOSupplier<CodecReader>)` (`SoftDeletesRetentionMergePolicy.java:79-94`):
+    /// a fully deleted segment is kept when the retention query still matches
+    /// one of its documents. A single hit is enough, so the soft-deletes field
+    /// is not consulted: the search runs over a view with no deletions at all.
+    fn keep_fully_deleted_segment(
+        &self,
+        reader_supplier: &mut CodecReaderSupplier<'_>,
+    ) -> Result<bool> {
+        let reader = reader_supplier()?;
         let max_doc = reader.max_doc();
         // We only need a single hit to keep it; no need for soft deletes to be
         // checked.
@@ -4283,26 +4463,74 @@ impl SoftDeletesRetentionMergePolicy {
             let at_least_one_hit = scorer.iterator().next_doc()? != crate::search::NO_MORE_DOCS;
             return Ok(at_least_one_hit);
         }
-        self.inner.keep_fully_deleted_segment()
+        self.inner.keep_fully_deleted_segment(reader_supplier)
     }
 
-    /// Returns how many deletions a merge of `info` would actually reclaim,
-    /// excluding the soft-deleted documents the retention query still matches.
-    ///
-    /// Equivalent to `SoftDeletesRetentionMergePolicy.numDeletesToMerge(SegmentCommitInfo,
-    /// int, IOSupplier<CodecReader>)`, with the reader passed directly.
+    fn num_deletes_to_merge_default(&self, info: &SegmentCommitInfo, del_count: i32) -> i32 {
+        self.inner.num_deletes_to_merge_default(info, del_count)
+    }
+
+    /// Equivalent to `SoftDeletesRetentionMergePolicy.numDeletesToMerge(
+    /// SegmentCommitInfo, int, IOSupplier<CodecReader>)`: the soft-deleted
+    /// documents the retention query still matches are not reclaimed.
+    fn num_deletes_to_merge_with_reader(
+        &self,
+        info: &SegmentCommitInfo,
+        del_count: i32,
+        reader_supplier: &mut dyn FnMut()
+            -> Result<Arc<dyn crate::index::codec_reader::CodecReader>>,
+    ) -> Result<i32> {
+        // `super.numDeletesToMerge(info, delCount, readerSupplier)`
+        // (`SoftDeletesRetentionMergePolicy.java:157`): the wrapped policy's own
+        // reader-aware answer.
+        let num_deletes_to_merge =
+            self.inner
+                .num_deletes_to_merge_with_reader(info, del_count, reader_supplier)?;
+        if num_deletes_to_merge != 0 && info.get_soft_del_count() > 0 {
+            return self.num_deletes_to_merge_for(info, num_deletes_to_merge, reader_supplier()?);
+        }
+        Ok(num_deletes_to_merge)
+    }
+
+    // `SoftDeletesRetentionMergePolicy` extends `OneMergeWrappingMergePolicy`,
+    // a `FilterMergePolicy`, so the methods it does not override forward to
+    // the wrapped policy.
+    fn use_compound_file(
+        &self,
+        infos: &SegmentInfos,
+        merged_info: &SegmentCommitInfo,
+        merge_context: &dyn MergeContext,
+    ) -> Result<bool> {
+        self.inner
+            .use_compound_file(infos, merged_info, merge_context)
+    }
+
+    fn size(&self, info: &SegmentCommitInfo, merge_context: &dyn MergeContext) -> Result<i64> {
+        self.inner.size(info, merge_context)
+    }
+
+    fn max_full_flush_merge_size(&self) -> i64 {
+        self.inner.max_full_flush_merge_size()
+    }
+}
+
+impl SoftDeletesRetentionMergePolicy {
+    /// The body of `SoftDeletesRetentionMergePolicy.numDeletesToMerge` once the
+    /// wrapped policy answered `num_deletes_to_merge` and the segment has soft
+    /// deletes (`SoftDeletesRetentionMergePolicy.java:158-180`): the
+    /// soft-deleted documents the retention query still matches are not
+    /// reclaimed.
     ///
     /// # Errors
     ///
     /// Propagates whatever building or running the retention scorer raises.
-    pub fn num_deletes_to_merge_for(
+    fn num_deletes_to_merge_for(
         &self,
         info: &SegmentCommitInfo,
-        del_count: i32,
+        num_deletes_to_merge: i32,
         reader: Arc<dyn CodecReader>,
     ) -> Result<i32> {
-        let num_deletes_to_merge = self.inner.num_deletes_to_merge_default(info, del_count);
-        if num_deletes_to_merge != 0 && info.get_soft_del_count() > 0 {
+        {
             if let Some(live_docs) = reader.get_live_docs() {
                 let mut builder = crate::search::boolean_query::Builder::new();
                 builder.add(
@@ -4634,5 +4862,150 @@ impl std::fmt::Display for SoftDeletesRetentionMergePolicy {
     /// Inherited from `FilterMergePolicy.toString()`, with this class's name.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "SoftDeletesRetentionMergePolicy({})", self.inner)
+    }
+}
+
+#[cfg(test)]
+mod reader_variant_forwarding_tests {
+    //! The wrapping policies forward the reader-taking hooks to the policy they
+    //! wrap, as `FilterMergePolicy` does in Lucene (`FilterMergePolicy.java`),
+    //! which `OneMergeWrappingMergePolicy` and `UpgradeIndexMergePolicy`
+    //! extend; `SoftDeletesRetentionMergePolicy` starts from the wrapped
+    //! policy's reader variant (`SoftDeletesRetentionMergePolicy.java:157`).
+    use super::*;
+    use crate::codecs::Lucene104Codec;
+    use crate::error::LuceneError;
+    use crate::index::codec_reader::CodecReader;
+    use crate::store::Directory;
+    use crate::util::Version;
+
+    /// A policy whose reader-taking hooks answer values no default produces.
+    struct Marker;
+
+    impl std::fmt::Display for Marker {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("Marker")
+        }
+    }
+
+    impl MergePolicy for Marker {
+        fn find_merges(
+            &self,
+            _merge_trigger: MergeTrigger,
+            _segment_infos: &SegmentInfos,
+            _merge_context: &dyn MergeContext,
+        ) -> Result<Option<MergeSpecification>> {
+            Ok(None)
+        }
+
+        fn find_forced_merges(
+            &self,
+            _segment_infos: &SegmentInfos,
+            _max_num_segments: i32,
+            _segments_to_merge: &HashMap<String, bool>,
+            _merge_context: &dyn MergeContext,
+        ) -> Result<Option<MergeSpecification>> {
+            Ok(None)
+        }
+
+        fn find_forced_deletes_merges(
+            &self,
+            _segment_infos: &SegmentInfos,
+            _merge_context: &dyn MergeContext,
+        ) -> Result<Option<MergeSpecification>> {
+            Ok(None)
+        }
+
+        fn keep_fully_deleted_segment(
+            &self,
+            _reader_supplier: &mut CodecReaderSupplier<'_>,
+        ) -> Result<bool> {
+            Ok(true)
+        }
+
+        fn num_deletes_to_merge_with_reader(
+            &self,
+            _info: &SegmentCommitInfo,
+            _del_count: i32,
+            _reader_supplier: &mut dyn FnMut() -> Result<Arc<dyn CodecReader>>,
+        ) -> Result<i32> {
+            Ok(7)
+        }
+
+        fn max_full_flush_merge_size(&self) -> i64 {
+            11
+        }
+    }
+
+    fn sci() -> SegmentCommitInfo {
+        let dir: Arc<dyn Directory> = Arc::new(crate::store::RamDirectory::default());
+        let info = crate::index::SegmentInfo::new(
+            dir,
+            Version::LUCENE_10_5_0,
+            Some(Version::LUCENE_10_5_0),
+            "_0".to_string(),
+            10,
+            false,
+            false,
+            Arc::new(Lucene104Codec::new()),
+            HashMap::new(),
+            [0u8; crate::util::string_helper::ID_LENGTH],
+            HashMap::new(),
+            crate::search::Sort::default(),
+        )
+        .unwrap();
+        SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, [0u8; 16]).unwrap()
+    }
+
+    /// A supplier the hooks under test must not need.
+    fn no_reader() -> Result<Arc<dyn CodecReader>> {
+        Err(LuceneError::IllegalState(
+            "no reader in this test".to_string(),
+        ))
+    }
+
+    fn assert_forwards(policy: &dyn MergePolicy) {
+        let info = sci();
+        assert_eq!(
+            policy
+                .num_deletes_to_merge_with_reader(&info, 3, &mut no_reader)
+                .unwrap(),
+            7
+        );
+        assert!(policy.keep_fully_deleted_segment(&mut no_reader).unwrap());
+        assert_eq!(policy.max_full_flush_merge_size(), 11);
+    }
+
+    #[test]
+    fn one_merge_wrapping_policy_forwards_the_reader_hooks() {
+        assert_forwards(&OneMergeWrappingMergePolicy::new(
+            Arc::new(Marker),
+            Arc::new(|merge| merge),
+        ));
+    }
+
+    #[test]
+    fn upgrade_index_policy_forwards_the_reader_hooks() {
+        assert_forwards(&UpgradeIndexMergePolicy::new(Arc::new(Marker)));
+    }
+
+    #[test]
+    fn retention_policy_starts_from_the_wrapped_reader_variant() {
+        let policy = SoftDeletesRetentionMergePolicy::new(
+            "soft",
+            Arc::new(|| {
+                Arc::new(crate::search::MatchAllDocsQuery) as Arc<dyn crate::search::Query>
+            }),
+            Arc::new(Marker),
+        );
+        // The segment has no soft deletes, so the retention policy answers
+        // what the wrapped policy's reader variant answered, without a reader.
+        assert_eq!(
+            policy
+                .num_deletes_to_merge_with_reader(&sci(), 3, &mut no_reader)
+                .unwrap(),
+            7
+        );
+        assert_eq!(policy.max_full_flush_merge_size(), 11);
     }
 }

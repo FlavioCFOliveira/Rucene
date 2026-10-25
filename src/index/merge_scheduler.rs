@@ -235,6 +235,13 @@ pub struct ConcurrentMergeScheduler {
     /// off them; a Rust scoped thread is not an object the scheduler can hold,
     /// so the registry holds the state Java reads through the thread instead.
     merge_threads: Mutex<Vec<Arc<MergeThreadState>>>,
+    /// The scheduler's monitor: `merge` and `maybeStall` are `synchronized`
+    /// in Java, so deciding to start a merge thread and registering it happen
+    /// atomically, and at most `maxMergeCount` merge threads ever exist. The
+    /// port's `merge` blocks while it joins its scoped threads, so the monitor
+    /// is held per decision rather than across the whole call; a stalled
+    /// caller releases it while it waits, as Java's `wait(250)` does.
+    monitor: Mutex<()>,
     /// Names the merge threads `_0`, `_1`, … as Java's counter does.
     ///
     /// Equivalent to `ConcurrentMergeScheduler.mergeThreadCounter`.
@@ -267,6 +274,9 @@ pub struct MergeThreadState {
     pub name: String,
     /// Whether the merge is still running.
     alive: AtomicBool,
+    /// The thread running the merge, so `maybe_stall` can tell a merge thread
+    /// from a producer (`mergeThreads.contains(Thread.currentThread())`).
+    thread: std::sync::OnceLock<std::thread::ThreadId>,
 }
 
 impl MergeThreadState {
@@ -279,6 +289,7 @@ impl MergeThreadState {
             rate_limiter: Arc::new(MergeRateLimiter::new()),
             name,
             alive: AtomicBool::new(true),
+            thread: std::sync::OnceLock::new(),
         }
     }
 
@@ -324,6 +335,7 @@ impl ConcurrentMergeScheduler {
             do_auto_io_throttle: AtomicBool::new(false),
             target_mb_per_sec: Mutex::new(START_MB_PER_SEC),
             merge_threads: Mutex::new(Vec::new()),
+            monitor: Mutex::new(()),
             merge_thread_counter: AtomicU64::new(0),
             suppress_exceptions: AtomicBool::new(false),
             info_stream: Mutex::new(None),
@@ -582,6 +594,21 @@ impl ConcurrentMergeScheduler {
     /// what Java answers when the caller is itself a merge thread, because
     /// stalling it would block the very work the stall is waiting for.
     pub fn maybe_stall(&self, merge_source: &dyn MergeSource) -> bool {
+        let guard = self
+            .monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.maybe_stall_locked(guard, merge_source).0
+    }
+
+    /// [`maybe_stall`](Self::maybe_stall) for a caller that holds the
+    /// scheduler's monitor; the monitor is released while stalling and handed
+    /// back, still held, with the answer.
+    fn maybe_stall_locked<'a>(
+        &'a self,
+        mut guard: std::sync::MutexGuard<'a, ()>,
+        merge_source: &dyn MergeSource,
+    ) -> (bool, std::sync::MutexGuard<'a, ()>) {
         let mut start_stall_time: Option<Instant> = None;
         while merge_source.has_pending_merges()
             && self.merge_thread_count() >= self.get_max_merge_count().max(0) as u64
@@ -589,12 +616,25 @@ impl ConcurrentMergeScheduler {
             // Merging has fallen behind: `max_merge_count` merges are already
             // running and at least one more is pending. Stall the producer so
             // no new segment is created until merging catches up.
+            if self.is_merge_thread(std::thread::current().id()) {
+                // Never stall a merge thread since this blocks the thread from
+                // finishing and calling updateMergeThreads, and blocking it
+                // accomplishes nothing anyway (it's not really a segment
+                // producer).
+                return (false, guard);
+            }
             if start_stall_time.is_none() {
                 start_stall_time = Some(Instant::now());
             }
+            // `wait(250)` releases the monitor while waiting.
+            drop(guard);
             self.do_stall();
+            guard = self
+                .monitor
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        true
+        (true, guard)
     }
 
     /// Pauses the calling thread briefly, waiting for a merge to finish.
@@ -613,11 +653,48 @@ impl ConcurrentMergeScheduler {
         merge_source.merge(merge)
     }
 
-    /// Called when a merge finishes: drops it from the active set and re-rates
-    /// the rest.
+    /// Returns whether `thread` runs one of this scheduler's merges.
+    fn is_merge_thread(&self, thread: std::thread::ThreadId) -> bool {
+        self.merge_threads
+            .lock()
+            .map(|threads| {
+                threads
+                    .iter()
+                    .any(|t| t.is_alive() && t.thread.get() == Some(&thread))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Called by a merge thread once its merge is done: lets the scheduler run
+    /// new merges — a cascading `forceMerge` registers its next round here —
+    /// then drops the thread from the active set and re-rates the rest.
     ///
-    /// Equivalent to `ConcurrentMergeScheduler.runOnMergeFinished(MergeSource, OneMerge, MergeRateLimiter)`.
-    pub fn run_on_merge_finished(&self, state: &Arc<MergeThreadState>) {
+    /// Equivalent to `ConcurrentMergeScheduler.runOnMergeFinished(MergeSource, OneMerge, MergeRateLimiter)`
+    /// (`ConcurrentMergeScheduler.java:685-707`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates what scheduling the new merges raised, except an
+    /// already-closed writer, which Java ignores.
+    pub fn run_on_merge_finished(
+        &self,
+        merge_source: &dyn MergeSource,
+        state: &Arc<MergeThreadState>,
+    ) -> Result<()> {
+        // Let CMS run new merges if necessary.
+        let outcome = match MergeScheduler::merge(self, merge_source, MergeTrigger::MergeFinished) {
+            Err(LuceneError::AlreadyClosed(_)) => Ok(()),
+            other => other,
+        };
+        self.finish_merge_thread(state);
+        outcome
+    }
+
+    /// Retires a merge thread: the equivalent of the `finally` block of
+    /// `runOnMergeFinished` together with the thread exiting.
+    fn finish_merge_thread(&self, state: &Arc<MergeThreadState>) {
+        state.set_finished();
+        self.running.fetch_sub(1, Ordering::Relaxed);
         self.remove_merge_thread(state);
         self.update_merge_threads();
     }
@@ -952,9 +1029,16 @@ impl MergeScheduler for ConcurrentMergeScheduler {
         std::thread::scope(|scope| {
             let mut handles = Vec::new();
             loop {
+                // `synchronized merge`: the stall check, taking the next merge
+                // and counting its thread are one atomic decision.
+                let guard = self
+                    .monitor
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 // Java stalls the producer here when merging has fallen too far
                 // behind, so that indexing cannot outrun the merges.
-                if !self.maybe_stall(merge_source) {
+                let (proceed, guard) = self.maybe_stall_locked(guard, merge_source);
+                if !proceed {
                     break;
                 }
                 let Some(merge) = merge_source.get_next_merge() else {
@@ -967,12 +1051,19 @@ impl MergeScheduler for ConcurrentMergeScheduler {
                 }
                 self.update_merge_threads();
                 self.running.fetch_add(1, Ordering::Relaxed);
+                drop(guard);
                 let state_for_thread = Arc::clone(&state);
                 handles.push(scope.spawn(move || {
-                    let result = self.do_merge(merge_source, merge);
-                    state_for_thread.set_finished();
-                    self.running.fetch_sub(1, Ordering::Relaxed);
-                    self.run_on_merge_finished(&state_for_thread);
+                    let _ = state_for_thread.thread.set(std::thread::current().id());
+                    // `MergeThread.run()`: `runOnMergeFinished` follows only a
+                    // merge that completed; a failed merge's thread just ends.
+                    let result = match self.do_merge(merge_source, merge) {
+                        Ok(()) => self.run_on_merge_finished(merge_source, &state_for_thread),
+                        Err(error) => {
+                            self.finish_merge_thread(&state_for_thread);
+                            Err(error)
+                        }
+                    };
                     match result {
                         Err(error) if self.suppress_exceptions.load(Ordering::Acquire) => {
                             let _ = error;

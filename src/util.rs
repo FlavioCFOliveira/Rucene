@@ -2993,6 +2993,30 @@ pub trait Bits: Send + Sync + Debug {
     fn into_live_docs(self: Box<Self>) -> Option<Box<dyn crate::util::bit_set::LiveDocs>> {
         None
     }
+
+    /// Returns the address of the bit set these bits read, which is how two
+    /// handles on the same bits are told apart from two equal copies.
+    ///
+    /// **Addition, not a port.** Java compares `Bits` by reference
+    /// (`PendingDeletes.needsRefresh`, `PendingDeletes.java:241-243`). This port
+    /// hands bits around behind shared handles, so a handle reports the
+    /// identity of the bits it shares; any other implementation is its own
+    /// identity.
+    fn identity(&self) -> *const () {
+        self as *const Self as *const ()
+    }
+}
+
+/// Returns whether `left` and `right` are the same bits, or both absent.
+///
+/// The port's equivalent of Java's reference comparison of two `Bits`
+/// (`left == right`); see [`Bits::identity`].
+pub fn same_bits(left: Option<&dyn Bits>, right: Option<&dyn Bits>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => left.identity() == right.identity(),
+        _ => false,
+    }
 }
 
 /// Bits implementation with all bits set.
