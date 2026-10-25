@@ -246,7 +246,7 @@ mod tests {
     use super::*;
     use crate::codecs::stub::FieldInfos;
     use crate::index::SegmentInfo;
-    use crate::store::{Directory, RamDirectory};
+    use crate::store::RamDirectory;
     use crate::util::{StringHelper, Version};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -270,13 +270,13 @@ mod tests {
     }
 
     fn test_write_state<'a>(
-        dir: &'a dyn crate::store::Directory,
+        dir: &'a Arc<dyn crate::store::Directory>,
         info: &'a SegmentInfo,
         infos: &'a FieldInfos,
     ) -> SegmentWriteState<'a> {
         SegmentWriteState::new(
             crate::util::default_info_stream(),
-            dir,
+            Arc::clone(dir),
             info,
             infos,
             &crate::codecs::stub::BufferedUpdates,
@@ -355,11 +355,10 @@ mod tests {
 
     #[test]
     fn fields_consumer_returns_writer() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(RamDirectory::default());
         let segment_info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
-        let write_state = test_write_state(dir_ref, &segment_info, &field_infos);
+        let write_state = test_write_state(&dir, &segment_info, &field_infos);
 
         let format = Lucene104PostingsFormat::new();
         let mut consumer = format
@@ -380,11 +379,11 @@ mod tests {
 
     #[test]
     fn fields_producer_returns_reader_after_writing_empty_fields() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(RamDirectory::default());
+        let dir_ref: &dyn crate::store::Directory = &*dir;
         let segment_info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
-        let write_state = test_write_state(dir_ref, &segment_info, &field_infos);
+        let write_state = test_write_state(&dir, &segment_info, &field_infos);
 
         let format = Lucene104PostingsFormat::new();
         let mut consumer = format

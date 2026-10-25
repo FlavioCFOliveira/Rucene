@@ -473,6 +473,9 @@ pub struct BlockPostingsEnum {
     needs_payloads: bool,
     needs_offsets_or_payloads: bool,
     needs_impacts: bool,
+    /// `needsDocsAndFreqsOnly = needsPos == false && needsImpacts == false`
+    /// (`Lucene104PostingsReader.java:428`).
+    needs_docs_and_freqs_only: bool,
 
     /// Where the current full block's frequencies start, or `-1` once they
     /// are decoded. Equivalent to `BlockPostingsEnum.freqFP`.
@@ -648,6 +651,7 @@ impl BlockPostingsEnum {
             needs_payloads,
             needs_offsets_or_payloads,
             needs_impacts,
+            needs_docs_and_freqs_only: !needs_pos && !needs_impacts,
             freq_fp: Cell::new(-1),
             freq_in: RefCell::new(None),
             position: 0,
@@ -1036,18 +1040,53 @@ impl BlockPostingsEnum {
             self.skip_level1_to(self.doc + 1)?;
         }
         self.prev_doc_id = self.level0_last_doc_id;
-        self.do_move_to_next_level0_block()
+
+        if self.needs_docs_and_freqs_only && self.doc_count_left >= BS_I32 {
+            // Optimize the common path for exhaustive evaluation
+            // (`Lucene104PostingsReader.java:780-786`): skip the rest of the
+            // level-0 skip data in one seek.
+            let doc_delta = {
+                let doc_in = self
+                    .doc_in
+                    .as_mut()
+                    .ok_or_else(|| LuceneError::IllegalState("doc_in is not open".to_string()))?;
+                let level0_num_bytes = doc_in.read_v_long()?;
+                let level0_end = doc_in.file_pointer() + level0_num_bytes;
+                let doc_delta = read_v_int15(doc_in.as_mut())?;
+                doc_in.seek(level0_end)?;
+                doc_delta
+            };
+            self.level0_last_doc_id += doc_delta;
+            self.refill_full_block()
+        } else {
+            self.do_move_to_next_level0_block()
+        }
     }
 
+    /// Reads the position and payload file pointers of the next level-0 block.
+    ///
+    /// Equivalent to `readLevel0PosData()` (`Lucene104PostingsReader.java:792-799`).
+    /// The skip data is interleaved with the doc blocks, so every field is
+    /// read from the **doc** file; the positions and payloads files are only
+    /// seeked to afterwards, by [`seek_pos_data`](Self::seek_pos_data).
     fn read_level0_pos_data(&mut self) -> Result<()> {
-        let pos_in = unsafe { Self::input_ref(self.pos_in_ptr()?) };
-        self.level0_pos_end_fp += pos_in.read_v_long()?;
-        self.level0_block_pos_upto = pos_in.read_byte()? as i32;
-        if self.index_has_offsets_or_payloads {
-            self.level0_pay_end_fp +=
-                unsafe { Self::input_ref(self.pay_in_ptr()?) }.read_v_long()?;
-            self.level0_block_pay_upto =
-                unsafe { Self::input_ref(self.pay_in_ptr()?) }.read_v_int()?;
+        let index_has_offsets_or_payloads = self.index_has_offsets_or_payloads;
+        let doc_in = self
+            .doc_in
+            .as_mut()
+            .ok_or_else(|| LuceneError::IllegalState("doc_in is not open".to_string()))?;
+        let pos_delta = doc_in.read_v_long()?;
+        let block_pos_upto = i32::from(doc_in.read_byte()?);
+        let pay = if index_has_offsets_or_payloads {
+            Some((doc_in.read_v_long()?, doc_in.read_v_int()?))
+        } else {
+            None
+        };
+        self.level0_pos_end_fp += pos_delta;
+        self.level0_block_pos_upto = block_pos_upto;
+        if let Some((pay_delta, block_pay_upto)) = pay {
+            self.level0_pay_end_fp += pay_delta;
+            self.level0_block_pay_upto = block_pay_upto;
         }
         Ok(())
     }
@@ -1169,7 +1208,10 @@ impl BlockPostingsEnum {
         } else {
             to_skip -= left_in_block;
             let pos_in = unsafe { Self::input_ref(self.pos_in_ptr()?) };
-            let mut pay_in = if self.index_has_offsets_or_payloads {
+            // `if (payIn != null)` (`Lucene104PostingsReader.java:1153`): the
+            // payloads file is only open when offsets or payloads are
+            // requested, which a field that indexes them need not be.
+            let mut pay_in = if self.pay_in.is_some() {
                 Some(unsafe { Self::input_ref(self.pay_in_ptr()?) })
             } else {
                 None
@@ -1271,7 +1313,9 @@ impl BlockPostingsEnum {
                     self.payload_bytes.resize(num_bytes, 0);
                 }
                 pay_in.read_bytes(&mut self.payload_bytes, 0, num_bytes)?;
-            } else {
+            } else if self.pay_in.is_some() {
+                // Needs offsets: skip the payload lengths and bytes
+                // (`Lucene104PostingsReader.java:1230-1235`).
                 let pay_in = unsafe { Self::input_ref(self.pay_in_ptr()?) };
                 PForUtil::skip(pay_in)?;
                 let num_bytes = pay_in.read_v_int()?;
@@ -1292,7 +1336,9 @@ impl BlockPostingsEnum {
                     .as_mut()
                     .unwrap()
                     .decode(&mut pdu, self.offset_length_buffer.as_mut().unwrap())?;
-            } else {
+            } else if self.pay_in.is_some() {
+                // Needs payloads: skip the offset starts and lengths
+                // (`Lucene104PostingsReader.java:1244-1248`).
                 let pay_in = unsafe { Self::input_ref(self.pay_in_ptr()?) };
                 PForUtil::skip(pay_in)?;
                 PForUtil::skip(pay_in)?;
@@ -1648,19 +1694,20 @@ mod tests {
     use crate::store::{
         ByteBuffersDataOutput, ByteBuffersIndexOutput, Directory, MockIndexInput, RamDirectory,
     };
+    use std::sync::Arc;
 
     fn test_segment_info(name: &str, max_doc: i32) -> crate::index::SegmentInfo {
         crate::codecs::tests::test_segment_info(name, max_doc)
     }
 
     fn test_write_state<'a>(
-        dir: &'a dyn Directory,
+        dir: &'a Arc<dyn Directory>,
         info: &'a crate::index::SegmentInfo,
         infos: &'a FieldInfos,
     ) -> SegmentWriteState<'a> {
         SegmentWriteState::new(
             crate::util::default_info_stream(),
-            dir,
+            Arc::clone(dir),
             info,
             infos,
             &crate::codecs::stub::BufferedUpdates,
@@ -1721,10 +1768,22 @@ mod tests {
     }
 
     fn write_term_and_open_reader(
-        dir: &dyn Directory,
+        dir: &Arc<dyn Directory>,
         field_infos: &FieldInfos,
         field_info: &FieldInfo,
         postings: &TestPostingsEnum,
+    ) -> Result<(Lucene104PostingsReader, BlockTermState)> {
+        write_term_and_open_reader_with(dir, field_infos, field_info, postings, |_, _| {})
+    }
+
+    /// [`write_term_and_open_reader`] that runs `before_open` on the written
+    /// files, with the term's state, before the reader opens them.
+    fn write_term_and_open_reader_with(
+        dir: &Arc<dyn Directory>,
+        field_infos: &FieldInfos,
+        field_info: &FieldInfo,
+        postings: &TestPostingsEnum,
+        before_open: impl FnOnce(&Arc<dyn Directory>, &BlockTermState),
     ) -> Result<(Lucene104PostingsReader, BlockTermState)> {
         let max_doc = postings.docs.last().map(|d| d + 1).unwrap_or(1).max(1);
         let segment_info = test_segment_info("_0", max_doc);
@@ -1754,8 +1813,9 @@ mod tests {
         state.total_term_freq = postings.freqs.iter().map(|f| *f as i64).sum();
         writer.finish_term(&mut state)?;
         writer.close()?;
+        before_open(dir, &state);
 
-        let read_state = test_read_state(dir, &segment_info, field_infos);
+        let read_state = test_read_state(&**dir, &segment_info, field_infos);
         let mut reader = Lucene104PostingsReader::new(&read_state)?;
         let terms_bytes = terms_out.to_array_copy()?;
         let mut terms_in = MockIndexInput::new(terms_bytes, "terms");
@@ -1765,14 +1825,13 @@ mod tests {
 
     #[test]
     fn singleton_doc_round_trip() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let field_infos = field_infos_with_freqs();
         let field_info = field_infos.field_info("body").unwrap();
         let postings = TestPostingsEnum::new(vec![0], vec![1], vec![vec![]]);
 
         let (mut reader, state) =
-            write_term_and_open_reader(dir_ref, &field_infos, field_info, &postings)
+            write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
                 .expect("reader builds");
 
         let mut it = reader
@@ -1787,8 +1846,7 @@ mod tests {
 
     #[test]
     fn multi_doc_round_trip() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let field_infos = field_infos_with_freqs();
         let field_info = field_infos.field_info("body").unwrap();
         let postings = TestPostingsEnum::new(
@@ -1798,7 +1856,7 @@ mod tests {
         );
 
         let (mut reader, state) =
-            write_term_and_open_reader(dir_ref, &field_infos, field_info, &postings)
+            write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
                 .expect("reader builds");
 
         let mut it = reader
@@ -1825,8 +1883,7 @@ mod tests {
 
     #[test]
     fn positions_payloads_offsets_round_trip() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let field_infos = field_infos_with_positions();
         let field_info = field_infos.field_info("body").unwrap();
         let postings = TestPostingsEnum::new(
@@ -1844,7 +1901,7 @@ mod tests {
         );
 
         let (mut reader, state) =
-            write_term_and_open_reader(dir_ref, &field_infos, field_info, &postings)
+            write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
                 .expect("reader builds");
 
         let mut it = reader
@@ -1890,14 +1947,13 @@ mod tests {
 
     #[test]
     fn full_block_256_round_trip() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let field_infos = field_infos_with_freqs();
         let field_info = field_infos.field_info("body").unwrap();
         let postings = TestPostingsEnum::new((0..256).collect(), vec![1; 256], vec![vec![]; 256]);
 
         let (mut reader, state) =
-            write_term_and_open_reader(dir_ref, &field_infos, field_info, &postings)
+            write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
                 .expect("reader builds");
 
         let mut it = reader
@@ -1918,17 +1974,82 @@ mod tests {
         reader.close().expect("close succeeds");
     }
 
+    /// rmp #241: a full block whose width byte is past `ForUtil`'s mask table
+    /// fails as Java does — `ForUtil.decode` throws
+    /// `ArrayIndexOutOfBoundsException` from `MASKS32[bitsPerValue]`
+    /// (`ForUtil.java:168-170`), reached from `refillFullBlock`
+    /// (`Lucene104PostingsReader.java:594-597`) — instead of panicking.
+    #[test]
+    fn a_corrupt_full_block_width_is_an_error_not_a_panic() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let field_infos = field_infos_with_freqs();
+        let field_info = field_infos.field_info("body").unwrap();
+        // Deltas of 1000 pack in 10 bits, so the block is PACKED, not a bit set.
+        let postings = TestPostingsEnum::new(
+            (0..512).map(|i| i * 1000).collect(),
+            vec![1; 512],
+            vec![vec![]; 512],
+        );
+
+        let corrupt = |dir: &Arc<dyn Directory>, state: &BlockTermState| {
+            let name = dir
+                .list_all()
+                .unwrap()
+                .into_iter()
+                .find(|name| name.ends_with(".doc"))
+                .expect("the postings writer wrote a .doc file");
+            let length = dir.file_length(&name).unwrap() as usize;
+            let mut bytes = vec![0u8; length];
+            dir.open_input(&name, &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap()
+                .read_bytes(&mut bytes, 0, length)
+                .unwrap();
+            // Walk the first block's level-0 skip data the way
+            // `doMoveToNextLevel0Block` reads it
+            // (`Lucene104PostingsReader.java:740-753`); the width byte follows.
+            let mut input = MockIndexInput::new(bytes.clone(), "doc");
+            input.seek(state.doc_start_fp).unwrap();
+            input.read_v_long().unwrap(); // level0NumBytes
+            read_v_int15(&mut input).unwrap(); // docDelta
+            read_v_long15(&mut input).unwrap(); // blockLength
+            let num_impact_bytes = input.read_v_int().unwrap();
+            input.skip_bytes(i64::from(num_impact_bytes)).unwrap();
+            let width_at = input.file_pointer() as usize;
+            assert_eq!(bytes[width_at], 10, "the width byte of the first block");
+            bytes[width_at] = 40;
+            dir.delete_file(&name).unwrap();
+            let mut out = dir
+                .create_output(&name, &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            out.write_bytes(&bytes, 0, bytes.len()).unwrap();
+            out.close().unwrap();
+        };
+        let (mut reader, state) =
+            write_term_and_open_reader_with(&dir, &field_infos, field_info, &postings, corrupt)
+                .expect("reader builds");
+
+        let mut it = reader
+            .postings(field_info, &state, None, crate::index::POSTINGS_ENUM_FREQS)
+            .expect("postings exist");
+        match it.next_doc() {
+            Err(LuceneError::IllegalArgument(message)) => {
+                assert_eq!(message, "Index 40 out of bounds for length 32")
+            }
+            other => panic!("expected Java's index-out-of-bounds failure, got {other:?}"),
+        }
+        reader.close().expect("close succeeds");
+    }
+
     #[test]
     fn level1_skip_8193_round_trip() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let field_infos = field_infos_with_freqs();
         let field_info = field_infos.field_info("body").unwrap();
         let postings =
             TestPostingsEnum::new((0..8193).collect(), vec![1; 8193], vec![vec![]; 8193]);
 
         let (mut reader, state) =
-            write_term_and_open_reader(dir_ref, &field_infos, field_info, &postings)
+            write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
                 .expect("reader builds");
 
         let mut it = reader

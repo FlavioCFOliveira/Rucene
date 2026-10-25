@@ -825,6 +825,45 @@ fn list_commits_matches_lucene_on_a_java_written_index() {
     );
 }
 
+/// rmp #212: `ReaderCommit.toString()` prints its files in the iteration
+/// order of the `java.util.HashSet` that `SegmentInfos.files(true)` builds
+/// (`SegmentInfos.java:932-947`, `StandardDirectoryReader.java:593, 601-604`).
+/// The port held a `HashSet` and sorted the names for display; it now holds
+/// the same Java-ordered set and prints it as it is.
+#[test]
+fn reader_commit_to_string_matches_lucene_on_a_java_written_index() {
+    let out = scratch_dir("list-commits-to-string");
+    let stdout = run_java_fixture(&out, "list-commits");
+    let expected: Vec<String> = repeated(&stdout, "commit_string")
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(expected.len(), 5, "one line per retained commit");
+
+    // The comparison only discriminates if Lucene's order is not the sorted
+    // one for at least one commit.
+    let sorted_rendering = |line: &str| {
+        let (head, files) = line.split_once(" files=[").unwrap();
+        let mut names: Vec<&str> = files.trim_end_matches("])").split(", ").collect();
+        names.sort_unstable();
+        format!("{head} files=[{}])", names.join(", "))
+    };
+    assert!(
+        expected.iter().any(|line| *line != sorted_rendering(line)),
+        "every commit's file list is sorted already, so the test cannot tell \
+         Lucene's order from a sorted one: {expected:?}"
+    );
+
+    let _ = register_codec("Lucene104", Lucene104Codec::new());
+    let directory: Arc<dyn Directory> = Arc::new(NIOFSDirectory::open(out.join("index")).unwrap());
+    let actual: Vec<String> = list_commits(directory)
+        .expect("Rucene must list the commits of a Lucene-written index")
+        .iter()
+        .map(|commit| commit.to_string())
+        .collect();
+    assert_eq!(actual, expected);
+}
+
 // -----------------------------------------------------------------------------
 // TwoPhaseCommitTool
 // -----------------------------------------------------------------------------

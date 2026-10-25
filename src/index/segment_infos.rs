@@ -8,7 +8,7 @@
 
 #![deny(unsafe_code)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::{self, Debug, Formatter};
 use std::io;
 use std::sync::{Arc, RwLock};
@@ -18,7 +18,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::index_file_names::{file_name_from_generation, PENDING_SEGMENTS, SEGMENTS};
 use crate::index::SegmentCommitInfo;
 use crate::store::{Directory, IndexOutput};
-use crate::util::java_collections::JavaStringMap;
+use crate::util::java_collections::{JavaHashSet, JavaIntHashMap, JavaStringMap};
 use crate::util::string_helper::{StringHelper, ID_LENGTH};
 use crate::util::{InfoStream, Version};
 
@@ -495,16 +495,24 @@ impl SegmentInfos {
     /// * `include_segments_file` - if `true`, the committed `segments_N` file is
     ///   included.
     pub fn files(&self, include_segments_file: bool) -> Result<HashSet<String>> {
-        let mut files = HashSet::new();
+        Ok(self.files_ordered(include_segments_file)?.to_std())
+    }
+
+    /// Returns all file names referenced by this commit, iteration order
+    /// included.
+    ///
+    /// Equivalent to `SegmentInfos.files(boolean)` (`SegmentInfos.java:932-947`):
+    /// a `java.util.HashSet` that receives the `segments_N` name first, then
+    /// every segment's [`SegmentCommitInfo::files_ordered`] in segment order.
+    pub fn files_ordered(&self, include_segments_file: bool) -> Result<JavaHashSet> {
+        let mut files = JavaHashSet::new();
         if include_segments_file {
             if let Some(segment_file_name) = self.segments_file_name() {
                 files.insert(segment_file_name);
             }
         }
         for info in &self.segments {
-            for file in info.files()? {
-                files.insert(file);
-            }
+            files.extend(info.files_ordered()?);
         }
         Ok(files)
     }
@@ -795,13 +803,22 @@ impl SegmentInfos {
             si_per_commit.set_field_infos_files(field_infos_files);
 
             let num_dv_fields = codec_util::read_be_int(input)?;
-            let mut dv_updates_files: HashMap<i32, Vec<String>> = HashMap::new();
+            // `HashMap.newHashMap(numDVFields)`, iterated in its order by
+            // `setDocValuesUpdatesFiles` (`SegmentInfos.java:440-451`); an
+            // empty count is `Collections.emptyMap()`.
+            let mut dv_updates_files: JavaIntHashMap<Vec<String>> =
+                JavaIntHashMap::new_hash_map(num_dv_fields.max(0) as usize);
             for _ in 0..num_dv_fields {
                 let field_number = codec_util::read_be_int(input)?;
                 let files = input.read_set_of_strings()?;
                 dv_updates_files.insert(field_number, files.into_iter().collect());
             }
-            si_per_commit.set_doc_values_updates_files(dv_updates_files);
+            si_per_commit.set_doc_values_updates_files(
+                dv_updates_files
+                    .iter()
+                    .map(|(field_number, files)| (field_number, files.clone()))
+                    .collect::<Vec<_>>(),
+            );
 
             infos.add(si_per_commit)?;
 
@@ -1135,8 +1152,8 @@ impl SegmentInfos {
             out.write_set_of_strings(si_per_commit.get_field_infos_files())?;
             let dv_updates_files = si_per_commit.get_doc_values_updates_files();
             codec_util::write_be_int(out, dv_updates_files.len() as i32)?;
-            for (field_number, files) in dv_updates_files {
-                codec_util::write_be_int(out, *field_number)?;
+            for (field_number, files) in dv_updates_files.iter() {
+                codec_util::write_be_int(out, field_number)?;
                 out.write_set_of_strings(files)?;
             }
         }
@@ -1439,7 +1456,10 @@ mod tests {
             .unwrap()])
             .unwrap(),
         );
-        info.set_diagnostics(HashMap::from([("source".to_string(), "test".to_string())]));
+        info.set_diagnostics(std::collections::HashMap::from([(
+            "source".to_string(),
+            "test".to_string(),
+        )]));
         info.set_files(HashSet::from(["_0.fnm".to_string(), "_0.fdt".to_string()]));
 
         write_segment_info_file(dir.as_ref(), &info).unwrap();

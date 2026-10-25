@@ -38,8 +38,8 @@ use crate::index::doc_values::DocValuesIterator;
 use crate::index::index_file_names::segment_file_name;
 use crate::search::{DocIdSetIterator, SortedSetSelector, SortedSetSelectorType, NO_MORE_DOCS};
 use crate::store::{
-    ByteArrayDataOutput, ByteBuffersDataOutput, ByteBuffersIndexOutput, DataOutput, Directory,
-    IOContext, IndexInput, IndexOutput, MockIndexOutput, RandomAccessInput,
+    ByteArrayDataOutput, ByteBuffersDataOutput, ByteBuffersIndexOutput, DataOutput, IOContext,
+    IndexInput, IndexOutput, RandomAccessInput,
 };
 use crate::util::compress::{FastCompressionHashTable, Lz4};
 use crate::util::packed::{
@@ -181,10 +181,17 @@ impl DocValuesFormat for Lucene90DocValuesFormat {
 // -----------------------------------------------------------------------------
 
 /// Writer for [`Lucene90DocValuesFormat`].
+///
+/// The three outputs are opened in the segment's directory by the constructor
+/// and written as each field arrives, as Java's are
+/// (`Lucene90DocValuesConsumer.java:73-125`).
 pub struct Lucene90DocValuesConsumer<'a> {
-    data: MockIndexOutput,
-    meta: MockIndexOutput,
-    skip_index: MockIndexOutput,
+    data: Box<dyn IndexOutput>,
+    meta: Box<dyn IndexOutput>,
+    skip_index: Box<dyn IndexOutput>,
+    /// Set once [`close`](DocValuesConsumer::close) ran: Java nulls the three
+    /// outputs (`:147`), so a second close does nothing.
+    closed: bool,
     /// Scratch buffer for the terms dictionary, reused across every field of
     /// the segment that writes one.
     ///
@@ -199,11 +206,7 @@ pub struct Lucene90DocValuesConsumer<'a> {
     max_doc: i32,
     #[allow(dead_code)]
     skip_index_interval_size: i32,
-    directory: &'a dyn Directory,
-    context: &'a dyn IOContext,
-    data_name: String,
-    meta_name: String,
-    skip_name: String,
+    _context: std::marker::PhantomData<&'a dyn IOContext>,
 }
 
 /// One interval of the doc-values skip index: the document range it covers and
@@ -479,9 +482,9 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             &state.segment_suffix,
             DATA_EXTENSION,
         );
-        let mut data = MockIndexOutput::new(&data_name, &data_name);
+        let mut data = state.directory.create_output(&data_name, state.context)?;
         write_index_header(
-            &mut data,
+            data.as_mut(),
             DATA_CODEC,
             VERSION_CURRENT,
             &state.segment_info.id(),
@@ -493,9 +496,9 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             &state.segment_suffix,
             META_EXTENSION,
         );
-        let mut meta = MockIndexOutput::new(&meta_name, &meta_name);
+        let mut meta = state.directory.create_output(&meta_name, state.context)?;
         write_index_header(
-            &mut meta,
+            meta.as_mut(),
             META_CODEC,
             VERSION_CURRENT,
             &state.segment_info.id(),
@@ -507,9 +510,9 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             &state.segment_suffix,
             SKIP_INDEX_EXTENSION,
         );
-        let mut skip_index = MockIndexOutput::new(&skip_name, &skip_name);
+        let mut skip_index = state.directory.create_output(&skip_name, state.context)?;
         write_index_header(
-            &mut skip_index,
+            skip_index.as_mut(),
             SKIP_INDEX_CODEC,
             VERSION_CURRENT,
             &state.segment_info.id(),
@@ -528,11 +531,8 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             terms_dict_buffer: vec![0u8; 1 << 14],
             max_doc: state.segment_info.max_doc()?,
             skip_index_interval_size,
-            directory: state.directory,
-            context: state.context,
-            data_name,
-            meta_name,
-            skip_name,
+            closed: false,
+            _context: std::marker::PhantomData,
         })
     }
 }
@@ -591,60 +591,72 @@ struct NumericStats {
 }
 
 impl NumericStats {
-    fn compute(values: &[i64], ords: bool) -> Self {
-        if values.is_empty() {
-            // A field whose every value belongs to a deleted document has none
-            // left after a merge. Java's `MinMaxTracker` then still holds its
-            // initial bounds, and `writeValues` writes that `min`
-            // (`Lucene90DocValuesConsumer.java:172-181, 432-434, 505`), with
-            // the `gcd` it never updated.
-            return Self {
-                min: i64::MAX,
-                max: i64::MIN,
-                gcd: 0,
-                unique_values: None,
-                do_blocks: false,
-            };
-        }
-
-        let first = values[0];
-        let mut global_min = i64::MAX;
-        let mut global_max = i64::MIN;
+    /// The statistics pass of `writeValues`
+    /// (`Lucene90DocValuesConsumer.java:373-430`): the GCD of the deltas from
+    /// the first value, the global and per-block bit budgets, and the unique
+    /// values up to 256 of them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] with Java's messages when
+    /// ordinals do not start at zero or share a GCD other than one
+    /// (`Lucene90DocValuesConsumer.java:421-430`).
+    fn compute(values: &[i64], ords: bool) -> Result<Self> {
+        // `firstValue` is the first value of the first document, or `0` when no
+        // document has one (`Lucene90DocValuesConsumer.java:376-381`). A field
+        // whose every value belongs to a deleted document has none left after
+        // a merge; the trackers then keep their initial bounds and the `gcd`
+        // its initial `0`, and `writeValues` writes them as they are.
+        let first = values.first().copied().unwrap_or(0);
+        let mut min_max = MinMaxTracker::new();
+        let mut block_min_max = MinMaxTracker::new();
         let mut gcd = 0i64;
         let mut unique = if ords { None } else { Some(HashSet::new()) };
 
-        let mut total_tracker = MinMaxTracker::new();
-        let mut block_tracker = MinMaxTracker::new();
-
         for &v in values {
-            if !ords && gcd != 1 {
+            // Ordinals take the same GCD computation as any other value; Java
+            // only checks the result afterwards.
+            if gcd != 1 {
                 if !(i64::MIN / 2..=i64::MAX / 2).contains(&v) {
+                    // In that case `v - minValue` might overflow and make the
+                    // GCD computation return wrong results.
                     gcd = 1;
                 } else {
                     gcd = gcd_i64(gcd, v - first);
                 }
             }
-            block_tracker.update(v);
-            if block_tracker.num_values as usize == NUMERIC_BLOCK_SIZE {
-                total_tracker.merge(&block_tracker);
-                block_tracker.reset();
+
+            block_min_max.update(v);
+            if block_min_max.num_values == NUMERIC_BLOCK_SIZE as i64 {
+                min_max.update_from(&block_min_max);
+                block_min_max.next_block();
             }
+
             if let Some(ref mut set) = unique {
                 if set.insert(v) && set.len() > 256 {
                     unique = None;
                 }
             }
-            global_min = global_min.min(v);
-            global_max = global_max.max(v);
         }
-        total_tracker.merge(&block_tracker);
-        total_tracker.finish();
-        block_tracker.finish();
 
-        if ords {
-            assert!(global_min == 0, "ordinals min must be 0");
-            gcd = 1;
+        min_max.update_from(&block_min_max);
+        min_max.finish();
+        block_min_max.finish();
+
+        if ords && min_max.num_values > 0 {
+            if min_max.min != 0 {
+                return Err(LuceneError::IllegalState(format!(
+                    "The min value for ordinals should always be 0, got {}",
+                    min_max.min
+                )));
+            }
+            if min_max.max != 0 && gcd != 1 {
+                return Err(LuceneError::IllegalState(format!(
+                    "GCD compression should never be used on ordinals, found gcd={gcd}"
+                )));
+            }
         }
+        debug_assert!(block_min_max.space_in_bits <= min_max.space_in_bits);
 
         let unique_values = unique.map(|set| {
             let mut vec: Vec<i64> = set.into_iter().collect();
@@ -652,21 +664,29 @@ impl NumericStats {
             vec
         });
 
-        // Block-packed writing is implemented but kept disabled so the producer can
-        // rely on the simpler single-block / table encodings for round-trip tests.
-        let do_blocks = false;
+        // "We do blocks if that appears to save 10+% storage"
+        // (`Lucene90DocValuesConsumer.java:485-487`). `writeValues` only
+        // consults it once the unique-value table has been ruled out.
+        let do_blocks = min_max.space_in_bits > 0
+            && (block_min_max.space_in_bits as f64 / min_max.space_in_bits as f64) <= 0.9;
 
-        Self {
-            min: global_min,
-            max: global_max,
+        Ok(Self {
+            min: min_max.min,
+            max: min_max.max,
             gcd,
             unique_values,
             do_blocks,
-        }
+        })
     }
 }
 
-#[derive(Debug, Default)]
+/// Tracks the bounds of a run of values and the packed bits they need.
+///
+/// Equivalent to `Lucene90DocValuesConsumer.MinMaxTracker`
+/// (`Lucene90DocValuesConsumer.java:169-209`): `spaceInBits` accumulates over
+/// every [`finish`](Self::finish), and [`reset`](Self::reset) leaves it alone,
+/// so the per-block tracker ends up holding the sum over all blocks.
+#[derive(Debug)]
 struct MinMaxTracker {
     min: i64,
     max: i64,
@@ -684,30 +704,46 @@ impl MinMaxTracker {
         }
     }
 
+    /// `reset()`: the bounds and the count, never the space.
+    fn reset(&mut self) {
+        self.min = i64::MAX;
+        self.max = i64::MIN;
+        self.num_values = 0;
+    }
+
+    /// `update(long)`.
     fn update(&mut self, v: i64) {
         self.min = self.min.min(v);
         self.max = self.max.max(v);
         self.num_values += 1;
     }
 
-    fn merge(&mut self, other: &Self) {
-        if other.num_values == 0 {
-            return;
-        }
+    /// `update(MinMaxTracker)`.
+    fn update_from(&mut self, other: &Self) {
         self.min = self.min.min(other.min);
         self.max = self.max.max(other.max);
         self.num_values += other.num_values;
     }
 
+    /// `finish()`: adds the bits of the current run. Java's `max - min`
+    /// wraps for a range wider than `Long.MAX_VALUE`, and
+    /// `unsignedBitsRequired` then answers 64.
     fn finish(&mut self) {
         if self.max > self.min {
-            self.space_in_bits =
-                DirectWriter::unsigned_bits_required(self.max - self.min) as i64 * self.num_values;
+            // `spaceInBits += bitsRequired * numValues`, in Java's wrapping `long`.
+            self.space_in_bits = self.space_in_bits.wrapping_add(
+                i64::from(DirectWriter::unsigned_bits_required(
+                    self.max.wrapping_sub(self.min),
+                ))
+                .wrapping_mul(self.num_values),
+            );
         }
     }
 
-    fn reset(&mut self) {
-        *self = Self::new();
+    /// `nextBlock()`.
+    fn next_block(&mut self) {
+        self.finish();
+        self.reset();
     }
 }
 
@@ -732,7 +768,7 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         }
         let offset = self.data.file_pointer();
         let mut it = BufferedDocIdSetIterator::new(docs.to_vec());
-        let jump_count = write_bit_set(&mut it, &mut self.data, DEFAULT_DENSE_RANK_POWER)?;
+        let jump_count = write_bit_set(&mut it, self.data.as_mut(), DEFAULT_DENSE_RANK_POWER)?;
         let length = self.data.file_pointer() - offset;
         Ok((offset, length, jump_count, DEFAULT_DENSE_RANK_POWER))
     }
@@ -755,7 +791,7 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         let num_values = values.len() as i64;
         self.meta.write_long(num_values)?;
 
-        let mut stats = NumericStats::compute(values, ords);
+        let mut stats = NumericStats::compute(values, ords)?;
         let mut min = stats.min;
         let mut gcd = stats.gcd;
 
@@ -766,37 +802,40 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         // normalization that keeps small positive ranges at their natural bit
         // width. The fall-through must apply the same normalization — skipping
         // it writes a different `min` than Lucene for ranges like 1..=11.
-        let (num_bits_per_value, table_size, table, encode) =
-            if num_values == 0 || stats.min >= stats.max {
-                (0u8, -1i32, None, None)
-            } else if let Some(unique) = stats.unique_values.take_if(|u| {
-                DirectWriter::unsigned_bits_required((u.len() as i64) - 1)
-                    < DirectWriter::unsigned_bits_required((stats.max - stats.min) / stats.gcd)
-            }) {
-                let bits = DirectWriter::unsigned_bits_required((unique.len() as i64) - 1) as u8;
-                let mut encode = HashMap::with_capacity(unique.len());
-                for (i, &v) in unique.iter().enumerate() {
-                    encode.insert(v, i as i64);
-                }
-                min = 0;
-                gcd = 1;
-                (bits, unique.len() as i32, Some(unique), Some(encode))
+        let (num_bits_per_value, table_size, table, encode) = if num_values == 0
+            || stats.min >= stats.max
+        {
+            (0u8, -1i32, None, None)
+        } else if let Some(unique) = stats.unique_values.take_if(|u| {
+            DirectWriter::unsigned_bits_required((u.len() as i64) - 1)
+                < DirectWriter::unsigned_bits_required(
+                    stats.max.wrapping_sub(stats.min) / stats.gcd,
+                )
+        }) {
+            let bits = DirectWriter::unsigned_bits_required((unique.len() as i64) - 1) as u8;
+            let mut encode = HashMap::with_capacity(unique.len());
+            for (i, &v) in unique.iter().enumerate() {
+                encode.insert(v, i as i64);
+            }
+            min = 0;
+            gcd = 1;
+            (bits, unique.len() as i32, Some(unique), Some(encode))
+        } else {
+            let direct_bits =
+                DirectWriter::unsigned_bits_required(stats.max.wrapping_sub(stats.min) / stats.gcd);
+            if stats.do_blocks {
+                (0xFFu8, -2 - NUMERIC_BLOCK_SHIFT, None, None)
             } else {
-                let direct_bits =
-                    DirectWriter::unsigned_bits_required((stats.max - stats.min) / stats.gcd);
-                if stats.do_blocks {
-                    (0xFFu8, -2 - NUMERIC_BLOCK_SHIFT, None, None)
-                } else {
-                    let single_bits = direct_bits;
-                    if gcd == 1
-                        && min > 0
-                        && DirectWriter::unsigned_bits_required(stats.max) == single_bits
-                    {
-                        min = 0;
-                    }
-                    (single_bits as u8, -1, None, None)
+                let single_bits = direct_bits;
+                if gcd == 1
+                    && min > 0
+                    && DirectWriter::unsigned_bits_required(stats.max) == single_bits
+                {
+                    min = 0;
                 }
-            };
+                (single_bits as u8, -1, None, None)
+            }
+        };
 
         self.meta.write_int(table_size)?;
         if let Some(ref table) = table {
@@ -841,12 +880,12 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         gcd: i64,
         encode: Option<&HashMap<i64, i64>>,
     ) -> Result<i64> {
-        let mut writer = DirectWriter::new(&mut self.data, num_values, num_bits_per_value)?;
+        let mut writer = DirectWriter::new(self.data.as_mut(), num_values, num_bits_per_value)?;
         for &v in values {
             let encoded = if let Some(map) = encode {
                 *map.get(&v).expect("value not in table")
             } else {
-                (v - min) / gcd
+                v.wrapping_sub(min) / gcd
             };
             writer.add(encoded)?;
         }
@@ -886,11 +925,15 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         gcd: i64,
         encode_buffer: &mut ByteBuffersDataOutput,
     ) -> Result<()> {
-        assert!(!values.is_empty());
+        debug_assert!(!values.is_empty());
         let mut min = values[0];
         let mut max = values[0];
         for &v in values.iter().skip(1) {
-            assert_eq!((v - min).rem_euclid(gcd), 0);
+            // Java's `assert Math.floorMod(values[i] - min, gcd) == 0`
+            // (`Lucene90DocValuesConsumer.java:584`), with its wrapping
+            // subtraction: an assertion, so compiled out of release builds as
+            // Java runs without `-ea`.
+            debug_assert_eq!(v.wrapping_sub(min).rem_euclid(gcd), 0);
             min = min.min(v);
             max = max.max(v);
         }
@@ -898,17 +941,17 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             self.data.write_byte(0)?;
             self.data.write_long(min)?;
         } else {
-            let bits_per_value = DirectWriter::unsigned_bits_required((max - min) / gcd);
+            let bits_per_value = DirectWriter::unsigned_bits_required(max.wrapping_sub(min) / gcd);
             encode_buffer.reset();
             let mut writer = DirectWriter::new(encode_buffer, values.len() as i64, bits_per_value)?;
             for &v in values {
-                writer.add((v - min) / gcd)?;
+                writer.add(v.wrapping_sub(min) / gcd)?;
             }
             writer.finish()?;
             self.data.write_byte(bits_per_value as u8)?;
             self.data.write_long(min)?;
             self.data.write_int(encode_buffer.size() as i32)?;
-            encode_buffer.copy_to(&mut self.data)?;
+            encode_buffer.copy_to(self.data.as_mut())?;
         }
         Ok(())
     }
@@ -952,8 +995,8 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             self.meta.write_long(start)?;
             self.meta.write_v_int(DIRECT_MONOTONIC_BLOCK_SHIFT)?;
             let mut writer = DirectMonotonicWriter::new(
-                &mut self.meta,
-                &mut self.data,
+                self.meta.as_mut(),
+                self.data.as_mut(),
                 num_docs as i64 + 1,
                 DIRECT_MONOTONIC_BLOCK_SHIFT,
             )?;
@@ -1100,8 +1143,8 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             self.meta.write_v_int(DIRECT_MONOTONIC_BLOCK_SHIFT)?;
 
             let mut addresses_writer = DirectMonotonicWriter::new(
-                &mut self.meta,
-                &mut self.data,
+                self.meta.as_mut(),
+                self.data.as_mut(),
                 num_docs_with_field as i64 + 1,
                 DIRECT_MONOTONIC_BLOCK_SHIFT,
             )?;
@@ -1137,7 +1180,7 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene90.Lucene90DocValuesConsumer#compressAndGetTermsDictBlockLength`.
     fn compress_and_get_terms_dict_block_length(
-        data: &mut MockIndexOutput,
+        data: &mut dyn IndexOutput,
         terms_dict_buffer: &[u8],
         buffered_position: usize,
         dict_length: usize,
@@ -1227,7 +1270,7 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         let mut address_output =
             ByteBuffersIndexOutput::new(address_buffer, "terms_dict_address", "terms_dict_address");
         let mut writer = DirectMonotonicWriter::new(
-            &mut self.meta,
+            self.meta.as_mut(),
             &mut address_output,
             num_blocks,
             DIRECT_MONOTONIC_BLOCK_SHIFT,
@@ -1253,7 +1296,7 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
                 if ord != 0 {
                     // flush the previous block
                     let uncompressed_length = Self::compress_and_get_terms_dict_block_length(
-                        &mut self.data,
+                        self.data.as_mut(),
                         terms_dict_buffer,
                         buffered_position,
                         dict_length,
@@ -1305,7 +1348,7 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         // Compress and write out the last block
         if buffered_position > dict_length {
             let uncompressed_length = Self::compress_and_get_terms_dict_block_length(
-                &mut self.data,
+                self.data.as_mut(),
                 terms_dict_buffer,
                 buffered_position,
                 dict_length,
@@ -1347,7 +1390,7 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             "terms_index_address",
         );
         let mut writer = DirectMonotonicWriter::new(
-            &mut self.meta,
+            self.meta.as_mut(),
             &mut address_output,
             num_blocks,
             DIRECT_MONOTONIC_BLOCK_SHIFT,
@@ -1495,38 +1538,29 @@ impl<'a> DocValuesConsumer for Lucene90DocValuesConsumer<'a> {
         Ok(())
     }
 
+    /// Equivalent to `Lucene90DocValuesConsumer.close()`
+    /// (`Lucene90DocValuesConsumer.java:127-149`): the EOF marker and the three
+    /// footers, then the outputs closed in Java's order.
     fn close(&mut self) -> Result<()> {
-        self.meta.write_int(-1)?;
-        write_footer(&mut self.meta)?;
-        write_footer(&mut self.data)?;
-        write_footer(&mut self.skip_index)?;
-        {
-            let mut out = self
-                .directory
-                .create_output(&self.data_name, self.context)?;
-            let bytes = self.data.as_inner();
-            out.write_bytes(bytes, 0, bytes.len())?;
-            out.close()?;
+        if self.closed {
+            return Ok(());
         }
-        {
-            let mut out = self
-                .directory
-                .create_output(&self.meta_name, self.context)?;
-            let bytes = self.meta.as_inner();
-            out.write_bytes(bytes, 0, bytes.len())?;
-            out.close()?;
-        }
-        {
-            let mut out = self
-                .directory
-                .create_output(&self.skip_name, self.context)?;
-            let bytes = self.skip_index.as_inner();
-            out.write_bytes(bytes, 0, bytes.len())?;
-            out.close()?;
-        }
-        self.data.close()?;
-        self.meta.close()?;
-        self.skip_index.close()?;
+        self.closed = true;
+        let written = (|| -> Result<()> {
+            self.meta.write_int(-1)?; // write EOF marker
+            write_footer(self.meta.as_mut())?;
+            write_footer(self.data.as_mut())?;
+            write_footer(self.skip_index.as_mut())
+        })();
+        // `IOUtils.close(data, meta, skipIndex)`: every output is closed, and
+        // the first failure is the one reported.
+        let closes = [
+            self.data.close(),
+            self.meta.close(),
+            self.skip_index.close(),
+        ];
+        written?;
+        closes.into_iter().collect::<Result<Vec<()>>>()?;
         Ok(())
     }
 }
@@ -1577,6 +1611,10 @@ struct NumericEntry {
     gcd: i64,
     values_offset: i64,
     values_length: i64,
+    /// Where the per-block offsets start in the data file, `-1` without them.
+    ///
+    /// Equivalent to `NumericEntry.valueJumpTableOffset`.
+    value_jump_table_offset: i64,
 }
 
 /// One `BINARY` metadata entry (`Lucene90DocValuesProducer.java:343-378`).
@@ -2176,7 +2214,7 @@ impl Lucene90DocValuesProducer {
         let gcd = meta.read_long()?;
         let values_offset = meta.read_long()?;
         let values_length = meta.read_long()?;
-        let _value_jump_table_offset = meta.read_long()?;
+        let value_jump_table_offset = meta.read_long()?;
         Ok(NumericEntry {
             docs_with_field_offset,
             docs_with_field_length,
@@ -2190,6 +2228,7 @@ impl Lucene90DocValuesProducer {
             gcd,
             values_offset,
             values_length,
+            value_jump_table_offset,
         })
     }
 
@@ -2522,6 +2561,9 @@ impl DocsCursor {
 /// metadata, an ordinal into a unique-value table, and `gcd * packed + min`.
 enum NumericValueSource {
     Constant(i64),
+    /// Values split into blocks of `2^blockShift` with their own width, read
+    /// through Java's `VaryingBPVReader`.
+    Varying(RefCell<VaryingBpvReader>),
     Table {
         reader: DirectReader,
         table: Vec<i64>,
@@ -2546,20 +2588,14 @@ impl NumericValueSource {
         if entry.bits_per_value == 0 {
             return Ok(Self::Constant(entry.min_value));
         }
-        if entry.block_shift >= 0 {
-            // **Divergence (pre-existing).** `writeValues` switches to
-            // per-block widths when that saves over 10% of the packed bits
-            // (`Lucene90DocValuesConsumer.java:486-497`), and Lucene reads them
-            // back through its `VaryingBPVReader`. This port's consumer never
-            // writes that layout — no field it indexes reaches the 16384 values
-            // one block holds — so its reader was never ported either. The
-            // entry is refused rather than decoded as if it were single-block,
-            // which would silently return wrong values.
-            return corrupt(
-                "per-block numeric widths are not supported by this reader".to_string(),
-            );
-        }
         let slice = checked_random_access(data, entry.values_offset, entry.values_length)?;
+        if entry.block_shift >= 0 {
+            // Dense or sparse, "split into blocks of different bits per value"
+            // (`Lucene90DocValuesProducer.java:819-823, 1003-1007, 1063-1065`).
+            return Ok(Self::Varying(RefCell::new(VaryingBpvReader::new(
+                data, entry, slice,
+            )?)));
+        }
         let reader = DirectReader::with_random_access(
             Rc::clone(&slice),
             i32::from(entry.bits_per_value),
@@ -2588,6 +2624,7 @@ impl NumericValueSource {
     fn value(&self, index: i64) -> Result<i64> {
         match self {
             Self::Constant(value) => Ok(*value),
+            Self::Varying(reader) => reader.borrow_mut().get_long_value(index),
             Self::Table { reader, table, .. } => {
                 let ordinal = reader.get_checked(index)?;
                 // The ordinal is `bitsPerValue` wide and the table at most 256
@@ -2615,6 +2652,123 @@ impl NumericValueSource {
                 .wrapping_mul(reader.get_checked(index)?)
                 .wrapping_add(*min)),
         }
+    }
+}
+
+/// Reader for longs split into blocks of different bits per value.
+///
+/// Equivalent to `Lucene90DocValuesProducer.VaryingBPVReader`
+/// (`Lucene90DocValuesProducer.java:2295-2365`). Each block starts with its
+/// width byte and its `delta` long, followed, for a non-zero width, by the
+/// byte length of its packed values and the values themselves. The values must
+/// be requested in increasing order: the next block is reached by walking
+/// from the current one, and any other block through the offsets jump table
+/// the consumer writes after the last block.
+///
+/// Like every reader of this module it decodes through
+/// [`DirectReader::get_checked`] and never takes Java's
+/// `getDirectReaderInstance` merge variant; see
+/// [`Lucene90DocValuesProducer::get_direct_reader_instance`].
+struct VaryingBpvReader {
+    slice: SharedRandomAccess,
+    /// The jump table: the data-file offset of every block, `None` when the
+    /// entry has none (`valueJumpTableOffset == -1`).
+    rank_slice: Option<SharedRandomAccess>,
+    values_offset: i64,
+    shift: i32,
+    mul: i64,
+    mask: i64,
+    block: i64,
+    delta: i64,
+    offset: i64,
+    block_end_offset: i64,
+    /// `None` is Java's `LongValues.ZEROES`, the values of a width-0 block.
+    values: Option<DirectReader>,
+}
+
+impl VaryingBpvReader {
+    fn new(data: &dyn IndexInput, entry: &NumericEntry, slice: SharedRandomAccess) -> Result<Self> {
+        let rank_slice = if entry.value_jump_table_offset == -1 {
+            None
+        } else {
+            Some(checked_random_access(
+                data,
+                entry.value_jump_table_offset,
+                data.length().wrapping_sub(entry.value_jump_table_offset),
+            )?)
+        };
+        let shift = entry.block_shift;
+        Ok(Self {
+            slice,
+            rank_slice,
+            values_offset: entry.values_offset,
+            shift,
+            mul: entry.gcd,
+            // Java's `(1 << shift) - 1` is an `int`.
+            mask: i64::from(1i32.wrapping_shl(shift as u32).wrapping_sub(1)),
+            block: -1,
+            delta: 0,
+            offset: 0,
+            block_end_offset: 0,
+            values: None,
+        })
+    }
+
+    /// `getLongValue(long)`.
+    fn get_long_value(&mut self, index: i64) -> Result<i64> {
+        // Java's `index >>> shift` on a `long`, whose shift count is masked to
+        // six bits.
+        let block = ((index as u64).wrapping_shr(self.shift as u32)) as i64;
+        if self.block != block {
+            let mut bits_per_value;
+            loop {
+                // If the needed block is the one directly following the
+                // current block, it is cheaper to avoid the cache.
+                if let Some(ref rank_slice) = self.rank_slice {
+                    if block != self.block.wrapping_add(1) {
+                        // Java's `long` arithmetic wraps: a corrupt jump-table
+                        // entry yields an offset the next checked read rejects.
+                        self.block_end_offset = rank_slice
+                            .borrow_mut()
+                            .read_long_at(block.wrapping_mul(8))?
+                            .wrapping_sub(self.values_offset);
+                        self.block = block.wrapping_sub(1);
+                    }
+                }
+                let mut slice = self.slice.borrow_mut();
+                self.offset = self.block_end_offset;
+                // `slice.readByte` is signed in Java.
+                bits_per_value = i32::from(slice.read_byte_at(self.offset)? as i8);
+                self.offset = self.offset.wrapping_add(1);
+                self.delta = slice.read_long_at(self.offset)?;
+                self.offset = self.offset.wrapping_add(8);
+                if bits_per_value == 0 {
+                    self.block_end_offset = self.offset;
+                } else {
+                    let length = slice.read_int_at(self.offset)?;
+                    self.offset = self.offset.wrapping_add(4);
+                    self.block_end_offset = self.offset.wrapping_add(i64::from(length));
+                }
+                self.block = self.block.wrapping_add(1);
+                if self.block == block {
+                    break;
+                }
+            }
+            self.values = if bits_per_value == 0 {
+                None
+            } else {
+                Some(DirectReader::with_random_access(
+                    Rc::clone(&self.slice),
+                    bits_per_value,
+                    self.offset,
+                )?)
+            };
+        }
+        let value = match self.values {
+            Some(ref values) => values.get_checked(index & self.mask)?,
+            None => 0,
+        };
+        Ok(self.mul.wrapping_mul(value).wrapping_add(self.delta))
     }
 }
 
@@ -2806,7 +2960,7 @@ impl NumericDocValues for LazyNumericDocValues {
                 }
                 done
             }
-            NumericValueSource::Constant(_) => false,
+            NumericValueSource::Constant(_) | NumericValueSource::Varying(_) => false,
         };
         self.bulk_bytes = bulk_bytes;
         if decoded {
@@ -3126,6 +3280,28 @@ impl TermsDict {
 }
 
 /// A `SORTED` field: an ordinal per document, plus the dictionary they index.
+/// Rejects an ordinals entry that a single packed block encodes with a GCD, an
+/// offset or a table, none of which an ordinal stream may use.
+///
+/// Equivalent to the check `getSorted` and `getSortedSet` make before
+/// specialising "the common case for ordinals: single block of packed
+/// integers" (`Lucene90DocValuesProducer.java:1319-1324, 2064-2067`).
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalState`] with Java's message.
+fn check_ordinals_entry(ords: &NumericEntry) -> Result<()> {
+    if ords.block_shift < 0
+        && ords.bits_per_value > 0
+        && (ords.gcd != 1 || ords.min_value != 0 || ords.table.is_some())
+    {
+        return Err(LuceneError::IllegalState(
+            "Ordinals shouldn't use GCD, offset or table compression".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 struct LazySortedDocValues {
     ords: LazyNumericDocValues,
     terms: RefCell<TermsDict>,
@@ -3134,6 +3310,7 @@ struct LazySortedDocValues {
 
 impl LazySortedDocValues {
     fn new(data: &dyn IndexInput, max_doc: i32, entry: &SortedEntry) -> Result<Self> {
+        check_ordinals_entry(&entry.ords)?;
         Ok(Self {
             ords: LazyNumericDocValues::new(data, max_doc, &entry.ords)?,
             terms: RefCell::new(TermsDict::new(data, &entry.terms_dict)?),
@@ -3330,6 +3507,12 @@ struct LazySortedSetDocValues {
 
 impl LazySortedSetDocValues {
     fn new(data: &dyn IndexInput, max_doc: i32, entry: &SortedSetEntry) -> Result<Self> {
+        // `getSortedSet` checks the single-valued entry through `getSorted`
+        // and the multi-valued one itself (`Lucene90DocValuesProducer.java:2059-2067`).
+        match entry {
+            SortedSetEntry::Single(single) => check_ordinals_entry(&single.ords)?,
+            SortedSetEntry::Multi { ords, .. } => check_ordinals_entry(&ords.numeric)?,
+        }
         let (ords_entry, terms_dict) = match entry {
             SortedSetEntry::Single(single) => (
                 SortedNumericEntry {
@@ -3500,12 +3683,72 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
 }
 #[cfg(test)]
 mod tests {
+    /// Round 2, item 1: `getSorted`/`getSortedSet` refuse a single-block
+    /// ordinals entry with a GCD, an offset or a table
+    /// (`Lucene90DocValuesProducer.java:1319-1324, 2064-2067`), and accept
+    /// the other shapes untouched.
+    #[test]
+    fn ordinals_entries_refuse_gcd_offset_or_table() {
+        let base = NumericEntry {
+            docs_with_field_offset: -1,
+            docs_with_field_length: 0,
+            jump_table_entry_count: -1,
+            dense_rank_power: -1,
+            num_values: 4,
+            table: None,
+            block_shift: -1,
+            bits_per_value: 2,
+            min_value: 0,
+            gcd: 1,
+            values_offset: 0,
+            values_length: 1,
+            value_jump_table_offset: -1,
+        };
+        assert!(super::check_ordinals_entry(&base).is_ok());
+        let refused = [
+            NumericEntry {
+                gcd: 2,
+                ..base.clone()
+            },
+            NumericEntry {
+                min_value: 1,
+                ..base.clone()
+            },
+            NumericEntry {
+                table: Some(vec![0, 1]),
+                ..base.clone()
+            },
+        ];
+        for entry in refused {
+            match super::check_ordinals_entry(&entry) {
+                Err(LuceneError::IllegalState(message)) => assert_eq!(
+                    message,
+                    "Ordinals shouldn't use GCD, offset or table compression"
+                ),
+                other => panic!("expected Java's IllegalStateException, got {other:?}"),
+            }
+        }
+        // A constant (width 0) or per-block entry takes the general path.
+        assert!(super::check_ordinals_entry(&NumericEntry {
+            gcd: 0,
+            bits_per_value: 0,
+            ..base.clone()
+        })
+        .is_ok());
+        assert!(super::check_ordinals_entry(&NumericEntry {
+            gcd: 2,
+            block_shift: 14,
+            ..base
+        })
+        .is_ok());
+    }
+
     use super::*;
     use crate::codecs::stub::{BufferedUpdates, SegmentInfo};
     use crate::codecs::tests::DummyCodec;
     use crate::index::FieldInfos;
     use crate::search::Sort;
-    use crate::store::{RamDirectory, DEFAULT_IO_CONTEXT};
+    use crate::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
     use crate::util::default_info_stream;
     use crate::util::string_helper::ID_LENGTH;
     use crate::util::Version;
@@ -3891,7 +4134,7 @@ mod tests {
         let seg_updates = BufferedUpdates;
         let write_state = SegmentWriteState::new(
             default_info_stream(),
-            dir.as_ref(),
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &seg_updates,
@@ -3904,6 +4147,39 @@ mod tests {
             consumer.close().unwrap();
         }
         (dir, segment_info, field_infos)
+    }
+
+    /// Round 2, item 5: the consumer opens its three outputs in the segment's
+    /// directory when it is created and writes through them, as Java's
+    /// constructor does (`Lucene90DocValuesConsumer.java:73-125`), instead of
+    /// buffering the files until `close`.
+    #[test]
+    fn the_consumer_creates_its_files_when_it_opens() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let field_infos = FieldInfos::default();
+        let segment_info = make_segment_info(Arc::clone(&dir), "_0", 1);
+        let write_state = SegmentWriteState::new(
+            default_info_stream(),
+            Arc::clone(&dir),
+            &segment_info,
+            &field_infos,
+            &BufferedUpdates,
+            &*DEFAULT_IO_CONTEXT,
+        );
+        let mut consumer = Lucene90DocValuesFormat::new()
+            .fields_consumer(&write_state)
+            .unwrap();
+        let mut files = dir.list_all().unwrap();
+        files.sort();
+        assert_eq!(files, vec!["_0.dvd", "_0.dvm", "_0.dvs"]);
+        // Still being written: listed, but empty, as `ByteBuffersDirectory`
+        // reports it.
+        assert_eq!(dir.file_length("_0.dvm").unwrap(), 0);
+        consumer.close().unwrap();
+        // Closing twice is a no-op, as Java's nulled outputs make it.
+        consumer.close().unwrap();
+        let meta = dir.file_length("_0.dvm").unwrap();
+        assert!(meta > 0);
     }
 
     fn write_and_read<F>(
@@ -3920,7 +4196,7 @@ mod tests {
         let seg_updates = BufferedUpdates;
         let write_state = SegmentWriteState::new(
             default_info_stream(),
-            dir.as_ref(),
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &seg_updates,

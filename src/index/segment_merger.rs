@@ -177,7 +177,7 @@ impl SegmentMerger {
     fn segment_write_state(&self) -> SegmentWriteState<'_> {
         SegmentWriteState::new(
             &*self.info_stream,
-            &*self.directory,
+            Arc::clone(&self.directory),
             self.segment_info(),
             &self.merge_state.merge_field_infos,
             &self.seg_updates,

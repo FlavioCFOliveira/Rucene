@@ -37,6 +37,7 @@ use crate::index::doc_values::{
 use crate::index::doc_values_field_updates::{
     merged_iterator, DocValuesFieldUpdates, MergedIterator,
 };
+use crate::index::documents_writer::SharedDirectory;
 use crate::index::field_infos::{FieldInfo, FieldInfos, FieldNumbers};
 use crate::index::index_reader::IndexReader;
 use crate::index::index_sorter::SorterDocMap;
@@ -48,9 +49,10 @@ use crate::index::DocValuesType;
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::DocIdSetIterator;
 use crate::store::{
-    flush_io_context, Directory, FlushInfo, IOContext, DEFAULT_IO_CONTEXT, READONCE_IO_CONTEXT,
+    flush_io_context, Directory, FlushInfo, IOContext, TrackingDirectoryWrapper,
+    DEFAULT_IO_CONTEXT, READONCE_IO_CONTEXT,
 };
-use crate::util::java_collections::JavaHashMap;
+use crate::util::java_collections::{JavaHashMap, JavaHashSet, JavaIntHashMap};
 use crate::util::{Accountable, Bits, BytesRef, FixedBitSet, InfoStream, NoOutputInfoStream};
 
 // ---------------------------------------------------------------------------
@@ -1718,13 +1720,8 @@ impl ReadersAndUpdates {
     /// `ReadersAndUpdates.writeFieldInfosGen(FieldInfos, Directory,
     /// FieldInfosFormat)`. The size estimate is Java's: 40 bytes of header and
     /// footer, plus about 90 per field, over-estimating a long name and an
-    /// attribute map.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java tracks the created files with a
-    /// `TrackingDirectoryWrapper` around the directory. This port has the
-    /// wrapper but not a borrow of the directory it could wrap here, so the
-    /// files are the ones that appeared since `before` — the same set, observed
-    /// rather than recorded.
+    /// attribute map. The created files are recorded by a fresh
+    /// `TrackingDirectoryWrapper` around `dir`, as in Java.
     ///
     /// # Errors
     ///
@@ -1732,10 +1729,9 @@ impl ReadersAndUpdates {
     fn write_field_infos_gen(
         state: &mut RauState,
         field_infos: &FieldInfos,
-        dir: &dyn Directory,
+        dir: &Arc<dyn Directory>,
         infos_format: &dyn crate::codecs::field_infos::FieldInfosFormat,
-        before: &HashSet<String>,
-    ) -> Result<HashSet<String>> {
+    ) -> Result<JavaHashSet> {
         let next_field_infos_gen = state.info.get_next_field_infos_gen();
         let segment_suffix = radix36(next_field_infos_gen as u64);
         // We write approximately that many bytes (based on Lucene46DVF):
@@ -1744,25 +1740,22 @@ impl ReadersAndUpdates {
         let est_infos_size = 40 + 90 * field_infos.len() as i64;
         let infos_context =
             flush_io_context(FlushInfo::new(state.info.info.max_doc()?, est_infos_size));
+        // Separately also track which files were created for this gen.
+        let tracking = TrackingDirectoryWrapper::new(Box::new(SharedDirectory(Arc::clone(dir))));
         infos_format.write(
-            dir,
+            &tracking,
             &state.info.info,
             &segment_suffix,
             field_infos,
             &*infos_context,
         )?;
         state.info.advance_field_infos_gen();
-        Ok(dir
-            .list_all()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|f| !before.contains(f))
-            .collect())
+        Ok(tracking.get_created_files_ordered())
     }
 
     pub fn write_field_updates(
         &self,
-        dir: &dyn Directory,
+        dir: &Arc<dyn Directory>,
         field_numbers: &FieldNumbers,
         max_del_gen: i64,
         info_stream: &dyn InfoStream,
@@ -1786,23 +1779,29 @@ impl ReadersAndUpdates {
             return Ok(false);
         }
 
-        let before = dir
-            .list_all()
-            .unwrap_or_default()
-            .into_iter()
-            .collect::<HashSet<_>>();
+        // Do this so we can delete any created files on exception; this saves
+        // all codecs from having to do it (`ReadersAndUpdates.java:636-638`).
+        let tracking = Arc::new(TrackingDirectoryWrapper::new(Box::new(SharedDirectory(
+            Arc::clone(dir),
+        ))));
+        let tracking_dir: Arc<dyn Directory> = Arc::clone(&tracking) as Arc<dyn Directory>;
 
-        let result =
-            self.handle_dv_updates(&mut state, dir, field_numbers, max_del_gen, info_stream);
+        let result = self.handle_dv_updates(
+            &mut state,
+            &tracking_dir,
+            field_numbers,
+            max_del_gen,
+            info_stream,
+        );
 
         if result.is_err() {
+            // Advance only the nextWriteFieldInfosGen and nextWriteDocValuesGen,
+            // so that a second attempt writes to a new file, and delete any
+            // partially created file (`ReadersAndUpdates.java:700-711`).
             state.info.advance_next_write_field_infos_gen();
             state.info.advance_next_write_doc_values_gen();
-            let after = dir.list_all().unwrap_or_default();
-            for f in after {
-                if !before.contains(&f) {
-                    let _ = dir.delete_file(&f);
-                }
+            for file_name in tracking.get_created_files_ordered() {
+                let _ = dir.delete_file(&file_name);
             }
         }
         result
@@ -1812,7 +1811,7 @@ impl ReadersAndUpdates {
     fn handle_dv_updates(
         &self,
         state: &mut RauState,
-        dir: &dyn Directory,
+        dir: &Arc<dyn Directory>,
         field_numbers: &FieldNumbers,
         max_del_gen: i64,
         info_stream: &dyn InfoStream,
@@ -1889,7 +1888,9 @@ impl ReadersAndUpdates {
         let doc_values_format = codec.doc_values_format();
 
         // Handle each field's DV updates.
-        let mut new_dv_files: HashMap<i32, HashSet<String>> = HashMap::new();
+        // `final Map<Integer, Set<String>> newDVFiles = new HashMap<>()`
+        // (`ReadersAndUpdates.java:619`), in Java's iteration order.
+        let mut new_dv_files: JavaIntHashMap<JavaHashSet> = JavaIntHashMap::new();
 
         // Phase 1: Collect update data from `state.pending_dv_updates` into a
         // local `Vec` so that Phase 2 can freely mutate `state.info` without
@@ -1990,10 +1991,12 @@ impl ReadersAndUpdates {
         // it and swapped in before the field infos are written.
         let mut written_field_infos: HashMap<String, FieldInfo> = HashMap::new();
         for fd in &fields_data {
-            // `new TrackingDirectoryWrapper(dir)` per field: only the files
-            // this field's consumer creates belong to its generation.
-            let before_field: HashSet<String> =
-                dir.list_all().unwrap_or_default().into_iter().collect();
+            // `new TrackingDirectoryWrapper(dir)` per field
+            // (`ReadersAndUpdates.java:331`): only the files this field's
+            // consumer creates belong to its generation.
+            let field_tracking = Arc::new(TrackingDirectoryWrapper::new(Box::new(
+                SharedDirectory(Arc::clone(dir)),
+            )));
             let next_dv_gen = state.info.get_next_doc_values_gen();
             let segment_suffix = radix36(next_dv_gen as u64);
             let flush_context =
@@ -2041,7 +2044,7 @@ impl ReadersAndUpdates {
                 let empty_updates = crate::codecs::stub::BufferedUpdates;
                 let write_state = SegmentWriteState::with_suffix(
                     &NoOutputInfoStream,
-                    dir,
+                    Arc::clone(&field_tracking) as Arc<dyn Directory>,
                     &state.info.info,
                     &single_field_infos,
                     &empty_updates,
@@ -2070,13 +2073,9 @@ impl ReadersAndUpdates {
             state.info.advance_doc_values_gen();
             written_field_infos.insert(fd.field.clone(), field_info_mut);
 
-            // Track files created for this field.
-            let after = dir.list_all().unwrap_or_default();
-            let created: HashSet<String> = after
-                .into_iter()
-                .filter(|f| !before_field.contains(f))
-                .collect();
-            new_dv_files.insert(field_number, created);
+            // `fieldFiles.put(fieldInfo.number, trackingDir.getCreatedFiles())`
+            // (`ReadersAndUpdates.java:459`).
+            new_dv_files.insert(field_number, field_tracking.get_created_files_ordered());
         }
         let field_infos = if written_field_infos.is_empty() {
             field_infos
@@ -2093,25 +2092,33 @@ impl ReadersAndUpdates {
         };
 
         // Write the FieldInfos generation file; only the files that write
-        // creates are the field-infos files (`ReadersAndUpdates.java:608-612`).
-        let before_infos: HashSet<String> =
-            dir.list_all().unwrap_or_default().into_iter().collect();
+        // creates are the field-infos files (`ReadersAndUpdates.java:598-612`).
         let fi_files = Self::write_field_infos_gen(
             &mut *state,
             &field_infos,
             dir,
             codec.field_infos_format(),
-            &before_infos,
         )?;
         state.info.set_field_infos_files(fi_files);
 
         // Merge with existing DV updates files.
-        for (k, v) in state.info.get_doc_values_updates_files() {
+        let existing: Vec<(i32, JavaHashSet)> = state
+            .info
+            .get_doc_values_updates_files()
+            .iter()
+            .map(|(k, v)| (k, v.clone()))
+            .collect();
+        for (k, v) in existing {
             if !new_dv_files.contains_key(k) {
-                new_dv_files.insert(*k, v.iter().cloned().collect());
+                new_dv_files.insert(k, v);
             }
         }
-        state.info.set_doc_values_updates_files(new_dv_files);
+        state.info.set_doc_values_updates_files(
+            new_dv_files
+                .iter()
+                .map(|(k, v)| (k, v.iter().cloned().collect::<Vec<_>>()))
+                .collect::<Vec<_>>(),
+        );
 
         // Prune the now-written DV updates.  We take each Vec out of the map
         // to avoid simultaneous immutable/mutable borrows of the same Vec.
@@ -3012,7 +3019,7 @@ impl ReaderPool {
                     changed = true;
                 }
                 if rld.write_field_updates(
-                    &*self.directory,
+                    &self.directory,
                     &self.field_numbers,
                     (self.completed_del_gen_supplier)(),
                     &*self.info_stream,
@@ -3151,7 +3158,7 @@ impl ReaderPool {
             if let Some(rld) = map.get(&info.info.name) {
                 let mut changed = rld.write_live_docs(&*self.directory)?;
                 changed |= rld.write_field_updates(
-                    &*self.directory,
+                    &self.directory,
                     &self.field_numbers,
                     (self.completed_del_gen_supplier)(),
                     &*self.info_stream,
@@ -3205,7 +3212,7 @@ impl ReaderPool {
         let mut any = false;
         for rld in map.values() {
             any |= rld.write_field_updates(
-                &*self.directory,
+                &self.directory,
                 &self.field_numbers,
                 (self.completed_del_gen_supplier)(),
                 &*self.info_stream,
@@ -3230,7 +3237,7 @@ impl ReaderPool {
         for info in merging_segments {
             if let Some(rld) = map.get(&info.info.name) {
                 rld.write_field_updates(
-                    &*self.directory,
+                    &self.directory,
                     &self.field_numbers,
                     (self.completed_del_gen_supplier)(),
                     &*self.info_stream,

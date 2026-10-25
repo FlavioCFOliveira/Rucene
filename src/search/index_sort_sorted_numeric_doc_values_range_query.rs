@@ -756,7 +756,8 @@ impl IndexSortSortedNumericDocValuesRangeQuery {
 /// Equivalent to the private functional interface
 /// `IndexSortSortedNumericDocValuesRangeQuery.ValueComparator`.
 struct ValueComparator {
-    comparator: Box<dyn crate::search::field_comparator::FieldComparator>,
+    /// The leaf comparator `loadComparator` keeps from `getLeafComparator`.
+    comparator: Box<dyn crate::search::leaf_field_comparator::LeafFieldComparator>,
     direction: i32,
 }
 
@@ -784,9 +785,9 @@ fn load_comparator(
         // case.
         comparator.set_top_value(SortValue::Long(top_value));
     }
-    comparator.get_leaf_comparator(context)?;
+    let leaf_comparator = comparator.get_leaf_comparator(context)?;
     Ok(ValueComparator {
-        comparator,
+        comparator: leaf_comparator,
         direction: if sort_field.reverse() { -1 } else { 1 },
     })
 }

@@ -494,6 +494,7 @@ impl DocValuesFormat for EmptyDocValuesFormat {
 mod tests {
     use super::*;
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
+    use std::sync::Arc;
 
     #[test]
     fn empty_numeric_doc_values_returns_no_docs() {
@@ -586,14 +587,14 @@ mod tests {
         let format = EmptyDocValuesFormat::new("EmptyDV");
         assert_eq!(format.name(), "EmptyDV");
 
-        let dir = crate::store::RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(crate::store::RamDirectory::default());
+        let dir_ref: &dyn crate::store::Directory = &*dir;
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
         let field_infos = FieldInfos::default();
         let segment_info = crate::codecs::tests::test_segment_info("test", 10);
         let state = SegmentWriteState::new(
             crate::util::default_info_stream(),
-            dir_ref,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &BufferedUpdates,

@@ -1593,8 +1593,7 @@ mod tests {
         use crate::store::DEFAULT_IO_CONTEXT;
         use crate::util::default_info_stream;
 
-        let dir = crate::store::RamDirectory::default();
-        let dir_ref: &'static dyn crate::store::Directory = Box::leak(Box::new(dir));
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(crate::store::RamDirectory::default());
         let info_stream: &'static dyn crate::util::InfoStream = default_info_stream();
         let segment_info: &'static SegmentInfo = Box::leak(Box::new(
             crate::codecs::tests::test_segment_info("test", 10),
@@ -1605,7 +1604,7 @@ mod tests {
 
         SegmentWriteState::new(
             info_stream,
-            dir_ref,
+            dir,
             segment_info,
             field_infos,
             seg_updates,

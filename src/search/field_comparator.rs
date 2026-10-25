@@ -6,9 +6,11 @@
 use std::any::Any;
 use std::cmp::Ordering;
 use std::fmt::Debug;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::error::Result;
 use crate::index::{BinaryDocValues, LeafReaderContext};
+use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::doc_values_access::get_binary;
 use crate::search::leaf_field_comparator::LeafFieldComparator;
 use crate::search::scorable::Scorable;
@@ -226,31 +228,21 @@ impl std::fmt::Display for SortValue {
 /// the concrete implementations correspond to the
 /// [`SortFieldType`](crate::search::SortFieldType) variants.
 ///
-/// The document IDs passed to these methods must only move forwards, since they
-/// use doc-values iterators to retrieve sort values.
+/// The document IDs passed to the leaf comparators must only move forwards,
+/// since they use doc-values iterators to retrieve sort values.
 ///
 /// This API is designed to achieve high performance sorting, by exposing a
 /// tight interaction with [`FieldValueHitQueue`](crate::search::FieldValueHitQueue)
 /// as it visits hits. Whenever a hit is competitive, it is enrolled into a
 /// virtual slot, which is an integer ranging from `0` to `num_hits - 1`.
 ///
-/// # Adaptation: no separate per-leaf object
-///
-/// **Divergence from Lucene 10.5.0.** Java's
-/// `getLeafComparator(LeafReaderContext)` returns a *new* `LeafFieldComparator`
-/// per segment — usually an inner class that keeps writing into the outer
-/// comparator's slot arrays — and `TopFieldCollector` then holds that object
-/// while the hit queue keeps calling [`compare`](Self::compare) and
-/// [`value`](Self::value) on the outer one. Rust cannot express that pair of
-/// aliases: an inner object borrowing the outer mutably would lock the outer
-/// out for as long as collection lasts. So the leaf half is folded into the
-/// comparator itself — a comparator implements [`LeafFieldComparator`] too, and
-/// [`get_leaf_comparator`](Self::get_leaf_comparator) installs the per-segment
-/// state instead of returning a new object, exactly as Java's
-/// [`SimpleFieldComparator`](crate::search::SimpleFieldComparator) already
-/// does. No behaviour changes: the same state is created at the same moment and
-/// the same methods run against it.
-pub trait FieldComparator: LeafFieldComparator + Debug {
+/// As in Java, [`get_leaf_comparator`](Self::get_leaf_comparator) returns a
+/// separate [`LeafFieldComparator`] for every segment, which the collector
+/// drives while the hit queue keeps calling [`compare`](Self::compare) and
+/// [`value`](Self::value) on this comparator. The comparator is `Send`, so a
+/// collector can be handed to an executor's worker; the leaf comparator, which
+/// holds the segment's iterators, is created and dropped on that worker.
+pub trait FieldComparator: Debug + Send {
     /// Compares the hit at `slot1` with the hit at `slot2`.
     ///
     /// Equivalent to `FieldComparator.compare(int, int)`. Returns any `N < 0`
@@ -271,26 +263,20 @@ pub trait FieldComparator: LeafFieldComparator + Debug {
     /// Equivalent to `FieldComparator.value(int)`.
     fn value(&self, slot: i32) -> SortValue;
 
-    /// Prepares this comparator to collect the given leaf.
+    /// Returns the comparator to use for the given leaf.
     ///
-    /// Equivalent to `FieldComparator.getLeafComparator(LeafReaderContext)`;
-    /// see the adaptation note on this trait for why nothing is returned. All
-    /// doc IDs supplied to the [`LeafFieldComparator`] methods afterwards are
-    /// relative to the current reader — add the context's doc base to map one
-    /// to a top-level doc ID.
+    /// Equivalent to `FieldComparator.getLeafComparator(LeafReaderContext)`.
+    /// All doc IDs supplied to the returned comparator are relative to the
+    /// current reader — add the context's doc base to map one to a top-level
+    /// doc ID.
     ///
     /// # Errors
     ///
     /// Propagates any I/O error raised while opening the segment's values.
-    fn get_leaf_comparator(&mut self, context: &LeafReaderContext) -> Result<()>;
-
-    /// Returns this comparator viewed as a [`LeafFieldComparator`].
-    ///
-    /// **Divergence from Lucene 10.5.0.** Rust before 1.86 cannot coerce a
-    /// `&mut dyn FieldComparator` into a `&mut dyn LeafFieldComparator`, and
-    /// this crate's minimum supported Rust version is 1.80, so the upcast is
-    /// spelled out as a method. Every implementation writes `self`.
-    fn as_leaf_comparator(&mut self) -> &mut dyn LeafFieldComparator;
+    fn get_leaf_comparator(
+        &mut self,
+        context: &LeafReaderContext,
+    ) -> Result<Box<dyn LeafFieldComparator>>;
 
     /// Returns this comparator as [`Any`], so that a caller can recover its
     /// concrete type.
@@ -331,6 +317,262 @@ pub trait FieldComparator: LeafFieldComparator + Debug {
     fn disable_skipping(&mut self) {}
 }
 
+/// The two halves of a Lucene comparator: the outer class's slot state and
+/// logic, and the state of the leaf comparator it creates for each segment.
+///
+/// Every comparator in Lucene's core keeps its slot values on the outer
+/// `FieldComparator` and creates a `LeafFieldComparator` per segment that
+/// reads the segment's values and writes into those slots — an inner class
+/// (`NumericComparator.NumericLeafComparator`,
+/// `TermOrdValComparator.TermOrdValLeafComparator`,
+/// `DocComparator.DocLeafComparator`) or the comparator itself returning
+/// `this` (`RelevanceComparator`, `TermValComparator`,
+/// `SimpleFieldComparator`). An implementor is the outer object; its
+/// [`Leaf`](Self::Leaf) is the inner object's own fields, and the leaf methods
+/// receive it beside `self`, exactly as an inner class reaches both its own
+/// fields and its enclosing instance's. [`SharedFieldComparator`] and
+/// [`SharedLeafComparator`] assemble the two halves into Lucene's two
+/// objects.
+pub trait SlotComparator: Debug + Send + 'static {
+    /// The fields of the leaf comparator created for one segment.
+    type Leaf: 'static;
+
+    /// Equivalent to `FieldComparator.compare(int, int)`.
+    fn compare(&self, slot1: i32, slot2: i32) -> i32;
+
+    /// Equivalent to `FieldComparator.setTopValue(T)`.
+    fn set_top_value(&mut self, value: SortValue);
+
+    /// Equivalent to `FieldComparator.value(int)`.
+    fn value(&self, slot: i32) -> SortValue;
+
+    /// Equivalent to `FieldComparator.compareValues(T, T)`.
+    fn compare_values(&self, first: &SortValue, second: &SortValue) -> i32 {
+        first.compare_to(second)
+    }
+
+    /// Equivalent to `FieldComparator.setSingleSort()`.
+    fn set_single_sort(&mut self) {}
+
+    /// Equivalent to `FieldComparator.disableSkipping()`.
+    fn disable_skipping(&mut self) {}
+
+    /// Builds the leaf comparator's fields for `context`.
+    ///
+    /// Equivalent to the body of `getLeafComparator(LeafReaderContext)`: the
+    /// inner leaf comparator's constructor, or the per-segment set-up a
+    /// comparator that returns `this` performs first.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while opening the segment's values.
+    fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<Self::Leaf>;
+
+    /// Equivalent to `LeafFieldComparator.setBottom(int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while reading the slot's value.
+    fn set_bottom(&mut self, leaf: &mut Self::Leaf, slot: i32) -> Result<()>;
+
+    /// Equivalent to `LeafFieldComparator.compareBottom(int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while reading the document's value.
+    fn compare_bottom(
+        &mut self,
+        leaf: &mut Self::Leaf,
+        doc: i32,
+        scorer: &mut dyn Scorable,
+    ) -> Result<i32>;
+
+    /// Equivalent to `LeafFieldComparator.compareTop(int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while reading the document's value.
+    fn compare_top(
+        &mut self,
+        leaf: &mut Self::Leaf,
+        doc: i32,
+        scorer: &mut dyn Scorable,
+    ) -> Result<i32>;
+
+    /// Equivalent to `LeafFieldComparator.copy(int, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while reading the document's value.
+    fn copy(
+        &mut self,
+        leaf: &mut Self::Leaf,
+        slot: i32,
+        doc: i32,
+        scorer: &mut dyn Scorable,
+    ) -> Result<()>;
+
+    /// Equivalent to `LeafFieldComparator.setScorer(Scorable)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while preparing for collection.
+    fn set_scorer(&mut self, leaf: &mut Self::Leaf, scorer: &mut dyn Scorable) -> Result<()>;
+
+    /// Equivalent to `LeafFieldComparator.competitiveIterator()`, `null` by
+    /// default.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while building the iterator.
+    fn competitive_iterator(
+        &mut self,
+        _leaf: &mut Self::Leaf,
+    ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        Ok(None)
+    }
+
+    /// Equivalent to `LeafFieldComparator.setHitsThresholdReached()`, a no-op
+    /// by default.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while reacting to the notification.
+    fn set_hits_threshold_reached(&mut self, _leaf: &mut Self::Leaf) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Locks a comparator's shared state. A panic while it was held leaves the
+/// slots as far as that call got, which is still a valid comparator state.
+fn lock_slots<C>(shared: &Mutex<C>) -> MutexGuard<'_, C> {
+    shared.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The outer comparator of a [`SlotComparator`]: what the hit queue holds.
+///
+/// Its slot state is shared with the [`SharedLeafComparator`] it creates for
+/// each segment, which is what Java's inner leaf comparators reach through
+/// their enclosing instance. The state is behind a [`Mutex`] so that the
+/// comparator is `Send` while a leaf comparator writes into it on the thread
+/// that collects the segment.
+pub struct SharedFieldComparator<C: SlotComparator> {
+    shared: Arc<Mutex<C>>,
+}
+
+impl<C: SlotComparator> SharedFieldComparator<C> {
+    /// Wraps the outer state `comparator`.
+    pub fn new(comparator: C) -> Self {
+        Self {
+            shared: Arc::new(Mutex::new(comparator)),
+        }
+    }
+
+    /// Runs `f` on the outer state.
+    pub fn with<R>(&self, f: impl FnOnce(&C) -> R) -> R {
+        f(&lock_slots(&self.shared))
+    }
+
+    /// Runs `f` on the outer state for mutation.
+    pub fn with_mut<R>(&mut self, f: impl FnOnce(&mut C) -> R) -> R {
+        f(&mut lock_slots(&self.shared))
+    }
+}
+
+impl<C: SlotComparator> Debug for SharedFieldComparator<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        lock_slots(&self.shared).fmt(f)
+    }
+}
+
+impl<C: SlotComparator> FieldComparator for SharedFieldComparator<C> {
+    fn compare(&self, slot1: i32, slot2: i32) -> i32 {
+        lock_slots(&self.shared).compare(slot1, slot2)
+    }
+
+    fn set_top_value(&mut self, value: SortValue) {
+        lock_slots(&self.shared).set_top_value(value);
+    }
+
+    fn value(&self, slot: i32) -> SortValue {
+        lock_slots(&self.shared).value(slot)
+    }
+
+    fn get_leaf_comparator(
+        &mut self,
+        context: &LeafReaderContext,
+    ) -> Result<Box<dyn LeafFieldComparator>> {
+        let leaf = lock_slots(&self.shared).new_leaf(context)?;
+        Ok(Box::new(SharedLeafComparator {
+            shared: Arc::clone(&self.shared),
+            leaf,
+        }))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn compare_values(&self, first: &SortValue, second: &SortValue) -> i32 {
+        lock_slots(&self.shared).compare_values(first, second)
+    }
+
+    fn set_single_sort(&mut self) {
+        lock_slots(&self.shared).set_single_sort();
+    }
+
+    fn disable_skipping(&mut self) {
+        lock_slots(&self.shared).disable_skipping();
+    }
+}
+
+/// The leaf comparator of a [`SlotComparator`] for one segment: its own
+/// fields, and the outer comparator's shared state it writes into.
+pub struct SharedLeafComparator<C: SlotComparator> {
+    shared: Arc<Mutex<C>>,
+    leaf: C::Leaf,
+}
+
+impl<C: SlotComparator> LeafFieldComparator for SharedLeafComparator<C> {
+    fn set_bottom(&mut self, slot: i32) -> Result<()> {
+        lock_slots(&self.shared).set_bottom(&mut self.leaf, slot)
+    }
+
+    fn compare_bottom(&mut self, doc: i32, scorer: &mut dyn Scorable) -> Result<i32> {
+        lock_slots(&self.shared).compare_bottom(&mut self.leaf, doc, scorer)
+    }
+
+    fn compare_top(&mut self, doc: i32, scorer: &mut dyn Scorable) -> Result<i32> {
+        lock_slots(&self.shared).compare_top(&mut self.leaf, doc, scorer)
+    }
+
+    fn copy(&mut self, slot: i32, doc: i32, scorer: &mut dyn Scorable) -> Result<()> {
+        lock_slots(&self.shared).copy(&mut self.leaf, slot, doc, scorer)
+    }
+
+    fn set_scorer(&mut self, scorer: &mut dyn Scorable) -> Result<()> {
+        lock_slots(&self.shared).set_scorer(&mut self.leaf, scorer)
+    }
+
+    fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        lock_slots(&self.shared).competitive_iterator(&mut self.leaf)
+    }
+
+    fn set_hits_threshold_reached(&mut self) -> Result<()> {
+        lock_slots(&self.shared).set_hits_threshold_reached(&mut self.leaf)
+    }
+}
+
+/// Whether `comparator` is a [`RelevanceComparator`].
+///
+/// Equivalent to Java's `firstComparator instanceof RelevanceComparator`
+/// (`TopFieldCollector.java:323`).
+pub fn is_relevance_comparator(comparator: &dyn FieldComparator) -> bool {
+    comparator
+        .as_any()
+        .is::<SharedFieldComparator<RelevanceComparator>>()
+}
+
 /// Sorts by descending relevance.
 ///
 /// Equivalent to `org.apache.lucene.search.FieldComparator.RelevanceComparator`,
@@ -361,37 +603,11 @@ impl RelevanceComparator {
     }
 }
 
-impl LeafFieldComparator for RelevanceComparator {
-    fn set_bottom(&mut self, slot: i32) -> Result<()> {
-        self.bottom = self.scores[slot as usize];
-        Ok(())
-    }
+impl SlotComparator for RelevanceComparator {
+    /// `RelevanceComparator.getLeafComparator` returns `this`, which keeps no
+    /// per-segment field.
+    type Leaf = ();
 
-    fn compare_bottom(&mut self, _doc: i32, scorer: &mut dyn Scorable) -> Result<i32> {
-        let score = scorer.score()?;
-        debug_assert!(!score.is_nan());
-        Ok(java_float_compare(score, self.bottom))
-    }
-
-    fn compare_top(&mut self, _doc: i32, scorer: &mut dyn Scorable) -> Result<i32> {
-        let doc_value = scorer.score()?;
-        debug_assert!(!doc_value.is_nan());
-        Ok(java_float_compare(doc_value, self.top_value))
-    }
-
-    fn copy(&mut self, slot: i32, _doc: i32, scorer: &mut dyn Scorable) -> Result<()> {
-        let score = scorer.score()?;
-        debug_assert!(!score.is_nan());
-        self.scores[slot as usize] = score;
-        Ok(())
-    }
-
-    fn set_scorer(&mut self, _scorer: &mut dyn Scorable) -> Result<()> {
-        Ok(())
-    }
-}
-
-impl FieldComparator for RelevanceComparator {
     fn compare(&self, slot1: i32, slot2: i32) -> i32 {
         java_float_compare(self.scores[slot2 as usize], self.scores[slot1 as usize])
     }
@@ -404,22 +620,53 @@ impl FieldComparator for RelevanceComparator {
         SortValue::Float(self.scores[slot as usize])
     }
 
-    fn get_leaf_comparator(&mut self, _context: &LeafReaderContext) -> Result<()> {
-        Ok(())
-    }
-
-    fn as_leaf_comparator(&mut self) -> &mut dyn LeafFieldComparator {
-        self
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     /// Equivalent to the overridden `compareValues(Float, Float)`, reversed
     /// intentionally because relevance sorts descending by default.
     fn compare_values(&self, first: &SortValue, second: &SortValue) -> i32 {
         second.compare_to(first)
+    }
+
+    fn new_leaf(&mut self, _context: &LeafReaderContext) -> Result<()> {
+        Ok(())
+    }
+
+    fn set_bottom(&mut self, _leaf: &mut (), slot: i32) -> Result<()> {
+        self.bottom = self.scores[slot as usize];
+        Ok(())
+    }
+
+    fn compare_bottom(
+        &mut self,
+        _leaf: &mut (),
+        _doc: i32,
+        scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        let score = scorer.score()?;
+        debug_assert!(!score.is_nan());
+        Ok(java_float_compare(score, self.bottom))
+    }
+
+    fn compare_top(&mut self, _leaf: &mut (), _doc: i32, scorer: &mut dyn Scorable) -> Result<i32> {
+        let doc_value = scorer.score()?;
+        debug_assert!(!doc_value.is_nan());
+        Ok(java_float_compare(doc_value, self.top_value))
+    }
+
+    fn copy(
+        &mut self,
+        _leaf: &mut (),
+        slot: i32,
+        _doc: i32,
+        scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        let score = scorer.score()?;
+        debug_assert!(!score.is_nan());
+        self.scores[slot as usize] = score;
+        Ok(())
+    }
+
+    fn set_scorer(&mut self, _leaf: &mut (), _scorer: &mut dyn Scorable) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -444,7 +691,6 @@ impl FieldComparator for RelevanceComparator {
 /// [`FieldComparator`] directly.
 pub struct TermValComparator {
     values: Vec<Option<BytesRef>>,
-    doc_terms: Option<Box<dyn BinaryDocValues>>,
     field: String,
     bottom: Option<BytesRef>,
     top_value: Option<BytesRef>,
@@ -467,7 +713,6 @@ impl TermValComparator {
     pub fn new(num_hits: usize, field: impl Into<String>, sort_missing_last: bool) -> Self {
         Self {
             values: vec![None; num_hits],
-            doc_terms: None,
             field: field.into(),
             bottom: None,
             top_value: None,
@@ -475,11 +720,12 @@ impl TermValComparator {
         }
     }
 
-    /// Equivalent to the private `TermValComparator.getValueForDoc(int)`.
-    fn get_value_for_doc(&mut self, doc: i32) -> Result<Option<BytesRef>> {
-        let Some(doc_terms) = self.doc_terms.as_mut() else {
-            return Ok(None);
-        };
+    /// Equivalent to the private `TermValComparator.getValueForDoc(int)`,
+    /// over the `docTerms` field `getLeafComparator` set for the segment.
+    fn get_value_for_doc(
+        doc_terms: &mut dyn BinaryDocValues,
+        doc: i32,
+    ) -> Result<Option<BytesRef>> {
         if doc_terms.advance_exact(doc)? {
             Ok(Some(doc_terms.binary_value()?))
         } else {
@@ -503,34 +749,10 @@ impl TermValComparator {
     }
 }
 
-impl LeafFieldComparator for TermValComparator {
-    fn set_bottom(&mut self, slot: i32) -> Result<()> {
-        self.bottom = self.values[slot as usize].clone();
-        Ok(())
-    }
+impl SlotComparator for TermValComparator {
+    /// The `docTerms` field `getLeafComparator` sets before returning `this`.
+    type Leaf = Box<dyn BinaryDocValues>;
 
-    fn compare_bottom(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
-        let comparable_bytes = self.get_value_for_doc(doc)?;
-        Ok(self.compare_bytes(self.bottom.as_ref(), comparable_bytes.as_ref()))
-    }
-
-    fn compare_top(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
-        let comparable_bytes = self.get_value_for_doc(doc)?;
-        Ok(self.compare_bytes(self.top_value.as_ref(), comparable_bytes.as_ref()))
-    }
-
-    fn copy(&mut self, slot: i32, doc: i32, _scorer: &mut dyn Scorable) -> Result<()> {
-        let comparable_bytes = self.get_value_for_doc(doc)?;
-        self.values[slot as usize] = comparable_bytes.as_ref().map(BytesRef::deep_copy_of);
-        Ok(())
-    }
-
-    fn set_scorer(&mut self, _scorer: &mut dyn Scorable) -> Result<()> {
-        Ok(())
-    }
-}
-
-impl FieldComparator for TermValComparator {
     fn compare(&self, slot1: i32, slot2: i32) -> i32 {
         self.compare_bytes(
             self.values[slot1 as usize].as_ref(),
@@ -551,21 +773,53 @@ impl FieldComparator for TermValComparator {
         }
     }
 
-    fn get_leaf_comparator(&mut self, context: &LeafReaderContext) -> Result<()> {
+    fn compare_values(&self, first: &SortValue, second: &SortValue) -> i32 {
+        self.compare_bytes(first.as_bytes(), second.as_bytes())
+    }
+
+    fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<Box<dyn BinaryDocValues>> {
         let reader = context.leaf_reader();
-        self.doc_terms = Some(get_binary(reader.as_ref(), &self.field)?);
+        get_binary(reader.as_ref(), &self.field)
+    }
+
+    fn set_bottom(&mut self, _leaf: &mut Self::Leaf, slot: i32) -> Result<()> {
+        self.bottom = self.values[slot as usize].clone();
         Ok(())
     }
 
-    fn as_leaf_comparator(&mut self) -> &mut dyn LeafFieldComparator {
-        self
+    fn compare_bottom(
+        &mut self,
+        leaf: &mut Self::Leaf,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        let comparable_bytes = Self::get_value_for_doc(leaf.as_mut(), doc)?;
+        Ok(self.compare_bytes(self.bottom.as_ref(), comparable_bytes.as_ref()))
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
+    fn compare_top(
+        &mut self,
+        leaf: &mut Self::Leaf,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        let comparable_bytes = Self::get_value_for_doc(leaf.as_mut(), doc)?;
+        Ok(self.compare_bytes(self.top_value.as_ref(), comparable_bytes.as_ref()))
     }
 
-    fn compare_values(&self, first: &SortValue, second: &SortValue) -> i32 {
-        self.compare_bytes(first.as_bytes(), second.as_bytes())
+    fn copy(
+        &mut self,
+        leaf: &mut Self::Leaf,
+        slot: i32,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        let comparable_bytes = Self::get_value_for_doc(leaf.as_mut(), doc)?;
+        self.values[slot as usize] = comparable_bytes.as_ref().map(BytesRef::deep_copy_of);
+        Ok(())
+    }
+
+    fn set_scorer(&mut self, _leaf: &mut Self::Leaf, _scorer: &mut dyn Scorable) -> Result<()> {
+        Ok(())
     }
 }

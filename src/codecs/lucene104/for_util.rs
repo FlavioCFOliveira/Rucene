@@ -4,7 +4,7 @@
 //! It packs 256 integers per block using 1..32 bits per value, matching the
 //! on-disk layout of Lucene Core 10.5.0.
 
-use crate::error::Result;
+use crate::error::{LuceneError, Result};
 use crate::store::DataOutput;
 
 use super::posting_decoding_util::PostingDecodingUtil;
@@ -283,7 +283,22 @@ fn decode_slow(
     ints: &mut [i32; BLOCK_SIZE],
 ) -> Result<()> {
     let num_ints = (bits_per_value << 3) as usize;
-    let mask = MASKS32[bits_per_value as usize];
+    // `MASKS32[bitsPerValue]` (`ForUtil.java:168-170`) is the first access
+    // that depends on the width, and for a width outside the table Java throws
+    // `ArrayIndexOutOfBoundsException` there, before any byte is read. A full
+    // block of a corrupt `.doc` reaches this with a width up to 127, the
+    // largest positive signed byte `refillFullBlock` reads. Java's exception
+    // maps to `IllegalArgument`, this crate's carrier for an
+    // `IndexOutOfBoundsException`, with the JDK's message.
+    let Some(&mask) = usize::try_from(bits_per_value)
+        .ok()
+        .and_then(|index| MASKS32.get(index))
+    else {
+        return Err(LuceneError::IllegalArgument(format!(
+            "Index {bits_per_value} out of bounds for length {}",
+            MASKS32.len()
+        )));
+    };
     pdu.split_ints(
         num_ints as i32,
         ints,
@@ -713,7 +728,7 @@ fn decode16(pdu: &mut PostingDecodingUtil, ints: &mut [i32; BLOCK_SIZE]) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{MockIndexInput, VecDataOutput};
+    use crate::store::{IndexInput, MockIndexInput, VecDataOutput};
 
     fn round_trip_bits(bits_per_value: i32) {
         let mut for_util = ForUtil::new();
@@ -758,6 +773,31 @@ mod tests {
     fn round_trip_all_bits() {
         for bits in 1..=31 {
             round_trip_bits(bits);
+        }
+    }
+
+    /// rmp #241: a width past the 32-entry mask table is Java's
+    /// `ArrayIndexOutOfBoundsException` from `MASKS32[bitsPerValue]`
+    /// (`ForUtil.java:168-170`), not a panic. The message is the JDK's; the
+    /// Java oracle check lives in `tests/postings_portability.rs`.
+    #[test]
+    fn a_width_outside_the_mask_table_is_an_error_not_a_panic() {
+        for bits in [32, 33, 40, 127] {
+            let mut input = MockIndexInput::new(vec![0u8; 4096], "for-util-corrupt");
+            let error = {
+                let mut pdu = PostingDecodingUtil::new(&mut input);
+                let mut decoded = [0i32; BLOCK_SIZE];
+                ForUtil::new()
+                    .decode(bits, &mut pdu, &mut decoded)
+                    .expect_err("a width outside MASKS32 must fail")
+            };
+            match error {
+                LuceneError::IllegalArgument(message) => {
+                    assert_eq!(message, format!("Index {bits} out of bounds for length 32"))
+                }
+                other => panic!("unexpected error for {bits} bits: {other:?}"),
+            }
+            assert_eq!(input.file_pointer(), 0, "nothing is read before the check");
         }
     }
 

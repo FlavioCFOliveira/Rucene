@@ -17,7 +17,7 @@ use crate::index::IndexReader;
 use crate::search::sort::{MissingValue, SortFieldKind, SortFieldType};
 use crate::search::Sort;
 use crate::store::Directory;
-use crate::util::java_collections::{JavaHashSet, JavaStringMap};
+use crate::util::java_collections::{JavaHashSet, JavaIntHashMap, JavaStringMap};
 use crate::util::string_helper::{StringHelper, ID_LENGTH};
 use crate::util::NumericUtils;
 use crate::util::Version;
@@ -671,7 +671,9 @@ pub struct SegmentCommitInfo {
     /// [`JavaHashMap`](crate::util::java_collections::JavaHashMap) is
     /// `String`-keyed. Closing it needs that type generalised over a key hash.
     /// It only bites on a segment carrying doc-values update files.
-    dv_updates_files: HashMap<i32, JavaHashSet>,
+    /// `Map<Integer, Set<String>> dvUpdatesFiles = new HashMap<>()`
+    /// (`SegmentCommitInfo.java:72`), in Java's iteration order.
+    dv_updates_files: JavaIntHashMap<JavaHashSet>,
 
     /// Field infos update files.
     /// A `java.util.HashSet` that is cleared and refilled rather than replaced
@@ -738,7 +740,7 @@ impl SegmentCommitInfo {
             } else {
                 doc_values_gen + 1
             },
-            dv_updates_files: HashMap::new(),
+            dv_updates_files: JavaIntHashMap::new(),
             field_infos_files: JavaHashSet::new(),
             size_in_bytes: -1,
             buffered_deletes_gen: -1,
@@ -930,8 +932,9 @@ impl SegmentCommitInfo {
         self.next_write_doc_values_gen = v;
     }
 
-    /// Returns the per-field doc values update files.
-    pub fn get_doc_values_updates_files(&self) -> &HashMap<i32, JavaHashSet> {
+    /// Returns the per-field doc values update files, in Java's
+    /// `HashMap<Integer, Set<String>>` order.
+    pub fn get_doc_values_updates_files(&self) -> &JavaIntHashMap<JavaHashSet> {
         &self.dv_updates_files
     }
 
@@ -941,6 +944,8 @@ impl SegmentCommitInfo {
         M: IntoIterator<Item = (i32, I)>,
         I: IntoIterator<Item = String>,
     {
+        // `this.dvUpdatesFiles.clear()` keeps the table it had, then one `put`
+        // per entry in the argument's order.
         self.dv_updates_files.clear();
         for (field_number, set) in files {
             // `new HashSet<>()` then one renamed `add` per file, in the
@@ -1003,29 +1008,37 @@ impl SegmentCommitInfo {
 
     /// Returns all files in use by this segment commit.
     ///
-    /// Equivalent to `SegmentCommitInfo.files()`.
+    /// Equivalent to `SegmentCommitInfo.files()`, for the callers that only
+    /// test membership; [`files_ordered`](Self::files_ordered) keeps Java's
+    /// iteration order.
     pub fn files(&self) -> Result<HashSet<String>> {
-        let mut files = self.info.files()?;
+        Ok(self.files_ordered()?.to_std())
+    }
+
+    /// Returns all files in use by this segment commit, iteration order
+    /// included.
+    ///
+    /// Equivalent to `SegmentCommitInfo.files()` (`SegmentCommitInfo.java:239-260`),
+    /// which builds a `java.util.HashSet` with `new HashSet<>(info.files())`
+    /// and then adds the live-docs files, the doc-values update files and the
+    /// field-infos files, in that order.
+    ///
+    pub fn files_ordered(&self) -> Result<JavaHashSet> {
+        let mut files = JavaHashSet::from_collection(self.info.files_ordered()?);
 
         if self.has_deletions() {
             if let Some(codec) = self.info.codec() {
                 let mut live_docs_files = Vec::new();
                 codec.live_docs_format().files(self, &mut live_docs_files)?;
-                for file in live_docs_files {
-                    files.insert(file);
-                }
+                files.extend(live_docs_files);
             }
         }
 
         for set in self.dv_updates_files.values() {
-            for file in set {
-                files.insert(file.clone());
-            }
+            files.extend(set.iter().cloned());
         }
 
-        for file in &self.field_infos_files {
-            files.insert(file.clone());
-        }
+        files.extend(self.field_infos_files.iter().cloned());
 
         Ok(files)
     }
@@ -1088,7 +1101,15 @@ impl Clone for SegmentCommitInfo {
             next_write_field_infos_gen: self.next_write_field_infos_gen,
             doc_values_gen: self.doc_values_gen,
             next_write_doc_values_gen: self.next_write_doc_values_gen,
-            dv_updates_files: self.dv_updates_files.clone(),
+            // Deep clone: a fresh map receiving `new HashSet<>(value)` per entry
+            // in `entrySet()` order (`SegmentCommitInfo.java:394-397`).
+            dv_updates_files: {
+                let mut files = JavaIntHashMap::new();
+                for (field_number, set) in self.dv_updates_files.iter() {
+                    files.insert(field_number, JavaHashSet::from_collection(set.clone()));
+                }
+                files
+            },
             field_infos_files: self.field_infos_files.clone(),
             size_in_bytes: self.size_in_bytes,
             buffered_deletes_gen: self.buffered_deletes_gen,
@@ -1585,7 +1606,7 @@ mod tests {
     #[test]
     fn segment_write_state_new() {
         let info_stream: &dyn crate::util::InfoStream = crate::util::default_info_stream();
-        let dir: &dyn Directory = &RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
         let seg_updates = crate::codecs::stub::BufferedUpdates;

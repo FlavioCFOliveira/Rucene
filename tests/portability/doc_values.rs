@@ -30,18 +30,15 @@
 //!   (`Lucene90DocValuesConsumer.isSingleValued`, whose metadata byte is the
 //!   `SORTED` one);
 //!   [`sortedsetmulti`] drives the multi-valued addresses route;
-//! * `mixed` — all five types in one segment, with gaps in several.
-//!
-//! # What the fixtures deliberately avoid
-//!
-//! The Java `writeValues` switches to a per-block layout (`doBlocks`,
-//! `Lucene90DocValuesConsumer.java:486-497`) whenever per-block value ranges
-//! would save over 10% of the packed bits. A block only differs from the whole
-//! field once it holds more than 16384 values, and Rucene's codec port does
-//! not yet implement that branch; every fixture therefore keeps its per-field
-//! value count far below it, and a fixture that outgrows one block would
-//! first have to port `doBlocks`. This is the one deliberate shape limitation
-//! of this suite.
+//! * `mixed` — all five types in one segment, with gaps in several;
+//! * `blocks` — numeric values whose range changes from one 16384-value block
+//!   to the next, so `writeValues` takes its per-block layout (`doBlocks`,
+//!   `Lucene90DocValuesConsumer.java:485-497`) and the reader its
+//!   `VaryingBPVReader`, for a dense, a sparse and a sorted-numeric field
+//!   (rmp #239);
+//! * `sortedoneterm` — one term in every document, so every ordinal is 0 and
+//!   the GCD `writeValues` computes for the ordinals stays 0
+//!   (`Lucene90DocValuesConsumer.java:390-401`, rmp #239).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -589,6 +586,26 @@ fn fields(case: &str) -> Vec<(&'static str, DocValuesType)> {
             ("msnum", DocValuesType::SORTED_NUMERIC),
             ("mss", DocValuesType::SORTED_SET),
         ],
+        "blocks" => vec![
+            ("vbpv", DocValuesType::NUMERIC),
+            ("svbpv", DocValuesType::NUMERIC),
+            ("snvbpv", DocValuesType::SORTED_NUMERIC),
+        ],
+        "sortedoneterm" => vec![
+            ("one", DocValuesType::SORTED),
+            ("oneset", DocValuesType::SORTED_SET),
+        ],
+        "ordblocks" => vec![
+            ("ob", DocValuesType::SORTED),
+            ("obs", DocValuesType::SORTED_SET),
+        ],
+        "extreme" => vec![
+            ("ex", DocValuesType::NUMERIC),
+            ("exs", DocValuesType::SORTED_NUMERIC),
+            ("exw", DocValuesType::NUMERIC),
+        ],
+        "boundary09" | "boundary095" => vec![("bd", DocValuesType::NUMERIC)],
+        "extremeblocks" => vec![("xb", DocValuesType::NUMERIC)],
         other => panic!("unknown case: {other}"),
     }
 }
@@ -743,7 +760,129 @@ fn documents(case: &str) -> Vec<Vec<(usize, Dv)>> {
                 values
             })
             .collect(),
+        "blocks" => (0..34_000)
+            .map(|doc: i64| {
+                let mut values = vec![(0, Dv::Num(block_value(doc)))];
+                if doc % 2 == 0 {
+                    values.push((1, Dv::Num(sparse_block_value(doc / 2))));
+                }
+                let pair = if doc < 8192 {
+                    [doc % 3, 1 + doc % 3]
+                } else {
+                    [doc * 104_729, doc * 104_729 + 5]
+                };
+                for value in pair {
+                    values.push((2, Dv::SortedNum(vec![value])));
+                }
+                values
+            })
+            .collect(),
+        "sortedoneterm" => (0..10)
+            .map(|doc| {
+                let mut values = vec![(0, Dv::Sorted(b"only".as_slice()))];
+                if doc % 2 == 0 {
+                    values.push((1, Dv::SortedSet(vec![b"only".as_slice()])));
+                }
+                values
+            })
+            .collect(),
+        "ordblocks" => (0..40_000)
+            .map(|doc: i64| {
+                let term: &'static [u8] = if doc < 16384 {
+                    if doc % 2 == 0 {
+                        b"a"
+                    } else {
+                        b"b"
+                    }
+                } else {
+                    leaked(format!("t{doc:05}"))
+                };
+                let mut values = vec![(0, Dv::Sorted(term))];
+                if doc < 16384 {
+                    values.push((1, Dv::SortedSet(vec![b"a".as_slice()])));
+                } else {
+                    values.push((1, Dv::SortedSet(vec![leaked(format!("t{doc:05}"))])));
+                    values.push((1, Dv::SortedSet(vec![leaked(format!("u{doc:05}"))])));
+                }
+                values
+            })
+            .collect(),
+        "extreme" => (0..34_000)
+            .map(|doc: i64| {
+                let ex = if doc < 16384 {
+                    doc % 2
+                } else if doc < 32768 {
+                    if doc % 2 == 0 {
+                        i64::MIN
+                    } else {
+                        i64::MAX
+                    }
+                } else {
+                    -1
+                };
+                let exw = match doc % 3 {
+                    0 => i64::MIN,
+                    1 => i64::MAX,
+                    _ => doc,
+                };
+                vec![
+                    (0, Dv::Num(ex)),
+                    (1, Dv::SortedNum(vec![i64::MIN])),
+                    (1, Dv::SortedNum(vec![i64::MAX])),
+                    (2, Dv::Num(exw)),
+                ]
+            })
+            .collect(),
+        "extremeblocks" => (0..34_000)
+            .map(|doc: i64| {
+                let v = if doc < 16384 {
+                    doc % 2
+                } else if doc < 32768 {
+                    match doc % 3 {
+                        0 => i64::MIN,
+                        1 => i64::MAX,
+                        _ => doc,
+                    }
+                } else {
+                    -1
+                };
+                vec![(0, Dv::Num(v))]
+            })
+            .collect(),
+        "boundary09" | "boundary095" => (0..32_768)
+            .map(|doc: i64| {
+                let low = if case == "boundary09" { 8 } else { 9 };
+                let v = if doc < 16384 {
+                    doc % (1 << low)
+                } else {
+                    (doc * 7) % 1024
+                };
+                vec![(0, Dv::Num(v))]
+            })
+            .collect(),
         other => panic!("unknown case: {other}"),
+    }
+}
+
+/// `DocValuesFixture.blockValue(int)`: one value range per 16384-value block,
+/// the last block constant.
+fn block_value(doc: i64) -> i64 {
+    if doc < 16384 {
+        doc % 2
+    } else if doc < 32768 {
+        doc * 1_000_003 % 1_099_511_627_776
+    } else {
+        7
+    }
+}
+
+/// `DocValuesFixture.sparseBlockValue(int)`, for the `i`-th value of the
+/// sparse field (document `2 * i`).
+fn sparse_block_value(i: i64) -> i64 {
+    if i < 16384 {
+        i % 4
+    } else {
+        i * 7919
     }
 }
 
@@ -1013,4 +1152,187 @@ fn sorted_long_terms_doc_values_match_lucene() {
 fn mixed_doc_values_match_lucene() {
     // All five types in one segment, with gaps in several of them.
     assert_case_matches_lucene("mixed");
+}
+
+#[test]
+fn per_block_numeric_doc_values_match_lucene() {
+    // rmp #239. Per-block ranges far apart (0..1, then up to 2^40, then a
+    // constant block) make the per-block widths save more than 10% of the
+    // packed bits, so Lucene writes the `doBlocks` layout. Rucene must write
+    // the same bytes, read Lucene's layout through `VaryingBPVReader`, and
+    // write one Lucene reads back -- dense, sparse and sorted-numeric.
+    assert_case_matches_lucene("blocks");
+}
+
+#[test]
+fn single_term_sorted_doc_values_match_lucene() {
+    // rmp #239. Every ordinal is 0, so the GCD `writeValues` computes for the
+    // ordinals stays 0 and that 0 is what the metadata records; forcing the
+    // GCD to 1 for ordinals wrote a different `.dvm`.
+    assert_case_matches_lucene("sortedoneterm");
+}
+
+#[test]
+fn per_block_ordinals_match_lucene() {
+    // Round 3 (audit): sorted and sorted-set ordinals that take the per-block
+    // layout themselves.
+    assert_case_matches_lucene("ordblocks");
+}
+
+#[test]
+fn extreme_values_match_lucene() {
+    // Round 3 (audit): `Long.MIN_VALUE`/`MAX_VALUE` beside small values, where
+    // the consumer's `long` arithmetic wraps.
+    assert_case_matches_lucene("extreme");
+}
+
+#[test]
+fn per_block_savings_just_under_the_threshold_match_lucene() {
+    assert_case_matches_lucene("boundary09");
+}
+
+#[test]
+fn per_block_savings_just_over_the_threshold_match_lucene() {
+    assert_case_matches_lucene("boundary095");
+}
+
+#[test]
+fn extreme_values_in_blocks_match_lucene() {
+    assert_case_matches_lucene("extremeblocks");
+}
+
+// ---------------------------------------------------------------------------
+// Corrupt per-block files (round 3)
+// ---------------------------------------------------------------------------
+
+/// Writes Lucene's `blocks` segment into a fresh directory and returns it.
+fn lucene_blocks_segment() -> tempfile::TempDir {
+    require_maven();
+    let tmp = tempfile::tempdir().expect("temp dir");
+    run_java_fixture(tmp.path(), "blocks").expect("java fixture");
+    tmp
+}
+
+/// Opens the doc-values producer of the single segment in `dir` without
+/// checking file integrity, which is what a reader does on open.
+fn open_producer(dir: &Path) -> Result<(Box<dyn DocValuesProducer>, FieldInfos), String> {
+    let codec = ensure_codec();
+    let directory: Arc<dyn Directory> =
+        Arc::new(FSDirectory::open(dir).map_err(|e| e.to_string())?);
+    let infos =
+        SegmentInfos::read_latest_commit(Arc::clone(&directory)).map_err(|e| e.to_string())?;
+    let segment_info = infos.info(0).info.clone();
+    let field_infos = codec
+        .field_infos_format()
+        .read(directory.as_ref(), &segment_info, "", &*DEFAULT_IO_CONTEXT)
+        .map_err(|e| e.to_string())?;
+    let read_state = SegmentReadState::new(
+        directory.as_ref(),
+        &segment_info,
+        &field_infos,
+        &*DEFAULT_IO_CONTEXT,
+    );
+    let producer = codec
+        .doc_values_format()
+        .fields_producer(&read_state)
+        .map_err(|e| e.to_string())?;
+    Ok((producer, field_infos))
+}
+
+#[test]
+fn a_corrupt_jump_table_entry_is_an_error_not_a_panic() {
+    // Round 3 (audit): `VaryingBPVReader` subtracts `valuesOffset` from the
+    // jump-table entry in Java's wrapping `long` arithmetic, and the read that
+    // follows rejects the position (`Lucene90DocValuesProducer.java:2337-2352`).
+    // Entry 2 of `vbpv`'s jump table lies at byte 84079 of Lucene's `.dvd`.
+    let tmp = lucene_blocks_segment();
+    let dvd = find_doc_values_file(tmp.path(), "_0", "dvd", "blocks");
+    let mut bytes = std::fs::read(&dvd).unwrap();
+    assert_eq!(
+        i64::from_le_bytes(bytes[84079..84087].try_into().unwrap()),
+        84054,
+        "the jump-table entry the mutation targets"
+    );
+    bytes[84079..84087].copy_from_slice(&(i64::MIN + 1).to_le_bytes());
+    std::fs::write(&dvd, &bytes).unwrap();
+
+    let (producer, field_infos) = open_producer(tmp.path()).unwrap();
+    let mut values = producer
+        .get_numeric(field_infos.field_info("vbpv").unwrap())
+        .unwrap();
+    assert_eq!(values.advance(33000).unwrap(), 33000);
+    assert!(
+        values.long_value().is_err(),
+        "the corrupt offset must be rejected by the read it feeds"
+    );
+}
+
+/// Reads every numeric and sorted-numeric value, stopping at the first error.
+fn read_every_value(
+    producer: &dyn DocValuesProducer,
+    field_infos: &FieldInfos,
+) -> rucene::error::Result<()> {
+    for info in field_infos.iter() {
+        match info.doc_values_type {
+            DocValuesType::NUMERIC => {
+                let mut values = producer.get_numeric(info)?;
+                while values.next_doc()? != NO_MORE_DOCS {
+                    values.long_value()?;
+                }
+            }
+            DocValuesType::SORTED_NUMERIC => {
+                let mut values = producer.get_sorted_numeric(info)?;
+                while values.next_doc()? != NO_MORE_DOCS {
+                    for _ in 0..values.doc_value_count()? {
+                        values.next_value()?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn random_corruption_of_per_block_values_never_panics() {
+    // Round 3 (audit): flips bytes in the value region of Lucene's `blocks`
+    // `.dvd` and reads every value; Java answers with an exception or with
+    // values, never with a crash, so neither may this port.
+    let source = lucene_blocks_segment();
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut panics = Vec::new();
+    for iteration in 0..300 {
+        let tmp = tempfile::tempdir().unwrap();
+        for entry in std::fs::read_dir(source.path()).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                std::fs::copy(entry.path(), tmp.path().join(entry.file_name())).unwrap();
+            }
+        }
+        let dvd = find_doc_values_file(tmp.path(), "_0", "dvd", "blocks");
+        let mut bytes = std::fs::read(&dvd).unwrap();
+        for _ in 0..1 + iteration % 4 {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let at = 60 + (seed >> 33) as usize % (bytes.len() - 76);
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            bytes[at] = (seed >> 56) as u8;
+        }
+        std::fs::write(&dvd, &bytes).unwrap();
+        let path = tmp.path().to_path_buf();
+        let outcome = std::panic::catch_unwind(move || {
+            if let Ok((producer, field_infos)) = open_producer(&path) {
+                // An error is a legitimate answer to a corrupt file.
+                let _ = read_every_value(producer.as_ref(), &field_infos);
+            }
+        });
+        if outcome.is_err() {
+            panics.push(iteration);
+        }
+    }
+    assert!(panics.is_empty(), "iterations that panicked: {panics:?}");
 }

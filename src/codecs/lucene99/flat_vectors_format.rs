@@ -2089,7 +2089,7 @@ mod tests {
         let info_stream = default_info_stream();
         let write_state = SegmentWriteState::new(
             info_stream,
-            dir.as_ref(),
+            Arc::clone(dir),
             seg_info,
             field_infos,
             seg_updates,

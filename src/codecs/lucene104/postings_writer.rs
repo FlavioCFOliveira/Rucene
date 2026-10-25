@@ -224,7 +224,7 @@ impl Lucene104PostingsWriter {
         let segment_info = state.segment_info;
         let id = segment_info.id();
         let suffix = &state.segment_suffix;
-        let dir = state.directory;
+        let dir = &*state.directory;
         let context = state.context;
 
         let meta_name = segment_file_name(&segment_info.name, suffix, "psm");
@@ -940,6 +940,7 @@ mod tests {
     use crate::store::{Directory, RamDirectory};
     use crate::util::{AttributeSource, BytesRef};
     use base64::Engine as _;
+    use std::sync::Arc;
 
     /// A norm of one for every document, as the flush hands the writer.
     fn test_norms(max_doc: i32) -> crate::index::EmptyNormsProducer {
@@ -951,13 +952,13 @@ mod tests {
     }
 
     fn test_write_state<'a>(
-        dir: &'a dyn Directory,
+        dir: &'a Arc<dyn Directory>,
         info: &'a crate::index::SegmentInfo,
         infos: &'a FieldInfos,
     ) -> SegmentWriteState<'a> {
         SegmentWriteState::new(
             crate::util::default_info_stream(),
-            dir,
+            Arc::clone(dir),
             info,
             infos,
             &crate::codecs::stub::BufferedUpdates,
@@ -1355,8 +1356,7 @@ mod tests {
     /// Θ(terms × maxDoc).
     #[test]
     fn norms_are_read_only_for_each_terms_documents() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let max_doc = 1_000_000;
         let segment_info = test_segment_info("_0", max_doc);
         let field_infos = FieldInfos::new(vec![FieldInfo::new("body", 0).with_postings_options(
@@ -1366,7 +1366,7 @@ mod tests {
         )])
         .expect("valid field infos");
         assert!(field_infos.field_info("body").unwrap().has_norms());
-        let write_state = test_write_state(dir_ref, &segment_info, &field_infos);
+        let write_state = test_write_state(&dir, &segment_info, &field_infos);
 
         let postings = TestFields {
             terms: vec![
@@ -1413,11 +1413,11 @@ mod tests {
 
     #[test]
     fn writes_postings_files_with_headers_and_footers() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("_0", 10);
         let field_infos = field_infos_with_positions();
-        let write_state = test_write_state(dir_ref, &segment_info, &field_infos);
+        let write_state = test_write_state(&dir, &segment_info, &field_infos);
 
         let format = Lucene104PostingsFormat::new();
         let mut consumer = format
@@ -1492,7 +1492,7 @@ mod tests {
     }
 
     fn write_test_fields(
-        dir: &dyn Directory,
+        dir: &Arc<dyn Directory>,
         field_infos: &FieldInfos,
         terms: Vec<(BytesRef, TestPostingsEnum)>,
     ) {
@@ -1545,12 +1545,12 @@ mod tests {
         const DOC_B64: &str = "P9dsFxpMdWNlbmUxMDRQb3N0aW5nc1dyaXRlckRvYwAAAAAAAAAAAAAAAAAAAAAAAAAAAMAok+gAAAAAAAAAAMeH+LI=";
         const PSM_B64: &str = "P9dsFxtMdWNlbmUxMDRQb3N0aW5nc1dyaXRlck1ldGEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARAAAAAAAAADAKJPoAAAAAAAAAACdve11";
 
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let field_infos = field_infos_with_freqs();
         let postings = TestPostingsEnum::new(vec![0], vec![1], vec![vec![]]);
         write_test_fields(
-            dir_ref,
+            &dir,
             &field_infos,
             vec![(BytesRef::new(b"singleton".to_vec()), postings)],
         );
@@ -1567,8 +1567,8 @@ mod tests {
         const DOC_B64: &str = "P9dsFxpMdWNlbmUxMDRQb3N0aW5nc1dyaXRlckRvYwAAAAAAAAAAAAAAAAAAAAAAAAAAAAACBQYFAwLAKJPoAAAAAAAAAAAELOIl";
         const PSM_B64: &str = "P9dsFxtMdWNlbmUxMDRQb3N0aW5nc1dyaXRlck1ldGEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAASwAAAAAAAADAKJPoAAAAAAAAAAATV4pP";
 
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let field_infos = field_infos_with_freqs();
         let postings = TestPostingsEnum::new(
             vec![0, 2, 5, 7],
@@ -1576,7 +1576,7 @@ mod tests {
             vec![vec![], vec![], vec![], vec![]],
         );
         write_test_fields(
-            dir_ref,
+            &dir,
             &field_infos,
             vec![(BytesRef::new(b"multidoc".to_vec()), postings)],
         );
@@ -1595,8 +1595,8 @@ mod tests {
         const PAY_B64: &str = "P9dsFxpMdWNlbmUxMDRQb3N0aW5nc1dyaXRlclBheQAAAAAAAAAAAAAAAAAAAAAAAAAAAMAok+gAAAAAAAAAAMpgXAw=";
         const PSM_B64: &str = "P9dsFxtMdWNlbmUxMDRQb3N0aW5nc1dyaXRlck1ldGEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAASQAAAAAAAABgAAAAAAAAAEQAAAAAAAAAwCiT6AAAAAAAAAAA872Nug==";
 
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let field_infos = field_infos_with_positions();
         let postings = TestPostingsEnum::new(
             vec![0, 2, 3],
@@ -1612,7 +1612,7 @@ mod tests {
             ],
         );
         write_test_fields(
-            dir_ref,
+            &dir,
             &field_infos,
             vec![(BytesRef::new(b"positions".to_vec()), postings)],
         );
@@ -1629,12 +1629,12 @@ mod tests {
         const DOC_B64: &str = "P9dsFxpMdWNlbmUxMDRQb3N0aW5nc1dyaXRlckRvYwAAAAAAAAAAAAAAAAAAAAAAAAAAAAYAAQUAAQAAAAHAKJPoAAAAAAAAAADESAyS";
         const PSM_B64: &str = "P9dsFxtMdWNlbmUxMDRQb3N0aW5nc1dyaXRlck1ldGEAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAQAAAAAAAAAAAAAATgAAAAAAAADAKJPoAAAAAAAAAACZYa/u";
 
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let field_infos = field_infos_with_freqs();
         let postings = TestPostingsEnum::new((0..256).collect(), vec![1; 256], vec![vec![]; 256]);
         write_test_fields(
-            dir_ref,
+            &dir,
             &field_infos,
             vec![(BytesRef::new(b"block256".to_vec()), postings)],
         );
@@ -1651,13 +1651,13 @@ mod tests {
         const DOC_B64: &str = "P9dsFxpMdWNlbmUxMDRQb3N0aW5nc1dyaXRlckRvYwAAAAAAAAAAAAAAAAAAAAAAAAAAAIBAxQIDAAEAAAYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABA8Aok+gAAAAAAAAAAA5oVTQ=";
         const PSM_B64: &str = "P9dsFxtMdWNlbmUxMDRQb3N0aW5nc1dyaXRlck1ldGEAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAQAAAAEAAAABAAAAjgEAAAAAAADAKJPoAAAAAAAAAAC2WzFp";
 
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let field_infos = field_infos_with_freqs();
         let postings =
             TestPostingsEnum::new((0..8193).collect(), vec![1; 8193], vec![vec![]; 8193]);
         write_test_fields(
-            dir_ref,
+            &dir,
             &field_infos,
             vec![(BytesRef::new(b"level1".to_vec()), postings)],
         );

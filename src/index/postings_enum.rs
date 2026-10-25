@@ -16,23 +16,26 @@ pub const POSTINGS_ENUM_NONE: i32 = 0x00;
 
 /// Request term frequencies.
 ///
-/// Equivalent to `PostingsEnum.FREQS`.
-pub const POSTINGS_ENUM_FREQS: i32 = 0x04;
+/// Equivalent to `PostingsEnum.FREQS`, `1 << 3` (`PostingsEnum.java:40`).
+pub const POSTINGS_ENUM_FREQS: i32 = 1 << 3;
 
 /// Request term positions.
 ///
-/// Equivalent to `PostingsEnum.POSITIONS`.
-pub const POSTINGS_ENUM_POSITIONS: i32 = POSTINGS_ENUM_FREQS | 0x08;
+/// Equivalent to `PostingsEnum.POSITIONS`, `FREQS | 1 << 4`
+/// (`PostingsEnum.java:46`).
+pub const POSTINGS_ENUM_POSITIONS: i32 = POSTINGS_ENUM_FREQS | 1 << 4;
 
 /// Request term offsets.
 ///
-/// Equivalent to `PostingsEnum.OFFSETS`.
-pub const POSTINGS_ENUM_OFFSETS: i32 = POSTINGS_ENUM_POSITIONS | 0x20;
+/// Equivalent to `PostingsEnum.OFFSETS`, `POSITIONS | 1 << 5`
+/// (`PostingsEnum.java:52`).
+pub const POSTINGS_ENUM_OFFSETS: i32 = POSTINGS_ENUM_POSITIONS | 1 << 5;
 
 /// Request term payloads.
 ///
-/// Equivalent to `PostingsEnum.PAYLOADS`.
-pub const POSTINGS_ENUM_PAYLOADS: i32 = POSTINGS_ENUM_POSITIONS | 0x40;
+/// Equivalent to `PostingsEnum.PAYLOADS`, `POSITIONS | 1 << 6`
+/// (`PostingsEnum.java:58`).
+pub const POSTINGS_ENUM_PAYLOADS: i32 = POSTINGS_ENUM_POSITIONS | 1 << 6;
 
 /// Request everything (frequencies, positions, payloads and offsets).
 ///
@@ -424,15 +427,14 @@ mod tests {
 
     #[test]
     fn postings_flags_match_java_values() {
+        // The literal values of `PostingsEnum.java:34-64`; the Java oracle
+        // comparison lives in `tests/postings_portability.rs`.
         assert_eq!(POSTINGS_ENUM_NONE, 0);
-        assert_eq!(POSTINGS_ENUM_FREQS, 0x04);
-        assert_eq!(POSTINGS_ENUM_POSITIONS, 0x04 | 0x08);
-        assert_eq!(POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_POSITIONS | 0x20);
-        assert_eq!(POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS | 0x40);
-        assert_eq!(
-            POSTINGS_ENUM_ALL,
-            POSTINGS_ENUM_OFFSETS | POSTINGS_ENUM_PAYLOADS
-        );
+        assert_eq!(POSTINGS_ENUM_FREQS, 8);
+        assert_eq!(POSTINGS_ENUM_POSITIONS, 24);
+        assert_eq!(POSTINGS_ENUM_OFFSETS, 56);
+        assert_eq!(POSTINGS_ENUM_PAYLOADS, 88);
+        assert_eq!(POSTINGS_ENUM_ALL, 120);
     }
 
     #[test]

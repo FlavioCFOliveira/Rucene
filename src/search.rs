@@ -344,7 +344,10 @@ pub use double_values_source_rescorer::{
     DoubleValuesSourceRescorer, DoubleValuesSourceRescorerImpl,
 };
 pub use exact_phrase_matcher::{merge_impacts, ExactPhraseMatcher, MergedImpactsSource};
-pub use field_comparator::{FieldComparator, RelevanceComparator, SortValue, TermValComparator};
+pub use field_comparator::{
+    is_relevance_comparator, FieldComparator, RelevanceComparator, SharedFieldComparator,
+    SharedLeafComparator, SlotComparator, SortValue, TermValComparator,
+};
 pub use field_comparator_source::FieldComparatorSource;
 pub use field_doc::FieldDoc;
 pub use field_exists_query::FieldExistsQuery;
@@ -410,9 +413,7 @@ pub use multi_collector::{MinCompetitiveScoreAwareScorable, MultiCollector, Mult
 pub use multi_collector_manager::{
     AnyCollector, ErasedCollectorManager, MultiCollectorHandle, MultiCollectorManager,
 };
-pub use multi_leaf_field_comparator::{
-    compare_bottom_weighted, compare_top_weighted, MultiLeafFieldComparator,
-};
+pub use multi_leaf_field_comparator::MultiLeafFieldComparator;
 pub use multi_norms_leaf_sim_scorer::MultiNormsLeafSimScorer;
 pub use multi_phrase_query::{
     Builder as MultiPhraseQueryBuilder, MultiPhraseQuery, UnionFullPostingsEnum, UnionPostingsEnum,

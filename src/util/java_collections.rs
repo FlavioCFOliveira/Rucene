@@ -617,6 +617,193 @@ impl<V: Clone> From<&JavaHashMap<V>> for HashMap<String, V> {
     }
 }
 
+/// A `java.util.HashMap<Integer, V>` with Java's iteration order.
+///
+/// `Integer.hashCode()` is the value itself, so the bucket of key `k` is
+/// `(k ^ (k >>> 16)) & (n - 1)`; everything else — lazy allocation, the load
+/// factor, the resize that keeps each chain's order, `clear` keeping the table —
+/// is [`JavaHashMap`]'s. Lucene keys `SegmentCommitInfo.dvUpdatesFiles` by
+/// field number with such a map, and `SegmentInfos.write` writes it in this
+/// order (`SegmentInfos.java:696-702`).
+///
+/// Like [`JavaHashMap`], a bucket that reaches the tree shape is flagged by
+/// [`JavaIntHashMap::is_treeified`] and no longer ordered like Java past it.
+#[derive(Clone, Debug)]
+pub struct JavaIntHashMap<V> {
+    table: Vec<Vec<(i32, V)>>,
+    size: usize,
+    threshold: i32,
+    treeified: bool,
+}
+
+impl<V> Default for JavaIntHashMap<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// `HashMap.hash(Object)` of an `Integer`.
+fn spread_int(key: i32) -> i32 {
+    key ^ ((key as u32) >> 16) as i32
+}
+
+impl<V> JavaIntHashMap<V> {
+    /// `new HashMap<>()`.
+    pub fn new() -> Self {
+        Self {
+            table: Vec::new(),
+            size: 0,
+            threshold: 0,
+            treeified: false,
+        }
+    }
+
+    /// `new HashMap<>(int initialCapacity)`.
+    pub fn with_initial_capacity(initial_capacity: i32) -> Self {
+        assert!(
+            initial_capacity >= 0,
+            "illegal initial capacity: {initial_capacity}"
+        );
+        Self {
+            table: Vec::new(),
+            size: 0,
+            threshold: table_size_for(initial_capacity),
+            treeified: false,
+        }
+    }
+
+    /// `HashMap.newHashMap(int numMappings)`: an initial capacity of
+    /// `ceil(numMappings / 0.75)`, so that many mappings fit without a resize.
+    pub fn new_hash_map(num_mappings: usize) -> Self {
+        Self::with_initial_capacity(
+            (num_mappings as f64 / f64::from(DEFAULT_LOAD_FACTOR)).ceil() as i32,
+        )
+    }
+
+    /// `HashMap.size()`.
+    pub fn len(&self) -> usize {
+        self.size
+    }
+
+    /// `HashMap.isEmpty()`.
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
+    }
+
+    /// The current table length, or 0 while the table is unallocated.
+    pub fn table_length(&self) -> usize {
+        self.table.len()
+    }
+
+    /// See [`JavaHashMap::is_treeified`].
+    pub fn is_treeified(&self) -> bool {
+        self.treeified
+    }
+
+    /// `HashMap.get(Object)`.
+    pub fn get(&self, key: i32) -> Option<&V> {
+        if self.table.is_empty() {
+            return None;
+        }
+        self.table[index_for(spread_int(key), self.table.len())]
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v)
+    }
+
+    /// `HashMap.containsKey(Object)`.
+    pub fn contains_key(&self, key: i32) -> bool {
+        self.get(key).is_some()
+    }
+
+    /// `HashMap.put(K, V)`, returning the previous value as Java does.
+    pub fn insert(&mut self, key: i32, value: V) -> Option<V> {
+        if self.table.is_empty() {
+            self.resize();
+        }
+        let n = self.table.len();
+        let bucket = &mut self.table[index_for(spread_int(key), n)];
+        if let Some(entry) = bucket.iter_mut().find(|(k, _)| *k == key) {
+            return Some(std::mem::replace(&mut entry.1, value));
+        }
+        bucket.push((key, value));
+        if bucket.len() > TREEIFY_THRESHOLD {
+            if n < MIN_TREEIFY_CAPACITY {
+                self.resize();
+            } else {
+                self.treeified = true;
+            }
+        }
+        self.size += 1;
+        if self.size as i32 > self.threshold {
+            self.resize();
+        }
+        None
+    }
+
+    /// `HashMap.clear()`, which keeps the table it has.
+    pub fn clear(&mut self) {
+        for bucket in self.table.iter_mut() {
+            bucket.clear();
+        }
+        self.size = 0;
+        self.treeified = false;
+    }
+
+    /// Iterates the entries in `HashMap.entrySet()` order.
+    pub fn iter(&self) -> impl Iterator<Item = (i32, &V)> {
+        self.table
+            .iter()
+            .flat_map(|bucket| bucket.iter().map(|(k, v)| (*k, v)))
+    }
+
+    /// Iterates the values in `HashMap.values()` order.
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.iter().map(|(_, v)| v)
+    }
+
+    /// `HashMap.resize()`; see [`JavaHashMap`]'s, which this mirrors.
+    fn resize(&mut self) {
+        let old_cap = self.table.len();
+        let old_thr = self.threshold;
+        let new_cap: usize;
+        let mut new_thr: i32 = 0;
+        if old_cap > 0 {
+            if old_cap >= MAXIMUM_CAPACITY {
+                self.threshold = i32::MAX;
+                return;
+            }
+            new_cap = old_cap << 1;
+            if new_cap < MAXIMUM_CAPACITY && old_cap >= DEFAULT_INITIAL_CAPACITY {
+                new_thr = old_thr << 1;
+            }
+        } else if old_thr > 0 {
+            new_cap = old_thr as usize;
+        } else {
+            new_cap = DEFAULT_INITIAL_CAPACITY;
+            new_thr = (DEFAULT_LOAD_FACTOR * DEFAULT_INITIAL_CAPACITY as f32) as i32;
+        }
+        if new_thr == 0 {
+            let ft = new_cap as f32 * DEFAULT_LOAD_FACTOR;
+            new_thr = if new_cap < MAXIMUM_CAPACITY && ft < MAXIMUM_CAPACITY as f32 {
+                ft as i32
+            } else {
+                i32::MAX
+            };
+        }
+        self.threshold = new_thr;
+        let old_table = std::mem::take(&mut self.table);
+        let mut new_table: Vec<Vec<(i32, V)>> = Vec::with_capacity(new_cap);
+        new_table.resize_with(new_cap, Vec::new);
+        for bucket in old_table {
+            for (key, value) in bucket {
+                new_table[index_for(spread_int(key), new_cap)].push((key, value));
+            }
+        }
+        self.table = new_table;
+    }
+}
+
 /// A `java.util.HashSet<String>` with Java's iteration order.
 ///
 /// `java.util.HashSet` is a `HashMap` whose values are all one shared sentinel

@@ -9,7 +9,6 @@
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
@@ -19,7 +18,9 @@ use crate::search::comparators::{
     DocComparator, DoubleComparator, FloatComparator, IntComparator, LongComparator,
     TermOrdValComparator,
 };
-use crate::search::field_comparator::{FieldComparator, RelevanceComparator, TermValComparator};
+use crate::search::field_comparator::{
+    FieldComparator, RelevanceComparator, SharedFieldComparator, TermValComparator,
+};
 use crate::search::field_comparator_source::FieldComparatorSource;
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::pruning::Pruning;
@@ -761,7 +762,7 @@ impl SortField {
                 let selector_pruning = if is_min_or_max { pruning } else { Pruning::NONE };
                 let selector = *selector;
                 let numeric_type = *numeric_type;
-                let source: NumericDocValuesSource = Rc::new(
+                let source: NumericDocValuesSource = Arc::new(
                     move |reader: &dyn crate::index::LeafReader,
                           field: &str|
                           -> Result<Box<dyn crate::index::NumericDocValues>> {
@@ -784,8 +785,8 @@ impl SortField {
                             self.reverse,
                             selector_pruning,
                         );
-                        c.set_numeric_doc_values_source(Rc::clone(&source));
-                        Box::new(c)
+                        c.set_numeric_doc_values_source(Arc::clone(&source));
+                        Box::new(SharedFieldComparator::new(c))
                     }
                     SortFieldType::Float => {
                         let mut c = FloatComparator::new(
@@ -798,8 +799,8 @@ impl SortField {
                             self.reverse,
                             selector_pruning,
                         );
-                        c.set_numeric_doc_values_source(Rc::clone(&source));
-                        Box::new(c)
+                        c.set_numeric_doc_values_source(Arc::clone(&source));
+                        Box::new(SharedFieldComparator::new(c))
                     }
                     SortFieldType::Long => {
                         let mut c = LongComparator::new(
@@ -812,8 +813,8 @@ impl SortField {
                             self.reverse,
                             selector_pruning,
                         );
-                        c.set_numeric_doc_values_source(Rc::clone(&source));
-                        Box::new(c)
+                        c.set_numeric_doc_values_source(Arc::clone(&source));
+                        Box::new(SharedFieldComparator::new(c))
                     }
                     SortFieldType::Double => {
                         let mut c = DoubleComparator::new(
@@ -826,8 +827,8 @@ impl SortField {
                             self.reverse,
                             selector_pruning,
                         );
-                        c.set_numeric_doc_values_source(Rc::clone(&source));
-                        Box::new(c)
+                        c.set_numeric_doc_values_source(Arc::clone(&source));
+                        Box::new(SharedFieldComparator::new(c))
                     }
                     other => {
                         return Err(LuceneError::IllegalState(format!(
@@ -850,7 +851,7 @@ impl SortField {
                     self.reverse,
                     final_pruning,
                 );
-                comparator.set_sorted_doc_values_source(Rc::new(
+                comparator.set_sorted_doc_values_source(Arc::new(
                     move |reader: &dyn crate::index::LeafReader, field: &str| {
                         SortedSetSelector::wrap(
                             crate::search::doc_values_access::get_sorted_set(reader, field)?,
@@ -858,19 +859,19 @@ impl SortField {
                         )
                     },
                 ));
-                Box::new(comparator)
+                Box::new(SharedFieldComparator::new(comparator))
             }
-            SortFieldKind::Binary { .. } => Box::new(TermValComparator::new(
+            SortFieldKind::Binary { .. } => Box::new(SharedFieldComparator::new(TermValComparator::new(
                 num_hits,
                 field,
                 self.missing_value == Some(MissingValue::StringLast),
-            )),
+            ))),
             SortFieldKind::Plain => match self.field_type {
-                SortFieldType::Score => Box::new(RelevanceComparator::new(num_hits)),
+                SortFieldType::Score => Box::new(SharedFieldComparator::new(RelevanceComparator::new(num_hits))),
                 SortFieldType::Doc => {
-                    Box::new(DocComparator::new(num_hits, self.reverse, pruning))
+                    Box::new(SharedFieldComparator::new(DocComparator::new(num_hits, self.reverse, pruning)))
                 }
-                SortFieldType::Int => Box::new(IntComparator::new(
+                SortFieldType::Int => Box::new(SharedFieldComparator::new(IntComparator::new(
                     num_hits,
                     field,
                     match self.missing_value {
@@ -879,8 +880,8 @@ impl SortField {
                     },
                     self.reverse,
                     pruning,
-                )),
-                SortFieldType::Float => Box::new(FloatComparator::new(
+                ))),
+                SortFieldType::Float => Box::new(SharedFieldComparator::new(FloatComparator::new(
                     num_hits,
                     field,
                     match self.missing_value {
@@ -889,8 +890,8 @@ impl SortField {
                     },
                     self.reverse,
                     pruning,
-                )),
-                SortFieldType::Long => Box::new(LongComparator::new(
+                ))),
+                SortFieldType::Long => Box::new(SharedFieldComparator::new(LongComparator::new(
                     num_hits,
                     field,
                     match self.missing_value {
@@ -899,8 +900,8 @@ impl SortField {
                     },
                     self.reverse,
                     pruning,
-                )),
-                SortFieldType::Double => Box::new(DoubleComparator::new(
+                ))),
+                SortFieldType::Double => Box::new(SharedFieldComparator::new(DoubleComparator::new(
                     num_hits,
                     field,
                     match self.missing_value {
@@ -909,7 +910,7 @@ impl SortField {
                     },
                     self.reverse,
                     pruning,
-                )),
+                ))),
                 SortFieldType::Custom => match self.comparator_source.as_ref() {
                     Some(source) => source.new_comparator(field, num_hits, pruning, self.reverse)?,
                     None => {
@@ -918,18 +919,18 @@ impl SortField {
                         ))
                     }
                 },
-                SortFieldType::String => Box::new(TermOrdValComparator::new(
+                SortFieldType::String => Box::new(SharedFieldComparator::new(TermOrdValComparator::new(
                     num_hits,
                     field,
                     self.missing_value == Some(MissingValue::StringLast),
                     self.reverse,
                     pruning,
-                )),
-                SortFieldType::StringVal => Box::new(TermValComparator::new(
+                ))),
+                SortFieldType::StringVal => Box::new(SharedFieldComparator::new(TermValComparator::new(
                     num_hits,
                     field,
                     self.missing_value == Some(MissingValue::StringLast),
-                )),
+                ))),
                 SortFieldType::Rewriteable => {
                     return Err(LuceneError::IllegalState(
                         "SortField needs to be rewritten through Sort.rewrite(..) and SortField.rewrite(..)"

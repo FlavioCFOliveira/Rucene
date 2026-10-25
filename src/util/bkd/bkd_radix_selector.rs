@@ -602,9 +602,8 @@ impl BKDRadixSelector {
         common_prefix_length: usize,
     ) -> Vec<u8> {
         let bytes_per_dim = config.bytes_per_dim as usize;
-        let dim_offset = dim * bytes_per_dim + common_prefix_length;
-        let dim_cmp_bytes = bytes_per_dim - common_prefix_length;
-        let data_offset = config.packed_index_bytes_length() as usize - dim_cmp_bytes;
+        let (dim_offset, dim_cmp_bytes, data_offset) =
+            key_offsets(config, dim, common_prefix_length);
         {
             let mut ops = HeapPointOps {
                 points,
@@ -645,9 +644,8 @@ impl BKDRadixSelector {
         common_prefix_length: usize,
     ) {
         let bytes_per_dim = self.config.bytes_per_dim as usize;
-        let dim_offset = dim * bytes_per_dim + common_prefix_length;
-        let dim_cmp_bytes = bytes_per_dim - common_prefix_length;
-        let data_offset = self.config.packed_index_bytes_length() as usize - dim_cmp_bytes;
+        let (dim_offset, dim_cmp_bytes, data_offset) =
+            key_offsets(&self.config, dim, common_prefix_length);
         let mut ops = HeapPointOps {
             points,
             scratch: &mut self.scratch,
@@ -754,21 +752,44 @@ struct HeapPointOps<'a> {
     scratch: &'a mut [u8],
     bytes_per_dim: usize,
     dim: usize,
-    dim_offset: usize,
-    dim_cmp_bytes: usize,
-    data_offset: usize,
+    /// `dimOffset`, `dimCmpBytes` and `dataOffset`, Java `int`s; see
+    /// [`key_offsets`].
+    dim_offset: i64,
+    dim_cmp_bytes: i64,
+    data_offset: i64,
     common_prefix_length: usize,
     fallback_d: usize,
 }
 
+/// The three `int`s `heapRadixSelect` and `heapRadixSort` derive from the
+/// common prefix (`BKDRadixSelector.java:410-412, 466-468`).
+///
+/// Java computes them as signed `int`s: once the common prefix spans past the
+/// dimension into the data dimensions and the doc ID, `dimCmpBytes` is
+/// negative, every key byte `k` falls in the data branch of `byteAt`, and
+/// `dataOffset + k` addresses tie-break byte `commonPrefixLength + k -
+/// bytesPerDim` (`:415-428`). Unsigned arithmetic would underflow there.
+fn key_offsets(config: &BKDConfig, dim: usize, common_prefix_length: usize) -> (i64, i64, i64) {
+    let bytes_per_dim = i64::from(config.bytes_per_dim);
+    let common_prefix_length = common_prefix_length as i64;
+    let dim_offset = dim as i64 * bytes_per_dim + common_prefix_length;
+    let dim_cmp_bytes = bytes_per_dim - common_prefix_length;
+    let data_offset = i64::from(config.packed_index_bytes_length()) - dim_cmp_bytes;
+    (dim_offset, dim_cmp_bytes, data_offset)
+}
+
 impl HeapPointOps<'_> {
+    /// `byteAt(int, int)`: `k < dimCmpBytes ? dimOffset + k : dataOffset + k`,
+    /// in Java's signed arithmetic.
     fn key_byte_at(&self, i: usize, k: usize) -> i32 {
+        let k = k as i64;
         let offset = if k < self.dim_cmp_bytes {
             self.dim_offset + k
         } else {
             self.data_offset + k
         };
-        i32::from(self.points.byte_at(i, offset))
+        debug_assert!(offset >= 0, "negative key offset {offset}");
+        i32::from(self.points.byte_at(i, offset as usize))
     }
 
     fn skipped_bytes(&self) -> usize {

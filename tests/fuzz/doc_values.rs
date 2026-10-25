@@ -502,7 +502,7 @@ fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &F
     let infos = fixture.field_infos();
     let write_state = SegmentWriteState::new(
         default_info_stream(),
-        directory.as_ref(),
+        Arc::clone(directory),
         info,
         &infos,
         &BufferedUpdates,

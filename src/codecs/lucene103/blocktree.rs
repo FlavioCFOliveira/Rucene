@@ -2599,13 +2599,13 @@ mod tests {
     }
 
     fn test_write_state<'a>(
-        dir: &'a dyn Directory,
+        dir: &'a Arc<dyn Directory>,
         info: &'a SegmentInfo,
         infos: &'a FieldInfos,
     ) -> SegmentWriteState<'a> {
         SegmentWriteState::new(
             default_info_stream(),
-            dir,
+            Arc::clone(dir),
             info,
             infos,
             &crate::codecs::stub::BufferedUpdates,
@@ -2802,7 +2802,7 @@ mod tests {
     /// it had opened (`Lucene103BlockTreeTermsWriter.java:338-341`).
     #[test]
     fn a_failed_constructor_closes_the_postings_writer_and_its_outputs() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let segment_info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
         let state = test_write_state(&dir, &segment_info, &field_infos);
@@ -2813,11 +2813,12 @@ mod tests {
             "invalid settings close the postings writer"
         );
 
-        let failing = FailingTmdDirectory {
+        let failing = Arc::new(FailingTmdDirectory {
             inner: RamDirectory::default(),
             fail_create: true,
-        };
-        let state = test_write_state(&failing, &segment_info, &field_infos);
+        });
+        let failing_dir: Arc<dyn Directory> = Arc::clone(&failing) as Arc<dyn Directory>;
+        let state = test_write_state(&failing_dir, &segment_info, &field_infos);
         let (postings_writer, closed) = closing_postings_writer(false);
         let error = Lucene103BlockTreeTermsWriter::new(&state, postings_writer, 25, 48)
             .expect_err("the metadata file cannot be created");
@@ -2838,13 +2839,14 @@ mod tests {
     /// termsOut, indexOut, postingsWriter)` (`Lucene103BlockTreeTermsWriter.java:1146-1152`).
     #[test]
     fn close_closes_everything_and_raises_the_first_failure() {
-        let failing = FailingTmdDirectory {
+        let failing = Arc::new(FailingTmdDirectory {
             inner: RamDirectory::default(),
             fail_create: false,
-        };
+        });
         let segment_info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
-        let state = test_write_state(&failing, &segment_info, &field_infos);
+        let failing_dir: Arc<dyn Directory> = Arc::clone(&failing) as Arc<dyn Directory>;
+        let state = test_write_state(&failing_dir, &segment_info, &field_infos);
         let (postings_writer, closed) = closing_postings_writer(true);
         let mut writer =
             Lucene103BlockTreeTermsWriter::new(&state, postings_writer, 25, 48).unwrap();
@@ -2865,11 +2867,10 @@ mod tests {
 
     #[test]
     fn writer_creates_empty_terms_files_with_valid_headers_and_footers() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let segment_info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
-        let state = test_write_state(dir_ref, &segment_info, &field_infos);
+        let state = test_write_state(&dir, &segment_info, &field_infos);
 
         let postings_writer: Box<dyn PostingsWriterBase> = Box::new(StubPostingsWriter);
         let mut writer = Lucene103BlockTreeTermsWriter::new(&state, postings_writer, 25, 48)
@@ -3131,12 +3132,11 @@ mod tests {
 
     #[test]
     fn writer_writes_nonempty_terms_file_for_small_field() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let segment_info = test_segment_info("_0", 10);
         let field = FieldInfo::new("body", 0);
         let field_infos = FieldInfos::new(vec![field.clone()]).expect("valid field infos");
-        let state = test_write_state(dir_ref, &segment_info, &field_infos);
+        let state = test_write_state(&dir, &segment_info, &field_infos);
 
         let terms = vec![
             BytesRef::new(b"a".to_vec()),
@@ -3242,13 +3242,13 @@ mod tests {
     /// never reads a block never pays for the clone.
     #[test]
     fn segment_terms_enum_clones_the_terms_input_lazily() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("_0", 10);
         let field_infos =
             FieldInfos::new(vec![FieldInfo::new("body", 0)]).expect("valid field infos");
         {
-            let state = test_write_state(dir_ref, &segment_info, &field_infos);
+            let state = test_write_state(&dir, &segment_info, &field_infos);
             let fields = TestFields {
                 field: "body".to_string(),
                 terms: vec![

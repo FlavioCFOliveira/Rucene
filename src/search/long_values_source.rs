@@ -14,10 +14,11 @@ use crate::index::LeafReaderContext;
 use crate::search::doc_values_access::get_numeric;
 use crate::search::double_values::DoubleValues;
 use crate::search::double_values_source::{hash_of, DoubleValuesSource};
-use crate::search::field_comparator::{java_long_compare, FieldComparator, SortValue};
+use crate::search::field_comparator::{
+    java_long_compare, FieldComparator, SharedFieldComparator, SlotComparator, SortValue,
+};
 use crate::search::field_comparator_source::FieldComparatorSource;
 use crate::search::index_searcher::IndexSearcher;
-use crate::search::leaf_field_comparator::LeafFieldComparator;
 use crate::search::long_values::LongValues;
 use crate::search::pruning::Pruning;
 use crate::search::scorable::Scorable;
@@ -458,15 +459,13 @@ impl FieldComparatorSource for LongValuesComparatorSource {
         _pruning: Pruning,
         _reversed: bool,
     ) -> Result<Box<dyn FieldComparator>> {
-        Ok(Box::new(LongValuesComparator {
+        Ok(Box::new(SharedFieldComparator::new(LongValuesComparator {
             producer: Arc::clone(&self.producer),
             missing_value: self.missing_value,
             values: vec![0; num_hits],
             bottom: 0,
             top_value: 0,
-            score: Rc::new(Cell::new(0.0)),
-            leaf: None,
-        }))
+        })))
     }
 }
 
@@ -500,8 +499,13 @@ struct LongValuesComparator {
     values: Vec<i64>,
     bottom: i64,
     top_value: i64,
+}
+
+/// The per-segment state of a [`LongValuesComparator`]: the producer's values
+/// for the segment, and the cell through which they read the current score.
+struct LongValuesLeaf {
     score: Rc<Cell<f64>>,
-    leaf: Option<Box<dyn LongValues>>,
+    values: Box<dyn LongValues>,
 }
 
 impl Debug for LongValuesComparator {
@@ -516,14 +520,17 @@ impl Debug for LongValuesComparator {
 impl LongValuesComparator {
     /// Equivalent to `LongLeafComparator.getValueForDoc(int)` over the
     /// producer's values.
-    fn get_value_for_doc(&mut self, doc: i32, scorer: &mut dyn Scorable) -> Result<i64> {
+    fn get_value_for_doc(
+        &self,
+        leaf: &mut LongValuesLeaf,
+        doc: i32,
+        scorer: &mut dyn Scorable,
+    ) -> Result<i64> {
         if self.producer.needs_scores() {
-            self.score.set(f64::from(scorer.score()?));
+            leaf.score.set(f64::from(scorer.score()?));
         }
         let missing_value = self.missing_value;
-        let Some(values) = self.leaf.as_mut() else {
-            return Ok(missing_value);
-        };
+        let values = &mut leaf.values;
         if values.advance_exact(doc)? {
             values.long_value()
         } else {
@@ -532,33 +539,9 @@ impl LongValuesComparator {
     }
 }
 
-impl LeafFieldComparator for LongValuesComparator {
-    fn set_bottom(&mut self, slot: i32) -> Result<()> {
-        self.bottom = self.values[slot as usize];
-        Ok(())
-    }
+impl SlotComparator for LongValuesComparator {
+    type Leaf = LongValuesLeaf;
 
-    fn compare_bottom(&mut self, doc: i32, scorer: &mut dyn Scorable) -> Result<i32> {
-        let value = self.get_value_for_doc(doc, scorer)?;
-        Ok(java_long_compare(self.bottom, value))
-    }
-
-    fn compare_top(&mut self, doc: i32, scorer: &mut dyn Scorable) -> Result<i32> {
-        let value = self.get_value_for_doc(doc, scorer)?;
-        Ok(java_long_compare(self.top_value, value))
-    }
-
-    fn copy(&mut self, slot: i32, doc: i32, scorer: &mut dyn Scorable) -> Result<()> {
-        self.values[slot as usize] = self.get_value_for_doc(doc, scorer)?;
-        Ok(())
-    }
-
-    fn set_scorer(&mut self, _scorer: &mut dyn Scorable) -> Result<()> {
-        Ok(())
-    }
-}
-
-impl FieldComparator for LongValuesComparator {
     fn compare(&self, slot1: i32, slot2: i32) -> i32 {
         java_long_compare(self.values[slot1 as usize], self.values[slot2 as usize])
     }
@@ -573,19 +556,52 @@ impl FieldComparator for LongValuesComparator {
         SortValue::Long(self.values[slot as usize])
     }
 
-    fn get_leaf_comparator(&mut self, context: &LeafReaderContext) -> Result<()> {
+    fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<LongValuesLeaf> {
+        let score = Rc::new(Cell::new(0.0));
         let scores: Box<dyn DoubleValues> = Box::new(ScoreCellDoubleValues {
-            score: Rc::clone(&self.score),
+            score: Rc::clone(&score),
         });
-        self.leaf = Some(Arc::clone(&self.producer).get_values(context, Some(scores))?);
+        let values = Arc::clone(&self.producer).get_values(context, Some(scores))?;
+        Ok(LongValuesLeaf { score, values })
+    }
+
+    fn set_bottom(&mut self, _leaf: &mut LongValuesLeaf, slot: i32) -> Result<()> {
+        self.bottom = self.values[slot as usize];
         Ok(())
     }
 
-    fn as_leaf_comparator(&mut self) -> &mut dyn LeafFieldComparator {
-        self
+    fn compare_bottom(
+        &mut self,
+        leaf: &mut LongValuesLeaf,
+        doc: i32,
+        scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        let value = self.get_value_for_doc(leaf, doc, scorer)?;
+        Ok(java_long_compare(self.bottom, value))
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
+    fn compare_top(
+        &mut self,
+        leaf: &mut LongValuesLeaf,
+        doc: i32,
+        scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        let value = self.get_value_for_doc(leaf, doc, scorer)?;
+        Ok(java_long_compare(self.top_value, value))
+    }
+
+    fn copy(
+        &mut self,
+        leaf: &mut LongValuesLeaf,
+        slot: i32,
+        doc: i32,
+        scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        self.values[slot as usize] = self.get_value_for_doc(leaf, doc, scorer)?;
+        Ok(())
+    }
+
+    fn set_scorer(&mut self, _leaf: &mut LongValuesLeaf, _scorer: &mut dyn Scorable) -> Result<()> {
+        Ok(())
     }
 }

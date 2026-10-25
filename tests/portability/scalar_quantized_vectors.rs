@@ -151,7 +151,7 @@ fn write_with_rucene(
     let infos = field_infos(dim, similarity);
     let write_state = SegmentWriteState::new(
         default_info_stream(),
-        directory.as_ref(),
+        Arc::clone(&directory),
         &info,
         &infos,
         &BufferedUpdates,
@@ -222,7 +222,7 @@ fn merge_with_rucene(
     .expect("merged segment info");
     let write_state = SegmentWriteState::new(
         default_info_stream(),
-        directory.as_ref(),
+        Arc::clone(&directory),
         &merged_info,
         &infos,
         &BufferedUpdates,

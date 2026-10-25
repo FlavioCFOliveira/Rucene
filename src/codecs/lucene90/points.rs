@@ -9,10 +9,12 @@
 //! * `.kdi` – inner nodes of the block KD-tree.
 //! * `.kdd` – leaf nodes with the actual point data.
 //!
-//! This module currently provides the file envelope implementation
-//! (headers/footers and metadata layout). The full BKD tree encoding/decoding
-//! is implemented in the `bkd` utility module and will be wired in a follow-up
-//! task.
+//! The writer encodes every field as a block KD-tree through
+//! [`BKDWriter`](crate::util::bkd::BKDWriter) — straight from the indexing
+//! buffer's mutable tree at flush, through `BKDWriter.merge` for a
+//! one-dimensional merge, and through `add`/`finish` otherwise, spilling to the
+//! segment's directory past its heap budget — and the reader serves each field
+//! through a [`BKDReader`](crate::util::bkd::BKDReader).
 //!
 //! Lucene Core equivalents:
 //! * `org.apache.lucene.codecs.lucene90.Lucene90PointsFormat`
@@ -37,7 +39,7 @@ use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, Result};
 use crate::index::{segment_file_name, FieldInfos};
-use crate::store::{DataInput, Directory, IndexInput, IndexOutput, RamDirectory};
+use crate::store::{DataInput, Directory, IndexInput, IndexOutput};
 use crate::util::bkd::{BKDConfig, BKDFinalizer, BKDReader, BKDWriter};
 
 // -----------------------------------------------------------------------------
@@ -136,6 +138,9 @@ impl PointsFormat for Lucene90PointsFormat {
 ///
 /// Lucene Core equivalent: `org.apache.lucene.codecs.lucene90.Lucene90PointsWriter`.
 pub struct Lucene90PointsWriter {
+    /// The segment's directory, which every `BKDWriter` this writer creates
+    /// receives for its temporary files (`Lucene90PointsWriter.java:152, 252`).
+    directory: Arc<dyn Directory>,
     segment_name: String,
     segment_suffix: String,
     version: i32,
@@ -181,7 +186,10 @@ impl Lucene90PointsWriter {
         write_index_header(
             data_out.as_mut(),
             DATA_CODEC_NAME,
-            version,
+            // Java writes `VERSION_CURRENT` whatever `version` the writer was
+            // built with (`Lucene90PointsWriter.java:72, 85, 98`); `version`
+            // only selects the BKD encoding.
+            VERSION_CURRENT,
             &state.segment_info.id(),
             &state.segment_suffix,
         )?;
@@ -195,7 +203,10 @@ impl Lucene90PointsWriter {
         write_index_header(
             meta_out.as_mut(),
             META_CODEC_NAME,
-            version,
+            // Java writes `VERSION_CURRENT` whatever `version` the writer was
+            // built with (`Lucene90PointsWriter.java:72, 85, 98`); `version`
+            // only selects the BKD encoding.
+            VERSION_CURRENT,
             &state.segment_info.id(),
             &state.segment_suffix,
         )?;
@@ -209,12 +220,16 @@ impl Lucene90PointsWriter {
         write_index_header(
             index_out.as_mut(),
             INDEX_CODEC_NAME,
-            version,
+            // Java writes `VERSION_CURRENT` whatever `version` the writer was
+            // built with (`Lucene90PointsWriter.java:72, 85, 98`); `version`
+            // only selects the BKD encoding.
+            VERSION_CURRENT,
             &state.segment_info.id(),
             &state.segment_suffix,
         )?;
 
         Ok(Self {
+            directory: Arc::clone(&state.directory),
             segment_name: state.segment_info.name.clone(),
             segment_suffix: state.segment_suffix.clone(),
             version,
@@ -251,27 +266,12 @@ impl Lucene90PointsWriter {
             field_info.point_num_bytes,
             self.max_points_in_leaf_node,
         )?;
-        // **Divergence from Lucene 10.5.0.** Java gives `BKDWriter` the
-        // segment's own directory for its temporary files
-        // (`Lucene90PointsWriter.java:152` in `writeField`, `:252` in
-        // `merge`), which it spills to once a field's points exceed
-        // `maxMBSortInHeap` (`BKDWriter.java:222-232, 930-1034, 1922-2126`).
-        // This writer only receives a borrowed `&dyn Directory`, while the
-        // offline point writers need an owned `Arc<dyn Directory>`, so it
-        // hands over a `RamDirectory` and `BKDWriter` keeps every point in
-        // heap (see `BKDWriter::init_point_writer`); giving the points writer
-        // an owned handle on the segment directory is an architecture
-        // decision pending with the user (`OwnedSegmentWriteState`, which the
-        // vectors writers receive, already holds one). Consequence: the whole
-        // buffer of `total_point_count` points is allocated at the first
-        // `add`, not grown; in a merge that count is the sum of the source
-        // segments' `.kdm` point counts, deleted points included, so a
-        // checksum-valid but inflated count decides the allocation, and a
-        // failed allocation aborts instead of spilling.
-        let temp_dir: Box<dyn Directory> = Box::new(RamDirectory::new());
+        // `BKDWriter` gets the segment's own directory for its temporary
+        // files, which it spills to once a field's points exceed
+        // `maxMBSortInHeap` (`Lucene90PointsWriter.java:149-157, 249-257`).
         BKDWriter::new(
             self.max_doc,
-            temp_dir,
+            Arc::clone(&self.directory),
             &self.segment_name,
             config,
             self.max_mb_sort_in_heap,
@@ -998,6 +998,196 @@ mod tests {
         }
     }
 
+    struct ProbeFailVisitor<'v> {
+        inner: &'v mut dyn crate::index::point_values::IntersectVisitor,
+        n: usize,
+        dir: Arc<dyn Directory>,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+    impl crate::index::point_values::IntersectVisitor for ProbeFailVisitor<'_> {
+        fn visit(&mut self, doc_id: i32) -> Result<()> {
+            self.inner.visit(doc_id)
+        }
+        fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
+            self.n += 1;
+            if self.n > 600 {
+                // What the directory holds when the source fails: the spill file.
+                *self.seen.lock().unwrap() = self.dir.list_all()?;
+                return Err(LuceneError::IllegalState("probe: source failed".into()));
+            }
+            self.inner.visit_with_value(doc_id, packed_value)
+        }
+        fn compare(&self, a: &[u8], b: &[u8]) -> Result<crate::index::point_values::Relation> {
+            self.inner.compare(a, b)
+        }
+    }
+    struct ProbeFailTree {
+        inner: Box<dyn crate::index::point_values::PointTree>,
+        dir: Arc<dyn Directory>,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+    impl crate::index::point_values::PointTree for ProbeFailTree {
+        fn clone_tree(&self) -> Result<Box<dyn crate::index::point_values::PointTree>> {
+            Ok(Box::new(ProbeFailTree {
+                inner: self.inner.clone_tree()?,
+                dir: Arc::clone(&self.dir),
+                seen: Arc::clone(&self.seen),
+            }))
+        }
+        fn move_to_child(&mut self) -> Result<bool> {
+            self.inner.move_to_child()
+        }
+        fn move_to_sibling(&mut self) -> Result<bool> {
+            self.inner.move_to_sibling()
+        }
+        fn move_to_parent(&mut self) -> Result<bool> {
+            self.inner.move_to_parent()
+        }
+        fn min_packed_value(&self) -> Result<&[u8]> {
+            self.inner.min_packed_value()
+        }
+        fn max_packed_value(&self) -> Result<&[u8]> {
+            self.inner.max_packed_value()
+        }
+        fn size(&self) -> Result<i64> {
+            self.inner.size()
+        }
+        fn visit_doc_ids(
+            &mut self,
+            v: &mut dyn crate::index::point_values::IntersectVisitor,
+        ) -> Result<()> {
+            self.inner.visit_doc_ids(v)
+        }
+        fn visit_doc_values(
+            &mut self,
+            v: &mut dyn crate::index::point_values::IntersectVisitor,
+        ) -> Result<()> {
+            let mut f = ProbeFailVisitor {
+                inner: v,
+                n: 0,
+                dir: Arc::clone(&self.dir),
+                seen: Arc::clone(&self.seen),
+            };
+            self.inner.visit_doc_values(&mut f)
+        }
+    }
+    #[derive(Clone)]
+    struct ProbeFailValues(VecPointValues, Arc<dyn Directory>, Arc<Mutex<Vec<String>>>);
+    impl std::fmt::Debug for ProbeFailValues {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("ProbeFailValues")
+        }
+    }
+    impl PointValues for ProbeFailValues {
+        fn point_tree(&self) -> Result<Box<dyn crate::index::point_values::PointTree>> {
+            Ok(Box::new(ProbeFailTree {
+                inner: self.0.point_tree()?,
+                dir: Arc::clone(&self.1),
+                seen: Arc::clone(&self.2),
+            }))
+        }
+        fn size(&self) -> Result<i64> {
+            self.0.size()
+        }
+        fn doc_count(&self) -> Result<i32> {
+            self.0.doc_count()
+        }
+        fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
+            self.0.min_packed_value()
+        }
+        fn max_packed_value(&self) -> Result<Option<Vec<u8>>> {
+            self.0.max_packed_value()
+        }
+        fn num_dimensions(&self) -> Result<i32> {
+            self.0.num_dimensions()
+        }
+        fn num_index_dimensions(&self) -> Result<i32> {
+            self.0.num_index_dimensions()
+        }
+        fn bytes_per_dimension(&self) -> Result<i32> {
+            self.0.bytes_per_dimension()
+        }
+    }
+    #[derive(Debug)]
+    struct ProbeFailReader(ProbeFailValues);
+    impl PointsReader for ProbeFailReader {
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_values(&self, _f: &str) -> Result<Option<Box<dyn PointValues>>> {
+            Ok(Some(Box::new(self.0.clone())))
+        }
+        fn get_merge_instance(&self) -> Result<Box<dyn PointsReader>> {
+            unreachable!()
+        }
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Round 3: a source that fails while `BKDWriter.add` is spilling leaves
+    /// no temporary file. Java's `try`-with-resources closes the `BKDWriter`
+    /// on that exit (`Lucene90PointsWriter.java:149-157`), and `close` deletes
+    /// the spill file (`BKDWriter.java:1546-1556`); here dropping the writer
+    /// does.
+    #[test]
+    fn a_failing_source_leaves_no_spill_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir: Arc<dyn Directory> =
+            Arc::new(crate::store::FSDirectory::open(tmp.path()).unwrap());
+        let segment_info = test_segment_info("_p", 2000);
+        let fi = point_field("p", 0, 2, 2, 4);
+        let field_infos = FieldInfos::new(vec![fi.clone()]).unwrap();
+        let state = SegmentWriteState::new(
+            crate::util::default_info_stream(),
+            Arc::clone(&dir),
+            &segment_info,
+            &field_infos,
+            &crate::codecs::stub::BufferedUpdates,
+            &*crate::store::DEFAULT_IO_CONTEXT,
+        );
+        // 2000 points of 12 bytes against 0.001 MB, which holds 87: `add` spills.
+        let mut writer =
+            Lucene90PointsWriter::with_config(&state, 64, 0.001, VERSION_CURRENT).unwrap();
+        let points: Vec<(i32, Vec<u8>)> = (0..2000)
+            .map(|i: i32| {
+                let mut v = vec![0u8; 8];
+                v[..4].copy_from_slice(&((i * 7919) % 1000).to_be_bytes());
+                v[4..].copy_from_slice(&((i * 31) % 997).to_be_bytes());
+                (i, v)
+            })
+            .collect();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let reader = ProbeFailReader(ProbeFailValues(
+            VecPointValues::new("p", 2, 2, 4, points),
+            Arc::clone(&dir),
+            Arc::clone(&seen),
+        ));
+        let error = writer
+            .write_field(&fi, &reader)
+            .expect_err("the source fails");
+        assert!(
+            error.to_string().contains("probe: source failed"),
+            "{error}"
+        );
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|n| n.contains("_bkd_spill_") && n.ends_with(".tmp")),
+            "the writer was spilling when the source failed: {:?}",
+            seen.lock().unwrap()
+        );
+        let _ = writer.close();
+        let left: Vec<String> = dir
+            .list_all()
+            .unwrap()
+            .into_iter()
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(left.is_empty(), "temporary files left behind: {left:?}");
+    }
+
     fn point_field(
         name: &str,
         number: i32,
@@ -1029,17 +1219,58 @@ mod tests {
         packed
     }
 
+    /// rmp #244: Java writes `VERSION_CURRENT` into all three headers whatever
+    /// version the writer was built with (`Lucene90PointsWriter.java:72, 85,
+    /// 98`); the version only picks the BKD encoding.
+    #[test]
+    fn headers_carry_version_current_whatever_the_writer_version() {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let segment_info = test_segment_info("points_version", 10);
+        let field_infos = FieldInfos::new(vec![int_point_field("p", 0, 1)]).unwrap();
+        let write_state = SegmentWriteState::new(
+            crate::util::default_info_stream(),
+            Arc::clone(&dir),
+            &segment_info,
+            &field_infos,
+            &crate::codecs::stub::BufferedUpdates,
+            &*crate::store::DEFAULT_IO_CONTEXT,
+        );
+        let mut writer = Lucene90PointsWriter::new(&write_state, VERSION_START).unwrap();
+        writer.finish().unwrap();
+        for (extension, codec) in [
+            (DATA_EXTENSION, DATA_CODEC_NAME),
+            (META_EXTENSION, META_CODEC_NAME),
+            (INDEX_EXTENSION, INDEX_CODEC_NAME),
+        ] {
+            let name = segment_file_name("points_version", "", extension);
+            let mut input = dir
+                .open_input(&name, &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            let read_be_int = crate::codecs::codec_util::read_be_int;
+            assert_eq!(
+                read_be_int(input.as_mut()).unwrap(),
+                crate::codecs::codec_util::CODEC_MAGIC
+            );
+            assert_eq!(input.read_string().unwrap(), codec);
+            assert_eq!(
+                read_be_int(input.as_mut()).unwrap(),
+                VERSION_CURRENT,
+                "{name}"
+            );
+        }
+    }
+
     #[test]
     fn writer_reader_round_trip_single_1d_field() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("points_test", 10);
         let field = int_point_field("int_point", 0, 1);
         let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
 
         let write_state = SegmentWriteState::new(
             crate::util::default_info_stream(),
-            dir_ref,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &crate::codecs::stub::BufferedUpdates,
@@ -1080,8 +1311,8 @@ mod tests {
 
     #[test]
     fn writer_reader_round_trip_multiple_fields() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("points_test", 10);
 
         let f1 = point_field("f1", 0, 2, 2, 4);
@@ -1090,7 +1321,7 @@ mod tests {
 
         let write_state = SegmentWriteState::new(
             crate::util::default_info_stream(),
-            dir_ref,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &crate::codecs::stub::BufferedUpdates,
@@ -1202,15 +1433,15 @@ mod tests {
 
     #[test]
     fn empty_point_field_skips_metadata_entry() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("points_test", 10);
         let field = int_point_field("int_point", 0, 1);
         let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
 
         let write_state = SegmentWriteState::new(
             crate::util::default_info_stream(),
-            dir_ref,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &crate::codecs::stub::BufferedUpdates,
@@ -1237,15 +1468,15 @@ mod tests {
 
     #[test]
     fn single_point_round_trip() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("points_test", 5);
         let field = int_point_field("int_point", 0, 1);
         let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
 
         let write_state = SegmentWriteState::new(
             crate::util::default_info_stream(),
-            dir_ref,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &crate::codecs::stub::BufferedUpdates,
@@ -1282,15 +1513,15 @@ mod tests {
 
     #[test]
     fn single_field_min_max_and_doc_count() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("points_test", 10);
         let field = int_point_field("int_point", 0, 1);
         let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
 
         let write_state = SegmentWriteState::new(
             crate::util::default_info_stream(),
-            dir_ref,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &crate::codecs::stub::BufferedUpdates,
@@ -1333,8 +1564,8 @@ mod tests {
 
     #[test]
     fn get_values_rejects_non_point_field() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("points_test", 5);
         let field = FieldInfo::new("text", 0);
         let field_infos = FieldInfos::new(vec![field]).unwrap();
@@ -1342,7 +1573,7 @@ mod tests {
         // Create and finish an empty points writer so the segment files exist.
         let write_state = SegmentWriteState::new(
             crate::util::default_info_stream(),
-            dir_ref,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &crate::codecs::stub::BufferedUpdates,
@@ -1378,15 +1609,15 @@ mod tests {
     fn range_query_1d_round_trip() {
         use crate::codecs::points::{IntersectVisitor, Relation};
 
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("points_test", 20);
         let field = int_point_field("int_point", 0, 1);
         let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
 
         let write_state = SegmentWriteState::new(
             crate::util::default_info_stream(),
-            dir_ref,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &crate::codecs::stub::BufferedUpdates,
@@ -1456,15 +1687,15 @@ mod tests {
     fn box_query_2d_round_trip() {
         use crate::codecs::points::{IntersectVisitor, Relation};
 
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("points_test", 20);
         let field = point_field("box_point", 0, 2, 2, 4);
         let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
 
         let write_state = SegmentWriteState::new(
             crate::util::default_info_stream(),
-            dir_ref,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &crate::codecs::stub::BufferedUpdates,

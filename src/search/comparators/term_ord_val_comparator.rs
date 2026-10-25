@@ -4,7 +4,6 @@
 
 #![deny(unsafe_code)]
 
-use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::collections::VecDeque;
@@ -21,9 +20,8 @@ use crate::search::comparators::updateable_doc_id_set_iterator::UpdateableDocIdS
 use crate::search::doc_id_set_iterator::{all, empty, DocIdSetIterator, NO_MORE_DOCS};
 use crate::search::doc_values_access::get_sorted;
 use crate::search::doc_values_iteration::sorted_as_iterator;
-use crate::search::field_comparator::{FieldComparator, SortValue};
+use crate::search::field_comparator::{SlotComparator, SortValue};
 use crate::search::index_searcher::IndexSearcher;
-use crate::search::leaf_field_comparator::LeafFieldComparator;
 use crate::search::pruning::Pruning;
 use crate::search::scorable::Scorable;
 use crate::search::skip_block_range_iterator::SkipBlockRangeIterator;
@@ -299,14 +297,17 @@ impl CompetitiveState {
 /// from it, because a context cannot be stored beyond the call that produced
 /// it, and the postings-based competitive iterator re-derives the doc values
 /// after the call has returned.
+///
+/// It is shared and thread-safe because the comparator that holds it is handed
+/// to an executor's worker with its collector.
 pub type SortedDocValuesSource =
-    Rc<dyn Fn(&dyn LeafReader, &str) -> Result<Box<dyn SortedDocValues>>>;
+    Arc<dyn Fn(&dyn LeafReader, &str) -> Result<Box<dyn SortedDocValues>> + Send + Sync>;
 
 /// The per-segment state of a [`TermOrdValComparator`].
 ///
 /// Equivalent to the fields of the inner class
 /// `TermOrdValComparator.TermOrdValLeafComparator`.
-struct TermOrdValLeafState {
+pub struct TermOrdValLeafState {
     /// The current reader's doc ordinals and values.
     terms_index: Box<dyn SortedDocValues>,
     /// Whether the current bottom slot matches the current reader.
@@ -370,7 +371,6 @@ pub struct TermOrdValComparator {
     /// being skipped.
     hits_threshold_reached: bool,
     doc_values_source: Option<SortedDocValuesSource>,
-    leaf: Option<TermOrdValLeafState>,
 }
 
 impl std::fmt::Debug for TermOrdValComparator {
@@ -413,7 +413,6 @@ impl TermOrdValComparator {
             can_skip_documents: pruning != Pruning::NONE,
             hits_threshold_reached: false,
             doc_values_source: None,
-            leaf: None,
         }
     }
 
@@ -452,10 +451,7 @@ impl TermOrdValComparator {
 
     /// Equivalent to the private
     /// `TermOrdValLeafComparator.getOrdForDoc(int)`.
-    fn get_ord_for_doc(&mut self, doc: i32) -> Result<i32> {
-        let Some(leaf) = self.leaf.as_mut() else {
-            return Ok(-1);
-        };
+    fn get_ord_for_doc(leaf: &mut TermOrdValLeafState, doc: i32) -> Result<i32> {
         if leaf.terms_index.advance_exact(doc)? {
             leaf.terms_index.ord_value()
         } else {
@@ -478,19 +474,15 @@ impl TermOrdValComparator {
 
     /// Equivalent to the private
     /// `TermOrdValLeafComparator.updateCompetitiveIterator()`.
-    fn update_competitive_iterator(&mut self) -> Result<()> {
-        if self.leaf.as_ref().map_or(true, |leaf| {
-            leaf.competitive_state.is_none() || !self.hits_threshold_reached
-        }) || self.bottom_slot == -1
+    fn update_competitive_iterator(&mut self, leaf: &mut TermOrdValLeafState) -> Result<()> {
+        if leaf.competitive_state.is_none()
+            || !self.hits_threshold_reached
+            || self.bottom_slot == -1
         {
             return Ok(());
         }
 
         let (min_ord, max_ord) = {
-            let leaf = self
-                .leaf
-                .as_ref()
-                .expect("INVARIANT: the leaf was just observed to be present");
             let value_count = leaf.terms_index.get_value_count()?;
             // This logic to figure out the minimum and maximum ordinals is
             // quite complex and verbose; it mirrors Lucene's exactly.
@@ -567,16 +559,18 @@ impl TermOrdValComparator {
             return Ok(());
         }
         debug_assert!(min_ord >= 0);
-        self.competitive_state_update(min_ord, max_ord)
+        self.competitive_state_update(leaf, min_ord, max_ord)
     }
 
     /// Equivalent to `CompetitiveState.update(int, int)`, dispatched on the
     /// concrete strategy.
-    fn competitive_state_update(&mut self, min_ord: i32, max_ord: i32) -> Result<()> {
+    fn competitive_state_update(
+        &mut self,
+        leaf: &mut TermOrdValLeafState,
+        min_ord: i32,
+        max_ord: i32,
+    ) -> Result<()> {
         let doc_values_source = self.doc_values_source.clone();
-        let Some(leaf) = self.leaf.as_mut() else {
-            return Ok(());
-        };
         let Some(competitive) = leaf.competitive_state.as_mut() else {
             return Ok(());
         };
@@ -735,136 +729,9 @@ fn init_postings(
     Ok(PostingsDisjunction { postings, queue })
 }
 
-impl LeafFieldComparator for TermOrdValComparator {
-    fn set_bottom(&mut self, bottom: i32) -> Result<()> {
-        self.bottom_slot = bottom;
-        self.bottom_value = self.values[bottom as usize].clone();
+impl SlotComparator for TermOrdValComparator {
+    type Leaf = TermOrdValLeafState;
 
-        let current_reader_gen = self.current_reader_gen;
-        let bottom_value = self.bottom_value.clone();
-        let ord_at_slot = self.ords[bottom as usize];
-        let reader_gen_at_slot = self.reader_gen[bottom as usize];
-
-        let mut ords_write: Option<i32> = None;
-        let mut reader_gen_write: Option<i32> = None;
-        if let Some(leaf) = self.leaf.as_mut() {
-            if current_reader_gen == reader_gen_at_slot {
-                leaf.bottom_ord = ord_at_slot;
-                leaf.bottom_same_reader = true;
-            } else if bottom_value.is_none() {
-                // The missing ordinal is null for all segments.
-                debug_assert_eq!(ord_at_slot, leaf.missing_ord);
-                leaf.bottom_ord = leaf.missing_ord;
-                leaf.bottom_same_reader = true;
-                reader_gen_write = Some(current_reader_gen);
-            } else {
-                let value = bottom_value
-                    .as_ref()
-                    .expect("INVARIANT: the bottom value was just observed to be present");
-                let ord = leaf.terms_index.lookup_term(value)?;
-                if ord < 0 {
-                    leaf.bottom_ord = -ord - 2;
-                    leaf.bottom_same_reader = false;
-                } else {
-                    leaf.bottom_ord = ord;
-                    // Exact value match.
-                    leaf.bottom_same_reader = true;
-                    reader_gen_write = Some(current_reader_gen);
-                    ords_write = Some(ord);
-                }
-            }
-        }
-        if let Some(gen) = reader_gen_write {
-            self.reader_gen[bottom as usize] = gen;
-        }
-        if let Some(ord) = ords_write {
-            self.ords[bottom as usize] = ord;
-        }
-
-        self.update_competitive_iterator()
-    }
-
-    fn compare_bottom(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
-        debug_assert!(self.bottom_slot != -1);
-        let mut doc_ord = self.get_ord_for_doc(doc)?;
-        let Some(leaf) = self.leaf.as_ref() else {
-            return Ok(0);
-        };
-        if doc_ord == -1 {
-            doc_ord = leaf.missing_ord;
-        }
-        if leaf.bottom_same_reader {
-            // The ordinal is precisely comparable, even in the equal case.
-            Ok(leaf.bottom_ord - doc_ord)
-        } else if leaf.bottom_ord >= doc_ord {
-            // The equal case always means bottom is greater than doc, because
-            // bottom_ord was set to the lower bound in set_bottom.
-            Ok(1)
-        } else {
-            Ok(-1)
-        }
-    }
-
-    fn compare_top(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
-        let mut ord = self.get_ord_for_doc(doc)?;
-        let Some(leaf) = self.leaf.as_ref() else {
-            return Ok(0);
-        };
-        if ord == -1 {
-            ord = leaf.missing_ord;
-        }
-        if leaf.top_same_reader {
-            // The ordinal is precisely comparable, even in the equal case.
-            Ok(leaf.top_ord - ord)
-        } else if ord <= leaf.top_ord {
-            // The equal case always means doc is less than the value, because
-            // top_ord was set to the lower bound.
-            Ok(1)
-        } else {
-            Ok(-1)
-        }
-    }
-
-    fn copy(&mut self, slot: i32, doc: i32, _scorer: &mut dyn Scorable) -> Result<()> {
-        let mut ord = self.get_ord_for_doc(doc)?;
-        let current_reader_gen = self.current_reader_gen;
-        let value = if ord == -1 {
-            let missing_ord = self.leaf.as_ref().map_or(-1, |leaf| leaf.missing_ord);
-            ord = missing_ord;
-            None
-        } else {
-            debug_assert!(ord >= 0);
-            let leaf = self
-                .leaf
-                .as_ref()
-                .expect("INVARIANT: a non-negative ordinal implies a positioned leaf");
-            Some(BytesRef::deep_copy_of(&leaf.terms_index.lookup_ord(ord)?))
-        };
-        self.values[slot as usize] = value;
-        self.ords[slot as usize] = ord;
-        self.reader_gen[slot as usize] = current_reader_gen;
-        Ok(())
-    }
-
-    fn set_scorer(&mut self, _scorer: &mut dyn Scorable) -> Result<()> {
-        Ok(())
-    }
-
-    fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
-        Ok(self.leaf.as_ref().and_then(|leaf| {
-            leaf.competitive_state
-                .as_ref()
-                .map(|state| Box::new(state.iterator.clone()) as Box<dyn DocIdSetIterator>)
-        }))
-    }
-
-    fn set_hits_threshold_reached(&mut self) -> Result<()> {
-        self.hits_threshold_reached = true;
-        self.update_competitive_iterator()
-    }
-}
-
-impl FieldComparator for TermOrdValComparator {
     fn compare(&self, slot1: i32, slot2: i32) -> i32 {
         if self.reader_gen[slot1 as usize] == self.reader_gen[slot2 as usize] {
             return self.ords[slot1 as usize] - self.ords[slot2 as usize];
@@ -888,7 +755,11 @@ impl FieldComparator for TermOrdValComparator {
         }
     }
 
-    fn get_leaf_comparator(&mut self, context: &LeafReaderContext) -> Result<()> {
+    /// Equivalent to `TermOrdValComparator.getLeafComparator(LeafReaderContext)`,
+    /// which returns `new TermOrdValLeafComparator(getSortedDocValues(context, field))`;
+    /// the leaf constructor recomputes the bottom and the top for the segment
+    /// and sets up the competitive iterator.
+    fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<TermOrdValLeafState> {
         self.current_reader_gen += 1;
         let reader = context.leaf_reader();
         let max_doc = reader.max_doc();
@@ -909,7 +780,7 @@ impl FieldComparator for TermOrdValComparator {
             None => (missing_ord, true),
         };
 
-        self.leaf = Some(TermOrdValLeafState {
+        let mut leaf = TermOrdValLeafState {
             terms_index,
             bottom_same_reader: false,
             bottom_ord: 0,
@@ -918,11 +789,12 @@ impl FieldComparator for TermOrdValComparator {
             missing_ord,
             competitive_state: None,
             dense: false,
-        });
+        };
 
         if self.bottom_slot != -1 {
             // Recompute bottomOrd/bottomSameReader.
-            self.set_bottom(self.bottom_slot)?;
+            let bottom_slot = self.bottom_slot;
+            self.set_bottom(&mut leaf, bottom_slot)?;
         }
 
         let mut enable_skipping = false;
@@ -933,12 +805,7 @@ impl FieldComparator for TermOrdValComparator {
             let field_infos = reader.get_field_infos();
             match field_infos.field_info(&self.field) {
                 None => {
-                    let value_count = self
-                        .leaf
-                        .as_ref()
-                        .expect("INVARIANT: the leaf was just installed")
-                        .terms_index
-                        .get_value_count()?;
+                    let value_count = leaf.terms_index.get_value_count()?;
                     if value_count != 0 {
                         return Err(LuceneError::IllegalState(format!(
                             "Field [{}] cannot be found in field infos",
@@ -987,23 +854,14 @@ impl FieldComparator for TermOrdValComparator {
                 CompetitiveStateKind::Empty
             };
             let state = CompetitiveState::new(max_doc, kind)?;
-            if let Some(leaf) = self.leaf.as_mut() {
-                leaf.dense = dense;
-                leaf.competitive_state = Some(state);
-            }
-        } else if let Some(leaf) = self.leaf.as_mut() {
+            leaf.dense = dense;
+            leaf.competitive_state = Some(state);
+        } else {
             leaf.dense = dense;
         }
 
-        self.update_competitive_iterator()
-    }
-
-    fn as_leaf_comparator(&mut self) -> &mut dyn LeafFieldComparator {
-        self
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
+        self.update_competitive_iterator(&mut leaf)?;
+        Ok(leaf)
     }
 
     fn compare_values(&self, first: &SortValue, second: &SortValue) -> i32 {
@@ -1016,5 +874,143 @@ impl FieldComparator for TermOrdValComparator {
 
     fn disable_skipping(&mut self) {
         self.can_skip_documents = false;
+    }
+
+    fn set_bottom(&mut self, leaf: &mut TermOrdValLeafState, bottom: i32) -> Result<()> {
+        self.bottom_slot = bottom;
+        self.bottom_value = self.values[bottom as usize].clone();
+
+        let current_reader_gen = self.current_reader_gen;
+        let bottom_value = self.bottom_value.clone();
+        let ord_at_slot = self.ords[bottom as usize];
+        let reader_gen_at_slot = self.reader_gen[bottom as usize];
+
+        let mut ords_write: Option<i32> = None;
+        let mut reader_gen_write: Option<i32> = None;
+        {
+            if current_reader_gen == reader_gen_at_slot {
+                leaf.bottom_ord = ord_at_slot;
+                leaf.bottom_same_reader = true;
+            } else if bottom_value.is_none() {
+                // The missing ordinal is null for all segments.
+                debug_assert_eq!(ord_at_slot, leaf.missing_ord);
+                leaf.bottom_ord = leaf.missing_ord;
+                leaf.bottom_same_reader = true;
+                reader_gen_write = Some(current_reader_gen);
+            } else {
+                let value = bottom_value
+                    .as_ref()
+                    .expect("INVARIANT: the bottom value was just observed to be present");
+                let ord = leaf.terms_index.lookup_term(value)?;
+                if ord < 0 {
+                    leaf.bottom_ord = -ord - 2;
+                    leaf.bottom_same_reader = false;
+                } else {
+                    leaf.bottom_ord = ord;
+                    // Exact value match.
+                    leaf.bottom_same_reader = true;
+                    reader_gen_write = Some(current_reader_gen);
+                    ords_write = Some(ord);
+                }
+            }
+        }
+        if let Some(gen) = reader_gen_write {
+            self.reader_gen[bottom as usize] = gen;
+        }
+        if let Some(ord) = ords_write {
+            self.ords[bottom as usize] = ord;
+        }
+
+        self.update_competitive_iterator(leaf)
+    }
+
+    fn compare_bottom(
+        &mut self,
+        leaf: &mut TermOrdValLeafState,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        debug_assert!(self.bottom_slot != -1);
+        let mut doc_ord = Self::get_ord_for_doc(leaf, doc)?;
+        if doc_ord == -1 {
+            doc_ord = leaf.missing_ord;
+        }
+        if leaf.bottom_same_reader {
+            // The ordinal is precisely comparable, even in the equal case.
+            Ok(leaf.bottom_ord - doc_ord)
+        } else if leaf.bottom_ord >= doc_ord {
+            // The equal case always means bottom is greater than doc, because
+            // bottom_ord was set to the lower bound in set_bottom.
+            Ok(1)
+        } else {
+            Ok(-1)
+        }
+    }
+
+    fn compare_top(
+        &mut self,
+        leaf: &mut TermOrdValLeafState,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        let mut ord = Self::get_ord_for_doc(leaf, doc)?;
+        if ord == -1 {
+            ord = leaf.missing_ord;
+        }
+        if leaf.top_same_reader {
+            // The ordinal is precisely comparable, even in the equal case.
+            Ok(leaf.top_ord - ord)
+        } else if ord <= leaf.top_ord {
+            // The equal case always means doc is less than the value, because
+            // top_ord was set to the lower bound.
+            Ok(1)
+        } else {
+            Ok(-1)
+        }
+    }
+
+    fn copy(
+        &mut self,
+        leaf: &mut TermOrdValLeafState,
+        slot: i32,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        let mut ord = Self::get_ord_for_doc(leaf, doc)?;
+        let current_reader_gen = self.current_reader_gen;
+        let value = if ord == -1 {
+            ord = leaf.missing_ord;
+            None
+        } else {
+            debug_assert!(ord >= 0);
+            Some(BytesRef::deep_copy_of(&leaf.terms_index.lookup_ord(ord)?))
+        };
+        self.values[slot as usize] = value;
+        self.ords[slot as usize] = ord;
+        self.reader_gen[slot as usize] = current_reader_gen;
+        Ok(())
+    }
+
+    fn set_scorer(
+        &mut self,
+        _leaf: &mut TermOrdValLeafState,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn competitive_iterator(
+        &mut self,
+        leaf: &mut TermOrdValLeafState,
+    ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        Ok(leaf
+            .competitive_state
+            .as_ref()
+            .map(|state| Box::new(state.iterator.clone()) as Box<dyn DocIdSetIterator>))
+    }
+
+    fn set_hits_threshold_reached(&mut self, leaf: &mut TermOrdValLeafState) -> Result<()> {
+        self.hits_threshold_reached = true;
+        self.update_competitive_iterator(leaf)
     }
 }

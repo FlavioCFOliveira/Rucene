@@ -7,12 +7,10 @@ use std::fmt;
 
 use crate::error::{LuceneError, Result};
 use crate::index::LeafReaderContext;
-use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::field_comparator::FieldComparator;
 use crate::search::field_doc::FieldDoc;
-use crate::search::multi_leaf_field_comparator::{compare_bottom_weighted, compare_top_weighted};
+use crate::search::leaf_field_comparator::LeafFieldComparator;
 use crate::search::pruning::Pruning;
-use crate::search::scorable::Scorable;
 use crate::search::score_doc::ScoreDoc;
 use crate::search::sort::SortField;
 
@@ -72,25 +70,13 @@ impl fmt::Display for Entry {
 /// keeps them apart to avoid an array access in the hot path, not to change
 /// behaviour.
 ///
-/// # Adaptation: the queue owns the comparators and the leaf operations
+/// # Adaptation: the heap is implemented here
 ///
-/// **Divergence from Lucene 10.5.0.** Java's `lessThan` reads the comparators
-/// through `FieldComparator.compare(int, int)` while `TopFieldCollector` holds
-/// the *leaf* comparators of the very same objects and keeps calling
-/// `copy`, `setBottom` and `compareBottom` on them. Rust cannot hold those two
-/// aliases at once, so this type owns the comparators and exposes both halves:
-/// the heap operations, and the per-leaf operations that Java performs through
-/// `MultiLeafFieldComparator`. The algorithms are unchanged — the weighted,
-/// short-circuiting comparisons are
-/// [`compare_bottom_weighted`](crate::search::compare_bottom_weighted) and
-/// [`compare_top_weighted`](crate::search::compare_top_weighted), the very
-/// functions [`MultiLeafFieldComparator`](crate::search::MultiLeafFieldComparator)
-/// runs.
-///
-/// For the same reason the heap itself is implemented here rather than by
-/// holding a [`PriorityQueue`](crate::util::PriorityQueue): that type takes its
-/// ordering from a separate comparator object, which cannot reach the
-/// comparators stored here. The sift-up and sift-down are the same as
+/// **Divergence from Lucene 10.5.0.** The heap is implemented here rather than
+/// by holding a [`PriorityQueue`](crate::util::PriorityQueue): that type takes
+/// its ordering from a separate comparator object, which cannot reach the
+/// comparators stored here, where Java's `lessThan` is a method of the queue
+/// subclass itself. The sift-up and sift-down are the same as
 /// `PriorityQueue`'s, so the heap behaves identically.
 pub struct FieldValueHitQueue {
     /// The sort criteria being used.
@@ -203,130 +189,21 @@ impl FieldValueHitQueue {
         &mut self.comparators
     }
 
-    /// Prepares every comparator to collect the given leaf.
+    /// Returns the leaf comparator of every comparator for `context`.
     ///
-    /// Equivalent to
-    /// `FieldValueHitQueue.getComparators(LeafReaderContext)`, which builds one
-    /// `LeafFieldComparator` per comparator; see the adaptation note on this
-    /// type for why nothing is returned.
+    /// Equivalent to `FieldValueHitQueue.getComparators(LeafReaderContext)`.
     ///
     /// # Errors
     ///
     /// Propagates any I/O error raised while opening the segment's values.
-    pub fn set_next_leaf(&mut self, context: &LeafReaderContext) -> Result<()> {
-        for comparator in self.comparators.iter_mut() {
-            comparator.get_leaf_comparator(context)?;
-        }
-        Ok(())
-    }
-
-    /// Compares the bottom of the queue with `doc`, weighted by the reverse
-    /// multipliers.
-    ///
-    /// Equivalent to `reverseMul * comparator.compareBottom(doc)` in
-    /// `TopFieldCollector.TopFieldLeafCollector.thresholdCheck`, for both the
-    /// single-comparator and the multi-comparator shapes.
-    ///
-    /// # Errors
-    ///
-    /// Propagates any I/O error a comparator raises.
-    pub fn compare_bottom(&mut self, doc: i32, scorer: &mut dyn Scorable) -> Result<i32> {
-        compare_bottom_weighted(
-            self.comparators
-                .iter_mut()
-                .map(|comparator| comparator.as_leaf_comparator()),
-            &self.reverse_mul,
-            doc,
-            scorer,
-        )
-    }
-
-    /// Compares the top value with `doc`, weighted by the reverse multipliers.
-    ///
-    /// Equivalent to `reverseMul * comparator.compareTop(doc)` in
-    /// `TopFieldCollector.PagingFieldCollector`.
-    ///
-    /// # Errors
-    ///
-    /// Propagates any I/O error a comparator raises.
-    pub fn compare_top(&mut self, doc: i32, scorer: &mut dyn Scorable) -> Result<i32> {
-        compare_top_weighted(
-            self.comparators
-                .iter_mut()
-                .map(|comparator| comparator.as_leaf_comparator()),
-            &self.reverse_mul,
-            doc,
-            scorer,
-        )
-    }
-
-    /// Copies the values of `doc` into `slot` on every comparator.
-    ///
-    /// Equivalent to `LeafFieldComparator.copy(int, int)` on the leaf
-    /// comparator of every sort field.
-    ///
-    /// # Errors
-    ///
-    /// Propagates any I/O error a comparator raises.
-    pub fn copy(&mut self, slot: i32, doc: i32, scorer: &mut dyn Scorable) -> Result<()> {
-        for comparator in self.comparators.iter_mut() {
-            comparator.copy(slot, doc, scorer)?;
-        }
-        Ok(())
-    }
-
-    /// Sets the bottom slot on every comparator.
-    ///
-    /// Equivalent to `LeafFieldComparator.setBottom(int)` on the leaf
-    /// comparator of every sort field.
-    ///
-    /// # Errors
-    ///
-    /// Propagates any I/O error a comparator raises.
-    pub fn set_bottom(&mut self, slot: i32) -> Result<()> {
-        for comparator in self.comparators.iter_mut() {
-            comparator.set_bottom(slot)?;
-        }
-        Ok(())
-    }
-
-    /// Installs the scorer on every comparator.
-    ///
-    /// Equivalent to `LeafFieldComparator.setScorer(Scorable)` on the leaf
-    /// comparator of every sort field.
-    ///
-    /// # Errors
-    ///
-    /// Propagates any I/O error a comparator raises.
-    pub fn set_scorer(&mut self, scorer: &mut dyn Scorable) -> Result<()> {
-        for comparator in self.comparators.iter_mut() {
-            comparator.set_scorer(scorer)?;
-        }
-        Ok(())
-    }
-
-    /// Notifies the primary comparator that the hits threshold was reached.
-    ///
-    /// Equivalent to `MultiLeafFieldComparator.setHitsThresholdReached()`,
-    /// which only notifies the first comparator because skipping is only
-    /// relevant for the primary sort field.
-    ///
-    /// # Errors
-    ///
-    /// Propagates any I/O error the comparator raises.
-    pub fn set_hits_threshold_reached(&mut self) -> Result<()> {
-        self.comparators[0].set_hits_threshold_reached()
-    }
-
-    /// Returns the competitive iterator of the primary comparator.
-    ///
-    /// Equivalent to `MultiLeafFieldComparator.competitiveIterator()`.
-    ///
-    /// # Errors
-    ///
-    /// Propagates any I/O error the comparator raises.
-    pub fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
-        self.comparators[0].competitive_iterator()
+    pub fn get_leaf_comparators(
+        &mut self,
+        context: &LeafReaderContext,
+    ) -> Result<Vec<Box<dyn LeafFieldComparator>>> {
+        self.comparators
+            .iter_mut()
+            .map(|comparator| comparator.get_leaf_comparator(context))
+            .collect()
     }
 
     /// Builds the [`FieldDoc`] that carries the values used to sort `entry`.
@@ -524,40 +401,5 @@ impl FieldValueHitQueue {
             }
         }
         self.heap[i] = Some(node);
-    }
-}
-
-/// Compile-time check that [`FieldValueHitQueue`] is `Send` but for its
-/// comparators.
-#[cfg(test)]
-pub(crate) mod send_checks {
-    use super::FieldValueHitQueue;
-
-    fn assert_send<T: Send>(_: &T) {}
-
-    /// Every field of the queue but the comparators is `Send`.
-    fn queue_fields(queue: &FieldValueHitQueue) {
-        let FieldValueHitQueue {
-            fields,
-            comparators: _,
-            reverse_mul,
-            one_comparator,
-            heap,
-            size,
-            max_size,
-        } = queue;
-        assert_send(fields);
-        assert_send(reverse_mul);
-        assert_send(one_comparator);
-        assert_send(heap);
-        assert_send(size);
-        assert_send(max_size);
-    }
-
-    /// Forces the check above to compile. The destructuring names every
-    /// field, so a field added later fails to compile until it is listed, and
-    /// a listed field that is not `Send` fails its assertion.
-    pub(crate) fn queue_is_send_but_for_its_comparators() {
-        let _: fn(&FieldValueHitQueue) = queue_fields;
     }
 }

@@ -35,6 +35,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use rucene::document::IntPoint;
@@ -194,7 +195,7 @@ fn write_corpus(dir: &Path) {
 
         // The writer's temp directory is never touched for this corpus: 512
         // points fit in the heap budget, so the point writer stays in memory.
-        let temp_dir: Box<dyn Directory> = Box::new(RamDirectory::new());
+        let temp_dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
         let mut writer = BKDWriter::new_default(
             MAX_DOC,
             temp_dir,

@@ -435,6 +435,9 @@ public final class DeletionPolicyFixture {
                                 + joinStrings(new TreeSet<>(commit.getFileNames()))
                                 + ";"
                                 + joinUserData(commit.getUserData()));
+                // `ReaderCommit.toString()`, whose file list keeps the iteration order of
+                // the `HashSet` `SegmentInfos.files` builds (rmp #212).
+                System.out.println("commit_string=" + commit);
             }
         }
     }

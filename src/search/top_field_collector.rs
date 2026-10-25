@@ -10,11 +10,13 @@ use crate::index::{sub_index_from_leaves, LeafReaderContext};
 use crate::search::collection_terminated_exception::{CollectionError, CollectionResult};
 use crate::search::collector::{Collector, LeafCollector};
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
-use crate::search::field_comparator::RelevanceComparator;
+use crate::search::field_comparator::is_relevance_comparator;
 use crate::search::field_doc::FieldDoc;
 use crate::search::field_value_hit_queue::{Entry, FieldValueHitQueue};
 use crate::search::index_searcher::IndexSearcher;
+use crate::search::leaf_field_comparator::LeafFieldComparator;
 use crate::search::max_score_accumulator::MaxScoreAccumulator;
+use crate::search::multi_leaf_field_comparator::MultiLeafFieldComparator;
 use crate::search::query::Query;
 use crate::search::scorable::Scorable;
 use crate::search::score_caching_wrapping_scorer::ScoreCachingWrappingScorer;
@@ -169,9 +171,7 @@ impl TopFieldCollector {
     ) -> Self {
         let needs_scores = sort.needs_scores();
         let num_comparators = queue.get_comparators().len();
-        let first_is_relevance = queue.get_comparators()[0]
-            .as_any()
-            .is::<RelevanceComparator>();
+        let first_is_relevance = is_relevance_comparator(queue.get_comparators()[0].as_ref());
         let reverse_mul = queue.get_reverse_mul()[0];
 
         let (score_mode, can_set_min_score) = if first_is_relevance
@@ -230,11 +230,6 @@ impl TopFieldCollector {
             total_hits: 0,
             total_hits_relation: TotalHitsRelation::EQUAL_TO,
         };
-        // The state is not `Send` while `FieldComparator` lacks a `Send`
-        // bound, which `arc_with_non_send_sync` flags. The `Arc<Mutex<..>>` is
-        // deliberate: it is what makes this handle `Send` and `Sync` as soon as
-        // the comparators are, as Lucene's executor-driven search requires.
-        #[allow(clippy::arc_with_non_send_sync)]
         let state = Arc::new(Mutex::new(state));
         Self { state }
     }
@@ -438,7 +433,27 @@ impl Collector for TopFieldCollector {
                 state.queue.get_comparators_mut()[0].disable_skipping();
             }
         }
-        state.queue.set_next_leaf(context)?;
+        // `queue.getComparators(context)`, wrapped in a
+        // `MultiLeafFieldComparator` when there are several.
+        let mut comparators = state.queue.get_leaf_comparators(context)?;
+        let reverse_mul = state.queue.get_reverse_mul();
+        let (comparator, reverse_mul): (Box<dyn LeafFieldComparator>, i32) =
+            if comparators.len() == 1 {
+                (
+                    comparators
+                        .pop()
+                        .expect("INVARIANT: exactly one comparator was just counted"),
+                    reverse_mul[0],
+                )
+            } else {
+                (
+                    Box::new(MultiLeafFieldComparator::new(
+                        comparators,
+                        reverse_mul.to_vec(),
+                    )?),
+                    1,
+                )
+            };
 
         // Reset the minimum competitive score.
         state.min_competitive_score = 0.0;
@@ -452,6 +467,8 @@ impl Collector for TopFieldCollector {
         let needs_scores = state.needs_scores;
         let collector = TopFieldLeafCollector {
             parent,
+            comparator,
+            reverse_mul,
             after_doc,
             collected_all_competitive_hits: false,
         };
@@ -516,6 +533,16 @@ impl TopDocsCollector for TopFieldCollector {
 struct TopFieldLeafCollector<'a> {
     /// The collector's state, locked for as long as this leaf is collected.
     parent: MutexGuard<'a, TopFieldCollectorState>,
+    /// The leaf comparator of the sort, or the `MultiLeafFieldComparator`
+    /// over the leaf comparators of a multi-field sort.
+    ///
+    /// Equivalent to `TopFieldLeafCollector.comparator`.
+    comparator: Box<dyn LeafFieldComparator>,
+    /// `reverseMul[0]` for a single comparator, `1` for the
+    /// `MultiLeafFieldComparator`, which applies the multipliers itself.
+    ///
+    /// Equivalent to `TopFieldLeafCollector.reverseMul`.
+    reverse_mul: i32,
     /// The `after` hit rebased on the current leaf, when paging.
     ///
     /// Equivalent to `final int afterDoc = after.doc - docBase`.
@@ -552,7 +579,7 @@ impl TopFieldLeafCollector<'_> {
         {
             // The hits threshold was reached for the first time; notify the
             // comparator about it.
-            self.parent.queue.set_hits_threshold_reached()?;
+            self.comparator.set_hits_threshold_reached()?;
             self.parent.total_hits_relation = TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO;
         }
         Ok(())
@@ -561,7 +588,7 @@ impl TopFieldLeafCollector<'_> {
     /// Equivalent to `TopFieldLeafCollector.thresholdCheck(int)`.
     fn threshold_check(&mut self, doc: i32, scorer: &mut dyn Scorable) -> CollectionResult<bool> {
         if self.collected_all_competitive_hits
-            || self.parent.queue.compare_bottom(doc, scorer)? <= 0
+            || self.reverse_mul * self.comparator.compare_bottom(doc, scorer)? <= 0
         {
             // Since docs are visited in doc ID order, a comparison of 0 means
             // this document is larger than anything else in the queue and
@@ -591,14 +618,14 @@ impl TopFieldLeafCollector<'_> {
             .bottom
             .expect("INVARIANT: the queue is full, so a bottom entry exists")
             .slot;
-        self.parent.queue.copy(bottom_slot, doc, scorer)?;
+        self.comparator.copy(bottom_slot, doc, scorer)?;
         self.parent.update_bottom(doc);
         let bottom_slot = self
             .parent
             .bottom
             .expect("INVARIANT: updateBottom leaves a bottom entry")
             .slot;
-        self.parent.queue.set_bottom(bottom_slot)?;
+        self.comparator.set_bottom(bottom_slot)?;
         self.parent.update_min_competitive_score(scorer)
     }
 
@@ -612,7 +639,7 @@ impl TopFieldLeafCollector<'_> {
         // Startup transient: the queue has not gathered numHits yet.
         let slot = hits_collected - 1;
         // Copy the hit into the queue.
-        self.parent.queue.copy(slot, doc, scorer)?;
+        self.comparator.copy(slot, doc, scorer)?;
         self.parent.add(slot, doc);
         if self.parent.queue_full {
             let bottom_slot = self
@@ -620,7 +647,7 @@ impl TopFieldLeafCollector<'_> {
                 .bottom
                 .expect("INVARIANT: a full queue has a bottom entry")
                 .slot;
-            self.parent.queue.set_bottom(bottom_slot)?;
+            self.comparator.set_bottom(bottom_slot)?;
             self.parent.update_min_competitive_score(scorer)?;
         }
         Ok(())
@@ -629,7 +656,7 @@ impl TopFieldLeafCollector<'_> {
 
 impl LeafCollector for TopFieldLeafCollector<'_> {
     fn set_scorer(&mut self, scorer: &mut dyn Scorable) -> Result<()> {
-        self.parent.queue.set_scorer(scorer)?;
+        self.comparator.set_scorer(scorer)?;
         if self.parent.min_score_acc.is_none() {
             self.parent.update_min_competitive_score(scorer)
         } else {
@@ -655,7 +682,7 @@ impl LeafCollector for TopFieldLeafCollector<'_> {
                 if self.parent.queue_full && self.threshold_check(doc, scorer)? {
                     return Ok(());
                 }
-                let top_cmp = self.parent.queue.compare_top(doc, scorer)?;
+                let top_cmp = self.reverse_mul * self.comparator.compare_top(doc, scorer)?;
                 if top_cmp > 0 || (top_cmp == 0 && doc <= after_doc) {
                     // Already collected on a previous page. Check whether the
                     // hits threshold is reached and the competitive score can be
@@ -679,70 +706,6 @@ impl LeafCollector for TopFieldLeafCollector<'_> {
     }
 
     fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
-        self.parent.queue.competitive_iterator()
-    }
-}
-
-/// Compile-time checks that [`TopFieldCollector`] and its state are `Send`
-/// but for the hit queue, which holds the comparators.
-#[cfg(test)]
-pub(crate) mod send_checks {
-    use super::{TopFieldCollector, TopFieldCollectorState};
-
-    fn assert_send<T: Send>(_: &T) {}
-
-    /// The collector is only its shared state, whose wrapper the manager's
-    /// test checks.
-    fn collector_fields(collector: &TopFieldCollector) {
-        let TopFieldCollector { state: _ } = collector;
-    }
-
-    /// Every field of the state but the hit queue is `Send`; the queue's
-    /// fields but the comparators are checked by
-    /// [`field_value_hit_queue::send_checks`](crate::search::field_value_hit_queue::send_checks).
-    fn state_fields(state: &TopFieldCollectorState) {
-        let TopFieldCollectorState {
-            sort,
-            queue: _,
-            after,
-            collected_hits,
-            num_hits,
-            total_hits_threshold,
-            can_set_min_score,
-            search_sort_part_of_index_sort,
-            min_score_acc,
-            min_competitive_score,
-            bottom,
-            queue_full,
-            doc_base,
-            needs_scores,
-            score_mode,
-            total_hits,
-            total_hits_relation,
-        } = state;
-        assert_send(sort);
-        assert_send(after);
-        assert_send(collected_hits);
-        assert_send(num_hits);
-        assert_send(total_hits_threshold);
-        assert_send(can_set_min_score);
-        assert_send(search_sort_part_of_index_sort);
-        assert_send(min_score_acc);
-        assert_send(min_competitive_score);
-        assert_send(bottom);
-        assert_send(queue_full);
-        assert_send(doc_base);
-        assert_send(needs_scores);
-        assert_send(score_mode);
-        assert_send(total_hits);
-        assert_send(total_hits_relation);
-    }
-
-    /// Forces the two checks above to compile. Each destructuring names every
-    /// field, so a field added later fails to compile until it is listed, and
-    /// a listed field that is not `Send` fails its assertion.
-    pub(crate) fn collector_is_send_but_for_its_queue() {
-        let _: fn(&TopFieldCollector) = collector_fields;
-        let _: fn(&TopFieldCollectorState) = state_fields;
+        self.comparator.competitive_iterator()
     }
 }

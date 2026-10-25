@@ -20,20 +20,15 @@
 //!
 //! # Deviations from Java byte-for-byte layout
 //!
-//! - The offline point writer keeps all data in memory for its external merge
-//!   sort; this is simpler than the Java reference's true streaming sort but is
-//!   sufficient for the current port phase.
 //! - `DocIdsWriter` implements the full set of doc-id encodings from Lucene
 //!   10.5.0, including the vectorized `BPV_24` layout and `BPV_21`, selected by
 //!   the BKD format version exactly as the Java reference does.
-//! - `BKDWriter` switches any `OfflinePointWriter` into a `HeapPointWriter` at
-//!   `finish` time and builds the tree in memory, as allowed by the task
-//!   specification. Partitioning is performed by sorting sub-slices and
-//!   splitting at the median, which may choose different split values than the
-//!   reference radix selector when duplicate values straddle the cut point.
-//!   The produced tree and leaf blocks are internally consistent and readable by
-//!   `BKDReader`. [`BKDRadixSelector`] is now ported and reproduces Lucene's
-//!   partitioning exactly; `BKDWriter` has not yet been switched over to it.
+//! - `BKDWriter` buffers the points [`BKDWriter::add`] receives in heap or, past
+//!   its heap budget, in a temporary file of the directory it was given, and
+//!   [`BKDWriter::finish`] partitions them with [`BKDRadixSelector`], spilling
+//!   partitions that do not fit in heap, exactly as Lucene's `finish` and
+//!   `build(…, PathSlice, …)` do (`BKDWriter.java:222-232, 930-1034,
+//!   1922-2126`).
 //!
 //! | Rucene | Apache Lucene Core 10.5.0 |
 //! | --- | --- |
@@ -64,17 +59,21 @@ pub use mutable_point_tree_reader_utils::MutablePointTreeReaderUtils;
 use std::sync::Arc;
 use std::{cmp::Ordering, collections::HashSet};
 
+use crate::index::documents_writer::SharedDirectory;
 use crate::index::merge::DocMap;
 use crate::index::point_values::MutablePointTree;
 use crate::util::packed::PackedInts;
 use crate::util::selector::{intro_select, intro_sort, PivotOps, RadixSelector, RadixSelectorOps};
 use crate::{
-    codecs::codec_util::{check_footer_with_prior, check_header, write_header},
+    codecs::codec_util::{
+        check_footer, check_footer_with_prior, check_header,
+        footer_length as codec_util_footer_length, write_footer, write_header,
+    },
     error::{LuceneError, Result},
     search::{DocIdSetIterator, NO_MORE_DOCS},
     store::{
-        DataOutput, Directory, IndexInput, IndexOutput, VecDataOutput, DEFAULT_IO_CONTEXT,
-        READONCE_IO_CONTEXT,
+        BufferedChecksumIndexInput, DataOutput, Directory, IndexInput, IndexOutput,
+        TrackingDirectoryWrapper, VecDataOutput, DEFAULT_IO_CONTEXT, READONCE_IO_CONTEXT,
     },
     util::{
         ArrayUtil, BitUtil, DocBaseBitSetIterator, FixedBitSet, IntsRef, MathUtil, PriorityQueue,
@@ -811,7 +810,10 @@ impl PointWriter for HeapPointWriter {
     }
 
     fn get_reader(&mut self, start: usize, length: usize) -> Result<Box<dyn PointReader + '_>> {
-        self.ensure_open()?;
+        // Java only asserts that the writer is already *closed*
+        // (`HeapPointWriter.java:218`): a closed heap writer hands out as many
+        // readers as its caller asks for, as `BKDWriter.finish` does for the
+        // slices of its closed root writer (`BKDWriter.java:1878-1918`).
         self.close()?;
         if start + length > self.next_write {
             return Err(LuceneError::IllegalArgument(format!(
@@ -983,10 +985,16 @@ impl PointWriter for OfflinePointWriter {
         self.count
     }
 
+    /// Writes the codec footer and closes the file
+    /// (`OfflinePointWriter.java:109-119`), so that a reader of the whole file
+    /// can verify its checksum.
     fn close(&mut self) -> Result<()> {
         if !self.closed {
-            self.out.close()?;
+            let footer = write_footer(self.out.as_mut());
+            let closed = self.out.close();
             self.closed = true;
+            footer?;
+            closed?;
         }
         Ok(())
     }
@@ -1037,6 +1045,9 @@ impl OfflinePointWriter {
         for record in &records {
             sorted_out.write_bytes(record, 0, record.len())?;
         }
+        // Same layout as an `OfflinePointWriter` file: the records, then the
+        // codec footer the reader expects.
+        write_footer(sorted_out.as_mut())?;
         sorted_out.close()?;
 
         let buf = vec![0u8; bytes_per_doc];
@@ -1057,11 +1068,13 @@ impl OfflinePointWriter {
 /// [`OfflinePointWriter`].
 pub struct OfflinePointReader {
     config: BKDConfig,
-    in_: Box<dyn IndexInput>,
+    in_: OfflineInput,
     buffer: Vec<u8>,
     offset: usize,
     points_in_buffer: usize,
     count_left: usize,
+    /// Whether the footer was verified already.
+    checked: bool,
     current: PointValue,
 }
 
@@ -1079,9 +1092,28 @@ impl OfflinePointReader {
                 "reusableBuffer too small".to_string(),
             ));
         }
-        let mut in_ = temp_dir.open_input(name, &*READONCE_IO_CONTEXT)?;
-        let seek_fp = start as i64 * config.bytes_per_doc() as i64;
-        in_.seek(seek_fp)?;
+        let bytes_per_doc = i64::from(config.bytes_per_doc());
+        let file_length = temp_dir.file_length(name)?;
+        let footer_length = i64::from(codec_util_footer_length());
+        if (start + length) as i64 * bytes_per_doc + footer_length > file_length {
+            return Err(LuceneError::IllegalArgument(format!(
+                "requested slice is beyond the length of this file: start={start} \
+                 length={length} bytesPerDoc={bytes_per_doc} fileLength={file_length} \
+                 tempFileName={name}"
+            )));
+        }
+        // Best-effort checksumming (`OfflinePointReader.java:83-96`): a reader
+        // of the entire file, e.g. because `BKDWriter` is now partitioning it,
+        // verifies the checksum at close; one that seeks into the middle of
+        // the file does not.
+        let mut in_ = if start == 0 && length as i64 * bytes_per_doc == file_length - footer_length
+        {
+            OfflineInput::Checksum(temp_dir.open_checksum_input(name)?)
+        } else {
+            OfflineInput::Plain(temp_dir.open_input(name, &*READONCE_IO_CONTEXT)?)
+        };
+        let seek_fp = start as i64 * bytes_per_doc;
+        in_.as_input().seek(seek_fp)?;
         Ok(Self {
             config,
             in_,
@@ -1089,6 +1121,7 @@ impl OfflinePointReader {
             offset: 0,
             points_in_buffer: 0,
             count_left: length,
+            checked: false,
             current: PointValue::new(Vec::new(), 0),
         })
     }
@@ -1103,7 +1136,7 @@ impl PointReader for OfflinePointReader {
             let max_point_on_heap = self.buffer.len() / self.config.bytes_per_doc() as usize;
             let to_read = self.count_left.min(max_point_on_heap);
             let bytes = to_read * self.config.bytes_per_doc() as usize;
-            self.in_.read_bytes(&mut self.buffer, 0, bytes)?;
+            self.in_.as_input().read_bytes(&mut self.buffer, 0, bytes)?;
             self.points_in_buffer = to_read - 1;
             self.count_left -= to_read;
             self.offset = 0;
@@ -1120,8 +1153,35 @@ impl PointReader for OfflinePointReader {
         &self.current
     }
 
+    /// Verifies the footer when the whole file was read through a checksum
+    /// input, then closes it (`OfflinePointReader.java:145-155`).
     fn close(&mut self) -> Result<()> {
-        self.in_.close()
+        let checked = match self.in_ {
+            OfflineInput::Checksum(ref mut input) if self.count_left == 0 && !self.checked => {
+                self.checked = true;
+                check_footer(input.as_mut()).map(|_| ())
+            }
+            _ => Ok(()),
+        };
+        let closed = self.in_.as_input().close();
+        checked?;
+        closed
+    }
+}
+
+/// The file an [`OfflinePointReader`] reads: through a checksum when it reads
+/// the whole file, plainly otherwise.
+enum OfflineInput {
+    Checksum(Box<BufferedChecksumIndexInput>),
+    Plain(Box<dyn IndexInput>),
+}
+
+impl OfflineInput {
+    fn as_input(&mut self) -> &mut dyn IndexInput {
+        match self {
+            Self::Checksum(input) => input.as_mut(),
+            Self::Plain(input) => input.as_mut(),
+        }
     }
 }
 
@@ -3477,6 +3537,13 @@ fn apply_permutation(points: &mut dyn BuildPoints, from: usize, order: &[usize])
 #[allow(dead_code)]
 pub struct BKDWriter {
     max_doc: i32,
+    /// The caller's directory behind a [`TrackingDirectoryWrapper`], as
+    /// `this.tempDir = new TrackingDirectoryWrapper(tempDir)`
+    /// (`BKDWriter.java:173`): every temporary file this writer and its
+    /// `BKDRadixSelector` create is recorded, so a failed `finish` can delete
+    /// them all and `verifyChecksum` can tell a temporary file it made.
+    tracking_dir: Arc<TrackingDirectoryWrapper>,
+    /// [`Self::tracking_dir`] as the `Directory` the point writers take.
     temp_dir: Arc<dyn Directory>,
     temp_prefix: String,
     config: BKDConfig,
@@ -3663,7 +3730,7 @@ impl BKDWriter {
     /// Creates a writer using [`Self::VERSION_CURRENT`].
     pub fn new_default(
         max_doc: i32,
-        temp_dir: Box<dyn Directory>,
+        temp_dir: Arc<dyn Directory>,
         temp_prefix: &str,
         config: BKDConfig,
         max_mb_sort_in_heap: f64,
@@ -3681,9 +3748,14 @@ impl BKDWriter {
     }
 
     /// Creates a writer with an explicit format version.
+    ///
+    /// `temp_dir` receives the temporary files of a writer whose
+    /// `total_point_count` exceeds what `max_mb_sort_in_heap` holds
+    /// (`BKDWriter.java:222-232`), and those of the partitions `finish`
+    /// spills; `Lucene90PointsWriter` passes the segment's own directory.
     pub fn new(
         max_doc: i32,
-        temp_dir: Box<dyn Directory>,
+        temp_dir: Arc<dyn Directory>,
         temp_prefix: &str,
         config: BKDConfig,
         max_mb_sort_in_heap: f64,
@@ -3706,11 +3778,13 @@ impl BKDWriter {
             ));
         }
         let init_config = config.clone();
+        let tracking_dir = Arc::new(TrackingDirectoryWrapper::new(Box::new(SharedDirectory(
+            temp_dir,
+        ))));
         Ok(Self {
             max_doc,
-            // `Arc` rather than `Box` so that `BKDRadixSelector` can open several
-            // temporary point writers on the same directory, as Lucene does.
-            temp_dir: Arc::from(temp_dir),
+            temp_dir: Arc::clone(&tracking_dir) as Arc<dyn Directory>,
+            tracking_dir,
             temp_prefix: temp_prefix.to_string(),
             config,
             max_mb_sort_in_heap,
@@ -3737,37 +3811,31 @@ impl BKDWriter {
 
     /// Creates the writer [`add`](Self::add) buffers points into.
     ///
-    /// Equivalent to `BKDWriter.initPointWriter()`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java buffers in a `HeapPointWriter`
-    /// only while `totalPointCount` fits in `maxPointsSortInHeap` (derived
-    /// from `maxMBSortInHeap`), and otherwise spills to an
-    /// `OfflinePointWriter` (`BKDWriter.java:222-232`); `finish` then builds
-    /// the tree over a `BKDRadixSelector.PathSlice`, partitioning offline
-    /// until a slice fits in heap (`:930-1034, 1922-2126`), with temporary
-    /// files in the segment's own directory (`Lucene90PointsWriter.java:152`
-    /// for `writeField`, `:252` for `merge`). This port keeps every point in
-    /// one `HeapPointWriter`, and `Lucene90PointsWriter` hands it a temporary
-    /// `RamDirectory`. Why: the points writer only receives a borrowed
-    /// `&dyn Directory`, while the offline writers need an owned
-    /// `Arc<dyn Directory>`; how to give the points writer an owned handle on
-    /// the segment directory is an architecture decision pending with the
-    /// user (`OwnedSegmentWriteState`, which the vectors writers receive,
-    /// already holds one). Consequence: the whole buffer — `totalPointCount`
-    /// points — is allocated here, at the first [`add`](Self::add), not grown
-    /// as points arrive. In a merge that count is the sum of the source
-    /// segments' point counts, read from their `.kdm` files, deleted points
-    /// included, so a checksum-valid but inflated count decides the
-    /// allocation; a failed allocation aborts the process instead of spilling
-    /// to disk.
+    /// Equivalent to `BKDWriter.initPointWriter()` (`BKDWriter.java:222-232`):
+    /// the points go to heap while `totalPointCount`, an upper bound on what
+    /// the caller adds, fits in `maxPointsSortInHeap`, and to a temporary
+    /// `spill` file in the caller's directory otherwise.
     fn init_point_writer(&mut self) -> Result<()> {
         if self.point_writer.is_some() {
             return Ok(());
         }
-        self.point_writer = Some(Box::new(HeapPointWriter::new(
-            self.config.clone(),
-            self.total_point_count as usize,
-        )?));
+        if self.total_point_count > self.max_points_sort_in_heap as i64 {
+            let writer = OfflinePointWriter::new(
+                self.config.clone(),
+                Arc::clone(&self.temp_dir),
+                &self.temp_prefix,
+                "spill",
+            )?;
+            // Java's `tempInput`: the file `close` deletes when `finish` never
+            // took the writer over.
+            self.temp_input_name = Some(writer.name.clone());
+            self.point_writer = Some(Box::new(writer));
+        } else {
+            self.point_writer = Some(Box::new(HeapPointWriter::new(
+                self.config.clone(),
+                self.total_point_count as usize,
+            )?));
+        }
         Ok(())
     }
 
@@ -4120,28 +4188,46 @@ impl BKDWriter {
         }
         self.finished = true;
 
-        let mut heap = self.switch_to_heap()?;
-        let point_count = heap.count();
-        let num_leaves = point_count.div_ceil(self.config.max_points_in_leaf_node as usize) as i32;
-        if num_leaves <= 0 {
-            return Err(LuceneError::IllegalState("no leaves".to_string()));
-        }
+        let mut point_writer = self
+            .point_writer
+            .take()
+            .expect("INVARIANT: add created the point writer before counting a point");
+        point_writer.close()?;
+        let points = PathSlice::of(point_writer, 0, self.point_count);
+        // Clean up pointers: from here on the slices own the spill file.
+        self.temp_input_name = None;
+
+        let num_leaves = i32::try_from(
+            (self.point_count + i64::from(self.config.max_points_in_leaf_node) - 1)
+                / i64::from(self.config.max_points_in_leaf_node),
+        )
+        .map_err(|_| LuceneError::IllegalState("integer overflow: numLeaves".to_string()))?;
+        let num_splits = num_leaves - 1;
         check_max_leaf_node_count(num_leaves, &self.config)?;
 
         let mut split_packed_values =
-            vec![0u8; (num_leaves as usize - 1) * self.config.bytes_per_dim as usize];
-        let mut split_dimension_values = vec![0u8; num_leaves as usize - 1];
+            vec![0u8; num_splits as usize * self.config.bytes_per_dim as usize];
+        let mut split_dimension_values = vec![0u8; num_splits as usize];
         let mut leaf_block_fps = Vec::with_capacity(num_leaves as usize);
-        let data_start_fp = data_out.file_pointer();
 
+        // We re-use the selector so we do not need to create an object every
+        // time.
+        let mut radix_selector = BKDRadixSelector::new(
+            self.config.clone(),
+            self.max_points_sort_in_heap,
+            Arc::clone(&self.temp_dir),
+            &self.temp_prefix,
+        );
+
+        let data_start_fp = data_out.file_pointer();
         let mut parent_splits = vec![0i32; self.config.num_index_dims as usize];
-        self.build_offline(
+        let mut spare_doc_ids = vec![0i32; self.config.max_points_in_leaf_node as usize];
+        let result = self.build_path_slice(
             0,
             num_leaves,
-            &mut heap as &mut dyn BuildPoints,
-            0,
-            point_count,
+            points,
             data_out,
+            &mut radix_selector,
             self.min_packed_value.clone(),
             self.max_packed_value.clone(),
             &mut parent_splits,
@@ -4149,7 +4235,20 @@ impl BKDWriter {
             &mut split_dimension_values,
             &mut leaf_block_fps,
             num_leaves,
-        )?;
+            &mut spare_doc_ids,
+        );
+        if let Err(error) = result {
+            // `IOUtils.deleteFilesIgnoringExceptions(tempDir,
+            // tempDir.getCreatedFiles())` (`BKDWriter.java:1017-1021`).
+            for name in self.tracking_dir.get_created_files() {
+                let _ = self.temp_dir.delete_file(&name);
+            }
+            return Err(error);
+        }
+        debug_assert!(parent_splits.iter().all(|&splits| splits == 0));
+        debug_assert_eq!(leaf_block_fps.len(), num_leaves as usize);
+        // If no exception, we should have cleaned everything up.
+        debug_assert!(self.tracking_dir.get_created_files().is_empty());
 
         Ok(Some(self.make_writer(
             split_dimension_values,
@@ -4199,13 +4298,8 @@ impl BKDWriter {
     /// [`check_footer_with_prior`] and the fact that Java's method only ever
     /// exists to be thrown.
     ///
-    /// Equivalent to `org.apache.lucene.util.bkd.BKDWriter#verifyChecksum`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java holds the temporary directory as
-    /// a `TrackingDirectoryWrapper` and asks
-    /// `tempDir.getCreatedFiles().contains(tempFileName)`; this port holds it as
-    /// a plain [`Directory`], so the same question -- is that temporary file
-    /// there to be verified? -- is asked with `list_all`.
+    /// Equivalent to `org.apache.lucene.util.bkd.BKDWriter#verifyChecksum`
+    /// (`BKDWriter.java:1563-1583`).
     fn verify_checksum(
         &self,
         prior_exception: LuceneError,
@@ -4217,8 +4311,11 @@ impl BKDWriter {
         if let Some(offline) = writer.as_any_mut().downcast_mut::<OfflinePointWriter>() {
             // We are reading from a temp file; go verify the checksum.
             let temp_file_name = offline.name.clone();
-            let created = self.temp_dir.list_all().unwrap_or_default();
-            if created.iter().any(|file| *file == temp_file_name) {
+            if self
+                .tracking_dir
+                .get_created_files()
+                .contains(&temp_file_name)
+            {
                 return match self.temp_dir.open_checksum_input(&temp_file_name) {
                     Ok(mut input) => check_footer_with_prior(&mut *input, prior_exception),
                     Err(open_error) => open_error,
@@ -4232,25 +4329,43 @@ impl BKDWriter {
     /// Pulls a partition back into heap once the point count is low enough
     /// while recursing.
     ///
-    /// Equivalent to `BKDWriter.switchToHeap(PointWriter)`.
-    fn switch_to_heap(&mut self) -> Result<HeapPointWriter> {
-        if let Some(mut pw) = self.point_writer.take() {
-            let count = pw.count();
-            let config = self.config.clone();
-            let result = (|| -> Result<HeapPointWriter> {
-                let mut heap = HeapPointWriter::new(config, count)?;
-                let mut reader = pw.get_reader(0, count)?;
-                while reader.next()? {
-                    heap.append(reader.point_value())?;
+    /// Equivalent to `BKDWriter.switchToHeap(PointWriter)`
+    /// (`BKDWriter.java:1623-1638`): every point of `source`, which is then
+    /// destroyed.
+    fn switch_to_heap(&self, source: &mut dyn PointWriter) -> Result<HeapPointWriter> {
+        let count = source.count();
+        // Java destroys the source inside its `try` block, before the
+        // `try`-with-resources closes the reader over it. The reader borrows
+        // `source` here, so an offline source's `destroy` — deleting its file
+        // from the temporary directory — is performed by name while the
+        // reader is still open; a heap source's `destroy` does nothing.
+        let offline_name = source
+            .as_any_mut()
+            .downcast_mut::<OfflinePointWriter>()
+            .map(|offline| offline.name.clone());
+        let result = (|| -> Result<HeapPointWriter> {
+            let mut heap = HeapPointWriter::new(self.config.clone(), count)?;
+            let mut reader = source.get_reader(0, count)?;
+            for _ in 0..count {
+                let has_next = reader.next()?;
+                debug_assert!(has_next);
+                heap.append(reader.point_value())?;
+            }
+            if let Some(name) = offline_name.as_ref() {
+                // `OfflinePointWriter.destroy()`.
+                let _ = self.temp_dir.delete_file(name);
+            }
+            reader.close()?;
+            Ok(heap)
+        })();
+        match result {
+            Ok(heap) => {
+                if offline_name.is_none() {
+                    source.destroy()?;
                 }
-                reader.close()?;
-                drop(reader);
-                pw.destroy()?;
                 Ok(heap)
-            })();
-            result.map_err(|error| self.verify_checksum(error, &mut *pw))
-        } else {
-            Err(LuceneError::IllegalState("no point writer".to_string()))
+            }
+            Err(error) => Err(self.verify_checksum(error, source)),
         }
     }
 
@@ -4260,7 +4375,7 @@ impl BKDWriter {
     /// Equivalent to `BKDWriter.build(int, int, MutablePointTree, …)`
     /// (`BKDWriter.java:1641-1874`), the half of `build` that serves
     /// `writeField`. Java has two `build` methods and they are **not** the same
-    /// algorithm; see [`build_offline`](Self::build_offline) for the
+    /// algorithm; see [`build_path_slice`](Self::build_path_slice) for the
     /// differences and why they are kept apart.
     #[allow(clippy::too_many_arguments)]
     fn build_mutable(
@@ -4461,47 +4576,27 @@ impl BKDWriter {
         Ok(())
     }
 
-    /// Recursively writes the tree from a buffer read through the point-writer
-    /// machinery rather than reordered in place.
+    /// Recursively partitions the points of a [`PathSlice`] and writes the tree
+    /// on the fly.
     ///
     /// Equivalent to `BKDWriter.build(int, int, BKDRadixSelector.PathSlice, …)`
     /// (`BKDWriter.java:1922-2126`), the half of `build` that serves
     /// [`BKDWriter::finish`] — the path a caller takes after
-    /// [`BKDWriter::add`], and the path `Lucene90PointsWriter` falls back to
-    /// for a tree that is not mutable.
-    ///
-    /// # Differences from [`build_mutable`](Self::build_mutable)
-    ///
-    /// Java's two `build` methods differ in three places, and only the first is
-    /// reproduced here:
-    ///
-    /// * **byte-cardinality census** — offline counts every point of the leaf
-    ///   from `from` (`BKDWriter.java:1968`); mutable skips the first
-    ///   (`:1688`). Reproduced.
-    /// * **leaf sort** — offline sorts with `BKDRadixSelector.heapRadixSort`;
-    ///   this port still calls [`sort_by_dim`](Self::sort_by_dim), the mutable
-    ///   path's `IntroSorter`. **Pending: `BKDRadixSelector` is not ported.**
-    /// * **partition** — offline partitions with `BKDRadixSelector.select` over
-    ///   a `PathSlice`, which may spill to disk; this port still calls
-    ///   [`partition_by_dim`](Self::partition_by_dim), the mutable path's
-    ///   `RadixSelector`. **Pending: `BKDRadixSelector` is not ported.**
-    ///
-    /// The two pending items need `BKDRadixSelector` and `MSBRadixSorter`,
-    /// which are scoped to their own task and deliberately not ported here.
-    /// The signature takes a buffer rather than a `PathSlice` for the same
-    /// reason: this port has no offline slice type yet. Until they land, a
-    /// segment written through [`BKDWriter::add`] is a valid BKD tree that may
-    /// differ from Lucene's in which dimension a leaf is compressed on and in
-    /// how a partition arranges each side.
+    /// [`BKDWriter::add`], and the path `Lucene90PointsWriter` takes for a
+    /// tree that is not mutable. It differs from
+    /// [`build_mutable`](Self::build_mutable) as Java's two methods do: a leaf
+    /// counts every one of its points for the byte-cardinality census
+    /// (`:1968`) and is sorted with `BKDRadixSelector.heapRadixSort`, and an
+    /// inner node is partitioned with `BKDRadixSelector.select`, which writes
+    /// a partition that does not fit in heap to a temporary file.
     #[allow(clippy::too_many_arguments)]
-    fn build_offline(
+    fn build_path_slice(
         &mut self,
         leaves_offset: i32,
         num_leaves: i32,
-        points: &mut dyn BuildPoints,
-        from: usize,
-        to: usize,
+        points: PathSlice,
         out: &mut dyn IndexOutput,
+        radix_selector: &mut BKDRadixSelector,
         mut min_packed_value: Vec<u8>,
         mut max_packed_value: Vec<u8>,
         parent_splits: &mut [i32],
@@ -4509,38 +4604,42 @@ impl BKDWriter {
         split_dimension_values: &mut [u8],
         leaf_block_fps: &mut Vec<i64>,
         total_num_leaves: i32,
+        spare_doc_ids: &mut [i32],
     ) -> Result<()> {
         if num_leaves == 1 {
-            let count = to - from;
-            self.compute_common_prefix_length(points, from, to);
+            // Leaf node: write block. We can write the block in any order, so
+            // by default we write it sorted by the dimension that has the
+            // least number of unique bytes at `commonPrefixLengths[dim]`,
+            // which makes compression more efficient.
+            let mut writer = points.writer.borrow_mut();
+            let mut switched;
+            let heap_source: &mut HeapPointWriter = if writer.as_any_mut().is::<HeapPointWriter>() {
+                writer
+                    .as_any_mut()
+                    .downcast_mut::<HeapPointWriter>()
+                    .expect("INVARIANT: checked with `is::<HeapPointWriter>` above")
+            } else {
+                // Adversarial cases can cause this, e.g. merging big
+                // segments with most of the points deleted.
+                switched = self.switch_to_heap(writer.as_mut())?;
+                &mut switched
+            };
+
+            let from = points.start as usize;
+            let to = (points.start + points.count) as usize;
+            self.compute_common_prefix_length(&*heap_source, from, to);
 
             let mut sorted_dim = 0;
             let mut sorted_dim_cardinality = usize::MAX;
-            let mut used_bytes: Vec<Option<FixedBitSet>> = (0..self.config.num_dims as usize)
-                .map(|dim| {
-                    if self.common_prefix_lengths[dim] < self.config.bytes_per_dim as usize {
-                        Some(FixedBitSet::new(256))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            for (dim, &prefix) in self
-                .common_prefix_lengths
-                .iter()
-                .enumerate()
-                .take(self.config.num_dims as usize)
-            {
+            for dim in 0..self.config.num_dims as usize {
+                let prefix = self.common_prefix_lengths[dim];
                 if prefix < self.config.bytes_per_dim as usize {
+                    let mut used_bytes = FixedBitSet::new(256);
                     let offset = dim * self.config.bytes_per_dim as usize;
-                    // The offline `build` counts every point of the leaf,
-                    // the one at `from` included (`BKDWriter.java:1968`); the
-                    // mutable one skips it (`:1688`).
                     for i in from..to {
-                        let bucket = points.byte_at(i, offset + prefix) as usize;
-                        used_bytes[dim].as_mut().unwrap().set(bucket);
+                        used_bytes.set(heap_source.byte_at(i, offset + prefix) as usize);
                     }
-                    let cardinality = used_bytes[dim].as_ref().unwrap().cardinality();
+                    let cardinality = used_bytes.cardinality();
                     if cardinality < sorted_dim_cardinality {
                         sorted_dim = dim;
                         sorted_dim_cardinality = cardinality;
@@ -4548,31 +4647,46 @@ impl BKDWriter {
                 }
             }
 
-            self.sort_by_dim(points, from, to, sorted_dim)?;
+            // Sort the chosen dimension.
+            radix_selector.heap_radix_sort(
+                heap_source,
+                from,
+                to,
+                sorted_dim,
+                self.common_prefix_lengths[sorted_dim],
+            );
             let leaf_cardinality =
-                self.compute_cardinality(points, from, to, &self.common_prefix_lengths);
+                self.compute_cardinality(&*heap_source, from, to, &self.common_prefix_lengths);
 
-            let block_fp = out.file_pointer();
-            leaf_block_fps.push(block_fp);
+            // Save the block file pointer.
+            leaf_block_fps.push(out.file_pointer());
 
-            let mut doc_ids = vec![0i32; count];
-            for (i, slot) in doc_ids.iter_mut().enumerate().take(count) {
-                *slot = points.doc_id(from + i);
+            // Write the doc IDs first, as their own chunk, so that at intersect
+            // time we can add all doc IDs without loading the values.
+            let count = to - from;
+            debug_assert!(count > 0);
+            debug_assert!(count <= spare_doc_ids.len());
+            for (i, slot) in spare_doc_ids.iter_mut().enumerate().take(count) {
+                *slot = heap_source.doc_id(from + i);
             }
             write_leaf_block_docs(
                 out,
-                &doc_ids,
+                &spare_doc_ids[..count],
                 self.config.max_points_in_leaf_node as usize,
                 self.version,
             )?;
 
+            // Write the common prefixes. Every value of the leaf shares them,
+            // so the first one after the sort carries the same bytes as the
+            // first one before it, which is where Java copies them from.
             let mut first_value = vec![0u8; self.config.packed_bytes_length() as usize];
-            points.copy_packed_value(from, &mut first_value);
+            heap_source.copy_packed_value(from, &mut first_value);
             write_common_prefixes(out, &self.common_prefix_lengths, &first_value, &self.config)?;
 
+            // Write the full values.
             let packed_values = |i: usize| -> Vec<u8> {
                 let mut v = vec![0u8; self.config.packed_bytes_length() as usize];
-                points.copy_packed_value(from + i, &mut v);
+                heap_source.copy_packed_value(from + i, &mut v);
                 v
             };
             write_leaf_block_packed_values(
@@ -4585,108 +4699,143 @@ impl BKDWriter {
                 leaf_cardinality,
             )?;
         } else {
+            // Inner node: partition and recurse.
             let split_dim = if self.config.num_index_dims == 1 {
                 0
             } else {
-                // Above two index dimensions the inherited bounds are loose on
-                // every dimension the parent did not split on, and `split`
-                // would then pick the wrong one and take the whole subtree with
-                // it. Java therefore recomputes the exact bounds of this node
-                // every `SPLITS_BEFORE_EXACT_BOUNDS` splits, but never at the
-                // root, whose bounds are already exact
-                // (`BKDWriter.java:2033-2038`). It is an expensive scan, which is
-                // why it is rationed rather than done at every node.
+                // For dimensions > 2 we recompute the bounds for the current
+                // inner node to help the algorithm choose the best split
+                // dimension. Because it is an expensive operation, the
+                // frequency is given by `SPLITS_BEFORE_EXACT_BOUNDS`.
                 if num_leaves != total_num_leaves
                     && self.config.num_index_dims > 2
                     && parent_splits.iter().sum::<i32>() % SPLITS_BEFORE_EXACT_BOUNDS == 0
                 {
-                    let (mut exact_min, mut exact_max) =
-                        (min_packed_value.clone(), max_packed_value.clone());
-                    self.compute_exact_bounds(points, from, to, &mut exact_min, &mut exact_max);
-                    min_packed_value = exact_min;
-                    max_packed_value = exact_max;
+                    self.compute_path_slice_bounds(
+                        &points,
+                        &mut min_packed_value,
+                        &mut max_packed_value,
+                    )?;
                 }
                 self.split(&min_packed_value, &max_packed_value, parent_splits)?
             };
-            let num_left_leaf_nodes = get_num_left_leaf_nodes(leaves_offset, num_leaves)?;
-            let left_count = subtree_point_count(
-                leaves_offset,
-                leaves_offset + num_left_leaf_nodes,
-                total_num_leaves,
-                self.point_count as usize,
-                self.config.max_points_in_leaf_node as usize,
-            );
-            let mid = from + left_count;
+            debug_assert!(num_leaves <= total_num_leaves);
 
+            // How many leaves will be in the left tree, and how many points.
+            let num_left_leaf_nodes = get_num_left_leaf_nodes(leaves_offset, num_leaves)?;
+            let left_count =
+                i64::from(num_left_leaf_nodes) * i64::from(self.config.max_points_in_leaf_node);
+
+            let bytes_per_dim = self.config.bytes_per_dim as usize;
             let common_prefix_len = BKDUtil::common_prefix_length(
                 &min_packed_value,
-                split_dim * self.config.bytes_per_dim as usize,
+                split_dim * bytes_per_dim,
                 &max_packed_value,
-                split_dim * self.config.bytes_per_dim as usize,
-                self.config.bytes_per_dim as usize,
+                split_dim * bytes_per_dim,
+                bytes_per_dim,
             );
-            self.partition_by_dim(points, from, to, mid, split_dim, common_prefix_len)?;
+
+            let (split_value, [left, right]) = radix_selector.select(
+                &points,
+                points.start,
+                points.start + points.count,
+                points.start + left_count,
+                split_dim,
+                common_prefix_len,
+            )?;
+            drop(points);
 
             let right_offset = leaves_offset + num_left_leaf_nodes;
-            let split_offset = right_offset - 1;
-            split_dimension_values[split_offset as usize] = split_dim as u8;
-            let address = split_offset as usize * self.config.bytes_per_dim as usize;
-            let mut split_value = vec![0u8; self.config.packed_bytes_length() as usize];
-            points.copy_packed_value(mid, &mut split_value);
-            // The split value lives in the split dimension's slice of the packed
-            // value (`splitDim * bytesPerDim`), not at offset 0. Copying from
-            // offset 0 (always dimension 0) stored the wrong bytes whenever
-            // `split_dim != 0`, so the reader decoded some other dimension's
-            // value as this node's split value — which diverged the 2D tree
-            // from Lucene 10.5.0. The 1D tree was unaffected because its only
-            // dimension is at offset 0. This mirrors Java's `BKDWriter.build`,
-            // which copies from `splitDim * config.bytesPerDim()`.
-            let bpd = self.config.bytes_per_dim as usize;
-            let dim_off = split_dim * bpd;
-            split_packed_values[address..address + bpd]
-                .copy_from_slice(&split_value[dim_off..dim_off + bpd]);
+            let split_value_offset = right_offset - 1;
 
-            let mut min_split_packed = min_packed_value.clone();
-            let mut max_split_packed = max_packed_value.clone();
-            min_split_packed[dim_off..dim_off + bpd]
-                .copy_from_slice(&split_value[dim_off..dim_off + bpd]);
-            max_split_packed[dim_off..dim_off + bpd]
-                .copy_from_slice(&split_value[dim_off..dim_off + bpd]);
+            split_dimension_values[split_value_offset as usize] = split_dim as u8;
+            let address = split_value_offset as usize * bytes_per_dim;
+            split_packed_values[address..address + bytes_per_dim]
+                .copy_from_slice(&split_value[..bytes_per_dim]);
+
+            let dim_off = split_dim * bytes_per_dim;
+            let index_len = self.config.packed_index_bytes_length() as usize;
+            let mut min_split_packed_value = min_packed_value[..index_len].to_vec();
+            let mut max_split_packed_value = max_packed_value[..index_len].to_vec();
+            min_split_packed_value[dim_off..dim_off + bytes_per_dim]
+                .copy_from_slice(&split_value[..bytes_per_dim]);
+            max_split_packed_value[dim_off..dim_off + bytes_per_dim]
+                .copy_from_slice(&split_value[..bytes_per_dim]);
 
             parent_splits[split_dim] += 1;
-            self.build_offline(
+            // Recurse on the left tree.
+            self.build_path_slice(
                 leaves_offset,
                 num_left_leaf_nodes,
-                points,
-                from,
-                mid,
+                left,
                 out,
+                radix_selector,
                 min_packed_value,
-                max_split_packed,
+                max_split_packed_value,
                 parent_splits,
                 split_packed_values,
                 split_dimension_values,
                 leaf_block_fps,
                 total_num_leaves,
+                spare_doc_ids,
             )?;
-            self.build_offline(
+            // Recurse on the right tree.
+            self.build_path_slice(
                 right_offset,
                 num_leaves - num_left_leaf_nodes,
-                points,
-                mid,
-                to,
+                right,
                 out,
-                min_split_packed,
+                radix_selector,
+                min_split_packed_value,
                 max_packed_value,
                 parent_splits,
                 split_packed_values,
                 split_dimension_values,
                 leaf_block_fps,
                 total_num_leaves,
+                spare_doc_ids,
             )?;
             parent_splits[split_dim] -= 1;
         }
         Ok(())
+    }
+
+    /// Recomputes the exact per-index-dimension bounds of the points of
+    /// `slice` into `min` and `max`.
+    ///
+    /// Equivalent to `BKDWriter.computePackedValueBounds(BKDRadixSelector.PathSlice, …)`
+    /// (`BKDWriter.java:1878-1918`), `else if` included: a value below the
+    /// running minimum on a dimension is never also tested against the
+    /// maximum on that dimension.
+    fn compute_path_slice_bounds(
+        &self,
+        slice: &PathSlice,
+        min: &mut [u8],
+        max: &mut [u8],
+    ) -> Result<()> {
+        let mut writer = slice.writer.borrow_mut();
+        let mut reader = writer.get_reader(slice.start as usize, slice.count as usize)?;
+        if !reader.next()? {
+            return reader.close();
+        }
+        let index_len = self.config.packed_index_bytes_length() as usize;
+        let bytes_per_dim = self.config.bytes_per_dim as usize;
+        let first = &reader.point_value().packed;
+        min[..index_len].copy_from_slice(&first[..index_len]);
+        max[..index_len].copy_from_slice(&first[..index_len]);
+        while reader.next()? {
+            let value = &reader.point_value().packed;
+            for dim in 0..self.config.num_index_dims as usize {
+                let start = dim * bytes_per_dim;
+                let end = start + bytes_per_dim;
+                if value[start..end] < min[start..end] {
+                    min[start..end].copy_from_slice(&value[start..end]);
+                } else if value[start..end] > max[start..end] {
+                    max[start..end].copy_from_slice(&value[start..end]);
+                }
+            }
+        }
+        reader.close()
     }
 
     /// Recomputes the exact per-index-dimension bounds of `[from, to)` into
@@ -4960,15 +5109,40 @@ impl BKDWriter {
     }
 
     /// Closes the writer and removes any temporary files.
+    ///
+    /// Equivalent to `BKDWriter.close()` (`BKDWriter.java:1546-1556`): the
+    /// spill file `add` was writing — `tempInput`, set until `finish` hands it
+    /// to the tree build — is closed and deleted; that only happens on an
+    /// exception, e.g. when the caller closes without finishing. It is also
+    /// what dropping the writer does, which is how a `?` that leaves the
+    /// caller's `try`-with-resources scope early reaches it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the failure to delete the spill file, which Java's
+    /// `finally` raises over a failure to close it, and otherwise that one.
     pub fn close(&mut self) -> Result<()> {
-        if let Some(mut pw) = self.point_writer.take() {
-            let _ = pw.close();
-            let _ = pw.destroy();
-        }
-        if let Some(ref name) = self.temp_input_name {
-            let _ = self.temp_dir.delete_file(name);
+        self.finished = true;
+        if let Some(name) = self.temp_input_name.take() {
+            let closed = match self.point_writer.as_mut() {
+                Some(point_writer) => point_writer.close(),
+                None => Ok(()),
+            };
+            let deleted = self.temp_dir.delete_file(&name);
+            deleted?;
+            closed?;
         }
         Ok(())
+    }
+}
+
+impl Drop for BKDWriter {
+    /// Closes the writer, as the `try`-with-resources around every
+    /// `BKDWriter` in `Lucene90PointsWriter` does on any exit
+    /// (`Lucene90PointsWriter.java:149-157, 249-257`); a failure is ignored,
+    /// as Java's would be suppressed by the exception already in flight.
+    fn drop(&mut self) {
+        let _ = self.close();
     }
 }
 
@@ -6398,6 +6572,83 @@ mod tests {
     }
 
     #[test]
+    fn offline_point_files_carry_a_footer_that_full_readers_verify() {
+        // Round 2, item 6: `OfflinePointWriter.close` writes the codec footer
+        // (`OfflinePointWriter.java:109-119`); an `OfflinePointReader` over
+        // the whole file reads it through a checksum and verifies it at close,
+        // one over a slice does not (`OfflinePointReader.java:58-96, 145-155`);
+        // and `BKDWriter.verifyChecksum` folds a corrupt checksum into the
+        // error it reports (`BKDWriter.java:1563-1583`).
+        let config = BKDConfig::of(2, 2, 4, 8).unwrap();
+        let raw = Arc::new(RamDirectory::new());
+        let writer = BKDWriter::new_default(
+            100,
+            Arc::clone(&raw) as Arc<dyn Directory>,
+            "bkd",
+            config.clone(),
+            16.0,
+            10,
+        )
+        .unwrap();
+        let mut offline =
+            OfflinePointWriter::new(config.clone(), Arc::clone(&writer.temp_dir), "bkd", "t")
+                .unwrap();
+        for i in 0..10 {
+            let mut packed = vec![0u8; 8];
+            packed[3] = i as u8;
+            offline.append(&PointValue::new(packed, i)).unwrap();
+        }
+        offline.close().unwrap();
+        let name = offline.name.clone();
+        let bytes_per_doc = config.bytes_per_doc() as i64;
+        assert_eq!(
+            raw.file_length(&name).unwrap(),
+            10 * bytes_per_doc + i64::from(crate::codecs::codec_util::footer_length())
+        );
+
+        let read_all = |offline: &mut OfflinePointWriter, start: usize, count: usize| {
+            let mut reader = offline.get_reader(start, count)?;
+            while reader.next()? {}
+            reader.close()
+        };
+        read_all(&mut offline, 0, 10).unwrap();
+        assert!(matches!(
+            offline.get_reader(5, 6).err(),
+            Some(LuceneError::IllegalArgument(_))
+        ));
+        let prior = || LuceneError::IllegalState("prior".to_string());
+        assert!(matches!(
+            writer.verify_checksum(prior(), &mut offline),
+            LuceneError::IllegalState(ref m) if m == "prior"
+        ));
+
+        // Flip one record byte behind the tracking wrapper's back.
+        let length = raw.file_length(&name).unwrap() as usize;
+        let mut bytes = vec![0u8; length];
+        raw.open_input(&name, &*DEFAULT_IO_CONTEXT)
+            .unwrap()
+            .read_bytes(&mut bytes, 0, length)
+            .unwrap();
+        bytes[13] ^= 0xff;
+        raw.delete_file(&name).unwrap();
+        let mut out = raw.create_output(&name, &*DEFAULT_IO_CONTEXT).unwrap();
+        out.write_bytes(&bytes, 0, length).unwrap();
+        out.close().unwrap();
+
+        assert!(matches!(
+            read_all(&mut offline, 0, 10),
+            Err(LuceneError::CorruptIndex(_))
+        ));
+        read_all(&mut offline, 1, 9).expect("a slice is read without its checksum");
+        match writer.verify_checksum(prior(), &mut offline) {
+            LuceneError::CorruptIndex(message) => {
+                assert!(message.contains("prior error"), "{message}")
+            }
+            other => panic!("expected the corrupt checksum to be reported, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn offline_point_writer_sorted_reader() {
         let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
         let config = BKDConfig::of(1, 1, 4, 512).unwrap();
@@ -6419,7 +6670,7 @@ mod tests {
 
     #[test]
     fn bkd_writer_reader_round_trip_1d() {
-        let dir = Box::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
         let config = BKDConfig::of(1, 1, 4, 16).unwrap();
         let mut writer = BKDWriter::new_default(100, dir, "bkd", config.clone(), 16.0, 50).unwrap();
         let mut expected = Vec::new();
@@ -6491,7 +6742,7 @@ mod tests {
 
     #[test]
     fn bkd_writer_reader_round_trip_2d() {
-        let dir = Box::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
         let config = BKDConfig::of(2, 2, 4, 16).unwrap();
         let mut writer = BKDWriter::new_default(100, dir, "bkd", config.clone(), 16.0, 60).unwrap();
         let mut expected = Vec::new();
@@ -6871,7 +7122,7 @@ mod tests {
         max_points_in_leaf_node: i32,
         points: &[(i32, Vec<u8>)],
     ) -> BKDReader {
-        let dir = Box::new(RamDirectory::new());
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
         let config = BKDConfig::of(
             num_dims,
             num_index_dims,

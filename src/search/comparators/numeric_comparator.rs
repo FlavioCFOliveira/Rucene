@@ -4,7 +4,6 @@
 
 #![deny(unsafe_code)]
 
-use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
@@ -48,13 +47,17 @@ const MAX_SKIP_INTERVAL: i32 = 8192;
 /// from it, because a context cannot be stored beyond the call that produced
 /// it, and the competitive iterator re-derives the doc values after the call
 /// has returned.
+///
+/// It is shared and thread-safe because the comparator that holds it is handed
+/// to an executor's worker with its collector.
 pub type NumericDocValuesSource =
-    Rc<dyn Fn(&dyn LeafReader, &str) -> Result<Box<dyn NumericDocValues>>>;
+    Arc<dyn Fn(&dyn LeafReader, &str) -> Result<Box<dyn NumericDocValues>> + Send + Sync>;
 
 /// The per-segment state of a numeric comparator.
 ///
 /// Equivalent to the fields of the abstract inner class
-/// `NumericComparator.NumericLeafComparator`.
+/// `NumericComparator.NumericLeafComparator`; the concrete comparators' inner
+/// leaf classes (`IntLeafComparator`, ...) add none of their own.
 pub struct NumericLeafState {
     reader: Arc<dyn LeafReader>,
     max_doc: i32,
@@ -63,6 +66,19 @@ pub struct NumericLeafState {
     /// Equivalent to the `protected final NumericDocValues docValues` field.
     doc_values: Box<dyn NumericDocValues>,
     competitive: Option<CompetitiveDisiBuilder>,
+}
+
+impl NumericLeafState {
+    /// Returns the doc values of the segment.
+    ///
+    /// Equivalent to reading `NumericLeafComparator.docValues`.
+    pub fn doc_values(&mut self) -> &mut dyn NumericDocValues {
+        self.doc_values.as_mut()
+    }
+
+    fn competitive_common_mut(&mut self) -> Option<&mut CompetitiveCommon> {
+        self.competitive.as_mut().map(|builder| &mut builder.common)
+    }
 }
 
 impl std::fmt::Debug for NumericLeafState {
@@ -181,7 +197,6 @@ pub struct NumericComparator {
     queue_full: bool,
     pruning: Pruning,
     doc_values_source: Option<NumericDocValuesSource>,
-    leaf: Option<NumericLeafState>,
 }
 
 impl std::fmt::Debug for NumericComparator {
@@ -223,7 +238,6 @@ impl NumericComparator {
             queue_full: false,
             pruning,
             doc_values_source: None,
-            leaf: None,
         }
     }
 
@@ -309,22 +323,11 @@ impl NumericComparator {
         self.pruning = Pruning::NONE;
     }
 
-    /// Returns the doc values of the segment currently being collected.
+    /// Builds the leaf state for `context`, opening the segment's doc values
+    /// and, when pruning is enabled, the competitive-iterator builder.
     ///
-    /// Equivalent to reading `NumericLeafComparator.docValues`; it is `None`
-    /// before the first call to [`set_next_leaf`](Self::set_next_leaf).
-    pub fn doc_values(&mut self) -> Option<&mut dyn NumericDocValues> {
-        self.leaf
-            .as_mut()
-            .map(|leaf| leaf.doc_values.as_mut() as &mut dyn NumericDocValues)
-    }
-
-    /// Prepares this comparator to collect `context`, opening the segment's
-    /// doc values and, when pruning is enabled, the competitive-iterator
-    /// builder.
-    ///
-    /// Equivalent to `new NumericLeafComparator(LeafReaderContext)` plus
-    /// `buildCompetitiveDISIBuilder()`.
+    /// Equivalent to `new NumericLeafComparator(LeafReaderContext)`, whose
+    /// constructor ends with `buildCompetitiveDISIBuilder()`.
     ///
     /// `top_as_comparable_long` is the value Java's
     /// `NumericLeafComparator.topAsComparableLong()` would return; it is only
@@ -336,39 +339,34 @@ impl NumericComparator {
     /// returns [`LuceneError::IllegalState`] or
     /// [`LuceneError::IllegalArgument`] for the field-info inconsistencies
     /// Java rejects when building the points-backed iterator.
-    pub fn set_next_leaf(
-        &mut self,
+    pub fn new_leaf(
+        &self,
         context: &LeafReaderContext,
         top_as_comparable_long: i64,
-    ) -> Result<()> {
+    ) -> Result<NumericLeafState> {
         let reader = context.leaf_reader();
         let max_doc = reader.max_doc();
         let doc_values = self.open_doc_values(reader.as_ref())?;
-        self.leaf = Some(NumericLeafState {
-            reader: Arc::clone(&reader),
+        let competitive =
+            self.build_competitive_disi_builder(&reader, max_doc, top_as_comparable_long)?;
+        Ok(NumericLeafState {
+            reader,
             max_doc,
             doc_values,
-            competitive: None,
-        });
-        let competitive = self.build_competitive_disi_builder(top_as_comparable_long)?;
-        if let Some(leaf) = self.leaf.as_mut() {
-            leaf.competitive = competitive;
-        }
-        Ok(())
+            competitive,
+        })
     }
 
     /// Equivalent to `NumericLeafComparator.buildCompetitiveDISIBuilder()`.
     fn build_competitive_disi_builder(
-        &mut self,
+        &self,
+        reader: &Arc<dyn LeafReader>,
+        max_doc: i32,
         top_as_comparable_long: i64,
     ) -> Result<Option<CompetitiveDisiBuilder>> {
         if self.pruning == Pruning::NONE {
             return Ok(None);
         }
-        let (reader, max_doc) = match self.leaf.as_ref() {
-            Some(leaf) => (Arc::clone(&leaf.reader), leaf.max_doc),
-            None => return Ok(None),
-        };
 
         if let Some(point_values) = reader.get_point_values(&self.field)? {
             let field_infos = reader.get_field_infos();
@@ -584,12 +582,13 @@ impl NumericComparator {
     /// Propagates any I/O error raised while rebuilding the iterator.
     pub fn set_bottom(
         &mut self,
+        leaf: &mut NumericLeafState,
         bottom_as_comparable_long: i64,
         top_as_comparable_long: i64,
     ) -> Result<()> {
         // Setting bottom means that we have collected enough hits.
         self.queue_full = true;
-        self.update_competitive_iterator(bottom_as_comparable_long, top_as_comparable_long)
+        self.update_competitive_iterator(leaf, bottom_as_comparable_long, top_as_comparable_long)
     }
 
     /// Records the highest document visited so far.
@@ -597,8 +596,8 @@ impl NumericComparator {
     /// Equivalent to `NumericLeafComparator.copy(int, int)`, whose per-type
     /// half — copying the document's value into the slot — the concrete
     /// comparators perform before calling this.
-    pub fn copy(&mut self, doc: i32) {
-        if let Some(common) = self.competitive_common_mut() {
+    pub fn copy(&mut self, leaf: &mut NumericLeafState, doc: i32) {
+        if let Some(common) = leaf.competitive_common_mut() {
             common.max_doc_visited = doc;
         }
     }
@@ -625,14 +624,11 @@ impl NumericComparator {
     /// Propagates any I/O error raised while rebuilding the iterator.
     pub fn set_scorer(
         &mut self,
+        leaf: &mut NumericLeafState,
         bottom_as_comparable_long: i64,
         top_as_comparable_long: i64,
     ) -> Result<()> {
-        let should_update = match self
-            .leaf
-            .as_mut()
-            .and_then(|leaf| leaf.competitive.as_mut())
-        {
+        let should_update = match leaf.competitive.as_mut() {
             None => false,
             Some(builder) => match &mut builder.kind {
                 CompetitiveKind::Points { iterator_cost, .. } => {
@@ -648,7 +644,11 @@ impl NumericComparator {
         };
         if should_update {
             // Update the iterator when we have a new segment.
-            self.update_competitive_iterator(bottom_as_comparable_long, top_as_comparable_long)?;
+            self.update_competitive_iterator(
+                leaf,
+                bottom_as_comparable_long,
+                top_as_comparable_long,
+            )?;
         }
         Ok(())
     }
@@ -663,49 +663,40 @@ impl NumericComparator {
     /// Propagates any I/O error raised while rebuilding the iterator.
     pub fn set_hits_threshold_reached(
         &mut self,
+        leaf: &mut NumericLeafState,
         bottom_as_comparable_long: i64,
         top_as_comparable_long: i64,
     ) -> Result<()> {
         self.hits_threshold_reached = true;
-        self.update_competitive_iterator(bottom_as_comparable_long, top_as_comparable_long)
+        self.update_competitive_iterator(leaf, bottom_as_comparable_long, top_as_comparable_long)
     }
 
     /// Returns the competitive iterator of the segment being collected.
     ///
     /// Equivalent to `NumericLeafComparator.competitiveIterator()`.
-    pub fn competitive_iterator(&self) -> Option<Box<dyn DocIdSetIterator>> {
-        self.leaf
-            .as_ref()
-            .and_then(|leaf| leaf.competitive.as_ref())
-            .map(|builder| {
-                Box::new(builder.common.competitive_iterator.clone()) as Box<dyn DocIdSetIterator>
-            })
-    }
-
-    fn competitive_common_mut(&mut self) -> Option<&mut CompetitiveCommon> {
-        self.leaf
-            .as_mut()
-            .and_then(|leaf| leaf.competitive.as_mut())
-            .map(|builder| &mut builder.common)
+    pub fn competitive_iterator(
+        &self,
+        leaf: &NumericLeafState,
+    ) -> Option<Box<dyn DocIdSetIterator>> {
+        leaf.competitive.as_ref().map(|builder| {
+            Box::new(builder.common.competitive_iterator.clone()) as Box<dyn DocIdSetIterator>
+        })
     }
 
     /// Equivalent to the `final CompetitiveDISIBuilder.updateCompetitiveIterator()`.
     fn update_competitive_iterator(
         &mut self,
+        leaf: &mut NumericLeafState,
         bottom_as_comparable_long: i64,
         top_as_comparable_long: i64,
     ) -> Result<()> {
-        if self.leaf.as_ref().map_or(true, |l| l.competitive.is_none()) {
+        if leaf.competitive.is_none() {
             return Ok(());
         }
         if !self.hits_threshold_reached {
             return Ok(());
         }
         let (leaf_top_set, has_missing_docs) = {
-            let leaf = self
-                .leaf
-                .as_ref()
-                .expect("INVARIANT: the leaf was just observed to be present");
             let builder = leaf
                 .competitive
                 .as_ref()
@@ -726,10 +717,7 @@ impl NumericComparator {
         // prohibit the optimization.
         if has_missing_docs {
             let competitive = {
-                let common = &self
-                    .leaf
-                    .as_ref()
-                    .expect("INVARIANT: the leaf was just observed to be present")
+                let common = &leaf
                     .competitive
                     .as_ref()
                     .expect("INVARIANT: the builder was just observed to be present")
@@ -746,7 +734,7 @@ impl NumericComparator {
         }
 
         {
-            let common = self
+            let common = leaf
                 .competitive_common_mut()
                 .expect("INVARIANT: the builder was just observed to be present");
             common.update_counter += 1;
@@ -762,29 +750,22 @@ impl NumericComparator {
         if self.queue_full {
             let reverse = self.reverse;
             let pruning = self.pruning;
-            let common = self
+            let common = leaf
                 .competitive_common_mut()
                 .expect("INVARIANT: the builder was just observed to be present");
             encode_bottom(common, reverse, pruning, bottom_as_comparable_long);
         }
 
-        self.do_update_competitive_iterator()
+        self.do_update_competitive_iterator(leaf)
     }
 
     /// Equivalent to the two `doUpdateCompetitiveIterator()` implementations.
-    fn do_update_competitive_iterator(&mut self) -> Result<()> {
+    fn do_update_competitive_iterator(&mut self, leaf: &mut NumericLeafState) -> Result<()> {
         let field = self.field.clone();
         let sortable_bytes_to_long = self.sortable_bytes_to_long;
         let doc_values_source = self.doc_values_source.clone();
-        let reader = match self.leaf.as_ref() {
-            Some(leaf) => Arc::clone(&leaf.reader),
-            None => return Ok(()),
-        };
-        let Some(builder) = self
-            .leaf
-            .as_mut()
-            .and_then(|leaf| leaf.competitive.as_mut())
-        else {
+        let reader = Arc::clone(&leaf.reader);
+        let Some(builder) = leaf.competitive.as_mut() else {
             return Ok(());
         };
 

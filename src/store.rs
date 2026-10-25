@@ -1091,15 +1091,21 @@ impl BufferedIndexInput {
     }
 
     fn refill(&mut self) -> Result<()> {
-        let start = self.buffer_start + self.buffer_position as i64;
-        let end = (start + self.buffer_size as i64).min(self.source.length());
-        let new_length = (end - start) as usize;
-        if new_length == 0 {
+        // `BufferedIndexInput.refill` (`BufferedIndexInput.java:289-295`), in
+        // Java's wrapping `long` arithmetic: a position near `Long.MAX_VALUE`
+        // wraps `end` negative and is rejected as a read past EOF.
+        let start = self.buffer_start.wrapping_add(self.buffer_position as i64);
+        let end = start
+            .wrapping_add(self.buffer_size as i64)
+            .min(self.source.length());
+        let new_length = end.wrapping_sub(start);
+        if new_length <= 0 {
             return Err(LuceneError::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "read past EOF",
             )));
         }
+        let new_length = new_length as usize;
         if self.buffer.capacity() < self.buffer_size {
             self.buffer
                 .reserve(self.buffer_size - self.buffer.capacity());
@@ -1156,13 +1162,13 @@ impl BufferedIndexInput {
 
     fn resolve_position_in_buffer(&mut self, pos: i64, width: usize) -> Result<usize> {
         let width_i64 = width as i64;
-        let index = pos - self.buffer_start;
-        if index >= 0 && index + width_i64 <= self.buffer_limit as i64 {
+        let index = pos.wrapping_sub(self.buffer_start);
+        if index >= 0 && index.wrapping_add(width_i64) <= self.buffer_limit as i64 {
             return Ok(index as usize);
         }
         let new_start = if index < 0 {
             let mut s = self.buffer_start - self.buffer_size as i64;
-            s = s.max(pos + width_i64 - self.buffer_size as i64);
+            s = s.max(pos.wrapping_add(width_i64) - self.buffer_size as i64);
             s = s.max(0);
             s.min(pos)
         } else {
@@ -1172,8 +1178,8 @@ impl BufferedIndexInput {
         self.buffer_position = 0;
         self.buffer_limit = 0;
         self.refill()?;
-        let result = pos - self.buffer_start;
-        if result < 0 || result + width_i64 > self.buffer_limit as i64 {
+        let result = pos.wrapping_sub(self.buffer_start);
+        if result < 0 || result.wrapping_add(width_i64) > self.buffer_limit as i64 {
             return Err(LuceneError::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "read past EOF",
@@ -1617,20 +1623,25 @@ impl SlicedIndexInput {
     }
 
     fn refill(&mut self) -> Result<()> {
-        let start = self.buffer_start + self.buffer_position as i64;
-        let end = (start + self.buffer_size as i64).min(self.length);
-        let new_length = (end - start) as usize;
-        if new_length == 0 {
+        // `BufferedIndexInput.refill` (`BufferedIndexInput.java:289-295`), in
+        // Java's wrapping `long` arithmetic: a position near `Long.MAX_VALUE`
+        // wraps `end` negative and is rejected as a read past EOF.
+        let start = self.buffer_start.wrapping_add(self.buffer_position as i64);
+        let end = start.wrapping_add(self.buffer_size as i64).min(self.length);
+        let new_length = end.wrapping_sub(start);
+        if new_length <= 0 {
             return Err(LuceneError::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "read past EOF",
             )));
         }
+        let new_length = new_length as usize;
         if self.buffer.capacity() < self.buffer_size {
             self.buffer
                 .reserve(self.buffer_size - self.buffer.capacity());
         }
-        self.base.seek(self.file_offset + start)?;
+        // Java's `fileOffset + start` wraps; the base rejects the result.
+        self.base.seek(self.file_offset.wrapping_add(start))?;
         self.base.read_bytes(&mut self.buffer, 0, new_length)?;
         self.buffer_start = start;
         self.buffer_position = 0;
@@ -1640,13 +1651,13 @@ impl SlicedIndexInput {
 
     fn resolve_position_in_buffer(&mut self, pos: i64, width: usize) -> Result<usize> {
         let width_i64 = width as i64;
-        let index = pos - self.buffer_start;
-        if index >= 0 && index + width_i64 <= self.buffer_limit as i64 {
+        let index = pos.wrapping_sub(self.buffer_start);
+        if index >= 0 && index.wrapping_add(width_i64) <= self.buffer_limit as i64 {
             return Ok(index as usize);
         }
         let new_start = if index < 0 {
             let mut s = self.buffer_start - self.buffer_size as i64;
-            s = s.max(pos + width_i64 - self.buffer_size as i64);
+            s = s.max(pos.wrapping_add(width_i64) - self.buffer_size as i64);
             s = s.max(0);
             s.min(pos)
         } else {
@@ -1656,8 +1667,8 @@ impl SlicedIndexInput {
         self.buffer_position = 0;
         self.buffer_limit = 0;
         self.refill()?;
-        let result = pos - self.buffer_start;
-        if result < 0 || result + width_i64 > self.buffer_limit as i64 {
+        let result = pos.wrapping_sub(self.buffer_start);
+        if result < 0 || result.wrapping_add(width_i64) > self.buffer_limit as i64 {
             return Err(LuceneError::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "read past EOF",
@@ -5056,7 +5067,10 @@ impl std::fmt::Debug for SimpleRateLimiter {
 /// created during indexing.
 pub struct TrackingDirectoryWrapper {
     inner: FilterDirectory,
-    created_files: Arc<Mutex<HashSet<String>>>,
+    /// `createdFileNames`, a `java.util.HashSet` (`TrackingDirectoryWrapper.java:27`),
+    /// kept in Java's iteration order because what callers build from it
+    /// reaches `segments_N`.
+    created_files: Arc<Mutex<JavaHashSet>>,
 }
 
 impl TrackingDirectoryWrapper {
@@ -5064,7 +5078,7 @@ impl TrackingDirectoryWrapper {
     pub fn new(inner: Box<dyn Directory>) -> Self {
         Self {
             inner: FilterDirectory::new(inner),
-            created_files: Arc::new(Mutex::new(HashSet::new())),
+            created_files: Arc::new(Mutex::new(JavaHashSet::new())),
         }
     }
 
@@ -5079,7 +5093,20 @@ impl TrackingDirectoryWrapper {
             .created_files
             .lock()
             .expect("created_files mutex poisoned");
-        files.clone()
+        files.to_std()
+    }
+
+    /// Returns a copy of the currently tracked created files, iteration order
+    /// included.
+    ///
+    /// Equivalent to `TrackingDirectoryWrapper.getCreatedFiles()`, which
+    /// returns `new HashSet<>(createdFileNames)` (`TrackingDirectoryWrapper.java:71-73`).
+    pub fn get_created_files_ordered(&self) -> JavaHashSet {
+        let files = self
+            .created_files
+            .lock()
+            .expect("created_files mutex poisoned");
+        JavaHashSet::from_collection(files.clone())
     }
 
     /// Clears the set of tracked created files.
@@ -5151,8 +5178,9 @@ impl Directory for TrackingDirectoryWrapper {
             .created_files
             .lock()
             .expect("created_files mutex poisoned");
-        files.remove(source);
+        // `createdFileNames.add(dest)` before `remove(source)`.
         files.insert(dest.to_string());
+        files.remove(source);
         Ok(())
     }
 
@@ -5634,12 +5662,26 @@ impl std::fmt::Debug for NRTCachingDirectory {
 /// This is not a full `ByteBuffersDirectory`; that is the subject of task #5.
 /// `RamDirectory` proves that the [`Directory`] trait compiles and behaves
 /// correctly for the operations required by task #18.
+///
+/// Like `ByteBuffersDirectory`, a file is registered when its output is
+/// created, not when it is closed (`ByteBuffersDirectory.java:153-162`): it is
+/// listed and counted from `create_output` on, reports a length of zero until
+/// its output closes, and cannot be opened while it is still being written.
 #[derive(Debug)]
 pub struct RamDirectory {
-    files: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    files: Arc<Mutex<BTreeMap<String, RamFileEntry>>>,
     temp_counter: AtomicU64,
     closed: Mutex<bool>,
 }
+
+/// One file of a [`RamDirectory`]: its content, `None` while its output is
+/// still open.
+///
+/// Equivalent to `ByteBuffersDirectory.FileEntry`, whose `content` stays null
+/// until the output closes (`ByteBuffersDirectory.java:226-288`). The entry is
+/// shared with the output, so a rename before the close moves the file the
+/// close then fills, as in Java.
+type RamFileEntry = Arc<Mutex<Option<Vec<u8>>>>;
 
 impl Default for RamDirectory {
     fn default() -> Self {
@@ -5673,6 +5715,13 @@ impl RamDirectory {
         ))
     }
 
+    fn still_open_for_writing(name: &str) -> LuceneError {
+        LuceneError::Io(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("Can't open a file still open for writing: {name}"),
+        ))
+    }
+
     fn already_exists(name: &str) -> LuceneError {
         LuceneError::Io(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -5700,21 +5749,21 @@ impl Directory for RamDirectory {
     fn file_length(&self, name: &str) -> Result<i64> {
         self.ensure_open()?;
         let files = self.files.lock().expect("files mutex poisoned");
-        files
-            .get(name)
-            .map(|v| v.len() as i64)
-            .ok_or_else(|| Self::not_found(name))
+        let entry = files.get(name).ok_or_else(|| Self::not_found(name))?;
+        // "We return 0 length until the IndexOutput is closed and flushed."
+        let content = entry.lock().expect("file entry mutex poisoned");
+        Ok(content.as_ref().map_or(0, |data| data.len() as i64))
     }
 
     fn create_output(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexOutput>> {
         self.ensure_open()?;
-        let files = self.files.lock().expect("files mutex poisoned");
+        let mut files = self.files.lock().expect("files mutex poisoned");
         if files.contains_key(name) {
             return Err(Self::already_exists(name));
         }
-        let name_owned = name.to_string();
-        let files_clone = Arc::clone(&self.files);
-        Ok(Box::new(RamIndexOutput::new(name_owned, files_clone)))
+        let entry: RamFileEntry = Arc::new(Mutex::new(None));
+        files.insert(name.to_string(), Arc::clone(&entry));
+        Ok(Box::new(RamIndexOutput::new(name.to_string(), entry)))
     }
 
     fn create_temp_output(
@@ -5756,7 +5805,11 @@ impl Directory for RamDirectory {
     fn open_input(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
         self.ensure_open()?;
         let files = self.files.lock().expect("files mutex poisoned");
-        let data = files.get(name).ok_or_else(|| Self::not_found(name))?;
+        let entry = files.get(name).ok_or_else(|| Self::not_found(name))?;
+        let content = entry.lock().expect("file entry mutex poisoned");
+        let data = content
+            .as_ref()
+            .ok_or_else(|| Self::still_open_for_writing(name))?;
         Ok(Box::new(MockIndexInput::new(
             data.clone(),
             format!("RamDirectory({})", name),
@@ -5780,23 +5833,23 @@ impl Directory for RamDirectory {
     }
 }
 
-/// An in-memory [`IndexOutput`] that publishes its bytes to a shared map on
+/// An in-memory [`IndexOutput`] that publishes its bytes to its file entry on
 /// close.
 #[derive(Debug)]
 struct RamIndexOutput {
     name: String,
     data: VecDataOutput,
     closed: bool,
-    files: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    entry: RamFileEntry,
 }
 
 impl RamIndexOutput {
-    fn new(name: String, files: Arc<Mutex<BTreeMap<String, Vec<u8>>>>) -> Self {
+    fn new(name: String, entry: RamFileEntry) -> Self {
         Self {
             name,
             data: VecDataOutput::new(),
             closed: false,
-            files,
+            entry,
         }
     }
 
@@ -5826,8 +5879,8 @@ impl IndexOutput for RamIndexOutput {
             return Ok(());
         }
         self.closed = true;
-        let mut files = self.files.lock().expect("files mutex poisoned");
-        files.insert(self.name.clone(), self.data.as_inner().to_vec());
+        let mut content = self.entry.lock().expect("file entry mutex poisoned");
+        *content = Some(self.data.as_inner().to_vec());
         Ok(())
     }
 
@@ -10613,6 +10666,28 @@ mod tests {
         fn fs_directory_path(&self) -> Option<&Path> {
             Some(&self.path)
         }
+    }
+
+    /// A file is registered when its output is created, as
+    /// `ByteBuffersDirectory.createOutput` puts its `FileEntry`
+    /// (`ByteBuffersDirectory.java:153-162`): listed at once, zero-length and
+    /// unopenable until the output closes, and a rename before the close
+    /// carries the content the close writes.
+    #[test]
+    fn ram_directory_lists_a_file_from_create_output() {
+        let dir = RamDirectory::new();
+        let mut out = dir.create_output("a", &*DEFAULT_IO_CONTEXT).unwrap();
+        assert_eq!(dir.list_all().unwrap(), vec!["a".to_string()]);
+        assert_eq!(dir.file_length("a").unwrap(), 0);
+        assert!(dir.open_input("a", &*DEFAULT_IO_CONTEXT).is_err());
+        assert!(dir.create_output("a", &*DEFAULT_IO_CONTEXT).is_err());
+        out.write_bytes(&[1, 2, 3], 0, 3).unwrap();
+        dir.rename("a", "b").unwrap();
+        out.close().unwrap();
+        assert_eq!(dir.list_all().unwrap(), vec!["b".to_string()]);
+        assert_eq!(dir.file_length("b").unwrap(), 3);
+        let mut input = dir.open_input("b", &*DEFAULT_IO_CONTEXT).unwrap();
+        assert_eq!(input.read_byte().unwrap(), 1);
     }
 
     /// Verifies that [`NoLockFactory`] returns a shared no-op lock that never

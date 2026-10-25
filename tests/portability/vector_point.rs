@@ -45,6 +45,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use base64::engine::general_purpose::STANDARD;
@@ -605,7 +606,7 @@ fn bkd_reader_from_java_points(java: &JavaPoints) -> BKDReader {
 
     let mut writer = BKDWriter::new(
         java.doc_count,
-        Box::new(RamDirectory::default()),
+        Arc::new(RamDirectory::default()),
         "_0",
         config.clone(),
         16.0,

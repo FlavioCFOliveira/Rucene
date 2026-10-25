@@ -30,6 +30,7 @@ use crate::index::segment_infos::SegmentInfos;
 use crate::index::segment_reader::SegmentReader;
 use crate::index::Term;
 use crate::store::{Directory, DEFAULT_IO_CONTEXT};
+use crate::util::java_collections::JavaHashSet;
 
 // -----------------------------------------------------------------------------
 // IndexWriter (minimal trait for NRT signatures)
@@ -1025,7 +1026,10 @@ impl StandardDirectoryReader {
 /// `org.apache.lucene.index.StandardDirectoryReader.ReaderCommit`.
 struct ReaderCommit {
     segments_file_name: String,
-    files: HashSet<String>,
+    /// `Collections.unmodifiableCollection(infos.files(true))`
+    /// (`StandardDirectoryReader.java:593`): the `java.util.HashSet`
+    /// `SegmentInfos.files` builds, iteration order included.
+    files: JavaHashSet,
     directory: Arc<dyn Directory>,
     generation: i64,
     user_data: HashMap<String, String>,
@@ -1078,7 +1082,7 @@ impl ReaderCommit {
         let generation = infos.generation();
         let user_data = infos.user_data().clone();
         let segment_count = infos.size() as i32;
-        let files = infos.files(true)?;
+        let files = infos.files_ordered(true)?;
         Ok(Self {
             segments_file_name,
             files,
@@ -1094,17 +1098,11 @@ impl ReaderCommit {
 impl std::fmt::Display for ReaderCommit {
     /// Equivalent to `StandardDirectoryReader.ReaderCommit.toString()`
     /// (`StandardDirectoryReader.java:601-604`), which is
-    /// `"StandardDirectoryReader.ReaderCommit(" + segmentsFileName + " files=" + files + ")"`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** `files` is a `Collection<String>`
-    /// there and renders in the iteration order of whichever collection
-    /// `SegmentInfos.files()` built. This port holds a `HashSet<String>`, whose
-    /// order is randomised per process, so the names are sorted before they are
-    /// printed: an unstable order would make the string unusable for the
-    /// debugging this method exists for.
+    /// `"StandardDirectoryReader.ReaderCommit(" + segmentsFileName + " files=" + files + ")"`;
+    /// the files render as `AbstractCollection.toString` does, in the
+    /// `HashSet`'s iteration order.
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut files: Vec<&str> = self.files.iter().map(String::as_str).collect();
-        files.sort_unstable();
+        let files: Vec<&str> = self.files.iter().map(String::as_str).collect();
         write!(
             f,
             "StandardDirectoryReader.ReaderCommit({} files=[{}])",
@@ -1120,7 +1118,7 @@ impl IndexCommit for ReaderCommit {
     }
 
     fn get_file_names(&self) -> Result<HashSet<String>> {
-        Ok(self.files.clone())
+        Ok(self.files.to_std())
     }
 
     fn get_directory(&self) -> Arc<dyn Directory> {

@@ -20,9 +20,9 @@ use crate::index::Term;
 use crate::index::{IndexOptions, IndexableField, IndexableFieldType};
 use crate::search::double_values::{DoubleValues, EmptyDoubleValues};
 use crate::search::double_values_source::DoubleValuesSource;
+use crate::search::field_comparator::SlotComparator;
 use crate::search::field_comparator::{java_float_compare, FieldComparator, SortValue};
 use crate::search::index_searcher::IndexSearcher;
-use crate::search::leaf_field_comparator::LeafFieldComparator;
 use crate::search::query::Query;
 use crate::search::query_visitor::QueryVisitor;
 use crate::search::scorable::Scorable;
@@ -740,7 +740,6 @@ pub struct FeatureComparator {
     values: Vec<f32>,
     bottom: f32,
     top_value: f32,
-    current_reader_postings_values: Option<Box<dyn PostingsEnum>>,
 }
 
 impl std::fmt::Debug for FeatureComparator {
@@ -763,15 +762,17 @@ impl FeatureComparator {
             values: vec![0.0; num_hits],
             bottom: 0.0,
             top_value: 0.0,
-            current_reader_postings_values: None,
         }
     }
 
     /// Returns the feature value of `doc` in the current segment.
     ///
     /// Equivalent to the private `FeatureComparator.getValueForDoc(int)`.
-    fn get_value_for_doc(&mut self, doc: i32) -> Result<f32> {
-        if let Some(postings) = self.current_reader_postings_values.as_mut() {
+    fn get_value_for_doc(
+        current_reader_postings_values: &mut Option<Box<dyn PostingsEnum>>,
+        doc: i32,
+    ) -> Result<f32> {
+        if let Some(postings) = current_reader_postings_values.as_mut() {
             if doc >= postings.doc_id()
                 && (postings.doc_id() == doc || postings.advance(doc)? == doc)
             {
@@ -782,39 +783,10 @@ impl FeatureComparator {
     }
 }
 
-impl LeafFieldComparator for FeatureComparator {
-    /// Equivalent to `FeatureComparator.setBottom(int)`.
-    fn set_bottom(&mut self, slot: i32) -> Result<()> {
-        self.bottom = self.values[slot as usize];
-        Ok(())
-    }
+impl SlotComparator for FeatureComparator {
+    /// The `currentReaderPostingsValues` field `doSetNextReader` sets.
+    type Leaf = Option<Box<dyn PostingsEnum>>;
 
-    /// Equivalent to `FeatureComparator.compareBottom(int)`.
-    fn compare_bottom(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
-        let value = self.get_value_for_doc(doc)?;
-        Ok(java_float_compare(self.bottom, value))
-    }
-
-    /// Equivalent to `FeatureComparator.compareTop(int)`.
-    fn compare_top(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
-        let value = self.get_value_for_doc(doc)?;
-        Ok(java_float_compare(self.top_value, value))
-    }
-
-    /// Equivalent to `FeatureComparator.copy(int, int)`.
-    fn copy(&mut self, slot: i32, doc: i32, _scorer: &mut dyn Scorable) -> Result<()> {
-        self.values[slot as usize] = self.get_value_for_doc(doc)?;
-        Ok(())
-    }
-
-    /// `FeatureComparator` inherits `SimpleFieldComparator.setScorer`, which
-    /// does nothing.
-    fn set_scorer(&mut self, _scorer: &mut dyn Scorable) -> Result<()> {
-        Ok(())
-    }
-}
-
-impl SimpleFieldComparatorImpl for FeatureComparator {
     /// Equivalent to `FeatureComparator.compare(int, int)`.
     fn compare(&self, slot1: i32, slot2: i32) -> i32 {
         java_float_compare(self.values[slot1 as usize], self.values[slot2 as usize])
@@ -830,25 +802,80 @@ impl SimpleFieldComparatorImpl for FeatureComparator {
         SortValue::Float(self.values[slot as usize])
     }
 
+    /// `SimpleFieldComparator.getLeafComparator`: `doSetNextReader`.
+    fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<Self::Leaf> {
+        self.do_set_next_reader(context)
+    }
+
+    /// Equivalent to `FeatureComparator.setBottom(int)`.
+    fn set_bottom(&mut self, _leaf: &mut Self::Leaf, slot: i32) -> Result<()> {
+        self.bottom = self.values[slot as usize];
+        Ok(())
+    }
+
+    /// Equivalent to `FeatureComparator.compareBottom(int)`.
+    fn compare_bottom(
+        &mut self,
+        leaf: &mut Self::Leaf,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        let value = Self::get_value_for_doc(leaf, doc)?;
+        Ok(java_float_compare(self.bottom, value))
+    }
+
+    /// Equivalent to `FeatureComparator.compareTop(int)`.
+    fn compare_top(
+        &mut self,
+        leaf: &mut Self::Leaf,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        let value = Self::get_value_for_doc(leaf, doc)?;
+        Ok(java_float_compare(self.top_value, value))
+    }
+
+    /// Equivalent to `FeatureComparator.copy(int, int)`.
+    fn copy(
+        &mut self,
+        leaf: &mut Self::Leaf,
+        slot: i32,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        self.values[slot as usize] = Self::get_value_for_doc(leaf, doc)?;
+        Ok(())
+    }
+
+    /// `FeatureComparator` inherits `SimpleFieldComparator.setScorer`, which
+    /// does nothing.
+    fn set_scorer(&mut self, _leaf: &mut Self::Leaf, _scorer: &mut dyn Scorable) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl SimpleFieldComparatorImpl for FeatureComparator {
     /// Equivalent to `FeatureComparator.doSetNextReader(LeafReaderContext)`.
     ///
     /// Java reaches the terms through `Terms.getTerms`, which substitutes
     /// `Terms.EMPTY` for a field the segment never saw; seeking the feature in
     /// it fails, and the postings become `null`, which is what the absent
-    /// branch does here. The previous segment's postings are offered for
-    /// reuse, as Java offers them.
-    fn do_set_next_reader(&mut self, context: &LeafReaderContext) -> Result<()> {
+    /// branch does here.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java offers the previous segment's
+    /// postings for reuse; here they belonged to the previous segment's leaf
+    /// comparator, which is gone, so nothing is offered. Reuse only saves an
+    /// allocation: the postings returned read the same values.
+    fn do_set_next_reader(&mut self, context: &LeafReaderContext) -> Result<Self::Leaf> {
         let reader = context.leaf_reader();
-        let reuse = self.current_reader_postings_values.take();
         let Some(terms) = reader.terms(&self.field)? else {
-            return Ok(());
+            return Ok(None);
         };
         let mut terms_enum = terms.iterator()?;
         if terms_enum.seek_exact(&self.feature_name)? {
-            self.current_reader_postings_values =
-                Some(terms_enum.postings(reuse, POSTINGS_ENUM_FREQS)?);
+            return Ok(Some(terms_enum.postings(None, POSTINGS_ENUM_FREQS)?));
         }
-        Ok(())
+        Ok(None)
     }
 }
 

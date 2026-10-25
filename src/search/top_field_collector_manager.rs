@@ -219,59 +219,20 @@ impl CollectorManager for TopFieldCollectorManager {
 #[cfg(test)]
 mod send_sync_tests {
     use super::*;
-    use crate::search::field_value_hit_queue;
-    use crate::search::top_field_collector::{self, SharedCollectorState};
+    use crate::search::FieldValueHitQueue;
 
-    fn assert_send_sync<T: Send + Sync>(_: &T) {}
+    fn assert_send_sync<T: Send + Sync>() {}
+    fn assert_send<T: Send>() {}
 
-    /// Every field of the manager but its collectors is `Send + Sync`. The
-    /// destructuring names every field, so a field added later fails to
-    /// compile until it is listed, and a listed field that is not both fails
-    /// its assertion.
-    fn manager_fields(manager: &TopFieldCollectorManager) {
-        let TopFieldCollectorManager {
-            sort,
-            num_hits,
-            after,
-            total_hits_threshold,
-            min_score_acc,
-            collectors: _,
-        } = manager;
-        assert_send_sync(sort);
-        assert_send_sync(num_hits);
-        assert_send_sync(after);
-        assert_send_sync(total_hits_threshold);
-        assert_send_sync(min_score_acc);
-    }
-
-    /// A collector handle and the manager's list of handles are both
-    /// `Send + Sync` for any `Send` state — checked on the very type aliases
-    /// the two structs use, for every `S` at once.
-    fn handles_are_send_and_sync<S: Send>(
-        handle: &SharedCollectorState<S>,
-        handles: &CollectorHandles<SharedCollectorState<S>>,
-    ) {
-        assert_send_sync(handle);
-        assert_send_sync(handles);
-    }
-
-    /// The manager is `Send + Sync` exactly when the comparators are `Send`.
-    /// Checked at compile time on the real structs, field by field: the
-    /// manager's fields but its collectors, the generic handle and list,
-    /// the collector and its state but the hit queue, and the queue but its
-    /// comparators.
-    ///
-    /// The assertion cannot be written on the concrete manager today, because
-    /// it does not hold: the hit queue holds `Box<dyn FieldComparator>`, and
-    /// `FieldComparator` has no `Send` bound. Once it has,
-    /// `assert_send_sync::<TopFieldCollectorManager>()` compiles and belongs
-    /// here.
+    /// The manager, its collectors and their hit queue are `Send` — the
+    /// comparators the queue holds included — so a collector can be handed to
+    /// an executor's worker, as Lucene's `IndexSearcher.search(Query,
+    /// CollectorManager)` does with every slice.
     #[test]
-    fn manager_is_send_and_sync_but_for_its_collectors() {
-        let _: fn(&TopFieldCollectorManager) = manager_fields;
-        let _: fn(&SharedCollectorState<()>, &CollectorHandles<SharedCollectorState<()>>) =
-            handles_are_send_and_sync::<()>;
-        top_field_collector::send_checks::collector_is_send_but_for_its_queue();
-        field_value_hit_queue::send_checks::queue_is_send_but_for_its_comparators();
+    fn manager_collectors_and_queue_are_send() {
+        assert_send_sync::<TopFieldCollectorManager>();
+        assert_send_sync::<TopFieldCollector>();
+        assert_send::<FieldValueHitQueue>();
+        assert_send::<Box<dyn crate::search::FieldComparator>>();
     }
 }

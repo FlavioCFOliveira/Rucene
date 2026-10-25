@@ -200,6 +200,7 @@ mod tests {
     use super::*;
     use crate::codecs::stub::BufferedUpdates;
     use crate::index::FieldInfos;
+    use std::sync::Arc;
 
     #[test]
     fn empty_norms_doc_values_is_exhausted() {
@@ -240,14 +241,14 @@ mod tests {
         let format = EmptyNormsFormat::new("EmptyNorms");
         assert_eq!(format.name(), "EmptyNorms");
 
-        let dir = crate::store::RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(crate::store::RamDirectory::default());
+        let dir_ref: &dyn crate::store::Directory = &*dir;
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
         let field_infos = FieldInfos::default();
         let segment_info = crate::codecs::tests::test_segment_info("test", 10);
         let write_state = SegmentWriteState::new(
             crate::util::default_info_stream(),
-            dir_ref,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &BufferedUpdates,

@@ -161,12 +161,24 @@ pub struct IndexWriter {
     /// writer reopened on an existing index carries on naming segments where
     /// the previous one stopped instead of restarting at `_0`.
     segment_counter: Arc<AtomicI64>,
+    /// `SegmentInfos.changed()` calls the segment-name supplier made and
+    /// `WriterState.segment_infos` has not absorbed yet.
+    ///
+    /// Java's `newSegmentName` bumps `segmentInfos.version` in place, under
+    /// `synchronized (segmentInfos)` (`IndexWriter.java:2129-2142`). The port
+    /// keeps `segment_infos` behind the writer's state lock, which the
+    /// indexing threads must not take (see [`Self::segment_counter`]), so the
+    /// supplier counts the bump here and [`Self::state`] folds it into the
+    /// version every time the state is locked. Every read of the writer's
+    /// `SegmentInfos` goes through that lock, so the version every reader
+    /// observes equals Java's.
+    pending_segment_infos_changes: Arc<AtomicI64>,
     /// Set when an unrecoverable error forces the writer closed.
     tragedy: Mutex<Option<String>>,
     /// Bumped on every change that must be written at close.
     ///
     /// Equivalent to `IndexWriter.changeCount`.
-    change_count: AtomicI64,
+    change_count: Arc<AtomicI64>,
     /// The `change_count` the last successful commit wrote.
     ///
     /// Equivalent to `IndexWriter.lastCommitChangeCount`.
@@ -372,8 +384,16 @@ impl IndexWriter {
             }
         };
 
+        // `IndexWriter.changed()` calls made while the writer opens, folded
+        // into `change_count` once it exists.
+        let mut initial_change_count = 0i64;
         let mut segment_infos = if create {
-            SegmentInfos::new(Version::LATEST.major as i32)?
+            let mut sis = SegmentInfos::new(Version::LATEST.major as i32)?;
+            // Record that we have a change (zero out all segments) pending
+            // (`IndexWriter.java:1022-1024`).
+            sis.changed();
+            initial_change_count += 1;
+            sis
         } else {
             SegmentInfos::read_latest_commit(Arc::clone(&directory))?
         };
@@ -399,6 +419,13 @@ impl IndexWriter {
             initial_index_exists,
             false,
         )?;
+        if deleter.starting_commit_deleted {
+            // Deletion policy deleted the "head" commit point. We have to mark
+            // ourself as changed so that if we are closed w/o any further
+            // changes we write a new segments_N file (`IndexWriter.java:1188-1194`).
+            segment_infos.changed();
+            initial_change_count += 1;
+        }
 
         let rollback_segments = segment_infos
             .iter()
@@ -412,9 +439,20 @@ impl IndexWriter {
         // at zero. Seeding from `segment_infos` reproduces both cases.
         let segment_counter = Arc::new(AtomicI64::new(segment_infos.counter));
 
+        let change_count = Arc::new(AtomicI64::new(initial_change_count));
+        let pending_segment_infos_changes = Arc::new(AtomicI64::new(0));
+        // `IndexWriter.newSegmentName()` (`IndexWriter.java:2129-2142`):
+        // `changeCount.incrementAndGet()`, `segmentInfos.changed()`, then the
+        // name from `segmentInfos.counter++`. See
+        // [`Self::pending_segment_infos_changes`] for where the version bump
+        // waits until the writer's state is next observed.
         let segment_name_supplier = {
             let counter = Arc::clone(&segment_counter);
+            let change_count = Arc::clone(&change_count);
+            let pending_changes = Arc::clone(&pending_segment_infos_changes);
             Arc::new(move || {
+                change_count.fetch_add(1, Ordering::AcqRel);
+                pending_changes.fetch_add(1, Ordering::AcqRel);
                 let n = counter.fetch_add(1, Ordering::AcqRel);
                 format!("_{}", radix_36(n))
             })
@@ -492,8 +530,9 @@ impl IndexWriter {
             closed: AtomicBool::new(false),
             pending_num_docs,
             segment_counter,
+            pending_segment_infos_changes,
             tragedy,
-            change_count: AtomicI64::new(0),
+            change_count,
             last_commit_change_count: AtomicI64::new(0),
             pending_commit_change_count: AtomicI64::new(0),
             flush_count: AtomicI32::new(0),
@@ -1029,9 +1068,16 @@ impl IndexWriter {
     }
 
     fn state(&self) -> Result<MutexGuard<'_, WriterState>> {
-        self.state
-            .lock()
-            .map_err(|_| LuceneError::IllegalState("IndexWriter state lock poisoned".to_string()))
+        let mut state = self.state.lock().map_err(|_| {
+            LuceneError::IllegalState("IndexWriter state lock poisoned".to_string())
+        })?;
+        // Absorb the `segmentInfos.changed()` calls the segment-name supplier
+        // made since the last lock; see `pending_segment_infos_changes`.
+        let pending = self.pending_segment_infos_changes.swap(0, Ordering::AcqRel);
+        for _ in 0..pending {
+            state.segment_infos.changed();
+        }
+        Ok(state)
     }
 
     // -------------------------------------------------------------------------
@@ -4980,7 +5026,7 @@ impl IndexWriter {
                     continue;
                 }
                 if rld.write_field_updates(
-                    self.directory.as_ref(),
+                    &self.directory,
                     &self.global_field_numbers,
                     self.buffered_updates_stream.get_completed_del_gen(),
                     self.info_stream.as_ref(),
@@ -5622,7 +5668,7 @@ impl IndexWriter {
         new_info_per_commit.set_doc_values_updates_files(
             info.get_doc_values_updates_files()
                 .iter()
-                .map(|(number, files)| (*number, files.clone()))
+                .map(|(number, files)| (number, files.clone()))
                 .collect::<Vec<_>>(),
         );
 

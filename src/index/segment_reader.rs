@@ -1159,10 +1159,17 @@ impl SegmentReader {
         let original_si = segment_info;
         let dir: &dyn Directory = &*original_si.info.directory;
 
+        // `si.info.getIndexSort()` is `null` for a segment without an index
+        // sort (`SegmentReader.java:85-90`); this port's `SegmentInfo` stands
+        // for that `null` with the relevance sort `Sort::new()`, which no index
+        // can be sorted by, so it maps back to `None` here. Handing it on
+        // made a relevance search look like a prefix of the index sort, and
+        // `TopFieldCollector` then terminated its leaves early.
+        let index_sort = original_si.info.index_sort();
         let meta_data = LeafMetaData::new(
             created_version_major,
             original_si.info.min_version(),
-            Some(original_si.info.index_sort().clone()),
+            (*index_sort != crate::search::Sort::new()).then(|| index_sort.clone()),
             original_si.info.get_has_blocks(),
         )?;
 

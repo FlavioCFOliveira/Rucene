@@ -840,6 +840,7 @@ impl<T: PushPostingsWriterBase + ?Sized> PostingsWriterBase for T {
 mod tests {
     use super::*;
     use crate::search::DocIdSetIterator;
+    use std::sync::Arc;
 
     // Stub Fields -----------------------------------------------------------
     #[derive(Debug, Default, Clone)]
@@ -1333,8 +1334,8 @@ mod tests {
         let format = StubPostingsFormat;
         assert_eq!(format.name(), "StubPostingsFormat");
 
-        let dir = crate::store::RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(crate::store::RamDirectory::default());
+        let dir_ref: &dyn crate::store::Directory = &*dir;
         let segment_info = crate::index::SegmentInfo::new(
             std::sync::Arc::new(crate::store::RamDirectory::default()),
             crate::util::Version::LUCENE_10_5_0,
@@ -1356,7 +1357,7 @@ mod tests {
         let info_stream = crate::util::default_info_stream();
         let write_state = SegmentWriteState::new(
             info_stream,
-            dir_ref,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &seg_updates,
@@ -1383,8 +1384,8 @@ mod tests {
 
     #[test]
     fn stub_postings_reader_base_compiles_and_runs() {
-        let dir = crate::store::RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(crate::store::RamDirectory::default());
+        let dir_ref: &dyn crate::store::Directory = &*dir;
         let segment_info = crate::index::SegmentInfo::new(
             std::sync::Arc::new(crate::store::RamDirectory::default()),
             crate::util::Version::LUCENE_10_5_0,
@@ -1442,8 +1443,7 @@ mod tests {
 
     #[test]
     fn stub_push_postings_writer_blanket_impl_runs() {
-        let dir = crate::store::RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(crate::store::RamDirectory::default());
         let segment_info = crate::index::SegmentInfo::new(
             std::sync::Arc::new(crate::store::RamDirectory::default()),
             crate::util::Version::LUCENE_10_5_0,
@@ -1465,7 +1465,7 @@ mod tests {
         let info_stream = crate::util::default_info_stream();
         let write_state = SegmentWriteState::new(
             info_stream,
-            dir_ref,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &seg_updates,
@@ -1510,8 +1510,7 @@ mod tests {
 
     #[test]
     fn stub_postings_writer_base_compiles_and_runs() {
-        let dir = crate::store::RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(crate::store::RamDirectory::default());
         let segment_info = crate::index::SegmentInfo::new(
             std::sync::Arc::new(crate::store::RamDirectory::default()),
             crate::util::Version::LUCENE_10_5_0,
@@ -1533,7 +1532,7 @@ mod tests {
         let info_stream = crate::util::default_info_stream();
         let write_state = SegmentWriteState::new(
             info_stream,
-            dir_ref,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
             &seg_updates,

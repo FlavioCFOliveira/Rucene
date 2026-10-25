@@ -4306,7 +4306,7 @@ mod tests {
         let infos = FieldInfos::new(vec![field_info.clone()]).unwrap();
         let write_state = SegmentWriteState::new(
             default_info_stream(),
-            directory.as_ref(),
+            Arc::clone(&directory),
             &info,
             &infos,
             &BufferedUpdates,

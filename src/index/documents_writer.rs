@@ -138,7 +138,10 @@ pub const SOURCE_FLUSH: &str = "flush";
 /// the close. Closing the directory is the responsibility of whoever created
 /// it — the `IndexWriter` — so this adapter reports `close` as a no-op and
 /// delegates everything else.
-struct SharedDirectory(Arc<dyn Directory>);
+///
+/// `BKDWriter` uses it for the same reason: it wraps the directory it is given
+/// in a [`TrackingDirectoryWrapper`] (`BKDWriter.java:173`).
+pub(crate) struct SharedDirectory(pub(crate) Arc<dyn Directory>);
 
 impl Directory for SharedDirectory {
     fn list_all(&self) -> Result<Vec<String>> {
@@ -1465,7 +1468,11 @@ pub struct IndexingChainFlushState<'a> {
     /// Info stream for diagnostics.
     pub info_stream: &'a dyn InfoStream,
     /// Tracking directory the chain must create its files in.
-    pub directory: &'a TrackingDirectoryWrapper,
+    ///
+    /// Shared rather than borrowed because the chain hands it on to the
+    /// codec writers through an owned
+    /// [`SegmentWriteState::directory`](crate::codecs::state::SegmentWriteState::directory).
+    pub directory: &'a Arc<TrackingDirectoryWrapper>,
     /// Segment being written, with `maxDoc` already set.
     pub segment_info: &'a SegmentInfo,
     /// Field metadata of the segment.
@@ -4028,7 +4035,7 @@ impl DwptGuard {
                 .expect("INVARIANT: state is only taken in Drop");
             let flush_state = IndexingChainFlushState {
                 info_stream: self.dwpt.info_stream.as_ref(),
-                directory: self.dwpt.directory.as_ref(),
+                directory: &self.dwpt.directory,
                 segment_info: &segment_info,
                 field_infos: &field_infos,
                 context: context.as_ref(),

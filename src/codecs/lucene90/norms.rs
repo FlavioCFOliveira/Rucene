@@ -1038,13 +1038,13 @@ mod tests {
     }
 
     fn write_state<'a>(
-        dir: &'a dyn Directory,
+        dir: &'a Arc<dyn Directory>,
         info: &'a crate::index::SegmentInfo,
         fis: &'a FieldInfos,
     ) -> SegmentWriteState<'a> {
         SegmentWriteState::new(
             crate::util::default_info_stream(),
-            dir,
+            Arc::clone(dir),
             info,
             fis,
             &BufferedUpdates,
@@ -1053,11 +1053,11 @@ mod tests {
     }
 
     fn read_state<'a>(
-        dir: &'a dyn Directory,
+        dir: &'a Arc<dyn Directory>,
         info: &'a crate::index::SegmentInfo,
         fis: &'a FieldInfos,
     ) -> SegmentReadState<'a> {
-        SegmentReadState::new(dir, info, fis, &*crate::store::DEFAULT_IO_CONTEXT)
+        SegmentReadState::new(&**dir, info, fis, &*crate::store::DEFAULT_IO_CONTEXT)
     }
 
     /// In-memory numeric doc-values iterator used only for tests.
@@ -1182,7 +1182,7 @@ mod tests {
 
     #[test]
     fn round_trip_dense_field() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let info = test_segment_info("_0", 5);
         let body = norm_field("body", 0);
         let fis = field_infos(vec![body.clone()]);
@@ -1213,7 +1213,7 @@ mod tests {
 
     #[test]
     fn round_trip_sparse_field() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let info = test_segment_info("_0", 10);
         let body = norm_field("body", 0);
         let fis = field_infos(vec![body.clone()]);
@@ -1247,7 +1247,7 @@ mod tests {
 
     #[test]
     fn round_trip_empty_field() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let info = test_segment_info("_0", 4);
         let body = norm_field("body", 0);
         let fis = field_infos(vec![body.clone()]);
@@ -1271,7 +1271,7 @@ mod tests {
 
     #[test]
     fn round_trip_constant_value() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let info = test_segment_info("_0", 6);
         let body = norm_field("body", 0);
         let fis = field_infos(vec![body.clone()]);
@@ -1299,7 +1299,7 @@ mod tests {
 
     #[test]
     fn round_trip_multiple_fields() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let info = test_segment_info("_0", 5);
         let body = norm_field("body", 0);
         let title = norm_field("title", 1);
@@ -1343,7 +1343,7 @@ mod tests {
 
     #[test]
     fn round_trip_byte_widths() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let info = test_segment_info("_0", 4);
         let fields = vec![
             (0, "byte", vec![(0, 100), (1, -100), (2, 50), (3, -50)]),
@@ -1398,7 +1398,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_field_number() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let info = test_segment_info("_0", 3);
         let body = norm_field("body", 0);
         let fis_with_body = field_infos(vec![body.clone()]);
@@ -1421,7 +1421,7 @@ mod tests {
 
     #[test]
     fn rejects_field_without_norms() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let info = test_segment_info("_0", 3);
         let mut body = FieldInfo::new("body", 0);
         body.index_options = IndexOptions::DOCS_AND_FREQS;
@@ -1453,7 +1453,7 @@ mod tests {
     ///
     /// The layout is the one `Lucene90NormsConsumer.addNormsField` writes:
     /// an index header, then `field_number` and seven words per field.
-    fn read_first_entry(dir: &RamDirectory, max_doc: i32) -> NormsEntry {
+    fn read_first_entry(dir: &Arc<dyn Directory>, max_doc: i32) -> NormsEntry {
         use crate::store::DataInput;
         let mut input = dir
             .open_input("_0.nvm", &*crate::store::DEFAULT_IO_CONTEXT)
@@ -1479,7 +1479,11 @@ mod tests {
         }
     }
 
-    fn write_one_field(dir: &RamDirectory, max_doc: i32, values: Vec<(i32, i64)>) -> FieldInfo {
+    fn write_one_field(
+        dir: &Arc<dyn Directory>,
+        max_doc: i32,
+        values: Vec<(i32, i64)>,
+    ) -> FieldInfo {
         let info = test_segment_info("_0", max_doc);
         let body = norm_field("body", 0);
         let fis = field_infos(vec![body.clone()]);
@@ -1500,7 +1504,7 @@ mod tests {
         // with each other, so every round-trip test passed — while the files
         // were unreadable by Lucene and Lucene's were unreadable here. The
         // metadata is asserted directly, because it is what names the encoding.
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         write_one_field(
             &dir,
             100,
@@ -1524,7 +1528,7 @@ mod tests {
 
     #[test]
     fn an_all_documents_field_writes_no_docs_with_field_stream() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         write_one_field(&dir, 20, (0..20).map(|d| (d, 3i64)).collect());
         let entry = read_first_entry(&dir, 20);
         assert_eq!(entry.docs_with_field_offset, -1);
@@ -1536,7 +1540,7 @@ mod tests {
 
     #[test]
     fn a_field_with_no_documents_writes_the_empty_sentinel() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         write_one_field(&dir, 20, Vec::new());
         let entry = read_first_entry(&dir, 20);
         assert_eq!(entry.docs_with_field_offset, -2);
@@ -1556,7 +1560,7 @@ mod tests {
         // zero — and so the wrong value — in a release one. Every document in
         // the segment is placed on such a boundary in turn.
         for boundary in [63, 64, 127, 128, 191, 255] {
-            let dir = RamDirectory::default();
+            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
             let body = write_one_field(
                 &dir,
                 300,
@@ -1587,7 +1591,7 @@ mod tests {
 
     #[test]
     fn a_sparse_field_supports_random_access() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let body = write_one_field(&dir, 200, vec![(5, -7), (63, 8), (64, 9), (199, -1)]);
         let info = test_segment_info("_0", 200);
         let fis = field_infos(vec![body.clone()]);
@@ -1614,7 +1618,7 @@ mod tests {
 
     #[test]
     fn a_dense_field_supports_random_access() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let body = write_one_field(&dir, 8, (0..8).map(|d| (d, d as i64 - 4)).collect());
         let info = test_segment_info("_0", 8);
         let fis = field_infos(vec![body.clone()]);
@@ -1645,7 +1649,7 @@ mod tests {
             .filter(|d| d % 43 != 0)
             .map(|d| (d, 1 + (d as i64 % 11)))
             .collect();
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let body = write_one_field(&dir, MAX_DOC, expected.clone());
         let entry = read_first_entry(&dir, MAX_DOC);
         assert_eq!(entry.num_docs_with_field, expected.len() as i32);
@@ -1667,7 +1671,7 @@ mod tests {
 
     #[test]
     fn the_merge_instance_reads_the_same_values() {
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let body = write_one_field(
             &dir,
             50,
@@ -1702,7 +1706,7 @@ mod tests {
             (vec![(0, 0i64), (1, 40_000)], 4),
             (vec![(0, 0i64), (1, i64::MAX)], 8),
         ] {
-            let dir = RamDirectory::default();
+            let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
             let body = write_one_field(&dir, 2, values.clone());
             let entry = read_first_entry(&dir, 2);
             assert_eq!(
@@ -1726,10 +1730,10 @@ mod tests {
     /// Rewrites `_0.nvm` with `patch` applied to its body, optionally recomputing
     /// the footer so that the file still passes its checksum.
     fn patch_metadata(
-        dir: &RamDirectory,
+        dir: &Arc<dyn Directory>,
         resign: bool,
         patch: impl FnOnce(&mut Vec<u8>),
-    ) -> RamDirectory {
+    ) -> Arc<dyn Directory> {
         let read = |name: &str| {
             let mut input = dir
                 .open_input(name, &*crate::store::DEFAULT_IO_CONTEXT)
@@ -1765,7 +1769,7 @@ mod tests {
             }
             out.close().unwrap();
         }
-        out_dir
+        Arc::new(out_dir)
     }
 
     /// Byte offset of the `bytes_per_norm` of the only entry, within the body of
@@ -1781,7 +1785,7 @@ mod tests {
         // the checksum passes: the file is exactly what was written, so it is
         // the entry that is wrong, and saying "footer mismatch" would send the
         // operator looking for disk corruption that is not there.
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let body = write_one_field(&dir, 4, vec![(0, 1), (2, 2)]);
         let patched = patch_metadata(&dir, true, |body| {
             let at = bytes_per_norm_offset(body.len());
@@ -1804,7 +1808,7 @@ mod tests {
         // With the footer left alone the same patch makes the file genuinely
         // corrupt, and then the corruption is what explains it — with the entry
         // failure folded in rather than lost.
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let body = write_one_field(&dir, 4, vec![(0, 1), (2, 2)]);
         let patched = patch_metadata(&dir, false, |body| {
             let at = bytes_per_norm_offset(body.len());
@@ -1831,7 +1835,7 @@ mod tests {
         // When the entry decoder has already read past the start of the footer
         // there is nothing left to verify, which Java reports as an
         // indeterminate checksum rather than pretending either way.
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let body = write_one_field(&dir, 4, vec![(0, 1), (2, 2)]);
         // Dropping the end-of-metadata marker makes the decoder read on into
         // the footer looking for the next field number.
@@ -1855,7 +1859,7 @@ mod tests {
         // Java checks the header inside the same `try` as the entries, so a
         // file whose header does not belong to this codec is reported as such
         // rather than as a footer problem.
-        let dir = RamDirectory::default();
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let body = write_one_field(&dir, 4, vec![(0, 1), (2, 2)]);
         let patched = patch_metadata(&dir, true, |body| {
             // The codec name follows the four-byte magic and a one-byte length.

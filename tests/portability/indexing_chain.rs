@@ -598,7 +598,7 @@ fn write_with_rucene(
 
     let finished = field_infos.finish().expect("field infos");
     let directory: Box<dyn Directory> = Box::new(FSDirectory::open(out_dir).expect("directory"));
-    let tracking = TrackingDirectoryWrapper::new(directory);
+    let tracking = Arc::new(TrackingDirectoryWrapper::new(directory));
 
     let segment_info = SegmentInfo::new(
         Arc::new(FSDirectory::open(out_dir).expect("directory")),

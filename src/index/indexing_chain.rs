@@ -3797,7 +3797,7 @@ impl IndexingChain for DefaultIndexingChain {
         let seg_updates = crate::codecs::stub::BufferedUpdates;
         let mut write_state = SegmentWriteState::new(
             state.info_stream,
-            state.directory,
+            Arc::clone(state.directory) as Arc<dyn crate::store::Directory>,
             state.segment_info,
             state.field_infos,
             &seg_updates,
@@ -3859,7 +3859,7 @@ impl IndexingChain for DefaultIndexingChain {
         // `FreqProxTermsWriter.SortingTerms`.
         let mut norms = if state.field_infos.has_norms() {
             let read_state = crate::codecs::state::SegmentReadState::new(
-                state.directory,
+                state.directory.as_ref(),
                 state.segment_info,
                 state.field_infos,
                 &*crate::store::DEFAULT_IO_CONTEXT,
@@ -3896,7 +3896,7 @@ impl IndexingChain for DefaultIndexingChain {
         // `IndexWriterConfig` and passes `IOContext.DEFAULT` rather than the
         // flush context, and both are reproduced here.
         self.config.codec().field_infos_format().write(
-            state.directory,
+            state.directory.as_ref(),
             state.segment_info,
             "",
             state.field_infos,
