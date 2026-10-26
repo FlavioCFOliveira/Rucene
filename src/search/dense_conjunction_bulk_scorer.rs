@@ -437,9 +437,7 @@ fn score_window_using_leap_frog(
         }
         let mut doc = members[clause].doc_id();
         while doc < max {
-            if accept_docs.map_or(true, |bits| bits.get(doc as usize))
-                && members[clause].matches()?
-            {
+            if accept_docs.is_none_or(|bits| bits.get(doc as usize)) && members[clause].matches()? {
                 collector.collect(doc, scorable)?;
             }
             doc = members[clause].next_doc()?;

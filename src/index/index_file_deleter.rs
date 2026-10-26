@@ -411,7 +411,7 @@ impl IndexFileDeleter {
 
                     if last_segment_infos
                         .as_ref()
-                        .map_or(true, |last| sis.generation() > last.generation())
+                        .is_none_or(|last| sis.generation() > last.generation())
                     {
                         last_segment_infos = Some(sis);
                     }

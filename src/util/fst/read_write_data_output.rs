@@ -111,7 +111,7 @@ impl ReadWriteDataOutput {
         if self
             .blocks
             .last()
-            .map_or(true, |block| block.len() == self.block_size)
+            .is_none_or(|block| block.len() == self.block_size)
         {
             self.blocks.push(Vec::with_capacity(self.block_size));
         }

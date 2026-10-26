@@ -12,7 +12,7 @@
 //!
 //! Because the reader now reads the accept docs, `ExitableDirectoryReader`'s
 //! `ExitableAcceptDocs` is reachable from inside the crate for the first time,
-//! and the last two tests cover it end to end.
+//! and the exitable tests below cover it end to end.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -257,5 +257,91 @@ fn an_exitable_reader_hides_nothing_when_the_timeout_never_fires() {
         docs.first().copied(),
         Some(0),
         "wrapping must not change what the search finds, got {docs:?}"
+    );
+}
+
+/// rmp #206: the timeout is raised from the accept-docs check itself, at the
+/// first sampled `Bits.get` of the search, as Java's `ExitingReaderException`
+/// leaves `ExitableAcceptDocs.bits().get(int)`
+/// (`ExitableDirectoryReader.java:371-375, 439-445`), not after the search has
+/// run to completion. With a timeout that has always fired, Java's first call
+/// samples (`calls++ % 16 == 0`), checks once and throws: exactly one timeout
+/// check is made and nothing is collected.
+#[test]
+fn an_exitable_reader_aborts_a_knn_search_at_the_first_sampled_check() {
+    let reader = build_index("rucene-206-exitable-first-check", None);
+    let timeout = Arc::new(AlwaysTimesOut::new());
+    let exitable =
+        ExitableDirectoryReaderWrapper::new(Arc::clone(&timeout) as Arc<dyn QueryTimeout>)
+            .wrap(Arc::clone(&reader))
+            .expect("wrap as an exitable reader");
+    let leaves = Arc::clone(&exitable).leaves();
+    let leaf = leaves[0].leaf_reader();
+
+    let mut collector = TopKnnCollector::new(3, i64::MAX);
+    let mut accept_docs =
+        from_live_docs(leaf.get_live_docs(), leaf.max_doc()).expect("accept docs");
+    let error = leaf
+        .search_nearest_vectors(VECTOR_FIELD, &[0.0, 0.0], &mut collector, &mut accept_docs)
+        .expect_err("the timeout has fired, so the search must be interrupted");
+    assert!(
+        error
+            .to_string()
+            .contains("The request took too long to search nearest vectors"),
+        "got: {error}"
+    );
+    assert_eq!(
+        timeout.calls(),
+        1,
+        "the search must stop at the first sampled check, as Java's exception does"
+    );
+    assert!(
+        collector.top_docs().score_docs.is_empty(),
+        "nothing may be collected once the first accept-docs check has thrown"
+    );
+}
+
+/// `ExitableAcceptDocs.bits()` wraps whatever bits the delegate answers, not
+/// only the `MatchAllBits` it substitutes for `null`
+/// (`ExitableDirectoryReader.java:359-387`). Over a leaf with deletions the
+/// delegate answers the live docs, and the wrapper around them still checks
+/// the timeout on the first sampled `get`: exactly one check is made, the
+/// search is interrupted, and nothing is collected.
+#[test]
+fn an_exitable_reader_aborts_a_knn_search_over_a_leaf_with_deletions() {
+    let reader = build_index("rucene-exitable-deletions-first-check", Some((0, 1)));
+    let timeout = Arc::new(AlwaysTimesOut::new());
+    let exitable =
+        ExitableDirectoryReaderWrapper::new(Arc::clone(&timeout) as Arc<dyn QueryTimeout>)
+            .wrap(Arc::clone(&reader))
+            .expect("wrap as an exitable reader");
+    let leaves = Arc::clone(&exitable).leaves();
+    assert_eq!(leaves.len(), 1, "one segment");
+    let leaf = leaves[0].leaf_reader();
+    let live_docs = leaf.get_live_docs();
+    assert!(
+        live_docs.is_some(),
+        "the leaf must have deletions, so the delegate answers bits of its own"
+    );
+
+    let mut collector = TopKnnCollector::new(3, i64::MAX);
+    let mut accept_docs = from_live_docs(live_docs, leaf.max_doc()).expect("accept docs");
+    let error = leaf
+        .search_nearest_vectors(VECTOR_FIELD, &[0.0, 0.0], &mut collector, &mut accept_docs)
+        .expect_err("the timeout has fired, so the search must be interrupted");
+    assert!(
+        error
+            .to_string()
+            .contains("The request took too long to search nearest vectors"),
+        "got: {error}"
+    );
+    assert_eq!(
+        timeout.calls(),
+        1,
+        "the search must stop at the first sampled check, as Java's exception does"
+    );
+    assert!(
+        collector.top_docs().score_docs.is_empty(),
+        "nothing may be collected once the first accept-docs check has thrown"
     );
 }

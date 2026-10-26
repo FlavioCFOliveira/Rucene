@@ -33,6 +33,7 @@ use crate::codecs::lucene90::stored_fields::{FieldsIndex, FieldsIndexReader, Fie
 use crate::codecs::stub::{FieldInfo, FieldInfos, SegmentInfo};
 use crate::codecs::term_vectors::{TermVectorsFormat, TermVectorsReader, TermVectorsWriter};
 use crate::error::{LuceneError, Result};
+use crate::index::leaf_reader::TermVectors;
 use crate::index::postings_enum::{Impacts, ImpactsEnum, ImpactsSource, PostingsEnum};
 use crate::index::terms::{Fields, SeekStatus, TermState, Terms, TermsEnum};
 use crate::index::{segment_file_name, DocIDMerger, DocIDMergerSub, DocMap, MergeState};
@@ -1839,33 +1840,41 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         Some(self)
     }
 
-    /// Asks the `.tvd` input to load the block that holds `doc_id`, unless it
-    /// was one of the last sixteen blocks prefetched.
-    ///
-    /// Equivalent to `Lucene90CompressingTermVectorsReader.prefetch(int)`
-    /// (`Lucene90CompressingTermVectorsReader.java:347-361`).
-    fn prefetch(&self, doc_id: i32) -> Result<()> {
-        let block_id = self.index_reader.get_block_id(doc_id)?;
-
-        let mut prefetched_block_id_cache = self.prefetched_block_id_cache.lock().unwrap();
-        for &prefetched_block_id in prefetched_block_id_cache.iter() {
-            if prefetched_block_id == block_id {
-                return Ok(());
-            }
-        }
-
-        let block_start_pointer = self.index_reader.get_block_start_pointer(block_id)?;
-        let block_length = self.index_reader.get_block_length(block_id)?;
-        self.vectors_stream
-            .prefetch(block_start_pointer, block_length)?;
-
-        let index = self
-            .prefetched_block_id_cache_index
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        prefetched_block_id_cache[(index & PREFETCH_CACHE_MASK) as usize] = block_id;
+    fn check_integrity(&self) -> Result<()> {
+        self.index_reader.check_integrity()?;
+        let mut input = self.vectors_stream.clone_input()?;
+        input.seek(0)?;
+        checksum_entire_file(input.as_mut())?;
         Ok(())
     }
 
+    fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
+        Box::new(self.clone())
+    }
+
+    fn get_merge_instance(&self) -> Box<dyn TermVectorsReader> {
+        Box::new(self.clone())
+    }
+
+    /// Closes the fields index and the `.tvd` stream, once.
+    ///
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.close()`: both are
+    /// closed even when the first fails, the first failure is the one reported,
+    /// and the reader is only marked closed when the close succeeded — so a
+    /// failed close can be retried, exactly as Java's `if (!closed)` allows.
+    fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        let index = self.index_reader.close();
+        let stream = self.vectors_stream.close();
+        index.and(stream)?;
+        self.closed = true;
+        Ok(())
+    }
+}
+
+impl TermVectors for Lucene90CompressingTermVectorsReader {
     #[allow(clippy::needless_range_loop)]
     fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
         self.ensure_open()?;
@@ -2445,36 +2454,30 @@ impl TermVectorsReader for Lucene90CompressingTermVectorsReader {
         })))
     }
 
-    fn check_integrity(&self) -> Result<()> {
-        self.index_reader.check_integrity()?;
-        let mut input = self.vectors_stream.clone_input()?;
-        input.seek(0)?;
-        checksum_entire_file(input.as_mut())?;
-        Ok(())
-    }
-
-    fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-        Box::new(self.clone())
-    }
-
-    fn get_merge_instance(&self) -> Box<dyn TermVectorsReader> {
-        Box::new(self.clone())
-    }
-
-    /// Closes the fields index and the `.tvd` stream, once.
+    /// Asks the `.tvd` input to load the block that holds `doc_id`, unless it
+    /// was one of the last sixteen blocks prefetched.
     ///
-    /// Equivalent to `Lucene90CompressingTermVectorsReader.close()`: both are
-    /// closed even when the first fails, the first failure is the one reported,
-    /// and the reader is only marked closed when the close succeeded — so a
-    /// failed close can be retried, exactly as Java's `if (!closed)` allows.
-    fn close(&mut self) -> Result<()> {
-        if self.closed {
-            return Ok(());
+    /// Equivalent to `Lucene90CompressingTermVectorsReader.prefetch(int)`
+    /// (`Lucene90CompressingTermVectorsReader.java:347-361`).
+    fn prefetch(&mut self, doc_id: i32) -> Result<()> {
+        let block_id = self.index_reader.get_block_id(doc_id)?;
+
+        let mut prefetched_block_id_cache = self.prefetched_block_id_cache.lock().unwrap();
+        for &prefetched_block_id in prefetched_block_id_cache.iter() {
+            if prefetched_block_id == block_id {
+                return Ok(());
+            }
         }
-        let index = self.index_reader.close();
-        let stream = self.vectors_stream.close();
-        index.and(stream)?;
-        self.closed = true;
+
+        let block_start_pointer = self.index_reader.get_block_start_pointer(block_id)?;
+        let block_length = self.index_reader.get_block_length(block_id)?;
+        self.vectors_stream
+            .prefetch(block_start_pointer, block_length)?;
+
+        let index = self
+            .prefetched_block_id_cache_index
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        prefetched_block_id_cache[(index & PREFETCH_CACHE_MASK) as usize] = block_id;
         Ok(())
     }
 }
@@ -4461,12 +4464,14 @@ mod tests {
             Box::new(Self(self.0.clone_reader()))
         }
 
-        fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
-            self.0.get(doc)
-        }
-
         fn close(&mut self) -> Result<()> {
             self.0.close()
+        }
+    }
+
+    impl TermVectors for OpaqueTermVectorsReader {
+        fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
+            self.0.get(doc)
         }
     }
 
@@ -5126,7 +5131,7 @@ mod tests {
         let source = write_tv_merge_source(&dir, "_h", 0, 3);
         // Positive control: the intact index serves the same calls.
         {
-            let reader = concrete_tv_merge_source(&dir, &source);
+            let mut reader = concrete_tv_merge_source(&dir, &source);
             reader.prefetch(0).unwrap();
             reader.get(0).unwrap();
         }
@@ -5136,7 +5141,7 @@ mod tests {
             "_h.tvm",
             2,
         );
-        let reader = concrete_tv_merge_source(&dir, &source);
+        let mut reader = concrete_tv_merge_source(&dir, &source);
         assert_eq!(reader.index_reader.get_block_id(0).unwrap(), -1);
         reader.prefetch(0).unwrap();
         assert!(matches!(reader.get(0), Err(LuceneError::CorruptIndex(_))));
@@ -5174,6 +5179,7 @@ mod tests {
             );
             (start, end - start)
         };
+        let expected = vec![block(0), block(2), block(1)];
 
         reader.prefetch(1).unwrap();
         reader.prefetch(0).unwrap(); // same block: cached
@@ -5181,10 +5187,7 @@ mod tests {
         reader.prefetch(MERGE_TEST_DOCS_PER_CHUNK).unwrap();
         reader.prefetch(2 * MERGE_TEST_DOCS_PER_CHUNK).unwrap(); // cached
 
-        assert_eq!(
-            *requests.lock().unwrap(),
-            vec![block(0), block(2), block(1)]
-        );
+        assert_eq!(*requests.lock().unwrap(), expected);
     }
 }
 

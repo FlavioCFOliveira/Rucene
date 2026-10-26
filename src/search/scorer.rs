@@ -131,7 +131,7 @@ pub trait Scorer: Scorable {
         let mut size = 0;
         let mut doc = self.doc_id();
         while doc < up_to && size < batch_size {
-            if live_docs.map_or(true, |bits| bits.get(doc as usize)) {
+            if live_docs.is_none_or(|bits| bits.get(doc as usize)) {
                 buffer.docs[size] = doc;
                 buffer.features[size] = self.score()?;
                 size += 1;

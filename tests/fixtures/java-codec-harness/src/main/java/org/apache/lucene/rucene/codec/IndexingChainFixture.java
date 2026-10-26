@@ -70,7 +70,7 @@ import org.apache.lucene.util.BytesRef;
  *
  * <p>Supported cases: {@code docs}, {@code freqs}, {@code positions},
  * {@code offsets}, {@code payloads}, {@code multivalue}, {@code manyterms},
- * {@code emptyvalue}, {@code stats} and {@code statsmulti}.
+ * {@code emptyvalue}, {@code compressible}, {@code stats} and {@code statsmulti}.
  *
  * <p>The two {@code stats*} cases index with norms enabled and a recording
  * {@link Similarity}, so that every value Lucene's own indexing chain puts in
@@ -96,7 +96,7 @@ public final class IndexingChainFixture {
     if (args.length != 2) {
       System.err.println("Usage: IndexingChainFixture <output-dir> <case>");
       System.err.println(
-          "Supported cases: docs, freqs, positions, offsets, payloads, multivalue, manyterms, emptyvalue, stats, statsmulti");
+          "Supported cases: docs, freqs, positions, offsets, payloads, multivalue, manyterms, emptyvalue, compressible, stats, statsmulti");
       System.exit(1);
     }
 
@@ -170,7 +170,7 @@ public final class IndexingChainFixture {
     return switch (caseName) {
       case "docs" -> IndexOptions.DOCS;
       case "freqs" -> IndexOptions.DOCS_AND_FREQS;
-      case "positions", "payloads", "manyterms", "emptyvalue" ->
+      case "positions", "payloads", "manyterms", "emptyvalue", "compressible" ->
           IndexOptions.DOCS_AND_FREQS_AND_POSITIONS;
       case "offsets", "multivalue", "stats", "statsmulti" ->
           IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS;
@@ -187,6 +187,7 @@ public final class IndexingChainFixture {
       case "multivalue" -> multiValueDocuments();
       case "manyterms" -> manyTermsDocuments();
       case "emptyvalue" -> emptyValueDocuments();
+      case "compressible" -> compressibleDocuments();
       default -> throw new IllegalArgumentException("Unknown case: " + caseName);
     };
   }
@@ -282,6 +283,30 @@ public final class IndexingChainFixture {
         }
       }
       docs.add(List.of(tokens));
+    }
+    return docs;
+  }
+
+  /**
+   * Thirty documents whose terms form two sub-blocks with long common prefixes:
+   * {@code lzfourgroupNN} followed by a repetitive suffix, which the block-tree
+   * writer compresses with LZ4, and {@code lowerascii} followed by five
+   * lowercase letters, whose suffixes are too short for LZ4 and are packed with
+   * {@code LowercaseAsciiCompression}.
+   */
+  static List<List<List<Tok>>> compressibleDocuments() {
+    List<List<List<Tok>>> docs = new ArrayList<>();
+    for (int i = 0; i < 30; i++) {
+      String lz4 = String.format(java.util.Locale.ROOT, "lzfourgroup%02dabcdabcdabcdabcd", i);
+      StringBuilder lower = new StringBuilder("lowerascii");
+      lower.append((char) ('a' + i / 26)).append((char) ('a' + i % 26));
+      for (int k = 2; k < 5; k++) {
+        lower.append((char) ('a' + (i * 7 + k * 3) % 26));
+      }
+      String ascii = lower.toString();
+      docs.add(List.of(List.of(
+          Tok.of(lz4, 1, 0, lz4.length()),
+          Tok.of(ascii, 1, lz4.length() + 1, lz4.length() + 1 + ascii.length()))));
     }
     return docs;
   }

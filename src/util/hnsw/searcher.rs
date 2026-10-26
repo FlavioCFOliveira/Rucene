@@ -314,7 +314,7 @@ impl HnswGraphSearcher {
                     let score = self.bulk_scores[i];
                     if score >= min_accepted_similarity {
                         self.candidates.add(node, score);
-                        if accept_ords.map_or(true, |b| b.get(node as usize))
+                        if accept_ords.map_or(Ok(true), |b| b.try_get(node as usize))?
                             && results.collect(node, score)
                         {
                             let old_min = min_accepted_similarity;
@@ -560,7 +560,7 @@ impl OnHeapSearcher {
                     let score = self.bulk_scores[i];
                     if score >= min_accepted_similarity {
                         self.candidates.add(node, score);
-                        if accept_ords.map_or(true, |b| b.get(node as usize))
+                        if accept_ords.map_or(Ok(true), |b| b.try_get(node as usize))?
                             && results.collect(node, score)
                         {
                             let old_min = min_accepted_similarity;

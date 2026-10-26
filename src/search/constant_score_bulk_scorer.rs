@@ -188,7 +188,7 @@ impl ConstantScoreBulkScorer {
                 }
             }
 
-            let accepted = accept_docs.map_or(true, |bits| bits.get(doc as usize));
+            let accepted = accept_docs.is_none_or(|bits| bits.get(doc as usize));
             let confirmed = if !accepted {
                 false
             } else if two_phase {

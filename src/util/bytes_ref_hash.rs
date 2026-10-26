@@ -30,18 +30,183 @@
 //!   picking one and never straying; this port makes the choice explicit in the
 //!   constructor ([`BytesRefHash::new`] versus
 //!   [`BytesRefHash::new_by_pool_offset`]) and asserts it on every entry point.
-//! * **[`BytesRefHash::sort`] is a comparison sort.** Lucene uses an MSB radix
-//!   sort with a comparison fallback. Both produce exactly the same order —
-//!   ascending unsigned byte-wise order — which is all the index format
-//!   depends on; the radix sort is a constant-factor optimisation that can be
-//!   revisited once term-heavy segments are benchmarked.
+//! * **[`BytesRefHash::sort`] does not consume the table.** Lucene's `sort()`
+//!   reorders the `ids` array in place and returns it, so `clear()` must be
+//!   called before the hash is reused. This port sorts a fresh array of the
+//!   ids, with the same `StringSorter`/`MSBStringRadixSorter` Lucene uses, and
+//!   returns only the `count` sorted ids; the order is the same.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use crate::error::Result;
 use crate::util::byte_block_pool::{hash_bytes, ByteBlockPool};
+use crate::util::selector::{intro_sort, PivotOps};
+use crate::util::sorter::{
+    MSBRadixSorter, MSBRadixSorterOps, MSB_HISTOGRAM_SIZE, MSB_LENGTH_THRESHOLD,
+    MSB_LEVEL_THRESHOLD,
+};
 use crate::util::RamUsageEstimator;
+
+/// The anonymous `MSBStringRadixSorter` subclass of `BytesRefHash.sort()`
+/// (`BytesRefHash.java:205-252`), together with the `StringSorter` it lives in:
+/// bytes are read as `BytesRefComparator.NATURAL` reads them, and each entry's
+/// bucket is cached at `compact[tmp_offset + i]` while a level is reordered.
+///
+/// Java keeps the bucket cache in the second half of the `compact` array and
+/// writes it from `buildHistogram`; [`MSBRadixSorterOps::build_histogram`]
+/// takes `&self`, so the cache is a separate array of cells here. The values
+/// and the moments they are written and read are Java's.
+struct HashRadixOps<'a> {
+    compact: &'a mut [i32],
+    /// Equivalent to `compact[tmpOffset ..]`.
+    bucket_cache: Vec<Cell<i32>>,
+    pool: &'a ByteBlockPool,
+    bytes_start: &'a [i32],
+    /// The byte the current histogram was built for; Java asserts it matches
+    /// the one `reorder` is called with.
+    k: Cell<usize>,
+}
+
+impl HashRadixOps<'_> {
+    /// The term bytes of the entry at `i`.
+    ///
+    /// Equivalent to the overridden `StringSorter.get(BytesRefBuilder,
+    /// BytesRef, int)`: `pool.fillBytesRef(result, bytesStart[compact[i]])`.
+    fn term(&self, i: usize) -> &[u8] {
+        self.pool
+            .term_bytes(self.bytes_start[self.compact[i] as usize])
+    }
+
+    /// `swapBucketCache(int, int)`.
+    fn swap_bucket_cache(&mut self, i: usize, j: usize) {
+        self.compact.swap(i, j);
+        self.bucket_cache.swap(i, j);
+    }
+}
+
+impl MSBRadixSorterOps for HashRadixOps<'_> {
+    /// `MSBStringRadixSorter.byteAt`, over `BytesRefComparator.NATURAL.byteAt`.
+    fn byte_at(&self, i: usize, k: usize) -> i32 {
+        let term = self.term(i);
+        if term.len() <= k {
+            -1
+        } else {
+            i32::from(term[k])
+        }
+    }
+
+    /// The overridden `StringSorter.swap(int, int)`.
+    fn swap(&mut self, i: usize, j: usize) {
+        self.compact.swap(i, j);
+    }
+
+    fn build_histogram(
+        &self,
+        prefix_common_bucket: usize,
+        prefix_common_len: i32,
+        from: usize,
+        to: usize,
+        k: usize,
+        histogram: &mut [i32],
+    ) {
+        self.k.set(k);
+        histogram[prefix_common_bucket] = prefix_common_len;
+        let fill_from = from - prefix_common_len as usize;
+        for cell in &self.bucket_cache[fill_from..from] {
+            cell.set(prefix_common_bucket as i32);
+        }
+        for i in from..to {
+            let b = self.get_bucket(i, k);
+            self.bucket_cache[i].set(b as i32);
+            histogram[b] += 1;
+        }
+    }
+
+    fn should_fallback(&self, from: usize, to: usize, l: usize) -> bool {
+        // We lower the fallback threshold because the bucket cache speeds up
+        // the reorder.
+        to - from <= MSB_LENGTH_THRESHOLD / 2 || l >= MSB_LEVEL_THRESHOLD
+    }
+
+    fn reorder(
+        &mut self,
+        from: usize,
+        _to: usize,
+        start_offsets: &mut [i32],
+        end_offsets: &[i32],
+        k: usize,
+    ) {
+        debug_assert_eq!(self.k.get(), k);
+        for i in 0..MSB_HISTOGRAM_SIZE {
+            let limit = end_offsets[i];
+            loop {
+                let h1 = start_offsets[i];
+                if h1 >= limit {
+                    break;
+                }
+                let b = self.bucket_cache[from + h1 as usize].get() as usize;
+                let h2 = start_offsets[b];
+                start_offsets[b] += 1;
+                self.swap_bucket_cache(from + h1 as usize, from + h2 as usize);
+            }
+        }
+    }
+
+    /// `MSBStringRadixSorter.getFallbackSorter(k)`: the `StringSorter`
+    /// intro sort under `(o1, o2) -> NATURAL.compare(o1, o2, k)`.
+    fn fallback_sort(&mut self, from: usize, to: usize, k: usize, _max_length: usize) {
+        let mut fallback = HashFallbackSorter {
+            ops: self,
+            k,
+            pivot: Vec::new(),
+        };
+        intro_sort(&mut fallback, from, to);
+    }
+}
+
+/// The intro sort of `StringSorter.fallbackSorter(Comparator)` over the
+/// hash's entries, comparing from byte `k` on, as
+/// `BytesRefComparator.NATURAL.compare(o1, o2, k)` does.
+struct HashFallbackSorter<'a, 'b> {
+    ops: &'a mut HashRadixOps<'b>,
+    k: usize,
+    pivot: Vec<u8>,
+}
+
+impl PivotOps for HashFallbackSorter<'_, '_> {
+    fn swap(&mut self, i: usize, j: usize) {
+        self.ops.compact.swap(i, j);
+    }
+
+    fn set_pivot(&mut self, i: usize) {
+        self.pivot.clear();
+        self.pivot.extend_from_slice(self.ops.term(i));
+    }
+
+    fn compare_pivot(&mut self, j: usize) -> i32 {
+        compare_unsigned_from(&self.pivot, self.ops.term(j), self.k)
+    }
+
+    fn compare(&mut self, i: usize, j: usize) -> i32 {
+        compare_unsigned_from(self.ops.term(i), self.ops.term(j), self.k)
+    }
+}
+
+/// `Arrays.compareUnsigned` over both arrays from offset `k` to their ends,
+/// which is what `BytesRefComparator.NATURAL.compare(o1, o2, k)` computes.
+fn compare_unsigned_from(a: &[u8], b: &[u8], k: usize) -> i32 {
+    let a = a.get(k..).unwrap_or(&[]);
+    let b = b.get(k..).unwrap_or(&[]);
+    let n = a.len().min(b.len());
+    for i in 0..n {
+        if a[i] != b[i] {
+            return i32::from(a[i]) - i32::from(b[i]);
+        }
+    }
+    a.len() as i32 - b.len() as i32
+}
 
 /// Initial number of slots in the hash table.
 ///
@@ -251,15 +416,26 @@ impl BytesRefHash {
     /// Returns every term id ordered by the unsigned byte-wise order of its
     /// term bytes.
     ///
-    /// Equivalent to `BytesRefHash.sort()`. Unlike Lucene's version this does
-    /// not consume the table, so it can be called again after inspection.
+    /// Equivalent to `BytesRefHash.sort()` (`BytesRefHash.java:198-262`): a
+    /// `StringSorter` over `BytesRefComparator.NATURAL` whose radix sorter is
+    /// an `MSBStringRadixSorter` caching each entry's bucket in the second half
+    /// of the array, and whose fallback is the `StringSorter` intro sort.
+    /// Unlike Lucene's version this does not consume the table, so it can be
+    /// called again after inspection.
     pub fn sort(&self, pool: &ByteBlockPool) -> Vec<i32> {
-        let mut sorted: Vec<i32> = (0..self.count).collect();
-        sorted.sort_unstable_by(|left, right| {
-            pool.term_bytes(self.bytes_start[*left as usize])
-                .cmp(pool.term_bytes(self.bytes_start[*right as usize]))
-        });
-        sorted
+        let count = self.count as usize;
+        // `compact()` lays the ids out first.
+        let mut compact: Vec<i32> = (0..self.count).collect();
+        let mut ops = HashRadixOps {
+            compact: &mut compact,
+            bucket_cache: vec![Cell::new(0); count],
+            pool,
+            bytes_start: &self.bytes_start,
+            k: Cell::new(0),
+        };
+        let mut radix = MSBRadixSorter::new(i32::MAX as usize);
+        radix.sort(&mut ops, 0, count);
+        compact
     }
 
     /// Shallow size of the Java class plus the `Counter` it shares, the fixed
@@ -628,6 +804,43 @@ mod tests {
         let mut expected = inputs.clone();
         expected.sort();
         assert_eq!(sorted, expected);
+    }
+
+    /// rmp #151: `sort` runs Lucene's `MSBStringRadixSorter` with the bucket
+    /// cache and the lowered fallback threshold (`BytesRefHash.java:198-262`).
+    /// Terms with long shared prefixes, empty and one-byte terms, and bytes
+    /// above 0x7F drive the radix levels, the common-prefix shortcut and the
+    /// intro-sort fallback; the order must be the unsigned byte-wise order.
+    #[test]
+    fn sort_uses_the_radix_sorter_and_yields_unsigned_byte_order() {
+        let (mut pool, mut hash) = fixture();
+        let mut inputs: Vec<Vec<u8>> = vec![Vec::new(), vec![0x00], vec![0xFF], vec![0x80, 0x01]];
+        for i in 0..3000u32 {
+            let mut term = b"common/prefix/".to_vec();
+            term.push(((i * 131) % 256) as u8);
+            term.extend_from_slice(format!("{}", (i * 7919) % 3001).as_bytes());
+            if i % 3 == 0 {
+                term.extend_from_slice(b"/tail");
+            }
+            inputs.push(term);
+        }
+        inputs.sort();
+        inputs.dedup();
+        // Insert in a scrambled order so the ids do not already sort.
+        let mut scrambled = inputs.clone();
+        let n = scrambled.len();
+        for i in 0..n {
+            scrambled.swap(i, (i * 104_729) % n);
+        }
+        for input in &scrambled {
+            hash.add(&mut pool, input).expect("add");
+        }
+        let sorted: Vec<Vec<u8>> = hash
+            .sort(&pool)
+            .into_iter()
+            .map(|id| pool.term_bytes(hash.byte_start(id)).to_vec())
+            .collect();
+        assert_eq!(sorted, inputs);
     }
 
     #[test]

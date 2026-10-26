@@ -491,9 +491,7 @@ fn binary_index_sort_segment_private_delete_matches_lucene() {
     while let Some(term) = terms_enum.next().unwrap() {
         let mut postings = terms_enum.postings(None, POSTINGS_ENUM_NONE).unwrap();
         let doc = postings.next_doc().unwrap();
-        let live = live_docs
-            .as_ref()
-            .map_or(true, |bits| bits.get(doc as usize));
+        let live = live_docs.as_ref().is_none_or(|bits| bits.get(doc as usize));
         order.insert(
             doc,
             format!(
@@ -1388,7 +1386,7 @@ fn document_lines(leaf: &Arc<dyn rucene::index::LeafReader>) -> Vec<String> {
     let mut lines = Vec::new();
     for doc in 0..leaf.max_doc() {
         let mut b = format!("doc {doc}");
-        let is_live = live.as_ref().map_or(true, |bits| bits.get(doc as usize));
+        let is_live = live.as_ref().is_none_or(|bits| bits.get(doc as usize));
         b.push_str(&format!(" live={is_live}"));
         b.push_str(&format!(
             " id={}",

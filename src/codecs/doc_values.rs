@@ -22,7 +22,7 @@ use crate::error::{LuceneError, Result};
 
 pub use crate::index::doc_values::{
     BinaryDocValues, DocValues, DocValuesIterator, DocValuesSkipper, EmptyBinaryDocValues,
-    EmptyDocValuesProducer, EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
+    EmptyDocValuesProducer, EmptyNumericDocValues, EmptySortedDocValues,
     EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues,
     SingletonSortedNumericDocValues, SingletonSortedSetDocValues, SortedDocValues,
     SortedNumericDocValues, SortedSetDocValues,
@@ -62,8 +62,25 @@ pub trait DocValuesProducer: Send + Sync + fmt::Debug {
     /// Returns the sorted-set values for the given field.
     fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>>;
 
-    /// Returns the skip index for the given field.
-    fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>>;
+    /// Returns the skip index for the given field, or `None` when this
+    /// producer has none to offer.
+    ///
+    /// Equivalent to `DocValuesProducer.getSkipper(FieldInfo)`
+    /// (`codecs/DocValuesProducer.java:78-83`), whose return value is nullable:
+    /// `PerFieldDocValuesFormat` answers `null` for a field with no producer
+    /// (`codecs/perfield/PerFieldDocValuesFormat.java:348-351`) and
+    /// `SortingCodecReader` always does (`index/SortingCodecReader.java:713-716`).
+    /// As in Java, the result is undefined when the field's
+    /// `doc_values_skip_index_type` is `NONE`; readers check that first
+    /// (`index/CodecReader.java:198-206`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::UnsupportedOperation`] from producers that
+    /// mirror Java's `EmptyDocValuesProducer`, whose `getSkipper` throws
+    /// `UnsupportedOperationException` (`index/EmptyDocValuesProducer.java:54-57`),
+    /// and any I/O error from opening the skip index.
+    fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>>;
 
     /// Checks consistency of this producer.
     fn check_integrity(&self) -> Result<()>;
@@ -535,14 +552,18 @@ mod tests {
         assert_eq!(values.lookup_ord(0).unwrap().length, 0);
     }
 
+    /// `EmptyDocValuesProducer.getSkipper` throws
+    /// `UnsupportedOperationException` (`index/EmptyDocValuesProducer.java:54-57`);
+    /// it never hands out a skipper whose `advance` cannot reach `NO_MORE_DOCS`.
     #[test]
-    fn empty_doc_values_skipper_reports_no_interval() {
-        let mut skipper = EmptyDocValuesSkipper;
-        skipper.advance(42).unwrap();
-        assert_eq!(skipper.num_levels(), 1);
-        assert_eq!(skipper.min_doc_id(0), -1);
-        assert_eq!(skipper.max_doc_id(0), -1);
-        assert_eq!(skipper.global_doc_count(), 0);
+    fn empty_doc_values_producer_get_skipper_is_unsupported() {
+        let producer = EmptyDocValuesProducer;
+        let field = FieldInfo::default();
+        match producer.get_skipper(&field) {
+            Err(LuceneError::UnsupportedOperation(_)) => {}
+            Err(other) => panic!("expected UnsupportedOperation, got {other:?}"),
+            Ok(_) => panic!("expected UnsupportedOperation, got a skipper"),
+        }
     }
 
     #[test]
@@ -559,8 +580,6 @@ mod tests {
         assert_eq!(sorted_numeric.next_doc().unwrap(), NO_MORE_DOCS);
         let mut sorted_set = producer.get_sorted_set(&field).unwrap();
         assert_eq!(sorted_set.next_doc().unwrap(), NO_MORE_DOCS);
-        let skipper = producer.get_skipper(&field).unwrap();
-        assert_eq!(skipper.num_levels(), 1);
         producer.check_integrity().unwrap();
     }
 
@@ -1667,7 +1686,10 @@ impl DocValuesProducer for MergedDocValuesProducer<'_> {
         get_merged_sorted_set_doc_values(self.field, self.merge_state, self.map()?)
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
+    /// Equivalent to the `getSkipper` the anonymous merge producers of
+    /// `DocValuesConsumer` inherit from `EmptyDocValuesProducer`
+    /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
         Err(self.unsupported("skip-index"))
     }
 

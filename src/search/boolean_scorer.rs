@@ -246,7 +246,7 @@ impl BooleanScorer {
                 debug_assert!(self.min_should_match > 1);
                 let mut doc = self.wrappers[w].iterator().doc_id();
                 while doc < max {
-                    if accept_docs.map_or(true, |bits| bits.get(doc as usize)) {
+                    if accept_docs.is_none_or(|bits| bits.get(doc as usize)) {
                         let d = (doc & MASK) as usize;
                         self.matching.set(d);
                         let bucket =
@@ -420,7 +420,7 @@ impl BooleanScorer {
         }
         collector.set_scorer(self.wrappers[w].scorable())?;
         while doc < end {
-            if accept_docs.map_or(true, |bits| bits.get(doc as usize)) {
+            if accept_docs.is_none_or(|bits| bits.get(doc as usize)) {
                 collector.collect(doc, self.wrappers[w].scorable())?;
             }
             doc = self.wrappers[w].iterator().next_doc()?;

@@ -4966,7 +4966,8 @@ impl IndexableField for FloatField {
 
     fn binary_value(&self) -> Option<BytesRef> {
         let mut bytes = vec![0u8; 4];
-        FloatPoint::encode_dimension(self.value, &mut bytes, 0);
+        // `FloatField.binaryValue()` encodes `getValueAsFloat()`.
+        FloatPoint::encode_dimension(self.get_value_as_float(), &mut bytes, 0);
         Some(BytesRef::new(bytes))
     }
 
@@ -5120,7 +5121,8 @@ impl IndexableField for DoubleField {
 
     fn binary_value(&self) -> Option<BytesRef> {
         let mut bytes = vec![0u8; 8];
-        DoublePoint::encode_dimension(self.value, &mut bytes, 0);
+        // `DoubleField.binaryValue()` encodes `getValueAsDouble()`.
+        DoublePoint::encode_dimension(self.get_value_as_double(), &mut bytes, 0);
         Some(BytesRef::new(bytes))
     }
 
@@ -5968,7 +5970,7 @@ impl std::fmt::Display for FloatField {
             f,
             "FloatField <{}:{}>",
             self.name,
-            java_fmt::float_to_string(self.value)
+            java_fmt::float_to_string(self.get_value_as_float())
         )
     }
 }
@@ -5981,7 +5983,7 @@ impl std::fmt::Display for DoubleField {
             f,
             "DoubleField <{}:{}>",
             self.name,
-            java_fmt::double_to_string(self.value)
+            java_fmt::double_to_string(self.get_value_as_double())
         )
     }
 }

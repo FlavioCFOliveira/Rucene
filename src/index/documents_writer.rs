@@ -1192,7 +1192,7 @@ impl FrozenBufferedUpdates {
                     if within_limit
                         && accept_docs
                             .as_ref()
-                            .map_or(true, |bits| bits.get(doc as usize))
+                            .is_none_or(|bits| bits.get(doc as usize))
                     {
                         let update = &mut resolved_updates[index];
                         match buffered_update.value {
@@ -6243,7 +6243,7 @@ impl DocumentsWriter {
     fn set_flushing_delete_queue(&self, session: Option<Arc<DocumentsWriterDeleteQueue>>) -> bool {
         let mut current = self.lock_full_flush_queue();
         assert!(
-            current.as_ref().map_or(true, |queue| !queue.is_open()),
+            current.as_ref().is_none_or(|queue| !queue.is_open()),
             "Can not replace a full flush queue if the queue is not closed"
         );
         *current = session;

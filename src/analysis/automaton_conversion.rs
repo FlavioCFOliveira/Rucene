@@ -11,7 +11,8 @@ use crate::analysis::tokenattributes::{
 };
 use crate::analysis::TokenStream;
 use crate::error::{LuceneError, Result};
-use crate::util::automaton::Automaton;
+use crate::util::automaton::{Automaton, AutomatonBuilder};
+use crate::util::ring_buffer::{Resettable, RollingBuffer};
 use crate::util::{AttributeSource, BytesRef};
 
 /// Arc label separating one position from the next.
@@ -43,16 +44,20 @@ impl Default for Position {
     }
 }
 
+impl Resettable for Position {
+    /// Equivalent to `TokenStreamToAutomaton.Position.reset()`.
+    fn reset(&mut self) {
+        self.arriving = -1;
+        self.leaving = -1;
+    }
+}
+
 /// Turns a token stream into the automaton that accepts exactly the phrases the
 /// stream encodes.
 ///
-/// Equivalent to `org.apache.lucene.analysis.TokenStreamToAutomaton`.
-///
-/// **Divergence from Lucene 10.5.0.** Java holds the positions in a
-/// `RollingBuffer` it frees behind the cursor, so a very long stream costs
-/// constant memory. `RollingBuffer` is not ported, so this port keeps a `Vec`
-/// that grows to the stream's position count. The automaton produced is
-/// identical; only the peak memory differs.
+/// Equivalent to `org.apache.lucene.analysis.TokenStreamToAutomaton`. The
+/// positions are held in a [`RollingBuffer`] freed behind the cursor, as Java's
+/// `Positions` is, so a very long stream costs constant memory.
 #[derive(Clone, Copy, Debug)]
 pub struct TokenStreamToAutomaton {
     preserve_position_increments: bool,
@@ -118,56 +123,64 @@ impl TokenStreamToAutomaton {
         input
     }
 
-    /// Returns the position record at `pos`, growing the buffer as needed.
-    fn position_at(positions: &mut Vec<Position>, pos: usize) -> &mut Position {
-        if positions.len() <= pos {
-            positions.resize(pos + 1, Position::default());
-        }
-        &mut positions[pos]
-    }
-
     /// Fills the gap before `pos` with hole arcs, so a phrase cannot match
     /// across a position nothing occupies.
     ///
-    /// Equivalent to `TokenStreamToAutomaton.addHoles`.
-    fn add_holes(builder: &mut Automaton, positions: &mut Vec<Position>, pos: usize) {
-        let mut pos_data_arriving = Self::position_at(positions, pos).arriving;
-        let mut idx = pos;
-        while idx > 0 {
-            let prev = Self::position_at(positions, idx - 1);
-            if prev.leaving != -1 {
+    /// Equivalent to `TokenStreamToAutomaton.addHoles(Automaton.Builder,
+    /// RollingBuffer, int)` (`TokenStreamToAutomaton.java:270-298`).
+    fn add_holes<F: FnMut() -> Position>(
+        builder: &mut AutomatonBuilder,
+        positions: &mut RollingBuffer<Position, F>,
+        mut pos: i32,
+    ) {
+        while positions.get(pos).arriving == -1 || positions.get(pos - 1).leaving == -1 {
+            if positions.get(pos).arriving == -1 {
+                let arriving = builder.create_state();
+                positions.get(pos).arriving = arriving;
+                let leaving = positions.get(pos).leaving;
+                builder.add_transition(arriving, leaving, POS_SEP);
+            }
+            if positions.get(pos - 1).leaving == -1 {
+                let leaving = if pos == 1 { 0 } else { builder.create_state() };
+                positions.get(pos - 1).leaving = leaving;
+                let arriving = positions.get(pos - 1).arriving;
+                if arriving != -1 {
+                    builder.add_transition(arriving, leaving, POS_SEP);
+                }
+            }
+            let prev_leaving = positions.get(pos - 1).leaving;
+            let arriving = positions.get(pos).arriving;
+            builder.add_transition(prev_leaving, arriving, HOLE);
+            pos -= 1;
+            if pos <= 0 {
                 break;
             }
-            if prev.arriving == -1 {
-                prev.arriving = builder.create_state();
-            }
-            let prev_arriving = prev.arriving;
-            let prev_leaving = builder.create_state();
-            Self::position_at(positions, idx - 1).leaving = prev_leaving;
-            builder.add_transition(prev_arriving, prev_leaving, POS_SEP);
-            if pos_data_arriving == -1 {
-                pos_data_arriving = builder.create_state();
-                Self::position_at(positions, idx).arriving = pos_data_arriving;
-            }
-            builder.add_transition(prev_leaving, pos_data_arriving, HOLE);
-            pos_data_arriving = Self::position_at(positions, idx - 1).arriving;
-            idx -= 1;
         }
     }
 
     /// Builds the automaton for `input`.
     ///
-    /// Equivalent to `TokenStreamToAutomaton.toAutomaton(TokenStream)`.
+    /// Equivalent to `TokenStreamToAutomaton.toAutomaton(TokenStream)`
+    /// (`TokenStreamToAutomaton.java:113-257`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates the stream's errors, and returns
+    /// [`LuceneError::IllegalState`] when the first token has a position
+    /// increment of zero, where Java's `assert pos > -1 || posInc > 0` fails
+    /// and its `posData.leaving` then dereferences `null`.
     pub fn to_automaton(&self, input: &mut dyn TokenStream) -> Result<Automaton> {
-        let mut builder = Automaton::new();
+        let mut builder = AutomatonBuilder::new();
         builder.create_state();
 
         input.reset()?;
 
-        let mut positions: Vec<Position> = vec![Position::default()];
-        let mut pos: i64 = -1;
-        let mut max_offset = 0i32;
+        // Only temporarily holds states ahead of our current position.
+        let mut positions = RollingBuffer::new(Position::default);
 
+        let mut pos: i32 = -1;
+        let mut freed_pos: i32 = 0;
+        let mut max_offset = 0i32;
         while input.increment_token()? {
             let (term_bytes, mut pos_inc, pos_len, end_offset) = {
                 let source = input.attribute_source();
@@ -181,43 +194,60 @@ impl TokenStreamToAutomaton {
                     None => (BytesRef::default(), 1, 1, 0),
                 }
             };
-
             if !self.preserve_position_increments && pos_inc > 1 {
                 pos_inc = 1;
             }
+            if pos == -1 && pos_inc <= 0 {
+                return Err(LuceneError::IllegalState(
+                    "the first token must have a positive position increment".to_string(),
+                ));
+            }
 
             if pos_inc > 0 {
-                pos += i64::from(pos_inc);
-                let p = pos as usize;
-                let arriving = Self::position_at(&mut positions, p).arriving;
+                // New node:
+                pos += pos_inc;
+
+                let arriving = positions.get(pos).arriving;
                 if arriving == -1 {
-                    if p == 0 {
-                        Self::position_at(&mut positions, p).leaving = 0;
+                    // No token ever arrived to this position
+                    if pos == 0 {
+                        // OK: this is the first token
+                        positions.get(pos).leaving = 0;
                     } else {
+                        // This means there's a hole (eg, StopFilter does this):
                         let leaving = builder.create_state();
-                        Self::position_at(&mut positions, p).leaving = leaving;
-                        Self::add_holes(&mut builder, &mut positions, p);
+                        positions.get(pos).leaving = leaving;
+                        Self::add_holes(&mut builder, &mut positions, pos);
                     }
                 } else {
                     let leaving = builder.create_state();
-                    Self::position_at(&mut positions, p).leaving = leaving;
+                    positions.get(pos).leaving = leaving;
                     builder.add_transition(arriving, leaving, POS_SEP);
                     if pos_inc > 1 {
-                        Self::add_holes(&mut builder, &mut positions, p);
+                        // A token spanned over a hole; add holes "under" it:
+                        Self::add_holes(&mut builder, &mut positions, pos);
                     }
+                }
+                while freed_pos <= pos {
+                    let free_pos_data = *positions.get(freed_pos);
+                    // don't free this position yet if we may still need to fill
+                    // holes over it:
+                    if free_pos_data.arriving == -1 || free_pos_data.leaving == -1 {
+                        break;
+                    }
+                    positions.free_before(freed_pos);
+                    freed_pos += 1;
                 }
             }
 
-            let end_pos = (pos + i64::from(pos_len)) as usize;
+            let end_pos = pos + pos_len;
+
             let term_bytes = self.change_token(term_bytes);
-            let end_arriving = Self::position_at(&mut positions, end_pos).arriving;
-            let end_arriving = if end_arriving == -1 {
-                let s = builder.create_state();
-                Self::position_at(&mut positions, end_pos).arriving = s;
-                s
-            } else {
-                end_arriving
-            };
+            if positions.get(end_pos).arriving == -1 {
+                let arriving = builder.create_state();
+                positions.get(end_pos).arriving = arriving;
+            }
+            let end_arriving = positions.get(end_pos).arriving;
 
             // Each byte (or code point) of the term is one arc.
             let labels: Vec<i32> = if self.unicode_arcs {
@@ -229,9 +259,9 @@ impl TokenStreamToAutomaton {
                 term_bytes.slice().iter().map(|&b| i32::from(b)).collect()
             };
 
-            let mut state = Self::position_at(&mut positions, pos.max(0) as usize).leaving;
-            for (i, &label) in labels.iter().enumerate() {
-                let next_state = if i == labels.len() - 1 {
+            let mut state = positions.get(pos).leaving;
+            for (byte_idx, &label) in labels.iter().enumerate() {
+                let next_state = if byte_idx == labels.len() - 1 {
                     end_arriving
                 } else {
                     builder.create_state()
@@ -259,42 +289,42 @@ impl TokenStreamToAutomaton {
         }
 
         let end_state = if end_pos_inc > 0 {
-            // A trailing gap becomes a run of hole arcs ending in the accept
-            // state.
+            // there were hole(s) after the last token
             let end_state = builder.create_state();
+
+            // add trailing holes now:
             let mut last_state = end_state;
             loop {
-                let state = builder.create_state();
-                builder.add_transition(last_state, state, HOLE);
+                let state1 = builder.create_state();
+                builder.add_transition(last_state, state1, HOLE);
                 end_pos_inc -= 1;
                 if end_pos_inc == 0 {
-                    builder.set_accept(state, true);
+                    builder.set_accept(state1, true);
                     break;
                 }
-                last_state = state;
+                let state2 = builder.create_state();
+                builder.add_transition(state1, state2, POS_SEP);
+                last_state = state2;
             }
             end_state
         } else {
-            let p = pos.max(0) as usize;
-            let leaving = Self::position_at(&mut positions, p).leaving;
-            if leaving != -1 {
-                builder.set_accept(leaving, true);
-            }
-            leaving
+            -1
         };
 
-        // Join every open position to the end state.
-        if end_pos_inc > 0 || end_state != -1 {
-            for idx in 0..positions.len() {
-                let arriving = positions[idx].arriving;
-                if arriving != -1 && positions[idx].leaving == -1 && end_state != -1 {
+        pos += 1;
+        while pos <= positions.get_max_pos() {
+            let arriving = positions.get(pos).arriving;
+            if arriving != -1 {
+                if end_state != -1 {
                     builder.add_transition(arriving, end_state, POS_SEP);
+                } else {
+                    builder.set_accept(arriving, true);
                 }
             }
+            pos += 1;
         }
 
-        builder.finish();
-        Ok(builder)
+        Ok(builder.finish())
     }
 }
 

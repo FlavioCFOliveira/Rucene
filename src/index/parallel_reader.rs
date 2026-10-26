@@ -369,7 +369,7 @@ impl ParallelLeafReader {
                     break;
                 }
                 Some(v) => {
-                    if min_version.map_or(true, |mv| mv.on_or_after(&v)) {
+                    if min_version.is_none_or(|mv| mv.on_or_after(&v)) {
                         min_version = Some(v);
                     }
                 }

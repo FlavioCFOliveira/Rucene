@@ -2977,6 +2977,29 @@ pub trait Bits: Send + Sync + Debug {
     /// Returns the value of the bit at `index`.
     fn get(&self, index: usize) -> bool;
 
+    /// Returns the value of the bit at `index`, or the error a wrapper raises
+    /// while answering.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `Bits.get(int)` declares no
+    /// exception, yet `ExitableDirectoryReader.ExitableAcceptDocs.bits()`
+    /// returns a `Bits` whose `get` throws the unchecked
+    /// `ExitingReaderException` on a sampled call
+    /// (`ExitableDirectoryReader.java:359-387, 439-445`), aborting the
+    /// nearest-vector search that consults it. Rust reports errors through
+    /// `Result`, and making `get` fallible would reach every caller of `Bits`;
+    /// this companion is the minimal surface that keeps Java's timing. The
+    /// nearest-vector searches call `try_get`; every implementation whose
+    /// `get` delegates to another `Bits` forwards `try_get` to it, as Java's
+    /// exception propagates through any wrapper that delegates `get`; leaf
+    /// implementations answer `Ok(self.get(index))`.
+    ///
+    /// # Errors
+    ///
+    /// The default never fails; an overriding wrapper may.
+    fn try_get(&self, index: usize) -> crate::error::Result<bool> {
+        Ok(self.get(index))
+    }
+
     /// Returns the number of bits in this set.
     fn length(&self) -> usize;
 

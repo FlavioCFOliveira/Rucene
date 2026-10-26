@@ -180,7 +180,7 @@ impl DefaultBulkScorer {
     }
 
     fn accepted(accept_docs: Option<&dyn Bits>, doc: i32) -> bool {
-        accept_docs.map_or(true, |bits| bits.get(doc as usize))
+        accept_docs.is_none_or(|bits| bits.get(doc as usize))
     }
 
     /// Optimises simple iterators with collectors that cannot skip.

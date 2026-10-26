@@ -19,9 +19,9 @@ use crate::index::index_sorter::SorterDocMap;
 use crate::index::leaf_reader::{LeafMetaData, LeafReader, TermVectors};
 use crate::index::{
     BinaryDocValues, ByteVectorValues, DocIndexIterator, DocValuesIterator, DocValuesSkipper,
-    EmptyDocValuesSkipper, FieldInfo, FieldInfos, FieldInfosBuilder, FieldNumbers, Fields,
-    FloatVectorValues, IntersectVisitor, KnnVectorValues, NumericDocValues, PointTree, PointValues,
-    SortedDocValues, SortedNumericDocValues, SortedSetDocValues, StoredFieldVisitor, Terms,
+    FieldInfo, FieldInfos, FieldInfosBuilder, FieldNumbers, Fields, FloatVectorValues,
+    IntersectVisitor, KnnVectorValues, NumericDocValues, PointTree, PointValues, SortedDocValues,
+    SortedNumericDocValues, SortedSetDocValues, StoredFieldVisitor, Terms,
 };
 use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::search::knn::KnnCollector;
@@ -1703,12 +1703,14 @@ impl TermVectorsReader for SortingTermVectorsReader {
             doc_map: Arc::clone(&self.doc_map),
         })
     }
+}
 
+impl TermVectors for SortingTermVectorsReader {
     fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
         self.delegate.get(self.doc_map.new_to_old(doc))
     }
 
-    fn prefetch(&self, doc_id: i32) -> Result<()> {
+    fn prefetch(&mut self, doc_id: i32) -> Result<()> {
         self.delegate.prefetch(self.doc_map.new_to_old(doc_id))
     }
 }
@@ -1731,6 +1733,14 @@ impl Bits for SortingBits {
     fn get(&self, index: usize) -> bool {
         self.inner
             .get(self.doc_map.new_to_old(index as i32) as usize)
+    }
+
+    /// Forwards to the wrapped bits' `try_get`, so that an error they raise
+    /// (`ExitableDirectoryReader.java:359-387`, whose `get` throws through
+    /// every wrapper that delegates to it) is not swallowed here.
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.inner
+            .try_get(self.doc_map.new_to_old(index as i32) as usize)
     }
 
     fn length(&self) -> usize {
@@ -1806,11 +1816,12 @@ impl DocValuesProducer for SortingDocValuesProducer {
         Ok(Box::new(SortingSortedSetDocValues::new(old, dvs)))
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
-        // Equivalent to `SortingCodecReader.getDocValuesReader().getSkipper`,
-        // which returns `null`: min/max-per-block skip metadata is meaningless
-        // once documents have been reordered, so no skip index is offered.
-        Ok(Box::new(EmptyDocValuesSkipper))
+    /// Equivalent to `SortingCodecReader.getDocValuesReader().getSkipper`
+    /// (`index/SortingCodecReader.java:713-717`), which returns `null`:
+    /// min/max-per-block skip metadata is meaningless once documents have been
+    /// reordered, so no skip index is offered.
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        Ok(None)
     }
 
     fn check_integrity(&self) -> Result<()> {

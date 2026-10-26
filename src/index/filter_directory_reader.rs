@@ -48,7 +48,7 @@ use crate::util::attribute::AttributeSource;
 use crate::util::automaton::CompiledAutomaton;
 use crate::util::{Bits, BytesRef, IOBooleanSupplier, MatchAllBits};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 
 /// Wraps each leaf of a [`DirectoryReader`] as it is opened.
 ///
@@ -747,17 +747,16 @@ impl SubReaderWrapper for ExitableSubReaderWrapper {
 /// [`IntersectVisitor::grow`] all return [`Result`], so each check is reported
 /// at the call Lucene throws from.
 ///
-/// The single exception is [`Bits::get`], which returns a plain `bool`; see the
-/// divergence recorded on [`ExitableAcceptDocs`] for why, and for how the check
-/// it makes is reported. [`defer_check_with_sampling`](Self::defer_check_with_sampling)
-/// and [`take_deferred`](Self::take_deferred) serve that one method.
+/// The single exception is [`Bits::get`], which returns a plain `bool`: the
+/// check Java makes there is made by [`Bits::try_get`], which the
+/// nearest-vector searches call; see the divergence recorded on
+/// [`ExitableAcceptDocs`].
 #[derive(Debug)]
 struct ExitableCheck {
     query_timeout: Arc<dyn QueryTimeout>,
     /// Equivalent to the `calls` field of the sampling inner classes. Java's
     /// `int` wraps on overflow, matched here by the atomic's wrapping add.
     calls: AtomicI32,
-    deferred: AtomicBool,
     /// The action the message names, e.g. `"iterate over terms"`.
     action: &'static str,
 }
@@ -767,7 +766,6 @@ impl ExitableCheck {
         Self {
             query_timeout,
             calls: AtomicI32::new(0),
-            deferred: AtomicBool::new(false),
             action,
         }
     }
@@ -778,19 +776,17 @@ impl ExitableCheck {
         &self.query_timeout
     }
 
-    /// The timeout test itself, without the deferred-check bookkeeping.
+    /// The timeout test itself.
     fn fired(&self) -> bool {
         self.query_timeout.should_exit()
     }
 
-    /// Equivalent to the `checkAndThrow()` of the enclosing inner class, at a
-    /// call site that can also report a check deferred from an earlier one.
+    /// Equivalent to the `checkAndThrow()` of the enclosing inner class.
     ///
     /// # Errors
     ///
     /// Raises the exiting-reader error when the timeout has fired.
     fn check_and_throw(&self) -> Result<()> {
-        self.take_deferred()?;
         if self.fired() {
             return Err(exiting_reader_action_error(self.action));
         }
@@ -804,7 +800,6 @@ impl ExitableCheck {
     ///
     /// As [`check_and_throw`](Self::check_and_throw), on a sampled call.
     fn check_and_throw_with_sampling(&self, modulus: i32) -> Result<()> {
-        self.take_deferred()?;
         if self.sample(modulus) && self.fired() {
             return Err(exiting_reader_action_error(self.action));
         }
@@ -819,7 +814,6 @@ impl ExitableCheck {
     ///
     /// As [`check_and_throw`](Self::check_and_throw), on a sampled call.
     fn check_and_throw_with_mask(&self, mask: i32) -> Result<()> {
-        self.take_deferred()?;
         let calls = self.calls.fetch_add(1, Ordering::Relaxed);
         if calls & mask == 0 && self.fired() {
             return Err(exiting_reader_action_error(self.action));
@@ -831,28 +825,6 @@ impl ExitableCheck {
     /// `int` field does.
     fn sample(&self, modulus: i32) -> bool {
         self.calls.fetch_add(1, Ordering::Relaxed) % modulus == 0
-    }
-
-    /// The `checkAndThrowWithSampling()` of [`Bits::get`], the one method Rust
-    /// cannot fail from: the check runs where Java runs it and the failure is
-    /// remembered for [`take_deferred`](Self::take_deferred).
-    fn defer_check_with_sampling(&self, modulus: i32) {
-        if self.sample(modulus) && self.fired() {
-            self.deferred.store(true, Ordering::Relaxed);
-        }
-    }
-
-    /// Reports and clears a check deferred by
-    /// [`defer_check_with_sampling`](Self::defer_check_with_sampling).
-    ///
-    /// # Errors
-    ///
-    /// Raises the exiting-reader error when a deferred check had fired.
-    fn take_deferred(&self) -> Result<()> {
-        if self.deferred.swap(false, Ordering::Relaxed) {
-            return Err(exiting_reader_action_error(self.action));
-        }
-        Ok(())
     }
 }
 
@@ -1101,13 +1073,12 @@ impl LeafReader for ExitableFilterLeafReader {
             LeafReader::max_doc(self),
             Arc::clone(&self.query_timeout),
         );
-        let outcome = self.inner.search_nearest_vectors(
+        self.inner.search_nearest_vectors(
             field,
             target,
             collector,
             &mut timeout_checking_accept_docs,
-        );
-        timeout_checking_accept_docs.finish(outcome)
+        )
     }
 
     fn search_nearest_vectors_byte(
@@ -1122,13 +1093,12 @@ impl LeafReader for ExitableFilterLeafReader {
             LeafReader::max_doc(self),
             Arc::clone(&self.query_timeout),
         );
-        let outcome = self.inner.search_nearest_vectors_byte(
+        self.inner.search_nearest_vectors_byte(
             field,
             target,
             collector,
             &mut timeout_checking_accept_docs,
-        );
-        timeout_checking_accept_docs.finish(outcome)
+        )
     }
 
     fn get_field_infos(&self) -> crate::index::FieldInfos {
@@ -1709,27 +1679,19 @@ impl IntersectVisitor for ExitableIntersectVisitor<'_> {
 ///
 /// Equivalent to `ExitableDirectoryReader.ExitableFilterAtomicReader.ExitableAcceptDocs`.
 ///
-/// **Divergence from Lucene 10.5.0.** Java's `bits()` wraps whatever the
-/// delegate answers, substituting `Bits.MatchAllBits` when it answers `null`
-/// "to allow timeout checking", and the wrapper throws
-/// `ExitingReaderException` straight out of `Bits.get(int)`. This port wraps
-/// only the substituted `MatchAllBits`. Two things stand in the way of wrapping
-/// the delegate's own bits: `AcceptDocs::bits` returns a borrow of the
-/// delegate, and a wrapper holding it would be a self-referential struct, which
-/// Rust does not allow without `unsafe`; and [`Bits::get`] returns a plain
-/// `bool`, so no wrapper could report the timeout from there anyway — the check
-/// is deferred to [`finish`](Self::finish), which reports it once the search
-/// returns. A leaf with deletions therefore loses the timeout check on the
-/// random-access path only; the iterator path, the doc-values path, the terms
-/// path, the points path and the vector-values path all keep theirs.
+/// **Divergence from Lucene 10.5.0.** Java throws `ExitingReaderException`,
+/// an unchecked exception, straight out of `Bits.get(int)` on a sampled call
+/// (`ExitableDirectoryReader.java:371-375, 439-445`). [`Bits::get`] returns a
+/// plain `bool`, so the wrapped bits make that check in [`Bits::try_get`]
+/// instead, which the nearest-vector searches call and every `Bits` that
+/// delegates `get` forwards; the error leaves the search at the call where
+/// Java's exception does.
 struct ExitableAcceptDocs<'a> {
     inner: &'a mut dyn AcceptDocs,
     max_doc: i32,
-    /// The substituted match-all bits, wrapped. `None` until `bits()` is first
-    /// called, and left `None` when the delegate has bits of its own.
-    bits: Option<ExitableBits>,
-    /// Set once the delegate has been found to answer with bits of its own.
-    delegate_bits: bool,
+    /// The timeout-checking bits, wrapping the delegate's bits or, when it has
+    /// none, match-all bits. `None` until `bits()` is first called.
+    bits: Option<Arc<dyn Bits>>,
     check: Arc<ExitableCheck>,
 }
 
@@ -1747,24 +1709,8 @@ impl<'a> ExitableAcceptDocs<'a> {
             inner: accept_docs,
             max_doc,
             bits: None,
-            delegate_bits: false,
             check: Arc::new(ExitableCheck::new(query_timeout, "search nearest vectors")),
         }
-    }
-
-    /// Reports a timeout observed while the search was consulting the bits,
-    /// which [`Bits::get`] could not report itself, and otherwise returns
-    /// `outcome` unchanged.
-    ///
-    /// This has no counterpart in Java, where the exception leaves `Bits.get`
-    /// directly; see the divergence recorded on the type.
-    ///
-    /// # Errors
-    ///
-    /// Raises the exiting-reader error when a deferred check had fired.
-    fn finish(&self, outcome: Result<()>) -> Result<()> {
-        self.check.take_deferred()?;
-        outcome
     }
 }
 
@@ -1774,24 +1720,21 @@ impl AcceptDocs for ExitableAcceptDocs<'_> {
     /// # Errors
     ///
     /// Propagates the delegate's errors.
-    fn bits(&mut self) -> Result<Option<&dyn Bits>> {
-        if self.bits.is_none() && !self.delegate_bits {
+    fn bits(&mut self) -> Result<Option<Arc<dyn Bits>>> {
+        if self.bits.is_none() {
             // When acceptDocs is null due to no doc deleted, we will
             // instantiate a new one that would match all docs to allow timeout
             // checking.
-            if self.inner.bits()?.is_none() {
-                self.bits = Some(ExitableBits {
-                    inner: Box::new(MatchAllBits::new(self.max_doc as usize)),
-                    check: Arc::clone(&self.check),
-                });
-            } else {
-                self.delegate_bits = true;
-            }
+            let updated_accept_docs: Arc<dyn Bits> = match self.inner.bits()? {
+                None => Arc::new(MatchAllBits::new(self.max_doc as usize)),
+                Some(bits) => bits,
+            };
+            self.bits = Some(Arc::new(ExitableBits {
+                inner: updated_accept_docs,
+                check: Arc::clone(&self.check),
+            }));
         }
-        match self.bits.as_ref() {
-            Some(bits) => Ok(Some(bits as &dyn Bits)),
-            None => self.inner.bits(),
-        }
+        Ok(self.bits.as_ref().map(Arc::clone))
     }
 
     /// Equivalent to `ExitableAcceptDocs.iterator()`, which wraps the
@@ -1828,7 +1771,7 @@ impl AcceptDocs for ExitableAcceptDocs<'_> {
 /// checks the timeout on one call in
 /// [`MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK`].
 struct ExitableBits {
-    inner: Box<dyn Bits>,
+    inner: Arc<dyn Bits>,
     check: Arc<ExitableCheck>,
 }
 
@@ -1839,12 +1782,26 @@ impl std::fmt::Debug for ExitableBits {
 }
 
 impl Bits for ExitableBits {
-    /// Equivalent to the anonymous `Bits.get(int)`, whose sampled check is
-    /// deferred here — see the divergence recorded on [`ExitableAcceptDocs`].
+    /// Answers the wrapped bits. The sampled check of Java's `get` is made by
+    /// [`try_get`](Self::try_get), which is what the nearest-vector searches
+    /// call; see the divergence recorded on [`ExitableAcceptDocs`].
     fn get(&self, index: usize) -> bool {
-        self.check
-            .defer_check_with_sampling(MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK);
         self.inner.get(index)
+    }
+
+    /// Equivalent to the anonymous `Bits.get(int)` of
+    /// `ExitableAcceptDocs.bits()` (`ExitableDirectoryReader.java:371-377`):
+    /// one call in [`MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK`] checks the timeout
+    /// and raises the exiting-reader error, before the wrapped bits answer.
+    ///
+    /// # Errors
+    ///
+    /// Raises the exiting-reader error on a sampled call once the timeout has
+    /// fired.
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.check
+            .check_and_throw_with_sampling(MAX_CALLS_BEFORE_QUERY_TIMEOUT_CHECK)?;
+        Ok(self.inner.get(index))
     }
 
     fn length(&self) -> usize {
@@ -3053,15 +3010,11 @@ impl DocValuesProducer for SlowDocValuesProducer {
             .unwrap_or_else(|| Box::new(DocValues::empty_sorted_set())))
     }
 
-    fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
-        self.reader
-            .get_doc_values_skipper(&field.name)?
-            .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
-                    "field \"{}\" has no doc-values skip index",
-                    field.name
-                ))
-            })
+    /// Equivalent to the anonymous producer's `getSkipper`
+    /// (`index/SlowCodecReaderWrapper.java:269-272`): the wrapped reader's
+    /// `getDocValuesSkipper(field.name)`, `None` included.
+    fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        self.reader.get_doc_values_skipper(&field.name)
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -3137,16 +3090,18 @@ impl TermVectorsReader for SlowTermVectorsReader {
         })
     }
 
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl TermVectors for SlowTermVectorsReader {
     fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
         self.reader.term_vectors()?.get(doc)
     }
 
-    fn prefetch(&self, doc_id: i32) -> Result<()> {
+    fn prefetch(&mut self, doc_id: i32) -> Result<()> {
         self.reader.term_vectors()?.prefetch(doc_id)
-    }
-
-    fn close(&mut self) -> Result<()> {
-        Ok(())
     }
 }
 

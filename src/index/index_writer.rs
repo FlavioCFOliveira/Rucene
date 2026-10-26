@@ -4068,6 +4068,14 @@ impl Bits for HardAndWrappedLiveDocs {
         self.hard_live_docs.get(index) && self.wrapped_live_docs.get(index)
     }
 
+    /// Forwards to the wrapped bits' `try_get`, so that an error they raise
+    /// (`ExitableDirectoryReader.java:359-387`, whose `get` throws through
+    /// every wrapper that delegates to it) is not swallowed here.
+    /// Both operands are asked through `try_get`, with `&&`'s short circuit.
+    fn try_get(&self, index: usize) -> Result<bool> {
+        Ok(self.hard_live_docs.try_get(index)? && self.wrapped_live_docs.try_get(index)?)
+    }
+
     fn length(&self) -> usize {
         self.hard_live_docs.length()
     }

@@ -630,7 +630,7 @@ impl DocIdSetIterator for WANDCore {
         let mut head_top = self.advance_head(target)?;
 
         if self.score_mode == ScoreMode::TOP_SCORES
-            && head_top.map_or(true, |top| self.wrappers[top].doc > self.up_to)
+            && head_top.is_none_or(|top| self.wrappers[top].doc > self.up_to)
         {
             // Update score bounds if necessary
             self.move_to_next_block(target)?;

@@ -6,6 +6,7 @@
 use std::fmt;
 
 use crate::error::{LuceneError, Result};
+use crate::index::leaf_reader::TermVectors;
 use crate::store::{DataInput, Directory, IOContext};
 use crate::util::{Accountable, BytesRef};
 
@@ -44,8 +45,11 @@ pub trait TermVectorsFormat: Send + Sync + fmt::Debug {
 
 /// Codec API for reading term vectors.
 ///
-/// Lucene Core equivalent: `org.apache.lucene.codecs.TermVectorsReader`.
-pub trait TermVectorsReader: Send + Sync + fmt::Debug {
+/// Lucene Core equivalent: `org.apache.lucene.codecs.TermVectorsReader`, which
+/// extends `TermVectors` (`TermVectorsReader.java:28`): `get` and `prefetch`
+/// are inherited from [`TermVectors`], so a codec reader is itself the
+/// `TermVectors` a `CodecReader` hands out.
+pub trait TermVectorsReader: TermVectors {
     /// Checks consistency of this reader.
     fn check_integrity(&self) -> Result<()>;
 
@@ -57,14 +61,6 @@ pub trait TermVectorsReader: Send + Sync + fmt::Debug {
     /// The default implementation returns a clone of `self`.
     fn get_merge_instance(&self) -> Box<dyn TermVectorsReader> {
         self.clone_reader()
-    }
-
-    /// Returns term vectors for this document, or `None` if none exist.
-    fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>>;
-
-    /// Optional hint that the given document will be read in the near future.
-    fn prefetch(&self, _doc_id: i32) -> Result<()> {
-        Ok(())
     }
 
     /// Returns this reader as [`std::any::Any`], for the one caller that has to
@@ -385,7 +381,9 @@ impl TermVectorsReader for EmptyTermVectorsReader {
     fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
         Box::new(*self)
     }
+}
 
+impl TermVectors for EmptyTermVectorsReader {
     fn get(&self, _doc: i32) -> Result<Option<Box<dyn Fields>>> {
         Ok(None)
     }

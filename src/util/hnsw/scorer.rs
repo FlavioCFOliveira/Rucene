@@ -111,6 +111,10 @@ impl Bits for BorrowedBits<'_> {
         self.0.get(index)
     }
 
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.0.try_get(index)
+    }
+
     fn length(&self) -> usize {
         self.0.length()
     }

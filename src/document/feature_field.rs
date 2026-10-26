@@ -77,10 +77,11 @@ pub fn encode_feature_value(feature_value: f32) -> i32 {
 /// Equivalent to the `FeatureField.FeatureFunction` hierarchy.
 ///
 /// **Divergence from Lucene 10.5.0.** Java models the four functions as
-/// subclasses of an abstract `FeatureFunction`, each supplying a `SimScorer`
-/// and an `Explanation`. This port is one enum: the four differ only in their
-/// arithmetic, and neither `SimScorer` nor `Explanation` is reachable from the
-/// document module in this crate.
+/// subclasses of the package-private `abstract static class FeatureFunction`
+/// (`FeatureField.java:252-262`), each supplying a `SimScorer` and an
+/// `Explanation`. Because the class is package-private, no code outside
+/// Lucene can add a function, so the closed set is one enum here: each variant
+/// carries its parameters and [`score`](Self::score) matches on it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FeatureFunction {
     /// `w * value` — the value used directly.

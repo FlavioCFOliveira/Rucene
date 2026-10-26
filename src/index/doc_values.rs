@@ -447,40 +447,6 @@ pub trait DocValuesSkipper: Send + Sync {
     /// Return the number of levels.
     fn num_levels(&self) -> i32;
 
-    /// Advances this skipper to the next interval whose values intersect
-    /// `[min_value, max_value]`.
-    ///
-    /// Equivalent to the `final DocValuesSkipper.advance(long, long)`, which
-    /// climbs the levels to skip as many documents at once as it can.
-    ///
-    /// # Errors
-    ///
-    /// Propagates whatever advancing the skipper raises.
-    fn advance_values(&mut self, min_value: i64, max_value: i64) -> Result<()> {
-        if self.min_doc_id(0) == -1 {
-            // `advance` has not been called yet.
-            self.advance(0)?;
-        }
-        // Check whether the current interval intersects the given range.
-        while self.min_doc_id(0) != crate::search::NO_MORE_DOCS
-            && (self.min_value(0) > max_value || self.max_value(0) < min_value)
-        {
-            let mut max_doc_id = self.max_doc_id(0);
-            let mut next_level = 1;
-            // Check whether the next levels intersect, to skip as many
-            // documents as possible.
-            while next_level < self.num_levels()
-                && (self.min_value(next_level) > max_value
-                    || self.max_value(next_level) < min_value)
-            {
-                max_doc_id = self.max_doc_id(next_level);
-                next_level += 1;
-            }
-            self.advance(max_doc_id + 1)?;
-        }
-        Ok(())
-    }
-
     /// Return the minimum doc ID of the interval on the given level, inclusive.
     fn min_doc_id(&self, level: i32) -> i32;
 
@@ -520,18 +486,30 @@ pub trait DocValuesSkipper: Send + Sync {
     }
 
     /// Advance this skipper so that all levels intersect the range given by
-    /// `min_value` and `max_value`.
+    /// `min_value` and `max_value`. If there are no intersecting levels, the
+    /// skipper is exhausted.
     ///
-    /// Equivalent to `DocValuesSkipper.advance(long, long)`.
+    /// Equivalent to the `final DocValuesSkipper.advance(long, long)`, which
+    /// climbs the levels to skip as many documents at once as it can. Rust has
+    /// no overloading; the `_range` suffix names the two-bound form, as the
+    /// crate's other range overloads do (`FixedBitSet::set_range`,
+    /// `FixedBitSet::clear_range`, `FixedBitSet::cardinality_range`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever advancing the skipper raises.
     fn advance_range(&mut self, min_value: i64, max_value: i64) -> Result<()> {
         if self.min_doc_id(0) == -1 {
+            // #advance has not been called yet
             self.advance(0)?;
         }
+        // check if the current interval intersects the provided range
         while self.min_doc_id(0) != NO_MORE_DOCS
             && (self.min_value(0) > max_value || self.max_value(0) < min_value)
         {
             let mut max_doc_id = self.max_doc_id(0);
             let mut next_level = 1;
+            // check if the next levels intersects to skip as many docs as possible
             while next_level < self.num_levels()
                 && (self.min_value(next_level) > max_value
                     || self.max_value(next_level) < min_value)
@@ -1069,52 +1047,6 @@ impl SortedSetDocValues for EmptySortedSetDocValues {
 
     fn get_value_count(&self) -> Result<i64> {
         Ok(0)
-    }
-}
-
-/// A no-op doc-values skipper.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyDocValuesSkipper;
-
-impl DocValuesSkipper for EmptyDocValuesSkipper {
-    fn advance(&mut self, _target: i32) -> Result<()> {
-        Ok(())
-    }
-
-    fn num_levels(&self) -> i32 {
-        1
-    }
-
-    fn min_doc_id(&self, _level: i32) -> i32 {
-        -1
-    }
-
-    fn max_doc_id(&self, _level: i32) -> i32 {
-        -1
-    }
-
-    fn min_value(&self, _level: i32) -> i64 {
-        0
-    }
-
-    fn max_value(&self, _level: i32) -> i64 {
-        0
-    }
-
-    fn doc_count(&self, _level: i32) -> i32 {
-        0
-    }
-
-    fn global_min_value(&self) -> i64 {
-        0
-    }
-
-    fn global_max_value(&self) -> i64 {
-        0
-    }
-
-    fn global_doc_count(&self) -> i32 {
-        0
     }
 }
 
@@ -1688,8 +1620,17 @@ impl DocValuesProducer for EmptyDocValuesProducer {
         Ok(Box::new(EmptySortedSetDocValues::new()))
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
-        Ok(Box::new(EmptyDocValuesSkipper))
+    /// Equivalent to `EmptyDocValuesProducer.getSkipper(FieldInfo)`
+    /// (`index/EmptyDocValuesProducer.java:54-57`), which throws
+    /// `UnsupportedOperationException`.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`].
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        Err(LuceneError::UnsupportedOperation(
+            "EmptyDocValuesProducer does not provide a doc-values skipper".to_string(),
+        ))
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -2940,15 +2881,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_doc_values_skipper_reports_initial_state() {
-        let skipper = EmptyDocValuesSkipper;
-        assert_eq!(skipper.num_levels(), 1);
-        assert_eq!(skipper.min_doc_id(0), -1);
-        assert_eq!(skipper.global_doc_count(), 0);
-        assert_eq!(skipper.max_value_count(), 0);
-    }
-
-    #[test]
     fn doc_values_helper_factory_functions() {
         let mut numeric = DocValues::empty_numeric();
         assert_eq!(numeric.next_doc().unwrap(), NO_MORE_DOCS);
@@ -3056,8 +2988,10 @@ mod tests {
         assert_eq!(sorted_numeric.next_doc().unwrap(), NO_MORE_DOCS);
         let mut sorted_set = producer.get_sorted_set(&field).unwrap();
         assert_eq!(sorted_set.next_doc().unwrap(), NO_MORE_DOCS);
-        let skipper = producer.get_skipper(&field).unwrap();
-        assert_eq!(skipper.num_levels(), 1);
+        assert!(matches!(
+            producer.get_skipper(&field),
+            Err(crate::error::LuceneError::UnsupportedOperation(_))
+        ));
         producer.check_integrity().unwrap();
         let mut clone = producer.get_merge_instance().unwrap();
         clone.close().unwrap();

@@ -12,7 +12,7 @@ use crate::index::index_file_names::{segment_file_name, FIELD_INFO_EXTENSION};
 use crate::index::{
     DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding, VectorSimilarityFunction,
 };
-use crate::store::{DataInput, Directory, IOContext};
+use crate::store::{DataInput, Directory, IOContext, IndexInput};
 
 const CODEC_NAME: &str = "Lucene94FieldInfos";
 const FORMAT_START: i32 = 0;
@@ -140,7 +140,7 @@ impl FieldInfosFormat for Lucene94FieldInfosFormat {
     }
 }
 
-fn read_field_info(input: &mut dyn DataInput, format: i32) -> Result<FieldInfo> {
+fn read_field_info(input: &mut dyn IndexInput, format: i32) -> Result<FieldInfo> {
     let name = input.read_string()?;
     let field_number = input.read_v_int()?;
     if field_number < 0 {
@@ -195,7 +195,8 @@ fn read_field_info(input: &mut dyn DataInput, format: i32) -> Result<FieldInfo> 
 
     let vector_dimension = input.read_v_int()?;
     let vector_encoding = vector_encoding_from_byte(input.read_byte()?)?;
-    let vector_similarity_function = get_dist_func(input.read_byte()?)?;
+    let dist_func_byte = input.read_byte()?;
+    let vector_similarity_function = get_dist_func(input, dist_func_byte)?;
 
     FieldInfo::new_full(
         name,
@@ -331,13 +332,9 @@ fn dist_func_to_ord(func: VectorSimilarityFunction) -> Result<u8> {
 }
 
 /// Reads back the similarity function that byte `b` encodes, reporting an
-/// unknown ordinal as index corruption rather than as a programming error.
-///
-/// Divergence: Lucene takes the `IndexInput` as well, only so that the
-/// `CorruptIndexException` can name the file it came from
-/// (`Lucene94FieldInfosFormat.java:328-334`). This crate's
-/// [`LuceneError::CorruptIndex`] carries a message and no resource, so the
-/// input is not passed.
+/// unknown ordinal as index corruption, naming `input` as its resource
+/// (`Lucene94FieldInfosFormat.java:328-334`). The byte is printed signed, as
+/// Java's `byte` concatenation prints it.
 ///
 /// # Errors
 ///
@@ -345,9 +342,13 @@ fn dist_func_to_ord(func: VectorSimilarityFunction) -> Result<u8> {
 ///
 /// Equivalent to
 /// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat#getDistFunc`.
-fn get_dist_func(b: u8) -> Result<VectorSimilarityFunction> {
-    dist_ord_to_func(b)
-        .map_err(|_| LuceneError::CorruptIndex(format!("invalid distance function: {b}")))
+fn get_dist_func(input: &dyn IndexInput, b: u8) -> Result<VectorSimilarityFunction> {
+    dist_ord_to_func(b).map_err(|_| {
+        LuceneError::corrupt_index(
+            format!("invalid distance function: {}", b as i8),
+            input.resource_description(),
+        )
+    })
 }
 
 fn index_options_from_byte(b: u8) -> Result<IndexOptions> {
@@ -398,18 +399,6 @@ fn vector_encoding_from_byte(b: u8) -> Result<VectorEncoding> {
     }
 }
 
-fn vector_similarity_function_from_byte(b: u8) -> Result<VectorSimilarityFunction> {
-    match b {
-        0 => Ok(VectorSimilarityFunction::EUCLIDEAN),
-        1 => Ok(VectorSimilarityFunction::DOT_PRODUCT),
-        2 => Ok(VectorSimilarityFunction::COSINE),
-        3 => Ok(VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT),
-        _ => Err(LuceneError::CorruptIndex(format!(
-            "invalid vector similarity function: {b}"
-        ))),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     /// The four serialization sites for `VectorEncoding` and
@@ -436,10 +425,7 @@ mod tests {
             VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
         ] {
             let ordinal = similarity as i32;
-            assert_eq!(
-                super::vector_similarity_function_from_byte(ordinal as u8).unwrap(),
-                similarity
-            );
+            assert_eq!(super::dist_ord_to_func(ordinal as u8).unwrap(), similarity);
         }
     }
 
@@ -447,6 +433,34 @@ mod tests {
     use crate::codecs::tests::test_segment_info;
     use crate::store::RamDirectory;
     use std::collections::HashMap;
+
+    /// `getDistFunc` names the input in its `CorruptIndexException`
+    /// (`Lucene94FieldInfosFormat.java:328-334`), and prints the byte signed.
+    #[test]
+    fn get_dist_func_names_the_resource() {
+        let dir = RamDirectory::default();
+        {
+            let mut out = dir
+                .create_output("_0.fnm", &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            out.write_byte(0).unwrap();
+            out.close().unwrap();
+        }
+        let input = dir
+            .open_input("_0.fnm", &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        let resource = input.resource_description().to_string();
+        let error = super::get_dist_func(input.as_ref(), 0xF0).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            LuceneError::corrupt_index("invalid distance function: -16", &resource).to_string()
+        );
+        assert!(error.to_string().contains("(resource="), "{error}");
+        assert_eq!(
+            super::get_dist_func(input.as_ref(), 2).unwrap(),
+            VectorSimilarityFunction::COSINE
+        );
+    }
 
     #[test]
     fn round_trip_field_infos() {

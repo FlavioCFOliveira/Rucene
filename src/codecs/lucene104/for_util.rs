@@ -376,17 +376,25 @@ macro_rules! mask_consts8 {
     };
 }
 
+// Lucene's generated `ForUtil.java` declares every `MASK16_*` constant
+// below, and some of them (e.g. `MASK16_8`) are never
+// read there either; they are kept so the declarations match Lucene's.
 macro_rules! mask_consts16 {
     ($($name:ident = $idx:literal),* $(,)?) => {
         $(
+            #[allow(dead_code)]
             const $name: i32 = MASKS16[$idx];
         )*
     };
 }
 
+// Lucene's generated `ForUtil.java` declares every `MASK32_*` constant
+// below, and some of them (e.g. `MASK32_1`) are never
+// read there either; they are kept so the declarations match Lucene's.
 macro_rules! mask_consts32 {
     ($($name:ident = $idx:literal),* $(,)?) => {
         $(
+            #[allow(dead_code)]
             const $name: i32 = MASKS32[$idx];
         )*
     };

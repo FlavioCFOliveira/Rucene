@@ -274,10 +274,15 @@ fn read_corpus(dir: &Path) -> Vec<Vec<i32>> {
             let mut data = directory
                 .open_input(&format!("{}.kdd", spec.name), &*READONCE_IO_CONTEXT)
                 .expect("kdd input");
-            let mut reader =
-                BKDReader::new(&mut *meta, &mut *index, &mut *data).expect("BKDReader");
+            let reader = BKDReader::new(&mut *meta, &mut *index, &mut *data).expect("BKDReader");
             let mut collector = DocIdCollector::default();
-            reader.intersect(&mut collector).expect("intersect");
+            // `PointValues.intersect(IntersectVisitor)`, which is
+            // `intersect(visitor, getPointTree())`.
+            rucene::index::point_values::intersect(
+                &mut collector,
+                reader.point_tree().expect("point tree").as_mut(),
+            )
+            .expect("intersect");
             collector.doc_ids
         })
         .collect()

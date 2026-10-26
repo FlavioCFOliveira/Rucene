@@ -804,6 +804,13 @@ impl Bits for ArcBits {
         self.0.get(index)
     }
 
+    /// Forwards to the wrapped bits' `try_get`, so that an error they raise
+    /// (`ExitableDirectoryReader.java:359-387`, whose `get` throws through
+    /// every wrapper that delegates to it) is not swallowed here.
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.0.try_get(index)
+    }
+
     fn length(&self) -> usize {
         self.0.length()
     }

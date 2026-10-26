@@ -305,7 +305,10 @@ where
 /// Equivalent to `org.apache.lucene.search.AcceptDocs`.
 pub trait AcceptDocs {
     /// Random access to accepted docs, or `None` if all documents are accepted.
-    fn bits(&mut self) -> Result<Option<&dyn Bits>>;
+    ///
+    /// The bits are shared, as Java's `AcceptDocs.bits()` hands out a reference
+    /// that callers may keep and wrap.
+    fn bits(&mut self) -> Result<Option<Arc<dyn Bits>>>;
 
     /// Sequential access to accepted docs.
     fn iterator(&mut self) -> Result<Box<dyn DocIdSetIterator>>;
@@ -366,8 +369,8 @@ impl BitsAcceptDocs {
 }
 
 impl AcceptDocs for BitsAcceptDocs {
-    fn bits(&mut self) -> Result<Option<&dyn Bits>> {
-        Ok(self.bits.as_ref().map(|b| b.as_ref()))
+    fn bits(&mut self) -> Result<Option<Arc<dyn Bits>>> {
+        Ok(self.bits.as_ref().map(Arc::clone))
     }
 
     fn iterator(&mut self) -> Result<Box<dyn DocIdSetIterator>> {
@@ -394,7 +397,11 @@ pub struct IteratorAcceptDocs<S: DocIdSetIteratorSupplier> {
     supplier: S,
     live_docs: Option<Arc<dyn Bits>>,
     max_doc: i32,
-    cached_bits: Option<AcceptBitSet>,
+    /// The lazily built accept bit set; `None` until `bits()` or `cost()` is
+    /// first called. Java's `acceptBitSet`.
+    accept_bit_set: Option<Arc<dyn BitSet>>,
+    /// The cardinality of `accept_bit_set` once built. Java's `cardinality`.
+    cardinality: usize,
 }
 
 impl<S: DocIdSetIteratorSupplier + std::fmt::Debug> std::fmt::Debug for IteratorAcceptDocs<S> {
@@ -403,7 +410,8 @@ impl<S: DocIdSetIteratorSupplier + std::fmt::Debug> std::fmt::Debug for Iterator
             .field("supplier", &self.supplier)
             .field("max_doc", &self.max_doc)
             .field("has_live_docs", &self.live_docs.is_some())
-            .field("cached_bits", &self.cached_bits.as_ref().map(|_| "..."))
+            .field("has_accept_bit_set", &self.accept_bit_set.is_some())
+            .field("cardinality", &self.cardinality)
             .finish()
     }
 }
@@ -434,7 +442,8 @@ impl<S: DocIdSetIteratorSupplier> IteratorAcceptDocs<S> {
             supplier,
             live_docs: live_docs.map(Arc::from),
             max_doc,
-            cached_bits: None,
+            accept_bit_set: None,
+            cardinality: 0,
         })
     }
 
@@ -446,8 +455,9 @@ impl<S: DocIdSetIteratorSupplier> IteratorAcceptDocs<S> {
         ))
     }
 
+    /// Equivalent to `DocIdSetIteratorAcceptDocs.createBitSetAcceptDocsIfNecessary()`.
     fn ensure_cached_bits(&mut self) -> Result<()> {
-        if self.cached_bits.is_none() {
+        if self.accept_bit_set.is_none() {
             // Java passes `iterator()`, which while the bit set is absent is
             // exactly the live-docs-filtered iterator built here.
             let iterator = self.filtered_iterator()?;
@@ -456,27 +466,28 @@ impl<S: DocIdSetIteratorSupplier> IteratorAcceptDocs<S> {
                 self.live_docs.as_ref().map(Arc::clone),
                 self.max_doc,
             )?);
-            let cardinality = bit_set.cardinality();
-            self.cached_bits = Some(AcceptBitSet {
-                bit_set,
-                cardinality,
-            });
+            self.cardinality = bit_set.cardinality();
+            self.accept_bit_set = Some(bit_set);
         }
         Ok(())
     }
 }
 
 impl<S: DocIdSetIteratorSupplier> AcceptDocs for IteratorAcceptDocs<S> {
-    fn bits(&mut self) -> Result<Option<&dyn Bits>> {
+    fn bits(&mut self) -> Result<Option<Arc<dyn Bits>>> {
         self.ensure_cached_bits()?;
-        Ok(self.cached_bits.as_ref().map(|b| b as &dyn Bits))
+        // Java returns the `BitSet` itself, which is a `Bits`.
+        Ok(self
+            .accept_bit_set
+            .as_ref()
+            .map(|bit_set| Arc::clone(bit_set) as Arc<dyn Bits>))
     }
 
     fn iterator(&mut self) -> Result<Box<dyn DocIdSetIterator>> {
-        if let Some(cached) = self.cached_bits.as_ref() {
+        if let Some(bit_set) = self.accept_bit_set.as_ref() {
             Ok(Box::new(BitSetIterator::new(
-                Arc::clone(&cached.bit_set),
-                cached.cardinality as i64,
+                Arc::clone(bit_set),
+                self.cardinality as i64,
             )?))
         } else {
             self.filtered_iterator()
@@ -485,12 +496,7 @@ impl<S: DocIdSetIteratorSupplier> AcceptDocs for IteratorAcceptDocs<S> {
 
     fn cost(&mut self) -> Result<i64> {
         self.ensure_cached_bits()?;
-        let cardinality = self
-            .cached_bits
-            .as_ref()
-            .expect("INVARIANT: ensure_cached_bits always populates cached_bits")
-            .cardinality;
-        Ok(cardinality as i64)
+        Ok(self.cardinality as i64)
     }
 }
 
@@ -510,41 +516,6 @@ pub fn from_iterator_supplier<S: DocIdSetIteratorSupplier>(
     max_doc: i32,
 ) -> Result<IteratorAcceptDocs<S>> {
     IteratorAcceptDocs::from_iterator_supplier(supplier, live_docs, max_doc)
-}
-
-/// The lazily built accept bit set of [`IteratorAcceptDocs`], together with its
-/// cardinality.
-///
-/// Equivalent to the `acceptBitSet` and `cardinality` fields of
-/// `AcceptDocs.DocIdSetIteratorAcceptDocs`.
-///
-/// **Divergence from Lucene 10.5.0.** Java hands the `BitSet` straight back
-/// from `AcceptDocs.bits()`, because `BitSet` implements `Bits`. This crate's
-/// MSRV is Rust 1.80, which predates trait upcasting, so a `dyn BitSet` cannot
-/// be narrowed to a `dyn Bits`; this wrapper forwards the two [`Bits`] methods
-/// to the set instead. The set itself is shared, exactly as in Java.
-struct AcceptBitSet {
-    bit_set: Arc<dyn BitSet>,
-    cardinality: usize,
-}
-
-impl std::fmt::Debug for AcceptBitSet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AcceptBitSet")
-            .field("length", &self.bit_set.length())
-            .field("cardinality", &self.cardinality)
-            .finish()
-    }
-}
-
-impl Bits for AcceptBitSet {
-    fn get(&self, index: usize) -> bool {
-        self.bit_set.get(index)
-    }
-
-    fn length(&self) -> usize {
-        self.bit_set.length()
-    }
 }
 
 /// Builds the bit set of the documents `iterator` accepts, honouring

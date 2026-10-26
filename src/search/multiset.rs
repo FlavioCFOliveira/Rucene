@@ -123,7 +123,7 @@ impl<T: Hash + Eq> Multiset<T> {
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.map
             .iter()
-            .flat_map(|(element, count)| std::iter::repeat(element).take(*count as usize))
+            .flat_map(|(element, count)| std::iter::repeat_n(element, *count as usize))
     }
 
     /// Returns an iterator over the distinct elements and their counts.

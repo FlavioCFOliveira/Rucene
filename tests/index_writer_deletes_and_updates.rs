@@ -74,7 +74,7 @@ fn prices(reader: &Arc<dyn DirectoryReader>) -> Vec<i64> {
             if doc == NO_MORE_DOCS {
                 break;
             }
-            if live.as_ref().map_or(true, |bits| bits.get(doc as usize)) {
+            if live.as_ref().is_none_or(|bits| bits.get(doc as usize)) {
                 out.push(values.long_value().unwrap());
             }
         }

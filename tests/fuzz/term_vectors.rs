@@ -222,9 +222,8 @@ fn write_mixed_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs:
                 .start_field(infos.field_info(&name).unwrap(), 2, true, true, true)
                 .unwrap();
             for term in 0..2u32 {
-                let text: String = std::iter::repeat(char::from(b'a' + (field + term) as u8 % 26))
-                    .take(60)
-                    .collect();
+                let text: String =
+                    std::iter::repeat_n(char::from(b'a' + (field + term) as u8 % 26), 60).collect();
                 writer
                     .start_term(&BytesRef::new(format!("{text}{term}").into_bytes()), 2)
                     .unwrap();

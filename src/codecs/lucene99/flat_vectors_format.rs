@@ -826,6 +826,7 @@ fn write_meta(
     let count = docs_with_field.cardinality();
     meta.write_int(count)?;
     OrdToDocDISIReaderConfiguration::write_stored_meta(
+        DIRECT_MONOTONIC_BLOCK_SHIFT,
         meta,
         vector_data,
         count,

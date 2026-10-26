@@ -2278,9 +2278,10 @@ impl TieredMergePolicy {
                     );
                 }
 
-                if best_score.as_ref().map_or(true, |best_score| {
-                    score.get_score() < best_score.get_score()
-                }) && (!hit_too_large || !max_merge_is_running)
+                if best_score
+                    .as_ref()
+                    .is_none_or(|best_score| score.get_score() < best_score.get_score())
+                    && (!hit_too_large || !max_merge_is_running)
                 {
                     best_score = Some(score);
                     best_too_large = hit_too_large;
@@ -4364,6 +4365,13 @@ struct InvertedBits {
 impl Bits for InvertedBits {
     fn get(&self, index: usize) -> bool {
         !self.inner.get(index)
+    }
+
+    /// Forwards to the wrapped bits' `try_get`, so that an error they raise
+    /// (`ExitableDirectoryReader.java:359-387`, whose `get` throws through
+    /// every wrapper that delegates to it) is not swallowed here.
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.inner.try_get(index).map(|bit| !bit)
     }
 
     fn length(&self) -> usize {

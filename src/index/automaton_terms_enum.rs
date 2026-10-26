@@ -273,7 +273,7 @@ impl FilteredTermsEnumFilter for AutomatonTermsEnum {
         let suffix_ok = self
             .common_suffix_ref
             .as_ref()
-            .map_or(true, |suffix| StringHelper::ends_with(term, suffix));
+            .is_none_or(|suffix| StringHelper::ends_with(term, suffix));
         if suffix_ok {
             if self.byte_runnable.run(term.slice()) {
                 if self.linear {

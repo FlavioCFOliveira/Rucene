@@ -220,13 +220,9 @@ fn hash_long(value: i64) -> i32 {
 /// A range query over a numeric doc-values field.
 ///
 /// Equivalent to
-/// `org.apache.lucene.document.SortedNumericDocValuesRangeQuery`.
-///
-/// **Divergence from Lucene 10.5.0.** Java's query is a `Query` that builds a
-/// `ScorerSupplier` over the segment's doc values, using the doc-values skipper
-/// when the field has one. This port carries the predicate — the field, the
-/// bounds, and the per-value test — because the `Query`/`Weight`/`Scorer`
-/// hierarchy it plugs into is not ported yet.
+/// `org.apache.lucene.document.SortedNumericDocValuesRangeQuery`: a `Query`
+/// whose scorer supplier reads the segment's doc values, using the doc-values
+/// skipper when the field has one.
 #[derive(Clone, Debug)]
 pub struct SortedNumericDocValuesRangeQuery {
     field: String,
@@ -476,6 +472,31 @@ trait DocValuesScorerSource: Debug + Send + Sync + 'static {
     fn count(&self, _reader: &dyn LeafReader) -> Result<i32> {
         Ok(-1)
     }
+
+    /// Returns the leaf's scorer supplier, or `None` when nothing in the leaf
+    /// can match.
+    ///
+    /// The default wraps [`iterator`](Self::iterator) in a
+    /// [`ConstantScoreScorerSupplier`]; the two range queries override it to
+    /// hand out a [`SortedSkipperScorerSupplier`] when the leaf is sorted by
+    /// their field, as their `scorerSupplier` does in Java.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while opening the doc values.
+    fn scorer_supplier(
+        &self,
+        reader: &dyn LeafReader,
+        score: f32,
+        score_mode: ScoreMode,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
+        let max_doc = reader.max_doc();
+        Ok(self.iterator(reader)?.map(|iterator| {
+            Box::new(ConstantScoreScorerSupplier::from_iterator(
+                iterator, score, score_mode, max_doc,
+            )) as Box<dyn ScorerSupplier>
+        }))
+    }
 }
 
 impl<S: DocValuesScorerSource> ConstantScoreWeightImpl for DocValuesWeightImpl<S> {
@@ -491,16 +512,8 @@ impl<S: DocValuesScorerSource> ConstantScoreWeightImpl for DocValuesWeightImpl<S
         {
             return Ok(None);
         }
-        let max_doc = reader.max_doc();
-        let Some(iterator) = self.source.iterator(reader.as_ref())? else {
-            return Ok(None);
-        };
-        Ok(Some(Box::new(ConstantScoreScorerSupplier::from_iterator(
-            iterator,
-            self.score,
-            self.score_mode,
-            max_doc,
-        ))))
+        self.source
+            .scorer_supplier(reader.as_ref(), self.score, self.score_mode)
     }
 
     fn is_cacheable(&self, ctx: &LeafReaderContext) -> bool {
@@ -559,9 +572,66 @@ impl DocValuesScorerSource for SortedNumericRangeSource {
     }
 
     fn iterator(&self, reader: &dyn LeafReader) -> Result<Option<ScorerIterator>> {
+        let count =
+            doc_count_ignoring_deletes(reader, &self.field, self.lower_value, self.upper_value)?;
+        self.iterator_with_count(reader, count)
+    }
+
+    fn count(&self, reader: &dyn LeafReader) -> Result<i32> {
+        doc_count_ignoring_deletes(reader, &self.field, self.lower_value, self.upper_value)
+    }
+
+    /// Equivalent to `SortedNumericDocValuesRangeQuery…scorerSupplier`
+    /// (`SortedNumericDocValuesRangeQuery.java:123-160`): after the two
+    /// counting short cuts, a single-valued field whose leaf is sorted by it
+    /// first, densely, is served by a [`SortedSkipperScorerSupplier`].
+    fn scorer_supplier(
+        &self,
+        reader: &dyn LeafReader,
+        score: f32,
+        score_mode: ScoreMode,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let max_doc = reader.max_doc();
         let count =
             doc_count_ignoring_deletes(reader, &self.field, self.lower_value, self.upper_value)?;
+        if count != 0 && count != max_doc {
+            let values = DocValues::get_sorted_numeric(reader, &self.field)?;
+            if let Some(singleton) = DocValues::unwrap_singleton_numeric(values) {
+                if let Some(skipper) = reader.get_doc_values_skipper(&self.field)? {
+                    if let Some(primary_sort_field) =
+                        dense_primary_sort(reader, skipper.as_ref(), &self.field)
+                    {
+                        return Ok(Some(Box::new(SortedSkipperScorerSupplier::new(
+                            skipper,
+                            primary_sort_field.reverse(),
+                            score,
+                            score_mode,
+                            Box::new(NumericSkipperRange {
+                                lower_value: self.lower_value,
+                                upper_value: self.upper_value,
+                                singleton,
+                            }),
+                        ))));
+                    }
+                }
+            }
+        }
+        Ok(self.iterator_with_count(reader, count)?.map(|iterator| {
+            Box::new(ConstantScoreScorerSupplier::from_iterator(
+                iterator, score, score_mode, max_doc,
+            )) as Box<dyn ScorerSupplier>
+        }))
+    }
+}
+
+impl SortedNumericRangeSource {
+    /// The iterator of the leaf once its document count is known.
+    fn iterator_with_count(
+        &self,
+        reader: &dyn LeafReader,
+        count: i32,
+    ) -> Result<Option<ScorerIterator>> {
+        let max_doc = reader.max_doc();
         if count == 0 {
             return Ok(None);
         }
@@ -600,9 +670,102 @@ impl DocValuesScorerSource for SortedNumericRangeSource {
             }
         }
     }
+}
 
-    fn count(&self, reader: &dyn LeafReader) -> Result<i32> {
-        doc_count_ignoring_deletes(reader, &self.field, self.lower_value, self.upper_value)
+/// The [`SkipperRangeSource`] of [`SortedNumericDocValuesRangeQuery`].
+///
+/// Equivalent to the anonymous `SortedSkipperScorerSupplier` subclass of
+/// `getScorerSupplierFromDensePrimarySort(NumericDocValues, DocValuesSkipper,
+/// SortField)` (`SortedNumericDocValuesRangeQuery.java:193-219`).
+struct NumericSkipperRange {
+    lower_value: i64,
+    upper_value: i64,
+    singleton: Box<dyn crate::index::doc_values::NumericDocValues>,
+}
+
+impl Debug for NumericSkipperRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NumericSkipperRange")
+            .field("lower_value", &self.lower_value)
+            .field("upper_value", &self.upper_value)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SkipperRangeSource for NumericSkipperRange {
+    fn lower_value(&mut self) -> Result<i64> {
+        Ok(self.lower_value)
+    }
+
+    fn upper_value(&mut self) -> Result<i64> {
+        Ok(self.upper_value)
+    }
+
+    fn next_doc(&mut self, start_doc_id: i32, predicate: &dyn Fn(i64) -> bool) -> Result<i32> {
+        let mut doc = self.singleton.doc_id();
+        if start_doc_id > doc {
+            doc = self.singleton.advance(start_doc_id)?;
+        }
+        while doc < NO_MORE_DOCS {
+            if predicate(self.singleton.long_value()?) {
+                break;
+            }
+            doc = self.singleton.next_doc()?;
+        }
+        Ok(doc)
+    }
+}
+
+/// The [`SkipperRangeSource`] of [`SortedSetDocValuesRangeQuery`].
+///
+/// Equivalent to the anonymous `SortedSkipperScorerSupplier` subclass of
+/// `getScorerSupplierFromDensePrimarySort(SortedDocValues, SortedSetDocValues,
+/// DocValuesSkipper, SortField)` (`SortedSetDocValuesRangeQuery.java:198-234`):
+/// the ordinal bounds are looked up once, on first use.
+struct OrdinalSkipperRange {
+    range: SortedSetRangeSource,
+    singleton: Box<dyn crate::index::doc_values::SortedDocValues>,
+    values: Box<dyn SortedSetDocValues>,
+    min_ord: i64,
+    max_ord: i64,
+}
+
+impl Debug for OrdinalSkipperRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrdinalSkipperRange")
+            .field("min_ord", &self.min_ord)
+            .field("max_ord", &self.max_ord)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SkipperRangeSource for OrdinalSkipperRange {
+    fn lower_value(&mut self) -> Result<i64> {
+        if self.min_ord == -1 {
+            self.min_ord = self.range.min_ord(self.values.as_ref())?;
+        }
+        Ok(self.min_ord)
+    }
+
+    fn upper_value(&mut self) -> Result<i64> {
+        if self.max_ord == -1 {
+            self.max_ord = self.range.max_ord(self.values.as_ref())?;
+        }
+        Ok(self.max_ord)
+    }
+
+    fn next_doc(&mut self, start_doc_id: i32, predicate: &dyn Fn(i64) -> bool) -> Result<i32> {
+        let mut doc = self.singleton.doc_id();
+        if start_doc_id > doc {
+            doc = self.singleton.advance(start_doc_id)?;
+        }
+        while doc < NO_MORE_DOCS {
+            if predicate(i64::from(self.singleton.ord_value()?)) {
+                break;
+            }
+            doc = self.singleton.next_doc()?;
+        }
+        Ok(doc)
     }
 }
 
@@ -969,6 +1132,50 @@ impl DocValuesScorerSource for SortedSetRangeSource {
         }
     }
 
+    /// Equivalent to `SortedSetDocValuesRangeQuery…scorerSupplier`
+    /// (`SortedSetDocValuesRangeQuery.java:116-130`): a single-valued field
+    /// whose leaf is sorted by it first, densely, is served by a
+    /// [`SortedSkipperScorerSupplier`] before any ordinal is looked up.
+    fn scorer_supplier(
+        &self,
+        reader: &dyn LeafReader,
+        score: f32,
+        score_mode: ScoreMode,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
+        if let Some(skipper) = reader.get_doc_values_skipper(&self.field)? {
+            let values = DocValues::get_sorted_set(reader, &self.field)?;
+            if let Some(singleton) = DocValues::unwrap_singleton_sorted(values) {
+                if let Some(primary_sort_field) =
+                    dense_primary_sort(reader, skipper.as_ref(), &self.field)
+                {
+                    // `unwrap_singleton_sorted` consumed the values, so they
+                    // are reopened for the ordinal lookups; Java keeps the
+                    // reference it tested.
+                    let values = DocValues::get_sorted_set(reader, &self.field)?;
+                    return Ok(Some(Box::new(SortedSkipperScorerSupplier::new(
+                        skipper,
+                        primary_sort_field.reverse(),
+                        score,
+                        score_mode,
+                        Box::new(OrdinalSkipperRange {
+                            range: self.clone(),
+                            singleton,
+                            values,
+                            min_ord: -1,
+                            max_ord: -1,
+                        }),
+                    ))));
+                }
+            }
+        }
+        let max_doc = reader.max_doc();
+        Ok(self.iterator(reader)?.map(|iterator| {
+            Box::new(ConstantScoreScorerSupplier::from_iterator(
+                iterator, score, score_mode, max_doc,
+            )) as Box<dyn ScorerSupplier>
+        }))
+    }
+
     fn count(&self, reader: &dyn LeafReader) -> Result<i32> {
         if reader.get_field_infos().field_info(&self.field).is_none() {
             return Ok(0);
@@ -1105,20 +1312,20 @@ struct DocIdRange {
 /// Equivalent to the three abstract methods of
 /// `SortedSkipperScorerSupplier` — `getLowerValue`, `getUpperValue` and
 /// `nextDoc` — which each query overrides in an anonymous subclass.
-trait SkipperRangeSource: Debug + Send + Sync {
+trait SkipperRangeSource: Debug {
     /// The lower bound of the query range, in the skipper's coordinate space.
     ///
     /// # Errors
     ///
     /// Propagates whatever reading the values raises.
-    fn lower_value(&self) -> Result<i64>;
+    fn lower_value(&mut self) -> Result<i64>;
 
     /// The upper bound of the query range, in the skipper's coordinate space.
     ///
     /// # Errors
     ///
     /// Propagates whatever reading the values raises.
-    fn upper_value(&self) -> Result<i64>;
+    fn upper_value(&mut self) -> Result<i64>;
 
     /// Advances from `start_doc_id` to the first document whose value makes
     /// `predicate` true, or [`NO_MORE_DOCS`] when there is none.
@@ -1126,7 +1333,7 @@ trait SkipperRangeSource: Debug + Send + Sync {
     /// # Errors
     ///
     /// Propagates whatever reading the values raises.
-    fn next_doc(&self, start_doc_id: i32, predicate: &dyn Fn(i64) -> bool) -> Result<i32>;
+    fn next_doc(&mut self, start_doc_id: i32, predicate: &dyn Fn(i64) -> bool) -> Result<i32>;
 }
 
 /// A constant-score supplier that narrows a range query to one document
@@ -1257,7 +1464,7 @@ impl SortedSkipperScorerSupplier {
                 self.skipper_min_doc_id = 0;
                 self.skipper_min_doc_id_exact = true;
             } else {
-                self.skipper.advance_values(i64::MIN, max_ord)?;
+                self.skipper.advance_range(i64::MIN, max_ord)?;
                 self.skipper_min_doc_id = self.skipper.min_doc_id(0);
                 self.skipper_min_doc_id_exact = self.skipper.max_value(0) == max_ord;
             }
@@ -1265,7 +1472,7 @@ impl SortedSkipperScorerSupplier {
                 self.skipper_max_doc_id = self.skipper.global_doc_count();
                 self.skipper_max_doc_id_exact = true;
             } else {
-                self.skipper.advance_values(i64::MIN, min_ord - 1)?;
+                self.skipper.advance_range(i64::MIN, min_ord - 1)?;
                 self.skipper_max_doc_id = self.skipper.min_doc_id(0);
                 self.skipper_max_doc_id_exact = self.skipper.max_value(0) < min_ord;
             }
@@ -1274,7 +1481,7 @@ impl SortedSkipperScorerSupplier {
                 self.skipper_min_doc_id = 0;
                 self.skipper_min_doc_id_exact = true;
             } else {
-                self.skipper.advance_values(min_ord, i64::MAX)?;
+                self.skipper.advance_range(min_ord, i64::MAX)?;
                 self.skipper_min_doc_id = self.skipper.min_doc_id(0);
                 self.skipper_min_doc_id_exact = self.skipper.min_value(0) == min_ord;
             }
@@ -1282,7 +1489,7 @@ impl SortedSkipperScorerSupplier {
                 self.skipper_max_doc_id = self.skipper.global_doc_count();
                 self.skipper_max_doc_id_exact = true;
             } else {
-                self.skipper.advance_values(max_ord + 1, i64::MAX)?;
+                self.skipper.advance_range(max_ord + 1, i64::MAX)?;
                 self.skipper_max_doc_id = self.skipper.min_doc_id(0);
                 self.skipper_max_doc_id_exact = self.skipper.min_value(0) > max_ord;
             }

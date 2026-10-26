@@ -27,9 +27,9 @@ use crate::codecs::codec_util::{
 };
 use crate::codecs::doc_values::{
     BinaryDocValues, DocValuesConsumer, DocValuesFormat, DocValuesProducer, DocValuesSkipper,
-    EmptyBinaryDocValues, EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
-    EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues, SortedDocValues,
-    SortedNumericDocValues, SortedSetDocValues,
+    EmptyBinaryDocValues, EmptyNumericDocValues, EmptySortedDocValues, EmptySortedNumericDocValues,
+    EmptySortedSetDocValues, NumericDocValues, SortedDocValues, SortedNumericDocValues,
+    SortedSetDocValues,
 };
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
@@ -93,8 +93,10 @@ const SKIP_INDEX_LEVEL_SHIFT: i32 = 3;
 #[allow(dead_code)]
 const SKIP_INDEX_MAX_LEVEL: usize = 4;
 
-/// Jump length per level, pre-computed from Java's static initializer.
-#[allow(dead_code)]
+/// Jump length per level, pre-computed from Java's static initializer
+/// (`Lucene90DocValuesFormat.java:232-246`). The skipper's `advance` skips
+/// this many bytes past an interval whose `maxDocID` is below the target
+/// (`Lucene90DocValuesProducer.java:2408-2411`).
 const SKIP_INDEX_JUMP_LENGTH_PER_LEVEL: [i64; SKIP_INDEX_MAX_LEVEL] = [
     SKIP_INDEX_INTERVAL_BYTES - 5,
     SKIP_INDEX_INTERVAL_BYTES - 5 + (1 << SKIP_INDEX_LEVEL_SHIFT) * SKIP_INDEX_INTERVAL_BYTES - 1,
@@ -1686,6 +1688,139 @@ struct DocValuesSkipperEntry {
     max_value_count: i32,
 }
 
+/// The skipper `getSkipper` returns.
+///
+/// Equivalent to the anonymous `DocValuesSkipper` of
+/// `Lucene90DocValuesProducer.getSkipper(FieldInfo)`
+/// (`Lucene90DocValuesProducer.java:2375-2468`).
+struct Lucene90DocValuesSkipper {
+    entry: DocValuesSkipperEntry,
+    input: Box<dyn IndexInput>,
+    min_doc_id: [i32; SKIP_INDEX_MAX_LEVEL],
+    max_doc_id: [i32; SKIP_INDEX_MAX_LEVEL],
+    min_value: [i64; SKIP_INDEX_MAX_LEVEL],
+    max_value: [i64; SKIP_INDEX_MAX_LEVEL],
+    doc_count: [i32; SKIP_INDEX_MAX_LEVEL],
+    levels: i32,
+}
+
+impl Lucene90DocValuesSkipper {
+    fn new(entry: DocValuesSkipperEntry, input: Box<dyn IndexInput>) -> Self {
+        Self {
+            entry,
+            input,
+            min_doc_id: [-1; SKIP_INDEX_MAX_LEVEL],
+            max_doc_id: [-1; SKIP_INDEX_MAX_LEVEL],
+            min_value: [0; SKIP_INDEX_MAX_LEVEL],
+            max_value: [0; SKIP_INDEX_MAX_LEVEL],
+            doc_count: [0; SKIP_INDEX_MAX_LEVEL],
+            levels: 1,
+        }
+    }
+}
+
+impl DocValuesSkipper for Lucene90DocValuesSkipper {
+    fn advance(&mut self, target: i32) -> Result<()> {
+        if target > self.entry.max_doc_id {
+            // skipper is exhausted
+            self.min_doc_id = [crate::search::NO_MORE_DOCS; SKIP_INDEX_MAX_LEVEL];
+            self.max_doc_id = [crate::search::NO_MORE_DOCS; SKIP_INDEX_MAX_LEVEL];
+            return Ok(());
+        }
+        // find next interval
+        debug_assert!(
+            target > self.max_doc_id[0],
+            "target {target} must be bigger that current interval {}",
+            self.max_doc_id[0]
+        );
+        loop {
+            self.levels = i32::from(self.input.read_byte()? as i8);
+            // `Lucene90DocValuesProducer.java:2402-2420`: Java asserts
+            // `0 < levels <= SKIP_INDEX_MAX_LEVEL`; without assertions a level
+            // above the maximum throws ArrayIndexOutOfBoundsException at
+            // `maxDocID[levels - 1]`, and a negative level throws it at
+            // `maxDocID[levels]` in the level adjustment once the empty
+            // per-level loop leaves the interval valid. Both are reported as a
+            // corrupt index, the port's mapping of an index-driven
+            // out-of-bounds access. A zero level reads no level, stays valid,
+            // and `maxDocID[0] < target` leaves `levels == 0`, as in Java.
+            if self.levels > SKIP_INDEX_MAX_LEVEL as i32 || self.levels < 0 {
+                return Err(LuceneError::corrupt_index(
+                    format!("level out of range [{}]", self.levels),
+                    self.input.resource_description(),
+                ));
+            }
+            debug_assert!(self.levels > 0, "level out of range [{}]", self.levels);
+            let mut valid = true;
+            // check if current interval is competitive or we can jump to the
+            // next position
+            for level in (0..self.levels as usize).rev() {
+                self.max_doc_id[level] = self.input.read_int()?;
+                if self.max_doc_id[level] < target {
+                    // the jump for the level
+                    self.input
+                        .skip_bytes(SKIP_INDEX_JUMP_LENGTH_PER_LEVEL[level])?;
+                    valid = false;
+                    break;
+                }
+                self.min_doc_id[level] = self.input.read_int()?;
+                self.max_value[level] = self.input.read_long()?;
+                self.min_value[level] = self.input.read_long()?;
+                self.doc_count[level] = self.input.read_int()?;
+            }
+            if valid {
+                // adjust levels
+                while (self.levels as usize) < SKIP_INDEX_MAX_LEVEL
+                    && self.max_doc_id[self.levels as usize] >= target
+                {
+                    self.levels += 1;
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    fn num_levels(&self) -> i32 {
+        self.levels
+    }
+
+    fn min_doc_id(&self, level: i32) -> i32 {
+        self.min_doc_id[level as usize]
+    }
+
+    fn max_doc_id(&self, level: i32) -> i32 {
+        self.max_doc_id[level as usize]
+    }
+
+    fn min_value(&self, level: i32) -> i64 {
+        self.min_value[level as usize]
+    }
+
+    fn max_value(&self, level: i32) -> i64 {
+        self.max_value[level as usize]
+    }
+
+    fn doc_count(&self, level: i32) -> i32 {
+        self.doc_count[level as usize]
+    }
+
+    fn global_min_value(&self) -> i64 {
+        self.entry.min_value
+    }
+
+    fn global_max_value(&self) -> i64 {
+        self.entry.max_value
+    }
+
+    fn global_doc_count(&self) -> i32 {
+        self.entry.doc_count
+    }
+
+    fn max_value_count(&self) -> i32 {
+        self.entry.max_value_count
+    }
+}
+
 #[derive(Debug, Clone)]
 enum FieldEntry {
     Numeric(NumericEntry),
@@ -1705,6 +1840,13 @@ pub struct Lucene90DocValuesProducer {
     max_doc: i32,
     entries: HashMap<i32, FieldEntry>,
     skippers: HashMap<i32, DocValuesSkipperEntry>,
+    /// The `.dvs` skip-index file, opened when the segment was written at
+    /// [`VERSION_SKIPPER_SEPARATE_FILE`] or later; older segments keep their
+    /// skip index inside the data file.
+    ///
+    /// Equivalent to `Lucene90DocValuesProducer.skipIndexData`
+    /// (`Lucene90DocValuesProducer.java:70,155-183`).
+    skip_index_data: Option<Box<dyn IndexInput>>,
     /// Set on the instance `get_merge_instance` hands out, exactly as Lucene's
     /// `merging` field is (`Lucene90DocValuesProducer.java:2295-2310`).
     merging: bool,
@@ -1751,13 +1893,6 @@ impl Lucene90DocValuesProducer {
             &state.segment_suffix,
         )?;
 
-        // **Divergence (pre-existing).** Lucene opens the skip-index file here
-        // as well, checks its index header, refuses a segment whose skip-index
-        // version disagrees with the metadata's, and retrieves its checksum
-        // (`Lucene90DocValuesProducer.java:155-181`). This port reads the
-        // skip-index metadata out of `.dvm` but never opens `.dvs` itself, so a
-        // corrupt or mismatched skip-index file goes undetected here. Closing
-        // that gap belongs with porting the skipper itself.
         let max_doc = state.segment_info.max_doc()?;
         let (entries, mut skippers) = Self::read_fields(&mut *meta, state.field_infos, version)?;
 
@@ -1766,11 +1901,44 @@ impl Lucene90DocValuesProducer {
         }
 
         let _ = retrieve_checksum(&mut *meta)?;
+
+        // `Lucene90DocValuesProducer.java:155-183`: from
+        // VERSION_SKIPPER_SEPARATE_FILE on, the skip index lives in its own
+        // file, whose header must carry the metadata's version.
+        let skip_index_data = if version >= VERSION_SKIPPER_SEPARATE_FILE {
+            let skip_index_name = segment_file_name(
+                &state.segment_info.name,
+                &state.segment_suffix,
+                SKIP_INDEX_EXTENSION,
+            );
+            let mut skip_in = state
+                .directory
+                .open_input(&skip_index_name, state.context)?;
+            let skip_version = check_index_header(
+                &mut *skip_in,
+                SKIP_INDEX_CODEC,
+                VERSION_SKIPPER_SEPARATE_FILE,
+                VERSION_CURRENT,
+                &state.segment_info.id(),
+                &state.segment_suffix,
+            )?;
+            if version != skip_version {
+                return Err(LuceneError::corrupt_index(
+                    format!("Format versions mismatch: meta={version}, skipIndex={skip_version}"),
+                    skip_in.resource_description(),
+                ));
+            }
+            let _ = retrieve_checksum(&mut *skip_in)?;
+            Some(skip_in)
+        } else {
+            None
+        };
         Ok(Self {
             data,
             max_doc,
             entries,
             skippers,
+            skip_index_data,
             merging: false,
         })
     }
@@ -1967,8 +2135,11 @@ impl Lucene90DocValuesProducer {
     /// Equivalent to `Lucene90DocValuesProducer.canBulkDecodeByteAligned(NumericEntry)`:
     /// only a single-block entry whose width is a positive multiple of eight
     /// bits sits on byte boundaries.
-    fn can_bulk_decode_byte_aligned(entry: &NumericEntry) -> bool {
-        entry.block_shift < 0 && entry.bits_per_value > 0 && (entry.bits_per_value & 0x07) == 0
+    ///
+    /// The values source keeps the entry's `blockShift` and `bitsPerValue`
+    /// rather than the entry itself, so those two fields are what this takes.
+    fn can_bulk_decode_byte_aligned(block_shift: i32, bits_per_value: i32) -> bool {
+        block_shift < 0 && bits_per_value > 0 && (bits_per_value & 0x07) == 0
     }
 
     /// Returns whether `docs[docs_offset..docs_offset + size]` is a run of
@@ -2052,20 +2223,23 @@ impl Lucene90DocValuesProducer {
     /// Equivalent to `Lucene90DocValuesProducer.sortedNumericMatchesRange(LongValues, long, long, long, long)`.
     /// The values of a document are sorted, so the first one at or above the
     /// lower bound decides the answer.
+    ///
+    /// `values` is the fallible accessor of the field's values, so a corrupt
+    /// index reports an error where Java's `LongValues.get` throws.
     fn sorted_numeric_matches_range(
-        values: &dyn crate::util::LongValues,
+        values: &dyn Fn(i64) -> Result<i64>,
         start: i64,
         end: i64,
         min_value: i64,
         max_value: i64,
-    ) -> bool {
+    ) -> Result<bool> {
         for value_offset in start..end {
-            let value = values.get(value_offset);
+            let value = values(value_offset)?;
             if value >= min_value {
-                return value <= max_value;
+                return Ok(value <= max_value);
             }
         }
-        false
+        Ok(false)
     }
 
     /// Sets a bit for every document in `[from_doc, to_doc)` whose sorted
@@ -2075,7 +2249,7 @@ impl Lucene90DocValuesProducer {
     /// Equivalent to `Lucene90DocValuesProducer.sortedNumericScalarRangeIntoBitSet(LongValues, int, int, int, long, long, FixedBitSet, int)`.
     #[allow(clippy::too_many_arguments)]
     fn sorted_numeric_scalar_range_into_bit_set(
-        values: &dyn crate::util::LongValues,
+        values: &dyn Fn(i64) -> Result<i64>,
         from_doc: i32,
         to_doc: i32,
         cardinality: i32,
@@ -2083,11 +2257,11 @@ impl Lucene90DocValuesProducer {
         max_value: i64,
         bit_set: &mut crate::util::FixedBitSet,
         offset: i32,
-    ) {
+    ) -> Result<()> {
         for doc in from_doc..to_doc {
             let value_offset = i64::from(doc) * i64::from(cardinality);
             for i in 0..i64::from(cardinality) {
-                let value = values.get(value_offset + i);
+                let value = values(value_offset + i)?;
                 if value >= min_value {
                     if value <= max_value {
                         bit_set.set((doc - offset) as usize);
@@ -2096,6 +2270,7 @@ impl Lucene90DocValuesProducer {
                 }
             }
         }
+        Ok(())
     }
 
     /// Sets a bit for every document in `[from_doc, to_doc)` whose single value
@@ -2110,20 +2285,21 @@ impl Lucene90DocValuesProducer {
     /// bits set are identical either way.
     #[allow(clippy::too_many_arguments)]
     fn range_into_bit_set(
-        values: &dyn crate::util::LongValues,
+        values: &dyn Fn(i64) -> Result<i64>,
         from_doc: i32,
         to_doc: i32,
         min_value: i64,
         max_value: i64,
         bit_set: &mut crate::util::FixedBitSet,
         offset: i32,
-    ) {
+    ) -> Result<()> {
         for doc in from_doc..to_doc {
-            let value = values.get(i64::from(doc));
+            let value = values(i64::from(doc))?;
             if value >= min_value && value <= max_value {
                 bit_set.set((doc - offset) as usize);
             }
         }
+        Ok(())
     }
 
     /// Reads a contiguous run of byte-aligned values in one go, decoding them
@@ -2145,8 +2321,9 @@ impl Lucene90DocValuesProducer {
         values_offset: usize,
         bytes: &mut Vec<u8>,
     ) -> Result<bool> {
-        let byte_aligned = block_shift < 0 && bits_per_value > 0 && (bits_per_value & 0x07) == 0;
-        if !byte_aligned || !Self::is_contiguous(size, docs, docs_offset) {
+        if !Self::can_bulk_decode_byte_aligned(block_shift, bits_per_value)
+            || !Self::is_contiguous(size, docs, docs_offset)
+        {
             return Ok(false);
         }
         let bytes_per_value = (bits_per_value / 8) as i64;
@@ -2982,6 +3159,63 @@ impl NumericDocValues for LazyNumericDocValues {
         )
     }
 
+    /// Equivalent to the `rangeIntoBitSet` overrides of Lucene's dense,
+    /// single-block, untabled numeric views
+    /// (`Lucene90DocValuesProducer.java:911-922, 958-970`): the values are
+    /// read by document number without moving the iterator — through
+    /// `rangeIntoBitSet` when `gcd == 1 && minValue == 0`, and per document
+    /// with the GCD and delta applied otherwise. Every other layout keeps
+    /// `NumericDocValues.rangeIntoBitSet`, as in Java.
+    fn range_into_bit_set(
+        &mut self,
+        from_doc: i32,
+        to_doc: i32,
+        min_value: i64,
+        max_value: i64,
+        bit_set: &mut crate::util::FixedBitSet,
+        offset: i32,
+    ) -> Result<()> {
+        if self.docs.is_dense() {
+            if let NumericValueSource::Packed {
+                reader, min, gcd, ..
+            } = &self.values
+            {
+                if *gcd == 1 && *min == 0 {
+                    // Bulk range evaluation via DocValuesRangeSupport.
+                    return Lucene90DocValuesProducer::range_into_bit_set(
+                        &|index| reader.get_checked(index),
+                        from_doc,
+                        to_doc,
+                        min_value,
+                        max_value,
+                        bit_set,
+                        offset,
+                    );
+                }
+                // Per-doc evaluation for gcd/delta encoded fields.
+                for d in from_doc..to_doc {
+                    let v = gcd
+                        .wrapping_mul(reader.get_checked(i64::from(d))?)
+                        .wrapping_add(*min);
+                    if v >= min_value && v <= max_value {
+                        bit_set.set((d - offset) as usize);
+                    }
+                }
+                return Ok(());
+            }
+        }
+        // `NumericDocValues.rangeIntoBitSet`.
+        for d in from_doc..to_doc {
+            if self.advance_exact(d)? {
+                let v = self.long_value()?;
+                if v >= min_value && v <= max_value {
+                    bit_set.set((d - offset) as usize);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn long_value(&self) -> Result<i64> {
         // No positioning check, for the reason given on `DocsCursor::index`:
         // Lucene reads at whatever the cursor holds, and a constant field
@@ -3368,6 +3602,12 @@ struct LazySortedNumericDocValues {
     docs: DocsCursor,
     values: NumericValueSource,
     addresses: Option<DirectMonotonicReader>,
+    max_doc: i32,
+    /// The fixed number of values every document holds, or `-1`.
+    ///
+    /// Equivalent to the `denseFixedCardinality` local of `getSortedNumeric`
+    /// (`Lucene90DocValuesProducer.java:1843`).
+    dense_fixed_cardinality: i32,
     cost: i64,
     start: i64,
     end: i64,
@@ -3375,7 +3615,12 @@ struct LazySortedNumericDocValues {
 }
 
 impl LazySortedNumericDocValues {
-    fn new(data: &dyn IndexInput, max_doc: i32, entry: &SortedNumericEntry) -> Result<Self> {
+    fn new(
+        data: &dyn IndexInput,
+        max_doc: i32,
+        entry: &SortedNumericEntry,
+        dense_fixed_cardinality: i32,
+    ) -> Result<Self> {
         let docs = DocsCursor::new(
             data,
             max_doc,
@@ -3400,6 +3645,8 @@ impl LazySortedNumericDocValues {
             docs,
             values: NumericValueSource::new(data, &entry.numeric)?,
             addresses,
+            max_doc,
+            dense_fixed_cardinality,
             cost: i64::from(entry.num_docs_with_field),
             start: 0,
             end: 0,
@@ -3492,6 +3739,122 @@ impl SortedNumericDocValues for LazySortedNumericDocValues {
         // Java produces, not an overflow panic.
         Ok(self.end.wrapping_sub(self.start) as i32)
     }
+
+    /// Equivalent to the `rangeIntoBitSet` overrides of the multi-valued
+    /// views `getSortedNumeric` returns (`Lucene90DocValuesProducer.java:1898-1925`
+    /// dense, `1997-2028` sparse): a constant field sets the whole run, a dense
+    /// field of fixed cardinality addresses its values by multiplication, and
+    /// every other document is decided by its first value at or above
+    /// `min_value`. A single-valued field is served by `DocValues.singleton`,
+    /// which keeps `SortedNumericDocValues.rangeIntoBitSet`.
+    fn range_into_bit_set(
+        &mut self,
+        from_doc: i32,
+        to_doc: i32,
+        min_value: i64,
+        max_value: i64,
+        bit_set: &mut crate::util::FixedBitSet,
+        offset: i32,
+    ) -> Result<()> {
+        let Some(addresses) = self.addresses.as_ref() else {
+            // `SortedNumericDocValues.rangeIntoBitSet`.
+            for doc in from_doc..to_doc {
+                if self.advance_exact(doc)? {
+                    let count = self.doc_value_count()?;
+                    for _ in 0..count {
+                        let value = self.next_value()?;
+                        if value >= min_value {
+                            if value <= max_value {
+                                bit_set.set((doc - offset) as usize);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        };
+        let end_doc = to_doc.min(self.max_doc);
+        if from_doc >= end_doc {
+            return Ok(());
+        }
+        let values = &self.values;
+        let read = |index: i64| values.value(index);
+        match &mut self.docs {
+            DocsCursor::Dense { .. } => {
+                if let NumericValueSource::Constant(constant) = values {
+                    if *constant >= min_value && *constant <= max_value {
+                        bit_set
+                            .set_range((from_doc - offset) as usize, (end_doc - offset) as usize);
+                    }
+                    return Ok(());
+                }
+                let cardinality = self.dense_fixed_cardinality;
+                if cardinality > 1 {
+                    return Lucene90DocValuesProducer::sorted_numeric_scalar_range_into_bit_set(
+                        &read,
+                        from_doc,
+                        end_doc,
+                        cardinality,
+                        min_value,
+                        max_value,
+                        bit_set,
+                        offset,
+                    );
+                }
+                for current_doc in from_doc..end_doc {
+                    let start_offset = addresses.get_checked(i64::from(current_doc))?;
+                    let end_offset = addresses.get_checked(i64::from(current_doc) + 1)?;
+                    if Lucene90DocValuesProducer::sorted_numeric_matches_range(
+                        &read,
+                        start_offset,
+                        end_offset,
+                        min_value,
+                        max_value,
+                    )? {
+                        bit_set.set((current_doc - offset) as usize);
+                    }
+                }
+                Ok(())
+            }
+            DocsCursor::Sparse { disi } => {
+                let mut current_doc = disi.doc_id();
+                if current_doc < from_doc {
+                    current_doc = disi.advance(from_doc)?;
+                }
+                if current_doc < end_doc {
+                    if let NumericValueSource::Constant(constant) = values {
+                        if *constant >= min_value && *constant <= max_value {
+                            disi.into_bit_set(end_doc, bit_set, offset)?;
+                        }
+                    } else {
+                        while current_doc < end_doc {
+                            let index = i64::from(disi.index());
+                            let start_offset = addresses.get_checked(index)?;
+                            let end_offset = addresses.get_checked(index + 1)?;
+                            if Lucene90DocValuesProducer::sorted_numeric_matches_range(
+                                &read,
+                                start_offset,
+                                end_offset,
+                                min_value,
+                                max_value,
+                            )? {
+                                bit_set.set((current_doc - offset) as usize);
+                            }
+                            current_doc = disi.next_doc()?;
+                        }
+                    }
+                }
+                // Java resets `set`, so the value window follows the iterator
+                // the next time it is read; this port positions eagerly.
+                if self.docs.doc_id() != NO_MORE_DOCS {
+                    self.position()?;
+                }
+                Ok(())
+            }
+            DocsCursor::Empty { .. } => Ok(()),
+        }
+    }
 }
 
 /// A `SORTED_SET` field, in either of its two layouts.
@@ -3530,7 +3893,7 @@ impl LazySortedSetDocValues {
             SortedSetEntry::Multi { ords, terms_dict } => (ords.clone(), terms_dict),
         };
         Ok(Self {
-            ords: LazySortedNumericDocValues::new(data, max_doc, &ords_entry)?,
+            ords: LazySortedNumericDocValues::new(data, max_doc, &ords_entry, -1)?,
             terms: RefCell::new(TermsDict::new(data, terms_dict)?),
             value_count: terms_dict.terms_dict_size,
         })
@@ -3629,9 +3992,22 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
 
     fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
         match self.entries.get(&field.number) {
-            Some(FieldEntry::SortedNumeric(entry)) => Ok(Box::new(
-                LazySortedNumericDocValues::new(&*self.data, self.max_doc, entry)?,
-            )),
+            Some(FieldEntry::SortedNumeric(entry)) => {
+                // `Lucene90DocValuesProducer.java:1823,1843`.
+                let dense_fixed_cardinality = Self::fixed_cardinality(
+                    entry.numeric.num_values,
+                    entry.num_docs_with_field,
+                    self.skippers
+                        .get(&field.number)
+                        .map(|skipper| skipper.max_value_count),
+                );
+                Ok(Box::new(LazySortedNumericDocValues::new(
+                    &*self.data,
+                    self.max_doc,
+                    entry,
+                    dense_fixed_cardinality,
+                )?))
+            }
             _ => Ok(Box::new(EmptySortedNumericDocValues::new())),
         }
     }
@@ -3647,23 +4023,43 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
         }
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
-        // **Divergence (pre-existing).** Lucene serves a `DocValuesSkipper`
-        // reading the intervals `.dvs` holds, located by the skipper metadata
-        // this port now parses into `self.skippers`. The skipper itself — the
-        // cursor over those intervals — is not ported yet, and the `.dvs` file
-        // is never opened, so an empty skipper is the only honest answer.
-        // Porting the skipper is a task of its own.
-        Ok(Box::new(EmptyDocValuesSkipper))
+    /// Equivalent to `Lucene90DocValuesProducer.getSkipper(FieldInfo)`
+    /// (`Lucene90DocValuesProducer.java:2368-2470`): a cursor over the field's
+    /// slice of the skip-index file (or of the data file, for a segment written
+    /// before [`VERSION_SKIPPER_SEPARATE_FILE`]).
+    ///
+    /// # Errors
+    ///
+    /// A field with no skip-index entry returns [`LuceneError::IllegalState`].
+    /// Java reads `skippers.get(field.number)` and dereferences the result
+    /// unchecked (`Lucene90DocValuesProducer.java:2370-2373`), so it throws
+    /// `NullPointerException`; its callers never reach that case, because
+    /// `CodecReader.getDocValuesSkipper` returns `null` first when the field's
+    /// `docValuesSkipIndexType()` is `NONE` (`index/CodecReader.java:198-206`).
+    /// The port fails the same call, with an error instead of a panic.
+    fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        let Some(entry) = self.skippers.get(&field.number).copied() else {
+            return Err(LuceneError::IllegalState(format!(
+                "field \"{}\" has no doc-values skip-index entry",
+                field.name
+            )));
+        };
+        let skipper_source: &dyn IndexInput = match &self.skip_index_data {
+            Some(skip_index_data) => skip_index_data.as_ref(),
+            None => self.data.as_ref(),
+        };
+        let input = skipper_source.slice("doc value skipper", entry.offset, entry.length)?;
+        Ok(Some(Box::new(Lucene90DocValuesSkipper::new(entry, input))))
     }
 
     fn check_integrity(&self) -> Result<()> {
-        // Lucene checksums the data file and, when it opened one, the
-        // skip-index file too (`Lucene90DocValuesProducer.java:2285-2291`).
-        // This port opens no skip-index file, so only the data file is covered;
-        // see the note in `Lucene90DocValuesProducer::new`.
+        // `Lucene90DocValuesProducer.java:2285-2291`.
         let mut data = self.data.clone_input()?;
         checksum_entire_file(&mut *data)?;
+        if let Some(skip_index_data) = &self.skip_index_data {
+            let mut skip = skip_index_data.clone_input()?;
+            checksum_entire_file(&mut *skip)?;
+        }
         Ok(())
     }
 
@@ -3673,12 +4069,23 @@ impl DocValuesProducer for Lucene90DocValuesProducer {
             max_doc: self.max_doc,
             entries: self.entries.clone(),
             skippers: self.skippers.clone(),
+            skip_index_data: match &self.skip_index_data {
+                Some(skip_index_data) => Some(skip_index_data.clone_input()?),
+                None => None,
+            },
             merging: true,
         }))
     }
 
+    /// Equivalent to `IOUtils.close(data, skipIndexData)`: both are closed,
+    /// and the first error is reported.
     fn close(&mut self) -> Result<()> {
-        self.data.close()
+        let data = self.data.close();
+        let skip = match self.skip_index_data.as_mut() {
+            Some(skip_index_data) => skip_index_data.close(),
+            None => Ok(()),
+        };
+        data.and(skip)
     }
 }
 #[cfg(test)]
@@ -4085,8 +4492,10 @@ mod tests {
             }
         }
 
-        fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
-            Ok(Box::new(EmptyDocValuesSkipper))
+        fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+            Err(LuceneError::UnsupportedOperation(
+                "the test producer does not provide a doc-values skipper".to_string(),
+            ))
         }
 
         fn check_integrity(&self) -> Result<()> {
@@ -4485,6 +4894,47 @@ mod tests {
         assert_eq!(dvm1, dvm2);
         assert_eq!(dvs1, dvs2);
     }
+
+    /// A `.dvs` interval whose level byte is outside `[0, 4]` fails as Java
+    /// fails (`Lucene90DocValuesProducer.java:2402-2420`): above the maximum,
+    /// `maxDocID[levels - 1]` is out of bounds; below zero, the level
+    /// adjustment's `maxDocID[levels]` is. The port reports a corrupt index.
+    #[test]
+    fn skipper_refuses_out_of_range_level_byte() {
+        for level in [5u8, 0x7f, 0xff, 0x80] {
+            let dir = RamDirectory::new();
+            {
+                let mut out = dir
+                    .create_output("crafted.dvs", &*DEFAULT_IO_CONTEXT)
+                    .unwrap();
+                out.write_byte(level).unwrap();
+                // Enough bytes for any interval the level could claim.
+                for _ in 0..(4 * SKIP_INDEX_INTERVAL_BYTES) {
+                    out.write_byte(0).unwrap();
+                }
+                out.close().unwrap();
+            }
+            let input = dir.open_input("crafted.dvs", &*DEFAULT_IO_CONTEXT).unwrap();
+            let length = input.length();
+            let entry = DocValuesSkipperEntry {
+                offset: 0,
+                length,
+                min_value: 0,
+                max_value: 0,
+                doc_count: 1,
+                max_doc_id: 10,
+                max_value_count: 1,
+            };
+            let mut skipper = Lucene90DocValuesSkipper::new(entry, input);
+            match skipper.advance(0) {
+                Err(LuceneError::CorruptIndex(message)) => assert!(
+                    message.contains(&format!("level out of range [{}]", level as i8)),
+                    "{message}"
+                ),
+                other => panic!("level byte {level:#x}: expected a corrupt index, got {other:?}"),
+            }
+        }
+    }
 }
 
 /// Presents a numeric field as the single-valued sorted-numeric field the skip
@@ -4522,8 +4972,12 @@ impl DocValuesProducer for SingletonNumericProducer<'_> {
         corrupt("a singleton numeric producer has no sorted set values".to_string())
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
-        corrupt("a singleton numeric producer has no skipper".to_string())
+    /// Inherited from `EmptyDocValuesProducer.getSkipper`
+    /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        Err(LuceneError::UnsupportedOperation(
+            "a singleton numeric producer does not provide a doc-values skipper".to_string(),
+        ))
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -4575,8 +5029,12 @@ impl DocValuesProducer for OrdinalsAsSortedNumericProducer<'_> {
         self.inner.get_sorted_set(field)
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
-        corrupt("an ordinals producer has no skipper".to_string())
+    /// Inherited from `EmptyDocValuesProducer.getSkipper`
+    /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        Err(LuceneError::UnsupportedOperation(
+            "an ordinals producer does not provide a doc-values skipper".to_string(),
+        ))
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -4630,8 +5088,12 @@ impl DocValuesProducer for SortedOrdinalsProducer<'_> {
         corrupt("a sorted-ordinals producer has no sorted-set values".to_string())
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
-        corrupt("a sorted-ordinals producer has no skipper".to_string())
+    /// Inherited from `EmptyDocValuesProducer.getSkipper`
+    /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        Err(LuceneError::UnsupportedOperation(
+            "a sorted-ordinals producer does not provide a doc-values skipper".to_string(),
+        ))
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -4722,8 +5184,12 @@ impl DocValuesProducer for MinOrdinalOfSortedSetProducer<'_> {
         self.inner.get_sorted_set(field)
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
-        corrupt("a minimum-ordinal producer has no skipper".to_string())
+    /// Inherited from `EmptyDocValuesProducer.getSkipper`
+    /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        Err(LuceneError::UnsupportedOperation(
+            "a minimum-ordinal producer does not provide a doc-values skipper".to_string(),
+        ))
     }
 
     fn check_integrity(&self) -> Result<()> {

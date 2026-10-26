@@ -18,13 +18,17 @@
 //!    the order the two are declared in; a swap writes a file Lucene decodes at
 //!    the wrong width, and nothing else in the file says so;
 //! 4. the packed length and the discretised dimension count agree with Lucene's,
-//!    since they set the on-disk stride of every vector.
+//!    since they set the on-disk stride of every vector;
+//! 5. the score of a fixed query against every stored vector, and the
+//!    merge-time score of every stored vector against every other one, are
+//!    bit-identical to Lucene's. For the asymmetric encodings the merge-time
+//!    supplier quantizes every vector a second time into a temporary file.
 //!
 //! # The grid
 //!
-//! * **all three symmetric encodings** — `UNSIGNED_BYTE`, `PACKED_NIBBLE` and
-//!   `SEVEN_BIT`. Lucene also declares two asymmetric ones, which this port does
-//!   not model; see `ScalarEncoding`'s declared divergence.
+//! * **all five encodings** — the symmetric `UNSIGNED_BYTE`, `PACKED_NIBBLE`
+//!   and `SEVEN_BIT`, and the asymmetric `SINGLE_BIT_QUERY_NIBBLE` and
+//!   `DIBIT_QUERY_NIBBLE`, which quantize the query to four bits.
 //! * **all four similarity functions** — each is an ordinal in the metadata, and
 //!   `COSINE` additionally normalises both the vectors and the centroid before
 //!   quantizing, which changes every quantized byte.
@@ -97,6 +101,8 @@ fn encoding_for(name: &str) -> ScalarEncoding {
         "unsignedbyte" => ScalarEncoding::UnsignedByte,
         "packednibble" => ScalarEncoding::PackedNibble,
         "sevenbit" => ScalarEncoding::SevenBit,
+        "singlebit" => ScalarEncoding::SingleBitQueryNibble,
+        "dibit" => ScalarEncoding::DibitQueryNibble,
         other => panic!("unknown encoding: {other}"),
     }
 }
@@ -255,6 +261,78 @@ fn merge_with_rucene(
     writer.close().expect("close");
 }
 
+/// Scores a fixed query, and every vector pair through the merge-time
+/// supplier, with Rucene's reader over `dir`; returns the `score=` and
+/// `mergescore=` lines in the format the Java fixture prints.
+fn scores_with_rucene(
+    dir: &Path,
+    encoding: ScalarEncoding,
+    dim: i32,
+    similarity: VectorSimilarityFunction,
+) -> Vec<String> {
+    let directory: Arc<dyn Directory> =
+        Arc::new(FSDirectory::open(dir).expect("open the directory"));
+    let info = segment_info(&directory);
+    let infos = field_infos(dim, similarity);
+    let read_state = SegmentReadState::new(directory.as_ref(), &info, &infos, &*DEFAULT_IO_CONTEXT);
+    let format = Lucene104ScalarQuantizedVectorsFormat::with_encoding(encoding);
+    let reader = format.fields_reader_flat(&read_state).expect("reader");
+    let mut out = Vec::new();
+
+    let query = vector_for(MAX_DOC + 1, dim, true).expect("dense query");
+    let mut scorer = reader
+        .get_random_vector_scorer_float(FIELD, &query)
+        .expect("query scorer");
+    for ord in 0..scorer.max_ord() {
+        let score = scorer.score(ord).expect("score");
+        out.push(format!("score={ord}:{:08x}", score.to_bits()));
+    }
+
+    let score_info = SegmentInfo::new(
+        Arc::clone(&directory),
+        Version::LATEST,
+        Some(Version::LATEST),
+        "_sqs".to_string(),
+        MAX_DOC,
+        false,
+        false,
+        codec(),
+        HashMap::new(),
+        SEGMENT_ID,
+        HashMap::new(),
+        Default::default(),
+    )
+    .expect("score segment info");
+    let score_state = SegmentWriteState::new(
+        default_info_stream(),
+        Arc::clone(&directory),
+        &score_info,
+        &infos,
+        &BufferedUpdates,
+        &*DEFAULT_IO_CONTEXT,
+    );
+    let field_info = infos.field_info_by_number(0).expect("field info").clone();
+    let mut supplier = reader
+        .as_quantized_vectors_reader()
+        .expect("a quantized reader")
+        .get_random_vector_scorer_supplier_for_merge(&field_info, &score_state)
+        .expect("merge supplier")
+        .expect("the field has quantized vectors");
+    let count = supplier.total_vector_count();
+    let mut merge_scorer = supplier.scorer().expect("merge scorer");
+    for i in 0..count {
+        merge_scorer
+            .set_scoring_ordinal(i)
+            .expect("scoring ordinal");
+        for j in 0..count {
+            let score = merge_scorer.score(j).expect("merge score");
+            out.push(format!("mergescore={i}:{j}:{:08x}", score.to_bits()));
+        }
+    }
+    supplier.close().expect("close the merge supplier");
+    out
+}
+
 /// Reads a directory with Rucene's reader and returns one `doc:ord:hex,..` line
 /// per vector, in the format the Java fixture prints.
 fn read_with_rucene(
@@ -324,6 +402,7 @@ struct JavaRun {
     doc_packed_length: i32,
     discrete_dimensions: i32,
     dump: Vec<String>,
+    scores: Vec<String>,
 }
 
 fn run_java(out_dir: &Path, case: &str) -> JavaRun {
@@ -352,6 +431,7 @@ fn run_java(out_dir: &Path, case: &str) -> JavaRun {
     let mut doc_packed_length = None;
     let mut discrete_dimensions = None;
     let mut dump = Vec::new();
+    let mut scores = Vec::new();
     for line in stdout.lines() {
         let line = line.trim();
         if let Some(v) = line.strip_prefix("wire_number=") {
@@ -362,6 +442,8 @@ fn run_java(out_dir: &Path, case: &str) -> JavaRun {
             discrete_dimensions = Some(v.parse().expect("discrete dimensions"));
         } else if line.starts_with("vec=") {
             dump.push(line.to_string());
+        } else if line.starts_with("score=") || line.starts_with("mergescore=") {
+            scores.push(line.to_string());
         }
     }
     JavaRun {
@@ -370,6 +452,7 @@ fn run_java(out_dir: &Path, case: &str) -> JavaRun {
         discrete_dimensions: discrete_dimensions
             .expect("the fixture printed no discrete dimension count"),
         dump,
+        scores,
     }
 }
 
@@ -381,13 +464,25 @@ fn run_java(out_dir: &Path, case: &str) -> JavaRun {
 fn cases() -> Vec<String> {
     let mut cases = Vec::new();
     // Every encoding against every similarity, at a dimension that packing pads.
-    for encoding in ["unsignedbyte", "packednibble", "sevenbit"] {
+    for encoding in [
+        "unsignedbyte",
+        "packednibble",
+        "sevenbit",
+        "singlebit",
+        "dibit",
+    ] {
         for similarity in ["euclidean", "dot", "cosine", "mip"] {
             cases.push(format!("{encoding}_{similarity}_5_dense"));
         }
     }
     // The packing edges, and the sparse shape.
-    for encoding in ["unsignedbyte", "packednibble", "sevenbit"] {
+    for encoding in [
+        "unsignedbyte",
+        "packednibble",
+        "sevenbit",
+        "singlebit",
+        "dibit",
+    ] {
         for dim in [1, 3, 8, 16] {
             cases.push(format!("{encoding}_euclidean_{dim}_dense"));
         }
@@ -479,6 +574,27 @@ fn scalar_quantized_vectors_match_lucene_byte_for_byte() {
         assert_eq!(
             java.dump, rucene_from_rust,
             "case {case}: Rucene decoded different values from its own files"
+        );
+
+        // 5. — query and merge-time scores, bit for bit, over Lucene's files.
+        assert!(
+            !java.scores.is_empty(),
+            "case {case}: the fixture printed no scores"
+        );
+        let rucene_scores = scores_with_rucene(&java_dir, encoding, dim, similarity);
+        assert_eq!(
+            java.scores, rucene_scores,
+            "case {case}: Rucene scored differently from Lucene"
+        );
+        let leftover: Vec<String> = std::fs::read_dir(&java_dir)
+            .expect("list the java dir")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("queries"))
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "case {case}: closing the merge supplier must delete its temporary file: {leftover:?}"
         );
     }
 

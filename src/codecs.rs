@@ -59,7 +59,7 @@ pub use doc_values::{
     available_doc_values_formats, doc_values_for_name, register_doc_values_format, BinaryDocValues,
     DocValuesConsumer, DocValuesFormat, DocValuesFormatRegistry, DocValuesProducer,
     DocValuesSkipper, EmptyBinaryDocValues, EmptyDocValuesConsumer, EmptyDocValuesFormat,
-    EmptyDocValuesProducer, EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
+    EmptyDocValuesProducer, EmptyNumericDocValues, EmptySortedDocValues,
     EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues, SortedDocValues,
     SortedNumericDocValues, SortedSetDocValues,
 };

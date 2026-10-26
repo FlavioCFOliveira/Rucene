@@ -17,6 +17,7 @@ use crate::search::collection_terminated_exception::CollectionError;
 use crate::search::collector::{Collector, CollectorManager};
 use crate::search::constant_score_query::ConstantScoreQuery;
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
+use crate::search::lru_query_cache::LRUQueryCache;
 use crate::search::query::Query;
 use crate::search::query_cache::{QueryCache, QueryCachingPolicy};
 use crate::search::query_visitor::QueryVisitor;
@@ -31,6 +32,7 @@ use crate::search::time_limiting_bulk_scorer::TimeLimitingBulkScorer;
 use crate::search::top_docs::TopDocs;
 use crate::search::top_score_doc_collector_manager::TopScoreDocCollectorManager;
 use crate::search::total_hit_count_collector::TotalHitCountCollectorManager;
+use crate::search::usage_tracking_query_caching_policy::UsageTrackingQueryCachingPolicy;
 use crate::search::weight::Weight;
 use crate::util::ByteRunAutomaton;
 
@@ -40,23 +42,44 @@ use crate::util::ByteRunAutomaton;
 /// which starts at 1024.
 static MAX_CLAUSE_COUNT: AtomicI32 = AtomicI32::new(1024);
 
+/// How many queries the default query cache holds.
+///
+/// Equivalent to the `maxCachedQueries` local of `IndexSearcher`'s static
+/// initialiser (`IndexSearcher.java:95-100`).
+const DEFAULT_MAX_CACHED_QUERIES: i32 = 1000;
+
+/// How many bytes the default query cache may use.
+///
+/// Equivalent to the `maxRamBytesUsed` local of `IndexSearcher`'s static
+/// initialiser (`IndexSearcher.java:97-98`).
+///
+/// **Divergence from Lucene 10.5.0.** Java takes
+/// `Math.min(1L << 25, Runtime.getRuntime().maxMemory() / 20)`: 32 MB, or 5% of
+/// the JVM heap when that is smaller (a heap under 640 MB). A Rust process has
+/// no managed heap to interrogate, so this port keeps the 32 MB cap alone —
+/// Java's value for any heap of 640 MB or more — as `OfflineSorter`'s
+/// automatic buffer size already does for the same reason.
+const DEFAULT_MAX_RAM_BYTES_USED: i64 = 1 << 25;
+
 /// The process-wide default query cache.
 ///
 /// Equivalent to the mutable static `IndexSearcher.DEFAULT_QUERY_CACHE`, which
-/// Java seeds with an `LRUQueryCache` holding up to 1000 queries or 5% of the
-/// heap. That cache is not part of the query-execution spine and is not ported
-/// yet, so the default is "no cache"; see [`crate::search::query_cache`].
-static DEFAULT_QUERY_CACHE: LazyLock<RwLock<Option<Arc<dyn QueryCache>>>> =
-    LazyLock::new(|| RwLock::new(None));
+/// Java seeds with `new LRUQueryCache(maxCachedQueries, maxRamBytesUsed)`
+/// (`IndexSearcher.java:83, 95-100`).
+static DEFAULT_QUERY_CACHE: LazyLock<RwLock<Option<Arc<dyn QueryCache>>>> = LazyLock::new(|| {
+    RwLock::new(Some(Arc::new(
+        LRUQueryCache::new(DEFAULT_MAX_CACHED_QUERIES, DEFAULT_MAX_RAM_BYTES_USED)
+            .expect("INVARIANT: the default cache sizes are positive"),
+    )))
+});
 
 /// The process-wide default query caching policy.
 ///
 /// Equivalent to the mutable static `IndexSearcher.DEFAULT_CACHING_POLICY`,
-/// which Java seeds with a `UsageTrackingQueryCachingPolicy`. That policy is
-/// not ported yet, and it would never be consulted anyway while
-/// [`DEFAULT_QUERY_CACHE`] is absent.
+/// which Java seeds with a `UsageTrackingQueryCachingPolicy`
+/// (`IndexSearcher.java:86`).
 static DEFAULT_CACHING_POLICY: LazyLock<RwLock<Option<Arc<dyn QueryCachingPolicy>>>> =
-    LazyLock::new(|| RwLock::new(None));
+    LazyLock::new(|| RwLock::new(Some(Arc::new(UsageTrackingQueryCachingPolicy::default()))));
 
 /// The default similarity, shared by every searcher that does not set its own.
 ///
@@ -1438,14 +1461,13 @@ impl IndexSearcher {
     /// Creates a [`Weight`] for the given query, adding caching when possible
     /// and configured.
     ///
-    /// Equivalent to `IndexSearcher.createWeight(Query, ScoreMode, float)`. The
-    /// query is assumed to have been [`rewrite`](Self::rewrite)n already.
+    /// Equivalent to `IndexSearcher.createWeight(Query, ScoreMode, float)`
+    /// (`IndexSearcher.java:986-995`). The query is assumed to have been
+    /// [`rewrite`](Self::rewrite)n already. The policy is present unless a
+    /// caller removed it with [`set_default_query_caching_policy`]; Java's
+    /// policy can never be null.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java caches whenever a cache is
-    /// installed, because the default caching policy is never null. Here the
-    /// policy is optional — its default implementation is not ported, see
-    /// [`crate::search::query_cache`] — so caching applies only when both a
-    /// cache and a policy are present.
+    /// [`set_default_query_caching_policy`]: Self::set_default_query_caching_policy
     ///
     /// # Errors
     ///

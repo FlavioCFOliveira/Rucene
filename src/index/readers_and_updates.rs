@@ -31,8 +31,8 @@ use crate::codecs::DocValuesProducer;
 use crate::error::{LuceneError, Result};
 use crate::index::doc_values::{
     BinaryDocValues, DocValuesIterator, EmptyBinaryDocValues, EmptyDocValuesProducer,
-    EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
-    EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues,
+    EmptyNumericDocValues, EmptySortedDocValues, EmptySortedNumericDocValues,
+    EmptySortedSetDocValues, NumericDocValues,
 };
 use crate::index::doc_values_field_updates::{
     merged_iterator, DocValuesFieldUpdates, MergedIterator,
@@ -2592,8 +2592,16 @@ impl<'a> DocValuesProducer for MergedDvProducer<'a> {
         Ok(Box::new(EmptySortedSetDocValues::new()))
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn crate::index::DocValuesSkipper>> {
-        Ok(Box::new(EmptyDocValuesSkipper))
+    /// Inherited from `EmptyDocValuesProducer.getSkipper`
+    /// (`index/EmptyDocValuesProducer.java:54-57`) by the anonymous producers
+    /// of `ReadersAndUpdates.handleDVUpdates`: unsupported.
+    fn get_skipper(
+        &self,
+        _field: &FieldInfo,
+    ) -> Result<Option<Box<dyn crate::index::DocValuesSkipper>>> {
+        Err(LuceneError::UnsupportedOperation(
+            "a doc-values update producer does not provide a doc-values skipper".to_string(),
+        ))
     }
 
     fn check_integrity(&self) -> Result<()> {

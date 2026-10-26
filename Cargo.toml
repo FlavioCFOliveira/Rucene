@@ -2,7 +2,7 @@
 name = "rucene"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.86"
 authors = ["Flavio CF Oliveira"]
 license = "Apache-2.0"
 description = "A Rust port of Apache Lucene Core 10.5.0 with functional parity and index-file compatibility."
@@ -142,6 +142,14 @@ path = "tests/portability/member_contracts.rs"
 [[test]]
 name = "portability_doc_values"
 path = "tests/portability/doc_values.rs"
+
+[[test]]
+name = "portability_doc_values_skipper"
+path = "tests/portability/doc_values_skipper.rs"
+
+[[test]]
+name = "portability_token_stream_to_automaton"
+path = "tests/portability/token_stream_to_automaton.rs"
 
 [[test]]
 name = "portability_index_file_deleter"

@@ -2068,7 +2068,7 @@ impl Lucene99HnswVectorsReader {
         };
         let filtered_doc_count = accept_docs.cost()?.min(i64::from(graph_size)) as i32;
         let accepted = accept_docs.bits()?;
-        let accepted_ords = scorer.get_accept_ords(accepted);
+        let accepted_ords = scorer.get_accept_ords(accepted.as_deref());
         let num_vectors = scorer.max_ord();
         let mut do_hnsw = k < num_vectors;
         // The approximate number of vectors that would be visited if we did not
@@ -2096,7 +2096,7 @@ impl Lucene99HnswVectorsReader {
             for i in 0..num_vectors {
                 if accepted_ords
                     .as_deref()
-                    .map_or(true, |accepted| accepted.get(i as usize))
+                    .map_or(Ok(true), |accepted| accepted.try_get(i as usize))?
                 {
                     if internal.early_terminated() {
                         break;

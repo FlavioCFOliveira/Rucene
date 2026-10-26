@@ -339,7 +339,7 @@ impl MaxScoreBulkScorer {
                 }
             } else {
                 let doc = self.wrappers[top].doc;
-                let accepted = accept_docs.map_or(true, |bits| bits.get(doc as usize));
+                let accepted = accept_docs.is_none_or(|bits| bits.get(doc as usize));
                 let confirmed = if accepted {
                     self.filter
                         .as_mut()
@@ -555,7 +555,7 @@ impl MaxScoreBulkScorer {
         for i in first_window_lead..len {
             let position = self.all_scorers[i];
             let cost = self.wrappers[position].cost;
-            if filter_cost.map_or(true, |filter_cost| cost >= filter_cost) {
+            if filter_cost.is_none_or(|filter_cost| cost >= filter_cost) {
                 let doc = self.wrappers[position].doc;
                 let up_to = self.wrappers[position]
                     .scorer()

@@ -480,6 +480,13 @@ impl Bits for AcceptOrds<'_> {
             .get(self.values.ord_to_doc(index as i32) as usize)
     }
 
+    /// Forwards to the accept docs' `try_get`, so that a check those bits
+    /// raise reaches the search as Java's exception does.
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.accept_docs
+            .try_get(self.values.ord_to_doc(index as i32) as usize)
+    }
+
     fn length(&self) -> usize {
         self.values.size() as usize
     }
@@ -548,6 +555,12 @@ where
     fn get(&self, index: usize) -> bool {
         self.accept_docs
             .get((self.ord_to_doc)(index as i32) as usize)
+    }
+
+    /// Forwards to the accept docs' `try_get`; see [`AcceptOrds`].
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.accept_docs
+            .try_get((self.ord_to_doc)(index as i32) as usize)
     }
 
     fn length(&self) -> usize {

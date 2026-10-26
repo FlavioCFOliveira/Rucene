@@ -646,7 +646,7 @@ impl DocValuesProducer for DocValuesProducerHolder {
         }
     }
 
-    fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
+    fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
         let guard = self.producer.lock().map_err(|_| {
             LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
         })?;
@@ -839,7 +839,10 @@ impl DocValuesProducer for SegmentDocValuesProducer {
             .get_sorted_set(field)
     }
 
-    fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
+    /// Equivalent to `SegmentDocValuesProducer.getSkipper(FieldInfo)`
+    /// (`index/SegmentDocValuesProducer.java:126-131`): the answer of the
+    /// producer serving the field, `None` included.
+    fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
         self.dv_producers_by_field
             .get(&field.number)
             .ok_or_else(|| {
@@ -1026,7 +1029,7 @@ impl LeafReader for DocValuesLeafReader {
     ) -> Result<Option<Box<dyn IndexDocValuesSkipper>>> {
         if let Some(fi) = self.field_infos.field_info(field) {
             if fi.doc_values_skip_index_type != crate::index::DocValuesSkipIndexType::NONE {
-                return Ok(Some(self.doc_values_producer.get_skipper(fi)?));
+                return self.doc_values_producer.get_skipper(fi);
             }
         }
         Ok(None)
@@ -1558,7 +1561,9 @@ impl LeafReader for SegmentReader {
                 LuceneError::IllegalState("term vectors reader lock poisoned".to_string())
             })?;
         if let Some(reader) = guard.as_ref() {
-            Ok(Box::new(TermVectorsReaderWrapper(reader.clone_reader())))
+            // `TermVectorsReader` extends `TermVectors`, so the codec reader
+            // itself is the caller's `TermVectors` (`CodecReader.java:107-114`).
+            Ok(reader.clone_reader())
         } else {
             Ok(Box::new(crate::index::leaf_reader::EmptyTermVectors))
         }
@@ -1741,7 +1746,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         }
         if let Some(ref producer) = self.doc_values_producer {
-            Ok(Some(producer.get_skipper(fi.unwrap())?))
+            producer.get_skipper(fi.unwrap())
         } else {
             Ok(None)
         }
@@ -1987,34 +1992,6 @@ fn radix36(gen: i64) -> String {
     s.chars().rev().collect()
 }
 
-/// Wrapper that lets a `Box<dyn TermVectorsReader>` satisfy the
-/// `TermVectors` trait.
-struct TermVectorsReaderWrapper(Box<dyn TermVectorsReader>);
-
-impl Debug for TermVectorsReaderWrapper {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TermVectorsReaderWrapper")
-            .finish_non_exhaustive()
-    }
-}
-
-impl TermVectors for TermVectorsReaderWrapper {
-    fn prefetch(&mut self, doc_id: i32) -> Result<()> {
-        // Java's `TermVectorsReader` *extends* `TermVectors`, so `CodecReader`
-        // hands the codec reader itself to the caller
-        // (`CodecReader.java:107-114`) and a `prefetch` call reaches the
-        // format's own override. This wrapper stands in for that inheritance
-        // and must forward, exactly as `StoredFieldsReaderWrapper` does;
-        // swallowing the hint would silently disable I/O parallelism for term
-        // vectors the moment a format implements it.
-        self.0.prefetch(doc_id)
-    }
-
-    fn get(&self, doc: i32) -> Result<Option<Box<dyn crate::index::Fields>>> {
-        self.0.get(doc)
-    }
-}
-
 /// `Bits` implementation that shares an underlying `Arc<dyn Bits>`.
 #[derive(Clone)]
 /// A [`Bits`] one reader can hand to several owners.
@@ -2042,6 +2019,13 @@ impl Debug for SharedBits {
 impl Bits for SharedBits {
     fn get(&self, index: usize) -> bool {
         self.0.get(index)
+    }
+
+    /// Forwards to the wrapped bits' `try_get`, so that an error they raise
+    /// (`ExitableDirectoryReader.java:359-387`, whose `get` throws through
+    /// every wrapper that delegates to it) is not swallowed here.
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.0.try_get(index)
     }
 
     fn length(&self) -> usize {
@@ -2527,17 +2511,19 @@ mod tests {
             })
         }
 
+        fn close(&mut self) -> Result<()> {
+            self.closed.store(true, Ordering::SeqCst);
+            self.inner.close()
+        }
+    }
+
+    impl TermVectors for RecordingTermVectorsReader {
         fn get(&self, doc: i32) -> Result<Option<Box<dyn Fields>>> {
             self.inner.get(doc)
         }
 
-        fn prefetch(&self, doc_id: i32) -> Result<()> {
+        fn prefetch(&mut self, doc_id: i32) -> Result<()> {
             self.inner.prefetch(doc_id)
-        }
-
-        fn close(&mut self) -> Result<()> {
-            self.closed.store(true, Ordering::SeqCst);
-            self.inner.close()
         }
     }
 
@@ -2704,7 +2690,7 @@ mod tests {
             self.inner.get_sorted_set(field)
         }
 
-        fn get_skipper(&self, field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
+        fn get_skipper(&self, field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
             self.inner.get_skipper(field)
         }
 
@@ -3459,7 +3445,7 @@ mod tests {
     /// A codec reader that only counts the prefetch hints it is handed.
     #[derive(Debug, Default)]
     struct CountingPrefetchReader {
-        prefetched: std::sync::Mutex<Vec<i32>>,
+        prefetched: Arc<std::sync::Mutex<Vec<i32>>>,
     }
 
     impl TermVectorsReader for CountingPrefetchReader {
@@ -3470,50 +3456,32 @@ mod tests {
         fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
             Box::new(Self::default())
         }
+    }
 
+    impl TermVectors for CountingPrefetchReader {
         fn get(&self, _doc: i32) -> Result<Option<Box<dyn crate::index::Fields>>> {
             Ok(None)
         }
 
-        fn prefetch(&self, doc_id: i32) -> Result<()> {
+        fn prefetch(&mut self, doc_id: i32) -> Result<()> {
             self.prefetched.lock().unwrap().push(doc_id);
             Ok(())
         }
     }
 
     #[test]
-    fn the_term_vectors_wrapper_forwards_the_prefetch_hint() {
+    fn the_codec_reader_is_the_term_vectors_and_receives_the_prefetch_hint() {
         // Java's `TermVectorsReader` *extends* `TermVectors`, so `CodecReader`
         // hands the codec reader itself to the caller and a prefetch reaches
-        // the format's own override. This wrapper stands in for that
-        // inheritance; swallowing the hint would silently disable I/O
-        // parallelism for term vectors.
-        let inner = Arc::new(CountingPrefetchReader::default());
-        struct Shared(Arc<CountingPrefetchReader>);
-        impl std::fmt::Debug for Shared {
-            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-                f.debug_struct("Shared").finish()
-            }
-        }
-        impl TermVectorsReader for Shared {
-            fn check_integrity(&self) -> Result<()> {
-                self.0.check_integrity()
-            }
-            fn clone_reader(&self) -> Box<dyn TermVectorsReader> {
-                Box::new(Shared(Arc::clone(&self.0)))
-            }
-            fn get(&self, doc: i32) -> Result<Option<Box<dyn crate::index::Fields>>> {
-                self.0.get(doc)
-            }
-            fn prefetch(&self, doc_id: i32) -> Result<()> {
-                self.0.prefetch(doc_id)
-            }
-        }
-
-        let mut wrapper = TermVectorsReaderWrapper(Box::new(Shared(Arc::clone(&inner))));
-        wrapper.prefetch(3).expect("prefetch");
-        wrapper.prefetch(11).expect("prefetch");
-        assert_eq!(*inner.prefetched.lock().unwrap(), vec![3, 11]);
+        // the format's own override (`CodecReader.java:107-114`).
+        let prefetched = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reader: Box<dyn TermVectorsReader> = Box::new(CountingPrefetchReader {
+            prefetched: Arc::clone(&prefetched),
+        });
+        let mut term_vectors: Box<dyn TermVectors> = reader;
+        term_vectors.prefetch(3).expect("prefetch");
+        term_vectors.prefetch(11).expect("prefetch");
+        assert_eq!(*prefetched.lock().unwrap(), vec![3, 11]);
     }
 }
 

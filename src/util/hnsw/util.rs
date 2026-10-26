@@ -250,14 +250,6 @@ impl HnswUtil {
         }
         Ok(Component::new(entry_point, count))
     }
-
-    fn next_unvisited(
-        _graph: &mut dyn HnswGraph,
-        _level: i32,
-        connected_nodes: &FixedBitSet,
-    ) -> Result<i32> {
-        Ok(connected_nodes.next_clear_bit(0) as i32)
-    }
 }
 
 /// Extension trait for `FixedBitSet` to provide the next clear bit.

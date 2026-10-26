@@ -999,9 +999,15 @@ impl PointWriter for OfflinePointWriter {
         Ok(())
     }
 
+    /// Equivalent to `OfflinePointWriter.destroy()`
+    /// (`OfflinePointWriter.java:121-124`): `tempDir.deleteFile(name)`,
+    /// whose failure is the caller's.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the failure to delete the temporary file.
     fn destroy(&mut self) -> Result<()> {
-        let _ = self.temp_dir.delete_file(&self.name);
-        Ok(())
+        self.temp_dir.delete_file(&self.name)
     }
 }
 
@@ -1976,160 +1982,6 @@ impl BKDReader {
         Ok(counter.count != last_leaf_node_point_count)
     }
 
-    /// Traverses the tree, calling `visitor` for every leaf point that may
-    /// intersect the query.
-    pub fn intersect(&mut self, visitor: &mut dyn IntersectVisitor) -> Result<()> {
-        let mut inner = self.index_in.clone_input()?;
-        inner.seek(self.index_start_pointer)?;
-        let mut leaf = self.data_in.clone_input()?;
-        let mut root = BKDTreeNode {
-            node_id: 1,
-            leaf_block_fp: 0,
-            split_value: vec![0u8; self.config.packed_index_bytes_length() as usize],
-            split_dim: -1,
-            min_packed: self.min_packed_value.clone(),
-            max_packed: self.max_packed_value.clone(),
-            negative_deltas: vec![false; self.config.num_index_dims as usize],
-            right_node_position: 0,
-            first_child_position: 0,
-        };
-        let parent = root.clone();
-        Self::read_node_data(
-            &mut inner,
-            &parent,
-            &mut root,
-            false,
-            &self.config,
-            self.num_leaves,
-        )?;
-        self.visit(&root, &mut inner, &mut leaf, visitor)
-    }
-
-    fn visit(
-        &self,
-        node: &BKDTreeNode,
-        inner: &mut Box<dyn IndexInput>,
-        leaf: &mut Box<dyn IndexInput>,
-        visitor: &mut dyn IntersectVisitor,
-    ) -> Result<()> {
-        if node.node_id >= self.num_leaves {
-            // Leaf node: Java's `PointValues.intersect` calls `compare` at
-            // the tree level before dispatching to `visitDocValues` or
-            // `visitDocIDs`. `BKDReader.visit` must do the same so the trace
-            // carries the tree-level `compare` that precedes the leaf-level
-            // refinement `compare` inside `visitDocValuesWithCardinality`.
-            match visitor.compare(&node.min_packed, &node.max_packed)? {
-                Relation::CellOutsideQuery => return Ok(()),
-                Relation::CellInsideQuery => {
-                    return self.visit_all(node, inner, leaf, visitor);
-                }
-                Relation::CellCrossesQuery => {
-                    return Self::visit_leaf(
-                        leaf,
-                        &self.config,
-                        self.version,
-                        node.leaf_block_fp,
-                        visitor,
-                    );
-                }
-            }
-        }
-        match visitor.compare(&node.min_packed, &node.max_packed)? {
-            Relation::CellOutsideQuery => Ok(()),
-            Relation::CellInsideQuery => self.visit_all(node, inner, leaf, visitor),
-            Relation::CellCrossesQuery => {
-                let mut left = node.child(self.num_leaves, true)?;
-                Self::read_node_data(inner, node, &mut left, true, &self.config, self.num_leaves)?;
-                self.visit(&left, inner, leaf, visitor)?;
-
-                let mut right = node.child(self.num_leaves, false)?;
-                // The right child starts at the absolute offset recorded when
-                // this node's own `read_node_data` ran (Java:
-                // `rightNodePositions[level]`). Seeking is required because the
-                // left-subtree traversal may have pruned a cell and returned
-                // early, leaving the shared cursor mid-stream; without the
-                // seek the right child would be decoded from a desynchronised
-                // position. The left child needs no seek: its bytes
-                // immediately follow the parent's, matching Java's `pushLeft`.
-                inner.seek(node.right_node_position)?;
-                Self::read_node_data(
-                    inner,
-                    node,
-                    &mut right,
-                    false,
-                    &self.config,
-                    self.num_leaves,
-                )?;
-                self.visit(&right, inner, leaf, visitor)?;
-                Ok(())
-            }
-        }
-    }
-
-    fn visit_all(
-        &self,
-        node: &BKDTreeNode,
-        inner: &mut Box<dyn IndexInput>,
-        leaf: &mut Box<dyn IndexInput>,
-        visitor: &mut dyn IntersectVisitor,
-    ) -> Result<()> {
-        if node.node_id >= self.num_leaves {
-            // Fully inside: visit every doc ID without value-level filtering,
-            // matching Java's `addAll` which reads doc IDs and calls
-            // `visit(IntsRef)` without touching the leaf bounds.
-            return Self::visit_leaf_doc_ids(
-                leaf,
-                &self.config,
-                self.version,
-                node.leaf_block_fp,
-                visitor,
-            );
-        }
-        let mut left = node.child(self.num_leaves, true)?;
-        Self::read_node_data(inner, node, &mut left, true, &self.config, self.num_leaves)?;
-        self.visit_all(&left, inner, leaf, visitor)?;
-
-        let mut right = node.child(self.num_leaves, false)?;
-        // See `visit` for why the right child must be sought to: the
-        // `visit_all` descent of the left subtree consumes the left child's
-        // bytes, but a seek keeps the cursor synchronised even under pruning
-        // paths that may be added later and matches Java's `pushRight`.
-        inner.seek(node.right_node_position)?;
-        Self::read_node_data(
-            inner,
-            node,
-            &mut right,
-            false,
-            &self.config,
-            self.num_leaves,
-        )?;
-        self.visit_all(&right, inner, leaf, visitor)?;
-        Ok(())
-    }
-
-    /// Visits every doc ID in a leaf without value-level filtering.
-    ///
-    /// Equivalent to the leaf branch of Java's `BKDReader.addAll`, which reads
-    /// the doc IDs and calls `visitor.visit(IntsRef)` (or the `DocIdSetIterator`
-    /// bulk form) without reading the leaf's value bounds. Used when the cell
-    /// is fully inside the query.
-    fn visit_leaf_doc_ids(
-        leaf_in: &mut Box<dyn IndexInput>,
-        config: &BKDConfig,
-        version: i32,
-        block_fp: i64,
-        visitor: &mut dyn IntersectVisitor,
-    ) -> Result<()> {
-        leaf_in.seek(block_fp)?;
-        let count = read_leaf_count(leaf_in.as_mut(), config)?;
-        let mut doc_ids = vec![0i32; count];
-        DocIdsWriter::read_doc_ids(leaf_in.as_mut(), count, &mut doc_ids, version)?;
-        visitor.grow(count as i32)?;
-        let ints_ref = IntsRef::new(doc_ids);
-        visitor.visit_ints_ref(&ints_ref)?;
-        Ok(())
-    }
-
     fn visit_leaf(
         leaf_in: &mut Box<dyn IndexInput>,
         config: &BKDConfig,
@@ -2547,10 +2399,6 @@ impl BKDReader {
 /// inherited from the trait defaults, which walk the [`PointTree`] produced by
 /// [`BKDReader::point_tree`]. This mirrors Java's `BKDReader extends
 /// PointValues`, where only the accessors and `getPointTree` are overridden.
-///
-/// The inherent [`BKDReader::intersect`] method (recursive, `&mut self`) is
-/// kept for the existing unit tests; the trait method (cursor-based, `&self`)
-/// is what the reader stack uses.
 impl PointValues for BKDReader {
     fn point_tree(&self) -> Result<Box<dyn PointTree>> {
         self.point_tree()
@@ -4351,11 +4199,16 @@ impl BKDWriter {
                 debug_assert!(has_next);
                 heap.append(reader.point_value())?;
             }
-            if let Some(name) = offline_name.as_ref() {
-                // `OfflinePointWriter.destroy()`.
-                let _ = self.temp_dir.delete_file(name);
-            }
-            reader.close()?;
+            // `OfflinePointWriter.destroy()`, whose failure Java's `catch`
+            // hands to `verifyChecksum`; the `try`-with-resources still closes
+            // the reader, its own failure suppressed under the first.
+            let destroyed = match offline_name.as_ref() {
+                Some(name) => self.temp_dir.delete_file(name),
+                None => Ok(()),
+            };
+            let closed = reader.close();
+            destroyed?;
+            closed?;
             Ok(heap)
         })();
         match result {
@@ -6648,6 +6501,155 @@ mod tests {
         }
     }
 
+    /// A directory whose `delete_file` fails while `refuse` is set, to prove
+    /// that a failed delete reaches the caller (rmp #266).
+    struct RefusingDeleteDirectory {
+        inner: RamDirectory,
+        refuse: std::sync::atomic::AtomicBool,
+    }
+
+    impl Directory for RefusingDeleteDirectory {
+        fn list_all(&self) -> Result<Vec<String>> {
+            self.inner.list_all()
+        }
+
+        fn delete_file(&self, name: &str) -> Result<()> {
+            if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(LuceneError::Io(std::io::Error::other(format!(
+                    "delete of {name} refused"
+                ))));
+            }
+            self.inner.delete_file(name)
+        }
+
+        fn file_length(&self, name: &str) -> Result<i64> {
+            self.inner.file_length(name)
+        }
+
+        fn create_output(
+            &self,
+            name: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn IndexOutput>> {
+            self.inner.create_output(name, context)
+        }
+
+        fn create_temp_output(
+            &self,
+            prefix: &str,
+            suffix: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn IndexOutput>> {
+            self.inner.create_temp_output(prefix, suffix, context)
+        }
+
+        fn sync(&self, names: &[String]) -> Result<()> {
+            self.inner.sync(names)
+        }
+
+        fn sync_metadata(&self) -> Result<()> {
+            self.inner.sync_metadata()
+        }
+
+        fn rename(&self, source: &str, dest: &str) -> Result<()> {
+            self.inner.rename(source, dest)
+        }
+
+        fn open_input(
+            &self,
+            name: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn IndexInput>> {
+            self.inner.open_input(name, context)
+        }
+
+        fn obtain_lock(&self, name: &str) -> Result<Box<dyn crate::store::Lock>> {
+            self.inner.obtain_lock(name)
+        }
+
+        fn close(&mut self) -> Result<()> {
+            self.inner.close()
+        }
+
+        fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+            self.inner.get_pending_deletions()
+        }
+
+        fn ensure_open(&self) -> Result<()> {
+            self.inner.ensure_open()
+        }
+    }
+
+    fn refusing_directory(refuse: bool) -> Arc<RefusingDeleteDirectory> {
+        Arc::new(RefusingDeleteDirectory {
+            inner: RamDirectory::new(),
+            refuse: std::sync::atomic::AtomicBool::new(refuse),
+        })
+    }
+
+    fn offline_with_points(
+        config: &BKDConfig,
+        dir: Arc<dyn Directory>,
+        count: i32,
+    ) -> OfflinePointWriter {
+        let mut offline = OfflinePointWriter::new(config.clone(), dir, "bkd", "t").unwrap();
+        for i in 0..count {
+            let mut packed = vec![0u8; config.packed_bytes_length() as usize];
+            packed[3] = i as u8;
+            offline.append(&PointValue::new(packed, i)).unwrap();
+        }
+        offline.close().unwrap();
+        offline
+    }
+
+    /// rmp #266: `OfflinePointWriter.destroy()` is `tempDir.deleteFile(name)`
+    /// (`OfflinePointWriter.java:121-124`), so a failed delete is the
+    /// caller's error, not swallowed.
+    #[test]
+    fn offline_point_writer_destroy_propagates_a_failed_delete() {
+        let config = BKDConfig::of(1, 1, 4, 8).unwrap();
+        let dir = refusing_directory(true);
+        let mut offline = offline_with_points(&config, Arc::clone(&dir) as Arc<dyn Directory>, 4);
+        let error = offline.destroy().expect_err("the delete was refused");
+        assert!(error.to_string().contains("refused"), "{error}");
+        assert!(dir.inner.list_all().unwrap().contains(&offline.name));
+
+        // Positive control: the same call deletes the file when allowed.
+        dir.refuse.store(false, std::sync::atomic::Ordering::SeqCst);
+        offline.destroy().expect("the delete succeeds");
+        assert!(!dir.inner.list_all().unwrap().contains(&offline.name));
+    }
+
+    /// rmp #266: `BKDWriter.switchToHeap` destroys the offline source inside
+    /// its `try`, so a failed delete reaches the `catch` and is reported
+    /// through `verifyChecksum` (`BKDWriter.java:1623-1637`).
+    #[test]
+    fn switch_to_heap_propagates_a_failed_delete_of_the_offline_source() {
+        let config = BKDConfig::of(1, 1, 4, 8).unwrap();
+        let dir = refusing_directory(true);
+        let writer = BKDWriter::new_default(
+            100,
+            Arc::clone(&dir) as Arc<dyn Directory>,
+            "bkd",
+            config.clone(),
+            16.0,
+            10,
+        )
+        .unwrap();
+        let mut offline = offline_with_points(&config, Arc::clone(&writer.temp_dir), 10);
+        let error = writer
+            .switch_to_heap(&mut offline)
+            .expect_err("the delete of the offline source was refused");
+        assert!(error.to_string().contains("refused"), "{error}");
+
+        // Positive control: allowed, the switch succeeds and the file is gone.
+        dir.refuse.store(false, std::sync::atomic::Ordering::SeqCst);
+        let mut offline = offline_with_points(&config, Arc::clone(&writer.temp_dir), 10);
+        let heap = writer.switch_to_heap(&mut offline).expect("switch to heap");
+        assert_eq!(heap.count(), 10);
+        assert!(!dir.inner.list_all().unwrap().contains(&offline.name));
+    }
+
     #[test]
     fn offline_point_writer_sorted_reader() {
         let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
@@ -6711,7 +6713,8 @@ mod tests {
             max: 150,
             found: Vec::new(),
         };
-        reader.intersect(&mut visitor).unwrap();
+        crate::index::point_values::intersect(&mut visitor, reader.point_tree().unwrap().as_mut())
+            .unwrap();
         visitor.found.sort();
         let expected_docs: Vec<i32> = expected
             .iter()
@@ -6728,7 +6731,8 @@ mod tests {
             value: 21,
             found: Vec::new(),
         };
-        reader.intersect(&mut exact).unwrap();
+        crate::index::point_values::intersect(&mut exact, reader.point_tree().unwrap().as_mut())
+            .unwrap();
         assert_eq!(exact.found, vec![3]);
 
         // Non-matching exact value: 20
@@ -6736,7 +6740,8 @@ mod tests {
             value: 20,
             found: Vec::new(),
         };
-        reader.intersect(&mut exact).unwrap();
+        crate::index::point_values::intersect(&mut exact, reader.point_tree().unwrap().as_mut())
+            .unwrap();
         assert!(exact.found.is_empty());
     }
 
@@ -6776,7 +6781,8 @@ mod tests {
             max_y: 90,
             found: Vec::new(),
         };
-        reader.intersect(&mut visitor).unwrap();
+        crate::index::point_values::intersect(&mut visitor, reader.point_tree().unwrap().as_mut())
+            .unwrap();
         visitor.found.sort();
         let expected_docs: Vec<i32> = expected
             .iter()
@@ -6835,7 +6841,8 @@ mod tests {
 
         // Recursive traversal (#125) — the inherent method.
         let mut v1 = RecordingVisitor::new(&qmin, &qmax, 2, 4);
-        reader.intersect(&mut v1).unwrap();
+        crate::index::point_values::intersect(&mut v1, reader.point_tree().unwrap().as_mut())
+            .unwrap();
         let recursive = v1.trace();
 
         // Cursor traversal (#119) — the `PointValues` trait default over
@@ -7189,7 +7196,8 @@ mod tests {
         let query_min = vec![0x00, 0x00, 0x00, 0x00, 0x15, 0x00, 0x00, 0x00];
         let query_max = vec![0xFF, 0xFF, 0xFF, 0xFF, 0x25, 0x00, 0x00, 0x00];
         let mut visitor = RecordingVisitor::new(&query_min, &query_max, 2, 4);
-        reader.intersect(&mut visitor).unwrap();
+        crate::index::point_values::intersect(&mut visitor, reader.point_tree().unwrap().as_mut())
+            .unwrap();
 
         // The decoded points must match what was written. Only point 1
         // (dim1 = 0x20) is inside the query dim1 range [0x15..0x25]; point 0
@@ -7269,7 +7277,11 @@ mod tests {
             let query_min = vec![5u8, 50u8];
             let query_max = vec![15u8, 60u8];
             let mut visitor = RecordingVisitor::new(&query_min, &query_max, 2, 1);
-            reader.intersect(&mut visitor).unwrap();
+            crate::index::point_values::intersect(
+                &mut visitor,
+                reader.point_tree().unwrap().as_mut(),
+            )
+            .unwrap();
             let trace = visitor.trace();
 
             // The refinement compare (the compare that follows the tree-level
@@ -7308,7 +7320,11 @@ mod tests {
             let query_min = vec![5u8, 5u8];
             let query_max = vec![15u8, 50u8];
             let mut visitor = RecordingVisitor::new(&query_min, &query_max, 2, 1);
-            reader.intersect(&mut visitor).unwrap();
+            crate::index::point_values::intersect(
+                &mut visitor,
+                reader.point_tree().unwrap().as_mut(),
+            )
+            .unwrap();
             let trace = visitor.trace();
 
             // The refinement compare must return INSIDE.
@@ -7351,7 +7367,11 @@ mod tests {
             let query_min = vec![5u8, 25u8];
             let query_max = vec![15u8, 35u8];
             let mut visitor = RecordingVisitor::new(&query_min, &query_max, 2, 1);
-            reader.intersect(&mut visitor).unwrap();
+            crate::index::point_values::intersect(
+                &mut visitor,
+                reader.point_tree().unwrap().as_mut(),
+            )
+            .unwrap();
             let trace = visitor.trace();
 
             // The refinement compare is the `compare` immediately before the
@@ -7436,7 +7456,8 @@ mod tests {
         let query_min = vec![50u8, 0u8];
         let query_max = vec![60u8, 255u8];
         let mut visitor = RecordingVisitor::new(&query_min, &query_max, 2, 1);
-        reader.intersect(&mut visitor).unwrap();
+        crate::index::point_values::intersect(&mut visitor, reader.point_tree().unwrap().as_mut())
+            .unwrap();
         let trace = visitor.trace();
 
         // The trace must contain `grow` then `visit_iter_v` (the bulk
@@ -7698,7 +7719,8 @@ mod tests {
             max: 120,
             found: Vec::new(),
         };
-        reader.intersect(&mut visitor).unwrap();
+        crate::index::point_values::intersect(&mut visitor, reader.point_tree().unwrap().as_mut())
+            .unwrap();
         visitor.found.sort();
 
         // Expected: docs whose values fall in [80, 120] = 84,91,98,105

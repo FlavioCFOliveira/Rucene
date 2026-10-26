@@ -101,7 +101,7 @@ pub(crate) fn score_entry_points(
         let ep = eps[i];
         visited.set(ep as usize);
         candidates.add(ep, score);
-        if accept_ords.map_or(true, |b| b.get(ep as usize)) {
+        if accept_ords.map_or(Ok(true), |b| b.try_get(ep as usize))? {
             results.collect(ep, score);
         }
     }

@@ -606,7 +606,7 @@ impl<'a> DocIdSetIterator for DocValuesFieldUpdatesIterator<'a> {
                 && single
                     .has_no_value
                     .as_ref()
-                    .map_or(true, |has_no_value| !has_no_value.get(self.doc as usize));
+                    .is_none_or(|has_no_value| !has_no_value.get(self.doc as usize));
             return Ok(self.doc);
         }
         if self.idx >= self.size {

@@ -17,18 +17,9 @@ use crate::util::Bits;
 
 /// How many bits each quantized component occupies, and how they are packed.
 ///
-/// Equivalent to `QuantizedByteVectorValues.ScalarEncoding`.
-///
-/// **Divergence from Lucene 10.5.0.** Java declares five encodings; this port
-/// models the three symmetric ones. The two missing ones,
-/// `SINGLE_BIT_QUERY_NIBBLE` (wire number 3) and `DIBIT_QUERY_NIBBLE` (wire
-/// number 4), quantize a query to four bits while quantizing a document to one
-/// or two, so they need the asymmetric query path
-/// (`OptimizedScalarQuantizer.packAsBinary` / `transposeDibit` and the
-/// query-packed off-heap values) that this port does not have. A segment
-/// written by Lucene with either of them is therefore rejected by
-/// [`from_wire_number`](Self::from_wire_number) rather than misread. See
-/// `QuantizedByteVectorValues.java:60-112` in Lucene 10.5.0.
+/// Equivalent to `QuantizedByteVectorValues.ScalarEncoding`
+/// (`QuantizedByteVectorValues.java:35-185` in Lucene 10.5.0), with all five
+/// constants and their wire numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScalarEncoding {
     /// Each dimension is quantized to 8 bits and treated as an unsigned value.
@@ -42,6 +33,14 @@ pub enum ScalarEncoding {
     /// quantization: it produces an index the same size as
     /// [`UnsignedByte`](Self::UnsignedByte) but less accurate comparisons.
     SevenBit,
+    /// Each dimension is quantized to a single bit and packed into bytes; the
+    /// query vector is quantized to 4 bits per dimension.
+    ///
+    /// The most space-efficient encoding, at the cost of accuracy.
+    SingleBitQueryNibble,
+    /// Each dimension is quantized to 2 bits, stored as two striped bit
+    /// planes; the query vector is quantized to 4 bits per dimension.
+    DibitQueryNibble,
 }
 
 impl std::fmt::Display for ScalarEncoding {
@@ -50,34 +49,70 @@ impl std::fmt::Display for ScalarEncoding {
     /// constant names are reproduced here rather than the Rust variant names
     /// (`UNSIGNED_BYTE`, not `UnsignedByte`).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::UnsignedByte => "UNSIGNED_BYTE",
-            Self::PackedNibble => "PACKED_NIBBLE",
-            Self::SevenBit => "SEVEN_BIT",
-        })
+        f.write_str(self.name())
     }
 }
 
 impl ScalarEncoding {
+    /// Every constant, in Java's declaration order.
+    ///
+    /// Equivalent to `ScalarEncoding.values()`.
+    pub const VALUES: [ScalarEncoding; 5] = [
+        Self::UnsignedByte,
+        Self::PackedNibble,
+        Self::SevenBit,
+        Self::SingleBitQueryNibble,
+        Self::DibitQueryNibble,
+    ];
+
+    /// Returns the Java constant name.
+    ///
+    /// Equivalent to `Enum.name()`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::UnsignedByte => "UNSIGNED_BYTE",
+            Self::PackedNibble => "PACKED_NIBBLE",
+            Self::SevenBit => "SEVEN_BIT",
+            Self::SingleBitQueryNibble => "SINGLE_BIT_QUERY_NIBBLE",
+            Self::DibitQueryNibble => "DIBIT_QUERY_NIBBLE",
+        }
+    }
+
     /// Returns how many bits one component occupies.
     ///
     /// Equivalent to `ScalarEncoding.getBits()`.
     pub fn get_bits(self) -> u8 {
         match self {
             Self::UnsignedByte => 8,
-            Self::SevenBit => 7,
             Self::PackedNibble => 4,
+            Self::SevenBit => 7,
+            Self::SingleBitQueryNibble => 1,
+            Self::DibitQueryNibble => 2,
         }
     }
 
-    /// Returns how many bytes a vector of `dimension` components occupies.
+    /// Returns how many bytes a packed document vector of `dimension`
+    /// components occupies.
     ///
-    /// Equivalent to `ScalarEncoding.getDocLength(int)`.
+    /// Rust-only convenience kept for its callers; it is
+    /// [`get_doc_packed_length`](Self::get_doc_packed_length).
     pub fn get_doc_length(self, dimension: usize) -> usize {
-        match self {
-            Self::PackedNibble => dimension.div_ceil(2),
-            _ => dimension,
-        }
+        self.get_doc_packed_length(dimension as i32).max(0) as usize
+    }
+
+    /// Returns the encoding whose document width is `bits`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when no encoding has that
+    /// width, as Java throws `IllegalArgumentException`.
+    ///
+    /// Equivalent to `ScalarEncoding.fromNumBits(int)`.
+    pub fn from_num_bits(bits: i32) -> Result<Self> {
+        Self::VALUES
+            .into_iter()
+            .find(|encoding| i32::from(encoding.get_bits()) == bits)
+            .ok_or_else(|| LuceneError::IllegalArgument(format!("No encoding for {bits} bits")))
     }
 
     /// Returns the encoding a wire number names, or `None` when no encoding
@@ -89,19 +124,16 @@ impl ScalarEncoding {
     ///
     /// Equivalent to `QuantizedByteVectorValues.ScalarEncoding.fromWireNumber(int)`.
     pub fn from_wire_number(wire_number: i32) -> Option<Self> {
-        match wire_number {
-            0 => Some(Self::UnsignedByte),
-            1 => Some(Self::PackedNibble),
-            2 => Some(Self::SevenBit),
-            _ => None,
-        }
+        Self::VALUES
+            .into_iter()
+            .find(|encoding| encoding.get_wire_number() == wire_number)
     }
 
     /// Returns the number used to identify this encoding on the wire.
     ///
-    /// The values are Lucene's own and were measured from
-    /// `lucene-core-10.5.0.jar`: `UNSIGNED_BYTE` is 0, `PACKED_NIBBLE` is 1 and
-    /// `SEVEN_BIT` is 2.
+    /// The values are Lucene's own (`QuantizedByteVectorValues.java:37-64`):
+    /// `UNSIGNED_BYTE` 0, `PACKED_NIBBLE` 1, `SEVEN_BIT` 2,
+    /// `SINGLE_BIT_QUERY_NIBBLE` 3 and `DIBIT_QUERY_NIBBLE` 4.
     ///
     /// Equivalent to `QuantizedByteVectorValues.ScalarEncoding.getWireNumber()`.
     pub fn get_wire_number(self) -> i32 {
@@ -109,20 +141,18 @@ impl ScalarEncoding {
             Self::UnsignedByte => 0,
             Self::PackedNibble => 1,
             Self::SevenBit => 2,
+            Self::SingleBitQueryNibble => 3,
+            Self::DibitQueryNibble => 4,
         }
     }
 
     /// Returns how many bits one component of a *query* vector occupies.
     ///
-    /// Every encoding this port models quantizes queries exactly as it
-    /// quantizes documents, so this is [`get_bits`](Self::get_bits).
-    ///
     /// Equivalent to `ScalarEncoding.getQueryBits()`.
     pub fn get_query_bits(self) -> u8 {
         match self {
-            Self::UnsignedByte => 8,
-            Self::SevenBit => 7,
-            Self::PackedNibble => 4,
+            Self::SingleBitQueryNibble | Self::DibitQueryNibble => 4,
+            other => other.get_bits(),
         }
     }
 
@@ -134,7 +164,8 @@ impl ScalarEncoding {
         self.get_bits() != self.get_query_bits()
     }
 
-    /// Returns how many components of a document vector share one byte.
+    /// Returns how many bits one component of a document vector takes in the
+    /// packed form.
     ///
     /// This is not the same as [`get_bits`](Self::get_bits): `SevenBit` stores
     /// seven significant bits in a whole byte, so it packs eight bits per
@@ -143,35 +174,59 @@ impl ScalarEncoding {
     /// Equivalent to `ScalarEncoding.getDocBitsPerDim()`.
     pub fn get_doc_bits_per_dim(self) -> i32 {
         match self {
-            Self::UnsignedByte => 8,
-            Self::SevenBit => 8,
+            Self::UnsignedByte | Self::SevenBit => 8,
             Self::PackedNibble => 4,
+            Self::SingleBitQueryNibble => 1,
+            Self::DibitQueryNibble => 2,
         }
     }
 
-    /// Returns how many components of a query vector share one byte.
+    /// Returns how many bits one component of a query vector takes in the
+    /// packed form.
     ///
     /// Equivalent to `ScalarEncoding.getQueryBitsPerDim()`.
     pub fn get_query_bits_per_dim(self) -> i32 {
-        self.get_doc_bits_per_dim()
+        match self {
+            Self::SingleBitQueryNibble | Self::DibitQueryNibble => 4,
+            other => other.get_doc_bits_per_dim(),
+        }
     }
 
     /// Returns `dimensions` rounded up so that the packed vector fills whole
     /// bytes.
     ///
-    /// Equivalent to `ScalarEncoding.getDiscreteDimensions(int)`.
+    /// Equivalent to `ScalarEncoding.getDiscreteDimensions(int)`, including the
+    /// override `DIBIT_QUERY_NIBBLE` declares
+    /// (`QuantizedByteVectorValues.java:66-78`), which aligns the documents as
+    /// single-bit striping would.
     pub fn get_discrete_dimensions(self, dimensions: i32) -> i32 {
         let bits_per_dim = self.get_doc_bits_per_dim();
-        let total_bits = dimensions * bits_per_dim;
-        (total_bits + 7) / 8 * 8 / bits_per_dim
+        let query_bits_per_dim = self.get_query_bits_per_dim();
+        if self == Self::DibitQueryNibble {
+            let query_discretized = (dimensions * 4 + 7) / 8 * 8 / 4;
+            let doc_discretized = (dimensions + 7) / 8 * 8;
+            return query_discretized.max(doc_discretized);
+        }
+        if !self.is_asymmetric() {
+            let total_bits = dimensions * bits_per_dim;
+            return (total_bits + 7) / 8 * 8 / bits_per_dim;
+        }
+        let query_discretized = (dimensions * query_bits_per_dim + 7) / 8 * 8 / query_bits_per_dim;
+        let doc_discretized = (dimensions * bits_per_dim + 7) / 8 * 8 / bits_per_dim;
+        query_discretized.max(doc_discretized)
     }
 
     /// Returns how many bytes a packed document vector of `dimensions`
     /// components occupies.
     ///
-    /// Equivalent to `ScalarEncoding.getDocPackedLength(int)`.
+    /// Equivalent to `ScalarEncoding.getDocPackedLength(int)`, including the
+    /// `DIBIT_QUERY_NIBBLE` override, which stores two striped single-bit
+    /// planes (`QuantizedByteVectorValues.java:80-85`).
     pub fn get_doc_packed_length(self, dimensions: i32) -> i32 {
         let discretized = self.get_discrete_dimensions(dimensions);
+        if self == Self::DibitQueryNibble {
+            return 2 * ((discretized + 7) / 8);
+        }
         let total_bits = discretized * self.get_doc_bits_per_dim();
         (total_bits + 7) / 8
     }

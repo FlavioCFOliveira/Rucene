@@ -203,7 +203,7 @@ impl AbstractHnswGraphSearcher for FilteredHnswGraphSearcher {
                 if self.visited.get_and_set(friend_ord as usize) {
                     continue;
                 }
-                if accept_ords.get(friend_ord as usize) {
+                if accept_ords.try_get(friend_ord as usize)? {
                     to_score.add(friend_ord);
                 } else {
                     to_explore.add(friend_ord);
@@ -245,7 +245,7 @@ impl AbstractHnswGraphSearcher for FilteredHnswGraphSearcher {
                             continue;
                         }
                         total_explored += 1;
-                        if accept_ords.get(friend_of_a_friend_ord as usize) {
+                        if accept_ords.try_get(friend_of_a_friend_ord as usize)? {
                             to_score.add(friend_of_a_friend_ord);
                         // If we have YET to find a minimum number of candidates, we
                         // will continue to explore until our max.

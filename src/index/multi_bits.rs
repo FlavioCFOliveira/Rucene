@@ -99,6 +99,22 @@ impl Bits for BitsSlice {
         self.parent.get(index + self.start)
     }
 
+    /// Forwards to the wrapped bits' `try_get`, so that an error they raise
+    /// (`ExitableDirectoryReader.java:359-387`, whose `get` throws through
+    /// every wrapper that delegates to it) is not swallowed here.
+    ///
+    /// # Panics
+    ///
+    /// As [`get`](Self::get).
+    fn try_get(&self, index: usize) -> Result<bool> {
+        assert!(
+            index < self.length,
+            "index {index} out of bounds for slice of length {}",
+            self.length
+        );
+        self.parent.try_get(index + self.start)
+    }
+
     fn length(&self) -> usize {
         self.length
     }
@@ -251,6 +267,34 @@ impl Bits for MultiBits {
                 debug_assert!(self.check_length(reader, doc));
                 let start = self.starts[reader] as usize;
                 bits.get(doc - start)
+            }
+        }
+    }
+
+    /// Forwards to the wrapped bits' `try_get`, so that an error they raise
+    /// (`ExitableDirectoryReader.java:359-387`, whose `get` throws through
+    /// every wrapper that delegates to it) is not swallowed here.
+    ///
+    /// # Panics
+    ///
+    /// As [`get`](Self::get).
+    fn try_get(&self, doc: usize) -> Result<bool> {
+        let length = self.length();
+        assert!(
+            doc < length,
+            "doc {doc} out of bounds for reader with maxDoc {length}"
+        );
+        let reader = reader_util::sub_index(doc as i32, &self.starts);
+        let sub = self
+            .subs
+            .get(reader)
+            .expect("INVARIANT: doc < length() keeps sub_index() inside subs");
+        match sub {
+            None => Ok(self.default_value),
+            Some(bits) => {
+                debug_assert!(self.check_length(reader, doc));
+                let start = self.starts[reader] as usize;
+                bits.try_get(doc - start)
             }
         }
     }

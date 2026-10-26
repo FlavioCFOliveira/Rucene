@@ -108,10 +108,14 @@ impl OrdToDocDISIReaderConfiguration {
         self.docs_with_field_offset == -1
     }
 
-    /// Writes the doc-id encoding metadata for a vector field.
+    /// Writes the doc-id encoding metadata for a vector field, with the
+    /// caller's `direct_monotonic_block_shift` for the ord-to-doc mapping.
     ///
-    /// Equivalent to `OrdToDocDISIReaderConfiguration.writeStoredMeta`.
+    /// Equivalent to `OrdToDocDISIReaderConfiguration.writeStoredMeta(int,
+    /// IndexOutput, IndexOutput, int, int, DocsWithFieldSet)`
+    /// (`OrdToDocDISIReaderConfiguration.java:68-110`).
     pub fn write_stored_meta(
+        direct_monotonic_block_shift: i32,
         meta_out: &mut dyn IndexOutput,
         vector_data: &mut dyn IndexOutput,
         count: i32,
@@ -141,12 +145,12 @@ impl OrdToDocDISIReaderConfiguration {
 
             let start = vector_data.file_pointer();
             meta_out.write_long(start)?;
-            meta_out.write_v_int(DIRECT_MONOTONIC_BLOCK_SHIFT)?;
+            meta_out.write_v_int(direct_monotonic_block_shift)?;
             let mut writer = DirectMonotonicWriter::new(
                 meta_out,
                 vector_data,
                 count as i64,
-                DIRECT_MONOTONIC_BLOCK_SHIFT,
+                direct_monotonic_block_shift,
             )?;
             let mut iter = docs_with_field.iterator()?;
             while iter.next_doc()? != NO_MORE_DOCS {

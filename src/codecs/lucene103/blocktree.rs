@@ -32,7 +32,9 @@ use crate::index::SegmentInfo;
 use crate::store::{
     ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput, IndexOutput,
 };
-use crate::util::compress::{LowercaseAsciiCompression, Lz4, Lz4HashTable};
+use crate::util::compress::{
+    HighCompressionHashTable, LowercaseAsciiCompression, Lz4, Lz4HashTable,
+};
 use crate::util::{BytesRef, BytesRefBuilder, FixedBitSet, StringHelper};
 
 // -----------------------------------------------------------------------------
@@ -1290,6 +1292,10 @@ struct TermsWriter<'a> {
     meta_writer: ByteBuffersDataOutput,
     spare_writer: ByteBuffersDataOutput,
     spare_bytes: Vec<u8>,
+    /// Created lazily on the field's first LZ4-compressed block and owned by
+    /// this field's writer, as `TermsWriter.compressionHashTable`
+    /// (`Lucene103BlockTreeTermsWriter.java:901-902, 1122`): each field
+    /// starts with a fresh table.
     compression_hash_table: Option<Box<dyn Lz4HashTable>>,
     terms_out: &'a mut dyn IndexOutput,
     index_out: &'a mut dyn IndexOutput,
@@ -1307,7 +1313,6 @@ impl<'a> TermsWriter<'a> {
         terms_out: &'a mut dyn IndexOutput,
         index_out: &'a mut dyn IndexOutput,
         scratch_bytes: &'a mut ByteBuffersDataOutput,
-        compression_hash_table: Option<Box<dyn Lz4HashTable>>,
     ) -> Self {
         let has_freqs = field_info.index_options != IndexOptions::DOCS;
         Self {
@@ -1330,7 +1335,7 @@ impl<'a> TermsWriter<'a> {
             meta_writer: ByteBuffersDataOutput::new_resettable_instance(),
             spare_writer: ByteBuffersDataOutput::new_resettable_instance(),
             spare_bytes: Vec::new(),
-            compression_hash_table,
+            compression_hash_table: None,
             terms_out,
             index_out,
             scratch_bytes,
@@ -1614,9 +1619,54 @@ impl<'a> TermsWriter<'a> {
             self.finish_term_stats()?;
         }
 
-        // Suffix compression (disabled in this checkpoint: always no compression).
-        let compression_alg = CompressionAlgorithm::NoCompression;
+        // Write suffixes byte[] blob to terms dict output, either uncompressed,
+        // compressed with LZ4 or with LowercaseAsciiCompression
+        // (`Lucene103BlockTreeTermsWriter.java:885-922`).
+        let mut compression_alg = CompressionAlgorithm::NoCompression;
         let suffix_len = self.suffix_writer.length();
+        // If there are 2 suffix bytes or less per term, then we don't bother
+        // compressing as suffixes are unlikely what makes the terms dictionary
+        // large, and it also tends to be frequently the case for dense IDs like
+        // auto-increment IDs, so not compressing in that case helps not hurt ID
+        // lookups by too much. We also only start compressing when the prefix
+        // length is greater than 2 since blocks whose prefix length is 1 or 2
+        // always all get visited when running a fuzzy query whose max number of
+        // edits is 2.
+        if suffix_len as i64 > 2 * num_entries as i64 && prefix_length > 2 {
+            // LZ4 inserts references whenever it sees duplicate strings of 4
+            // chars or more, so only try it out if the average suffix length is
+            // greater than 6.
+            if suffix_len as i64 > 6 * num_entries as i64 {
+                let hash_table = self
+                    .compression_hash_table
+                    .get_or_insert_with(|| Box::new(HighCompressionHashTable::new()));
+                Lz4::compress(
+                    self.suffix_writer.bytes(),
+                    0,
+                    suffix_len,
+                    &mut self.spare_writer,
+                    hash_table.as_mut(),
+                )?;
+                if self.spare_writer.size() < suffix_len - (suffix_len >> 2) {
+                    // LZ4 saved more than 25%, go for it.
+                    compression_alg = CompressionAlgorithm::Lz4;
+                }
+            }
+            if compression_alg == CompressionAlgorithm::NoCompression {
+                self.spare_writer.reset();
+                if self.spare_bytes.len() < suffix_len {
+                    self.spare_bytes = vec![0u8; crate::util::ArrayUtil::oversize(suffix_len, 1)];
+                }
+                if LowercaseAsciiCompression::compress(
+                    self.suffix_writer.bytes(),
+                    suffix_len,
+                    &mut self.spare_bytes,
+                    &mut self.spare_writer,
+                )? {
+                    compression_alg = CompressionAlgorithm::LowercaseAscii;
+                }
+            }
+        }
 
         let mut token = (suffix_len as i64) << 3;
         if is_leaf_block {
@@ -1816,7 +1866,6 @@ pub struct Lucene103BlockTreeTermsWriter<'a> {
     fields: Vec<Vec<u8>>,
     closed: bool,
     scratch_bytes: ByteBuffersDataOutput,
-    compression_hash_table: Option<Box<dyn Lz4HashTable>>,
 }
 
 impl<'a> Lucene103BlockTreeTermsWriter<'a> {
@@ -1897,7 +1946,6 @@ impl<'a> Lucene103BlockTreeTermsWriter<'a> {
             fields: Vec::new(),
             closed: false,
             scratch_bytes: ByteBuffersDataOutput::new_resettable_instance(),
-            compression_hash_table: None,
         })
     }
 
@@ -1995,7 +2043,7 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
             debug_assert!(
                 last_field
                     .as_deref()
-                    .map_or(true, |last| last < field.as_str()),
+                    .is_none_or(|last| last < field.as_str()),
                 "fields must arrive in increasing order: {last_field:?} then {field}"
             );
             let Some(terms) = fields.terms(&field)? else {
@@ -2018,7 +2066,6 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
                 self.terms_out.as_mut(),
                 self.index_out.as_mut(),
                 &mut self.scratch_bytes,
-                self.compression_hash_table.take(),
             );
             while let Some(term) = terms_enum.next()? {
                 terms_writer.write(&term, &mut *terms_enum, postings_writer, norms)?;
@@ -2026,7 +2073,6 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
             if let Some(field_meta) = terms_writer.finish(postings_writer)? {
                 self.fields.push(field_meta);
             }
-            self.compression_hash_table = terms_writer.compression_hash_table;
             last_field = Some(field);
         }
         Ok(())

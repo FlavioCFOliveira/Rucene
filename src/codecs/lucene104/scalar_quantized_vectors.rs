@@ -192,6 +192,12 @@ pub struct OffHeapScalarQuantizedVectorValues {
     corrections: QuantizationResult,
     /// Which ordinal `vector` holds, or `-1`.
     loaded_ord: i32,
+    /// Whether these are the query-width copies an asymmetric encoding writes
+    /// for merge-time scoring, rather than the stored documents.
+    ///
+    /// Equivalent to `OffHeapScalarQuantizedVectorValues.isQuerySide`
+    /// (`OffHeapScalarQuantizedVectorValues.java:56,77-104`).
+    is_query_side: bool,
 }
 
 impl std::fmt::Debug for OffHeapScalarQuantizedVectorValues {
@@ -224,7 +230,23 @@ impl OffHeapScalarQuantizedVectorValues {
         } else {
             Some(read_ord_to_doc_reader(slice.as_ref(), &entry.ord_to_doc)?)
         };
-        Ok(Self::load_with_ord_to_doc(entry, slice, ord_to_doc))
+        Ok(Self::load_with_ord_to_doc(entry, slice, ord_to_doc, false))
+    }
+
+    /// Opens the dense, query-side values an asymmetric encoding writes into a
+    /// temporary file at merge time: `size` vectors packed at the *query*
+    /// width, each followed by its corrections, starting at offset 0.
+    ///
+    /// Equivalent to `new OffHeapScalarQuantizedVectorValues.DenseOffHeapVectorValues(true, …)`
+    /// (`Lucene104ScalarQuantizedVectorsReader.java:498-509`).
+    fn load_query_side(entry: &FieldEntry, size: i32, slice: Box<dyn IndexInput>) -> Self {
+        let mut query_entry = entry.clone();
+        query_entry.size = size;
+        query_entry.vector_data_offset = 0;
+        query_entry.ord_to_doc.size = size;
+        // A dense configuration: the ordinal is the document id.
+        query_entry.ord_to_doc.docs_with_field_offset = -1;
+        Self::load_with_ord_to_doc(query_entry, slice, None, true)
     }
 
     /// As [`load`](Self::load), with the sparse ordinal-to-document reader
@@ -233,11 +255,16 @@ impl OffHeapScalarQuantizedVectorValues {
         entry: FieldEntry,
         slice: Box<dyn IndexInput>,
         ord_to_doc: Option<Arc<SharedDirectMonotonicReader>>,
+        is_query_side: bool,
     ) -> Self {
-        let byte_size = entry.byte_size();
-        let dim_bytes = entry
-            .scalar_encoding
-            .get_doc_length(entry.dimension.max(0) as usize);
+        let dimension = entry.dimension.max(0);
+        let dim_bytes = if is_query_side {
+            entry.scalar_encoding.get_query_packed_length(dimension)
+        } else {
+            entry.scalar_encoding.get_doc_packed_length(dimension)
+        }
+        .max(0) as usize;
+        let byte_size = dim_bytes + 3 * std::mem::size_of::<f32>() + std::mem::size_of::<i32>();
         let quantizer = OptimizedScalarQuantizer::new(entry.similarity_function);
         Self {
             entry,
@@ -253,6 +280,7 @@ impl OffHeapScalarQuantizedVectorValues {
                 quantized_component_sum: 0,
             },
             loaded_ord: -1,
+            is_query_side,
         }
     }
 
@@ -318,12 +346,11 @@ impl OffHeapScalarQuantizedVectorValues {
     ///
     /// Equivalent to `OffHeapScalarQuantizedVectorValues.getVectorByteLength()`,
     /// which returns `vectorValue.length` — the buffer sized to
-    /// `encoding.getDocPackedLength(dimension)` in the constructor. It is not
+    /// `encoding.getDocPackedLength(dimension)` in the constructor, or
+    /// `getQueryPackedLength(dimension)` for query-side values. It is not
     /// the same as [`FieldEntry::byte_size`], which is the whole on-disk stride.
     pub fn get_vector_byte_length(&self) -> i32 {
-        self.entry
-            .scalar_encoding
-            .get_doc_packed_length(self.entry.dimension.max(0))
+        self.vector.len() as i32
     }
 
     /// Returns a second view over the same vectors, so that two ordinals can be
@@ -339,6 +366,7 @@ impl OffHeapScalarQuantizedVectorValues {
             self.entry.clone(),
             self.slice.clone_input()?,
             self.ord_to_doc.clone(),
+            self.is_query_side,
         ))
     }
 
@@ -777,6 +805,18 @@ impl FloatVectorValues for OffHeapScalarQuantizedFloatVectorValues {
                 OffHeapScalarQuantizedVectorValues::unpack_nibbles(&packed, &mut unpacked)?;
                 unpacked
             }
+            // Java unpacks into `new byte[dimension]`
+            // (`OffHeapScalarQuantizedFloatVectorValues.java:96,125-128`).
+            ScalarEncoding::SingleBitQueryNibble => {
+                let mut unpacked = vec![0u8; dims];
+                OptimizedScalarQuantizer::unpack_binary(&packed, &mut unpacked);
+                unpacked
+            }
+            ScalarEncoding::DibitQueryNibble => {
+                let mut unpacked = vec![0u8; dims];
+                OptimizedScalarQuantizer::untranspose_dibit(&packed, &mut unpacked);
+                unpacked
+            }
         };
         let result = QuantizationResult {
             lower_interval: corrective[0],
@@ -831,11 +871,17 @@ impl FloatVectorValues for OffHeapScalarQuantizedFloatVectorValues {
 /// Equivalent to
 /// `org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorScorer`.
 ///
-/// **Divergence from Lucene 10.5.0.** Java's scorer chooses between a scalar
-/// and a vectorised inner loop through `VectorizationProvider`, and quantizes
-/// the query with `OptimizedScalarQuantizer` bound to the field's centroid.
-/// This port keeps the scalar loop and takes the already quantized query, since
-/// the crate has no vectorisation provider; the scores are the same.
+/// **Divergence from Lucene 10.5.0.** Two, both forced. First, Java's
+/// `VectorUtil` picks a vectorised inner loop through `VectorizationProvider`;
+/// this crate's `VectorUtil` is scalar-only (rmp #165), which yields the same
+/// scores. Second, the [`FlatVectorsScorer`] impl forwards all four methods to
+/// the non-quantized delegate, without the `instanceof
+/// QuantizedByteVectorValues` branch of
+/// `Lucene104ScalarQuantizedVectorScorer.java:47-101`, because a
+/// `Box<dyn FloatVectorValues>` cannot be narrowed to the quantized type; the
+/// reader, which knows it holds quantized values, calls the quantized branch
+/// directly ([`Self::get_random_vector_scorer_quantized`],
+/// [`Self::get_random_vector_scorer_supplier_quantized`]).
 pub struct Lucene104ScalarQuantizedVectorScorer {
     non_quantized_delegate: Arc<dyn FlatVectorsScorer>,
 }
@@ -869,15 +915,6 @@ impl Lucene104ScalarQuantizedVectorScorer {
     /// vector have different lengths, and whatever reading the stored vector
     /// and its corrections raises.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java dispatches over five
-    /// `ScalarEncoding` constants; this crate's `ScalarEncoding` models the
-    /// three symmetric ones, so the `SINGLE_BIT_QUERY_NIBBLE` and
-    /// `DIBIT_QUERY_NIBBLE` arms — `VectorUtil.int4BitDotProduct` and
-    /// `VectorUtil.int4DibitDotProduct`, at
-    /// `Lucene104ScalarQuantizedVectorScorer.java:251-253` — have no variant to
-    /// match on. Everything else, including the query and document scales taken
-    /// from `SCALE_LUT`, is Lucene's arithmetic unchanged.
-    ///
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorScorer#quantizedScore`.
     pub fn quantized_score(
@@ -902,6 +939,12 @@ impl Lucene104ScalarQuantizedVectorScorer {
                 ScalarEncoding::PackedNibble => {
                     vector_util::int4_dot_product_single_packed(quantized_query, quantized_doc)?
                         as f32
+                }
+                ScalarEncoding::SingleBitQueryNibble => {
+                    vector_util::int4_bit_dot_product(quantized_query, quantized_doc)? as f32
+                }
+                ScalarEncoding::DibitQueryNibble => {
+                    vector_util::int4_dibit_dot_product(quantized_query, quantized_doc)? as f32
                 }
             }
         };
@@ -991,6 +1034,18 @@ impl Lucene104ScalarQuantizedVectorScorer {
         }
         let encoding = vector_values.get_scalar_encoding();
         let mut scratch = vec![0u8; encoding.get_discrete_dimensions(dimension).max(0) as usize];
+        // An asymmetric encoding packs the quantized query into its own buffer
+        // (`Lucene104ScalarQuantizedVectorScorer.java:69-74`).
+        let mut target_quantized = if encoding.is_asymmetric() {
+            Some(vec![
+                0u8;
+                encoding
+                    .get_query_packed_length(scratch.len() as i32)
+                    .max(0) as usize
+            ])
+        } else {
+            None
+        };
         // Java copies the target because `scalarQuantize` mutates its input.
         let mut copy = target.to_vec();
         if similarity_function == VectorSimilarityFunction::COSINE {
@@ -1010,13 +1065,20 @@ impl Lucene104ScalarQuantizedVectorScorer {
             encoding.get_query_bits(),
             &centroid,
         )?;
-        // The transposeHalfByte step Java takes for SINGLE_BIT_QUERY_NIBBLE and
-        // DIBIT_QUERY_NIBBLE has no counterpart here: this port models only the
-        // symmetric encodings, for which Java also leaves the scratch as is.
+        // For asymmetric encodings with a 4-bit query, the nibbles are
+        // transposed for fast scoring (`Lucene104ScalarQuantizedVectorScorer.java:84-89`).
+        if matches!(
+            encoding,
+            ScalarEncoding::SingleBitQueryNibble | ScalarEncoding::DibitQueryNibble
+        ) {
+            if let Some(packed) = target_quantized.as_mut() {
+                OptimizedScalarQuantizer::transpose_half_byte(&scratch, packed);
+            }
+        }
         Ok(Lucene104ScalarQuantizedRandomVectorScorer::new(
             similarity_function,
             encoding,
-            scratch,
+            target_quantized.unwrap_or(scratch),
             corrections,
             vector_values,
         ))
@@ -1278,8 +1340,8 @@ impl ScalarQuantizedVectorScorerSupplier {
     ) -> Result<Self> {
         if values.get_scalar_encoding().is_asymmetric() {
             return Err(LuceneError::IllegalState(format!(
-                "{:?} encoding is not supported for symmetric quantization",
-                values.get_scalar_encoding()
+                "{} encoding is not supported for symmetric quantization",
+                values.get_scalar_encoding().name()
             )));
         }
         let target_values = values.copy()?;
@@ -1310,6 +1372,125 @@ impl RandomVectorScorerSupplier for ScalarQuantizedVectorScorerSupplier {
 impl CloseableRandomVectorScorerSupplier for ScalarQuantizedVectorScorerSupplier {
     fn total_vector_count(&self) -> i32 {
         self.values.size()
+    }
+}
+
+/// Supplies merge-time scorers for an asymmetric encoding: each scoring
+/// ordinal is read from the query-width copies, and scored against the stored
+/// document vectors.
+///
+/// Equivalent to
+/// `Lucene104ScalarQuantizedVectorScorer.AsymmetricQuantizedRandomVectorScorerSupplier`
+/// (`Lucene104ScalarQuantizedVectorScorer.java:124-171`), built by
+/// `getRandomVectorScorerSupplier(VectorSimilarityFunction, QuantizedByteVectorValues, QuantizedByteVectorValues)`.
+pub struct AsymmetricQuantizedRandomVectorScorerSupplier {
+    query_vectors: OffHeapScalarQuantizedVectorValues,
+    target_vectors: OffHeapScalarQuantizedVectorValues,
+    similarity_function: VectorSimilarityFunction,
+}
+
+impl std::fmt::Debug for AsymmetricQuantizedRandomVectorScorerSupplier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AsymmetricQuantizedRandomVectorScorerSupplier")
+            .field("similarity_function", &self.similarity_function)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AsymmetricQuantizedRandomVectorScorerSupplier {
+    /// Creates the supplier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the target encoding is
+    /// symmetric, which Java asserts.
+    pub fn new(
+        query_vectors: OffHeapScalarQuantizedVectorValues,
+        target_vectors: OffHeapScalarQuantizedVectorValues,
+        similarity_function: VectorSimilarityFunction,
+    ) -> Result<Self> {
+        if !target_vectors.get_scalar_encoding().is_asymmetric() {
+            return Err(LuceneError::IllegalState(format!(
+                "{} encoding is not asymmetric",
+                target_vectors.get_scalar_encoding().name()
+            )));
+        }
+        Ok(Self {
+            query_vectors,
+            target_vectors,
+            similarity_function,
+        })
+    }
+}
+
+impl RandomVectorScorerSupplier for AsymmetricQuantizedRandomVectorScorerSupplier {
+    fn scorer(&self) -> Result<Box<dyn UpdateableRandomVectorScorer>> {
+        Ok(Box::new(AsymmetricQuantizedUpdateableScorer {
+            target_vectors: self.target_vectors.copy()?,
+            query_vectors: self.query_vectors.copy()?,
+            similarity_function: self.similarity_function,
+            vector: None,
+            query_corrections: None,
+        }))
+    }
+
+    fn copy(&self) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        Ok(Box::new(Self::new(
+            self.query_vectors.copy()?,
+            self.target_vectors.copy()?,
+            self.similarity_function,
+        )?))
+    }
+}
+
+/// The scorer [`AsymmetricQuantizedRandomVectorScorerSupplier`] hands out.
+///
+/// Equivalent to the anonymous `AbstractUpdateableRandomVectorScorer` of
+/// `AsymmetricQuantizedRandomVectorScorerSupplier.scorer()`.
+struct AsymmetricQuantizedUpdateableScorer {
+    target_vectors: OffHeapScalarQuantizedVectorValues,
+    query_vectors: OffHeapScalarQuantizedVectorValues,
+    similarity_function: VectorSimilarityFunction,
+    vector: Option<Vec<u8>>,
+    query_corrections: Option<QuantizationResult>,
+}
+
+impl RandomVectorScorer for AsymmetricQuantizedUpdateableScorer {
+    fn score(&mut self, node: i32) -> Result<f32> {
+        let (Some(vector), Some(query_corrections)) =
+            (self.vector.as_ref(), self.query_corrections)
+        else {
+            return Err(LuceneError::IllegalState(
+                "setScoringOrdinal was not called".to_string(),
+            ));
+        };
+        Lucene104ScalarQuantizedVectorScorer::quantized_score(
+            vector,
+            &query_corrections,
+            &mut self.target_vectors,
+            node,
+            self.similarity_function,
+        )
+    }
+
+    fn max_ord(&self) -> i32 {
+        self.target_vectors.size()
+    }
+
+    fn ord_to_doc(&self, ord: i32) -> i32 {
+        self.target_vectors.ord_to_doc(ord)
+    }
+
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.target_vectors.get_accept_ords(accept_docs)
+    }
+}
+
+impl UpdateableRandomVectorScorer for AsymmetricQuantizedUpdateableScorer {
+    fn set_scoring_ordinal(&mut self, node: i32) -> Result<()> {
+        self.vector = Some(self.query_vectors.vector_value(node)?.to_vec());
+        self.query_corrections = Some(self.query_vectors.get_corrective_terms(node)?);
+        Ok(())
     }
 }
 
@@ -1381,6 +1562,13 @@ impl UpdateableRandomVectorScorer for ScalarQuantizedUpdateableScorer {
                     &mut unpacked,
                 )?;
                 self.target_vector = Some(unpacked);
+            }
+            encoding
+            @ (ScalarEncoding::SingleBitQueryNibble | ScalarEncoding::DibitQueryNibble) => {
+                return Err(LuceneError::IllegalState(format!(
+                    "{} encoding is not supported for symmetric quantization",
+                    encoding.name()
+                )));
             }
         }
         self.target_corrective_terms = Some(self.target_values.get_corrective_terms(node)?);
@@ -1878,25 +2066,19 @@ impl Lucene104ScalarQuantizedVectorsReader {
     /// score candidates while a merge builds the new graph, or `None` when the
     /// segment has no quantized vectors for that field.
     ///
+    /// For an asymmetric encoding, every vector is quantized a second time at
+    /// the query width into a temporary `queries` file, and the supplier scores
+    /// those query-side copies against the stored documents; closing the
+    /// supplier deletes the file.
+    ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::UnsupportedOperation`] when the field uses an
-    /// asymmetric encoding — see the divergence below — and whatever opening
-    /// the values raises.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java has a second branch, taken when
-    /// `fi.scalarEncoding.isAsymmetric()`, that quantizes every vector a second
-    /// time at the query width into a temporary file and scores against that
-    /// (`Lucene104ScalarQuantizedVectorsReader.java:467-522`). It needs
-    /// `OffHeapScalarQuantizedVectorValues.DenseOffHeapVectorValues` over
-    /// query-packed data, which this port does not have, and it is unreachable
-    /// here in any case: every constant of this crate's `ScalarEncoding`
-    /// quantizes queries and documents to the same width, so
-    /// [`is_asymmetric`](ScalarEncoding::is_asymmetric) is always false. The
-    /// branch therefore reports the missing piece rather than guessing.
+    /// Returns whatever opening the values, writing or opening the temporary
+    /// file raises.
     ///
     /// Equivalent to
-    /// `org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorsReader#getRandomVectorScorerSupplierForMerge`.
+    /// `org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorsReader#getRandomVectorScorerSupplierForMerge`
+    /// (`Lucene104ScalarQuantizedVectorsReader.java:453-524`).
     pub fn get_random_vector_scorer_supplier_for_merge(
         &self,
         field_info: &FieldInfo,
@@ -1916,12 +2098,79 @@ impl Lucene104ScalarQuantizedVectorsReader {
             )?;
             return Ok(Some(Box::new(supplier)));
         }
-        let _ = segment_write_state;
-        Err(LuceneError::UnsupportedOperation(format!(
-            "asymmetric merge scoring for field=\"{}\" needs a query-packed \
-             OffHeapScalarQuantizedVectorValues, which is not ported",
-            field_info.name
-        )))
+        let float_vector_values =
+            self.get_float_vector_values(&field_info.name)?
+                .ok_or_else(|| {
+                    LuceneError::IllegalState(format!(
+                        "field=\"{}\" has quantized vectors but no float vectors",
+                        field_info.name
+                    ))
+                })?;
+        let quantizer = OptimizedScalarQuantizer::new(field_info.vector_similarity_function);
+        let directory = Arc::clone(&segment_write_state.directory);
+        let mut temp_output = directory.create_temp_output(
+            &segment_write_state.segment_info.name,
+            "queries",
+            segment_write_state.context,
+        )?;
+        let temp_name = temp_output.name().to_string();
+        let written = (|| -> Result<DocsWithFieldSet> {
+            let docs_with_field = Self::write_binarized_query_data(
+                &vector_values,
+                scalar_encoding,
+                temp_output.as_mut(),
+                float_vector_values.as_ref(),
+                &quantizer,
+            )?;
+            crate::codecs::codec_util::write_footer(temp_output.as_mut())?;
+            temp_output.close()?;
+            Ok(docs_with_field)
+        })();
+        let docs_with_field = match written {
+            Ok(docs) => docs,
+            Err(error) => {
+                let _ = temp_output.close();
+                let _ = directory.delete_file(&temp_name);
+                return Err(error);
+            }
+        };
+        drop(temp_output);
+        let quantized_score_data_input =
+            directory.open_input(&temp_name, segment_write_state.context)?;
+        // Java hands `quantizedScoreDataInput` itself to the values and closes
+        // it from the supplier's close action. The values here own their
+        // input, so they read through a clone and the close action keeps the
+        // original to close (`Lucene104ScalarQuantizedVectorsReader.java:
+        // 490-521`). A failure on the way drops — closes — the input without
+        // masking the error, as Java's `closeWhileSuppressingExceptions`.
+        let values_input = quantized_score_data_input.clone_input()?;
+        let score_vector_values = OffHeapScalarQuantizedVectorValues::load_query_side(
+            fi,
+            docs_with_field.cardinality(),
+            values_input,
+        );
+        let total_vector_count = vector_values.size();
+        let mut quantized_score_data_input = Some(quantized_score_data_input);
+        let scorer_supplier = AsymmetricQuantizedRandomVectorScorerSupplier::new(
+            score_vector_values,
+            vector_values,
+            field_info.vector_similarity_function,
+        )?;
+        Ok(Some(Box::new(crate::util::hnsw::scorer::create(
+            Box::new(scorer_supplier),
+            total_vector_count,
+            Box::new(move || {
+                // `Lucene104ScalarQuantizedVectorsReader.java:512-515`:
+                // `IOUtils.close(quantizedScoreDataInput)` first, whose
+                // exception propagates and skips the deletion; then
+                // `IOUtils.deleteFilesIgnoringExceptions` on the temp file.
+                if let Some(mut input) = quantized_score_data_input.take() {
+                    input.close()?;
+                }
+                let _ = directory.delete_file(&temp_name);
+                Ok(())
+            }),
+        ))))
     }
 
     /// Quantizes every vector of a field a second time, at the *query* width,
@@ -2080,16 +2329,15 @@ impl KnnVectorsReader for Lucene104ScalarQuantizedVectorsReader {
             return Ok(());
         };
         let accepted = accept_docs.bits()?;
-        let accepted_ords = scorer.get_accept_ords(accepted);
+        let accepted_ords = scorer.get_accept_ords(accepted.as_deref());
         let mut ords = [0i32; EXHAUSTIVE_BULK_SCORE_ORDS];
         let mut scores = [0f32; EXHAUSTIVE_BULK_SCORE_ORDS];
         let mut num_ords = 0usize;
         let num_vectors = scorer.max_ord();
         for i in 0..num_vectors {
-            if accepted_ords
-                .as_deref()
-                .is_some_and(|accepted| !accepted.get(i as usize))
-            {
+            if accepted_ords.as_deref().map_or(Ok(false), |accepted| {
+                accepted.try_get(i as usize).map(|a| !a)
+            })? {
                 continue;
             }
             if knn_collector.early_terminated() {
@@ -2290,14 +2538,9 @@ impl QuantizedVectorsReader for Lucene104ScalarQuantizedVectorsReader {
 /// The scalar-quantized vectors format.
 ///
 /// Equivalent to
-/// `org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorsFormat`.
-///
-/// **Divergence from Lucene 10.5.0.** Java's format extends `FlatVectorsFormat`
-/// and builds a reader and a writer that wrap a `Lucene99FlatVectorsFormat`
-/// delegate. This port carries the format's identity, its file names and its
-/// encoding choice, and reads the metadata through
-/// [`Lucene104ScalarQuantizedVectorsReader`]; plugging it in as a
-/// `FlatVectorsFormat` needs the writer half, which is the remaining piece.
+/// `org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorsFormat`:
+/// a [`FlatVectorsFormat`] whose reader and writer wrap a
+/// `Lucene99FlatVectorsFormat` delegate for the raw vectors.
 #[derive(Clone, Copy, Debug)]
 pub struct Lucene104ScalarQuantizedVectorsFormat {
     encoding: ScalarEncoding,
@@ -2633,7 +2876,9 @@ fn write_quantized_vectors(
     let mut scratch = vec![0u8; encoding.get_discrete_dimensions(dimension).max(0) as usize];
     let mut packed = match encoding {
         ScalarEncoding::UnsignedByte | ScalarEncoding::SevenBit => Vec::new(),
-        ScalarEncoding::PackedNibble => {
+        ScalarEncoding::PackedNibble
+        | ScalarEncoding::SingleBitQueryNibble
+        | ScalarEncoding::DibitQueryNibble => {
             vec![0u8; encoding.get_doc_packed_length(scratch.len() as i32).max(0) as usize]
         }
     };
@@ -2643,6 +2888,14 @@ fn write_quantized_vectors(
             ScalarEncoding::UnsignedByte | ScalarEncoding::SevenBit => &scratch[..],
             ScalarEncoding::PackedNibble => {
                 OffHeapScalarQuantizedVectorValues::pack_nibbles(&scratch, &mut packed)?;
+                &packed[..]
+            }
+            ScalarEncoding::SingleBitQueryNibble => {
+                OptimizedScalarQuantizer::pack_as_binary(&scratch, &mut packed);
+                &packed[..]
+            }
+            ScalarEncoding::DibitQueryNibble => {
+                OptimizedScalarQuantizer::transpose_dibit(&scratch, &mut packed);
                 &packed[..]
             }
         };
@@ -2697,6 +2950,7 @@ fn write_meta_entry(
         meta.write_int(centroid_dp.to_bits() as i32)?;
     }
     OrdToDocDISIReaderConfiguration::write_stored_meta(
+        DIRECT_MONOTONIC_BLOCK_SHIFT,
         meta,
         vector_data,
         count,
@@ -3673,7 +3927,9 @@ impl QuantizedFloatVectorValues {
         ];
         let packed = match encoding {
             ScalarEncoding::UnsignedByte | ScalarEncoding::SevenBit => Vec::new(),
-            ScalarEncoding::PackedNibble => {
+            ScalarEncoding::PackedNibble
+            | ScalarEncoding::SingleBitQueryNibble
+            | ScalarEncoding::DibitQueryNibble => {
                 vec![
                     0u8;
                     encoding
@@ -3711,6 +3967,12 @@ impl QuantizedFloatVectorValues {
             ScalarEncoding::PackedNibble => {
                 OffHeapScalarQuantizedVectorValues::pack_nibbles(&self.quantized, &mut self.packed)?
             }
+            ScalarEncoding::SingleBitQueryNibble => {
+                OptimizedScalarQuantizer::pack_as_binary(&self.quantized, &mut self.packed)
+            }
+            ScalarEncoding::DibitQueryNibble => {
+                OptimizedScalarQuantizer::transpose_dibit(&self.quantized, &mut self.packed)
+            }
             ScalarEncoding::UnsignedByte | ScalarEncoding::SevenBit => {}
         }
         Ok(())
@@ -3726,7 +3988,9 @@ impl QuantizedByteVectorValues for QuantizedFloatVectorValues {
         }
         Ok(match self.encoding {
             ScalarEncoding::UnsignedByte | ScalarEncoding::SevenBit => &self.quantized,
-            ScalarEncoding::PackedNibble => &self.packed,
+            ScalarEncoding::PackedNibble
+            | ScalarEncoding::SingleBitQueryNibble
+            | ScalarEncoding::DibitQueryNibble => &self.packed,
         })
     }
 
@@ -3951,7 +4215,9 @@ fn write_sorted_quantized_vectors(
     let mut scratch = vec![0u8; encoding.get_discrete_dimensions(dimension).max(0) as usize];
     let mut packed = match encoding {
         ScalarEncoding::UnsignedByte | ScalarEncoding::SevenBit => Vec::new(),
-        ScalarEncoding::PackedNibble => {
+        ScalarEncoding::PackedNibble
+        | ScalarEncoding::SingleBitQueryNibble
+        | ScalarEncoding::DibitQueryNibble => {
             vec![0u8; encoding.get_doc_packed_length(scratch.len() as i32).max(0) as usize]
         }
     };
@@ -3969,6 +4235,14 @@ fn write_sorted_quantized_vectors(
             ScalarEncoding::UnsignedByte | ScalarEncoding::SevenBit => &scratch[..],
             ScalarEncoding::PackedNibble => {
                 OffHeapScalarQuantizedVectorValues::pack_nibbles(&scratch, &mut packed)?;
+                &packed[..]
+            }
+            ScalarEncoding::SingleBitQueryNibble => {
+                OptimizedScalarQuantizer::pack_as_binary(&scratch, &mut packed);
+                &packed[..]
+            }
+            ScalarEncoding::DibitQueryNibble => {
+                OptimizedScalarQuantizer::transpose_dibit(&scratch, &mut packed);
                 &packed[..]
             }
         };

@@ -911,10 +911,10 @@ impl CheckIndex {
         let mut newest: Option<Version> = None;
         for si in last_commit.iter() {
             let version = si.info.version();
-            if oldest.map_or(true, |oldest| !version.on_or_after(&oldest)) {
+            if oldest.is_none_or(|oldest| !version.on_or_after(&oldest)) {
                 oldest = Some(version);
             }
-            if newest.map_or(true, |newest| version.on_or_after(&newest)) {
+            if newest.is_none_or(|newest| version.on_or_after(&newest)) {
                 newest = Some(version);
             }
         }
@@ -2581,7 +2581,14 @@ fn check_doc_values(
 ) -> Result<()> {
     if fi.doc_values_skip_index_type() != DocValuesSkipIndexType::NONE {
         status.total_skipping_index += 1;
-        let mut skipper = dv_reader.get_skipper(fi)?;
+        // Java dereferences the result unchecked (`CheckIndex.java:3910-3912`,
+        // `:3397-3400`), so a missing skipper is Java's `NullPointerException`.
+        let mut skipper = dv_reader.get_skipper(fi)?.ok_or_else(|| {
+            LuceneError::IllegalState(format!(
+                "field \"{}\" declares a skip index but its producer returned none",
+                fi.name
+            ))
+        })?;
         check_doc_value_skipper(fi, skipper.as_mut())?;
     }
     match fi.get_doc_values_type() {
@@ -5272,7 +5279,7 @@ pub fn test_term_vectors(
             );
             return Ok(());
         };
-        let vectors_reader = vectors_reader.get_merge_instance();
+        let mut vectors_reader = vectors_reader.get_merge_instance();
 
         for j in 0..reader.max_doc() {
             if (j & 0x03) == 0 {

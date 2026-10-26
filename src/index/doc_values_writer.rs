@@ -116,9 +116,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::doc_values::{
     BinaryDocValues, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
 };
-use crate::index::doc_values::{
-    DocValuesIterator, DocValuesSkipper, EmptyDocValuesSkipper, NumericDocValues,
-};
+use crate::index::doc_values::{DocValuesIterator, DocValuesSkipper, NumericDocValues};
 use crate::index::index_sorter::SorterDocMap;
 use crate::index::{DocValuesType, FieldInfo, IndexableField};
 use crate::search::bit_set_util;
@@ -319,6 +317,17 @@ impl DocValuesWriter {
 /// The float conversions are JLS numeric conversions (`float`→`long`,
 /// `double`→`long`), which saturate at the type bounds and map `NaN` to `0`;
 /// Rust's `as` casts are specified to do exactly that.
+/// The error a flush-time producer answers to `get_skipper`.
+///
+/// Java's flush-time producers extend `EmptyDocValuesProducer`, whose
+/// `getSkipper` throws `UnsupportedOperationException`
+/// (`index/EmptyDocValuesProducer.java:54-57`).
+fn unsupported_skipper() -> LuceneError {
+    LuceneError::UnsupportedOperation(
+        "a flush-time doc-values producer does not provide a doc-values skipper".to_string(),
+    )
+}
+
 fn java_long_value(value: &crate::document::NumericValue) -> i64 {
     match value {
         crate::document::NumericValue::Int(v) => i64::from(*v),
@@ -1378,8 +1387,11 @@ impl DocValuesProducer for BufferedNumericProducer {
         Err(self.unsupported("sorted set"))
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
-        Ok(Box::new(EmptyDocValuesSkipper))
+    /// Inherited from `EmptyDocValuesProducer.getSkipper`
+    /// (`index/EmptyDocValuesProducer.java:54-57`) by the flush-time producer
+    /// of the matching `*DocValuesWriter`: unsupported.
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        Err(unsupported_skipper())
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -1778,8 +1790,11 @@ impl DocValuesProducer for BufferedBinaryProducer {
         Err(self.unsupported("sorted set"))
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
-        Ok(Box::new(EmptyDocValuesSkipper))
+    /// Inherited from `EmptyDocValuesProducer.getSkipper`
+    /// (`index/EmptyDocValuesProducer.java:54-57`) by the flush-time producer
+    /// of the matching `*DocValuesWriter`: unsupported.
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        Err(unsupported_skipper())
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -1925,8 +1940,11 @@ impl DocValuesProducer for BufferedSortedProducer {
         Err(self.unsupported("sorted set"))
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
-        Ok(Box::new(EmptyDocValuesSkipper))
+    /// Inherited from `EmptyDocValuesProducer.getSkipper`
+    /// (`index/EmptyDocValuesProducer.java:54-57`) by the flush-time producer
+    /// of the matching `*DocValuesWriter`: unsupported.
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        Err(unsupported_skipper())
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -2115,8 +2133,11 @@ impl DocValuesProducer for BufferedSortedNumericProducer {
         Err(self.unsupported("sorted set"))
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
-        Ok(Box::new(EmptyDocValuesSkipper))
+    /// Inherited from `EmptyDocValuesProducer.getSkipper`
+    /// (`index/EmptyDocValuesProducer.java:54-57`) by the flush-time producer
+    /// of the matching `*DocValuesWriter`: unsupported.
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        Err(unsupported_skipper())
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -2218,8 +2239,11 @@ impl DocValuesProducer for BufferedSortedSetProducer {
         }
     }
 
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Box<dyn DocValuesSkipper>> {
-        Ok(Box::new(EmptyDocValuesSkipper))
+    /// Inherited from `EmptyDocValuesProducer.getSkipper`
+    /// (`index/EmptyDocValuesProducer.java:54-57`) by the flush-time producer
+    /// of the matching `*DocValuesWriter`: unsupported.
+    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+        Err(unsupported_skipper())
     }
 
     fn check_integrity(&self) -> Result<()> {

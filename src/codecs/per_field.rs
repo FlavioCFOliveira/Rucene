@@ -971,10 +971,16 @@ impl DocValuesProducer for DvFieldsReader {
         self.producer_for(field)?.get_sorted_set(field)
     }
 
+    /// Equivalent to `PerFieldDocValuesFormat.FieldsReader.getSkipper(FieldInfo)`
+    /// (`codecs/perfield/PerFieldDocValuesFormat.java:347-351`): `None` when no
+    /// producer serves the field, otherwise the delegate's answer.
     fn get_skipper(
         &self,
         field: &FieldInfo,
-    ) -> Result<Box<dyn super::doc_values::DocValuesSkipper>> {
+    ) -> Result<Option<Box<dyn super::doc_values::DocValuesSkipper>>> {
+        if !self.fields.contains_key(&field.number) {
+            return Ok(None);
+        }
         self.producer_for(field)?.get_skipper(field)
     }
 
