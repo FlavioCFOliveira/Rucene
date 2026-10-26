@@ -1798,10 +1798,10 @@ mod tests {
         let mut state = writer.new_term_state()?;
         // A norm of one for every document, as the flush hands the writer.
         let norms = crate::codecs::norms::NormsProducer::get_norms(
-            &crate::index::EmptyNormsProducer::new(max_doc),
+            &crate::index::indexing_chain::EmptyNormsProducer::new(max_doc),
             field_info,
         )?;
-        writer.start_term(Some(norms))?;
+        writer.start_term(norms)?;
         for (doc_idx, &doc_id) in postings.docs.iter().enumerate() {
             writer.start_doc(doc_id, postings.freqs[doc_idx])?;
             for &(pos, payload, start, end) in &postings.positions[doc_idx] {

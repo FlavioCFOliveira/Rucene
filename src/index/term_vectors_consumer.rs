@@ -129,22 +129,11 @@
 //!   (`TermVectorsConsumer.java:65`) and therefore leaves them out of
 //!   `IndexingChain.ramBytesUsed()`. That private counter is what sizes the
 //!   `FlushInfo` when the writer is created.
-//! * **The codec writer's own buffer is not accounted, and the gap is
-//!   unbounded.** Java keeps the writer in an `Accountable` field so that
-//!   `IndexingChain.ramBytesUsed()` adds `termVectorsWriter.accountable
-//!   .ramBytesUsed()` (`IndexingChain.java:1719-1724`), which the compressing
-//!   writer reports as `positionsBuf + startOffsetsBuf + lengthsBuf +
-//!   payloadLengthsBuf + termSuffixes + payloadBytes + lastTerm + scratchBuffer`
-//!   (`Lucene90CompressingTermVectorsWriter.java:999-1008`). Rucene's
-//!   [`TermVectorsWriter`] has
-//!   no `ram_bytes_used`, so [`TermVectorsConsumer::ram_bytes_used`] reports
-//!   zero always. The four `int[]` in that sum grow with the position count of
-//!   the largest document seen and are never shrunk, so the undercount is
-//!   **not** bounded by the chunk size: one document with a million positions
-//!   leaves 16 MB uncounted for the rest of the segment. It shifts only when a
-//!   flush is triggered, never what is written, but a segment of very large
-//!   documents can overshoot its RAM budget. Giving the trait a
-//!   `ram_bytes_used` is the fix, and is filed separately.
+//! * **The `accountable` field is the writer itself.** Java keeps the
+//!   writer in an `Accountable` field that starts as
+//!   `Accountable.NULL_ACCOUNTABLE` (`TermVectorsConsumer.java:55-57`, `:108`);
+//!   [`TermVectorsConsumer::ram_bytes_used`] asks the `Option` writer instead,
+//!   with the same answers.
 //! * **Field names are ordered with a UTF-16 comparator.** Java sorts the
 //!   pending fields with `TermsHashPerField.compareTo`, which is
 //!   `String.compareTo` — UTF-16 code-unit order. The order reaches the `.tvd`
@@ -156,22 +145,12 @@
 //! Lucene subclasses this consumer with `SortingTermVectorsConsumer`, which
 //! buffers the vectors into a temporary, uncompressed term-vectors file during
 //! indexing and, at flush time, replays every document through the real codec
-//! writer in the order a `Sorter.DocMap` gives. It overrides exactly two
-//! members: `initTermVectorsWriter()`, to redirect the writer at a
-//! `TrackingTmpOutputDirectoryWrapper`, and `flush(...)`, to do the replay. Both
-//! of its dependencies — `Sorter.DocMap` and
-//! `TrackingTmpOutputDirectoryWrapper` — belong to the index-sorting port, so
-//! this type stops where `SortingStoredFieldsConsumer` stopped, and for the same
-//! reason. The two extension points are in place and are not expected to change:
-//! writer creation is isolated in the public
-//! [`TermVectorsConsumer::init_term_vectors_writer`], which is the only place
-//! the writer is built, and [`TermVectorsConsumer::flush`] already takes the
-//! document count of the segment being flushed. Neither is an override point in
-//! the Java sense: this is a concrete struct behind no trait, so a sorting
-//! variant has to change its shape — by giving it a writer-factory field, by
-//! wrapping it, or by introducing a trait — rather than subclass it. What is
-//! promised here is only that the two seams are isolated and that no caller
-//! reaches around them.
+//! writer in the order a `Sorter.DocMap` gives. That subclass is ported as
+//! [`SortingTermVectorsConsumer`](crate::index::sorting_consumers::SortingTermVectorsConsumer),
+//! which wraps this type: Java's override of `initTermVectorsWriter`
+//! (`SortingTermVectorsConsumer.java:87-94`) becomes the format and the
+//! directory it hands this consumer, which
+//! [`TermVectorsConsumer::init_term_vectors_writer`] writes through.
 
 #![deny(unsafe_code)]
 
@@ -767,18 +746,15 @@ impl TermVectorsConsumer {
         self.aborted
     }
 
-    /// Returns the approximate heap usage this consumer adds on top of the
-    /// chain's RAM counter, which is zero.
+    /// Returns the heap the codec writer uses, or zero while there is none.
     ///
-    /// Equivalent to `TermVectorsConsumer.accountable.ramBytesUsed()`. The
-    /// stream pool is already charged to the chain's counter, so adding it here
-    /// would count it twice, and the per-field tables are deliberately
-    /// uncounted in Java too. What is missing is the codec writer's own buffer,
-    /// which the [`TermVectorsWriter`] trait does not expose and which grows
-    /// without bound with the largest document of the segment — see the module
-    /// documentation.
+    /// Equivalent to `TermVectorsConsumer.accountable.ramBytesUsed()`
+    /// (`TermVectorsConsumer.java:55-57`, `:108`): the writer once it exists,
+    /// `Accountable.NULL_ACCOUNTABLE` before.
     pub fn ram_bytes_used(&self) -> i64 {
-        0
+        self.writer
+            .as_ref()
+            .map_or(0, |writer| writer.ram_bytes_used())
     }
 
     /// Records that the segment has at least one field storing term vectors.

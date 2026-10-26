@@ -69,6 +69,20 @@ pub fn deletion_doc_map(max_doc: i32, live_docs: Box<dyn Bits>, doc_base: i32) -
 /// constructor called with every one of the original's fields: a shallow copy
 /// whose readers, live docs, doc maps and `SegmentInfo` are the original's
 /// objects, never copies of them.
+///
+/// Both of Java's constructors have a counterpart: the package-private
+/// `MergeState(List<CodecReader>, SegmentInfo, InfoStream, Executor, OneMerge)`
+/// (`MergeState.java:103-177`) is [`from_readers`](Self::from_readers), and the
+/// public all-arrays `MergeState(DocMap[], SegmentInfo, FieldInfos, …)`
+/// (`MergeState.java:291-326`) is [`new`](Self::new).
+///
+/// **Divergence from Lucene 10.5.0.** Java's state also carries the
+/// `intraMergeTaskExecutor` and the `oneMerge` it belongs to
+/// (`MergeState.java:88-89`, `:94-100`), through which a codec can parallelise
+/// a merge and `checkAborted()` can stop it. This port carries neither: the
+/// merge runs on the calling thread, and [`check_aborted`](Self::check_aborted)
+/// never fails. The sequence of consumer calls and the files written are
+/// unchanged.
 #[derive(Clone)]
 pub struct MergeState {
     /// Maps document IDs from each source segment to the merged segment.
@@ -112,6 +126,13 @@ pub struct MergeState {
 
 impl MergeState {
     /// Creates a merge state from per-segment components.
+    ///
+    /// Equivalent to the public `MergeState(DocMap[], SegmentInfo, FieldInfos,
+    /// StoredFieldsReader[], TermVectorsReader[], NormsProducer[],
+    /// DocValuesProducer[], FieldInfos[], Bits[], FieldsProducer[],
+    /// PointsReader[], KnnVectorsReader[], int[], InfoStream, Executor,
+    /// boolean, OneMerge)` (`MergeState.java:291-326`), less the executor and
+    /// the merge (see the type-level note).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         doc_maps: Vec<DocMap>,

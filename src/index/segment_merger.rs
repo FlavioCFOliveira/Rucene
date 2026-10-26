@@ -37,10 +37,11 @@ const SM: &str = "SM";
 /// type:
 ///
 /// * Java's constructor also takes an intra-merge `Executor` and the
-///   `OneMerge`, storing them on the `MergeState` so a codec can parallelise a
-///   merge and check for an abort. This port's `MergeState` carries neither, so
-///   the merge runs on the calling thread; the sequence of consumer calls and
-///   the files written are unchanged.
+///   `OneMerge` (`SegmentMerger.java:55-75`), storing them on the `MergeState`
+///   so a codec can parallelise a merge and check for an abort. This port's
+///   [`MergeState`](crate::index::merge::MergeState) carries neither (see its
+///   note), so the merge runs on the calling thread; the sequence of consumer
+///   calls and the files written are unchanged. Its `InfoStream` is carried.
 /// * The vectors writer receives an [`OwnedSegmentWriteState`], whose
 ///   `SegmentInfo` is a copy taken when the vectors phase starts, because
 ///   [`KnnVectorsFormat::fields_writer`](crate::codecs::KnnVectorsFormat::fields_writer)
@@ -901,7 +902,7 @@ mod tests {
         );
         let terms = |fields: &dyn crate::codecs::postings::FieldsProducer| {
             let terms = fields.terms("id").unwrap().expect("field id has terms");
-            (terms.size(), terms.doc_count())
+            (terms.size().unwrap(), terms.doc_count().unwrap())
         };
         assert_eq!(terms(merge_postings.as_ref()), terms(postings.as_ref()));
         assert_eq!(terms(merge_postings.as_ref()), (5, 5));
@@ -933,7 +934,7 @@ mod tests {
         let merge_doc_values = doc_values.get_merge_instance().unwrap();
         let dv_field = field_infos.field_info("dv").unwrap().clone();
         let numeric = |producer: &dyn crate::codecs::DocValuesProducer| {
-            let mut values = producer.get_numeric(&dv_field).unwrap();
+            let mut values = producer.get_numeric(&dv_field).unwrap().unwrap();
             let mut out = Vec::new();
             loop {
                 let doc = values.next_doc().unwrap();

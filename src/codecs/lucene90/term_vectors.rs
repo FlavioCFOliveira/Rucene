@@ -2813,20 +2813,20 @@ impl Terms for TVTerms {
         )?))
     }
 
-    fn size(&self) -> i64 {
-        self.num_terms as i64
+    fn size(&self) -> Result<i64> {
+        Ok(self.num_terms as i64)
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
-        self.term_freqs.iter().map(|&f| f as i64).sum()
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        Ok(self.term_freqs.iter().map(|&f| f as i64).sum())
     }
 
-    fn sum_doc_freq(&self) -> i64 {
-        self.num_terms as i64
+    fn sum_doc_freq(&self) -> Result<i64> {
+        Ok(self.num_terms as i64)
     }
 
-    fn doc_count(&self) -> i32 {
-        1
+    fn doc_count(&self) -> Result<i32> {
+        Ok(1)
     }
 
     fn has_freqs(&self) -> bool {

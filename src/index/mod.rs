@@ -120,13 +120,13 @@ pub use term_vectors_consumer::{TermVectorsConsumer, TermVectorsConsumerPerField
 // `crate::index::point_values::`, which is the exact analogue of Java's
 // `PointValues.size(reader, field)` static call.
 pub use point_values::{
-    EmptyPointValues, InMemoryPointTree, InMemoryPointValues, IntersectVisitor, MutablePointTree,
-    PointTree, PointValues, Relation, MAX_DIMENSIONS, MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
+    InMemoryPointTree, InMemoryPointValues, IntersectVisitor, MutablePointTree, PointTree,
+    PointValues, Relation, MAX_DIMENSIONS, MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
 };
 pub use postings_enum::{
-    feature_requested, DocAndFloatFeatureBuffer, EmptyPostingsEnum, FreqAndNormBuffer, Impacts,
-    ImpactsEnum, ImpactsSource, PostingsEnum, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS,
-    POSTINGS_ENUM_NONE, POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
+    feature_requested, DocAndFloatFeatureBuffer, FreqAndNormBuffer, Impacts, ImpactsEnum,
+    ImpactsSource, PostingsEnum, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS, POSTINGS_ENUM_NONE,
+    POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
 };
 pub use reader_context::{CompositeReaderContext, IndexReaderContext, LeafReaderContext};
 pub use segment_info::{
@@ -140,9 +140,7 @@ pub use freq_prox_terms_writer::{
     FreqProxTermsWriterPerField, InvertedToken, TermSlot, TermsHash, TermsHashPerField,
     FIRST_LEVEL_SIZE, LEVEL_SIZE_ARRAY, NEXT_LEVEL_ARRAY,
 };
-pub use indexing_chain::{
-    DefaultIndexingChain, EmptyNormsProducer, FieldInvertState, MAX_POSITION,
-};
+pub use indexing_chain::{DefaultIndexingChain, FieldInvertState, MAX_POSITION};
 
 pub use index_writer_config::{
     BM25Similarity, ConcurrentMergeScheduler, IndexWriterConfig, IndexWriterEventListener,
@@ -201,19 +199,18 @@ pub use stored_field_visitor::{StoredFieldVisitor, StoredFieldVisitorStatus};
 pub use stored_fields_consumer::StoredFieldsConsumer;
 
 pub use terms::{
-    AcceptStatus, EmptyFields, EmptyTerms, EmptyTermsEnum, Fields, FilteredTermsEnum,
-    FilteredTermsEnumFilter, OrdTermState, PrefixCodedTerms, PrefixCodedTermsBuilder,
-    PrefixCodedTermsIterator, SeekStatus, SingleTermsEnum, Term, TermState, TermStates, Terms,
-    TermsEnum,
+    AcceptStatus, EmptyTerms, EmptyTermsEnum, Fields, FilteredTermsEnum, FilteredTermsEnumFilter,
+    OrdTermState, PrefixCodedTerms, PrefixCodedTermsBuilder, PrefixCodedTermsIterator, SeekStatus,
+    SingleTermsEnum, Term, TermState, TermStates, Terms, TermsEnum,
 };
 pub use terms_enum_index::{
     prefix8_to_comparable_unsigned_long, TermsEnumIndex, TermsEnumIndexState,
 };
 pub use vector_values::{
     accept_ords, accept_ords_with, check_byte_field, check_float_field, from_bytes, from_floats,
-    AcceptOrds, ByteVectorValues, DenseDocIndexIterator, DocIndexIterator, EmptyByteVectorValues,
-    EmptyFloatVectorValues, EmptyKnnVectorValues, FloatVectorValues, FromDisiDocIndexIterator,
-    KnnVectorValues, ListByteVectorValues, ListFloatVectorValues, SparseDocIndexIterator,
+    AcceptOrds, ByteVectorValues, DenseDocIndexIterator, DocIndexIterator, FloatVectorValues,
+    FromDisiDocIndexIterator, KnnVectorValues, ListByteVectorValues, ListFloatVectorValues,
+    SparseDocIndexIterator,
 };
 
 pub use doc_values_field_updates::DocValuesFieldUpdates;

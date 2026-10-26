@@ -371,7 +371,8 @@ impl Lucene90DocValuesConsumer<'_> {
             crate::index::DocValuesSkipIndexType::NONE
         );
         let start = self.skip_index.file_pointer();
-        let mut values = values_producer.get_sorted_numeric(field)?;
+        let mut values =
+            crate::codecs::doc_values::non_null(values_producer.get_sorted_numeric(field)?, field)?;
         let mut global_max_value = i64::MIN;
         let mut global_min_value = i64::MAX;
         let mut global_doc_count = 0i32;
@@ -1076,7 +1077,8 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             self.meta.write_byte(0u8)?; // multiValued (0 = singleValued)
         }
 
-        let mut sorted = values_producer.get_sorted(field)?;
+        let mut sorted =
+            crate::codecs::doc_values::non_null(values_producer.get_sorted(field)?, field)?;
         let value_count = sorted.get_value_count()? as i64;
         let mut docs = Vec::new();
         let mut ords = Vec::new();
@@ -1120,7 +1122,8 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             self.meta.write_byte(1u8)?; // multiValued (1 = multiValued)
         }
 
-        let mut numeric = values_producer.get_sorted_numeric(field)?;
+        let mut numeric =
+            crate::codecs::doc_values::non_null(values_producer.get_sorted_numeric(field)?, field)?;
         let mut docs = Vec::new();
         let mut counts = Vec::new();
         let mut all_values = Vec::new();
@@ -1452,7 +1455,7 @@ impl<'a> DocValuesConsumer for Lucene90DocValuesConsumer<'a> {
             self.write_skip_index(field, &producer)?;
         }
 
-        let mut numeric = values.get_numeric(field)?;
+        let mut numeric = crate::codecs::doc_values::non_null(values.get_numeric(field)?, field)?;
         let mut docs = Vec::new();
         let mut values_vec = Vec::new();
         let mut doc = numeric.next_doc()?;
@@ -1473,7 +1476,7 @@ impl<'a> DocValuesConsumer for Lucene90DocValuesConsumer<'a> {
         self.meta.write_int(field.number)?;
         self.meta.write_byte(TYPE_BINARY)?;
 
-        let mut binary = values.get_binary(field)?;
+        let mut binary = crate::codecs::doc_values::non_null(values.get_binary(field)?, field)?;
         let mut docs = Vec::new();
         let mut bytes = Vec::new();
         let mut doc = binary.next_doc()?;
@@ -1520,7 +1523,10 @@ impl<'a> DocValuesConsumer for Lucene90DocValuesConsumer<'a> {
         // set for any document carrying more than one value. The scan runs on
         // one iterator and both write paths below request fresh iterators, so
         // producers must return independent cursors per call.
-        if Self::is_single_valued(values.get_sorted_set(field)?)? {
+        if Self::is_single_valued(crate::codecs::doc_values::non_null(
+            values.get_sorted_set(field)?,
+            field,
+        )?)? {
             // Java's `doAddSortedField(field, ..., addTypeByte=true)` route:
             // meta byte 0, the minimum ord of every document laid out exactly
             // like `TYPE_SORTED`, then the terms dictionary
@@ -1534,7 +1540,7 @@ impl<'a> DocValuesConsumer for Lucene90DocValuesConsumer<'a> {
         let producer = OrdinalsAsSortedNumericProducer { inner: values };
         self.do_add_sorted_numeric_field(field, &producer, true)?;
 
-        let sorted_set = values.get_sorted_set(field)?;
+        let sorted_set = crate::codecs::doc_values::non_null(values.get_sorted_set(field)?, field)?;
         let value_count = sorted_set.get_value_count()?;
         self.add_terms_dict_values(value_count, |ord| sorted_set.lookup_ord(ord))?;
         Ok(())
@@ -3948,79 +3954,96 @@ impl SortedSetDocValues for LazySortedSetDocValues {
 // -----------------------------------------------------------------------------
 
 impl DocValuesProducer for Lucene90DocValuesProducer {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        match self.entries.get(&field.number) {
-            Some(FieldEntry::Numeric(entry)) => Ok(Box::new(LazyNumericDocValues::new(
-                &*self.data,
-                self.max_doc,
-                entry,
-            )?)),
-            _ => Ok(Box::new(EmptyNumericDocValues::new())),
-        }
-    }
-
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        match self.entries.get(&field.number) {
-            // A field no document has a value for: `DocValues.emptyBinary()`,
-            // before anything else of the entry is looked at
-            // (`Lucene90DocValuesProducer.java:1210-1215`). Its lengths are
-            // the consumer's initial `Integer.MAX_VALUE` and `0`
-            // (`Lucene90DocValuesConsumer.java:616-617, 651-652`), which describe
-            // no value.
-            Some(FieldEntry::Binary(entry)) if entry.docs_with_field_offset == -2 => {
-                Ok(Box::new(EmptyBinaryDocValues::new()))
-            }
-            Some(FieldEntry::Binary(entry)) => Ok(Box::new(LazyBinaryDocValues::new(
-                &*self.data,
-                self.max_doc,
-                entry,
-            )?)),
-            _ => Ok(Box::new(EmptyBinaryDocValues::new())),
-        }
-    }
-
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        match self.entries.get(&field.number) {
-            Some(FieldEntry::Sorted(entry)) => Ok(Box::new(LazySortedDocValues::new(
-                &*self.data,
-                self.max_doc,
-                entry,
-            )?)),
-            _ => Ok(Box::new(EmptySortedDocValues::new())),
-        }
-    }
-
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        match self.entries.get(&field.number) {
-            Some(FieldEntry::SortedNumeric(entry)) => {
-                // `Lucene90DocValuesProducer.java:1823,1843`.
-                let dense_fixed_cardinality = Self::fixed_cardinality(
-                    entry.numeric.num_values,
-                    entry.num_docs_with_field,
-                    self.skippers
-                        .get(&field.number)
-                        .map(|skipper| skipper.max_value_count),
-                );
-                Ok(Box::new(LazySortedNumericDocValues::new(
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        let values: Result<Box<dyn NumericDocValues>> = {
+            match self.entries.get(&field.number) {
+                Some(FieldEntry::Numeric(entry)) => Ok(Box::new(LazyNumericDocValues::new(
                     &*self.data,
                     self.max_doc,
                     entry,
-                    dense_fixed_cardinality,
-                )?))
+                )?)),
+                _ => Ok(Box::new(EmptyNumericDocValues::new())),
             }
-            _ => Ok(Box::new(EmptySortedNumericDocValues::new())),
-        }
+        };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        match self.entries.get(&field.number) {
-            Some(FieldEntry::SortedSet(entry)) => Ok(Box::new(LazySortedSetDocValues::new(
-                &*self.data,
-                self.max_doc,
-                entry,
-            )?)),
-            _ => Ok(Box::new(EmptySortedSetDocValues::new())),
-        }
+    fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        let values: Result<Box<dyn BinaryDocValues>> = {
+            match self.entries.get(&field.number) {
+                // A field no document has a value for: `DocValues.emptyBinary()`,
+                // before anything else of the entry is looked at
+                // (`Lucene90DocValuesProducer.java:1210-1215`). Its lengths are
+                // the consumer's initial `Integer.MAX_VALUE` and `0`
+                // (`Lucene90DocValuesConsumer.java:616-617, 651-652`), which describe
+                // no value.
+                Some(FieldEntry::Binary(entry)) if entry.docs_with_field_offset == -2 => {
+                    Ok(Box::new(EmptyBinaryDocValues::new()))
+                }
+                Some(FieldEntry::Binary(entry)) => Ok(Box::new(LazyBinaryDocValues::new(
+                    &*self.data,
+                    self.max_doc,
+                    entry,
+                )?)),
+                _ => Ok(Box::new(EmptyBinaryDocValues::new())),
+            }
+        };
+        Ok(Some(values?))
+    }
+
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        let values: Result<Box<dyn SortedDocValues>> = {
+            match self.entries.get(&field.number) {
+                Some(FieldEntry::Sorted(entry)) => Ok(Box::new(LazySortedDocValues::new(
+                    &*self.data,
+                    self.max_doc,
+                    entry,
+                )?)),
+                _ => Ok(Box::new(EmptySortedDocValues::new())),
+            }
+        };
+        Ok(Some(values?))
+    }
+
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        let values: Result<Box<dyn SortedNumericDocValues>> = {
+            match self.entries.get(&field.number) {
+                Some(FieldEntry::SortedNumeric(entry)) => {
+                    // `Lucene90DocValuesProducer.java:1823,1843`.
+                    let dense_fixed_cardinality = Self::fixed_cardinality(
+                        entry.numeric.num_values,
+                        entry.num_docs_with_field,
+                        self.skippers
+                            .get(&field.number)
+                            .map(|skipper| skipper.max_value_count),
+                    );
+                    Ok(Box::new(LazySortedNumericDocValues::new(
+                        &*self.data,
+                        self.max_doc,
+                        entry,
+                        dense_fixed_cardinality,
+                    )?))
+                }
+                _ => Ok(Box::new(EmptySortedNumericDocValues::new())),
+            }
+        };
+        Ok(Some(values?))
+    }
+
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        let values: Result<Box<dyn SortedSetDocValues>> =
+            {
+                match self.entries.get(&field.number) {
+                    Some(FieldEntry::SortedSet(entry)) => Ok(Box::new(
+                        LazySortedSetDocValues::new(&*self.data, self.max_doc, entry)?,
+                    )),
+                    _ => Ok(Box::new(EmptySortedSetDocValues::new())),
+                }
+            };
+        Ok(Some(values?))
     }
 
     /// Equivalent to `Lucene90DocValuesProducer.getSkipper(FieldInfo)`
@@ -4438,58 +4461,76 @@ mod tests {
     }
 
     impl DocValuesProducer for TestDocValuesProducer {
-        fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-            match self.numeric.get(&field.number) {
-                Some((docs, values)) => Ok(Box::new(VecNumeric {
-                    cursor: DocCursor::new(docs.clone()),
-                    values: values.clone(),
-                })),
-                None => Ok(Box::new(EmptyNumericDocValues::new())),
-            }
+        fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+            let values: Result<Box<dyn NumericDocValues>> = {
+                match self.numeric.get(&field.number) {
+                    Some((docs, values)) => Ok(Box::new(VecNumeric {
+                        cursor: DocCursor::new(docs.clone()),
+                        values: values.clone(),
+                    })),
+                    None => Ok(Box::new(EmptyNumericDocValues::new())),
+                }
+            };
+            Ok(Some(values?))
         }
 
-        fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-            match self.binary.get(&field.number) {
-                Some((docs, values)) => Ok(Box::new(VecBinary {
-                    cursor: DocCursor::new(docs.clone()),
-                    values: values.clone(),
-                })),
-                None => Ok(Box::new(EmptyBinaryDocValues::new())),
-            }
+        fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+            let values: Result<Box<dyn BinaryDocValues>> = {
+                match self.binary.get(&field.number) {
+                    Some((docs, values)) => Ok(Box::new(VecBinary {
+                        cursor: DocCursor::new(docs.clone()),
+                        values: values.clone(),
+                    })),
+                    None => Ok(Box::new(EmptyBinaryDocValues::new())),
+                }
+            };
+            Ok(Some(values?))
         }
 
-        fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-            match self.sorted.get(&field.number) {
-                Some((docs, ords, terms)) => Ok(Box::new(VecSorted {
-                    cursor: DocCursor::new(docs.clone()),
-                    ords: ords.clone(),
-                    terms: terms.clone(),
-                })),
-                None => Ok(Box::new(EmptySortedDocValues::new())),
-            }
+        fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+            let values: Result<Box<dyn SortedDocValues>> = {
+                match self.sorted.get(&field.number) {
+                    Some((docs, ords, terms)) => Ok(Box::new(VecSorted {
+                        cursor: DocCursor::new(docs.clone()),
+                        ords: ords.clone(),
+                        terms: terms.clone(),
+                    })),
+                    None => Ok(Box::new(EmptySortedDocValues::new())),
+                }
+            };
+            Ok(Some(values?))
         }
 
-        fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-            match self.sorted_numeric.get(&field.number) {
-                Some((docs, values)) => Ok(Box::new(VecSortedNumeric {
-                    cursor: DocCursor::new(docs.clone()),
-                    values: values.clone(),
-                    index: 0,
-                })),
-                None => Ok(Box::new(EmptySortedNumericDocValues::new())),
-            }
+        fn get_sorted_numeric(
+            &self,
+            field: &FieldInfo,
+        ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+            let values: Result<Box<dyn SortedNumericDocValues>> = {
+                match self.sorted_numeric.get(&field.number) {
+                    Some((docs, values)) => Ok(Box::new(VecSortedNumeric {
+                        cursor: DocCursor::new(docs.clone()),
+                        values: values.clone(),
+                        index: 0,
+                    })),
+                    None => Ok(Box::new(EmptySortedNumericDocValues::new())),
+                }
+            };
+            Ok(Some(values?))
         }
 
-        fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-            match self.sorted_set.get(&field.number) {
-                Some((docs, ords, terms)) => Ok(Box::new(VecSortedSet {
-                    cursor: DocCursor::new(docs.clone()),
-                    ords: ords.clone(),
-                    terms: terms.clone(),
-                    index: 0,
-                })),
-                None => Ok(Box::new(EmptySortedSetDocValues::new())),
-            }
+        fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+            let values: Result<Box<dyn SortedSetDocValues>> = {
+                match self.sorted_set.get(&field.number) {
+                    Some((docs, ords, terms)) => Ok(Box::new(VecSortedSet {
+                        cursor: DocCursor::new(docs.clone()),
+                        ords: ords.clone(),
+                        terms: terms.clone(),
+                        index: 0,
+                    })),
+                    None => Ok(Box::new(EmptySortedSetDocValues::new())),
+                }
+            };
+            Ok(Some(values?))
         }
 
         fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
@@ -4638,7 +4679,7 @@ mod tests {
             let values = TestDocValuesProducer::with_numeric(0, vec![0, 2, 4], vec![1, 3, 5]);
             consumer.add_numeric_field(&field, &values).unwrap();
         });
-        let mut numeric = producer.get_numeric(&field).unwrap();
+        let mut numeric = producer.get_numeric(&field).unwrap().unwrap();
         assert_eq!(numeric.next_doc().unwrap(), 0);
         assert_eq!(numeric.long_value().unwrap(), 1);
         assert_eq!(numeric.next_doc().unwrap(), 2);
@@ -4656,7 +4697,7 @@ mod tests {
                 TestDocValuesProducer::with_numeric(0, vec![0, 1, 2, 3], vec![0, 1, 2, 100]);
             consumer.add_numeric_field(&field, &values).unwrap();
         });
-        let mut numeric = producer.get_numeric(&field).unwrap();
+        let mut numeric = producer.get_numeric(&field).unwrap().unwrap();
         assert_eq!(numeric.next_doc().unwrap(), 0);
         assert_eq!(numeric.long_value().unwrap(), 0);
         assert_eq!(numeric.next_doc().unwrap(), 1);
@@ -4679,7 +4720,7 @@ mod tests {
             );
             consumer.add_binary_field(&field, &values).unwrap();
         });
-        let mut binary = producer.get_binary(&field).unwrap();
+        let mut binary = producer.get_binary(&field).unwrap().unwrap();
         assert_eq!(binary.next_doc().unwrap(), 0);
         assert_eq!(binary.binary_value().unwrap().bytes, b"a");
         assert_eq!(binary.next_doc().unwrap(), 2);
@@ -4700,7 +4741,7 @@ mod tests {
             );
             consumer.add_binary_field(&field, &values).unwrap();
         });
-        let mut binary = producer.get_binary(&field).unwrap();
+        let mut binary = producer.get_binary(&field).unwrap().unwrap();
         assert_eq!(binary.next_doc().unwrap(), 0);
         assert_eq!(binary.binary_value().unwrap().bytes, b"alpha");
         assert_eq!(binary.next_doc().unwrap(), 2);
@@ -4722,7 +4763,7 @@ mod tests {
             );
             consumer.add_sorted_field(&field, &values).unwrap();
         });
-        let mut sorted = producer.get_sorted(&field).unwrap();
+        let mut sorted = producer.get_sorted(&field).unwrap().unwrap();
         assert_eq!(sorted.next_doc().unwrap(), 0);
         assert_eq!(sorted.ord_value().unwrap(), 2);
         assert_eq!(sorted.next_doc().unwrap(), 1);
@@ -4750,7 +4791,7 @@ mod tests {
             );
             consumer.add_sorted_numeric_field(&field, &values).unwrap();
         });
-        let mut sorted_numeric = producer.get_sorted_numeric(&field).unwrap();
+        let mut sorted_numeric = producer.get_sorted_numeric(&field).unwrap().unwrap();
         assert_eq!(sorted_numeric.next_doc().unwrap(), 0);
         assert_eq!(sorted_numeric.doc_value_count().unwrap(), 2);
         assert_eq!(sorted_numeric.next_value().unwrap(), 1);
@@ -4778,7 +4819,7 @@ mod tests {
             );
             consumer.add_sorted_set_field(&field, &values).unwrap();
         });
-        let mut sorted_set = producer.get_sorted_set(&field).unwrap();
+        let mut sorted_set = producer.get_sorted_set(&field).unwrap().unwrap();
         assert_eq!(sorted_set.next_doc().unwrap(), 0);
         assert_eq!(sorted_set.doc_value_count().unwrap(), 2);
         assert_eq!(sorted_set.next_ord().unwrap(), 0);
@@ -4950,26 +4991,38 @@ struct SingletonNumericProducer<'a> {
 }
 
 impl DocValuesProducer for SingletonNumericProducer<'_> {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
         self.inner.get_numeric(field)
     }
 
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        corrupt("a singleton numeric producer has no binary values".to_string())
+    fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        let values: Result<Box<dyn BinaryDocValues>> =
+            { corrupt("a singleton numeric producer has no binary values".to_string()) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        corrupt("a singleton numeric producer has no sorted values".to_string())
+    fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        let values: Result<Box<dyn SortedDocValues>> =
+            { corrupt("a singleton numeric producer has no sorted values".to_string()) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        Ok(Box::new(crate::index::DocValues::singleton_numeric(
-            self.inner.get_numeric(field)?,
-        )))
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        let values: Result<Box<dyn SortedNumericDocValues>> = {
+            Ok(Box::new(crate::index::DocValues::singleton_numeric(
+                crate::codecs::doc_values::non_null(self.inner.get_numeric(field)?, field)?,
+            )))
+        };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        corrupt("a singleton numeric producer has no sorted set values".to_string())
+    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        let values: Result<Box<dyn SortedSetDocValues>> =
+            { corrupt("a singleton numeric producer has no sorted set values".to_string()) };
+        Ok(Some(values?))
     }
 
     /// Inherited from `EmptyDocValuesProducer.getSkipper`
@@ -5007,25 +5060,40 @@ struct OrdinalsAsSortedNumericProducer<'a> {
 }
 
 impl DocValuesProducer for OrdinalsAsSortedNumericProducer<'_> {
-    fn get_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        corrupt("an ordinals producer has no numeric values".to_string())
+    fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        let values: Result<Box<dyn NumericDocValues>> =
+            { corrupt("an ordinals producer has no numeric values".to_string()) };
+        Ok(Some(values?))
     }
 
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        corrupt("an ordinals producer has no binary values".to_string())
+    fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        let values: Result<Box<dyn BinaryDocValues>> =
+            { corrupt("an ordinals producer has no binary values".to_string()) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        corrupt("an ordinals producer has no sorted values".to_string())
+    fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        let values: Result<Box<dyn SortedDocValues>> =
+            { corrupt("an ordinals producer has no sorted values".to_string()) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        Ok(Box::new(SortedSetOrdinals {
-            values: self.inner.get_sorted_set(field)?,
-        }))
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        let values: Result<Box<dyn SortedNumericDocValues>> = {
+            Ok(Box::new(SortedSetOrdinals {
+                values: crate::codecs::doc_values::non_null(
+                    self.inner.get_sorted_set(field)?,
+                    field,
+                )?,
+            }))
+        };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
         self.inner.get_sorted_set(field)
     }
 
@@ -5062,30 +5130,46 @@ struct SortedOrdinalsProducer<'a> {
 }
 
 impl DocValuesProducer for SortedOrdinalsProducer<'_> {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        Ok(Box::new(SortedOrdinals {
-            values: self.inner.get_sorted(field)?,
-        }))
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        let values: Result<Box<dyn NumericDocValues>> = {
+            Ok(Box::new(SortedOrdinals {
+                values: crate::codecs::doc_values::non_null(self.inner.get_sorted(field)?, field)?,
+            }))
+        };
+        Ok(Some(values?))
     }
 
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        corrupt("a sorted-ordinals producer has no binary values".to_string())
+    fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        let values: Result<Box<dyn BinaryDocValues>> =
+            { corrupt("a sorted-ordinals producer has no binary values".to_string()) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
         self.inner.get_sorted(field)
     }
 
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        Ok(Box::new(
-            crate::index::doc_values::DocValues::singleton_numeric(Box::new(SortedOrdinals {
-                values: self.inner.get_sorted(field)?,
-            })),
-        ))
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        let values: Result<Box<dyn SortedNumericDocValues>> = {
+            Ok(Box::new(
+                crate::index::doc_values::DocValues::singleton_numeric(Box::new(SortedOrdinals {
+                    values: crate::codecs::doc_values::non_null(
+                        self.inner.get_sorted(field)?,
+                        field,
+                    )?,
+                })),
+            ))
+        };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        corrupt("a sorted-ordinals producer has no sorted-set values".to_string())
+    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        let values: Result<Box<dyn SortedSetDocValues>> =
+            { corrupt("a sorted-ordinals producer has no sorted-set values".to_string()) };
+        Ok(Some(values?))
     }
 
     /// Inherited from `EmptyDocValuesProducer.getSkipper`
@@ -5161,26 +5245,38 @@ struct MinOrdinalOfSortedSetProducer<'a> {
 }
 
 impl DocValuesProducer for MinOrdinalOfSortedSetProducer<'_> {
-    fn get_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        corrupt("a minimum-ordinal producer has no numeric values".to_string())
+    fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        let values: Result<Box<dyn NumericDocValues>> =
+            { corrupt("a minimum-ordinal producer has no numeric values".to_string()) };
+        Ok(Some(values?))
     }
 
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        corrupt("a minimum-ordinal producer has no binary values".to_string())
+    fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        let values: Result<Box<dyn BinaryDocValues>> =
+            { corrupt("a minimum-ordinal producer has no binary values".to_string()) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        SortedSetSelector::wrap(
-            self.inner.get_sorted_set(field)?,
-            SortedSetSelectorType::MIN,
-        )
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        let values: Result<Box<dyn SortedDocValues>> = {
+            SortedSetSelector::wrap(
+                crate::codecs::doc_values::non_null(self.inner.get_sorted_set(field)?, field)?,
+                SortedSetSelectorType::MIN,
+            )
+        };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        corrupt("a minimum-ordinal producer has no sorted-numeric values".to_string())
+    fn get_sorted_numeric(
+        &self,
+        _field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        let values: Result<Box<dyn SortedNumericDocValues>> =
+            { corrupt("a minimum-ordinal producer has no sorted-numeric values".to_string()) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
         self.inner.get_sorted_set(field)
     }
 

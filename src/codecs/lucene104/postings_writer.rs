@@ -943,8 +943,8 @@ mod tests {
     use std::sync::Arc;
 
     /// A norm of one for every document, as the flush hands the writer.
-    fn test_norms(max_doc: i32) -> crate::index::EmptyNormsProducer {
-        crate::index::EmptyNormsProducer::new(max_doc)
+    fn test_norms(max_doc: i32) -> crate::index::indexing_chain::EmptyNormsProducer {
+        crate::index::indexing_chain::EmptyNormsProducer::new(max_doc)
     }
 
     fn test_segment_info(name: &str, max_doc: i32) -> crate::index::SegmentInfo {
@@ -1181,23 +1181,25 @@ mod tests {
             Ok(Box::new(TestTermsEnum::new(self.terms.clone())))
         }
 
-        fn size(&self) -> i64 {
-            self.terms.len() as i64
+        fn size(&self) -> Result<i64> {
+            Ok(self.terms.len() as i64)
         }
 
-        fn sum_total_term_freq(&self) -> i64 {
-            self.terms
-                .iter()
-                .map(|(_, p)| p.freqs.iter().map(|f| *f as i64).sum::<i64>())
-                .sum()
+        fn sum_total_term_freq(&self) -> Result<i64> {
+            Ok({
+                self.terms
+                    .iter()
+                    .map(|(_, p)| p.freqs.iter().map(|f| *f as i64).sum::<i64>())
+                    .sum()
+            })
         }
 
-        fn sum_doc_freq(&self) -> i64 {
-            self.terms.iter().map(|(_, p)| p.docs.len() as i64).sum()
+        fn sum_doc_freq(&self) -> Result<i64> {
+            Ok(self.terms.iter().map(|(_, p)| p.docs.len() as i64).sum())
         }
 
-        fn doc_count(&self) -> i32 {
-            self.terms.len() as i32
+        fn doc_count(&self) -> Result<i32> {
+            Ok(self.terms.len() as i32)
         }
 
         fn has_freqs(&self) -> bool {
@@ -1324,13 +1326,19 @@ mod tests {
     }
 
     impl crate::codecs::norms::NormsProducer for CountingNorms {
-        fn get_norms(&self, _field: &FieldInfo) -> crate::error::Result<Box<dyn NumericDocValues>> {
-            NormsReads::bump(&self.reads.get_norms);
-            Ok(Box::new(CountingNormValues {
-                max_doc: self.max_doc,
-                doc: -1,
-                reads: std::sync::Arc::clone(&self.reads),
-            }))
+        fn get_norms(
+            &self,
+            _field: &FieldInfo,
+        ) -> crate::error::Result<Option<Box<dyn NumericDocValues>>> {
+            let values: crate::error::Result<Box<dyn NumericDocValues>> = {
+                NormsReads::bump(&self.reads.get_norms);
+                Ok(Box::new(CountingNormValues {
+                    max_doc: self.max_doc,
+                    doc: -1,
+                    reads: std::sync::Arc::clone(&self.reads),
+                }))
+            };
+            Ok(Some(values?))
         }
 
         fn check_integrity(&self) -> crate::error::Result<()> {

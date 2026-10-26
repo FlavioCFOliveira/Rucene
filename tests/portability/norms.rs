@@ -765,7 +765,7 @@ fn dump(producer: Option<&dyn NormsProducer>, field_infos: &FieldInfos) -> Vec<S
             lines.push(format!("nonorms={}", info.name));
             continue;
         };
-        let mut norms = producer.get_norms(info).expect("norms");
+        let mut norms = producer.get_norms(info).expect("norms").unwrap();
         loop {
             let doc = norms.next_doc().expect("next doc");
             if doc == NO_MORE_DOCS {

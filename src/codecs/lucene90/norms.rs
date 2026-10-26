@@ -179,7 +179,7 @@ impl NormsConsumer for Lucene90NormsConsumer {
         let mut min = i64::MAX;
         let mut max = i64::MIN;
         {
-            let mut it = values.get_norms(field)?;
+            let mut it = crate::codecs::doc_values::non_null(values.get_norms(field)?, field)?;
             loop {
                 let doc = it.next_doc()?;
                 if doc == NO_MORE_DOCS {
@@ -212,7 +212,7 @@ impl NormsConsumer for Lucene90NormsConsumer {
         } else {
             let offset = self.data.file_pointer();
             self.meta.write_long(offset)?;
-            let mut it = values.get_norms(field)?;
+            let mut it = crate::codecs::doc_values::non_null(values.get_norms(field)?, field)?;
             let mut docs = NormsDocs::new(it.as_mut());
             let jump_table_entry_count =
                 write_bit_set(&mut docs, self.data.as_mut(), DEFAULT_DENSE_RANK_POWER)?;
@@ -235,7 +235,7 @@ impl NormsConsumer for Lucene90NormsConsumer {
         } else {
             let norms_offset = self.data.file_pointer();
             self.meta.write_long(norms_offset)?;
-            let mut it = values.get_norms(field)?;
+            let mut it = crate::codecs::doc_values::non_null(values.get_norms(field)?, field)?;
             write_norm_values(it.as_mut(), bytes_per_norm, self.data.as_mut())?;
         }
 
@@ -582,8 +582,9 @@ fn read_fields(
     Ok(())
 }
 
-impl NormsProducer for Lucene90NormsProducer {
-    fn get_norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+impl Lucene90NormsProducer {
+    /// The body of `Lucene90NormsProducer.getNorms(FieldInfo)`.
+    fn norms_of(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
         let entry = self.norms.get(&field.number).ok_or_else(|| {
             LuceneError::IllegalArgument(format!("no norms for field {}", field.name))
         })?;
@@ -623,6 +624,13 @@ impl NormsProducer for Lucene90NormsProducer {
             slice,
             entry.bytes_per_norm,
         )))
+    }
+}
+
+impl NormsProducer for Lucene90NormsProducer {
+    fn get_norms(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        // Java's body never answers `null`.
+        self.norms_of(field).map(Some)
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -1144,9 +1152,12 @@ mod tests {
     }
 
     impl NormsProducer for VecNormsProducer {
-        fn get_norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-            let docs = self.fields.get(&field.number).cloned().unwrap_or_default();
-            Ok(Box::new(VecNumericDocValues::new(docs)))
+        fn get_norms(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+            let values: Result<Box<dyn NumericDocValues>> = {
+                let docs = self.fields.get(&field.number).cloned().unwrap_or_default();
+                Ok(Box::new(VecNumericDocValues::new(docs)))
+            };
+            Ok(Some(values?))
         }
 
         fn check_integrity(&self) -> Result<()> {
@@ -1203,7 +1214,7 @@ mod tests {
         let mut producer = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         let collected = collect_values(&mut *values, 5);
         assert_eq!(collected, vec![Some(1), Some(2), Some(3), Some(4), Some(5)]);
         producer.check_integrity().unwrap();
@@ -1232,7 +1243,7 @@ mod tests {
         let producer = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         let collected = collect_values(&mut *values, 10);
         let expected: Vec<Option<i64>> = (0..10)
             .map(|d| match d {
@@ -1265,7 +1276,7 @@ mod tests {
         let producer = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         assert_eq!(values.next_doc().unwrap(), NO_MORE_DOCS);
     }
 
@@ -1289,7 +1300,7 @@ mod tests {
         let producer = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         let collected = collect_values(&mut *values, 6);
         let expected: Vec<Option<i64>> = (0..6)
             .map(|d| if d % 2 == 0 { Some(42) } else { None })
@@ -1323,13 +1334,13 @@ mod tests {
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
 
-        let mut body_values = producer.get_norms(&body).unwrap();
+        let mut body_values = producer.get_norms(&body).unwrap().unwrap();
         assert_eq!(
             collect_values(&mut *body_values, 5),
             vec![Some(1), Some(2), Some(3), Some(4), Some(5)]
         );
 
-        let mut title_values = producer.get_norms(&title).unwrap();
+        let mut title_values = producer.get_norms(&title).unwrap().unwrap();
         let title_collected = collect_values(&mut *title_values, 5);
         let expected: Vec<Option<i64>> = (0..5)
             .map(|d| match d {
@@ -1387,7 +1398,7 @@ mod tests {
             .unwrap();
         for (number, _, expected) in &fields {
             let field = fis.field_info_by_number(*number).unwrap();
-            let mut it = producer.get_norms(field).unwrap();
+            let mut it = producer.get_norms(field).unwrap().unwrap();
             let collected = collect_values(&mut *it, 4);
             assert_eq!(
                 collected,
@@ -1571,17 +1582,17 @@ mod tests {
             let producer = Lucene90NormsFormat::new()
                 .norms_producer(&read_state(&dir, &info, &fis))
                 .unwrap();
-            let mut values = producer.get_norms(&body).unwrap();
+            let mut values = producer.get_norms(&body).unwrap().unwrap();
             assert_eq!(
                 collect_values(&mut *values, 300)[boundary as usize - 1],
                 Some(11)
             );
-            let mut values = producer.get_norms(&body).unwrap();
+            let mut values = producer.get_norms(&body).unwrap().unwrap();
             assert_eq!(
                 collect_values(&mut *values, 300)[boundary as usize],
                 Some(22)
             );
-            let mut values = producer.get_norms(&body).unwrap();
+            let mut values = producer.get_norms(&body).unwrap().unwrap();
             assert_eq!(
                 collect_values(&mut *values, 300)[boundary as usize + 1],
                 Some(33)
@@ -1599,7 +1610,7 @@ mod tests {
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
 
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         assert_eq!(values.advance(6).unwrap(), 63);
         assert_eq!(values.long_value().unwrap(), 8);
         assert_eq!(values.advance(199).unwrap(), 199);
@@ -1607,7 +1618,7 @@ mod tests {
         assert_eq!(values.advance(200).unwrap(), NO_MORE_DOCS);
         assert!(values.long_value().is_err());
 
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         assert!(values.advance_exact(5).unwrap());
         assert_eq!(values.long_value().unwrap(), -7);
         assert!(!values.advance_exact(6).unwrap());
@@ -1626,13 +1637,13 @@ mod tests {
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
 
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         assert_eq!(values.advance(3).unwrap(), 3);
         assert_eq!(values.long_value().unwrap(), -1);
         assert_eq!(values.advance(8).unwrap(), NO_MORE_DOCS);
         assert!(values.long_value().is_err());
 
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         assert!(values.advance_exact(7).unwrap());
         assert_eq!(values.long_value().unwrap(), 3);
         assert!(!values.advance_exact(8).unwrap());
@@ -1660,7 +1671,7 @@ mod tests {
         let producer = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
-        let mut values = producer.get_norms(&body).unwrap();
+        let mut values = producer.get_norms(&body).unwrap().unwrap();
         let collected = collect_values(&mut *values, MAX_DOC);
         let mut want = vec![None; MAX_DOC as usize];
         for (doc, value) in &expected {
@@ -1685,11 +1696,11 @@ mod tests {
         let producer = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap();
-        let mut direct = producer.get_norms(&body).unwrap();
+        let mut direct = producer.get_norms(&body).unwrap().unwrap();
         let expected = collect_values(&mut *direct, 50);
 
         let merge = producer.get_merge_instance().unwrap();
-        let mut merged = merge.get_norms(&body).unwrap();
+        let mut merged = merge.get_norms(&body).unwrap().unwrap();
         assert_eq!(collect_values(&mut *merged, 50), expected);
     }
 
@@ -1718,7 +1729,7 @@ mod tests {
             let producer = Lucene90NormsFormat::new()
                 .norms_producer(&read_state(&dir, &info, &fis))
                 .unwrap();
-            let mut read = producer.get_norms(&body).unwrap();
+            let mut read = producer.get_norms(&body).unwrap().unwrap();
             let collected = collect_values(&mut *read, 2);
             let mut want = vec![None; 2];
             for (doc, value) in &values {

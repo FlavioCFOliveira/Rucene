@@ -303,7 +303,7 @@ fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, max_doc: i32) -
         // Every field is asked for twice: state a failed read left behind must
         // not be served to the second one.
         for pass in 0..2 {
-            let Ok(mut norms) = producer.get_norms(field) else {
+            let Ok(Some(mut norms)) = producer.get_norms(field) else {
                 continue;
             };
             // A corrupt entry can describe a run far longer than the segment,
@@ -329,8 +329,8 @@ fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, max_doc: i32) -
                 // the ordinal arithmetic, including the shifts.
                 for target in [0, 1, max_doc / 2, max_doc - 1, max_doc, max_doc + 1] {
                     let mut fresh = match producer.get_norms(field) {
-                        Ok(fresh) => fresh,
-                        Err(_) => continue,
+                        Ok(Some(fresh)) => fresh,
+                        _ => continue,
                     };
                     let _ = fresh.advance(target);
                     let _ = fresh.long_value();
@@ -344,7 +344,7 @@ fn visit_all(directory: &Arc<dyn Directory>, info: &SegmentInfo, max_doc: i32) -
     // The merge instance must be no more trusting than the primary one.
     if let Ok(merge) = producer.get_merge_instance() {
         for field in infos.iter() {
-            let Ok(mut norms) = merge.get_norms(field) else {
+            let Ok(Some(mut norms)) = merge.get_norms(field) else {
                 continue;
             };
             let mut steps = 0;
@@ -740,7 +740,7 @@ fn a_document_id_outside_the_segment_is_never_answered_with_a_value() {
         for (number, _) in &fixture.fields {
             let field = infos.field_info_by_number(*number).expect("field info");
             for doc in [fixture.max_doc, fixture.max_doc + 1, i32::MAX - 1] {
-                let mut norms = producer.get_norms(field).expect("norms");
+                let mut norms = producer.get_norms(field).expect("norms").unwrap();
                 // Out of range is `NO_MORE_DOCS` or an error, never a value
                 // read from some other document's bytes.
                 if let Ok(found) = norms.advance(doc) {

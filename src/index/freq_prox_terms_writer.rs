@@ -1546,29 +1546,33 @@ impl Terms for FreqProxTerms {
         Ok(Box::new(FreqProxTermsEnum::new(Arc::clone(&self.field))))
     }
 
-    /// Returns `-1`: the buffers keep no per-field statistics.
-    ///
-    /// Lucene throws `UnsupportedOperationException` here; the trait cannot
-    /// fail, so this reports the "unknown" sentinel the trait documents. The
-    /// terms dictionary derives its statistics from the postings writer, so it
-    /// never consults these.
-    fn size(&self) -> i64 {
-        -1
+    /// Throws `UnsupportedOperationException`, as Java's does: the buffers
+    /// keep no per-field statistics (`FreqProxFields.java:75-78`).
+    fn size(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "FreqProxTerms.size".to_string(),
+        ))
     }
 
-    /// Returns `-1`; see [`Terms::size`] on this type.
-    fn sum_total_term_freq(&self) -> i64 {
-        -1
+    /// Throws `UnsupportedOperationException` (`FreqProxFields.java:80-83`).
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "FreqProxTerms.getSumTotalTermFreq".to_string(),
+        ))
     }
 
-    /// Returns `-1`; see [`Terms::size`] on this type.
-    fn sum_doc_freq(&self) -> i64 {
-        -1
+    /// Throws `UnsupportedOperationException` (`FreqProxFields.java:85-88`).
+    fn sum_doc_freq(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "FreqProxTerms.getSumDocFreq".to_string(),
+        ))
     }
 
-    /// Returns `-1`; see [`Terms::size`] on this type.
-    fn doc_count(&self) -> i32 {
-        -1
+    /// Throws `UnsupportedOperationException` (`FreqProxFields.java:90-93`).
+    fn doc_count(&self) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(
+            "FreqProxTerms.getDocCount".to_string(),
+        ))
     }
 
     fn has_freqs(&self) -> bool {
@@ -2362,19 +2366,19 @@ impl Terms for SortingTerms {
         )))
     }
 
-    fn size(&self) -> i64 {
+    fn size(&self) -> Result<i64> {
         self.base.size()
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
+    fn sum_total_term_freq(&self) -> Result<i64> {
         self.base.sum_total_term_freq()
     }
 
-    fn sum_doc_freq(&self) -> i64 {
+    fn sum_doc_freq(&self) -> Result<i64> {
         self.base.sum_doc_freq()
     }
 
-    fn doc_count(&self) -> i32 {
+    fn doc_count(&self) -> Result<i32> {
         self.base.doc_count()
     }
 
@@ -2394,7 +2398,7 @@ impl Terms for SortingTerms {
         self.base.has_payloads()
     }
 
-    fn stats(&self) -> String {
+    fn stats(&self) -> Result<String> {
         self.base.stats()
     }
 }

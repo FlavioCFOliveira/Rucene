@@ -63,12 +63,9 @@ pub use crate::index::merge::MergeState;
 // -----------------------------------------------------------------------------
 
 pub use crate::index::{
-    EmptyFields, EmptyTerms, EmptyTermsEnum, Fields, ImpactsEnum, PostingsEnum, SeekStatus,
-    TermState, Terms, TermsEnum,
+    EmptyTerms, EmptyTermsEnum, Fields, ImpactsEnum, PostingsEnum, SeekStatus, TermState, Terms,
+    TermsEnum,
 };
-
-/// Empty postings iterator.
-pub use crate::index::EmptyPostingsEnum;
 
 /// Returns an empty terms iterator.
 pub fn empty_terms_enum() -> Box<dyn TermsEnum> {
@@ -735,7 +732,7 @@ pub trait PushPostingsWriterBase {
                     field_info.name
                 ))
             })?;
-            Some(norms.get_norms(&field_info)?)
+            norms.get_norms(&field_info)?
         };
         self.start_term(norm_values)?;
 

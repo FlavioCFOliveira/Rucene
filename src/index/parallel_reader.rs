@@ -1246,7 +1246,8 @@ mod tests {
     use crate::index::field_infos::FieldInfo;
     use crate::index::index_reader::IndexReader;
     use crate::index::leaf_reader::LeafReader;
-    use crate::index::{EmptyFields, IndexOptions, Term};
+    use crate::index::terms::EmptyFields;
+    use crate::index::{IndexOptions, Term};
     use crate::search::knn::KnnCollector;
     use crate::search::AcceptDocs;
     use std::collections::HashSet;

@@ -945,29 +945,60 @@ impl DocValuesProducer for DvFieldsReader {
     fn get_numeric(
         &self,
         field: &FieldInfo,
-    ) -> Result<Box<dyn super::doc_values::NumericDocValues>> {
+    ) -> Result<Option<Box<dyn super::doc_values::NumericDocValues>>> {
+        // `producer == null ? null : producer.get_numeric(field)`
+        // (`codecs/perfield/PerFieldDocValuesFormat.java:318-345`).
+        if !self.fields.contains_key(&field.number) {
+            return Ok(None);
+        }
         self.producer_for(field)?.get_numeric(field)
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn super::doc_values::BinaryDocValues>> {
+    fn get_binary(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn super::doc_values::BinaryDocValues>>> {
+        // `producer == null ? null : producer.get_binary(field)`
+        // (`codecs/perfield/PerFieldDocValuesFormat.java:318-345`).
+        if !self.fields.contains_key(&field.number) {
+            return Ok(None);
+        }
         self.producer_for(field)?.get_binary(field)
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn super::doc_values::SortedDocValues>> {
+    fn get_sorted(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn super::doc_values::SortedDocValues>>> {
+        // `producer == null ? null : producer.get_sorted(field)`
+        // (`codecs/perfield/PerFieldDocValuesFormat.java:318-345`).
+        if !self.fields.contains_key(&field.number) {
+            return Ok(None);
+        }
         self.producer_for(field)?.get_sorted(field)
     }
 
     fn get_sorted_numeric(
         &self,
         field: &FieldInfo,
-    ) -> Result<Box<dyn super::doc_values::SortedNumericDocValues>> {
+    ) -> Result<Option<Box<dyn super::doc_values::SortedNumericDocValues>>> {
+        // `producer == null ? null : producer.get_sorted_numeric(field)`
+        // (`codecs/perfield/PerFieldDocValuesFormat.java:318-345`).
+        if !self.fields.contains_key(&field.number) {
+            return Ok(None);
+        }
         self.producer_for(field)?.get_sorted_numeric(field)
     }
 
     fn get_sorted_set(
         &self,
         field: &FieldInfo,
-    ) -> Result<Box<dyn super::doc_values::SortedSetDocValues>> {
+    ) -> Result<Option<Box<dyn super::doc_values::SortedSetDocValues>>> {
+        // `producer == null ? null : producer.get_sorted_set(field)`
+        // (`codecs/perfield/PerFieldDocValuesFormat.java:318-345`).
+        if !self.fields.contains_key(&field.number) {
+            return Ok(None);
+        }
         self.producer_for(field)?.get_sorted_set(field)
     }
 

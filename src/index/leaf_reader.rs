@@ -462,7 +462,7 @@ impl<T: LeafReader> IndexReader for T {
 
     fn get_sum_doc_freq(&self, field: &str) -> Result<i64> {
         if let Some(terms) = self.terms(field)? {
-            Ok(terms.sum_doc_freq())
+            terms.sum_doc_freq()
         } else {
             Ok(0)
         }
@@ -470,7 +470,7 @@ impl<T: LeafReader> IndexReader for T {
 
     fn get_doc_count(&self, field: &str) -> Result<i32> {
         if let Some(terms) = self.terms(field)? {
-            Ok(terms.doc_count())
+            terms.doc_count()
         } else {
             Ok(0)
         }
@@ -478,7 +478,7 @@ impl<T: LeafReader> IndexReader for T {
 
     fn get_sum_total_term_freq(&self, field: &str) -> Result<i64> {
         if let Some(terms) = self.terms(field)? {
-            Ok(terms.sum_total_term_freq())
+            terms.sum_total_term_freq()
         } else {
             Ok(0)
         }
@@ -511,7 +511,7 @@ mod tests {
     use super::*;
     use crate::index::index_reader::IndexReader;
     use crate::index::postings_enum::POSTINGS_ENUM_FREQS;
-    use crate::index::EmptyFields;
+    use crate::index::terms::EmptyFields;
     use crate::search::AcceptDocs;
     use crate::util::extra::Version;
 

@@ -1302,90 +1302,6 @@ impl PointValues for InMemoryPointValues {
 }
 
 // -----------------------------------------------------------------------------
-// Empty implementation
-// -----------------------------------------------------------------------------
-
-/// A [`PointTree`] with a single empty node.
-#[derive(Debug, Default, Clone, Copy)]
-struct EmptyPointTree;
-
-impl PointTree for EmptyPointTree {
-    fn clone_tree(&self) -> Result<Box<dyn PointTree>> {
-        Ok(Box::new(*self))
-    }
-
-    fn move_to_child(&mut self) -> Result<bool> {
-        Ok(false)
-    }
-
-    fn move_to_sibling(&mut self) -> Result<bool> {
-        Ok(false)
-    }
-
-    fn move_to_parent(&mut self) -> Result<bool> {
-        Ok(false)
-    }
-
-    fn min_packed_value(&self) -> Result<&[u8]> {
-        Ok(&[])
-    }
-
-    fn max_packed_value(&self) -> Result<&[u8]> {
-        Ok(&[])
-    }
-
-    fn size(&self) -> Result<i64> {
-        Ok(0)
-    }
-
-    fn visit_doc_ids(&mut self, _visitor: &mut dyn IntersectVisitor) -> Result<()> {
-        Ok(())
-    }
-
-    fn visit_doc_values(&mut self, _visitor: &mut dyn IntersectVisitor) -> Result<()> {
-        Ok(())
-    }
-}
-
-/// A no-op point-values instance that reports zero dimensions and no values.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyPointValues;
-
-impl PointValues for EmptyPointValues {
-    fn point_tree(&self) -> Result<Box<dyn PointTree>> {
-        Ok(Box::new(EmptyPointTree))
-    }
-
-    fn size(&self) -> Result<i64> {
-        Ok(0)
-    }
-
-    fn doc_count(&self) -> Result<i32> {
-        Ok(0)
-    }
-
-    fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
-        Ok(None)
-    }
-
-    fn max_packed_value(&self) -> Result<Option<Vec<u8>>> {
-        Ok(None)
-    }
-
-    fn num_dimensions(&self) -> Result<i32> {
-        Ok(0)
-    }
-
-    fn num_index_dimensions(&self) -> Result<i32> {
-        Ok(0)
-    }
-
-    fn bytes_per_dimension(&self) -> Result<i32> {
-        Ok(0)
-    }
-}
-
-// -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
 
@@ -1448,12 +1364,7 @@ mod tests {
         }
 
         fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
-            // A cell with no bounds holds no points, so it cannot overlap the
-            // query. Only `EmptyPointValues` produces one.
-            let disjoint = min_packed_value.is_empty()
-                || max_packed_value.is_empty()
-                || max_packed_value[0] < self.min
-                || min_packed_value[0] > self.max;
+            let disjoint = max_packed_value[0] < self.min || min_packed_value[0] > self.max;
             let relation = if disjoint {
                 Relation::CellOutsideQuery
             } else if min_packed_value[0] >= self.min && max_packed_value[0] <= self.max {
@@ -1762,22 +1673,6 @@ mod tests {
                 .unwrap(),
             5
         );
-    }
-
-    #[test]
-    fn empty_point_values_reports_zero() {
-        let points = EmptyPointValues;
-        assert_eq!(points.size().unwrap(), 0);
-        assert_eq!(points.doc_count().unwrap(), 0);
-        assert!(points.min_packed_value().unwrap().is_none());
-        assert!(points.max_packed_value().unwrap().is_none());
-        assert_eq!(points.num_dimensions().unwrap(), 0);
-        assert_eq!(points.num_index_dimensions().unwrap(), 0);
-        assert_eq!(points.bytes_per_dimension().unwrap(), 0);
-
-        let mut visitor = TracingVisitor::new(0, 1);
-        points.intersect(&mut visitor).unwrap();
-        assert_eq!(points.estimate_doc_count(&mut visitor).unwrap(), 0);
     }
 
     #[test]

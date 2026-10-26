@@ -296,20 +296,23 @@ impl BufferedNormsProducer {
 }
 
 impl NormsProducer for BufferedNormsProducer {
-    fn get_norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        if field.number != self.field_number {
-            return Err(LuceneError::IllegalArgument(format!(
-                "wrong fieldInfo: expected {} ({}), got {} ({})",
-                self.field_name, self.field_number, field.name, field.number
-            )));
-        }
-        match &self.sorted {
-            None => Ok(Box::new(BufferedNorms::new(
-                Arc::clone(&self.docs),
-                Arc::clone(&self.values),
-            ))),
-            Some(sorted) => Ok(Box::new(SortingNumeric::new(Arc::clone(sorted)))),
-        }
+    fn get_norms(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        let values: Result<Box<dyn NumericDocValues>> = {
+            if field.number != self.field_number {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "wrong fieldInfo: expected {} ({}), got {} ({})",
+                    self.field_name, self.field_number, field.name, field.number
+                )));
+            }
+            match &self.sorted {
+                None => Ok(Box::new(BufferedNorms::new(
+                    Arc::clone(&self.docs),
+                    Arc::clone(&self.values),
+                ))),
+                Some(sorted) => Ok(Box::new(SortingNumeric::new(Arc::clone(sorted)))),
+            }
+        };
+        Ok(Some(values?))
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -440,7 +443,7 @@ mod tests {
     impl NormsConsumer for RecordingConsumer {
         fn add_norms_field(&mut self, field: &FieldInfo, values: &dyn NormsProducer) -> Result<()> {
             let mut collected = Vec::new();
-            let mut norms = values.get_norms(field)?;
+            let mut norms = values.get_norms(field)?.unwrap();
             loop {
                 let doc = norms.next_doc()?;
                 if doc == NO_MORE_DOCS {
@@ -574,7 +577,7 @@ mod tests {
             ) -> Result<()> {
                 for _ in 0..3 {
                     let mut collected = Vec::new();
-                    let mut norms = values.get_norms(field)?;
+                    let mut norms = values.get_norms(field)?.unwrap();
                     loop {
                         let doc = norms.next_doc()?;
                         if doc == NO_MORE_DOCS {
@@ -622,7 +625,7 @@ mod tests {
                 field: &FieldInfo,
                 values: &dyn NormsProducer,
             ) -> Result<()> {
-                let mut norms = values.get_norms(field)?;
+                let mut norms = values.get_norms(field)?.unwrap();
                 self.advance = Some(norms.advance(0).unwrap_err().to_string());
                 self.advance_exact = Some(norms.advance_exact(0).unwrap_err().to_string());
                 Ok(())
@@ -653,7 +656,7 @@ mod tests {
                 field: &FieldInfo,
                 values: &dyn NormsProducer,
             ) -> Result<()> {
-                let mut norms = values.get_norms(field)?;
+                let mut norms = values.get_norms(field)?.unwrap();
                 assert_eq!(norms.next_doc()?, 2);
                 for _ in 0..4 {
                     self.after.push(norms.next_doc()?);

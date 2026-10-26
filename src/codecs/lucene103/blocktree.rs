@@ -2497,7 +2497,8 @@ mod tests {
     };
     use crate::codecs::postings::FieldsConsumer;
     use crate::codecs::term_state::BlockTermState;
-    use crate::index::{EmptyFields, PostingsEnum, SeekStatus, SegmentInfo, TermState};
+    use crate::index::terms::EmptyFields;
+    use crate::index::{PostingsEnum, SeekStatus, SegmentInfo, TermState};
     use crate::store::{Directory, IndexInput, IndexOutput, RamDirectory};
     use crate::util::default_info_stream;
     use std::collections::HashMap;
@@ -3009,20 +3010,20 @@ mod tests {
             }))
         }
 
-        fn size(&self) -> i64 {
-            self.terms.len() as i64
+        fn size(&self) -> Result<i64> {
+            Ok(self.terms.len() as i64)
         }
 
-        fn sum_total_term_freq(&self) -> i64 {
-            self.terms.len() as i64
+        fn sum_total_term_freq(&self) -> Result<i64> {
+            Ok(self.terms.len() as i64)
         }
 
-        fn sum_doc_freq(&self) -> i64 {
-            self.terms.len() as i64
+        fn sum_doc_freq(&self) -> Result<i64> {
+            Ok(self.terms.len() as i64)
         }
 
-        fn doc_count(&self) -> i32 {
-            self.terms.len() as i32
+        fn doc_count(&self) -> Result<i32> {
+            Ok(self.terms.len() as i32)
         }
 
         fn has_freqs(&self) -> bool {
@@ -3115,7 +3116,9 @@ mod tests {
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
         ) -> Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(crate::index::EmptyPostingsEnum::new()))
+            Ok(Box::new(
+                crate::index::postings_enum::EmptyPostingsEnum::new(),
+            ))
         }
 
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn crate::index::ImpactsEnum>> {

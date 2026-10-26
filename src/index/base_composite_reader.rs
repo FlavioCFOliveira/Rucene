@@ -269,7 +269,8 @@ mod tests {
     use crate::codecs::stub::StoredFieldVisitor;
     use crate::index::index_reader::{CacheHelper, IndexReaderCore};
     use crate::index::reader_context::IndexReaderContext;
-    use crate::index::{EmptyFields, Fields};
+    use crate::index::terms::EmptyFields;
+    use crate::index::Fields;
     use std::sync::Weak;
 
     /// Reports the sub-reader-local document id it was handed, so the doc-base

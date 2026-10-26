@@ -58,10 +58,9 @@ pub use compound::{
 pub use doc_values::{
     available_doc_values_formats, doc_values_for_name, register_doc_values_format, BinaryDocValues,
     DocValuesConsumer, DocValuesFormat, DocValuesFormatRegistry, DocValuesProducer,
-    DocValuesSkipper, EmptyBinaryDocValues, EmptyDocValuesConsumer, EmptyDocValuesFormat,
-    EmptyDocValuesProducer, EmptyNumericDocValues, EmptySortedDocValues,
-    EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues, SortedDocValues,
-    SortedNumericDocValues, SortedSetDocValues,
+    DocValuesSkipper, EmptyBinaryDocValues, EmptyDocValuesProducer, EmptyNumericDocValues,
+    EmptySortedDocValues, EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues,
+    SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
 };
 pub use field_infos::{EmptyFieldInfosFormat, FieldInfosFormat};
 pub use hnsw::{
@@ -70,8 +69,7 @@ pub use hnsw::{
 };
 pub use knn_vectors::{
     available_knn_vectors_formats, knn_vectors_for_name, BufferingKnnVectorsWriter,
-    ByteVectorValues, EmptyBufferingKnnVectorsWriter, EmptyByteVectorValues,
-    EmptyFloatVectorValues, EmptyKnnCollector, EmptyKnnFieldVectorsWriter, EmptyKnnVectorsFormat,
+    ByteVectorValues, EmptyKnnCollector, EmptyKnnFieldVectorsWriter, EmptyKnnVectorsFormat,
     EmptyKnnVectorsReader, EmptyKnnVectorsWriter, FloatVectorValues, KnnCollector,
     KnnFieldVectorsWriter, KnnSearchStrategy, KnnVectorsFormat, KnnVectorsFormatRegistry,
     KnnVectorsReader, KnnVectorsWriter, SorterDocMap, TopDocs,
@@ -98,16 +96,13 @@ pub use lucene99::{
     Lucene99HnswVectorsFormat, Lucene99HnswVectorsReader, Lucene99HnswVectorsWriter,
     Lucene99SegmentInfoFormat,
 };
-pub use norms::{
-    EmptyNormsConsumer, EmptyNormsDocValues, EmptyNormsFormat, EmptyNormsProducer, NormsConsumer,
-    NormsFormat, NormsProducer,
-};
+pub use norms::{EmptyNormsDocValues, NormsConsumer, NormsFormat, NormsProducer};
 pub use per_field::{
     PerFieldDocValuesFormat, PerFieldKnnVectorsFormat, PerFieldMergeState, PerFieldPostingsFormat,
 };
 pub use points::{
-    EmptyPointValues, EmptyPointsFormat, EmptyPointsReader, EmptyPointsWriter, PointValues,
-    PointsFormat, PointsReader, PointsWriter,
+    EmptyPointsFormat, EmptyPointsReader, EmptyPointsWriter, PointValues, PointsFormat,
+    PointsReader, PointsWriter,
 };
 pub use postings::{
     available_postings_formats, postings_for_name, FieldsConsumer, FieldsProducer, MergeState,
@@ -603,6 +598,8 @@ impl Codec for FilterCodec {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use super::doc_values::EmptyDocValuesConsumer;
+    use super::norms::{EmptyNormsConsumer, EmptyNormsProducer};
     use super::stub::*;
     use super::*;
 

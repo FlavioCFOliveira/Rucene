@@ -940,110 +940,6 @@ fn check_ord(ord: i32, size: usize) -> Result<()> {
 }
 
 // -----------------------------------------------------------------------------
-// Empty implementations
-// -----------------------------------------------------------------------------
-
-/// A no-op KNN vector values instance.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyKnnVectorValues;
-
-impl KnnVectorValues for EmptyKnnVectorValues {
-    fn dimension(&self) -> i32 {
-        0
-    }
-
-    fn size(&self) -> i32 {
-        0
-    }
-
-    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Ok(Box::new(*self))
-    }
-
-    fn encoding(&self) -> VectorEncoding {
-        VectorEncoding::FLOAT32
-    }
-
-    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        Ok(Box::new(DenseDocIndexIterator::new(0)))
-    }
-}
-
-/// A no-op float vector values instance.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyFloatVectorValues;
-
-impl KnnVectorValues for EmptyFloatVectorValues {
-    fn dimension(&self) -> i32 {
-        0
-    }
-
-    fn size(&self) -> i32 {
-        0
-    }
-
-    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Ok(Box::new(*self))
-    }
-
-    fn encoding(&self) -> VectorEncoding {
-        VectorEncoding::FLOAT32
-    }
-
-    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        Ok(Box::new(DenseDocIndexIterator::new(0)))
-    }
-}
-
-impl FloatVectorValues for EmptyFloatVectorValues {
-    fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
-        check_ord(ord, 0)?;
-        unreachable!("INVARIANT: size() is 0, so every ordinal is rejected above")
-    }
-
-    fn copy_float(&self) -> Result<Box<dyn FloatVectorValues>> {
-        Ok(Box::new(*self))
-    }
-}
-
-/// A no-op byte vector values instance.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EmptyByteVectorValues;
-
-impl KnnVectorValues for EmptyByteVectorValues {
-    fn dimension(&self) -> i32 {
-        0
-    }
-
-    fn size(&self) -> i32 {
-        0
-    }
-
-    fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-        Ok(Box::new(*self))
-    }
-
-    fn encoding(&self) -> VectorEncoding {
-        VectorEncoding::BYTE
-    }
-
-    fn iterator(&self) -> Result<Box<dyn DocIndexIterator>> {
-        Ok(Box::new(DenseDocIndexIterator::new(0)))
-    }
-}
-
-impl ByteVectorValues for EmptyByteVectorValues {
-    fn vector_value(&self, ord: i32) -> Result<Vec<u8>> {
-        check_ord(ord, 0)?;
-        unreachable!("INVARIANT: size() is 0, so every ordinal is rejected above")
-    }
-
-    fn copy_byte(&self) -> Result<Box<dyn ByteVectorValues>> {
-        Ok(Box::new(*self))
-    }
-}
-
-// -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
 
@@ -1359,51 +1255,19 @@ mod tests {
         assert_eq!(Bare.vector_byte_length(), 16);
     }
 
-    #[test]
-    fn empty_float_vector_values_is_empty() {
-        let values = EmptyFloatVectorValues;
-        assert_eq!(values.dimension(), 0);
-        assert_eq!(values.size(), 0);
-        assert!(values.vector_value(0).is_err());
-        let mut it = values.iterator().unwrap();
-        assert_eq!(it.next_doc().unwrap(), NO_MORE_DOCS);
-        assert_eq!(values.copy_float().unwrap().size(), 0);
-    }
-
-    #[test]
-    fn empty_byte_vector_values_is_empty() {
-        let values = EmptyByteVectorValues;
-        assert_eq!(values.dimension(), 0);
-        assert_eq!(values.size(), 0);
-        assert_eq!(values.encoding(), VectorEncoding::BYTE);
-        assert!(values.vector_value(0).is_err());
-        assert_eq!(values.copy_byte().unwrap().size(), 0);
-    }
-
-    #[test]
-    fn empty_knn_vector_values_copy_is_empty() {
-        let values = EmptyKnnVectorValues;
-        let copy = values.copy().unwrap();
-        assert_eq!(copy.size(), 0);
-    }
-
     /// Java fixes `getEncoding()` on `FloatVectorValues`/`ByteVectorValues`.
     /// Rust cannot make a supertrait method final, so the invariant is pinned
     /// here for every implementation this module owns.
     #[test]
     fn typed_values_report_their_fixed_encoding() {
-        let float_values: Vec<Box<dyn FloatVectorValues>> = vec![
-            Box::new(from_floats(vec![vec![1.0]], 1)),
-            Box::new(EmptyFloatVectorValues),
-        ];
+        let float_values: Vec<Box<dyn FloatVectorValues>> =
+            vec![Box::new(from_floats(vec![vec![1.0]], 1))];
         for values in float_values {
             assert_eq!(values.encoding(), VectorEncoding::FLOAT32);
         }
 
-        let byte_values: Vec<Box<dyn ByteVectorValues>> = vec![
-            Box::new(from_bytes(vec![vec![1]], 1)),
-            Box::new(EmptyByteVectorValues),
-        ];
+        let byte_values: Vec<Box<dyn ByteVectorValues>> =
+            vec![Box::new(from_bytes(vec![vec![1]], 1))];
         for values in byte_values {
             assert_eq!(values.encoding(), VectorEncoding::BYTE);
         }

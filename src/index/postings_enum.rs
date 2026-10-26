@@ -7,7 +7,7 @@
 #![deny(unsafe_code)]
 
 use crate::error::Result;
-use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
+use crate::search::DocIdSetIterator;
 
 /// Request no optional information from a postings enum.
 ///
@@ -213,34 +213,39 @@ impl FreqAndNormBuffer {
     }
 }
 
-/// An empty [`PostingsEnum`] instance.
+/// An empty [`PostingsEnum`] instance, for tests only: Lucene has no such
+/// class.
+#[cfg(test)]
 #[derive(Debug, Clone)]
-pub struct EmptyPostingsEnum;
+pub(crate) struct EmptyPostingsEnum;
 
+#[cfg(test)]
 impl Default for EmptyPostingsEnum {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(test)]
 impl EmptyPostingsEnum {
     /// Creates an empty postings enum.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 }
 
+#[cfg(test)]
 impl DocIdSetIterator for EmptyPostingsEnum {
     fn doc_id(&self) -> i32 {
-        NO_MORE_DOCS
+        crate::search::NO_MORE_DOCS
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        Ok(NO_MORE_DOCS)
+        Ok(crate::search::NO_MORE_DOCS)
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
-        Ok(NO_MORE_DOCS)
+        Ok(crate::search::NO_MORE_DOCS)
     }
 
     fn cost(&self) -> i64 {
@@ -248,6 +253,7 @@ impl DocIdSetIterator for EmptyPostingsEnum {
     }
 }
 
+#[cfg(test)]
 impl std::fmt::Display for EmptyPostingsEnum {
     /// Port-only: Lucene 10.5.0 has no `PostingsEnum.EMPTY` counterpart —
     /// `TermsEnum.EMPTY` exists, but its postings method throws. Rendered under
@@ -257,6 +263,7 @@ impl std::fmt::Display for EmptyPostingsEnum {
     }
 }
 
+#[cfg(test)]
 impl PostingsEnum for EmptyPostingsEnum {
     fn freq(&self) -> Result<i32> {
         Ok(0)
@@ -286,7 +293,7 @@ impl PostingsEnum for EmptyPostingsEnum {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::DocIdSetIterator;
+    use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
     use crate::util::BytesRef;
 
     /// Stub postings enum backed by a list of `(doc, freq, positions, offsets,

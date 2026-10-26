@@ -158,7 +158,7 @@ fn a_segment_whose_fields_have_a_single_term_can_be_read_back() {
         let terms = rucene::index::leaf_reader::LeafReader::terms(leaf.as_ref(), field)
             .expect("terms")
             .unwrap_or_else(|| panic!("field {field} must have a terms dictionary"));
-        assert_eq!(terms.size(), 1);
+        assert_eq!(terms.size().unwrap(), 1);
         assert_eq!(terms.min().unwrap().unwrap().slice(), term.as_bytes());
         assert_eq!(terms.max().unwrap().unwrap().slice(), term.as_bytes());
     }

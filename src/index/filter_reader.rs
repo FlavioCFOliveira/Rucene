@@ -400,19 +400,19 @@ impl Terms for FilterTerms {
         self.inner.iterator()
     }
 
-    fn size(&self) -> i64 {
+    fn size(&self) -> Result<i64> {
         self.inner.size()
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
+    fn sum_total_term_freq(&self) -> Result<i64> {
         self.inner.sum_total_term_freq()
     }
 
-    fn sum_doc_freq(&self) -> i64 {
+    fn sum_doc_freq(&self) -> Result<i64> {
         self.inner.sum_doc_freq()
     }
 
-    fn doc_count(&self) -> i32 {
+    fn doc_count(&self) -> Result<i32> {
         self.inner.doc_count()
     }
 
@@ -432,7 +432,7 @@ impl Terms for FilterTerms {
         self.inner.has_payloads()
     }
 
-    fn stats(&self) -> String {
+    fn stats(&self) -> Result<String> {
         self.inner.stats()
     }
 }

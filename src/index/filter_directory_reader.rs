@@ -334,24 +334,30 @@ impl std::fmt::Display for FilterDirectoryReader {
 }
 
 impl FilterDirectoryReader {
-    /// Wraps `inner`, passing each of `leaves` through `wrapper`, and
+    /// Wraps `inner`, passing each of its leaves through `wrapper`, and
     /// remembering `directory_wrapper` for `doOpenIfChanged*` to reproduce the
     /// same wrapping on the reopened reader.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java's constructor reaches the leaves
-    /// through `in.getSequentialSubReaders()` and downcasts each to
-    /// `LeafReader`. Rust has no downcast from `dyn IndexReader`, so the caller
-    /// supplies the leaves it already holds; every caller of this type has them.
+    /// Equivalent to `FilterDirectoryReader(DirectoryReader, SubReaderWrapper)`
+    /// (`FilterDirectoryReader.java:91-94`), which wraps
+    /// `in.getSequentialSubReaders()`. A `DirectoryReader`'s sequential
+    /// sub-readers are its leaves, so they are read off `inner`'s own
+    /// `LeafReaderContext`s, which carry the `Arc<dyn LeafReader>` handle that
+    /// a downcast from `dyn IndexReader` cannot produce.
     ///
     /// # Errors
     ///
-    /// Propagates whatever `wrapper` raises while wrapping `leaves`.
+    /// Propagates whatever `wrapper` raises while wrapping the leaves.
     pub fn new(
         inner: Arc<dyn DirectoryReader>,
-        leaves: Vec<Arc<dyn LeafReader>>,
         wrapper: Arc<dyn SubReaderWrapper>,
         directory_wrapper: Arc<dyn DirectoryReaderWrapper>,
     ) -> Result<Self> {
+        let leaves: Vec<Arc<dyn LeafReader>> = Arc::clone(&inner)
+            .leaves()
+            .into_iter()
+            .map(|context| context.leaf_reader())
+            .collect();
         let wrapped_leaves = wrapper.wrap_all(leaves)?;
         // `super(in.directory(), wrapper.wrap(in.getSequentialSubReaders()), null)`:
         // the composite is built over the **wrapped** leaves, never the
@@ -682,17 +688,6 @@ impl DirectoryReaderWrapper for ExitableDirectoryReaderWrapper {
     }
 
     fn wrap(&self, inner: Arc<dyn DirectoryReader>) -> Result<Arc<dyn DirectoryReader>> {
-        // Equivalent to `FilterDirectoryReader(DirectoryReader, SubReaderWrapper)`
-        // reaching `in.getSequentialSubReaders()`: Rust has no downcast from
-        // `dyn IndexReader` to `dyn LeafReader` (see `FilterDirectoryReader::new`'s
-        // doc comment), so the leaves are read back off `inner`'s own
-        // `LeafReaderContext`s instead, which carry the `Arc<dyn LeafReader>`
-        // handle directly.
-        let leaves: Vec<Arc<dyn LeafReader>> = Arc::clone(&inner)
-            .leaves()
-            .into_iter()
-            .map(|context| context.leaf_reader())
-            .collect();
         let sub_wrapper: Arc<dyn SubReaderWrapper> = Arc::new(ExitableSubReaderWrapper::new(
             Arc::clone(&self.query_timeout),
         ));
@@ -700,7 +695,6 @@ impl DirectoryReaderWrapper for ExitableDirectoryReaderWrapper {
             Arc::new(Self::new(Arc::clone(&self.query_timeout)));
         Ok(Arc::new(FilterDirectoryReader::new(
             inner,
-            leaves,
             sub_wrapper,
             directory_wrapper,
         )?))
@@ -1196,19 +1190,19 @@ impl Terms for ExitableTerms {
         self.inner.get_delegate().max()
     }
 
-    fn size(&self) -> i64 {
+    fn size(&self) -> Result<i64> {
         self.inner.size()
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
+    fn sum_total_term_freq(&self) -> Result<i64> {
         self.inner.sum_total_term_freq()
     }
 
-    fn sum_doc_freq(&self) -> i64 {
+    fn sum_doc_freq(&self) -> Result<i64> {
         self.inner.sum_doc_freq()
     }
 
-    fn doc_count(&self) -> i32 {
+    fn doc_count(&self) -> Result<i32> {
         self.inner.doc_count()
     }
 
@@ -1228,7 +1222,7 @@ impl Terms for ExitableTerms {
         self.inner.has_payloads()
     }
 
-    fn stats(&self) -> String {
+    fn stats(&self) -> Result<String> {
         self.inner.stats()
     }
 }
@@ -2943,10 +2937,10 @@ struct SlowNormsProducer {
 }
 
 impl NormsProducer for SlowNormsProducer {
-    fn get_norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        self.reader.get_norm_values(&field.name)?.ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("field \"{}\" has no norms", field.name))
-        })
+    /// `reader.getNormValues(field.name)`, `null` included
+    /// (`index/SlowCodecReaderWrapper.java:225-228`).
+    fn get_norms(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        self.reader.get_norm_values(&field.name)
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -2975,39 +2969,37 @@ struct SlowDocValuesProducer {
 }
 
 impl DocValuesProducer for SlowDocValuesProducer {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        Ok(self
-            .reader
-            .get_numeric_doc_values(&field.name)?
-            .unwrap_or_else(|| Box::new(DocValues::empty_numeric())))
+    /// `reader.get_numeric_doc_values(field.name)`, `null` included
+    /// (`index/SlowCodecReaderWrapper.java:245-248`).
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        self.reader.get_numeric_doc_values(&field.name)
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        Ok(self
-            .reader
-            .get_binary_doc_values(&field.name)?
-            .unwrap_or_else(|| Box::new(DocValues::empty_binary())))
+    /// `reader.get_binary_doc_values(field.name)`, `null` included
+    /// (`index/SlowCodecReaderWrapper.java:250-253`).
+    fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        self.reader.get_binary_doc_values(&field.name)
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        Ok(self
-            .reader
-            .get_sorted_doc_values(&field.name)?
-            .unwrap_or_else(|| Box::new(DocValues::empty_sorted())))
+    /// `reader.get_sorted_doc_values(field.name)`, `null` included
+    /// (`index/SlowCodecReaderWrapper.java:255-258`).
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        self.reader.get_sorted_doc_values(&field.name)
     }
 
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        Ok(self
-            .reader
-            .get_sorted_numeric_doc_values(&field.name)?
-            .unwrap_or_else(|| Box::new(DocValues::empty_sorted_numeric())))
+    /// `reader.get_sorted_numeric_doc_values(field.name)`, `null` included
+    /// (`index/SlowCodecReaderWrapper.java:260-263`).
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        self.reader.get_sorted_numeric_doc_values(&field.name)
     }
 
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        Ok(self
-            .reader
-            .get_sorted_set_doc_values(&field.name)?
-            .unwrap_or_else(|| Box::new(DocValues::empty_sorted_set())))
+    /// `reader.get_sorted_set_doc_values(field.name)`, `null` included
+    /// (`index/SlowCodecReaderWrapper.java:265-268`).
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        self.reader.get_sorted_set_doc_values(&field.name)
     }
 
     /// Equivalent to the anonymous producer's `getSkipper`
@@ -3550,20 +3542,12 @@ impl DirectoryReaderWrapper for SoftDeletesDirectoryReaderWrapper {
     }
 
     fn wrap(&self, inner: Arc<dyn DirectoryReader>) -> Result<Arc<dyn DirectoryReader>> {
-        // See `ExitableDirectoryReaderWrapper::wrap` for why the leaves are
-        // read back off `inner`'s own `LeafReaderContext`s.
-        let leaves: Vec<Arc<dyn LeafReader>> = Arc::clone(&inner)
-            .leaves()
-            .into_iter()
-            .map(|context| context.leaf_reader())
-            .collect();
         let sub_wrapper: Arc<dyn SubReaderWrapper> =
             Arc::new(SoftDeletesSubReaderWrapper::new(self.field.clone()));
         let directory_wrapper: Arc<dyn DirectoryReaderWrapper> =
             Arc::new(Self::new(self.field.clone()));
         Ok(Arc::new(FilterDirectoryReader::new(
             inner,
-            leaves,
             sub_wrapper,
             directory_wrapper,
         )?))

@@ -618,7 +618,7 @@ impl SortingTermVectorsConsumer {
             let has_payloads = terms.has_payloads();
             debug_assert!(!has_payloads || has_positions);
 
-            let mut num_terms = terms.size() as i32;
+            let mut num_terms = terms.size()? as i32;
             if num_terms == -1 {
                 // Count manually. It is stupid, but needed, as `Terms.size()` is
                 // not a mandatory statistics function.

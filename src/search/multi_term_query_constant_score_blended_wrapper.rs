@@ -202,7 +202,7 @@ impl RewriteInner for BlendedRewrite {
         lead_cost: i64,
     ) -> Result<WeightOrDocIdSetIterator> {
         let max_doc = context.leaf_reader().max_doc();
-        let mut other_terms = DocIdSetBuilder::from_terms(max_doc, terms);
+        let mut other_terms = DocIdSetBuilder::from_terms(max_doc, terms)?;
         let mut high_frequency_terms: PriorityQueue<Box<dyn PostingsEnum>, ByCost> =
             PriorityQueue::new(collected_terms.len(), ByCost)?;
 

@@ -366,7 +366,7 @@ mod tests {
             .expect("consumer should build");
 
         consumer
-            .write(&crate::index::EmptyFields::new(), None)
+            .write(&crate::index::terms::EmptyFields::new(), None)
             .expect("write should succeed on skeleton");
         consumer.close().expect("close should succeed");
 
@@ -390,7 +390,7 @@ mod tests {
             .fields_consumer(&write_state)
             .expect("consumer should build");
         consumer
-            .write(&crate::index::EmptyFields::new(), None)
+            .write(&crate::index::terms::EmptyFields::new(), None)
             .expect("write should succeed on empty fields");
         consumer.close().expect("close should succeed");
 

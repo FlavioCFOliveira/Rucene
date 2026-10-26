@@ -29,11 +29,7 @@ use std::sync::{Arc, Mutex};
 use crate::codecs::state::SegmentWriteState;
 use crate::codecs::DocValuesProducer;
 use crate::error::{LuceneError, Result};
-use crate::index::doc_values::{
-    BinaryDocValues, DocValuesIterator, EmptyBinaryDocValues, EmptyDocValuesProducer,
-    EmptyNumericDocValues, EmptySortedDocValues, EmptySortedNumericDocValues,
-    EmptySortedSetDocValues, NumericDocValues,
-};
+use crate::index::doc_values::{BinaryDocValues, DocValuesIterator, NumericDocValues};
 use crate::index::doc_values_field_updates::{
     merged_iterator, DocValuesFieldUpdates, MergedIterator,
 };
@@ -2055,9 +2051,9 @@ impl ReadersAndUpdates {
                 let mut consumer = doc_values_format.fields_consumer(&write_state)?;
 
                 let merged_producer = MergedDvProducer {
-                    reader,
+                    reader: Arc::clone(&reader_arc),
+                    dv_type: fd.dv_type,
                     field: fd.field.clone(),
-                    field_info: field_info_mut.clone(),
                     numeric_updates: fd.numeric_updates.clone(),
                     binary_updates: fd.binary_updates.clone(),
                 };
@@ -2509,17 +2505,24 @@ impl ReadersAndUpdates {
 /// A `DocValuesProducer` that merges on-disk doc values with in-memory updates
 /// for a single field, giving updates precedence.
 ///
-/// Equivalent to the anonymous `EmptyDocValuesProducer` + `MergedDocValues`
-/// inner classes in `ReadersAndUpdates.handleDVUpdates`.
-struct MergedDvProducer<'a> {
-    reader: &'a SegmentReader,
+/// Equivalent to the two anonymous `EmptyDocValuesProducer` subclasses of
+/// `ReadersAndUpdates.handleDVUpdates` (`ReadersAndUpdates.java:350-470`): the
+/// binary one overrides only `getBinary`, the numeric one only `getNumeric`,
+/// and both ignore the `FieldInfo` they are asked with, serving the field being
+/// updated. Every other member is `EmptyDocValuesProducer`'s and throws
+/// `UnsupportedOperationException`; `getMergeInstance` is
+/// `DocValuesProducer`'s, which returns `this`.
+#[derive(Clone)]
+struct MergedDvProducer {
+    reader: Arc<SegmentReader>,
+    /// Which of the two Java producers this is: `BINARY` or `NUMERIC`.
+    dv_type: DocValuesType,
     field: String,
-    field_info: FieldInfo,
     numeric_updates: HashMap<i32, Option<i64>>,
     binary_updates: HashMap<i32, Option<BytesRef>>,
 }
 
-impl<'a> std::fmt::Debug for MergedDvProducer<'a> {
+impl std::fmt::Debug for MergedDvProducer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MergedDvProducer")
             .field("field", &self.field)
@@ -2527,93 +2530,80 @@ impl<'a> std::fmt::Debug for MergedDvProducer<'a> {
     }
 }
 
-impl<'a> DocValuesProducer for MergedDvProducer<'a> {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        if field.name != self.field_info.name {
-            return Ok(Box::new(EmptyNumericDocValues::new()));
+impl MergedDvProducer {
+    /// The `UnsupportedOperationException` `EmptyDocValuesProducer` throws.
+    fn unsupported(method: &str) -> LuceneError {
+        LuceneError::UnsupportedOperation(format!("EmptyDocValuesProducer.{method}"))
+    }
+}
+
+impl DocValuesProducer for MergedDvProducer {
+    /// The numeric producer's `getNumeric` (`ReadersAndUpdates.java:399-441`):
+    /// `reader.getNumericDocValues(field)` merged with the updates.
+    fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        if self.dv_type != DocValuesType::NUMERIC {
+            return Err(Self::unsupported("getNumeric"));
         }
-        let on_disk = if let Some(producer) = self.reader.get_doc_values_reader()? {
-            if let Some(fi) = self.reader.get_field_infos().field_info(&self.field) {
-                if fi.get_doc_values_type() == DocValuesType::NUMERIC {
-                    Some(producer.get_numeric(fi)?)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        Ok(Box::new(MergedNumericDocValues::new(
+        let on_disk = self.reader.get_numeric_doc_values(&self.field)?;
+        Ok(Some(Box::new(MergedNumericDocValues::new(
             on_disk,
             &self.numeric_updates,
-        )))
+        ))))
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        if field.name != self.field_info.name {
-            return Ok(Box::new(EmptyBinaryDocValues::new()));
+    /// The binary producer's `getBinary` (`ReadersAndUpdates.java:352-395`):
+    /// `reader.getBinaryDocValues(field)` merged with the updates.
+    fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        if self.dv_type != DocValuesType::BINARY {
+            return Err(Self::unsupported("getBinary"));
         }
-        let on_disk = if let Some(producer) = self.reader.get_doc_values_reader()? {
-            if let Some(fi) = self.reader.get_field_infos().field_info(&self.field) {
-                if fi.get_doc_values_type() == DocValuesType::BINARY {
-                    Some(producer.get_binary(fi)?)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        Ok(Box::new(MergedBinaryDocValues::new(
+        let on_disk = self.reader.get_binary_doc_values(&self.field)?;
+        Ok(Some(Box::new(MergedBinaryDocValues::new(
             on_disk,
             &self.binary_updates,
-        )))
+        ))))
     }
 
-    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn crate::index::SortedDocValues>> {
-        Ok(Box::new(EmptySortedDocValues::new()))
+    fn get_sorted(
+        &self,
+        _field: &FieldInfo,
+    ) -> Result<Option<Box<dyn crate::index::SortedDocValues>>> {
+        Err(Self::unsupported("getSorted"))
     }
 
     fn get_sorted_numeric(
         &self,
         _field: &FieldInfo,
-    ) -> Result<Box<dyn crate::index::SortedNumericDocValues>> {
-        Ok(Box::new(EmptySortedNumericDocValues::new()))
+    ) -> Result<Option<Box<dyn crate::index::SortedNumericDocValues>>> {
+        Err(Self::unsupported("getSortedNumeric"))
     }
 
     fn get_sorted_set(
         &self,
         _field: &FieldInfo,
-    ) -> Result<Box<dyn crate::index::SortedSetDocValues>> {
-        Ok(Box::new(EmptySortedSetDocValues::new()))
+    ) -> Result<Option<Box<dyn crate::index::SortedSetDocValues>>> {
+        Err(Self::unsupported("getSortedSet"))
     }
 
-    /// Inherited from `EmptyDocValuesProducer.getSkipper`
-    /// (`index/EmptyDocValuesProducer.java:54-57`) by the anonymous producers
-    /// of `ReadersAndUpdates.handleDVUpdates`: unsupported.
     fn get_skipper(
         &self,
         _field: &FieldInfo,
     ) -> Result<Option<Box<dyn crate::index::DocValuesSkipper>>> {
-        Err(LuceneError::UnsupportedOperation(
-            "a doc-values update producer does not provide a doc-values skipper".to_string(),
-        ))
+        Err(Self::unsupported("getSkipper"))
     }
 
     fn check_integrity(&self) -> Result<()> {
-        Ok(())
+        Err(Self::unsupported("checkIntegrity"))
     }
 
+    /// Inherited from `DocValuesProducer.getMergeInstance()`, which returns
+    /// `this`; the clone shares the reader and holds the same updates.
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-        Ok(Box::new(EmptyDocValuesProducer))
+        Ok(Box::new(self.clone()))
     }
 
     fn close(&mut self) -> Result<()> {
-        Ok(())
+        Err(Self::unsupported("close"))
     }
 }
 

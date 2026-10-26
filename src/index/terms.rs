@@ -393,6 +393,26 @@ impl FilteredTermsEnum {
         }
     }
 
+    /// Creates a filtered enum whose first step seeks, to the term the filter's
+    /// [`next_seek_term`](FilteredTermsEnumFilter::next_seek_term) answers for
+    /// no current term, when `start_with_seek` is set.
+    ///
+    /// Equivalent to `FilteredTermsEnum(TermsEnum, boolean startWithSeek)`
+    /// (`index/FilteredTermsEnum.java:87-91`).
+    pub fn with_start_with_seek(
+        tenum: Box<dyn TermsEnum>,
+        filter: Box<dyn FilteredTermsEnumFilter>,
+        start_with_seek: bool,
+    ) -> Self {
+        Self {
+            tenum,
+            filter,
+            initial_seek_term: None,
+            do_seek: start_with_seek,
+            actual_term: None,
+        }
+    }
+
     /// Creates a filtered enum that first seeks to `initial_seek_term`.
     pub fn new_with_seek(
         tenum: Box<dyn TermsEnum>,
@@ -596,33 +616,48 @@ impl TermState for EmptyTermState {
 /// Access to the terms of a specific field.
 ///
 /// Equivalent to `org.apache.lucene.index.Terms`.
-pub trait Terms {
+pub trait Terms: Send + Sync {
     /// Returns an iterator over all terms in this field.
     fn iterator(&self) -> Result<Box<dyn TermsEnum>>;
 
     /// Returns a terms enum restricted to terms accepted by the automaton,
     /// starting after `start_term`.
+    ///
+    /// Equivalent to the default `Terms.intersect(CompiledAutomaton, BytesRef)`
+    /// (`Terms.java:64-96`); see [`default_intersect`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `compiled` is not a
+    /// normal automaton, and propagates whatever [`Terms::iterator`] raises.
     fn intersect(
         &self,
-        _compiled: &CompiledAutomaton,
-        _start_term: Option<&BytesRef>,
+        compiled: &CompiledAutomaton,
+        start_term: Option<&BytesRef>,
     ) -> Result<Box<dyn TermsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
-            "intersect not implemented".to_string(),
-        ))
+        default_intersect(self, compiled, start_term)
     }
 
     /// Returns the number of terms in this field, or `-1` if unknown.
-    fn size(&self) -> i64;
+    ///
+    /// Equivalent to `Terms.size()`, which throws `IOException`
+    /// (`Terms.java:103`).
+    fn size(&self) -> Result<i64>;
 
     /// Returns the sum of `totalTermFreq` for all terms in this field.
-    fn sum_total_term_freq(&self) -> i64;
+    ///
+    /// Equivalent to `Terms.getSumTotalTermFreq()` (`Terms.java:109`).
+    fn sum_total_term_freq(&self) -> Result<i64>;
 
     /// Returns the sum of `docFreq` for all terms in this field.
-    fn sum_doc_freq(&self) -> i64;
+    ///
+    /// Equivalent to `Terms.getSumDocFreq()` (`Terms.java:115`).
+    fn sum_doc_freq(&self) -> Result<i64>;
 
     /// Returns the number of documents with at least one term for this field.
-    fn doc_count(&self) -> i32;
+    ///
+    /// Equivalent to `Terms.getDocCount()` (`Terms.java:121`).
+    fn doc_count(&self) -> Result<i32>;
 
     /// Returns `true` if this field stores term frequencies.
     fn has_freqs(&self) -> bool;
@@ -644,7 +679,7 @@ pub trait Terms {
 
     /// Returns the largest term in this field, or `None` if empty.
     fn max(&self) -> Result<Option<BytesRef>> {
-        let size = self.size();
+        let size = self.size()?;
         if size == 0 {
             return Ok(None);
         }
@@ -688,21 +723,53 @@ pub trait Terms {
     }
 
     /// Returns additional debug statistics about this terms instance.
-    fn stats(&self) -> String {
-        format!(
+    ///
+    /// Equivalent to `Terms.getStats()`, which throws `IOException`
+    /// (`Terms.java:217-226`).
+    fn stats(&self) -> Result<String> {
+        Ok(format!(
             "impl=Terms,size={},docCount={},sumTotalTermFreq={},sumDocFreq={}",
-            self.size(),
-            self.doc_count(),
-            self.sum_total_term_freq(),
-            self.sum_doc_freq()
-        )
+            self.size()?,
+            self.doc_count()?,
+            self.sum_total_term_freq()?,
+            self.sum_doc_freq()?
+        ))
     }
+}
+
+/// The body of the default `Terms.intersect(CompiledAutomaton, BytesRef)`
+/// (`Terms.java:64-96`): an [`AutomatonTermsEnum`](crate::index::automaton_terms_enum::AutomatonTermsEnum)
+/// over `terms.iterator()`, whose first seek starts from `start_term` when one
+/// is given.
+///
+/// [`Terms::intersect`]'s default body.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when `compiled` is not a normal
+/// automaton, and propagates whatever `terms.iterator()` raises.
+pub(crate) fn default_intersect<T: Terms + ?Sized>(
+    terms: &T,
+    compiled: &CompiledAutomaton,
+    start_term: Option<&BytesRef>,
+) -> Result<Box<dyn TermsEnum>> {
+    let terms_enum = terms.iterator()?;
+    if compiled.automaton_type != crate::util::automaton::AutomatonType::Normal {
+        return Err(LuceneError::IllegalArgument(
+            "please use CompiledAutomaton.getTermsEnum instead".to_string(),
+        ));
+    }
+    crate::index::automaton_terms_enum::AutomatonTermsEnum::with_start_term(
+        terms_enum,
+        compiled.clone(),
+        start_term.cloned(),
+    )
 }
 
 /// Collection of per-field [`Terms`] instances.
 ///
 /// Equivalent to `org.apache.lucene.index.Fields`.
-pub trait Fields {
+pub trait Fields: Send + Sync {
     /// Returns an iterator over all field names.
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_>;
 
@@ -1381,20 +1448,20 @@ impl Terms for EmptyTerms {
         Ok(Box::new(EmptyTermsEnum::new()))
     }
 
-    fn size(&self) -> i64 {
-        0
+    fn size(&self) -> Result<i64> {
+        Ok(0)
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
-        0
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        Ok(0)
     }
 
-    fn sum_doc_freq(&self) -> i64 {
-        0
+    fn sum_doc_freq(&self) -> Result<i64> {
+        Ok(0)
     }
 
-    fn doc_count(&self) -> i32 {
-        0
+    fn doc_count(&self) -> Result<i32> {
+        Ok(0)
     }
 
     fn has_freqs(&self) -> bool {
@@ -1414,17 +1481,20 @@ impl Terms for EmptyTerms {
     }
 }
 
-/// An empty [`Fields`] instance.
+/// An empty [`Fields`] instance, for tests only: Lucene has no such class.
+#[cfg(test)]
 #[derive(Debug, Clone, Default)]
-pub struct EmptyFields;
+pub(crate) struct EmptyFields;
 
+#[cfg(test)]
 impl EmptyFields {
     /// Creates an empty fields collection.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 }
 
+#[cfg(test)]
 impl Fields for EmptyFields {
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
         Box::new(std::iter::empty())
@@ -1523,10 +1593,10 @@ mod tests {
     #[test]
     fn empty_terms_reports_zero_counts() {
         let terms = EmptyTerms::new();
-        assert_eq!(terms.size(), 0);
-        assert_eq!(terms.sum_total_term_freq(), 0);
-        assert_eq!(terms.sum_doc_freq(), 0);
-        assert_eq!(terms.doc_count(), 0);
+        assert_eq!(terms.size().unwrap(), 0);
+        assert_eq!(terms.sum_total_term_freq().unwrap(), 0);
+        assert_eq!(terms.sum_doc_freq().unwrap(), 0);
+        assert_eq!(terms.doc_count().unwrap(), 0);
         assert!(!terms.has_freqs());
         assert!(!terms.has_positions());
         assert!(!terms.has_offsets());

@@ -348,9 +348,9 @@ mod tests {
     use crate::index::leaf_reader::{LeafMetaData, LeafReader, TermVectors};
     use crate::index::multi_reader::MultiReader;
     use crate::index::{
-        BinaryDocValues, ByteVectorValues, DocValuesSkipper, EmptyFields, FieldInfos, Fields,
-        FloatVectorValues, NumericDocValues, PointValues, SortedDocValues, SortedNumericDocValues,
-        SortedSetDocValues, Terms,
+        BinaryDocValues, ByteVectorValues, DocValuesSkipper, FieldInfos, Fields, FloatVectorValues,
+        NumericDocValues, PointValues, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
+        Terms,
     };
     use crate::search::knn::KnnCollector;
     use crate::search::AcceptDocs;
@@ -398,7 +398,7 @@ mod tests {
     struct StubTermVectors;
     impl TermVectors for StubTermVectors {
         fn get(&self, _doc: i32) -> Result<Option<Box<dyn Fields>>> {
-            Ok(Some(Box::new(EmptyFields)))
+            Ok(Some(Box::new(crate::index::terms::EmptyFields)))
         }
     }
 

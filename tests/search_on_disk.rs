@@ -95,9 +95,9 @@ fn a_positioned_term_reports_its_statistics_and_postings() {
     let terms = leaf.terms("body").unwrap().expect("body terms");
     println!(
         "terms.size={} sumDocFreq={} docCount={}",
-        terms.size(),
-        terms.sum_doc_freq(),
-        terms.doc_count()
+        terms.size().unwrap(),
+        terms.sum_doc_freq().unwrap(),
+        terms.doc_count().unwrap()
     );
     let mut te = terms.iterator().unwrap();
     println!(

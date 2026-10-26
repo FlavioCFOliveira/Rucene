@@ -87,25 +87,24 @@
 //!   [`StoredFieldsConsumer::init_stored_fields_writer`] reports
 //!   [`LuceneError::AlreadyClosed`]. The `DocumentsWriterPerThread` contract
 //!   never reaches this state, so no behaviour Lucene relies on changes.
-//! * **`Accountable` is not ported.** Lucene wraps the writer in an
-//!   `Accountable` so that a null writer reports zero bytes;
-//!   [`StoredFieldsConsumer::ram_bytes_used`] returns zero for the same reason,
-//!   without the wrapper.
+//! * **The `accountable` field is the writer itself.** Lucene keeps the
+//!   writer in an `Accountable` field that starts as
+//!   `Accountable.NULL_ACCOUNTABLE` (`StoredFieldsConsumer.java:34-36`, `:51`)
+//!   so that a consumer without a writer reports zero bytes;
+//!   [`StoredFieldsConsumer::ram_bytes_used`] asks the `Option` writer instead,
+//!   with the same answers.
 //!
 //! # Index sorting
 //!
 //! Lucene subclasses this consumer with `SortingStoredFieldsConsumer`, which
 //! writes to a temporary, uncompressed stored-fields file during indexing and,
 //! at flush time, replays the documents through the real codec writer in the
-//! order given by a `Sorter.DocMap`. That subclass depends on index-sorting
-//! infrastructure (`Sorter.DocMap`, `IndexSorter`,
-//! `TrackingTmpOutputDirectoryWrapper`) which is not part of this port yet, so
-//! it belongs to the index-sorting task. The extension points it needs are in
-//! place and are not expected to change: writer creation is isolated in
-//! [`StoredFieldsConsumer::init_stored_fields_writer`], and
-//! [`StoredFieldsConsumer::flush`] already takes the segment being flushed, so
-//! a sorting variant adds the temporary directory and the doc map without
-//! altering this type's contract.
+//! order given by a `Sorter.DocMap`. That subclass is ported as
+//! [`SortingStoredFieldsConsumer`](crate::index::sorting_consumers::SortingStoredFieldsConsumer),
+//! which wraps this type: Java's override of `initStoredFieldsWriter`
+//! (`SortingStoredFieldsConsumer.java:95-100`) becomes the format and the
+//! directory it hands this consumer, which
+//! [`StoredFieldsConsumer::init_stored_fields_writer`] writes through.
 
 #![deny(unsafe_code)]
 

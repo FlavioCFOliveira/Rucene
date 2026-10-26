@@ -13,9 +13,7 @@
 //! sums) are deliberately unavailable: during a merge they would have to be
 //! recomputed after deletions, and the codec that consumes this view derives
 //! them from the postings it actually writes. Lucene enforces that by throwing
-//! `UnsupportedOperationException`; see the note on the module's private
-//! `MappedMultiTerms` for how this port reports the same thing under an
-//! infallible signature.
+//! `UnsupportedOperationException`, and so does this port.
 //!
 //! # Reference
 //!
@@ -31,11 +29,10 @@ use crate::error::{LuceneError, Result};
 use crate::index::filter_reader::FilterFields;
 use crate::index::mapping_multi_postings_enum::MappingMultiPostingsEnum;
 use crate::index::merge::MergeState;
-use crate::index::multi_fields::{MultiFields, MultiTerms, MultiTermsEnum, SlowImpactsEnum};
+use crate::index::multi_fields::{MultiFields, MultiTerms, MultiTermsEnum};
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
 use crate::index::terms::{EmptyTermsEnum, Fields, SeekStatus, TermState, Terms, TermsEnum};
 use crate::util::attribute::AttributeSource;
-use crate::util::automaton::CompiledAutomaton;
 use crate::util::BytesRef;
 
 /// A [`Fields`] view that merges several segments' fields into one and maps
@@ -118,14 +115,11 @@ impl Fields for MappedMultiFields {
 ///
 /// Equivalent to `MappedMultiFields.MappedMultiTerms`.
 ///
-/// **Deliberate divergence**: Java throws `UnsupportedOperationException` from
-/// [`Terms::size`], [`Terms::sum_total_term_freq`], [`Terms::sum_doc_freq`] and
-/// [`Terms::doc_count`], so that a codec accidentally consulting them during a
-/// merge fails loudly rather than writing statistics that ignore deletions.
-/// Rucene declares those four methods infallible, so they return `-1` instead —
-/// the value Lucene itself documents on [`Terms::size`] for "this measure is not
-/// available", and one every codec must already tolerate. The intent is
-/// unchanged: the numbers are not available here and must not be used.
+/// As in Java, [`Terms::size`], [`Terms::sum_total_term_freq`],
+/// [`Terms::sum_doc_freq`] and [`Terms::doc_count`] throw
+/// `UnsupportedOperationException` (`MappedMultiFields.java:74-92`), so that a
+/// codec consulting them during a merge fails loudly rather than writing
+/// statistics that ignore deletions.
 struct MappedMultiTerms {
     field: String,
     merge_state: Arc<MergeState>,
@@ -162,34 +156,28 @@ impl Terms for MappedMultiTerms {
         Ok(self.wrap(self.inner.multi_iterator()?))
     }
 
-    fn intersect(
-        &self,
-        compiled: &CompiledAutomaton,
-        start_term: Option<&BytesRef>,
-    ) -> Result<Box<dyn TermsEnum>> {
-        // **Deliberate divergence**: Java inherits `intersect` from
-        // `FilterTerms`, which delegates straight to the wrapped `MultiTerms`
-        // and therefore returns postings in the *composite* doc-ID space —
-        // unmapped, and wrong for a merge. Wrapping the filtered enum the same
-        // way `iterator()` does keeps every entry point of this type in the
-        // merged doc-ID space.
-        Ok(self.wrap(self.inner.multi_intersect(compiled, start_term)?))
+    fn size(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "MappedMultiTerms.size".to_string(),
+        ))
     }
 
-    fn size(&self) -> i64 {
-        -1
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "MappedMultiTerms.getSumTotalTermFreq".to_string(),
+        ))
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
-        -1
+    fn sum_doc_freq(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "MappedMultiTerms.getSumDocFreq".to_string(),
+        ))
     }
 
-    fn sum_doc_freq(&self) -> i64 {
-        -1
-    }
-
-    fn doc_count(&self) -> i32 {
-        -1
+    fn doc_count(&self) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(
+            "MappedMultiTerms.getDocCount".to_string(),
+        ))
     }
 
     fn has_freqs(&self) -> bool {
@@ -323,13 +311,11 @@ impl TermsEnum for MappedMultiTermsEnum {
         self.mapped_postings(flags)
     }
 
+    /// Inherited from `FilterTermsEnum.impacts(int)`, which delegates to the
+    /// wrapped `MultiTermsEnum` (`FilterLeafReader.java:232-235`),
+    /// so its documents are in the composite doc-ID space, not the merged one.
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        // **Deliberate divergence**: Java inherits `impacts` from
-        // `FilterTermsEnum`, which delegates to the wrapped `MultiTermsEnum`
-        // and so reports *unmapped* doc IDs. Wrapping the mapped postings in a
-        // `SlowImpactsEnum` — which is exactly what `MultiTermsEnum::impacts`
-        // does with its own postings — keeps the doc-ID space consistent.
-        Ok(Box::new(SlowImpactsEnum::new(self.mapped_postings(flags)?)))
+        self.inner.impacts(flags)
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
@@ -352,6 +338,7 @@ impl TermsEnum for MappedMultiTermsEnum {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::automaton::CompiledAutomaton;
 
     use std::collections::{BTreeMap, HashMap};
 
@@ -359,7 +346,6 @@ mod tests {
     use crate::index::{FieldInfos, ReaderSlice, SegmentInfo};
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
     use crate::store::{Directory, RamDirectory};
-    use crate::util::automaton::Automaton;
     use crate::util::{Bits, StringHelper, Version};
 
     // -----------------------------------------------------------------------
@@ -572,21 +558,23 @@ mod tests {
             self.iterator()
         }
 
-        fn size(&self) -> i64 {
-            self.entries.len() as i64
+        fn size(&self) -> Result<i64> {
+            Ok(self.entries.len() as i64)
         }
-        fn sum_total_term_freq(&self) -> i64 {
-            self.entries.iter().map(|(_, _, ttf, _)| *ttf).sum()
+        fn sum_total_term_freq(&self) -> Result<i64> {
+            Ok(self.entries.iter().map(|(_, _, ttf, _)| *ttf).sum())
         }
-        fn sum_doc_freq(&self) -> i64 {
-            self.entries.iter().map(|(_, df, _, _)| *df as i64).sum()
+        fn sum_doc_freq(&self) -> Result<i64> {
+            Ok(self.entries.iter().map(|(_, df, _, _)| *df as i64).sum())
         }
-        fn doc_count(&self) -> i32 {
-            self.entries
-                .iter()
-                .flat_map(|(_, _, _, docs)| docs.iter().copied())
-                .collect::<std::collections::BTreeSet<_>>()
-                .len() as i32
+        fn doc_count(&self) -> Result<i32> {
+            Ok({
+                self.entries
+                    .iter()
+                    .flat_map(|(_, _, _, docs)| docs.iter().copied())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len() as i32
+            })
         }
         fn has_freqs(&self) -> bool {
             self.has_freqs
@@ -852,12 +840,14 @@ mod tests {
     fn field_level_statistics_are_unavailable_while_merging() {
         let (_state, fields) = scenario();
         let terms = fields.terms("body").unwrap().unwrap();
-        // Java throws UnsupportedOperationException from all four; Rucene's
-        // infallible signatures report the documented "unknown" sentinel.
-        assert_eq!(terms.size(), -1);
-        assert_eq!(terms.sum_total_term_freq(), -1);
-        assert_eq!(terms.sum_doc_freq(), -1);
-        assert_eq!(terms.doc_count(), -1);
+        // Java throws UnsupportedOperationException from all four
+        // (MappedMultiFields.java:74-92).
+        let unsupported =
+            |e: Option<LuceneError>| matches!(e, Some(LuceneError::UnsupportedOperation(_)));
+        assert!(unsupported(terms.size().err()));
+        assert!(unsupported(terms.sum_total_term_freq().err()));
+        assert!(unsupported(terms.sum_doc_freq().err()));
+        assert!(unsupported(terms.doc_count().err()));
     }
 
     #[test]
@@ -937,8 +927,11 @@ mod tests {
         assert!(enumerator.next().unwrap().is_none());
     }
 
+    /// `MappedMultiTermsEnum` inherits `FilterTermsEnum.impacts`, which asks the
+    /// wrapped `MultiTermsEnum` (`FilterLeafReader.java:232-235`): its
+    /// documents are in the composite doc-ID space, deletions included.
     #[test]
-    fn impacts_report_the_mapped_doc_ids() {
+    fn impacts_report_the_composite_doc_ids() {
         let (_state, fields) = scenario();
         let terms = fields.terms("body").unwrap().unwrap();
         let mut enumerator = terms.iterator().unwrap();
@@ -952,7 +945,7 @@ mod tests {
             }
             docs.push(doc);
         }
-        assert_eq!(docs, vec![0, 1, 3]);
+        assert_eq!(docs, vec![0, 2, 4]);
     }
 
     #[test]
@@ -966,20 +959,62 @@ mod tests {
         assert_eq!(impacts.num_levels(), 1);
     }
 
+    /// `MappedMultiTerms` inherits `Terms.intersect` (`Terms.java:64-96`),
+    /// which walks the type's own iterator: the postings it hands out are the
+    /// mapped ones.
     #[test]
-    fn intersect_also_returns_mapped_postings() {
+    fn intersect_walks_the_mapped_iterator() {
         let (_state, fields) = scenario();
-        let automaton = Automaton::new();
-        let compiled = CompiledAutomaton::new(automaton, true, false, true).unwrap();
+        let automaton = crate::util::automaton::Automata::make_string("apple");
+        let compiled = CompiledAutomaton::new(automaton, true, false, false).unwrap();
         let terms = fields.terms("body").unwrap().unwrap();
         let mut enumerator = terms.intersect(&compiled, None).unwrap();
-        assert!(enumerator.seek_exact(&term("apple")).unwrap());
+        assert_eq!(text_of(&enumerator.next().unwrap().unwrap()), "apple");
         let mut postings = enumerator.postings(None, 0).unwrap();
-        assert_eq!(
-            drain(postings.as_mut()),
-            vec![0, 1, 3],
-            "Java's inherited FilterTerms.intersect would leak unmapped doc IDs here"
-        );
+        assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
+        assert!(enumerator.next().unwrap().is_none());
+    }
+
+    /// With a start term, the default `Terms.intersect` seeks past it: its
+    /// `AutomatonTermsEnum` subclass substitutes `startTerm` for the first,
+    /// `null`, seek term (`Terms.java:85-94`), so the first term is after it.
+    #[test]
+    fn intersect_starts_after_the_start_term() {
+        let (_state, fields) = scenario();
+        let compiled = || {
+            CompiledAutomaton::new(
+                crate::util::automaton::Automata::make_any_string(),
+                false,
+                false,
+                false,
+            )
+            .unwrap()
+        };
+        let terms = fields.terms("body").unwrap().unwrap();
+        let collect = |start: Option<&BytesRef>| {
+            let mut enumerator = terms.intersect(&compiled(), start).unwrap();
+            let mut seen = Vec::new();
+            while let Some(term) = enumerator.next().unwrap() {
+                seen.push(text_of(&term));
+            }
+            seen
+        };
+        assert_eq!(collect(None), vec!["apple", "pear", "plum"]);
+        assert_eq!(collect(Some(&term("pear"))), vec!["plum"]);
+    }
+
+    /// The default `Terms.intersect` rejects an automaton that is not
+    /// `NORMAL` (`Terms.java:79-81`).
+    #[test]
+    fn intersect_rejects_a_special_automaton() {
+        let (_state, fields) = scenario();
+        let automaton = crate::util::automaton::Automata::make_string("apple");
+        let compiled = CompiledAutomaton::new(automaton, true, true, false).unwrap();
+        let terms = fields.terms("body").unwrap().unwrap();
+        assert!(matches!(
+            terms.intersect(&compiled, None),
+            Err(LuceneError::IllegalArgument(_))
+        ));
     }
 
     #[test]

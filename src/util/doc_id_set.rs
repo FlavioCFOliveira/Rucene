@@ -480,9 +480,18 @@ impl DocIdSetBuilder {
 
     /// Creates a builder optimised for accumulating docs matching `terms`.
     ///
-    /// Equivalent to `new DocIdSetBuilder(int, Terms)`.
-    pub fn from_terms(max_doc: i32, terms: &dyn Terms) -> Self {
-        Self::with_stats(max_doc, terms.doc_count(), terms.sum_doc_freq())
+    /// Equivalent to `new DocIdSetBuilder(int, Terms)`, which throws
+    /// `IOException` (`DocIdSetBuilder.java:157`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the terms statistics raises.
+    pub fn from_terms(max_doc: i32, terms: &dyn Terms) -> crate::error::Result<Self> {
+        Ok(Self::with_stats(
+            max_doc,
+            terms.doc_count()?,
+            terms.sum_doc_freq()?,
+        ))
     }
 
     /// Creates a builder optimised for accumulating docs matching `values`.

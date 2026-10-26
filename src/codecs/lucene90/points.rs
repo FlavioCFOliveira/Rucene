@@ -894,12 +894,60 @@ mod tests {
         }
     }
 
+    /// A single-node tree with no points, for a fixture holding none.
+    #[derive(Debug, Clone, Copy)]
+    struct NoPointsTree;
+
+    impl crate::index::point_values::PointTree for NoPointsTree {
+        fn clone_tree(&self) -> Result<Box<dyn crate::index::point_values::PointTree>> {
+            Ok(Box::new(*self))
+        }
+
+        fn move_to_child(&mut self) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn move_to_sibling(&mut self) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn move_to_parent(&mut self) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn min_packed_value(&self) -> Result<&[u8]> {
+            Ok(&[])
+        }
+
+        fn max_packed_value(&self) -> Result<&[u8]> {
+            Ok(&[])
+        }
+
+        fn size(&self) -> Result<i64> {
+            Ok(0)
+        }
+
+        fn visit_doc_ids(
+            &mut self,
+            _visitor: &mut dyn crate::index::point_values::IntersectVisitor,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn visit_doc_values(
+            &mut self,
+            _visitor: &mut dyn crate::index::point_values::IntersectVisitor,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
     impl PointValues for VecPointValues {
         fn point_tree(&self) -> Result<Box<dyn crate::index::point_values::PointTree>> {
             if self.points.is_empty() {
                 // An in-memory leaf must hold a point; a source with none is a
                 // tree with nothing to visit.
-                return crate::index::point_values::EmptyPointValues.point_tree();
+                return Ok(Box::new(NoPointsTree));
             }
             // Build an in-memory tree over a single leaf so the generic
             // traversal algorithms can run on test fixtures. The points are

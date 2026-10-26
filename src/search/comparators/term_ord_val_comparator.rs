@@ -817,7 +817,10 @@ impl SlotComparator for TermOrdValComparator {
                 Some(field_info) if field_info.get_index_options() != IndexOptions::NONE => {
                     let terms = reader.terms(&self.field)?;
                     has_terms = terms.is_some();
-                    dense = terms.is_some_and(|terms| terms.doc_count() == max_doc);
+                    dense = match terms {
+                        Some(terms) => terms.doc_count()? == max_doc,
+                        None => false,
+                    };
                     enable_skipping = self.should_enable_skipping(dense);
                 }
                 Some(field_info)

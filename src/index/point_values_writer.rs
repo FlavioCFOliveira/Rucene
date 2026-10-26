@@ -925,7 +925,29 @@ impl IntersectVisitor for CollectingPointVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codecs::points::EmptyPointsWriter;
+    use crate::codecs::points::PointsReader;
+
+    /// A points writer that accepts every field and writes nothing.
+    #[derive(Debug)]
+    struct DiscardingPointsWriter;
+
+    impl crate::codecs::points::PointsWriter for DiscardingPointsWriter {
+        fn write_field(
+            &mut self,
+            _field_info: &FieldInfo,
+            _values: &dyn PointsReader,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn finish(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
     use crate::index::field_infos::FieldInfo;
 
     fn counter() -> Arc<AtomicI64> {
@@ -1054,7 +1076,7 @@ mod tests {
                 .add_packed_value(doc, &packed(&doc.to_be_bytes()))
                 .unwrap();
         }
-        let mut points_writer = EmptyPointsWriter;
+        let mut points_writer = DiscardingPointsWriter;
         writer.flush(&mut points_writer, None).expect("flush");
         assert_eq!(
             bytes_used.load(Ordering::Acquire),
@@ -1068,7 +1090,7 @@ mod tests {
         let bytes_used = counter();
         let mut writer = writer_1d(&bytes_used);
         writer.add_packed_value(0, &packed(&[0, 0, 0, 1])).unwrap();
-        let mut points_writer = EmptyPointsWriter;
+        let mut points_writer = DiscardingPointsWriter;
         writer.flush(&mut points_writer, None).expect("first flush");
         let error = writer
             .flush(&mut points_writer, None)
@@ -1086,7 +1108,7 @@ mod tests {
         // BKD writer then produces no metadata entry. Nothing may fail here.
         let bytes_used = counter();
         let mut writer = writer_1d(&bytes_used);
-        let mut points_writer = EmptyPointsWriter;
+        let mut points_writer = DiscardingPointsWriter;
         writer.flush(&mut points_writer, None).expect("flush");
         assert_eq!(writer.num_points(), 0);
     }

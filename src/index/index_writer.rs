@@ -3001,7 +3001,8 @@ impl IndexWriter {
                     crate::index::sorting_codec_reader::SortingCodecReader::wrap(
                         merged_view,
                         doc_map,
-                    ),
+                        None,
+                    )?,
                 )];
             }
         }
@@ -3388,7 +3389,8 @@ impl IndexWriter {
                     crate::index::sorting_codec_reader::SortingCodecReader::wrap(
                         merged_reader,
                         doc_map,
-                    ),
+                        None,
+                    )?,
                 )];
             }
         }
@@ -7492,6 +7494,12 @@ impl IndexWriterTrait for IndexWriter {
     /// reader, and it is `get_reader` that reports the closure.
     fn nrt_is_current(&self, infos: &SegmentInfos) -> bool {
         IndexWriter::nrt_is_current(self, infos).unwrap_or(false)
+    }
+
+    /// Equivalent to `writer.getConfig().getLeafSorter()`
+    /// (`StandardDirectoryReader.java:156`).
+    fn leaf_sorter(&self) -> Option<Arc<dyn crate::index::LeafComparator>> {
+        self.config.leaf_sorter()
     }
 
     /// Returns a near-real-time reader covering everything this writer has done

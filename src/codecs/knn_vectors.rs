@@ -20,8 +20,8 @@ use crate::error::{LuceneError, Result};
 use crate::index::merge::{DocIDMerger, DocIDMergerSub, DocMap};
 pub use crate::index::vector_values::{
     accept_ords, from_bytes, from_floats, ByteVectorValues, DenseDocIndexIterator,
-    DocIndexIterator, EmptyByteVectorValues, EmptyFloatVectorValues, EmptyKnnVectorValues,
-    FloatVectorValues, FromDisiDocIndexIterator, KnnVectorValues, SparseDocIndexIterator,
+    DocIndexIterator, FloatVectorValues, FromDisiDocIndexIterator, KnnVectorValues,
+    SparseDocIndexIterator,
 };
 use crate::index::VectorEncoding;
 pub use crate::search::knn::{KnnCollector, KnnSearchStrategy, TopDocs};
@@ -1413,20 +1413,23 @@ impl KnnFieldVectorsWriter<Vec<f32>> for EmptyKnnFieldVectorsWriter {
     }
 }
 
-/// A no-op KNN vectors writer.
+/// The writer of a codec that supports no vectors.
+///
+/// `KnnVectorsFormat.EMPTY` throws `UnsupportedOperationException("Attempt to
+/// write EMPTY vector values")` instead of handing out a writer
+/// (`codecs/KnnVectorsFormat.java:118-123`); this writer refuses every field
+/// with the same error.
 #[derive(Debug, Default, Clone)]
 pub struct EmptyKnnVectorsWriter;
 
 impl KnnVectorsWriter for EmptyKnnVectorsWriter {
-    fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
-        Ok(match field_info.vector_encoding {
-            crate::index::VectorEncoding::FLOAT32 => {
-                FieldVectorWriter::Float(Box::new(EmptyKnnFieldVectorsWriter))
-            }
-            crate::index::VectorEncoding::BYTE => {
-                FieldVectorWriter::Byte(Box::new(EmptyByteKnnFieldVectorsWriter))
-            }
-        })
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`].
+    fn add_field(&mut self, _field_info: &FieldInfo) -> Result<FieldVectorWriter> {
+        Err(LuceneError::UnsupportedOperation(
+            "Attempt to write EMPTY vector values".to_string(),
+        ))
     }
 
     fn flush(&mut self, _max_doc: i32, _sort_map: Option<&SorterDocMap>) -> Result<()> {
@@ -1465,9 +1468,13 @@ impl KnnFieldVectorsWriter<Vec<u8>> for EmptyByteKnnFieldVectorsWriter {
 }
 
 /// A no-op buffering KNN vectors writer.
+///
+/// Test-only: Lucene has no such class.
+#[cfg(test)]
 #[derive(Debug, Default, Clone)]
-pub struct EmptyBufferingKnnVectorsWriter;
+pub(crate) struct EmptyBufferingKnnVectorsWriter;
 
+#[cfg(test)]
 impl KnnVectorsWriter for EmptyBufferingKnnVectorsWriter {
     fn add_field(&mut self, field_info: &FieldInfo) -> Result<FieldVectorWriter> {
         Ok(match field_info.vector_encoding {
@@ -1497,6 +1504,7 @@ impl KnnVectorsWriter for EmptyBufferingKnnVectorsWriter {
     }
 }
 
+#[cfg(test)]
 impl BufferingKnnVectorsWriter for EmptyBufferingKnnVectorsWriter {
     fn write_field_float(
         &mut self,
@@ -1517,7 +1525,13 @@ impl BufferingKnnVectorsWriter for EmptyBufferingKnnVectorsWriter {
     }
 }
 
-/// A no-op KNN vectors reader.
+/// A KNN vectors reader over a segment that supports no vectors.
+///
+/// The value accessors are equivalent to those of the anonymous
+/// `KnnVectorsReader` that `KnnVectorsFormat.EMPTY`'s
+/// `fieldsReader(SegmentReadState)` returns
+/// (`codecs/KnnVectorsFormat.java:125-140`), which throw
+/// `UnsupportedOperationException`.
 #[derive(Debug, Default, Clone)]
 pub struct EmptyKnnVectorsReader;
 
@@ -1526,12 +1540,28 @@ impl KnnVectorsReader for EmptyKnnVectorsReader {
         Ok(())
     }
 
+    /// Equivalent to `KnnVectorsFormat.EMPTY`'s reader's
+    /// `getFloatVectorValues(String)` (`codecs/KnnVectorsFormat.java:130-133`).
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`].
     fn get_float_vector_values(&self, _field: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
-        Ok(Some(Box::new(EmptyFloatVectorValues)))
+        Err(LuceneError::UnsupportedOperation(
+            "EmptyKnnVectorsReader has no float vector values".to_string(),
+        ))
     }
 
+    /// Equivalent to `KnnVectorsFormat.EMPTY`'s reader's
+    /// `getByteVectorValues(String)` (`codecs/KnnVectorsFormat.java:135-138`).
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`].
     fn get_byte_vector_values(&self, _field: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
-        Ok(Some(Box::new(EmptyByteVectorValues)))
+        Err(LuceneError::UnsupportedOperation(
+            "EmptyKnnVectorsReader has no byte vector values".to_string(),
+        ))
     }
 
     fn search(
@@ -1541,7 +1571,11 @@ impl KnnVectorsReader for EmptyKnnVectorsReader {
         _knn_collector: &mut dyn KnnCollector,
         _accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        Ok(())
+        // `KnnVectorsFormat.EMPTY`'s reader throws from both searches
+        // (`codecs/KnnVectorsFormat.java:142-153`).
+        Err(LuceneError::UnsupportedOperation(
+            "EmptyKnnVectorsReader does not search".to_string(),
+        ))
     }
 
     fn search_byte(
@@ -1551,7 +1585,11 @@ impl KnnVectorsReader for EmptyKnnVectorsReader {
         _knn_collector: &mut dyn KnnCollector,
         _accept_docs: &mut dyn AcceptDocs,
     ) -> Result<()> {
-        Ok(())
+        // `KnnVectorsFormat.EMPTY`'s reader throws from both searches
+        // (`codecs/KnnVectorsFormat.java:142-153`).
+        Err(LuceneError::UnsupportedOperation(
+            "EmptyKnnVectorsReader does not search".to_string(),
+        ))
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn KnnVectorsReader>> {
@@ -1563,7 +1601,10 @@ impl KnnVectorsReader for EmptyKnnVectorsReader {
     }
 }
 
-/// A no-op KNN vectors format.
+/// A KNN vectors format that supports no vectors.
+///
+/// Equivalent to `KnnVectorsFormat.EMPTY` (`codecs/KnnVectorsFormat.java:114-162`):
+/// writing throws, the reader holds no values.
 #[derive(Debug, Default, Clone)]
 pub struct EmptyKnnVectorsFormat {
     name: String,
@@ -1581,8 +1622,16 @@ impl KnnVectorsFormat for EmptyKnnVectorsFormat {
         &self.name
     }
 
+    /// Equivalent to `KnnVectorsFormat.EMPTY.fieldsWriter(SegmentWriteState)`
+    /// (`codecs/KnnVectorsFormat.java:120-123`).
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`].
     fn fields_writer(&self, _state: &OwnedSegmentWriteState) -> Result<Box<dyn KnnVectorsWriter>> {
-        Ok(Box::new(EmptyKnnVectorsWriter))
+        Err(LuceneError::UnsupportedOperation(
+            "Attempt to write EMPTY vector values".to_string(),
+        ))
     }
 
     fn fields_reader<'a>(
@@ -1592,8 +1641,10 @@ impl KnnVectorsFormat for EmptyKnnVectorsFormat {
         Ok(Box::new(EmptyKnnVectorsReader))
     }
 
+    /// Equivalent to `KnnVectorsFormat.EMPTY.getMaxDimensions(String)`
+    /// (`codecs/KnnVectorsFormat.java:164-166`).
     fn get_max_dimensions(&self, _field_name: &str) -> i32 {
-        1024
+        0
     }
 }
 
@@ -1606,24 +1657,6 @@ mod tests {
     use super::*;
     use crate::codecs::stub::{BufferedUpdates, FieldInfos};
     use crate::search::from_live_docs;
-
-    #[test]
-    fn empty_float_vector_values_is_empty() {
-        let values = EmptyFloatVectorValues;
-        assert_eq!(values.dimension(), 0);
-        assert_eq!(values.size(), 0);
-        // Java documents `vectorValue(ord)` as throwing IndexOutOfBoundsException
-        // outside [0, size()); with size() == 0 every ordinal is out of range.
-        assert!(values.vector_value(0).is_err());
-    }
-
-    #[test]
-    fn empty_byte_vector_values_is_empty() {
-        let values = EmptyByteVectorValues;
-        assert_eq!(values.dimension(), 0);
-        assert_eq!(values.size(), 0);
-        assert!(values.vector_value(0).is_err());
-    }
 
     #[test]
     fn empty_knn_collector_is_empty() {
@@ -1648,7 +1681,10 @@ mod tests {
     fn empty_knn_vectors_writer_lifecycle() {
         let mut writer = EmptyKnnVectorsWriter;
         let field = FieldInfo::default();
-        let _field_writer = writer.add_field(&field).unwrap();
+        assert!(matches!(
+            writer.add_field(&field),
+            Err(LuceneError::UnsupportedOperation(_))
+        ));
         writer.flush(10, None).unwrap();
         writer.finish().unwrap();
         writer.close().unwrap();
@@ -1659,10 +1695,10 @@ mod tests {
         let mut writer = EmptyBufferingKnnVectorsWriter;
         let field = FieldInfo::default();
         writer
-            .write_field_float(&field, &EmptyFloatVectorValues, 10)
+            .write_field_float(&field, &from_floats(Vec::new(), 0), 10)
             .unwrap();
         writer
-            .write_field_byte(&field, &EmptyByteVectorValues, 10)
+            .write_field_byte(&field, &from_bytes(Vec::new(), 0), 10)
             .unwrap();
         writer.flush(10, None).unwrap();
         writer.finish().unwrap();
@@ -1672,22 +1708,27 @@ mod tests {
     #[test]
     fn empty_knn_vectors_reader_lifecycle() {
         let mut reader = EmptyKnnVectorsReader;
-        assert_eq!(
-            reader.get_float_vector_values("f").unwrap().unwrap().size(),
-            0
-        );
-        assert_eq!(
-            reader.get_byte_vector_values("f").unwrap().unwrap().size(),
-            0
-        );
+        // `KnnVectorsFormat.EMPTY`'s reader throws from both value accessors
+        // (`codecs/KnnVectorsFormat.java:130-138`).
+        assert!(matches!(
+            reader.get_float_vector_values("f"),
+            Err(LuceneError::UnsupportedOperation(_))
+        ));
+        assert!(matches!(
+            reader.get_byte_vector_values("f"),
+            Err(LuceneError::UnsupportedOperation(_))
+        ));
         let mut collector = EmptyKnnCollector;
         let mut accept_docs = from_live_docs(None, 10).unwrap();
-        reader
-            .search("f", &[1.0, 2.0], &mut collector, &mut accept_docs)
-            .unwrap();
-        reader
-            .search_byte("f", &[1, 2], &mut collector, &mut accept_docs)
-            .unwrap();
+        // Both searches throw (`codecs/KnnVectorsFormat.java:142-153`).
+        assert!(matches!(
+            reader.search("f", &[1.0, 2.0], &mut collector, &mut accept_docs),
+            Err(LuceneError::UnsupportedOperation(_))
+        ));
+        assert!(matches!(
+            reader.search_byte("f", &[1, 2], &mut collector, &mut accept_docs),
+            Err(LuceneError::UnsupportedOperation(_))
+        ));
         reader.check_integrity().unwrap();
         let _merge = reader.get_merge_instance().unwrap();
         reader.finish_merge().unwrap();
@@ -1698,7 +1739,7 @@ mod tests {
     fn empty_knn_vectors_format_name_and_factories() {
         let format = EmptyKnnVectorsFormat::new("EmptyKnn");
         assert_eq!(format.name(), "EmptyKnn");
-        assert_eq!(format.get_max_dimensions("field"), 1024);
+        assert_eq!(format.get_max_dimensions("field"), 0);
 
         let dir: Arc<dyn crate::store::Directory> = Arc::new(crate::store::RamDirectory::default());
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
@@ -1712,7 +1753,12 @@ mod tests {
             BufferedUpdates,
             Arc::new(crate::store::DefaultIOContext::default()),
         );
-        let _writer = format.fields_writer(&write_state).unwrap();
+        // `KnnVectorsFormat.EMPTY` throws when written
+        // (`codecs/KnnVectorsFormat.java:120-123`).
+        assert!(matches!(
+            format.fields_writer(&write_state),
+            Err(LuceneError::UnsupportedOperation(_))
+        ));
 
         let dir_ref: &dyn crate::store::Directory = &*dir;
         let read_state = SegmentReadState::new(dir_ref, &segment_info, &field_infos, context);

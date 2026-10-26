@@ -42,6 +42,10 @@ pub struct AutomatonTermsEnum {
     transition: Transition,
     /// Saved automaton states while walking the current term.
     saved_states: Vec<i32>,
+    /// The term the first seek starts from, when the enum is the one the
+    /// default `Terms.intersect(CompiledAutomaton, BytesRef)` builds with a
+    /// non-null `startTerm` (`Terms.java:86-94`); `None` otherwise.
+    start_term: Option<BytesRef>,
 }
 
 impl AutomatonTermsEnum {
@@ -56,6 +60,27 @@ impl AutomatonTermsEnum {
     pub fn new(
         tenum: Box<dyn TermsEnum>,
         compiled: CompiledAutomaton,
+    ) -> Result<Box<dyn TermsEnum>> {
+        Self::with_start_term(tenum, compiled, None)
+    }
+
+    /// Creates an enumerator over `tenum` restricted to the language of
+    /// `compiled`, whose first seek starts from `start_term` when one is
+    /// given.
+    ///
+    /// With a start term, equivalent to the anonymous `AutomatonTermsEnum`
+    /// subclass the default `Terms.intersect(CompiledAutomaton, BytesRef)`
+    /// builds (`Terms.java:85-94`), whose `nextSeekTerm` substitutes
+    /// `startTerm` for a `null` term; without one, equivalent to
+    /// `AutomatonTermsEnum(TermsEnum, CompiledAutomaton)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::new`].
+    pub(crate) fn with_start_term(
+        tenum: Box<dyn TermsEnum>,
+        compiled: CompiledAutomaton,
+        start_term: Option<BytesRef>,
     ) -> Result<Box<dyn TermsEnum>> {
         if compiled.automaton_type != AutomatonType::Normal {
             return Err(LuceneError::IllegalArgument(
@@ -93,11 +118,12 @@ impl AutomatonTermsEnum {
             linear_upper_bound: BytesRef::default(),
             transition: Transition::default(),
             saved_states: Vec::new(),
+            start_term,
         });
-        Ok(Box::new(FilteredTermsEnum::new_with_seek(
-            tenum,
-            filter,
-            BytesRef::new(Vec::new()),
+        // `super(tenum)`: start with a seek, whose term `nextSeekTerm(null)`
+        // answers (`AutomatonTermsEnum.java:80`, `FilteredTermsEnum.java:78-80`).
+        Ok(Box::new(FilteredTermsEnum::with_start_with_seek(
+            tenum, filter, true,
         )))
     }
 
@@ -294,6 +320,14 @@ impl FilteredTermsEnumFilter for AutomatonTermsEnum {
     }
 
     fn next_seek_term(&mut self, current_term: Option<&BytesRef>) -> Result<Option<BytesRef>> {
+        // The `Terms.intersect` subclass: a null term becomes `startTerm`
+        // (`Terms.java:88-92`).
+        let start_term = if current_term.is_none() {
+            self.start_term.clone()
+        } else {
+            None
+        };
+        let current_term = current_term.or(start_term.as_ref());
         if let Some(term) = current_term {
             self.seek_bytes_ref.copy_ref(term);
         } else {

@@ -178,7 +178,7 @@ impl RewriteInner for BitSetRewrite {
         _lead_cost: i64,
     ) -> Result<WeightOrDocIdSetIterator> {
         let max_doc = context.leaf_reader().max_doc();
-        let mut builder = DocIdSetBuilder::from_terms(max_doc, terms);
+        let mut builder = DocIdSetBuilder::from_terms(max_doc, terms)?;
         let mut docs: Option<Box<dyn PostingsEnum>> = None;
 
         // Handle the already-collected terms.

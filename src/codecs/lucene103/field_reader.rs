@@ -224,20 +224,20 @@ impl Terms for FieldReader {
         ))
     }
 
-    fn size(&self) -> i64 {
-        self.num_terms
+    fn size(&self) -> Result<i64> {
+        Ok(self.num_terms)
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
-        self.sum_total_term_freq
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        Ok(self.sum_total_term_freq)
     }
 
-    fn sum_doc_freq(&self) -> i64 {
-        self.sum_doc_freq
+    fn sum_doc_freq(&self) -> Result<i64> {
+        Ok(self.sum_doc_freq)
     }
 
-    fn doc_count(&self) -> i32 {
-        self.doc_count
+    fn doc_count(&self) -> Result<i32> {
+        Ok(self.doc_count)
     }
 
     fn has_freqs(&self) -> bool {

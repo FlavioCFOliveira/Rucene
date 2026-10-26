@@ -208,15 +208,27 @@ impl MappingMultiPostingsEnum {
 }
 
 impl DocIdSetIterator for MappingMultiPostingsEnum {
+    /// Equivalent to `MappingMultiPostingsEnum.docID()`
+    /// (`MappingMultiPostingsEnum.java:84-91`): `-1` whenever no sub is
+    /// current, which is both before the first [`next_doc`](Self::next_doc)
+    /// and once the merge is exhausted.
     fn doc_id(&self) -> i32 {
-        self.doc
+        if self.positioned {
+            self.doc
+        } else {
+            -1
+        }
     }
 
+    /// Equivalent to `MappingMultiPostingsEnum.nextDoc()`
+    /// (`MappingMultiPostingsEnum.java:98-106`).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java steps its `DocIDMerger` again
+    /// when called after exhaustion, which dereferences the merger's `null`
+    /// current sub. Here such a call answers `NO_MORE_DOCS`, because the
+    /// underlying [`DocIDMerger`] panics if stepped past its end.
     fn next_doc(&mut self) -> Result<i32> {
         if !self.positioned && self.doc == NO_MORE_DOCS {
-            // `DocIdSetIterator` forbids reusing an exhausted iterator, and the
-            // underlying `DocIDMerger` panics if stepped past its end, so the
-            // exhausted state is answered here.
             return Ok(NO_MORE_DOCS);
         }
         match self.doc_id_merger.next_sub()? {
@@ -226,14 +238,9 @@ impl DocIdSetIterator for MappingMultiPostingsEnum {
                 Ok(self.doc)
             }
             None => {
+                // `current == null`: `doc_id` reports -1 from here on, as
+                // Java's does; `doc` remembers the exhaustion.
                 self.positioned = false;
-                // **Deliberate divergence**: Java's `docID()` reverts to -1
-                // once the merge is exhausted, because it simply reports
-                // `current == null`. Rucene reports `NO_MORE_DOCS`, which is
-                // what `DocIdSetIterator` documents and what every other
-                // iterator in this crate does. The merge path only ever reads
-                // the value returned by `next_doc`, so the two behave alike
-                // there.
                 self.doc = NO_MORE_DOCS;
                 Ok(NO_MORE_DOCS)
             }
@@ -600,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn doc_id_is_unpositioned_before_the_first_step_and_exhausted_after_the_last() {
+    fn doc_id_is_minus_one_before_the_first_step_and_after_the_last() {
         let state = identity_merge_state();
         let subs = vec![EnumWithSlice::new(
             VecPostings::boxed(&[1]),
@@ -613,8 +620,8 @@ mod tests {
         assert_eq!(postings.next_doc().unwrap(), NO_MORE_DOCS);
         assert_eq!(
             postings.doc_id(),
-            NO_MORE_DOCS,
-            "Rucene honours the DocIdSetIterator contract here; Java reverts to -1"
+            -1,
+            "Java's docID() reports -1 once no sub is current (MappingMultiPostingsEnum.java:84-91)"
         );
         assert_eq!(
             postings.next_doc().unwrap(),

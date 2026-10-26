@@ -1160,7 +1160,7 @@ impl SegmentTermsEnum {
     /// walk reports. The index walk and the state it leaves behind are
     /// unchanged.
     fn prepare_seek_exact_state(&mut self, target: &[u8]) -> Result<PrepareSeek> {
-        if self.field.size() > 0
+        if self.field.size()? > 0
             && (target < self.field.get_min().slice() || target > self.field.get_max().slice())
         {
             return Ok(PrepareSeek::NoMatch);

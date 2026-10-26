@@ -1595,54 +1595,118 @@ impl SortedSetDocValues for FilterSortedSetDocValues {
 
 /// Abstract base class implementing a [`DocValuesProducer`] that has no doc values.
 ///
-/// Equivalent to `org.apache.lucene.index.EmptyDocValuesProducer`.
+/// Equivalent to `org.apache.lucene.index.EmptyDocValuesProducer`
+/// (`index/EmptyDocValuesProducer.java:22-70`). Every member throws
+/// `UnsupportedOperationException` there: the class only exists so that an
+/// anonymous subclass overrides the one getter it serves. Here every member
+/// returns [`LuceneError::UnsupportedOperation`] for the same reason; a Rust
+/// producer that serves one kind of values implements [`DocValuesProducer`]
+/// itself.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct EmptyDocValuesProducer;
 
+impl EmptyDocValuesProducer {
+    /// The `UnsupportedOperationException` every member throws.
+    fn unsupported(method: &str) -> LuceneError {
+        LuceneError::UnsupportedOperation(format!("EmptyDocValuesProducer.{method}"))
+    }
+}
+
 impl DocValuesProducer for EmptyDocValuesProducer {
-    fn get_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        Ok(Box::new(EmptyNumericDocValues::new()))
+    /// Equivalent to `EmptyDocValuesProducer.getNumeric(FieldInfo)`
+    /// (`index/EmptyDocValuesProducer.java:29-32`).
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`].
+    fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        let values: Result<Box<dyn NumericDocValues>> = { Err(Self::unsupported("getNumeric")) };
+        Ok(Some(values?))
     }
 
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        Ok(Box::new(EmptyBinaryDocValues::new()))
+    /// Equivalent to `EmptyDocValuesProducer.getBinary(FieldInfo)`
+    /// (`index/EmptyDocValuesProducer.java:34-37`).
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`].
+    fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        let values: Result<Box<dyn BinaryDocValues>> = { Err(Self::unsupported("getBinary")) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        Ok(Box::new(EmptySortedDocValues::new()))
+    /// Equivalent to `EmptyDocValuesProducer.getSorted(FieldInfo)`
+    /// (`index/EmptyDocValuesProducer.java:39-42`).
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`].
+    fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        let values: Result<Box<dyn SortedDocValues>> = { Err(Self::unsupported("getSorted")) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        Ok(Box::new(EmptySortedNumericDocValues::new()))
+    /// Equivalent to `EmptyDocValuesProducer.getSortedNumeric(FieldInfo)`
+    /// (`index/EmptyDocValuesProducer.java:44-47`).
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`].
+    fn get_sorted_numeric(
+        &self,
+        _field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        let values: Result<Box<dyn SortedNumericDocValues>> =
+            { Err(Self::unsupported("getSortedNumeric")) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        Ok(Box::new(EmptySortedSetDocValues::new()))
+    /// Equivalent to `EmptyDocValuesProducer.getSortedSet(FieldInfo)`
+    /// (`index/EmptyDocValuesProducer.java:49-52`).
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`].
+    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        let values: Result<Box<dyn SortedSetDocValues>> =
+            { Err(Self::unsupported("getSortedSet")) };
+        Ok(Some(values?))
     }
 
     /// Equivalent to `EmptyDocValuesProducer.getSkipper(FieldInfo)`
-    /// (`index/EmptyDocValuesProducer.java:54-57`), which throws
-    /// `UnsupportedOperationException`.
+    /// (`index/EmptyDocValuesProducer.java:54-57`).
     ///
     /// # Errors
     ///
     /// Always returns [`LuceneError::UnsupportedOperation`].
     fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(LuceneError::UnsupportedOperation(
-            "EmptyDocValuesProducer does not provide a doc-values skipper".to_string(),
-        ))
+        Err(Self::unsupported("getSkipper"))
     }
 
+    /// Equivalent to `EmptyDocValuesProducer.checkIntegrity()`
+    /// (`index/EmptyDocValuesProducer.java:59-62`).
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`].
     fn check_integrity(&self) -> Result<()> {
-        Ok(())
+        Err(Self::unsupported("checkIntegrity"))
     }
 
+    /// Inherited from `DocValuesProducer.getMergeInstance()`, which returns
+    /// `this`.
     fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
         Ok(Box::new(*self))
     }
 
+    /// Equivalent to `EmptyDocValuesProducer.close()`
+    /// (`index/EmptyDocValuesProducer.java:64-68`).
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`].
     fn close(&mut self) -> Result<()> {
-        Ok(())
+        Err(Self::unsupported("close"))
     }
 }
 
@@ -2973,28 +3037,28 @@ mod tests {
     }
 
     #[test]
-    fn empty_doc_values_producer_returns_empty_iterators() {
+    /// Every member of `EmptyDocValuesProducer` throws
+    /// `UnsupportedOperationException` (`index/EmptyDocValuesProducer.java:28-69`);
+    /// none hands out values.
+    fn empty_doc_values_producer_is_unsupported_throughout() {
         use crate::codecs::doc_values::DocValuesProducer;
+        use crate::error::LuceneError;
+
+        fn unsupported<T>(result: Result<T>) -> bool {
+            matches!(result, Err(LuceneError::UnsupportedOperation(_)))
+        }
 
         let producer = EmptyDocValuesProducer;
         let field = crate::index::FieldInfo::default();
-        let mut numeric = producer.get_numeric(&field).unwrap();
-        assert_eq!(numeric.next_doc().unwrap(), NO_MORE_DOCS);
-        let mut binary = producer.get_binary(&field).unwrap();
-        assert_eq!(binary.next_doc().unwrap(), NO_MORE_DOCS);
-        let mut sorted = producer.get_sorted(&field).unwrap();
-        assert_eq!(sorted.next_doc().unwrap(), NO_MORE_DOCS);
-        let mut sorted_numeric = producer.get_sorted_numeric(&field).unwrap();
-        assert_eq!(sorted_numeric.next_doc().unwrap(), NO_MORE_DOCS);
-        let mut sorted_set = producer.get_sorted_set(&field).unwrap();
-        assert_eq!(sorted_set.next_doc().unwrap(), NO_MORE_DOCS);
-        assert!(matches!(
-            producer.get_skipper(&field),
-            Err(crate::error::LuceneError::UnsupportedOperation(_))
-        ));
-        producer.check_integrity().unwrap();
+        assert!(unsupported(producer.get_numeric(&field)));
+        assert!(unsupported(producer.get_binary(&field)));
+        assert!(unsupported(producer.get_sorted(&field)));
+        assert!(unsupported(producer.get_sorted_numeric(&field)));
+        assert!(unsupported(producer.get_sorted_set(&field)));
+        assert!(unsupported(producer.get_skipper(&field)));
+        assert!(unsupported(producer.check_integrity()));
         let mut clone = producer.get_merge_instance().unwrap();
-        clone.close().unwrap();
+        assert!(unsupported(clone.close()));
     }
 
     #[test]

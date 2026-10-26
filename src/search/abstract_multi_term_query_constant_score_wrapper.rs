@@ -265,10 +265,10 @@ pub fn collect_terms(
 /// Propagates any I/O error raised while reading the terms statistics.
 pub fn estimate_cost(terms: &dyn Terms, query_terms_count: i64) -> Result<i64> {
     if query_terms_count == -1 {
-        return Ok(terms.sum_doc_freq());
+        return terms.sum_doc_freq();
     }
-    let mut potential_extra_cost = terms.sum_doc_freq();
-    let indexed_term_count = terms.size();
+    let mut potential_extra_cost = terms.sum_doc_freq()?;
+    let indexed_term_count = terms.size()?;
     if indexed_term_count != -1 {
         potential_extra_cost -= indexed_term_count;
     }
@@ -410,7 +410,7 @@ pub fn rewriting_scorer_supplier(
     };
     let terms: Arc<dyn Terms> = Arc::from(terms);
 
-    let field_doc_count = terms.doc_count();
+    let field_doc_count = terms.doc_count()?;
     let mut terms_enum = get_terms_enum(&*state.query, &terms)?;
     let context = owned_context(state, context)?;
 

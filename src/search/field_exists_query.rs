@@ -262,9 +262,10 @@ impl ConstantScoreWeightImpl for FieldExistsWeight {
                         None => 0,
                     };
                 } else if field_info.get_index_options() != IndexOptions::NONE {
-                    count = reader
-                        .terms(&self.field)?
-                        .map_or(0, |terms| terms.doc_count());
+                    count = match reader.terms(&self.field)? {
+                        Some(terms) => terms.doc_count()?,
+                        None => 0,
+                    };
                 }
             }
         } else {
@@ -354,7 +355,10 @@ impl Query for FieldExistsQuery {
                 // The field indexes doc values or points. This optimization is
                 // possible because a field always uses the same data structures
                 // in every document — all or nothing.
-                let terms_doc_count = leaf.terms(&self.field)?.map(|terms| terms.doc_count());
+                let terms_doc_count = match leaf.terms(&self.field)? {
+                    Some(terms) => Some(terms.doc_count()?),
+                    None => None,
+                };
                 let points_doc_count = match leaf.get_point_values(&self.field)? {
                     Some(values) => Some(values.doc_count()?),
                     None => None,

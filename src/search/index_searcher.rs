@@ -1539,9 +1539,9 @@ impl IndexSearcher {
             // Terms.getTerms(LeafReader, String) answers Terms.EMPTY when the
             // field is absent, and every statistic of Terms.EMPTY is 0.
             if let Some(terms) = leaf.leaf_reader().terms(field)? {
-                doc_count += i64::from(terms.doc_count());
-                sum_total_term_freq += terms.sum_total_term_freq();
-                sum_doc_freq += terms.sum_doc_freq();
+                doc_count += i64::from(terms.doc_count()?);
+                sum_total_term_freq += terms.sum_total_term_freq()?;
+                sum_doc_freq += terms.sum_doc_freq()?;
             }
         }
         if doc_count == 0 {

@@ -581,68 +581,81 @@ impl Drop for DocValuesProducerHolder {
 }
 
 impl DocValuesProducer for DocValuesProducerHolder {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        let guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
-        })?;
-        if let Some(producer) = guard.as_ref() {
-            producer.get_numeric(field)
-        } else {
-            Err(LuceneError::AlreadyClosed(
-                "doc-values producer is closed".to_string(),
-            ))
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        {
+            let guard = self.producer.lock().map_err(|_| {
+                LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+            })?;
+            if let Some(producer) = guard.as_ref() {
+                producer.get_numeric(field)
+            } else {
+                Err(LuceneError::AlreadyClosed(
+                    "doc-values producer is closed".to_string(),
+                ))
+            }
         }
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        let guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
-        })?;
-        if let Some(producer) = guard.as_ref() {
-            producer.get_binary(field)
-        } else {
-            Err(LuceneError::AlreadyClosed(
-                "doc-values producer is closed".to_string(),
-            ))
+    fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        {
+            let guard = self.producer.lock().map_err(|_| {
+                LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+            })?;
+            if let Some(producer) = guard.as_ref() {
+                producer.get_binary(field)
+            } else {
+                Err(LuceneError::AlreadyClosed(
+                    "doc-values producer is closed".to_string(),
+                ))
+            }
         }
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        let guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
-        })?;
-        if let Some(producer) = guard.as_ref() {
-            producer.get_sorted(field)
-        } else {
-            Err(LuceneError::AlreadyClosed(
-                "doc-values producer is closed".to_string(),
-            ))
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        {
+            let guard = self.producer.lock().map_err(|_| {
+                LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+            })?;
+            if let Some(producer) = guard.as_ref() {
+                producer.get_sorted(field)
+            } else {
+                Err(LuceneError::AlreadyClosed(
+                    "doc-values producer is closed".to_string(),
+                ))
+            }
         }
     }
 
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        let guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
-        })?;
-        if let Some(producer) = guard.as_ref() {
-            producer.get_sorted_numeric(field)
-        } else {
-            Err(LuceneError::AlreadyClosed(
-                "doc-values producer is closed".to_string(),
-            ))
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        {
+            let guard = self.producer.lock().map_err(|_| {
+                LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+            })?;
+            if let Some(producer) = guard.as_ref() {
+                producer.get_sorted_numeric(field)
+            } else {
+                Err(LuceneError::AlreadyClosed(
+                    "doc-values producer is closed".to_string(),
+                ))
+            }
         }
     }
 
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        let guard = self.producer.lock().map_err(|_| {
-            LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
-        })?;
-        if let Some(producer) = guard.as_ref() {
-            producer.get_sorted_set(field)
-        } else {
-            Err(LuceneError::AlreadyClosed(
-                "doc-values producer is closed".to_string(),
-            ))
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        {
+            let guard = self.producer.lock().map_err(|_| {
+                LuceneError::IllegalState("doc-values producer lock poisoned".to_string())
+            })?;
+            if let Some(producer) = guard.as_ref() {
+                producer.get_sorted_set(field)
+            } else {
+                Err(LuceneError::AlreadyClosed(
+                    "doc-values producer is closed".to_string(),
+                ))
+            }
         }
     }
 
@@ -779,64 +792,77 @@ impl SegmentDocValuesProducer {
 }
 
 impl DocValuesProducer for SegmentDocValuesProducer {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        self.dv_producers_by_field
-            .get(&field.number)
-            .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
-                    "no doc-values producer for field {}",
-                    field.name
-                ))
-            })?
-            .get_numeric(field)
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        {
+            self.dv_producers_by_field
+                .get(&field.number)
+                .ok_or_else(|| {
+                    LuceneError::IllegalArgument(format!(
+                        "no doc-values producer for field {}",
+                        field.name
+                    ))
+                })?
+                .get_numeric(field)
+        }
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        self.dv_producers_by_field
-            .get(&field.number)
-            .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
-                    "no doc-values producer for field {}",
-                    field.name
-                ))
-            })?
-            .get_binary(field)
+    fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        {
+            self.dv_producers_by_field
+                .get(&field.number)
+                .ok_or_else(|| {
+                    LuceneError::IllegalArgument(format!(
+                        "no doc-values producer for field {}",
+                        field.name
+                    ))
+                })?
+                .get_binary(field)
+        }
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        self.dv_producers_by_field
-            .get(&field.number)
-            .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
-                    "no doc-values producer for field {}",
-                    field.name
-                ))
-            })?
-            .get_sorted(field)
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        {
+            self.dv_producers_by_field
+                .get(&field.number)
+                .ok_or_else(|| {
+                    LuceneError::IllegalArgument(format!(
+                        "no doc-values producer for field {}",
+                        field.name
+                    ))
+                })?
+                .get_sorted(field)
+        }
     }
 
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        self.dv_producers_by_field
-            .get(&field.number)
-            .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
-                    "no doc-values producer for field {}",
-                    field.name
-                ))
-            })?
-            .get_sorted_numeric(field)
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        {
+            self.dv_producers_by_field
+                .get(&field.number)
+                .ok_or_else(|| {
+                    LuceneError::IllegalArgument(format!(
+                        "no doc-values producer for field {}",
+                        field.name
+                    ))
+                })?
+                .get_sorted_numeric(field)
+        }
     }
 
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        self.dv_producers_by_field
-            .get(&field.number)
-            .ok_or_else(|| {
-                LuceneError::IllegalArgument(format!(
-                    "no doc-values producer for field {}",
-                    field.name
-                ))
-            })?
-            .get_sorted_set(field)
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        {
+            self.dv_producers_by_field
+                .get(&field.number)
+                .ok_or_else(|| {
+                    LuceneError::IllegalArgument(format!(
+                        "no doc-values producer for field {}",
+                        field.name
+                    ))
+                })?
+                .get_sorted_set(field)
+        }
     }
 
     /// Equivalent to `SegmentDocValuesProducer.getSkipper(FieldInfo)`
@@ -971,7 +997,7 @@ impl LeafReader for DocValuesLeafReader {
     ) -> Result<Option<Box<dyn IndexNumericDocValues>>> {
         if let Some(fi) = self.field_infos.field_info(field) {
             if fi.doc_values_type == DocValuesType::NUMERIC {
-                return Ok(Some(self.doc_values_producer.get_numeric(fi)?));
+                return self.doc_values_producer.get_numeric(fi);
             }
         }
         Ok(None)
@@ -980,7 +1006,7 @@ impl LeafReader for DocValuesLeafReader {
     fn get_binary_doc_values(&self, field: &str) -> Result<Option<Box<dyn IndexBinaryDocValues>>> {
         if let Some(fi) = self.field_infos.field_info(field) {
             if fi.doc_values_type == DocValuesType::BINARY {
-                return Ok(Some(self.doc_values_producer.get_binary(fi)?));
+                return self.doc_values_producer.get_binary(fi);
             }
         }
         Ok(None)
@@ -989,7 +1015,7 @@ impl LeafReader for DocValuesLeafReader {
     fn get_sorted_doc_values(&self, field: &str) -> Result<Option<Box<dyn IndexSortedDocValues>>> {
         if let Some(fi) = self.field_infos.field_info(field) {
             if fi.doc_values_type == DocValuesType::SORTED {
-                return Ok(Some(self.doc_values_producer.get_sorted(fi)?));
+                return self.doc_values_producer.get_sorted(fi);
             }
         }
         Ok(None)
@@ -1001,7 +1027,7 @@ impl LeafReader for DocValuesLeafReader {
     ) -> Result<Option<Box<dyn IndexSortedNumericDocValues>>> {
         if let Some(fi) = self.field_infos.field_info(field) {
             if fi.doc_values_type == DocValuesType::SORTED_NUMERIC {
-                return Ok(Some(self.doc_values_producer.get_sorted_numeric(fi)?));
+                return self.doc_values_producer.get_sorted_numeric(fi);
             }
         }
         Ok(None)
@@ -1013,7 +1039,7 @@ impl LeafReader for DocValuesLeafReader {
     ) -> Result<Option<Box<dyn IndexSortedSetDocValues>>> {
         if let Some(fi) = self.field_infos.field_info(field) {
             if fi.doc_values_type == DocValuesType::SORTED_SET {
-                return Ok(Some(self.doc_values_producer.get_sorted_set(fi)?));
+                return self.doc_values_producer.get_sorted_set(fi);
             }
         }
         Ok(None)
@@ -1653,7 +1679,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         }
         if let Some(ref producer) = self.doc_values_producer {
-            Ok(Some(producer.get_numeric(fi.unwrap())?))
+            producer.get_numeric(fi.unwrap())
         } else {
             Ok(None)
         }
@@ -1666,7 +1692,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         }
         if let Some(ref producer) = self.doc_values_producer {
-            Ok(Some(producer.get_binary(fi.unwrap())?))
+            producer.get_binary(fi.unwrap())
         } else {
             Ok(None)
         }
@@ -1679,7 +1705,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         }
         if let Some(ref producer) = self.doc_values_producer {
-            Ok(Some(producer.get_sorted(fi.unwrap())?))
+            producer.get_sorted(fi.unwrap())
         } else {
             Ok(None)
         }
@@ -1695,7 +1721,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         }
         if let Some(ref producer) = self.doc_values_producer {
-            Ok(Some(producer.get_sorted_numeric(fi.unwrap())?))
+            producer.get_sorted_numeric(fi.unwrap())
         } else {
             Ok(None)
         }
@@ -1711,7 +1737,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         }
         if let Some(ref producer) = self.doc_values_producer {
-            Ok(Some(producer.get_sorted_set(fi.unwrap())?))
+            producer.get_sorted_set(fi.unwrap())
         } else {
             Ok(None)
         }
@@ -1728,7 +1754,7 @@ impl LeafReader for SegmentReader {
                 LuceneError::IllegalState("norms producer lock poisoned".to_string())
             })?;
         if let Some(producer) = guard.as_ref() {
-            Ok(Some(producer.get_norms(fi.unwrap())?))
+            producer.get_norms(fi.unwrap())
         } else {
             Ok(None)
         }
@@ -2005,6 +2031,11 @@ pub(crate) struct SharedBits(Arc<dyn Bits>);
 impl SharedBits {
     pub(crate) fn new(bits: Box<dyn Bits>) -> Self {
         Self(Arc::from(bits))
+    }
+
+    /// A handle onto bits that are already shared.
+    pub(crate) fn from_arc(bits: Arc<dyn Bits>) -> Self {
+        Self(bits)
     }
 }
 
@@ -2395,7 +2426,7 @@ mod tests {
     }
 
     impl NormsProducer for RecordingNormsProducer {
-        fn get_norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+        fn get_norms(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
             self.inner.get_norms(field)
         }
 
@@ -2670,23 +2701,26 @@ mod tests {
     }
 
     impl DocValuesProducer for RecordingDocValuesProducer {
-        fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
+        fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
             self.inner.get_numeric(field)
         }
 
-        fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
+        fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
             self.inner.get_binary(field)
         }
 
-        fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
+        fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
             self.inner.get_sorted(field)
         }
 
-        fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
+        fn get_sorted_numeric(
+            &self,
+            field: &FieldInfo,
+        ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
             self.inner.get_sorted_numeric(field)
         }
 
-        fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
+        fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
             self.inner.get_sorted_set(field)
         }
 

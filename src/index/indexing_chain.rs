@@ -5,13 +5,10 @@
 //! | [`FieldInvertState`] | `FieldInvertState` |
 //! | [`DefaultIndexingChain`] | `IndexingChain` |
 //! | `PerField` (private) | `IndexingChain.PerField` |
-//! | [`EmptyNormsProducer`] | — (a norms producer reporting a norm of one) |
 //!
 //! At flush the chain hands the postings writer the segment's real norms, read
 //! back from the files it has just written, as Lucene does
-//! (`IndexingChain.java:358-370`). [`EmptyNormsProducer`] is a
-//! [`NormsProducer`](crate::codecs::norms::NormsProducer) that reports a norm
-//! of one for every document, for callers that need a stand-in.
+//! (`IndexingChain.java:358-370`).
 //!
 //! The chain turns a [`Document`] into buffered postings, a stored-fields
 //! stream and a term-vectors stream: it registers each field in the segment's
@@ -89,7 +86,6 @@ use crate::analysis::Analyzer;
 use crate::analysis::TokenStream;
 use crate::codecs::doc_values::DocValuesConsumer;
 use crate::codecs::knn_vectors::FieldVectorWriter;
-use crate::codecs::norms::NormsProducer;
 use crate::codecs::points::PointsWriter;
 use crate::codecs::state::SegmentWriteState;
 use crate::document::column::{
@@ -379,32 +375,32 @@ impl FieldInvertState {
 // Norms
 // ---------------------------------------------------------------------------
 
-/// A norms source that reports a norm of one for every document.
-///
-/// The flush does not use it: like Java (`IndexingChain.java:358-370`), it
-/// hands the postings format a producer over the norms it has just written,
-/// because the postings writer folds each document's norm into its impact
-/// blocks. This producer remains for callers that need a stand-in, such as a
-/// test driving the postings writer without norms files.
+/// A norms source that reports a norm of one for every document, for tests
+/// that drive the postings writer without norms files. Lucene has no such
+/// class.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
-pub struct EmptyNormsProducer {
+pub(crate) struct EmptyNormsProducer {
     max_doc: i32,
 }
 
+#[cfg(test)]
 impl EmptyNormsProducer {
     /// Creates the producer for a segment of `max_doc` documents.
-    pub fn new(max_doc: i32) -> Self {
+    pub(crate) fn new(max_doc: i32) -> Self {
         Self { max_doc }
     }
 }
 
 /// Dense norms that report a norm of one for every document.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 struct ConstantNorms {
     max_doc: i32,
     doc: i32,
 }
 
+#[cfg(test)]
 impl DocIdSetIterator for ConstantNorms {
     fn doc_id(&self) -> i32 {
         self.doc
@@ -428,6 +424,7 @@ impl DocIdSetIterator for ConstantNorms {
     }
 }
 
+#[cfg(test)]
 impl crate::index::doc_values::DocValuesIterator for ConstantNorms {
     fn advance_exact(&mut self, target: i32) -> Result<bool> {
         self.doc = target;
@@ -435,28 +432,33 @@ impl crate::index::doc_values::DocValuesIterator for ConstantNorms {
     }
 }
 
+#[cfg(test)]
 impl crate::index::NumericDocValues for ConstantNorms {
     fn long_value(&self) -> Result<i64> {
         Ok(1)
     }
 }
 
-impl NormsProducer for EmptyNormsProducer {
+#[cfg(test)]
+impl crate::codecs::norms::NormsProducer for EmptyNormsProducer {
     fn get_norms(
         &self,
         _field_info: &FieldInfo,
-    ) -> Result<Box<dyn crate::index::NumericDocValues>> {
-        Ok(Box::new(ConstantNorms {
-            max_doc: self.max_doc,
-            doc: -1,
-        }))
+    ) -> Result<Option<Box<dyn crate::index::NumericDocValues>>> {
+        let values: Result<Box<dyn crate::index::NumericDocValues>> = {
+            Ok(Box::new(ConstantNorms {
+                max_doc: self.max_doc,
+                doc: -1,
+            }))
+        };
+        Ok(Some(values?))
     }
 
     fn check_integrity(&self) -> Result<()> {
         Ok(())
     }
 
-    fn get_merge_instance(&self) -> Result<Box<dyn NormsProducer>> {
+    fn get_merge_instance(&self) -> Result<Box<dyn crate::codecs::norms::NormsProducer>> {
         Ok(Box::new(*self))
     }
 
@@ -3201,13 +3203,24 @@ impl IndexingChain for DefaultIndexingChain {
         let producer = writer.get_doc_values()?;
         Ok(Some(match info.doc_values_type {
             DocValuesType::NONE => return Ok(None),
-            DocValuesType::NUMERIC => numeric_as_iterator(producer.get_numeric(info)?),
-            DocValuesType::BINARY => binary_as_iterator(producer.get_binary(info)?),
-            DocValuesType::SORTED => sorted_as_iterator(producer.get_sorted(info)?),
-            DocValuesType::SORTED_NUMERIC => {
-                sorted_numeric_as_iterator(producer.get_sorted_numeric(info)?)
-            }
-            DocValuesType::SORTED_SET => sorted_set_as_iterator(producer.get_sorted_set(info)?),
+            DocValuesType::NUMERIC => numeric_as_iterator(crate::codecs::doc_values::non_null(
+                producer.get_numeric(info)?,
+                info,
+            )?),
+            DocValuesType::BINARY => binary_as_iterator(crate::codecs::doc_values::non_null(
+                producer.get_binary(info)?,
+                info,
+            )?),
+            DocValuesType::SORTED => sorted_as_iterator(crate::codecs::doc_values::non_null(
+                producer.get_sorted(info)?,
+                info,
+            )?),
+            DocValuesType::SORTED_NUMERIC => sorted_numeric_as_iterator(
+                crate::codecs::doc_values::non_null(producer.get_sorted_numeric(info)?, info)?,
+            ),
+            DocValuesType::SORTED_SET => sorted_set_as_iterator(
+                crate::codecs::doc_values::non_null(producer.get_sorted_set(info)?, info)?,
+            ),
         }))
     }
 
@@ -4842,7 +4855,7 @@ mod tests {
                 .expect("norms producer");
             producer.check_integrity().expect("integrity");
             for info in finished.iter().filter(|info| info.has_norms()) {
-                let mut values = producer.get_norms(info).expect("norms");
+                let mut values = producer.get_norms(info).expect("norms").unwrap();
                 loop {
                     let doc = values.next_doc().expect("next doc");
                     if doc == crate::search::NO_MORE_DOCS {
@@ -6502,7 +6515,7 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
         if info.doc_values_type != DocValuesType::NUMERIC {
             return Ok(None);
         }
-        Ok(Some(producer.get_numeric(info)?))
+        producer.get_numeric(info)
     }
 
     fn get_binary_doc_values(
@@ -6515,7 +6528,7 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
         if info.doc_values_type != DocValuesType::BINARY {
             return Ok(None);
         }
-        Ok(Some(producer.get_binary(info)?))
+        producer.get_binary(info)
     }
 
     fn get_sorted_doc_values(
@@ -6528,7 +6541,7 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
         if info.doc_values_type != DocValuesType::SORTED {
             return Ok(None);
         }
-        Ok(Some(producer.get_sorted(info)?))
+        producer.get_sorted(info)
     }
 
     fn get_sorted_numeric_doc_values(
@@ -6541,7 +6554,7 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
         if info.doc_values_type != DocValuesType::SORTED_NUMERIC {
             return Ok(None);
         }
-        Ok(Some(producer.get_sorted_numeric(info)?))
+        producer.get_sorted_numeric(info)
     }
 
     fn get_sorted_set_doc_values(
@@ -6554,7 +6567,7 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
         if info.doc_values_type != DocValuesType::SORTED_SET {
             return Ok(None);
         }
-        Ok(Some(producer.get_sorted_set(info)?))
+        producer.get_sorted_set(info)
     }
 
     fn get_norm_values(

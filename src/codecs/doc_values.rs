@@ -48,19 +48,52 @@ use super::stub::FieldInfo;
 /// data file instead of a copy of its contents.
 pub trait DocValuesProducer: Send + Sync + fmt::Debug {
     /// Returns the numeric values for the given field.
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>>;
+    ///
+    /// Java's return value is nullable: a producer with no values of this
+    /// kind for the field answers `null` — `PerFieldDocValuesFormat` for a
+    /// field it has no producer for (`codecs/perfield/PerFieldDocValuesFormat.java:313-347`),
+    /// `SlowCompositeCodecReaderWrapper` when no wrapped reader has the field
+    /// (`MultiDocValues.java`). `None` is that `null`.
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>>;
 
     /// Returns the binary values for the given field.
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>>;
+    ///
+    /// Java's return value is nullable: a producer with no values of this
+    /// kind for the field answers `null` — `PerFieldDocValuesFormat` for a
+    /// field it has no producer for (`codecs/perfield/PerFieldDocValuesFormat.java:313-347`),
+    /// `SlowCompositeCodecReaderWrapper` when no wrapped reader has the field
+    /// (`MultiDocValues.java`). `None` is that `null`.
+    fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>>;
 
     /// Returns the sorted values for the given field.
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>>;
+    ///
+    /// Java's return value is nullable: a producer with no values of this
+    /// kind for the field answers `null` — `PerFieldDocValuesFormat` for a
+    /// field it has no producer for (`codecs/perfield/PerFieldDocValuesFormat.java:313-347`),
+    /// `SlowCompositeCodecReaderWrapper` when no wrapped reader has the field
+    /// (`MultiDocValues.java`). `None` is that `null`.
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>>;
 
     /// Returns the sorted-numeric values for the given field.
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>>;
+    ///
+    /// Java's return value is nullable: a producer with no values of this
+    /// kind for the field answers `null` — `PerFieldDocValuesFormat` for a
+    /// field it has no producer for (`codecs/perfield/PerFieldDocValuesFormat.java:313-347`),
+    /// `SlowCompositeCodecReaderWrapper` when no wrapped reader has the field
+    /// (`MultiDocValues.java`). `None` is that `null`.
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>>;
 
     /// Returns the sorted-set values for the given field.
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>>;
+    ///
+    /// Java's return value is nullable: a producer with no values of this
+    /// kind for the field answers `null` — `PerFieldDocValuesFormat` for a
+    /// field it has no producer for (`codecs/perfield/PerFieldDocValuesFormat.java:313-347`),
+    /// `SlowCompositeCodecReaderWrapper` when no wrapped reader has the field
+    /// (`MultiDocValues.java`). `None` is that `null`.
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>>;
 
     /// Returns the skip index for the given field, or `None` when this
     /// producer has none to offer.
@@ -95,6 +128,22 @@ pub trait DocValuesProducer: Send + Sync + fmt::Debug {
 // -----------------------------------------------------------------------------
 // Consumer
 // -----------------------------------------------------------------------------
+
+/// Dereferences the values a producer returned, as Java's callers dereference
+/// them without a check: a `null` there raises `NullPointerException`, which
+/// is reported as [`LuceneError::IllegalState`].
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalState`] when `values` is `None`.
+pub(crate) fn non_null<T>(values: Option<T>, field: &FieldInfo) -> Result<T> {
+    values.ok_or_else(|| {
+        LuceneError::IllegalState(format!(
+            "the producer has no values for field \"{}\"",
+            field.name
+        ))
+    })
+}
 
 /// Writes doc-values fields for a segment.
 ///
@@ -421,9 +470,13 @@ pub fn register_doc_values_format(
 // -----------------------------------------------------------------------------
 
 /// A no-op doc-values consumer.
+///
+/// Test-only: Lucene has no such class.
+#[cfg(test)]
 #[derive(Debug, Default, Clone)]
-pub struct EmptyDocValuesConsumer;
+pub(crate) struct EmptyDocValuesConsumer;
 
+#[cfg(test)]
 impl DocValuesConsumer for EmptyDocValuesConsumer {
     fn add_numeric_field(
         &mut self,
@@ -471,18 +524,23 @@ impl DocValuesConsumer for EmptyDocValuesConsumer {
 }
 
 /// A no-op doc-values format.
+///
+/// Test-only: Lucene has no such class.
+#[cfg(test)]
 #[derive(Debug, Default, Clone)]
-pub struct EmptyDocValuesFormat {
+pub(crate) struct EmptyDocValuesFormat {
     name: String,
 }
 
+#[cfg(test)]
 impl EmptyDocValuesFormat {
     /// Creates a new no-op doc-values format with the given SPI name.
-    pub fn new(name: impl Into<String>) -> Self {
+    pub(crate) fn new(name: impl Into<String>) -> Self {
         Self { name: name.into() }
     }
 }
 
+#[cfg(test)]
 impl DocValuesFormat for EmptyDocValuesFormat {
     fn name(&self) -> &str {
         &self.name
@@ -564,23 +622,6 @@ mod tests {
             Err(other) => panic!("expected UnsupportedOperation, got {other:?}"),
             Ok(_) => panic!("expected UnsupportedOperation, got a skipper"),
         }
-    }
-
-    #[test]
-    fn empty_doc_values_producer_returns_empty_iterators() {
-        let producer = EmptyDocValuesProducer;
-        let field = FieldInfo::default();
-        let mut numeric = producer.get_numeric(&field).unwrap();
-        assert_eq!(numeric.next_doc().unwrap(), NO_MORE_DOCS);
-        let mut binary = producer.get_binary(&field).unwrap();
-        assert_eq!(binary.next_doc().unwrap(), NO_MORE_DOCS);
-        let mut sorted = producer.get_sorted(&field).unwrap();
-        assert_eq!(sorted.next_doc().unwrap(), NO_MORE_DOCS);
-        let mut sorted_numeric = producer.get_sorted_numeric(&field).unwrap();
-        assert_eq!(sorted_numeric.next_doc().unwrap(), NO_MORE_DOCS);
-        let mut sorted_set = producer.get_sorted_set(&field).unwrap();
-        assert_eq!(sorted_set.next_doc().unwrap(), NO_MORE_DOCS);
-        producer.check_integrity().unwrap();
     }
 
     #[test]
@@ -915,9 +956,13 @@ pub fn get_merged_numeric_doc_values(
         else {
             continue;
         };
+        // `if (values != null) subs.add(...)` (`DocValuesConsumer.java:217-219`).
+        let Some(values) = producer.get_numeric(reader_field_info)? else {
+            continue;
+        };
         subs.push(NumericDocValuesSub {
             doc_map: Arc::clone(&merge_state.doc_maps[i]),
-            values: producer.get_numeric(reader_field_info)?,
+            values,
             mapped_doc_id: -1,
         });
     }
@@ -981,7 +1026,10 @@ pub fn get_merged_binary_doc_values(
         else {
             continue;
         };
-        let values = producer.get_binary(reader_field_info)?;
+        // `if (values != null)` (`DocValuesConsumer.java:336-339`).
+        let Some(values) = producer.get_binary(reader_field_info)? else {
+            continue;
+        };
         cost += values.cost();
         subs.push(BinaryDocValuesSub {
             doc_map: Arc::clone(&merge_state.doc_maps[i]),
@@ -1074,9 +1122,9 @@ pub fn get_merged_sorted_numeric_doc_values(
                 field,
                 DocValuesType::SORTED_NUMERIC,
             )) {
-            Some((producer, reader_field_info)) => {
-                producer.get_sorted_numeric(reader_field_info)?
-            }
+            Some((producer, reader_field_info)) => producer
+                .get_sorted_numeric(reader_field_info)?
+                .unwrap_or_else(|| Box::new(DocValues::empty_sorted_numeric())),
             None => Box::new(DocValues::empty_sorted_numeric()),
         };
         cost += values.cost();
@@ -1231,9 +1279,11 @@ fn select_sorted_leaves_to_merge(
             .as_ref()
             .zip(sub_field_info(merge_state, i, field, DocValuesType::SORTED))
         {
-            Some((producer, reader_field_info)) => {
-                to_merge.push(producer.get_sorted(reader_field_info)?)
-            }
+            Some((producer, reader_field_info)) => to_merge.push(
+                producer
+                    .get_sorted(reader_field_info)?
+                    .unwrap_or_else(|| Box::new(DocValues::empty_sorted())),
+            ),
             None => to_merge.push(Box::new(DocValues::empty_sorted())),
         }
     }
@@ -1372,9 +1422,11 @@ pub fn select_leaves_to_merge(
                 field,
                 DocValuesType::SORTED_SET,
             )) {
-            Some((producer, reader_field_info)) => {
-                to_merge.push(producer.get_sorted_set(reader_field_info)?)
-            }
+            Some((producer, reader_field_info)) => to_merge.push(
+                producer
+                    .get_sorted_set(reader_field_info)?
+                    .unwrap_or_else(|| Box::new(DocValues::empty_sorted_set())),
+            ),
             None => to_merge.push(Box::new(DocValues::empty_sorted_set())),
         }
     }
@@ -1661,29 +1713,47 @@ impl<'a> MergedDocValuesProducer<'a> {
 }
 
 impl DocValuesProducer for MergedDocValuesProducer<'_> {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        self.check_field(field)?;
-        get_merged_numeric_doc_values(self.merge_state, self.field)
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        let values: Result<Box<dyn NumericDocValues>> = {
+            self.check_field(field)?;
+            get_merged_numeric_doc_values(self.merge_state, self.field)
+        };
+        Ok(Some(values?))
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        self.check_field(field)?;
-        get_merged_binary_doc_values(self.field, self.merge_state)
+    fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        let values: Result<Box<dyn BinaryDocValues>> = {
+            self.check_field(field)?;
+            get_merged_binary_doc_values(self.field, self.merge_state)
+        };
+        Ok(Some(values?))
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        self.check_field(field)?;
-        get_merged_sorted_doc_values(self.field, self.merge_state, self.map()?)
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        let values: Result<Box<dyn SortedDocValues>> = {
+            self.check_field(field)?;
+            get_merged_sorted_doc_values(self.field, self.merge_state, self.map()?)
+        };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        self.check_field(field)?;
-        get_merged_sorted_numeric_doc_values(self.field, self.merge_state)
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        let values: Result<Box<dyn SortedNumericDocValues>> = {
+            self.check_field(field)?;
+            get_merged_sorted_numeric_doc_values(self.field, self.merge_state)
+        };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        self.check_field(field)?;
-        get_merged_sorted_set_doc_values(self.field, self.merge_state, self.map()?)
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        let values: Result<Box<dyn SortedSetDocValues>> = {
+            self.check_field(field)?;
+            get_merged_sorted_set_doc_values(self.field, self.merge_state, self.map()?)
+        };
+        Ok(Some(values?))
     }
 
     /// Equivalent to the `getSkipper` the anonymous merge producers of

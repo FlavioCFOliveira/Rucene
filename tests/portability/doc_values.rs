@@ -320,7 +320,7 @@ fn dump(producer: &dyn DocValuesProducer, field_infos: &FieldInfos) -> Vec<Strin
         match info.doc_values_type {
             DocValuesType::NONE => {}
             DocValuesType::NUMERIC => {
-                let mut values = producer.get_numeric(info).expect("numeric");
+                let mut values = producer.get_numeric(info).expect("numeric").unwrap();
                 loop {
                     let doc = values.next_doc().expect("next doc");
                     if doc == NO_MORE_DOCS {
@@ -334,7 +334,7 @@ fn dump(producer: &dyn DocValuesProducer, field_infos: &FieldInfos) -> Vec<Strin
                 }
             }
             DocValuesType::BINARY => {
-                let mut values = producer.get_binary(info).expect("binary");
+                let mut values = producer.get_binary(info).expect("binary").unwrap();
                 loop {
                     let doc = values.next_doc().expect("next doc");
                     if doc == NO_MORE_DOCS {
@@ -345,7 +345,7 @@ fn dump(producer: &dyn DocValuesProducer, field_infos: &FieldInfos) -> Vec<Strin
                 }
             }
             DocValuesType::SORTED => {
-                let values = producer.get_sorted(info).expect("sorted");
+                let values = producer.get_sorted(info).expect("sorted").unwrap();
                 let count = values.get_value_count().expect("value count");
                 let dictionary: Vec<String> = (0..count)
                     .map(|ord| hex(values.lookup_ord(ord).expect("term").slice()))
@@ -355,7 +355,7 @@ fn dump(producer: &dyn DocValuesProducer, field_infos: &FieldInfos) -> Vec<Strin
                     info.name,
                     dictionary.join(",")
                 ));
-                let mut values = producer.get_sorted(info).expect("sorted");
+                let mut values = producer.get_sorted(info).expect("sorted").unwrap();
                 loop {
                     let doc = values.next_doc().expect("next doc");
                     if doc == NO_MORE_DOCS {
@@ -371,7 +371,10 @@ fn dump(producer: &dyn DocValuesProducer, field_infos: &FieldInfos) -> Vec<Strin
                 }
             }
             DocValuesType::SORTED_NUMERIC => {
-                let mut values = producer.get_sorted_numeric(info).expect("sorted numeric");
+                let mut values = producer
+                    .get_sorted_numeric(info)
+                    .expect("sorted numeric")
+                    .unwrap();
                 loop {
                     let doc = values.next_doc().expect("next doc");
                     if doc == NO_MORE_DOCS {
@@ -390,7 +393,7 @@ fn dump(producer: &dyn DocValuesProducer, field_infos: &FieldInfos) -> Vec<Strin
                 }
             }
             DocValuesType::SORTED_SET => {
-                let mut values = producer.get_sorted_set(info).expect("sorted set");
+                let mut values = producer.get_sorted_set(info).expect("sorted set").unwrap();
                 let count = values.get_value_count().expect("value count");
                 let mut body = Vec::new();
                 for ord in 0..count {
@@ -1259,6 +1262,7 @@ fn a_corrupt_jump_table_entry_is_an_error_not_a_panic() {
     let (producer, field_infos) = open_producer(tmp.path()).unwrap();
     let mut values = producer
         .get_numeric(field_infos.field_info("vbpv").unwrap())
+        .unwrap()
         .unwrap();
     assert_eq!(values.advance(33000).unwrap(), 33000);
     assert!(
@@ -1275,13 +1279,13 @@ fn read_every_value(
     for info in field_infos.iter() {
         match info.doc_values_type {
             DocValuesType::NUMERIC => {
-                let mut values = producer.get_numeric(info)?;
+                let mut values = producer.get_numeric(info)?.unwrap();
                 while values.next_doc()? != NO_MORE_DOCS {
                     values.long_value()?;
                 }
             }
             DocValuesType::SORTED_NUMERIC => {
-                let mut values = producer.get_sorted_numeric(info)?;
+                let mut values = producer.get_sorted_numeric(info)?.unwrap();
                 while values.next_doc()? != NO_MORE_DOCS {
                     for _ in 0..values.doc_value_count()? {
                         values.next_value()?;

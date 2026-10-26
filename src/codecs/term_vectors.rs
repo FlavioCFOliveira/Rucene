@@ -253,7 +253,7 @@ pub trait TermVectorsWriter: Send + Sync + fmt::Debug + Accountable {
             let has_payloads = terms.has_payloads();
             debug_assert!(!has_payloads || has_positions);
 
-            let mut num_terms = terms.size() as i32;
+            let mut num_terms = terms.size()? as i32;
             if num_terms == -1 {
                 // Count them: `Terms.size()` is not a mandatory statistic.
                 num_terms = 0;

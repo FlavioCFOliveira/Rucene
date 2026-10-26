@@ -1360,31 +1360,42 @@ impl BufferedNumericProducer {
 }
 
 impl DocValuesProducer for BufferedNumericProducer {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        self.check_field(field)?;
-        match &self.sorted {
-            None => Ok(Box::new(BufferedNumeric::new(
-                Arc::clone(&self.docs),
-                Arc::clone(&self.values),
-            ))),
-            Some(sorted) => Ok(Box::new(SortingNumeric::new(Arc::clone(sorted)))),
-        }
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        let values: Result<Box<dyn NumericDocValues>> = {
+            self.check_field(field)?;
+            match &self.sorted {
+                None => Ok(Box::new(BufferedNumeric::new(
+                    Arc::clone(&self.docs),
+                    Arc::clone(&self.values),
+                ))),
+                Some(sorted) => Ok(Box::new(SortingNumeric::new(Arc::clone(sorted)))),
+            }
+        };
+        Ok(Some(values?))
     }
 
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        Err(self.unsupported("binary"))
+    fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        let values: Result<Box<dyn BinaryDocValues>> = { Err(self.unsupported("binary")) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        Err(self.unsupported("sorted"))
+    fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        let values: Result<Box<dyn SortedDocValues>> = { Err(self.unsupported("sorted")) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        Err(self.unsupported("sorted numeric"))
+    fn get_sorted_numeric(
+        &self,
+        _field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        let values: Result<Box<dyn SortedNumericDocValues>> =
+            { Err(self.unsupported("sorted numeric")) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        Err(self.unsupported("sorted set"))
+    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        let values: Result<Box<dyn SortedSetDocValues>> = { Err(self.unsupported("sorted set")) };
+        Ok(Some(values?))
     }
 
     /// Inherited from `EmptyDocValuesProducer.getSkipper`
@@ -1766,28 +1777,39 @@ impl BufferedBinaryProducer {
 }
 
 impl DocValuesProducer for BufferedBinaryProducer {
-    fn get_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        Err(self.unsupported("numeric"))
+    fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        let values: Result<Box<dyn NumericDocValues>> = { Err(self.unsupported("numeric")) };
+        Ok(Some(values?))
     }
 
-    fn get_binary(&self, field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        self.check_field(field)?;
-        Ok(Box::new(BufferedBinary::new(
-            Arc::clone(&self.docs),
-            Arc::clone(&self.values),
-        )))
+    fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        let values: Result<Box<dyn BinaryDocValues>> = {
+            self.check_field(field)?;
+            Ok(Box::new(BufferedBinary::new(
+                Arc::clone(&self.docs),
+                Arc::clone(&self.values),
+            )))
+        };
+        Ok(Some(values?))
     }
 
-    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        Err(self.unsupported("sorted"))
+    fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        let values: Result<Box<dyn SortedDocValues>> = { Err(self.unsupported("sorted")) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        Err(self.unsupported("sorted numeric"))
+    fn get_sorted_numeric(
+        &self,
+        _field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        let values: Result<Box<dyn SortedNumericDocValues>> =
+            { Err(self.unsupported("sorted numeric")) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        Err(self.unsupported("sorted set"))
+    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        let values: Result<Box<dyn SortedSetDocValues>> = { Err(self.unsupported("sorted set")) };
+        Ok(Some(values?))
     }
 
     /// Inherited from `EmptyDocValuesProducer.getSkipper`
@@ -1908,36 +1930,47 @@ impl BufferedSortedProducer {
 }
 
 impl DocValuesProducer for BufferedSortedProducer {
-    fn get_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        Err(self.unsupported("numeric"))
+    fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        let values: Result<Box<dyn NumericDocValues>> = { Err(self.unsupported("numeric")) };
+        Ok(Some(values?))
     }
 
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        Err(self.unsupported("binary"))
+    fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        let values: Result<Box<dyn BinaryDocValues>> = { Err(self.unsupported("binary")) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        self.check_field(field)?;
-        match &self.sorted {
-            None => Ok(Box::new(BufferedSorted::new(
-                Arc::clone(&self.docs),
-                Arc::clone(&self.ords),
-                Arc::clone(&self.dictionary),
-            ))),
-            Some(sorted) => Ok(Box::new(SortingSorted::new(
-                Arc::clone(&self.dictionary),
-                self.docs.len() as i64,
-                Arc::clone(sorted),
-            ))),
-        }
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        let values: Result<Box<dyn SortedDocValues>> = {
+            self.check_field(field)?;
+            match &self.sorted {
+                None => Ok(Box::new(BufferedSorted::new(
+                    Arc::clone(&self.docs),
+                    Arc::clone(&self.ords),
+                    Arc::clone(&self.dictionary),
+                ))),
+                Some(sorted) => Ok(Box::new(SortingSorted::new(
+                    Arc::clone(&self.dictionary),
+                    self.docs.len() as i64,
+                    Arc::clone(sorted),
+                ))),
+            }
+        };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        Err(self.unsupported("sorted numeric"))
+    fn get_sorted_numeric(
+        &self,
+        _field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        let values: Result<Box<dyn SortedNumericDocValues>> =
+            { Err(self.unsupported("sorted numeric")) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        Err(self.unsupported("sorted set"))
+    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        let values: Result<Box<dyn SortedSetDocValues>> = { Err(self.unsupported("sorted set")) };
+        Ok(Some(values?))
     }
 
     /// Inherited from `EmptyDocValuesProducer.getSkipper`
@@ -2102,35 +2135,45 @@ impl BufferedSortedNumericProducer {
 }
 
 impl DocValuesProducer for BufferedSortedNumericProducer {
-    fn get_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        Err(self.unsupported("numeric"))
+    fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        let values: Result<Box<dyn NumericDocValues>> = { Err(self.unsupported("numeric")) };
+        Ok(Some(values?))
     }
 
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        Err(self.unsupported("binary"))
+    fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        let values: Result<Box<dyn BinaryDocValues>> = { Err(self.unsupported("binary")) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        Err(self.unsupported("sorted"))
+    fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        let values: Result<Box<dyn SortedDocValues>> = { Err(self.unsupported("sorted")) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_numeric(&self, field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        self.check_field(field)?;
-        if let Some(counts) = &self.counts {
-            Ok(Box::new(BufferedSortedNumeric::new(
-                Arc::clone(&self.docs),
-                Arc::clone(counts),
-                Arc::clone(&self.values),
-            )))
-        } else {
-            Ok(Box::new(SingletonNumericAsSortedNumeric::new(Box::new(
-                BufferedNumeric::new(Arc::clone(&self.docs), Arc::clone(&self.values)),
-            ))))
-        }
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        let values: Result<Box<dyn SortedNumericDocValues>> = {
+            self.check_field(field)?;
+            if let Some(counts) = &self.counts {
+                Ok(Box::new(BufferedSortedNumeric::new(
+                    Arc::clone(&self.docs),
+                    Arc::clone(counts),
+                    Arc::clone(&self.values),
+                )))
+            } else {
+                Ok(Box::new(SingletonNumericAsSortedNumeric::new(Box::new(
+                    BufferedNumeric::new(Arc::clone(&self.docs), Arc::clone(&self.values)),
+                ))))
+            }
+        };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        Err(self.unsupported("sorted set"))
+    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        let values: Result<Box<dyn SortedSetDocValues>> = { Err(self.unsupported("sorted set")) };
+        Ok(Some(values?))
     }
 
     /// Inherited from `EmptyDocValuesProducer.getSkipper`
@@ -2201,42 +2244,53 @@ impl BufferedSortedSetProducer {
 }
 
 impl DocValuesProducer for BufferedSortedSetProducer {
-    fn get_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        Err(self.unsupported("numeric"))
+    fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        let values: Result<Box<dyn NumericDocValues>> = { Err(self.unsupported("numeric")) };
+        Ok(Some(values?))
     }
 
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Box<dyn BinaryDocValues>> {
-        Err(self.unsupported("binary"))
+    fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        let values: Result<Box<dyn BinaryDocValues>> = { Err(self.unsupported("binary")) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted(&self, _field: &FieldInfo) -> Result<Box<dyn SortedDocValues>> {
-        Err(self.unsupported("sorted"))
+    fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        let values: Result<Box<dyn SortedDocValues>> = { Err(self.unsupported("sorted")) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_numeric(&self, _field: &FieldInfo) -> Result<Box<dyn SortedNumericDocValues>> {
-        Err(self.unsupported("sorted numeric"))
+    fn get_sorted_numeric(
+        &self,
+        _field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        let values: Result<Box<dyn SortedNumericDocValues>> =
+            { Err(self.unsupported("sorted numeric")) };
+        Ok(Some(values?))
     }
 
-    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Box<dyn SortedSetDocValues>> {
-        self.check_field(field)?;
-        if let Some(counts) = &self.ord_counts {
-            Ok(Box::new(BufferedSortedSet::new(
-                Arc::clone(&self.docs),
-                Arc::clone(counts),
-                Arc::clone(&self.ords),
-                Arc::clone(&self.dictionary),
-            )))
-        } else {
-            Ok(Box::new(SingletonSortedAsSortedSet::new(Box::new(
-                BufferedSorted::new(
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        let values: Result<Box<dyn SortedSetDocValues>> = {
+            self.check_field(field)?;
+            if let Some(counts) = &self.ord_counts {
+                Ok(Box::new(BufferedSortedSet::new(
                     Arc::clone(&self.docs),
-                    // The singleton view reports `i32` ordinals straight from
-                    // the per-doc stream.
-                    Arc::new(self.ords.iter().map(|&ord| ord as i32).collect()),
+                    Arc::clone(counts),
+                    Arc::clone(&self.ords),
                     Arc::clone(&self.dictionary),
-                ),
-            ))))
-        }
+                )))
+            } else {
+                Ok(Box::new(SingletonSortedAsSortedSet::new(Box::new(
+                    BufferedSorted::new(
+                        Arc::clone(&self.docs),
+                        // The singleton view reports `i32` ordinals straight from
+                        // the per-doc stream.
+                        Arc::new(self.ords.iter().map(|&ord| ord as i32).collect()),
+                        Arc::clone(&self.dictionary),
+                    ),
+                ))))
+            }
+        };
+        Ok(Some(values?))
     }
 
     /// Inherited from `EmptyDocValuesProducer.getSkipper`
@@ -3417,7 +3471,7 @@ mod tests {
         values: &dyn DocValuesProducer,
         field: &FieldInfo,
     ) -> Result<SortedSetView> {
-        let mut sorted_set = values.get_sorted_set(field)?;
+        let mut sorted_set = values.get_sorted_set(field)?.unwrap();
         let mut docs_ords = Vec::new();
         loop {
             let doc = sorted_set.next_doc()?;
@@ -3453,7 +3507,7 @@ mod tests {
             values: &dyn DocValuesProducer,
         ) -> Result<()> {
             let mut collected = Vec::new();
-            let mut numeric = values.get_numeric(field)?;
+            let mut numeric = values.get_numeric(field)?.unwrap();
             loop {
                 let doc = numeric.next_doc()?;
                 if doc == NO_MORE_DOCS {
@@ -3472,7 +3526,7 @@ mod tests {
             values: &dyn DocValuesProducer,
         ) -> Result<()> {
             let mut collected = Vec::new();
-            let mut binary = values.get_binary(field)?;
+            let mut binary = values.get_binary(field)?.unwrap();
             loop {
                 let doc = binary.next_doc()?;
                 if doc == NO_MORE_DOCS {
@@ -3490,7 +3544,7 @@ mod tests {
             field: &FieldInfo,
             values: &dyn DocValuesProducer,
         ) -> Result<()> {
-            let mut sorted = values.get_sorted(field)?;
+            let mut sorted = values.get_sorted(field)?.unwrap();
             let mut docs_ords = Vec::new();
             loop {
                 let doc = sorted.next_doc()?;
@@ -3518,7 +3572,7 @@ mod tests {
             values: &dyn DocValuesProducer,
         ) -> Result<()> {
             let mut collected = Vec::new();
-            let mut numeric = values.get_sorted_numeric(field)?;
+            let mut numeric = values.get_sorted_numeric(field)?.unwrap();
             loop {
                 let doc = numeric.next_doc()?;
                 if doc == NO_MORE_DOCS {
@@ -3740,7 +3794,7 @@ mod tests {
             ) -> Result<()> {
                 for _ in 0..3 {
                     let mut collected = Vec::new();
-                    let mut numeric = values.get_numeric(field)?;
+                    let mut numeric = values.get_numeric(field)?.unwrap();
                     loop {
                         let doc = numeric.next_doc()?;
                         if doc == NO_MORE_DOCS {
@@ -3844,7 +3898,7 @@ mod tests {
                 field: &FieldInfo,
                 values: &dyn DocValuesProducer,
             ) -> Result<()> {
-                let mut numeric = values.get_numeric(field)?;
+                let mut numeric = values.get_numeric(field)?.unwrap();
                 self.advance = Some(numeric.advance(0).unwrap_err().to_string());
                 self.advance_exact = Some(numeric.advance_exact(0).unwrap_err().to_string());
                 assert_eq!(numeric.next_doc()?, 2);

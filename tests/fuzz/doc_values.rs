@@ -659,7 +659,7 @@ fn step_budget(fixture: &Fixture) -> usize {
 }
 
 fn visit_numeric(producer: &dyn DocValuesProducer, field: &FieldInfo, fixture: &Fixture) -> usize {
-    let Ok(mut values) = producer.get_numeric(field) else {
+    let Ok(Some(mut values)) = producer.get_numeric(field) else {
         return 0;
     };
     let mut decoded = 0;
@@ -677,7 +677,7 @@ fn visit_numeric(producer: &dyn DocValuesProducer, field: &FieldInfo, fixture: &
 }
 
 fn visit_binary(producer: &dyn DocValuesProducer, field: &FieldInfo, fixture: &Fixture) -> usize {
-    let Ok(mut values) = producer.get_binary(field) else {
+    let Ok(Some(mut values)) = producer.get_binary(field) else {
         return 0;
     };
     let mut decoded = 0;
@@ -697,7 +697,7 @@ fn visit_binary(producer: &dyn DocValuesProducer, field: &FieldInfo, fixture: &F
 }
 
 fn visit_sorted(producer: &dyn DocValuesProducer, field: &FieldInfo, fixture: &Fixture) -> usize {
-    let Ok(mut values) = producer.get_sorted(field) else {
+    let Ok(Some(mut values)) = producer.get_sorted(field) else {
         return 0;
     };
     let count = values.get_value_count().unwrap_or(0);
@@ -726,7 +726,7 @@ fn visit_sorted_numeric(
     field: &FieldInfo,
     fixture: &Fixture,
 ) -> usize {
-    let Ok(mut values) = producer.get_sorted_numeric(field) else {
+    let Ok(Some(mut values)) = producer.get_sorted_numeric(field) else {
         return 0;
     };
     let mut decoded = 0;
@@ -752,7 +752,7 @@ fn visit_sorted_set(
     field: &FieldInfo,
     fixture: &Fixture,
 ) -> usize {
-    let Ok(mut values) = producer.get_sorted_set(field) else {
+    let Ok(Some(mut values)) = producer.get_sorted_set(field) else {
         return 0;
     };
     let count = values.get_value_count().unwrap_or(0);
@@ -785,7 +785,7 @@ fn visit_random_access(producer: &dyn DocValuesProducer, field: &FieldInfo, fixt
     for target in targets {
         match field.doc_values_type {
             DocValuesType::NUMERIC => {
-                if let Ok(mut values) = producer.get_numeric(field) {
+                if let Ok(Some(mut values)) = producer.get_numeric(field) {
                     let _ = values.advance(target);
                     let _ = values.long_value();
                     let _ = values.advance_exact(target);
@@ -794,7 +794,7 @@ fn visit_random_access(producer: &dyn DocValuesProducer, field: &FieldInfo, fixt
                 }
             }
             DocValuesType::BINARY => {
-                if let Ok(mut values) = producer.get_binary(field) {
+                if let Ok(Some(mut values)) = producer.get_binary(field) {
                     let _ = values.advance(target);
                     let _ = values.binary_value();
                     let _ = values.advance_exact(target);
@@ -803,7 +803,7 @@ fn visit_random_access(producer: &dyn DocValuesProducer, field: &FieldInfo, fixt
                 }
             }
             DocValuesType::SORTED => {
-                if let Ok(mut values) = producer.get_sorted(field) {
+                if let Ok(Some(mut values)) = producer.get_sorted(field) {
                     let _ = values.advance(target);
                     let _ = values.ord_value();
                     let _ = values.advance_exact(target);
@@ -812,7 +812,7 @@ fn visit_random_access(producer: &dyn DocValuesProducer, field: &FieldInfo, fixt
                 }
             }
             DocValuesType::SORTED_NUMERIC => {
-                if let Ok(mut values) = producer.get_sorted_numeric(field) {
+                if let Ok(Some(mut values)) = producer.get_sorted_numeric(field) {
                     let _ = values.advance(target);
                     let _ = values.next_value();
                     let _ = values.advance_exact(target);
@@ -821,7 +821,7 @@ fn visit_random_access(producer: &dyn DocValuesProducer, field: &FieldInfo, fixt
                 }
             }
             DocValuesType::SORTED_SET => {
-                if let Ok(mut values) = producer.get_sorted_set(field) {
+                if let Ok(Some(mut values)) = producer.get_sorted_set(field) {
                     let _ = values.advance(target);
                     let _ = values.next_ord();
                     let _ = values.advance_exact(target);
@@ -1614,7 +1614,7 @@ fn a_field_the_metadata_never_mentions_is_never_answered_with_another_fields_val
         .fields_producer(&read_state)
         .expect("doc values producer");
     let field = infos.field_info_by_number(orphan).expect("field info");
-    let mut values = producer.get_numeric(field).expect("numeric");
+    let mut values = producer.get_numeric(field).expect("numeric").unwrap();
     assert_eq!(
         values.next_doc().expect("next doc"),
         NO_MORE_DOCS,
@@ -1641,7 +1641,7 @@ fn advancing_past_the_segment_exhausts_the_iterator() {
                 continue;
             }
             for doc in [fixture.max_doc, fixture.max_doc + 1, i32::MAX - 1] {
-                let mut values = producer.get_numeric(field).expect("numeric");
+                let mut values = producer.get_numeric(field).expect("numeric").unwrap();
                 if let Ok(found) = values.advance(doc) {
                     assert_eq!(
                         found, NO_MORE_DOCS,
@@ -1678,7 +1678,7 @@ fn an_ordinal_outside_the_dictionary_is_refused() {
         for field in infos.iter() {
             match field.doc_values_type {
                 DocValuesType::SORTED => {
-                    let values = producer.get_sorted(field).expect("sorted");
+                    let values = producer.get_sorted(field).expect("sorted").unwrap();
                     let count = values.get_value_count().expect("value count");
                     assert!(count > 0, "[{}] the fixture writes terms", fixture.name);
                     assert!(values.lookup_ord(count).is_err());
@@ -1687,7 +1687,7 @@ fn an_ordinal_outside_the_dictionary_is_refused() {
                     assert!(values.lookup_ord(count - 1).is_ok());
                 }
                 DocValuesType::SORTED_SET => {
-                    let values = producer.get_sorted_set(field).expect("sorted set");
+                    let values = producer.get_sorted_set(field).expect("sorted set").unwrap();
                     let count = values.get_value_count().expect("value count");
                     assert!(count > 0, "[{}] the fixture writes terms", fixture.name);
                     assert!(values.lookup_ord(count).is_err());
@@ -1722,7 +1722,7 @@ fn every_fixture_round_trips_before_it_is_corrupted() {
                 .expect("field info");
             match expected {
                 Values::Numeric(pairs) => {
-                    let mut values = producer.get_numeric(field).expect("numeric");
+                    let mut values = producer.get_numeric(field).expect("numeric").unwrap();
                     for (doc, value) in pairs {
                         assert_eq!(values.next_doc().expect("next doc"), *doc);
                         assert_eq!(values.long_value().expect("value"), *value);
@@ -1730,7 +1730,7 @@ fn every_fixture_round_trips_before_it_is_corrupted() {
                     assert_eq!(values.next_doc().expect("next doc"), NO_MORE_DOCS);
                 }
                 Values::Binary(pairs) => {
-                    let mut values = producer.get_binary(field).expect("binary");
+                    let mut values = producer.get_binary(field).expect("binary").unwrap();
                     for (doc, value) in pairs {
                         assert_eq!(values.next_doc().expect("next doc"), *doc);
                         assert_eq!(values.binary_value().expect("value").slice(), &value[..]);
@@ -1738,7 +1738,7 @@ fn every_fixture_round_trips_before_it_is_corrupted() {
                     assert_eq!(values.next_doc().expect("next doc"), NO_MORE_DOCS);
                 }
                 Values::Sorted(pairs) => {
-                    let mut values = producer.get_sorted(field).expect("sorted");
+                    let mut values = producer.get_sorted(field).expect("sorted").unwrap();
                     for (doc, value) in pairs {
                         assert_eq!(values.next_doc().expect("next doc"), *doc);
                         let ord = values.ord_value().expect("ord");
@@ -1747,7 +1747,10 @@ fn every_fixture_round_trips_before_it_is_corrupted() {
                     assert_eq!(values.next_doc().expect("next doc"), NO_MORE_DOCS);
                 }
                 Values::SortedNumeric(pairs) => {
-                    let mut values = producer.get_sorted_numeric(field).expect("sorted numeric");
+                    let mut values = producer
+                        .get_sorted_numeric(field)
+                        .expect("sorted numeric")
+                        .unwrap();
                     for (doc, expected) in pairs {
                         assert_eq!(values.next_doc().expect("next doc"), *doc);
                         let count = values.doc_value_count().expect("count");
@@ -1763,7 +1766,7 @@ fn every_fixture_round_trips_before_it_is_corrupted() {
                     assert_eq!(values.next_doc().expect("next doc"), NO_MORE_DOCS);
                 }
                 Values::SortedSet(pairs) => {
-                    let mut values = producer.get_sorted_set(field).expect("sorted set");
+                    let mut values = producer.get_sorted_set(field).expect("sorted set").unwrap();
                     for (doc, expected) in pairs {
                         assert_eq!(values.next_doc().expect("next doc"), *doc);
                         let count = values.doc_value_count().expect("count");
@@ -1840,7 +1843,7 @@ fn a_value_count_off_disk_sizes_nothing() {
             // reader that had reserved anything from `numValues` could not get
             // this far, and one that iterated it would not stop.
             for field in infos.iter() {
-                let Ok(mut values) = producer.get_numeric(field) else {
+                let Ok(Some(mut values)) = producer.get_numeric(field) else {
                     continue;
                 };
                 let mut seen = 0;

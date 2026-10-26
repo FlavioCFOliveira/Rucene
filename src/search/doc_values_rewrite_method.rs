@@ -219,23 +219,31 @@ impl Terms for DocValuesTerms {
         )?))
     }
 
-    fn size(&self) -> i64 {
-        -1
+    /// Equivalent to the anonymous `Terms.size()` (`DocValuesRewriteMethod.java:122-125`).
+    fn size(&self) -> Result<i64> {
+        Ok(-1)
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
-        // Java throws `UnsupportedOperationException`; the trait cannot report
-        // an error from these accessors, and nothing in this rewrite reads
-        // them, so the "unknown" sentinel stands in.
-        -1
+    /// Throws `UnsupportedOperationException`, as Java's does
+    /// (`DocValuesRewriteMethod.java:107-110`).
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "getSumTotalTermFreq".to_string(),
+        ))
     }
 
-    fn sum_doc_freq(&self) -> i64 {
-        -1
+    /// Throws `UnsupportedOperationException`, as Java's does
+    /// (`DocValuesRewriteMethod.java:112-115`).
+    fn sum_doc_freq(&self) -> Result<i64> {
+        Err(LuceneError::UnsupportedOperation(
+            "getSumDocFreq".to_string(),
+        ))
     }
 
-    fn doc_count(&self) -> i32 {
-        -1
+    /// Throws `UnsupportedOperationException`, as Java's does
+    /// (`DocValuesRewriteMethod.java:117-120`).
+    fn doc_count(&self) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation("getDocCount".to_string()))
     }
 
     fn has_freqs(&self) -> bool {

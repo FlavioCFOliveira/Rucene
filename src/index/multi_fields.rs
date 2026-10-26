@@ -267,12 +267,7 @@ impl MultiFields {
             return Ok(None);
         }
 
-        // `Arc` rather than `Rc`, although `Terms` is not currently bound by
-        // `Send + Sync`: Lucene's readers are fully thread-safe, and the
-        // reference count is the one part of this memo that must not have to
-        // change when Rucene's `Terms` catches up. The atomics are the cost of
-        // not baking single-threadedness into the public signature.
-        #[allow(clippy::arc_with_non_send_sync)]
+        // `Arc`: the memo is shared across threads, as Java's `ConcurrentHashMap` is.
         let built = Arc::new(MultiTerms::new(subs2, slices2)?);
         match self.terms_cache.write() {
             // Another caller may have raced us here; keep whichever instance
@@ -548,33 +543,41 @@ impl Terms for MultiTerms {
         })
     }
 
-    fn size(&self) -> i64 {
-        // Matches Lucene: the merged term count is not cheap to compute.
-        -1
+    fn size(&self) -> Result<i64> {
+        Ok({
+            // Matches Lucene: the merged term count is not cheap to compute.
+            -1
+        })
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
-        let mut sum: i64 = 0;
-        for sub in &self.subs {
-            sum += sub.sum_total_term_freq();
-        }
-        sum
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        Ok({
+            let mut sum: i64 = 0;
+            for sub in &self.subs {
+                sum += sub.sum_total_term_freq()?;
+            }
+            sum
+        })
     }
 
-    fn sum_doc_freq(&self) -> i64 {
-        let mut sum: i64 = 0;
-        for sub in &self.subs {
-            sum += sub.sum_doc_freq();
-        }
-        sum
+    fn sum_doc_freq(&self) -> Result<i64> {
+        Ok({
+            let mut sum: i64 = 0;
+            for sub in &self.subs {
+                sum += sub.sum_doc_freq()?;
+            }
+            sum
+        })
     }
 
-    fn doc_count(&self) -> i32 {
-        let mut sum: i32 = 0;
-        for sub in &self.subs {
-            sum = sum.wrapping_add(sub.doc_count());
-        }
-        sum
+    fn doc_count(&self) -> Result<i32> {
+        Ok({
+            let mut sum: i32 = 0;
+            for sub in &self.subs {
+                sum = sum.wrapping_add(sub.doc_count()?);
+            }
+            sum
+        })
     }
 
     fn has_freqs(&self) -> bool {
@@ -668,19 +671,19 @@ impl Terms for Arc<MultiTerms> {
         (**self).intersect(compiled, start_term)
     }
 
-    fn size(&self) -> i64 {
+    fn size(&self) -> Result<i64> {
         (**self).size()
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
+    fn sum_total_term_freq(&self) -> Result<i64> {
         (**self).sum_total_term_freq()
     }
 
-    fn sum_doc_freq(&self) -> i64 {
+    fn sum_doc_freq(&self) -> Result<i64> {
         (**self).sum_doc_freq()
     }
 
-    fn doc_count(&self) -> i32 {
+    fn doc_count(&self) -> Result<i32> {
         (**self).doc_count()
     }
 
@@ -708,7 +711,7 @@ impl Terms for Arc<MultiTerms> {
         (**self).max()
     }
 
-    fn stats(&self) -> String {
+    fn stats(&self) -> Result<String> {
         (**self).stats()
     }
 }
@@ -1622,8 +1625,9 @@ impl Impacts for SlowImpacts {
 mod tests {
     use super::*;
     use crate::index::postings_enum::{ImpactsEnum, PostingsEnum, POSTINGS_ENUM_FREQS};
+    use crate::index::terms::EmptyFields;
     use crate::index::terms::{EmptyTerms, Fields, SeekStatus, Terms, TermsEnum};
-    use crate::index::{EmptyFields, MultiReader, ReaderSlice};
+    use crate::index::{MultiReader, ReaderSlice};
     use crate::search::DocIdSetIterator;
     use crate::util::BytesRef;
 
@@ -1849,26 +1853,28 @@ mod tests {
             Ok(Box::new(VecTermsEnum::new(self.entries.clone())))
         }
 
-        fn size(&self) -> i64 {
-            self.entries.len() as i64
+        fn size(&self) -> Result<i64> {
+            Ok(self.entries.len() as i64)
         }
 
-        fn sum_total_term_freq(&self) -> i64 {
-            self.entries.iter().map(|(_, _, ttf, _)| *ttf).sum()
+        fn sum_total_term_freq(&self) -> Result<i64> {
+            Ok(self.entries.iter().map(|(_, _, ttf, _)| *ttf).sum())
         }
 
-        fn sum_doc_freq(&self) -> i64 {
-            self.entries.iter().map(|(_, df, _, _)| *df as i64).sum()
+        fn sum_doc_freq(&self) -> Result<i64> {
+            Ok(self.entries.iter().map(|(_, df, _, _)| *df as i64).sum())
         }
 
-        fn doc_count(&self) -> i32 {
-            // Number of distinct docs across all terms (approximation enough
-            // for the tests; not the focus here).
-            self.entries
-                .iter()
-                .flat_map(|(_, _, _, docs)| docs.iter().copied())
-                .collect::<std::collections::BTreeSet<_>>()
-                .len() as i32
+        fn doc_count(&self) -> Result<i32> {
+            Ok({
+                // Number of distinct docs across all terms (approximation enough
+                // for the tests; not the focus here).
+                self.entries
+                    .iter()
+                    .flat_map(|(_, _, _, docs)| docs.iter().copied())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len() as i32
+            })
         }
 
         fn has_freqs(&self) -> bool {
@@ -2304,9 +2310,9 @@ mod tests {
         )
         .unwrap();
         // sumTotalTermFreq = (3+1) + (2+5) = 11
-        assert_eq!(mt.sum_total_term_freq(), 11);
+        assert_eq!(mt.sum_total_term_freq().unwrap(), 11);
         // sumDocFreq = (2+1) + (1+3) = 7
-        assert_eq!(mt.sum_doc_freq(), 7);
+        assert_eq!(mt.sum_doc_freq().unwrap(), 7);
     }
 
     #[test]
@@ -2929,8 +2935,8 @@ mod tests {
         assert!(b.next().unwrap().is_none());
 
         // ... and the Arc handle itself satisfies `Terms`.
-        assert_eq!(Terms::doc_count(&shared), 2);
-        assert_eq!(Terms::sum_doc_freq(&shared), 2);
+        assert_eq!(Terms::doc_count(&shared).unwrap(), 2);
+        assert_eq!(Terms::sum_doc_freq(&shared).unwrap(), 2);
         assert!(Terms::has_freqs(&shared));
         assert_eq!(Terms::min(&shared).unwrap(), Some(term(b"apple")));
         assert_eq!(Terms::max(&shared).unwrap(), Some(term(b"apple")));
@@ -3099,7 +3105,7 @@ mod tests {
         let terms = MultiTerms::get_terms(&mr, "body").unwrap().unwrap();
         // Not wrapped: MultiTerms reports size() == -1, the leaf's VecTerms
         // reports the real count.
-        assert_eq!(terms.size(), 1);
+        assert_eq!(terms.size().unwrap(), 1);
         assert!(MultiTerms::get_terms(&mr, "missing").unwrap().is_none());
     }
 

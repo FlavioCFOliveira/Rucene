@@ -272,7 +272,7 @@ pub mod reader_util {
     /// when there is none. Rust's own `slice::binary_search` may pick a
     /// different member of a run of equal elements, which would move a
     /// duplicated doc ID from one leaf to the next.
-    fn binary_search_range(
+    pub(crate) fn binary_search_range(
         a: &[i32],
         from_index: usize,
         to_index: usize,
@@ -848,9 +848,9 @@ mod tests {
     use crate::index::index_reader::IndexReader;
     use crate::index::leaf_reader::{LeafMetaData, LeafReader};
     use crate::index::{
-        BinaryDocValues, ByteVectorValues, DocValuesSkipper, EmptyFields, FieldInfos,
-        FloatVectorValues, NumericDocValues, PointValues, SortedDocValues, SortedNumericDocValues,
-        SortedSetDocValues, Term, Terms,
+        BinaryDocValues, ByteVectorValues, DocValuesSkipper, FieldInfos, FloatVectorValues,
+        NumericDocValues, PointValues, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
+        Term, Terms,
     };
     use crate::search::knn::KnnCollector;
     use crate::search::AcceptDocs;
@@ -862,7 +862,7 @@ mod tests {
     struct StubTermVectors;
     impl TermVectors for StubTermVectors {
         fn get(&self, _doc: i32) -> Result<Option<Box<dyn Fields>>> {
-            Ok(Some(Box::new(EmptyFields)))
+            Ok(Some(Box::new(crate::index::terms::EmptyFields)))
         }
     }
 

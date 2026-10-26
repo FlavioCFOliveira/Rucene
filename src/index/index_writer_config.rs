@@ -43,10 +43,18 @@ use crate::util::InfoStream;
 /// warmer logic will be added in a later task.
 pub trait MergedSegmentWarmer: Send + Sync + Debug + fmt::Display {}
 
-/// Placeholder for `java.util.Comparator<LeafReader>` used to sort leaf
-/// readers when a `DirectoryReader` is opened from an `IndexWriter`.
+/// The `java.util.Comparator<LeafReader>` that sorts the leaves of a
+/// `DirectoryReader` opened from an `IndexWriter`.
+///
+/// Equivalent to the comparator `IndexWriterConfig.setLeafSorter` takes
+/// (`IndexWriterConfig.java:488-497`; `LiveIndexWriterConfig.java:96`,
+/// `:412-414`), which `StandardDirectoryReader` hands to its
+/// `BaseCompositeReader` constructor to sort the segment readers
+/// (`StandardDirectoryReader.java:51-64`, `:156`, `:184`).
 pub trait LeafComparator: Send + Sync + Debug + fmt::Display {
     /// Compares two leaf readers.
+    ///
+    /// Equivalent to `Comparator.compare(LeafReader, LeafReader)`.
     fn compare(&self, a: &dyn LeafReader, b: &dyn LeafReader) -> Ordering;
 }
 
@@ -445,6 +453,9 @@ impl LiveIndexWriterConfig {
     }
 
     /// Returns the leaf comparator, if one was configured.
+    ///
+    /// Equivalent to `LiveIndexWriterConfig.getLeafSorter()`
+    /// (`LiveIndexWriterConfig.java:412-414`).
     pub fn leaf_sorter(&self) -> Option<Arc<dyn LeafComparator>> {
         self.leaf_sorter.as_ref().map(Arc::clone)
     }
@@ -822,7 +833,11 @@ impl IndexWriterConfig {
         Ok(self)
     }
 
-    /// Sets a comparator used to sort leaf readers on NRT reopen.
+    /// Sets the comparator that sorts the leaf readers of a `DirectoryReader`
+    /// opened from an `IndexWriter` with this configuration.
+    ///
+    /// Equivalent to `IndexWriterConfig.setLeafSorter(Comparator<LeafReader>)`
+    /// (`IndexWriterConfig.java:488-497`).
     pub fn set_leaf_sorter(&mut self, leaf_sorter: Option<Arc<dyn LeafComparator>>) -> &mut Self {
         self.live.leaf_sorter = leaf_sorter;
         self

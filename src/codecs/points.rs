@@ -392,13 +392,13 @@ pub trait PointsFormat: Send + Sync + fmt::Debug {
 // No-op implementations
 // -----------------------------------------------------------------------------
 
-/// A no-op point-values instance that reports zero dimensions and no values.
+/// A points reader over a segment that has nothing indexed with points.
 ///
-/// Re-exported from the index layer so the codec and index layers share a
-/// single definition.
-pub use crate::index::point_values::EmptyPointValues;
-
-/// A no-op points reader.
+/// Equivalent to the anonymous `PointsReader` that `PointsFormat.EMPTY`'s
+/// `fieldsReader(SegmentReadState)` returns (`codecs/PointsFormat.java:55-68`):
+/// `close` and `checkIntegrity` do nothing, and `getValues` rejects every field
+/// with an `IllegalArgumentException`, because no field of such a segment was
+/// indexed with points.
 #[derive(Debug, Default, Clone)]
 pub struct EmptyPointsReader;
 
@@ -407,8 +407,16 @@ impl PointsReader for EmptyPointsReader {
         Ok(())
     }
 
-    fn get_values(&self, _field: &str) -> Result<Option<Box<dyn PointValues>>> {
-        Ok(Some(Box::new(EmptyPointValues)))
+    /// Equivalent to `PointsFormat.EMPTY.fieldsReader(...).getValues(String)`
+    /// (`codecs/PointsFormat.java:63-66`).
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::IllegalArgument`].
+    fn get_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
+        Err(LuceneError::IllegalArgument(format!(
+            "field=\"{field}\" was not indexed with points"
+        )))
     }
 
     fn get_merge_instance(&self) -> Result<Box<dyn PointsReader>> {
@@ -420,13 +428,22 @@ impl PointsReader for EmptyPointsReader {
     }
 }
 
-/// A no-op points writer.
+/// The writer of a codec that indexes no points.
+///
+/// `PointsFormat.EMPTY` throws `UnsupportedOperationException` instead of
+/// handing out a writer (`codecs/PointsFormat.java:49-52`); this writer refuses
+/// every field with the same error.
 #[derive(Debug, Default, Clone)]
 pub struct EmptyPointsWriter;
 
 impl PointsWriter for EmptyPointsWriter {
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`].
     fn write_field(&mut self, _field_info: &FieldInfo, _values: &dyn PointsReader) -> Result<()> {
-        Ok(())
+        Err(LuceneError::UnsupportedOperation(
+            "EmptyPointsWriter indexes no points".to_string(),
+        ))
     }
 
     fn finish(&mut self) -> Result<()> {
@@ -438,7 +455,9 @@ impl PointsWriter for EmptyPointsWriter {
     }
 }
 
-/// A no-op points format.
+/// A points format that indexes nothing.
+///
+/// Equivalent to `PointsFormat.EMPTY` (`codecs/PointsFormat.java:46-70`).
 #[derive(Debug, Default, Clone)]
 pub struct EmptyPointsFormat {
     name: String,
@@ -456,8 +475,16 @@ impl PointsFormat for EmptyPointsFormat {
         &self.name
     }
 
+    /// Equivalent to `PointsFormat.EMPTY.fieldsWriter(SegmentWriteState)`
+    /// (`codecs/PointsFormat.java:49-52`).
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneError::UnsupportedOperation`].
     fn fields_writer(&self, _state: &SegmentWriteState) -> Result<Box<dyn PointsWriter>> {
-        Ok(Box::new(EmptyPointsWriter))
+        Err(LuceneError::UnsupportedOperation(
+            "PointsFormat.EMPTY has no writer".to_string(),
+        ))
     }
 
     fn fields_reader(&self, _state: &SegmentReadState) -> Result<Box<dyn PointsReader>> {
@@ -476,41 +503,32 @@ mod tests {
     use crate::index::FieldInfos;
     use std::sync::Arc;
 
+    /// `PointsFormat.EMPTY`'s reader rejects every field
+    /// (`codecs/PointsFormat.java:63-66`); it never hands out values.
     #[test]
-    fn empty_point_values_reports_zero() {
-        let values = EmptyPointValues;
-        assert_eq!(values.bytes_per_dimension().unwrap(), 0);
-        assert_eq!(values.num_dimensions().unwrap(), 0);
-        assert_eq!(values.num_index_dimensions().unwrap(), 0);
-        assert_eq!(values.size().unwrap(), 0);
-        assert_eq!(values.doc_count().unwrap(), 0);
-        assert!(values.min_packed_value().unwrap().is_none());
-        assert!(values.max_packed_value().unwrap().is_none());
-    }
-
-    #[test]
-    fn empty_points_reader_returns_empty_values() {
+    fn empty_points_reader_rejects_every_field() {
         let mut reader = EmptyPointsReader;
-        assert_eq!(
-            reader
-                .get_values("field")
-                .unwrap()
-                .expect("the empty reader answers empty values")
-                .size()
-                .unwrap(),
-            0
-        );
+        match reader.get_values("field") {
+            Err(LuceneError::IllegalArgument(message)) => {
+                assert_eq!(message, "field=\"field\" was not indexed with points");
+            }
+            Err(other) => panic!("expected IllegalArgument, got {other:?}"),
+            Ok(_) => panic!("expected IllegalArgument, got values"),
+        }
         reader.check_integrity().unwrap();
         let _merge = reader.get_merge_instance().unwrap();
         reader.close().unwrap();
     }
 
     #[test]
-    fn empty_points_writer_accepts_field() {
+    fn empty_points_writer_refuses_every_field() {
         let mut writer = EmptyPointsWriter;
         let reader = EmptyPointsReader;
         let field = FieldInfo::default();
-        writer.write_field(&field, &reader).unwrap();
+        assert!(matches!(
+            writer.write_field(&field, &reader),
+            Err(LuceneError::UnsupportedOperation(_))
+        ));
         writer.finish().unwrap();
         writer.close().unwrap();
     }
@@ -533,7 +551,11 @@ mod tests {
             &BufferedUpdates,
             context,
         );
-        let _writer = format.fields_writer(&write_state).unwrap();
+        // `PointsFormat.EMPTY` has no writer (`codecs/PointsFormat.java:49-52`).
+        assert!(matches!(
+            format.fields_writer(&write_state),
+            Err(LuceneError::UnsupportedOperation(_))
+        ));
 
         let read_state = SegmentReadState::new(dir_ref, &segment_info, &field_infos, context);
         let _reader = format.fields_reader(&read_state).unwrap();

@@ -18,7 +18,7 @@ use crate::error::{LuceneError, Result};
 use super::postings::MergeState;
 use super::state::{SegmentReadState, SegmentWriteState};
 use super::stub::FieldInfo;
-use crate::index::doc_values::{DocValues, EmptyNumericDocValues, NumericDocValues};
+use crate::index::doc_values::{EmptyNumericDocValues, NumericDocValues};
 
 // -----------------------------------------------------------------------------
 // Producer
@@ -29,7 +29,11 @@ use crate::index::doc_values::{DocValues, EmptyNumericDocValues, NumericDocValue
 /// Equivalent to `org.apache.lucene.codecs.NormsProducer`.
 pub trait NormsProducer: Send + Sync + fmt::Debug {
     /// Returns the numeric norm values for the given field.
-    fn get_norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>>;
+    ///
+    /// Java's return value is nullable: `SlowCompositeCodecReaderWrapper`'s
+    /// producer answers `MultiDocValues.getNormValues`, which is `null` when no
+    /// wrapped reader has norms for the field. `None` is that `null`.
+    fn get_norms(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>>;
 
     /// Checks consistency of this producer.
     fn check_integrity(&self) -> Result<()>;
@@ -129,12 +133,18 @@ pub trait NormsFormat: Send + Sync + fmt::Debug {
 pub type EmptyNormsDocValues = EmptyNumericDocValues;
 
 /// A no-op norms producer.
+///
+/// Test-only: Lucene has no such class.
+#[cfg(test)]
 #[derive(Debug, Default, Clone)]
-pub struct EmptyNormsProducer;
+pub(crate) struct EmptyNormsProducer;
 
+#[cfg(test)]
 impl NormsProducer for EmptyNormsProducer {
-    fn get_norms(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        Ok(Box::new(DocValues::empty_numeric()))
+    fn get_norms(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        Ok(Some(Box::new(
+            crate::index::doc_values::DocValues::empty_numeric(),
+        )))
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -151,9 +161,13 @@ impl NormsProducer for EmptyNormsProducer {
 }
 
 /// A no-op norms consumer.
+///
+/// Test-only: Lucene has no such class.
+#[cfg(test)]
 #[derive(Debug, Default, Clone)]
-pub struct EmptyNormsConsumer;
+pub(crate) struct EmptyNormsConsumer;
 
+#[cfg(test)]
 impl NormsConsumer for EmptyNormsConsumer {
     fn add_norms_field(&mut self, _field: &FieldInfo, _values: &dyn NormsProducer) -> Result<()> {
         Ok(())
@@ -165,18 +179,23 @@ impl NormsConsumer for EmptyNormsConsumer {
 }
 
 /// A no-op norms format.
+///
+/// Test-only: Lucene has no such class.
+#[cfg(test)]
 #[derive(Debug, Default, Clone)]
-pub struct EmptyNormsFormat {
+pub(crate) struct EmptyNormsFormat {
     name: String,
 }
 
+#[cfg(test)]
 impl EmptyNormsFormat {
     /// Creates a new no-op norms format with the given SPI name.
-    pub fn new(name: impl Into<String>) -> Self {
+    pub(crate) fn new(name: impl Into<String>) -> Self {
         Self { name: name.into() }
     }
 }
 
+#[cfg(test)]
 impl NormsFormat for EmptyNormsFormat {
     fn name(&self) -> &str {
         &self.name
@@ -220,7 +239,7 @@ mod tests {
 
         let mut producer = EmptyNormsProducer;
         let field = FieldInfo::default();
-        let mut values = producer.get_norms(&field).unwrap();
+        let mut values = producer.get_norms(&field).unwrap().unwrap();
         assert_eq!(values.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
         producer.check_integrity().unwrap();
         let _merge = producer.get_merge_instance().unwrap();
@@ -280,35 +299,42 @@ impl fmt::Debug for MergedNormsProducer<'_> {
 }
 
 impl NormsProducer for MergedNormsProducer<'_> {
-    fn get_norms(&self, field_info: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        if field_info.name != self.merge_field_info.name {
-            return Err(LuceneError::IllegalArgument("wrong fieldInfo".to_string()));
-        }
-
-        let mut subs = Vec::new();
-        debug_assert_eq!(
-            self.merge_state.doc_maps.len(),
-            self.merge_state.doc_values_producers.len()
-        );
-        for i in 0..self.merge_state.doc_values_producers.len() {
-            let Some(norms_producer) = self.merge_state.norms_producers[i].as_ref() else {
-                continue;
-            };
-            let Some(reader_field_info) =
-                self.merge_state.field_infos[i].field_info(&self.merge_field_info.name)
-            else {
-                continue;
-            };
-            if !reader_field_info.has_norms() {
-                continue;
+    fn get_norms(&self, field_info: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        let values: Result<Box<dyn NumericDocValues>> = {
+            if field_info.name != self.merge_field_info.name {
+                return Err(LuceneError::IllegalArgument("wrong fieldInfo".to_string()));
             }
-            subs.push(NumericDocValuesSub {
-                doc_map: Arc::clone(&self.merge_state.doc_maps[i]),
-                values: norms_producer.get_norms(reader_field_info)?,
-                mapped_doc_id: -1,
-            });
-        }
-        merge_numeric_values(subs, self.merge_state.needs_index_sort)
+
+            let mut subs = Vec::new();
+            debug_assert_eq!(
+                self.merge_state.doc_maps.len(),
+                self.merge_state.doc_values_producers.len()
+            );
+            for i in 0..self.merge_state.doc_values_producers.len() {
+                let Some(norms_producer) = self.merge_state.norms_producers[i].as_ref() else {
+                    continue;
+                };
+                let Some(reader_field_info) =
+                    self.merge_state.field_infos[i].field_info(&self.merge_field_info.name)
+                else {
+                    continue;
+                };
+                if !reader_field_info.has_norms() {
+                    continue;
+                }
+                // `if (norms != null) subs.add(...)` (`NormsConsumer.java:128-130`).
+                let Some(values) = norms_producer.get_norms(reader_field_info)? else {
+                    continue;
+                };
+                subs.push(NumericDocValuesSub {
+                    doc_map: Arc::clone(&self.merge_state.doc_maps[i]),
+                    values,
+                    mapped_doc_id: -1,
+                });
+            }
+            merge_numeric_values(subs, self.merge_state.needs_index_sort)
+        };
+        Ok(Some(values?))
     }
 
     fn check_integrity(&self) -> Result<()> {
