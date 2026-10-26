@@ -150,7 +150,7 @@ impl VectorValuesConsumer {
             Arc::clone(&self.directory),
             self.segment_info.clone(),
             FieldInfos::default(),
-            BufferedUpdates,
+            BufferedUpdates::default(),
             // `IOContext.DEFAULT`, as Java passes.
             Arc::new(DefaultIOContext::default()),
         );

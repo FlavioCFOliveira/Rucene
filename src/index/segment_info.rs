@@ -390,31 +390,27 @@ impl SegmentInfo {
 
     /// Replaces the set of files referenced by this segment.
     ///
-    /// Equivalent to `SegmentInfo.setFiles(Collection<String>)`.
+    /// Equivalent to `SegmentInfo.setFiles(Collection<String>)`
+    /// (`SegmentInfo.java:309-320`): the set is replaced by a new, empty
+    /// `HashSet`, then `addFiles` validates every name with
+    /// [`check_file_names`](Self::check_file_names) and adds each one, in the
+    /// argument's iteration order, renamed with
+    /// [`named_for_this_segment`](Self::named_for_this_segment). As in Java, a
+    /// rejected name leaves the segment with the new, empty set.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java clears the set and then routes
-    /// the names through `addFiles`, so they are validated by
-    /// [`check_file_names`](Self::check_file_names) and renamed with
-    /// [`named_for_this_segment`](Self::named_for_this_segment). This port
-    /// stores the names as given and cannot report a rejection, because its
-    /// signature is infallible and the flush path in
-    /// `DocumentsWriterPerThread` calls it without a `Result` to propagate.
-    /// Callers that accept names from outside the codec should validate them
-    /// with [`check_file_names`](Self::check_file_names) first.
-    pub fn set_files<I>(&self, files: I)
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when a name is not a codec
+    /// file name or ends with `.tmp`, with Java's message.
+    pub fn set_files<I>(&self, files: I) -> Result<()>
     where
         I: IntoIterator<Item = String>,
     {
-        // `new HashSet<>()` then one `add` per name, in the argument's
-        // iteration order (`SegmentInfo.java:309-320`). The argument's order is
-        // therefore what fixes the chain order of any colliding names — in Java
-        // as much as here — so callers that care hand over an ordered
-        // collection.
-        let mut set = JavaHashSet::new();
-        for file in files {
-            set.insert(file);
-        }
-        *self.files.write().unwrap() = Some(set);
+        let files: Vec<String> = files.into_iter().collect();
+        // `setFiles = new HashSet<>()`.
+        *self.files.write().unwrap() = Some(JavaHashSet::new());
+        // `addFiles(files)`.
+        self.add_files(&files)
     }
 
     /// Rejects any file name that is not a well-formed codec file name.
@@ -1488,13 +1484,56 @@ mod tests {
         assert_eq!(info.get_diagnostics().get("source").unwrap(), "flush");
     }
 
+    /// `setFiles` replaces the set, then validates and renames every name
+    /// through `addFiles` (`SegmentInfo.java:309-345`): a foreign segment's
+    /// file is renamed for this segment, a name that is not a codec file name
+    /// or ends in `.tmp` is refused with Java's message, and a refusal leaves
+    /// the new, empty set behind.
+    #[test]
+    fn set_files_validates_and_renames_as_java() {
+        let info = test_segment_info("_0", 10);
+        info.set_files(["_7.fdt".to_string(), "_0_Lucene104_0.doc".to_string()])
+            .unwrap();
+        let files = info.files().unwrap();
+        assert!(
+            files.contains("_0.fdt"),
+            "namedForThisSegment renames `_7.fdt`"
+        );
+        assert!(files.contains("_0_Lucene104_0.doc"));
+        assert_eq!(files.len(), 2);
+
+        let error = info
+            .set_files(["_0.fnm".to_string(), "foo.bar".to_string()])
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            LuceneError::IllegalArgument(
+                "invalid codec filename 'foo.bar', must match: _[a-z0-9]+(_.*)?\\..*".to_string()
+            )
+            .to_string()
+        );
+        assert!(
+            info.files().unwrap().is_empty(),
+            "Java has already replaced the set when addFiles throws"
+        );
+
+        let error = info.set_files(["_0.TMP".to_string()]).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            LuceneError::IllegalArgument(
+                "invalid codec filename '_0.TMP', cannot end with .tmp extension".to_string()
+            )
+            .to_string()
+        );
+    }
+
     #[test]
     fn segment_info_files_round_trip() {
         let info = test_segment_info("_0", 10);
         let mut files = HashSet::new();
         files.insert("_0.fnm".to_string());
         files.insert("_0.si".to_string());
-        info.set_files(files);
+        info.set_files(files).unwrap();
         assert_eq!(info.files().unwrap().len(), 2);
 
         info.add_file("_0.doc".to_string()).unwrap();
@@ -1609,7 +1648,7 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(RamDirectory::default());
         let info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
-        let seg_updates = crate::codecs::stub::BufferedUpdates;
+        let seg_updates = crate::codecs::stub::BufferedUpdates::default();
         let ctx: &dyn crate::store::IOContext = &DefaultIOContext::default();
         let mut state =
             SegmentWriteState::new(info_stream, dir, &info, &field_infos, &seg_updates, ctx);

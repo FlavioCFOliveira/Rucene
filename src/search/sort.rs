@@ -12,7 +12,6 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
-use crate::search::binary_sort_field::BinarySortField;
 use crate::search::comparators::numeric_comparator::NumericDocValuesSource;
 use crate::search::comparators::{
     DocComparator, DoubleComparator, FloatComparator, IntComparator, LongComparator,
@@ -451,6 +450,23 @@ impl SortField {
     /// time.
     pub fn get_index_sorter(&self) -> Option<Arc<dyn crate::index::index_sorter::IndexSorter>> {
         use crate::index::index_sorter::{NumericSortKind, NumericSorter, StringSorter};
+        // `SortedNumericSortField` and `SortedSetSortField` override
+        // `getIndexSorter()` (`SortedNumericSortField.java:379-402`,
+        // `SortedSetSortField.java:203-206`); Java dispatches on the subclass,
+        // this port on the kind that records it.
+        match &self.kind {
+            SortFieldKind::SortedNumeric { .. } => {
+                return SortedNumericSortField::from_sort_field(self.clone())
+                    .and_then(|field| field.get_index_sorter())
+                    .ok();
+            }
+            SortFieldKind::SortedSet { .. } => {
+                return SortedSetSortField::from_sort_field(self.clone())
+                    .and_then(|field| field.get_index_sorter())
+                    .ok();
+            }
+            _ => {}
+        }
         let field = self.field.clone()?;
         // `BinarySortField` overrides `getIndexSorter()`
         // (`BinarySortField.java:178-182`).
@@ -1326,56 +1342,39 @@ impl fmt::Display for Sort {
 }
 
 /// Writes a [`Sort`] in the segment-info format used by
-/// `Lucene99SegmentInfoFormat`.
+/// `Lucene99SegmentInfoFormat`: the field count as a VInt, then each sort field
+/// as the name of the `SortFieldProvider` that can read it back followed by
+/// what that provider writes.
 ///
-/// This writes the count as a VInt, followed by each sort field prefixed by the
-/// name of the `SortFieldProvider` that can read it back: `"SortField"` for a
-/// plain sort field, and the subclass name for a
-/// [`SortedNumericSortField`](crate::search::SortedNumericSortField),
-/// [`SortedSetSortField`](crate::search::SortedSetSortField) or
-/// [`BinarySortField`](crate::search::BinarySortField). It is a convenience
-/// helper; a real segment-info writer will embed this in the full `.si`
-/// payload.
+/// Equivalent to the index-sort block of `Lucene99SegmentInfoFormat.write`
+/// (`Lucene99SegmentInfoFormat.java:223-234`): the provider name is the one the
+/// field's `IndexSorter` reports, and the payload is written through
+/// `SortFieldProvider.write`.
 ///
 /// # Errors
 ///
-/// Propagates the per-field serialization error and any I/O error.
+/// Returns [`LuceneError::IllegalArgument`] when a sort field has no index
+/// sorter, and propagates the provider's error and any I/O error.
 pub fn write_sort(output: &mut dyn DataOutput, sort: &Sort) -> Result<()> {
     output.write_v_int(sort.fields.len() as i32)?;
     for field in &sort.fields {
-        match field.kind() {
-            SortFieldKind::Plain => {
-                output.write_string("SortField")?;
-                field.serialize(output)?;
-            }
-            SortFieldKind::SortedNumeric { .. } => {
-                output.write_string(SortedNumericSortField::NAME)?;
-                SortedNumericSortField::from_sort_field(field.clone())?.serialize(output)?;
-            }
-            SortFieldKind::SortedSet { .. } => {
-                output.write_string(SortedSetSortField::NAME)?;
-                SortedSetSortField::from_sort_field(field.clone())?.serialize(output)?;
-            }
-            SortFieldKind::Binary { provider_name } => {
-                output.write_string(provider_name)?;
-                BinarySortField::from_sort_field(field.clone())?.serialize(output)?;
-            }
-            // `SortFieldProvider.write(SortField, DataOutput)` refuses a sort
-            // field without an `IndexSorter`, which `FeatureSortField` is.
-            SortFieldKind::Feature { .. } => {
-                return Err(LuceneError::IllegalArgument(format!(
-                    "Cannot serialize sort field {field}"
-                )));
-            }
-        }
+        let Some(sorter) = field.get_index_sorter() else {
+            return Err(LuceneError::IllegalArgument(format!(
+                "cannot serialize SortField {field}"
+            )));
+        };
+        output.write_string(sorter.get_provider_name())?;
+        crate::index::index_sorter::write_sort_field(field, output)?;
     }
     Ok(())
 }
 
 /// Reads a [`Sort`] previously written with [`write_sort`].
 ///
-/// Equivalent to resolving each provider name through
-/// `SortFieldProvider.forName(String)` and calling its `readSortField`.
+/// Equivalent to the index-sort block of `Lucene99SegmentInfoFormat.read`
+/// (`Lucene99SegmentInfoFormat.java:137-150`), which resolves each provider
+/// name through `SortFieldProvider.forName(String)` and lets it read its sort
+/// field.
 ///
 /// # Errors
 ///
@@ -1394,25 +1393,48 @@ pub fn read_sort(input: &mut dyn DataInput) -> Result<Option<Sort>> {
     }
     let mut fields = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        let provider = input.read_string()?;
-        let field = match provider.as_str() {
-            "SortField" => SortField::deserialize(input)?,
-            SortedNumericSortField::NAME => {
-                SortedNumericSortField::read_sort_field(input)?.into_sort_field()
-            }
-            SortedSetSortField::NAME => {
-                SortedSetSortField::read_sort_field(input)?.into_sort_field()
-            }
-            BinarySortField::NAME => BinarySortField::read_sort_field(input)?.into_sort_field(),
-            other => {
-                return Err(LuceneError::IllegalArgument(format!(
-                    "unknown sort field provider: {other}"
-                )))
-            }
-        };
-        fields.push(field);
+        let name = input.read_string()?;
+        fields.push(
+            crate::index::index_sorter::sort_field_provider_for_name(&name)?
+                .read_sort_field(input)?,
+        );
     }
     Ok(Some(Sort::new_fields(fields)?))
+}
+
+/// The `SortFieldProvider` for plain sort fields, registered as
+/// [`SortField::NAME`].
+///
+/// Equivalent to the nested class `SortField.Provider` (`SortField.java:204-268`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Provider;
+
+impl Provider {
+    /// Creates a new provider.
+    ///
+    /// Equivalent to `new SortField.Provider()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl crate::util::spi::NamedSPI for Provider {
+    fn get_name(&self) -> &str {
+        SortField::NAME
+    }
+}
+
+impl crate::index::index_sorter::SortFieldProvider for Provider {
+    /// Equivalent to `SortField.Provider.readSortField(DataInput)`.
+    fn read_sort_field(&self, input: &mut dyn DataInput) -> Result<SortField> {
+        SortField::deserialize(input)
+    }
+
+    /// Equivalent to `SortField.Provider.writeSortField(SortField, DataOutput)`,
+    /// which is `sf.serialize(out)`.
+    fn write_sort_field(&self, sort_field: &SortField, output: &mut dyn DataOutput) -> Result<()> {
+        sort_field.serialize(output)
+    }
 }
 
 #[cfg(test)]

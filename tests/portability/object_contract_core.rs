@@ -242,7 +242,7 @@ fn field_updates_buffer(m: &Measured) {
         3,
     )
     .expect("a buffer of resets");
-    none.add_reset("price", &term("b"), 5).expect("second");
+    none.add_no_value(&term("b"), 5).expect("second");
 
     for (name, buffer, count) in [
         ("same", &same, 3usize),
@@ -1645,18 +1645,15 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
         "the trailing space of the terms clause leaves two spaces before the query clause"
     );
 
-    // `FrozenBufferedUpdates` is where this port's freezing model shows: Java
-    // packs the terms into `PrefixCodedTerms` and the queries into an array and
-    // reports *their* RAM, while this port keeps the source `BufferedUpdates`
-    // and reports its own. The `bytesUsed=` clause therefore cannot agree — an
-    // empty Java packet already reports `bytesUsed=16` for an empty
-    // `PrefixCodedTerms` — so what is compared is every other clause, in Java's
-    // order and wording. See the divergence recorded on `Display for
-    // FrozenBufferedUpdates`.
+    // `FrozenBufferedUpdates` freezes its delete terms into `PrefixCodedTerms`
+    // and reports their RAM, the queries' fixed charge and the finished field
+    // updates as `bytesUsed=` (`FrozenBufferedUpdates.java:87-111`), so the
+    // whole rendering is compared — an empty packet already reports
+    // `bytesUsed=16` for its empty `PrefixCodedTerms`.
     let frozen_empty = FrozenBufferedUpdates::new(BufferedUpdates::new("_0"), None, 0);
     assert_eq!(
         frozen_empty.to_string(),
-        without_bytes_used(m.get("FrozenBufferedUpdates.toString/empty")),
+        m.get("FrozenBufferedUpdates.toString/empty"),
         "an unpushed packet renders `delGen=-1`: Java reads the field, not the asserting accessor"
     );
 
@@ -1678,8 +1675,8 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
     let frozen = FrozenBufferedUpdates::new(source, None, 0);
     frozen.set_del_gen(7);
     assert_eq!(
-        without_bytes_used(&frozen.to_string()),
-        without_bytes_used(m.get("FrozenBufferedUpdates.toString/terms-and-updates")),
+        frozen.to_string(),
+        m.get("FrozenBufferedUpdates.toString/terms-and-updates"),
         "`unique deleteTerms=` then `fieldUpdates=`, guarded on the field count but printing \
          the update count"
     );
@@ -1687,34 +1684,26 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
     let mut private_source = BufferedUpdates::new("_0");
     private_source.add_query(Arc::new(MatchAllDocsQuery::instance()), 3);
     let private_frozen = FrozenBufferedUpdates::new(private_source, Some("_0".to_string()), 0);
-    let rendered = without_bytes_used(&private_frozen.to_string());
-    let expected = without_bytes_used(m.get("FrozenBufferedUpdates.toString/private-segment"));
+    let rendered = private_frozen.to_string();
+    let expected = m
+        .get("FrozenBufferedUpdates.toString/private-segment")
+        .to_string();
+    // Java renders the private segment as a `SegmentCommitInfo`, this port as
+    // its name (see `Display for FrozenBufferedUpdates`): everything before it,
+    // `bytesUsed=` included, must agree.
+    let java_head = &expected[..expected.find(" privateSegment=").expect("Java shape")];
+    assert_eq!(
+        &rendered[..rendered.find(" privateSegment=").expect("Rucene shape")],
+        java_head,
+        "every clause before the private segment"
+    );
     assert!(
-        expected.starts_with("delGen=-1 numDeleteQueries=1 privateSegment="),
+        expected.starts_with(&format!("{java_head} privateSegment=_0(")),
         "the Java shape this comparison relies on: {expected}"
     );
-    assert!(
-        rendered.starts_with("delGen=-1 numDeleteQueries=1 privateSegment=_0"),
-        "the query clause and the private-segment clause, in Java's order: {rendered}"
+    assert_eq!(
+        rendered,
+        format!("{java_head} privateSegment=_0"),
+        "the private segment rendered by name, last, in Java's order"
     );
-}
-
-/// Strips the `bytesUsed=<n>` clause from a `FrozenBufferedUpdates` rendering.
-///
-/// Java's figure is the RAM of the frozen `PrefixCodedTerms` and `Query[]`;
-/// this port freezes by keeping the source `BufferedUpdates`, so the two count
-/// different objects. Everything else in the string is comparable.
-fn without_bytes_used(rendered: &str) -> String {
-    let mut out = Vec::new();
-    let mut rest = rendered;
-    while let Some(at) = rest.find(" bytesUsed=") {
-        out.push(&rest[..at]);
-        rest = &rest[at + " bytesUsed=".len()..];
-        let end = rest
-            .find(|c: char| !c.is_ascii_digit() && c != '-')
-            .unwrap_or(rest.len());
-        rest = &rest[end..];
-    }
-    out.push(rest);
-    out.concat()
 }

@@ -1191,7 +1191,7 @@ mod tests {
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
-            &crate::codecs::stub::BufferedUpdates,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
             &*crate::store::DEFAULT_IO_CONTEXT,
         );
         // 2000 points of 12 bytes against 0.001 MB, which holds 87: `add` spills.
@@ -1280,7 +1280,7 @@ mod tests {
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
-            &crate::codecs::stub::BufferedUpdates,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
             &*crate::store::DEFAULT_IO_CONTEXT,
         );
         let mut writer = Lucene90PointsWriter::new(&write_state, VERSION_START).unwrap();
@@ -1321,7 +1321,7 @@ mod tests {
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
-            &crate::codecs::stub::BufferedUpdates,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
             &*crate::store::DEFAULT_IO_CONTEXT,
         );
         let mut writer = Lucene90PointsWriter::new(&write_state, VERSION_CURRENT).unwrap();
@@ -1372,7 +1372,7 @@ mod tests {
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
-            &crate::codecs::stub::BufferedUpdates,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
             &*crate::store::DEFAULT_IO_CONTEXT,
         );
         let mut writer = Lucene90PointsWriter::new(&write_state, VERSION_CURRENT).unwrap();
@@ -1492,7 +1492,7 @@ mod tests {
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
-            &crate::codecs::stub::BufferedUpdates,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
             &*crate::store::DEFAULT_IO_CONTEXT,
         );
         let mut writer = Lucene90PointsWriter::new(&write_state, VERSION_CURRENT).unwrap();
@@ -1527,7 +1527,7 @@ mod tests {
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
-            &crate::codecs::stub::BufferedUpdates,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
             &*crate::store::DEFAULT_IO_CONTEXT,
         );
         let mut writer = Lucene90PointsWriter::new(&write_state, VERSION_CURRENT).unwrap();
@@ -1572,7 +1572,7 @@ mod tests {
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
-            &crate::codecs::stub::BufferedUpdates,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
             &*crate::store::DEFAULT_IO_CONTEXT,
         );
         let mut writer = Lucene90PointsWriter::new(&write_state, VERSION_CURRENT).unwrap();
@@ -1624,7 +1624,7 @@ mod tests {
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
-            &crate::codecs::stub::BufferedUpdates,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
             &*crate::store::DEFAULT_IO_CONTEXT,
         );
         let mut writer = Lucene90PointsWriter::new(&write_state, VERSION_CURRENT).unwrap();
@@ -1668,7 +1668,7 @@ mod tests {
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
-            &crate::codecs::stub::BufferedUpdates,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
             &*crate::store::DEFAULT_IO_CONTEXT,
         );
         let mut writer = Lucene90PointsWriter::new(&write_state, VERSION_CURRENT).unwrap();
@@ -1746,7 +1746,7 @@ mod tests {
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
-            &crate::codecs::stub::BufferedUpdates,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
             &*crate::store::DEFAULT_IO_CONTEXT,
         );
         let mut writer = Lucene90PointsWriter::new(&write_state, VERSION_CURRENT).unwrap();

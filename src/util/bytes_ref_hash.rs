@@ -213,6 +213,11 @@ fn compare_unsigned_from(a: &[u8], b: &[u8], k: usize) -> i32 {
 /// Equivalent to the `HASH_INIT_SIZE` used by `TermsHashPerField`.
 pub const HASH_INIT_SIZE: usize = 4;
 
+/// The slot count of a table built without an explicit capacity.
+///
+/// Equivalent to `BytesRefHash.DEFAULT_CAPACITY`.
+pub const DEFAULT_CAPACITY: usize = 16;
+
 /// Maps byte sequences to dense term ids.
 ///
 /// Equivalent to `org.apache.lucene.util.BytesRefHash`.
@@ -238,6 +243,13 @@ pub struct BytesRefHash {
     /// bytes (`BytesRefHash.addByPoolOffset`) rather than by the bytes
     /// themselves (`BytesRefHash.add`).
     keyed_by_pool_offset: bool,
+    /// Whether growing `bytes_start` is charged to `bytes_used`.
+    ///
+    /// `false` for a table built by
+    /// [`with_direct_bytes_start`](Self::with_direct_bytes_start), whose Java
+    /// counterpart's `BytesRefHash.DirectBytesStartArray` hands out a plain
+    /// `int[]` and never touches the counter (`BytesRefHash.java:560-600`).
+    charges_bytes_start: bool,
 }
 
 impl BytesRefHash {
@@ -286,7 +298,28 @@ impl BytesRefHash {
             last_count: -1,
             bytes_used,
             keyed_by_pool_offset: false,
+            charges_bytes_start: true,
         }
+    }
+
+    /// Creates an empty table with `capacity` slots whose term start offsets
+    /// are kept in a `DirectBytesStartArray`: only the slot array is charged to
+    /// `bytes_used`.
+    ///
+    /// Equivalent to `new BytesRefHash(pool, capacity, new
+    /// DirectBytesStartArray(capacity, bytesUsed))`, the table
+    /// `SortedDocValuesWriter` and `SortedSetDocValuesWriter` intern their
+    /// values into (`SortedDocValuesWriter.java:59-63`): the constructor
+    /// charges `capacity * Integer.BYTES` for the slots and the start array
+    /// costs the counter nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity` is zero or not a power of two.
+    pub fn with_direct_bytes_start(capacity: usize, bytes_used: Arc<AtomicI64>) -> Self {
+        let mut hash = Self::with_capacity(capacity, bytes_used);
+        hash.charges_bytes_start = false;
+        hash
     }
 
     /// Returns `true` when this table is keyed by pool offset.
@@ -341,8 +374,10 @@ impl BytesRefHash {
         let text_start = pool.add_bytes_ref(bytes)?;
         let term_id = self.count;
         self.bytes_start.push(text_start);
-        self.bytes_used
-            .fetch_add(std::mem::size_of::<i32>() as i64, Ordering::AcqRel);
+        if self.charges_bytes_start {
+            self.bytes_used
+                .fetch_add(std::mem::size_of::<i32>() as i64, Ordering::AcqRel);
+        }
         self.ids[hash_pos] = term_id | (hashcode & self.high_mask);
         self.count += 1;
         if self.count as usize == self.hash_half_size {
@@ -522,6 +557,21 @@ impl BytesRefHash {
         self.ids = Vec::new();
     }
 
+    /// The bytes this table has charged to its counter and still holds: the
+    /// slot array and, when the table charges them, the byte starts.
+    ///
+    /// What [`release_accounting`](Self::release_accounting) gives back; an
+    /// owner that shares the table read-only gives it back with this figure
+    /// instead.
+    pub fn charged_bytes(&self) -> i64 {
+        let charged_starts = if self.charges_bytes_start {
+            self.bytes_start.len()
+        } else {
+            0
+        };
+        ((self.ids.len() + charged_starts) * std::mem::size_of::<i32>()) as i64
+    }
+
     /// Drops both arrays and removes them from the shared RAM counter.
     ///
     /// This is [`close`](Self::close) without the pool: it returns the same
@@ -533,8 +583,8 @@ impl BytesRefHash {
     /// table is empty and unusable afterwards, and calling this twice is
     /// harmless.
     pub fn release_accounting(&mut self) {
-        let held = (self.ids.len() + self.bytes_start.len()) * std::mem::size_of::<i32>();
-        self.bytes_used.fetch_sub(held as i64, Ordering::AcqRel);
+        self.bytes_used
+            .fetch_sub(self.charged_bytes(), Ordering::AcqRel);
         self.ids = Vec::new();
         self.bytes_start = Vec::new();
         self.count = 0;
@@ -573,10 +623,12 @@ impl BytesRefHash {
     }
 
     pub fn clear(&mut self) {
-        self.bytes_used.fetch_sub(
-            (self.bytes_start.len() * std::mem::size_of::<i32>()) as i64,
-            Ordering::AcqRel,
-        );
+        if self.charges_bytes_start {
+            self.bytes_used.fetch_sub(
+                (self.bytes_start.len() * std::mem::size_of::<i32>()) as i64,
+                Ordering::AcqRel,
+            );
+        }
         self.bytes_start.clear();
         self.last_count = self.count;
         self.count = 0;

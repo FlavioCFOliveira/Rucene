@@ -152,7 +152,7 @@ impl SegmentMerger {
             info_stream,
             directory,
             context,
-            seg_updates: BufferedUpdates,
+            seg_updates: BufferedUpdates::default(),
             merge_state,
             merge_state_creation_thread: std::thread::current().id(),
         })
@@ -346,7 +346,7 @@ impl SegmentMerger {
             Arc::clone(&self.directory),
             self.segment_info().clone(),
             self.merge_state.merge_field_infos.clone(),
-            self.seg_updates.clone(),
+            BufferedUpdates::default(),
             Arc::clone(&self.context),
         );
         let mut writer = self.codec.knn_vectors_format().fields_writer(&state)?;

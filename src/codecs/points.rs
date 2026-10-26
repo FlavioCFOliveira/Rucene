@@ -548,7 +548,7 @@ mod tests {
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
-            &BufferedUpdates,
+            Box::leak(Box::new(BufferedUpdates::default())),
             context,
         );
         // `PointsFormat.EMPTY` has no writer (`codecs/PointsFormat.java:49-52`).

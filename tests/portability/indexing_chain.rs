@@ -29,9 +29,10 @@ use rucene::analysis::tokenattributes::{
     PayloadAttributeImpl, PositionIncrementAttribute,
 };
 use rucene::analysis::{default_token_attribute_factory, Analyzer, StandardAnalyzer, TokenStream};
+use rucene::codecs::state::SegmentWriteState;
 use rucene::codecs::{register_codec, Codec, Lucene104Codec};
 use rucene::document::{Document, Field, FieldType};
-use rucene::index::documents_writer::{IndexingChain, IndexingChainFlushState};
+use rucene::index::documents_writer::{BufferedUpdates, IndexingChain};
 use rucene::index::field_infos::{FieldInfosBuilder, FieldNumbers};
 use rucene::index::index_writer_config::LiveIndexWriterConfig;
 use rucene::index::indexing_chain::DefaultIndexingChain;
@@ -655,17 +656,16 @@ fn write_with_rucene(
 
     let info_stream = NoOutputInfoStream;
     let context = flush_io_context(FlushInfo::new(documents.len() as i32, 0));
-    let flush_state = IndexingChainFlushState {
-        info_stream: &info_stream,
-        directory: &tracking,
-        segment_info: &segment_info,
-        field_infos: &finished,
-        context: context.as_ref(),
-        live_docs: None,
-        del_count_on_flush: 0,
-        delete_terms: &[],
-    };
-    chain.flush(&flush_state).expect("flush");
+    let seg_updates = BufferedUpdates::default();
+    let mut flush_state = SegmentWriteState::new(
+        &info_stream,
+        Arc::clone(&tracking) as Arc<dyn Directory>,
+        &segment_info,
+        &finished,
+        &seg_updates,
+        context.as_ref(),
+    );
+    chain.flush(&mut flush_state).expect("flush");
 }
 
 /// Compares the postings files of the two directories byte for byte.

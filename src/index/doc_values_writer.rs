@@ -10,21 +10,21 @@
 //! * [`SortedNumericDocValuesWriter`] — `index/SortedNumericDocValuesWriter.java`
 //! * [`SortedSetDocValuesWriter`] — `index/SortedSetDocValuesWriter.java`
 //!
-//! together with `index/DocsWithFieldSet.java`, which this crate already ports
-//! as [`crate::codecs::DocsWithFieldSet`] (the kNN-vector writer needed it
-//! first). That port is faithful to Java — the same dense-case cardinality
-//! optimisation, the same migration to a `FixedBitSet` on the first doc gap,
-//! the same `addRange` — so it is reused rather than duplicated.
+//! together with `index/DocsWithFieldSet.java`, which this crate ports as
+//! [`crate::codecs::DocsWithFieldSet`] (the kNN-vector writer needed it first).
 //!
 //! # Responsibility
 //!
 //! Each writer owns the doc values of **one field** of the segment currently
 //! being built. It buffers one value (or one value set) per document that
-//! carried the field, in increasing document order; sorts where the
-//! [`DocValuesType`] requires it (the sorted variants); builds the dictionary
-//! and the ordinal mapping for the sorted variants; and hands everything to a
-//! [`DocValuesConsumer`] when the segment flushes. It writes no files itself —
-//! the codec owns the format.
+//! carried the field, in increasing document order, in the structures Java
+//! uses — `PackedLongValues` builders for the numbers, lengths, term ids and
+//! per-document counts, a `PagedBytes` for binary values, and a
+//! `BytesRefHash` over the indexing chain's shared `docValuesBytePool` for the
+//! dictionary of the sorted variants — and charges the shared counter exactly
+//! what Java charges. When the segment flushes it hands everything to a
+//! [`DocValuesConsumer`] through a producer whose iterators read those same
+//! structures. It writes no files itself — the codec owns the format.
 //!
 //! # Lifecycle
 //!
@@ -48,57 +48,40 @@
 //!    document turned out to carry exactly one value, which is what makes the
 //!    codec pick the single-valued file layout.
 //!
-//! # Invariants
-//!
-//! * Document ids are non-decreasing. A repeat of a single-valued type is the
-//!   "appears more than once" error; a backwards id is the same failure. Java
-//!   asserts for the multi-valued writers; this port refuses.
-//! * At flush time, every writer's value buffer has exactly as many entries as
-//!   `docs_with_field.cardinality()`, and the two are read back in lockstep.
-//! * The dictionary of the sorted variants is exactly the set of distinct
-//!   values in unsigned byte order, ordinal 0 first — which is what makes the
-//!   ordinals of two writers over the same documents agree with Lucene's.
-//! * The per-doc value order of SORTED_NUMERIC is ascending, and of
-//!   SORTED_SET is ascending with duplicates removed — both applied before
-//!   any ordinals exist, exactly as in the Java `finishCurrentDoc` methods.
-//!
 //! # Divergences from Java, and why
 //!
-//! * Java buffers with `PackedLongValues` (delta-packed) and `PagedBytes`;
-//!   this port uses plain `Vec`s and reports to the shared counter what it
-//!   actually holds. Same divergence as [`crate::index::NormValuesWriter`].
-//! * Java shares one `docValuesBytePool` between the sorted writers of a
-//!   segment; here each sorted writer owns its own [`ByteBlockPool`] and
-//!   [`BytesRefHash`]. Java shares to amortise block allocation; per-writer
-//!   pools keep ownership simple (the dictionary is materialised out of the
-//!   writer's own pool at flush) at the cost of one block per sorted field.
-//! * Java's `flush` takes a `Sorter.DocMap` and re-orders the values of a
-//!   segment with an index sort. `NumericDocValuesWriter` and
-//!   `SortedDocValuesWriter` port `sortDocValues`/`getDocValuesProducer`
-//!   faithfully. For the binary, sorted-numeric and sorted-set writers, Java
-//!   builds `BinaryDVs`, `LongValues` and `DocOrds` — the values of every
-//!   document laid out by its *new* number — and iterates them with
-//!   `SortingBinaryDocValues`, `SortingSortedNumericDocValues` and
-//!   `SortingSortedSetDocValues`. This port's buffered producers already hold
-//!   the values per document, so the same layout is produced by re-ordering
-//!   those per-document entries by new document number
-//!   ([`sort_per_document`]); the buffered iterators then visit the documents
-//!   in increasing new order with each document's own values, which is what
-//!   the `Sorting*` iterators visit. The `maxCount` of the sorted-set writer is
-//!   only consumed by `DocOrds`'s packed layout, so it is not tracked.
-//! * The batch paths (`addDenseValues`, `addOrdinalTuples`,
-//!   `addDenseOrdinalValues`) belong to the column-batch indexing row path,
-//!   which this crate does not have; the per-instance path is the only one.
+//! * **A backwards document is refused at the call by the multi-valued
+//!   writers.** Java only asserts `docID >= currentDoc` in
+//!   `SortedNumericDocValuesWriter.addValue` and
+//!   `SortedSetDocValuesWriter.addValue`; with assertions off, the backwards
+//!   document is refused later, when `finishCurrentDoc` adds it to the
+//!   document set, which throws `IllegalArgumentException("Out of order doc
+//!   ids: last=..., next=...")` (`DocsWithFieldSet.java:46-50`). This port
+//!   returns the `IllegalArgument` error at the call, before the value is
+//!   buffered.
+//! * **A second flush is refused.** Java would hand the consumer the field
+//!   twice, writing two metadata entries for one field; every writer here
+//!   refuses the second call.
+//! * **The counter is given back when a writer is dropped.** Java throws the
+//!   whole `Counter` away with the indexing chain. Rust drops writers
+//!   individually — a document that fails validation can leave one behind —
+//!   so each writer refunds what it charged in `Drop`.
+//! * **The shared pool and the sorted writers' hashes are reference-counted.**
+//!   Java's producers keep references to the writer's `hash` and, through it,
+//!   to the chain's `docValuesBytePool`, and read each value with
+//!   `hash.get(sortedValues[ord], scratch)`. Here the chain holds the pool as
+//!   an `Arc<ByteBlockPool>` and each sorted writer its hash as an
+//!   `Arc<BytesRefHash>`; both are mutated through `Arc::get_mut` while
+//!   documents are added, and shared, read-only, by the producers `finish`
+//!   hands out — the same structures Java reads, with no copy. Adding a value
+//!   while a producer over the pool is alive is refused with an
+//!   `IllegalState` error; Java never does it, as the producers only exist
+//!   while the segment flushes.
 //! * Java wraps single-valued producers in `DocValues.singleton(...)`; the
 //!   Rust wrappers (`SingletonSortedNumericDocValues`,
 //!   `SingletonSortedSetDocValues`) store `Box<dyn Trait>` without
-//!   `Send`/`Sync` and so cannot serve a producer whose iterators must be
-//!   `Send + Sync`. Two small local wrappers below provide the same
-//!   single-value views over `Send + Sync` iterators.
-//! * Java charges the `2 * Integer.BYTES` ordMap/rehash headroom per new
-//!   dictionary entry directly to the counter; here it is folded into the
-//!   writer's delta-tracked footprint, so the counter total is the same but
-//!   the refund at `Drop` covers it.
+//!   `Send`/`Sync`. Two small local wrappers below provide the same
+//!   single-value views.
 
 #![deny(unsafe_code)]
 
@@ -108,21 +91,33 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use crate::codecs::doc_values::{DocValuesConsumer, DocValuesProducer};
+use crate::codecs::state::SegmentWriteState;
 use crate::codecs::DocsWithFieldSet;
-use crate::document::column::{
-    BytesRefValuesCursor, LongValuesCursor, OrdinalsCursor, OrdinalsTupleCursor,
-};
+use crate::document::column::{LongValuesCursor, OrdinalsCursor, OrdinalsTupleCursor};
 use crate::error::{LuceneError, Result};
 use crate::index::doc_values::{
     BinaryDocValues, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
 };
 use crate::index::doc_values::{DocValuesIterator, DocValuesSkipper, NumericDocValues};
+use crate::index::documents_writer::{SharedIndexingScratch, INTS_SCRATCH_SIZE};
 use crate::index::index_sorter::SorterDocMap;
 use crate::index::{DocValuesType, FieldInfo, IndexableField};
 use crate::search::bit_set_util;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
+use crate::store::{DataInput, DataOutput};
+use crate::util::bytes_ref_array::SortableBytesRefArray;
+use crate::util::bytes_ref_hash::DEFAULT_CAPACITY;
+use crate::util::packed::{
+    DeltaPackedLongValues, DeltaPackedLongValuesBuilder, GrowableWriter,
+    OwnedPackedLongValuesIterator, PackedInts, PackedIntsMutable, PackedIntsReader,
+    PackedLongValues, PackedLongValuesAccess, PackedLongValuesBuilder, PackedLongValuesBuilderOps,
+};
+use crate::util::paged_bytes::{PagedBytes, PagedBytesDataInput};
 use crate::util::MAX_TERM_LENGTH;
-use crate::util::{ArrayUtil, ByteBlockPool, BytesRef, BytesRefHash, FixedBitSet};
+use crate::util::{
+    Accountable, ArrayUtil, ByteBlockPool, BytesRef, BytesRefArray, BytesRefHash, Counter,
+    FixedBitSet, RamUsageEstimator,
+};
 
 /// The doc-values writer of one field, dispatched on its [`DocValuesType`].
 ///
@@ -152,6 +147,9 @@ impl DocValuesWriter {
     ///
     /// Equivalent to the `DocValuesType` switch of
     /// `IndexingChain.initializeFieldInfo` (`IndexingChain.java:1351-1369`).
+    /// The sorted variants intern their values into the chain's shared
+    /// `docValuesBytePool`, which every call that touches the dictionary
+    /// receives as an argument.
     ///
     /// # Panics
     ///
@@ -189,7 +187,8 @@ impl DocValuesWriter {
     ///
     /// Equivalent to `IndexingChain.indexDocValue(int, PerField,
     /// DocValuesType, IndexableField)` (`IndexingChain.java:1659-1684`): the
-    /// value is pulled off the field exactly where Java pulls it.
+    /// value is pulled off the field exactly where Java pulls it. `pool` is the
+    /// chain's `docValuesBytePool`, which the sorted variants intern into.
     ///
     /// Java reaches `field.numericValue().longValue()` for SORTED_NUMERIC
     /// without a null check and dies of a `NullPointerException`; this port
@@ -202,7 +201,12 @@ impl DocValuesWriter {
     /// Returns [`LuceneError::IllegalArgument`] when a value is missing or
     /// rejected by the concrete writer, and propagates whatever the writer
     /// raises.
-    pub fn add_value(&mut self, doc_id: i32, field: &dyn IndexableField) -> Result<()> {
+    pub fn add_value(
+        &mut self,
+        doc_id: i32,
+        field: &dyn IndexableField,
+        pool: &mut Arc<ByteBlockPool>,
+    ) -> Result<()> {
         match self {
             Self::Numeric(writer) => {
                 let Some(value) = field.numeric_value() else {
@@ -229,7 +233,7 @@ impl DocValuesWriter {
                         field.name()
                     )));
                 };
-                writer.add_value(doc_id, value.slice())
+                writer.add_value(doc_id, value.slice(), pool)
             }
             Self::SortedNumeric(writer) => {
                 let Some(value) = field.numeric_value() else {
@@ -247,7 +251,7 @@ impl DocValuesWriter {
                         field.name()
                     )));
                 };
-                writer.add_value(doc_id, value.slice())
+                writer.add_value(doc_id, value.slice(), pool)
             }
         }
     }
@@ -255,18 +259,23 @@ impl DocValuesWriter {
     /// Returns a read-only view over the values buffered so far, for the
     /// index sorter to compare.
     ///
-    /// Equivalent to `DocValuesWriter.getDocValues()`.
+    /// Equivalent to `DocValuesWriter.getDocValues()`. As in Java, this
+    /// finishes the writer: the buffers are built into their final form and
+    /// no further value can be added.
     ///
     /// # Errors
     ///
     /// Propagates whatever the concrete writer raises.
-    pub fn get_doc_values(&self) -> Result<Arc<dyn DocValuesProducer>> {
+    pub fn get_doc_values(
+        &mut self,
+        pool: &Arc<ByteBlockPool>,
+    ) -> Result<Arc<dyn DocValuesProducer>> {
         match self {
             Self::Numeric(writer) => writer.get_doc_values(),
             Self::Binary(writer) => writer.get_doc_values(),
-            Self::Sorted(writer) => writer.get_doc_values(),
+            Self::Sorted(writer) => writer.get_doc_values(pool),
             Self::SortedNumeric(writer) => writer.get_doc_values(),
-            Self::SortedSet(writer) => writer.get_doc_values(),
+            Self::SortedSet(writer) => writer.get_doc_values(pool),
         }
     }
 
@@ -283,22 +292,21 @@ impl DocValuesWriter {
     /// would make the segment unreadable.
     pub fn flush(
         &mut self,
-        consumer: &mut dyn DocValuesConsumer,
+        state: &SegmentWriteState<'_>,
         sort_map: Option<&SorterDocMap>,
+        consumer: &mut dyn DocValuesConsumer,
+        pool: &Arc<ByteBlockPool>,
     ) -> Result<()> {
         match self {
-            Self::Numeric(writer) => writer.flush(consumer, sort_map),
-            Self::Binary(writer) => writer.flush(consumer, sort_map),
-            Self::Sorted(writer) => writer.flush(consumer, sort_map),
-            Self::SortedNumeric(writer) => writer.flush(consumer, sort_map),
-            Self::SortedSet(writer) => writer.flush(consumer, sort_map),
+            Self::Numeric(writer) => writer.flush(state, sort_map, consumer),
+            Self::Binary(writer) => writer.flush(state, sort_map, consumer),
+            Self::Sorted(writer) => writer.flush(state, sort_map, consumer, pool),
+            Self::SortedNumeric(writer) => writer.flush(state, sort_map, consumer),
+            Self::SortedSet(writer) => writer.flush(state, sort_map, consumer, pool),
         }
     }
 
-    /// Approximate heap held by the plain buffers of the writer.
-    ///
-    /// The `ByteBlockPool` and `BytesRefHash` of the sorted variants charge
-    /// the shared counter directly, so they are not part of this figure.
+    /// The bytes this writer has charged to the shared counter.
     pub fn ram_bytes_used(&self) -> i64 {
         match self {
             Self::Numeric(writer) => writer.ram_bytes_used(),
@@ -310,13 +318,6 @@ impl DocValuesWriter {
     }
 }
 
-/// Converts a [`NumericValue`] the way Java's `Number.longValue()` does at
-/// `IndexingChain.indexDocValue` — every numeric type widens, floats truncate
-/// toward zero, `NaN` becomes `0`.
-///
-/// The float conversions are JLS numeric conversions (`float`→`long`,
-/// `double`→`long`), which saturate at the type bounds and map `NaN` to `0`;
-/// Rust's `as` casts are specified to do exactly that.
 /// The error a flush-time producer answers to `get_skipper`.
 ///
 /// Java's flush-time producers extend `EmptyDocValuesProducer`, whose
@@ -328,6 +329,13 @@ fn unsupported_skipper() -> LuceneError {
     )
 }
 
+/// Converts a [`NumericValue`](crate::document::NumericValue) the way Java's
+/// `Number.longValue()` does at `IndexingChain.indexDocValue` — every numeric
+/// type widens, floats truncate toward zero, `NaN` becomes `0`.
+///
+/// The float conversions are JLS numeric conversions (`float`→`long`,
+/// `double`→`long`), which saturate at the type bounds and map `NaN` to `0`;
+/// Rust's `as` casts are specified to do exactly that.
 fn java_long_value(value: &crate::document::NumericValue) -> i64 {
     match value {
         crate::document::NumericValue::Int(v) => i64::from(*v),
@@ -337,46 +345,536 @@ fn java_long_value(value: &crate::document::NumericValue) -> i64 {
     }
 }
 
+/// The page size of every builder the writers create.
+///
+/// Java's `PackedLongValues.deltaPackedBuilder(float)` and
+/// `packedBuilder(float)` use `PackedLongValues.DEFAULT_PAGE_SIZE`.
+const PAGE_SIZE: usize = PackedLongValues::DEFAULT_PAGE_SIZE as usize;
+
+/// `PackedLongValues.deltaPackedBuilder(PackedInts.COMPACT)`.
+fn delta_packed_builder() -> DeltaPackedLongValuesBuilder {
+    PackedLongValues::delta_packed_builder(PAGE_SIZE, PackedInts::COMPACT)
+        .expect("INVARIANT: the default page size is a legal page size")
+}
+
+/// `PackedLongValues.packedBuilder(acceptableOverheadRatio)`.
+fn packed_builder(acceptable_overhead_ratio: f32) -> PackedLongValuesBuilder {
+    PackedLongValues::packed_builder(PAGE_SIZE, acceptable_overhead_ratio)
+        .expect("INVARIANT: the default page size is a legal page size")
+}
+
+/// The "Cannot be reused after build()" failure of a builder that has already
+/// been built, which is what Java's `Builder.add` throws once `pending` is
+/// `null`.
+fn already_built() -> LuceneError {
+    LuceneError::IllegalState("Cannot be reused after build()".to_string())
+}
+
+/// The error a writer reports when it is used after its field was flushed.
+fn already_flushed(field_info: &FieldInfo) -> LuceneError {
+    LuceneError::IllegalState(format!(
+        "the doc values of field \"{}\" have already been flushed",
+        field_info.name
+    ))
+}
+
+/// The "appears more than once in this document" error of the single-valued
+/// writers.
+fn appears_more_than_once(field_info: &FieldInfo) -> LuceneError {
+    LuceneError::IllegalArgument(format!(
+        "DocValuesField \"{}\" appears more than once in this document (only one value is allowed per field)",
+        field_info.name
+    ))
+}
+
+/// The error the multi-valued writers report for a backwards document, where
+/// Java only asserts (see the module documentation).
+fn backwards_document(field_info: &FieldInfo, doc_id: i32, current_doc: i32) -> LuceneError {
+    LuceneError::IllegalArgument(format!(
+        "DocValuesField \"{}\" values must be added in increasing document order (doc {doc_id} after {current_doc})",
+        field_info.name
+    ))
+}
+
+/// Mutable access to a writer's document set while it is still being built.
+///
+/// The set lives in an [`Arc`] so that the producers handed out at flush can
+/// share it, as Java's iterators share the writer's `DocsWithFieldSet`; until
+/// then the writer is its only owner.
+fn docs_mut(docs_with_field: &mut Arc<DocsWithFieldSet>) -> &mut DocsWithFieldSet {
+    Arc::make_mut(docs_with_field)
+}
+
+/// Shared "this producer serves another field" plumbing of the buffered
+/// producers below, mirroring the anonymous producers' guards.
+macro_rules! producer_guard {
+    ($type:ty) => {
+        impl $type {
+            fn check_field(&self, field: &FieldInfo) -> Result<()> {
+                if field.number != self.field_number {
+                    return Err(LuceneError::IllegalArgument(format!(
+                        "wrong fieldInfo: expected {} ({}), got {} ({})",
+                        self.field_name, self.field_number, field.name, field.number
+                    )));
+                }
+                Ok(())
+            }
+
+            fn unsupported(&self, kind: &str) -> LuceneError {
+                LuceneError::UnsupportedOperation(format!(
+                    "this producer only serves the {} values of field {} ({})",
+                    kind, self.field_name, self.field_number
+                ))
+            }
+        }
+    };
+}
+
+/// The methods every flush-time producer inherits from Java's
+/// `EmptyDocValuesProducer` (`index/EmptyDocValuesProducer.java`): every kind
+/// other than the one it serves is unsupported, as are the skipper and the
+/// merge instance's specialisations.
+macro_rules! empty_producer_methods {
+    (numeric) => {
+        fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+            Err(self.unsupported("numeric"))
+        }
+    };
+    (binary) => {
+        fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+            Err(self.unsupported("binary"))
+        }
+    };
+    (sorted) => {
+        fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+            Err(self.unsupported("sorted"))
+        }
+    };
+    (sorted_numeric) => {
+        fn get_sorted_numeric(
+            &self,
+            _field: &FieldInfo,
+        ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+            Err(self.unsupported("sorted numeric"))
+        }
+    };
+    (sorted_set) => {
+        fn get_sorted_set(
+            &self,
+            _field: &FieldInfo,
+        ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+            Err(self.unsupported("sorted set"))
+        }
+    };
+    (common) => {
+        /// Inherited from `EmptyDocValuesProducer.getSkipper`
+        /// (`index/EmptyDocValuesProducer.java:54-57`): unsupported.
+        fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+            Err(unsupported_skipper())
+        }
+
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
+            Ok(Box::new(self.clone()))
+        }
+
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    };
+}
+
 // -----------------------------------------------------------------------------
-// Shared producer/iterator machinery
+// NumericDocValuesWriter
 // -----------------------------------------------------------------------------
 
-/// Materialises the document ids of a [`DocsWithFieldSet`].
+/// Buffers one numeric value per document for a single field.
 ///
-/// [`DocsWithFieldSet::iterator`] borrows the set, while a producer must
-/// outlive it, so the ids are copied once at flush.
-fn materialize_docs(docs_with_field: &DocsWithFieldSet) -> Result<Vec<i32>> {
-    let mut docs = Vec::with_capacity(docs_with_field.cardinality() as usize);
-    let mut iterator = docs_with_field.iterator()?;
-    loop {
-        let doc = iterator.next_doc()?;
-        if doc == NO_MORE_DOCS {
-            break;
+/// Equivalent to `org.apache.lucene.index.NumericDocValuesWriter`
+/// (`index/NumericDocValuesWriter.java:32-312`): the values are appended to a
+/// delta-packed `PackedLongValues` builder, and the documents to a
+/// [`DocsWithFieldSet`].
+#[derive(Debug)]
+pub struct NumericDocValuesWriter {
+    /// `pending`, a `PackedLongValues.deltaPackedBuilder(PackedInts.COMPACT)`;
+    /// `None` once built into `final_values`.
+    pending: Option<DeltaPackedLongValuesBuilder>,
+    /// `finalValues`, built the first time the values are read.
+    final_values: Option<Arc<DeltaPackedLongValues>>,
+    iw_bytes_used: Arc<AtomicI64>,
+    /// What this writer has charged to `iw_bytes_used`, so an update reports
+    /// the delta. Equivalent to `NumericDocValuesWriter.bytesUsed`.
+    bytes_used: i64,
+    docs_with_field: Arc<DocsWithFieldSet>,
+    field_info: FieldInfo,
+    last_doc_id: i32,
+    flushed: bool,
+}
+
+impl NumericDocValuesWriter {
+    /// Creates a writer for `field_info`, charging its initial footprint to
+    /// `iw_bytes_used`.
+    ///
+    /// Equivalent to `new NumericDocValuesWriter(FieldInfo, Counter)`
+    /// (`NumericDocValuesWriter.java:42-49`).
+    pub fn new(field_info: FieldInfo, iw_bytes_used: Arc<AtomicI64>) -> Self {
+        let pending = delta_packed_builder();
+        let docs_with_field = DocsWithFieldSet::new();
+        let bytes_used = pending.ram_bytes_used() + docs_with_field.ram_bytes_used();
+        iw_bytes_used.fetch_add(bytes_used, Ordering::AcqRel);
+        Self {
+            pending: Some(pending),
+            final_values: None,
+            iw_bytes_used,
+            bytes_used,
+            docs_with_field: Arc::new(docs_with_field),
+            field_info,
+            last_doc_id: -1,
+            flushed: false,
         }
-        docs.push(doc);
     }
-    Ok(docs)
+
+    /// Returns the field these values belong to.
+    pub fn field_info(&self) -> &FieldInfo {
+        &self.field_info
+    }
+
+    fn pending_mut(&mut self) -> Result<&mut DeltaPackedLongValuesBuilder> {
+        if self.flushed {
+            return Err(already_flushed(&self.field_info));
+        }
+        self.pending.as_mut().ok_or_else(already_built)
+    }
+
+    /// Buffers `value` as the doc value of `doc_id`.
+    ///
+    /// Equivalent to `NumericDocValuesWriter.addValue(int, long)`
+    /// (`NumericDocValuesWriter.java:51-63`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` is not strictly
+    /// greater than the last document added — which in Lucene means the field
+    /// appeared twice in one document — and [`LuceneError::IllegalState`] when
+    /// the values have already been built or flushed.
+    pub fn add_value(&mut self, doc_id: i32, value: i64) -> Result<()> {
+        if self.flushed {
+            return Err(already_flushed(&self.field_info));
+        }
+        if doc_id <= self.last_doc_id {
+            return Err(appears_more_than_once(&self.field_info));
+        }
+        self.pending_mut()?.add(value)?;
+        docs_mut(&mut self.docs_with_field).add(doc_id)?;
+        self.update_bytes_used();
+        self.last_doc_id = doc_id;
+        Ok(())
+    }
+
+    /// Buffers `value` as the doc value of `count` consecutive documents
+    /// starting at `first_doc_id`.
+    ///
+    /// Equivalent to `NumericDocValuesWriter.addRepeatValues(int, long, int)`
+    /// (`NumericDocValuesWriter.java:65-79`), which the column path uses for the
+    /// parent field.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `first_doc_id` is not
+    /// strictly greater than the last document added (Java asserts it), and
+    /// [`LuceneError::IllegalState`] when the values have already been built or
+    /// flushed.
+    pub fn add_repeat_values(&mut self, first_doc_id: i32, value: i64, count: i32) -> Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        self.check_appendable(first_doc_id)?;
+        self.pending_mut()?.add_repeated(value, count)?;
+        docs_mut(&mut self.docs_with_field).add_range(first_doc_id, first_doc_id + count)?;
+        self.update_bytes_used();
+        self.last_doc_id = first_doc_id + count - 1;
+        Ok(())
+    }
+
+    /// Buffers every value of `cursor` as the doc values of the consecutive
+    /// documents starting at `first_doc_id`.
+    ///
+    /// Equivalent to `NumericDocValuesWriter.addDenseValues(int,
+    /// LongValuesCursor)` (`NumericDocValuesWriter.java:81-95`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `first_doc_id` is not
+    /// strictly greater than the last document added,
+    /// [`LuceneError::IllegalState`] when the values have already been built or
+    /// flushed, and whatever reading the cursor raises.
+    pub fn add_dense_values(
+        &mut self,
+        first_doc_id: i32,
+        cursor: &mut dyn LongValuesCursor,
+    ) -> Result<()> {
+        let num_values = cursor.size();
+        if num_values == 0 {
+            return Ok(());
+        }
+        self.check_appendable(first_doc_id)?;
+        self.pending_mut()?.add_cursor(cursor)?;
+        docs_mut(&mut self.docs_with_field).add_range(first_doc_id, first_doc_id + num_values)?;
+        self.update_bytes_used();
+        self.last_doc_id = first_doc_id + num_values - 1;
+        Ok(())
+    }
+
+    /// The two checks the batch paths run before buffering: the field must not
+    /// have been flushed, and the document must come after the last one (Java
+    /// asserts `firstDocID > lastDocID`).
+    fn check_appendable(&self, doc_id: i32) -> Result<()> {
+        if self.flushed {
+            return Err(already_flushed(&self.field_info));
+        }
+        if doc_id <= self.last_doc_id {
+            return Err(appears_more_than_once(&self.field_info));
+        }
+        Ok(())
+    }
+
+    /// Number of documents that have a value buffered.
+    pub fn num_docs_with_field(&self) -> i32 {
+        self.docs_with_field.cardinality()
+    }
+
+    /// Equivalent to `NumericDocValuesWriter.updateBytesUsed`
+    /// (`NumericDocValuesWriter.java:97-101`).
+    fn update_bytes_used(&mut self) {
+        let Some(pending) = self.pending.as_ref() else {
+            return;
+        };
+        let new_bytes_used = pending.ram_bytes_used() + self.docs_with_field.ram_bytes_used();
+        self.iw_bytes_used
+            .fetch_add(new_bytes_used - self.bytes_used, Ordering::AcqRel);
+        self.bytes_used = new_bytes_used;
+    }
+
+    /// The bytes this writer has charged to the shared counter:
+    /// `pending.ramBytesUsed() + docsWithField.ramBytesUsed()` as of the last
+    /// update.
+    pub fn ram_bytes_used(&self) -> i64 {
+        self.bytes_used
+    }
+
+    /// Builds `finalValues` the first time it is needed.
+    fn final_values(&mut self) -> Result<Arc<DeltaPackedLongValues>> {
+        if self.final_values.is_none() {
+            let pending = self.pending.take().ok_or_else(already_built)?;
+            self.final_values = Some(Arc::new(pending.build()?));
+        }
+        Ok(Arc::clone(
+            self.final_values
+                .as_ref()
+                .expect("INVARIANT: built just above"),
+        ))
+    }
+
+    /// Returns a read-only view over the values buffered so far.
+    ///
+    /// Equivalent to `NumericDocValuesWriter.getDocValues()`
+    /// (`NumericDocValuesWriter.java:103-109`), which builds `finalValues` and
+    /// iterates them; `IndexingChain.maybeSortSegment` reads it to order the
+    /// segment before anything is written.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the values raises.
+    pub fn get_doc_values(&mut self) -> Result<Arc<dyn DocValuesProducer>> {
+        let values = self.final_values()?;
+        Self::get_doc_values_producer(
+            &self.field_info,
+            values,
+            Arc::clone(&self.docs_with_field),
+            None,
+        )
+    }
+
+    /// Builds the ordered, per-new-document view of `old_doc_values` that an
+    /// index sort produces.
+    ///
+    /// Equivalent to `NumericDocValuesWriter.sortDocValues(int, Sorter.DocMap,
+    /// NumericDocValues, boolean)` (`NumericDocValuesWriter.java:111-133`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever iterating `old_doc_values` raises.
+    pub(crate) fn sort_doc_values(
+        max_doc: i32,
+        sort_map: &SorterDocMap,
+        old_doc_values: &mut dyn NumericDocValues,
+        dense: bool,
+    ) -> Result<NumericDVs> {
+        let mut docs_with_field = if dense {
+            None
+        } else {
+            Some(FixedBitSet::new(max_doc as usize))
+        };
+
+        let mut values = vec![0i64; max_doc as usize];
+        loop {
+            let doc_id = old_doc_values.next_doc()?;
+            if doc_id == NO_MORE_DOCS {
+                break;
+            }
+            let new_doc_id = sort_map.old_to_new(doc_id);
+            if let Some(docs_with_field) = docs_with_field.as_mut() {
+                docs_with_field.set(new_doc_id as usize);
+            }
+            values[new_doc_id as usize] = old_doc_values.long_value()?;
+        }
+        Ok(NumericDVs {
+            values,
+            docs_with_field,
+            max_doc,
+        })
+    }
+
+    /// Hands the buffered values to `consumer`.
+    ///
+    /// Equivalent to `NumericDocValuesWriter.flush(SegmentWriteState,
+    /// Sorter.DocMap, DocValuesConsumer)` (`NumericDocValuesWriter.java:135-143`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the field has already been
+    /// flushed — writing it twice would put two metadata entries for one field
+    /// into the same segment. Otherwise propagates whatever the consumer
+    /// raises while writing the field.
+    pub fn flush(
+        &mut self,
+        _state: &SegmentWriteState<'_>,
+        sort_map: Option<&SorterDocMap>,
+        consumer: &mut dyn DocValuesConsumer,
+    ) -> Result<()> {
+        if self.flushed {
+            return Err(already_flushed(&self.field_info));
+        }
+        let values = self.final_values()?;
+        self.flushed = true;
+        let producer = Self::get_doc_values_producer(
+            &self.field_info,
+            values,
+            Arc::clone(&self.docs_with_field),
+            sort_map,
+        )?;
+        consumer.add_numeric_field(&self.field_info, &*producer)
+    }
+
+    /// Builds the [`DocValuesProducer`] `flush` and `get_doc_values` hand to
+    /// the codec: the plain buffered view when `sort_map` is `None`, or a view
+    /// reordered by the index sort otherwise.
+    ///
+    /// Equivalent to `NumericDocValuesWriter.getDocValuesProducer(FieldInfo,
+    /// PackedLongValues, DocsWithFieldSet, Sorter.DocMap)`
+    /// (`NumericDocValuesWriter.java:145-175`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`Self::sort_doc_values`] raises.
+    pub(crate) fn get_doc_values_producer(
+        field_info: &FieldInfo,
+        values: Arc<DeltaPackedLongValues>,
+        docs_with_field: Arc<DocsWithFieldSet>,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<Arc<dyn DocValuesProducer>> {
+        let sorted = match sort_map {
+            Some(sort_map) => {
+                let mut old_values = BufferedNumeric::new(Arc::clone(&values), &docs_with_field);
+                let dense = sort_map.size() == docs_with_field.cardinality();
+                Some(Arc::new(Self::sort_doc_values(
+                    sort_map.size(),
+                    sort_map,
+                    &mut old_values,
+                    dense,
+                )?))
+            }
+            None => None,
+        };
+        Ok(Arc::new(BufferedNumericProducer {
+            field_number: field_info.number,
+            field_name: field_info.name.clone(),
+            values,
+            docs_with_field,
+            sorted,
+        }))
+    }
+}
+
+impl Drop for NumericDocValuesWriter {
+    /// Gives back the bytes this writer charged to the shared counter.
+    ///
+    /// Java has no equivalent: `DocumentsWriterPerThread` throws its whole
+    /// `Counter` away with the chain. Rust drops writers individually — a
+    /// document that fails validation can leave one behind — so the counter is
+    /// balanced here instead of drifting upwards.
+    fn drop(&mut self) {
+        self.iw_bytes_used
+            .fetch_sub(self.bytes_used, Ordering::AcqRel);
+    }
+}
+
+/// Serves the buffered numeric values of one field to a [`DocValuesConsumer`].
+///
+/// Equivalent to the anonymous `EmptyDocValuesProducer` of
+/// `NumericDocValuesWriter.getDocValuesProducer`, including its "wrong
+/// fieldInfo" guard.
+#[derive(Debug, Clone)]
+struct BufferedNumericProducer {
+    field_number: i32,
+    field_name: String,
+    values: Arc<DeltaPackedLongValues>,
+    docs_with_field: Arc<DocsWithFieldSet>,
+    /// The field reordered by an index sort, when one applies.
+    sorted: Option<Arc<NumericDVs>>,
+}
+
+producer_guard!(BufferedNumericProducer);
+
+impl DocValuesProducer for BufferedNumericProducer {
+    fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        self.check_field(field)?;
+        Ok(Some(match &self.sorted {
+            None => Box::new(BufferedNumeric::new(
+                Arc::clone(&self.values),
+                &self.docs_with_field,
+            )),
+            Some(sorted) => Box::new(SortingNumeric::new(Arc::clone(sorted))),
+        }))
+    }
+
+    empty_producer_methods!(binary);
+    empty_producer_methods!(sorted);
+    empty_producer_methods!(sorted_numeric);
+    empty_producer_methods!(sorted_set);
+    empty_producer_methods!(common);
 }
 
 /// Iterates the docs and one value per doc held in memory.
 ///
-/// Equivalent to `NumericDocValuesWriter.BufferedNumericDocValues`. Like its
-/// Java counterpart it is forward-only: `advance` and `advance_exact` are not
-/// supported, because the only consumer is the codec's sequential passes.
+/// Equivalent to `NumericDocValuesWriter.BufferedNumericDocValues`
+/// (`NumericDocValuesWriter.java:178-232`). Like its Java counterpart it is
+/// forward-only: `advance` and `advance_exact` are not supported.
 struct BufferedNumeric {
-    docs: Arc<Vec<i32>>,
-    values: Arc<Vec<i64>>,
-    /// Index of the current document, or `-1` before the first `next_doc` and
-    /// `docs.len()` once exhausted.
-    index: i64,
+    iter: OwnedPackedLongValuesIterator<DeltaPackedLongValues>,
+    docs_with_field: Box<dyn DocIdSetIterator + Send + Sync>,
+    value: i64,
 }
 
 impl BufferedNumeric {
-    fn new(docs: Arc<Vec<i32>>, values: Arc<Vec<i64>>) -> Self {
+    fn new(values: Arc<DeltaPackedLongValues>, docs_with_field: &Arc<DocsWithFieldSet>) -> Self {
         Self {
-            docs,
-            values,
-            index: -1,
+            iter: OwnedPackedLongValuesIterator::new(values),
+            docs_with_field: DocsWithFieldSet::shared_iterator(docs_with_field),
+            value: 0,
         }
     }
 }
@@ -384,79 +882,510 @@ impl BufferedNumeric {
 impl fmt::Debug for BufferedNumeric {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BufferedNumeric")
-            .field("count", &self.docs.len())
-            .field("index", &self.index)
+            .field("doc_id", &self.docs_with_field.doc_id())
             .finish()
     }
 }
 
 impl DocIdSetIterator for BufferedNumeric {
     fn doc_id(&self) -> i32 {
-        if self.index < 0 {
-            -1
-        } else if self.index as usize >= self.docs.len() {
-            NO_MORE_DOCS
-        } else {
-            self.docs[self.index as usize]
-        }
+        self.docs_with_field.doc_id()
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        // `index` runs from -1 to `docs.len()` and then stops, so that calling
-        // `next_doc` on an exhausted iterator keeps answering `NO_MORE_DOCS`
-        // rather than running off the end.
-        if self.index < self.docs.len() as i64 {
-            self.index += 1;
+        let doc_id = self.docs_with_field.next_doc()?;
+        if doc_id != NO_MORE_DOCS {
+            self.value = self.iter.next_value();
         }
-        Ok(self.doc_id())
+        Ok(doc_id)
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
         Err(LuceneError::UnsupportedOperation(
-            "BufferedNumeric does not support advance".to_string(),
+            "BufferedNumericDocValues does not support advance".to_string(),
         ))
     }
 
     fn cost(&self) -> i64 {
-        self.docs.len() as i64
+        self.docs_with_field.cost()
+    }
+
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        self.docs_with_field.into_bit_set(up_to, bit_set, offset)
+    }
+
+    fn doc_id_run_end(&self) -> Result<i32> {
+        self.docs_with_field.doc_id_run_end()
     }
 }
 
 impl DocValuesIterator for BufferedNumeric {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
         Err(LuceneError::UnsupportedOperation(
-            "BufferedNumeric does not support advance_exact".to_string(),
+            "BufferedNumericDocValues does not support advanceExact".to_string(),
         ))
     }
 }
 
 impl NumericDocValues for BufferedNumeric {
     fn long_value(&self) -> Result<i64> {
-        if self.index < 0 || self.index as usize >= self.values.len() {
-            return Err(LuceneError::IllegalState(
-                "long_value called with no current document".to_string(),
-            ));
-        }
-        Ok(self.values[self.index as usize])
+        Ok(self.value)
     }
+}
+
+/// The numeric values of a field once an index sort has reordered the
+/// segment: one value per new document ID, plus which new document IDs
+/// actually carry the field.
+///
+/// Equivalent to `NumericDocValuesWriter.NumericDVs`
+/// (`NumericDocValuesWriter.java:283-312`).
+#[derive(Debug)]
+pub(crate) struct NumericDVs {
+    values: Vec<i64>,
+    /// `None` when every new document carries the field (the dense case),
+    /// exactly like Java's `docsWithField == null`.
+    docs_with_field: Option<FixedBitSet>,
+    max_doc: i32,
+}
+
+impl NumericDVs {
+    fn max_doc(&self) -> i32 {
+        self.max_doc
+    }
+
+    /// Equivalent to `NumericDVs.advanceExact(int)`.
+    fn advance_exact(&self, target: i32) -> bool {
+        match &self.docs_with_field {
+            Some(docs_with_field) => docs_with_field.get(target as usize),
+            None => true,
+        }
+    }
+
+    /// Equivalent to `NumericDVs.advance(int)`. Only called when `target` is
+    /// less than [`Self::max_doc`].
+    fn advance(&self, target: i32) -> i32 {
+        match &self.docs_with_field {
+            Some(docs_with_field) => bit_set_util::next_set_bit(docs_with_field, target as usize),
+            None => target,
+        }
+    }
+
+    /// Equivalent to `NumericDVs.cost()`.
+    fn cost(&self) -> i64 {
+        match &self.docs_with_field {
+            Some(docs_with_field) => docs_with_field.cardinality() as i64,
+            None => self.max_doc as i64,
+        }
+    }
+}
+
+/// Iterates the numeric doc values of a field after an index sort has
+/// reordered the segment.
+///
+/// Equivalent to `NumericDocValuesWriter.SortingNumericDocValues`
+/// (`NumericDocValuesWriter.java:234-281`).
+pub(crate) struct SortingNumeric {
+    dvs: Arc<NumericDVs>,
+    doc_id: i32,
+    /// Lazily computed and cached, like Java's `cost` field (sentinel `-1`).
+    cost: Cell<Option<i64>>,
+}
+
+impl SortingNumeric {
+    pub(crate) fn new(dvs: Arc<NumericDVs>) -> Self {
+        Self {
+            dvs,
+            doc_id: -1,
+            cost: Cell::new(None),
+        }
+    }
+}
+
+impl fmt::Debug for SortingNumeric {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SortingNumeric")
+            .field("doc_id", &self.doc_id)
+            .finish()
+    }
+}
+
+impl DocIdSetIterator for SortingNumeric {
+    fn doc_id(&self) -> i32 {
+        self.doc_id
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.doc_id = if self.doc_id + 1 == self.dvs.max_doc() {
+            NO_MORE_DOCS
+        } else {
+            self.dvs.advance(self.doc_id + 1)
+        };
+        Ok(self.doc_id)
+    }
+
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(
+            "use nextDoc() instead".to_string(),
+        ))
+    }
+
+    fn cost(&self) -> i64 {
+        if let Some(cost) = self.cost.get() {
+            return cost;
+        }
+        let cost = self.dvs.cost();
+        self.cost.set(Some(cost));
+        cost
+    }
+
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        let up_to = up_to.min(self.dvs.max_doc());
+        if up_to > self.doc_id {
+            match &self.dvs.docs_with_field {
+                None => {
+                    bit_set.set_range((self.doc_id - offset) as usize, (up_to - offset) as usize);
+                    self.doc_id = up_to;
+                }
+                Some(docs_with_field) => {
+                    FixedBitSet::or_range(
+                        docs_with_field,
+                        self.doc_id as usize,
+                        bit_set,
+                        (self.doc_id - offset) as usize,
+                        (up_to - self.doc_id) as usize,
+                    );
+                    self.doc_id = if up_to < self.dvs.max_doc() {
+                        self.dvs.advance(up_to)
+                    } else {
+                        NO_MORE_DOCS
+                    };
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl DocValuesIterator for SortingNumeric {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        // needed in IndexSorter#{Long|Int|Double|Float}Sorter
+        self.doc_id = target;
+        Ok(self.dvs.advance_exact(target))
+    }
+}
+
+impl NumericDocValues for SortingNumeric {
+    fn long_value(&self) -> Result<i64> {
+        Ok(self.dvs.values[self.doc_id as usize])
+    }
+}
+
+// -----------------------------------------------------------------------------
+// BinaryDocValuesWriter
+// -----------------------------------------------------------------------------
+
+/// Java's `BinaryDocValuesWriter.MAX_LENGTH = ArrayUtil.MAX_ARRAY_LENGTH`.
+const BINARY_MAX_LENGTH: usize = ArrayUtil::MAX_ARRAY_LENGTH;
+
+/// Java's `BinaryDocValuesWriter.BLOCK_BITS`: 4 kB pages for the `PagedBytes`.
+const BINARY_BLOCK_BITS: u32 = 12;
+
+/// Buffers one binary value per document for a single field.
+///
+/// Equivalent to `org.apache.lucene.index.BinaryDocValuesWriter`
+/// (`index/BinaryDocValuesWriter.java:37-263`): the values are appended to a
+/// `PagedBytes` of 4 kB pages and their lengths to a delta-packed
+/// `PackedLongValues` builder.
+#[derive(Debug)]
+pub struct BinaryDocValuesWriter {
+    bytes: PagedBytes,
+    /// `lengths`, a `PackedLongValues.deltaPackedBuilder(PackedInts.COMPACT)`;
+    /// `None` once built into `final_lengths`.
+    lengths: Option<DeltaPackedLongValuesBuilder>,
+    final_lengths: Option<Arc<DeltaPackedLongValues>>,
+    /// The frozen bytes, read sequentially by every iterator: Java's
+    /// `bytes.getDataInput()`, taken once at freeze time.
+    bytes_input: Option<PagedBytesDataInput<'static>>,
+    docs_with_field: Arc<DocsWithFieldSet>,
+    field_info: FieldInfo,
+    iw_bytes_used: Arc<AtomicI64>,
+    bytes_used: i64,
+    last_doc_id: i32,
+    max_length: usize,
+    flushed: bool,
+}
+
+impl BinaryDocValuesWriter {
+    /// Creates a writer for `field_info`.
+    ///
+    /// Equivalent to `new BinaryDocValuesWriter(FieldInfo, Counter)`
+    /// (`BinaryDocValuesWriter.java:56-65`), which charges the lengths builder
+    /// and the document set but not the empty `PagedBytes`.
+    pub fn new(field_info: FieldInfo, iw_bytes_used: Arc<AtomicI64>) -> Self {
+        let lengths = delta_packed_builder();
+        let docs_with_field = DocsWithFieldSet::new();
+        let bytes_used = lengths.ram_bytes_used() + docs_with_field.ram_bytes_used();
+        iw_bytes_used.fetch_add(bytes_used, Ordering::AcqRel);
+        Self {
+            bytes: PagedBytes::new(BINARY_BLOCK_BITS),
+            lengths: Some(lengths),
+            final_lengths: None,
+            bytes_input: None,
+            docs_with_field: Arc::new(docs_with_field),
+            field_info,
+            iw_bytes_used,
+            bytes_used,
+            last_doc_id: -1,
+            max_length: 0,
+            flushed: false,
+        }
+    }
+
+    /// Returns the field these values belong to.
+    pub fn field_info(&self) -> &FieldInfo {
+        &self.field_info
+    }
+
+    /// Buffers `value` as the doc value of `doc_id`.
+    ///
+    /// Equivalent to `BinaryDocValuesWriter.addValue(int, BytesRef)`
+    /// (`BinaryDocValuesWriter.java:67-97`). Note the validation order, which
+    /// differs from the other writers: document order first, then the null
+    /// check (performed by the caller, which reads the value off the field),
+    /// then the length check.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` repeats or goes
+    /// backwards, or when `value` is longer than [`BINARY_MAX_LENGTH`], and
+    /// [`LuceneError::IllegalState`] when the field has already been built or
+    /// flushed.
+    pub fn add_value(&mut self, doc_id: i32, value: &[u8]) -> Result<()> {
+        if self.flushed {
+            return Err(already_flushed(&self.field_info));
+        }
+        if doc_id <= self.last_doc_id {
+            return Err(appears_more_than_once(&self.field_info));
+        }
+        if value.len() > BINARY_MAX_LENGTH {
+            return Err(LuceneError::IllegalArgument(format!(
+                "DocValuesField \"{}\" is too large, must be <= {BINARY_MAX_LENGTH}",
+                self.field_info.name
+            )));
+        }
+        let lengths = self.lengths.as_mut().ok_or_else(already_built)?;
+        self.max_length = self.max_length.max(value.len());
+        lengths.add(value.len() as i64)?;
+        self.bytes
+            .get_data_output()?
+            .write_bytes(value, 0, value.len())?;
+        docs_mut(&mut self.docs_with_field).add(doc_id)?;
+        self.update_bytes_used();
+
+        self.last_doc_id = doc_id;
+        Ok(())
+    }
+
+    /// Equivalent to `BinaryDocValuesWriter.updateBytesUsed`
+    /// (`BinaryDocValuesWriter.java:99-104`).
+    fn update_bytes_used(&mut self) {
+        let Some(lengths) = self.lengths.as_ref() else {
+            return;
+        };
+        let new_bytes_used = lengths.ram_bytes_used()
+            + self.bytes.ram_bytes_used()
+            + self.docs_with_field.ram_bytes_used();
+        self.iw_bytes_used
+            .fetch_add(new_bytes_used - self.bytes_used, Ordering::AcqRel);
+        self.bytes_used = new_bytes_used;
+    }
+
+    /// The bytes this writer has charged to the shared counter as of the last
+    /// update.
+    pub fn ram_bytes_used(&self) -> i64 {
+        self.bytes_used
+    }
+
+    /// Freezes the `PagedBytes` exactly once.
+    ///
+    /// Equivalent to `BinaryDocValuesWriter.freezeBytes()`
+    /// (`BinaryDocValuesWriter.java:106-114`): `getDocValues()` may be called
+    /// before `flush()` (when index sorting on this field reads the in-RAM
+    /// values), so `flush()` cannot rely on being the first to freeze.
+    fn freeze_bytes(&mut self) -> Result<()> {
+        if self.bytes_input.is_none() {
+            self.bytes.freeze(false)?;
+            self.bytes_input = Some(self.bytes.get_shared_data_input()?);
+        }
+        Ok(())
+    }
+
+    /// Builds `finalLengths` the first time it is needed.
+    fn final_lengths(&mut self) -> Result<Arc<DeltaPackedLongValues>> {
+        if self.final_lengths.is_none() {
+            let lengths = self.lengths.take().ok_or_else(already_built)?;
+            self.final_lengths = Some(Arc::new(lengths.build()?));
+        }
+        Ok(Arc::clone(
+            self.final_lengths
+                .as_ref()
+                .expect("INVARIANT: built just above"),
+        ))
+    }
+
+    /// The buffered view `getDocValues()` and `flush()` build.
+    fn buffered(&self, lengths: &Arc<DeltaPackedLongValues>) -> BufferedBinary {
+        BufferedBinary::new(
+            Arc::clone(lengths),
+            self.max_length,
+            self.bytes_input
+                .clone()
+                .expect("INVARIANT: the bytes are frozen before any view is built"),
+            &self.docs_with_field,
+        )
+    }
+
+    /// Returns a read-only view over the values buffered so far.
+    ///
+    /// Equivalent to `BinaryDocValuesWriter.getDocValues()`
+    /// (`BinaryDocValuesWriter.java:116-124`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the lengths or freezing the bytes raises.
+    pub fn get_doc_values(&mut self) -> Result<Arc<dyn DocValuesProducer>> {
+        let lengths = self.final_lengths()?;
+        self.freeze_bytes()?;
+        Ok(Arc::new(self.producer(lengths, None)))
+    }
+
+    fn producer(
+        &self,
+        lengths: Arc<DeltaPackedLongValues>,
+        sorted: Option<Arc<BinaryDVs>>,
+    ) -> BufferedBinaryProducer {
+        BufferedBinaryProducer {
+            field_number: self.field_info.number,
+            field_name: self.field_info.name.clone(),
+            lengths,
+            max_length: self.max_length,
+            bytes_input: self
+                .bytes_input
+                .clone()
+                .expect("INVARIANT: the bytes are frozen before any view is built"),
+            docs_with_field: Arc::clone(&self.docs_with_field),
+            sorted,
+        }
+    }
+
+    /// Hands the buffered values to `consumer`.
+    ///
+    /// Equivalent to `BinaryDocValuesWriter.flush(SegmentWriteState,
+    /// Sorter.DocMap, DocValuesConsumer)` (`BinaryDocValuesWriter.java:126-162`):
+    /// with an index sort, the values are first copied into `BinaryDVs` by new
+    /// document number.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the field has already been
+    /// flushed; otherwise propagates whatever the consumer raises.
+    pub fn flush(
+        &mut self,
+        state: &SegmentWriteState<'_>,
+        sort_map: Option<&SorterDocMap>,
+        consumer: &mut dyn DocValuesConsumer,
+    ) -> Result<()> {
+        if self.flushed {
+            return Err(already_flushed(&self.field_info));
+        }
+        self.freeze_bytes()?;
+        let lengths = self.final_lengths()?;
+        self.flushed = true;
+        let sorted = match sort_map {
+            Some(sort_map) => Some(Arc::new(BinaryDVs::new(
+                state.segment_info.max_doc()?,
+                sort_map,
+                &mut self.buffered(&lengths),
+            )?)),
+            None => None,
+        };
+        let producer = self.producer(lengths, sorted);
+        consumer.add_binary_field(&self.field_info, &producer)
+    }
+}
+
+impl Drop for BinaryDocValuesWriter {
+    fn drop(&mut self) {
+        self.iw_bytes_used
+            .fetch_sub(self.bytes_used, Ordering::AcqRel);
+    }
+}
+
+/// Serves the buffered binary values of one field to a [`DocValuesConsumer`].
+///
+/// Equivalent to the anonymous `EmptyDocValuesProducer` of
+/// `BinaryDocValuesWriter.flush`, including its "wrong fieldInfo" guard.
+#[derive(Debug, Clone)]
+struct BufferedBinaryProducer {
+    field_number: i32,
+    field_name: String,
+    lengths: Arc<DeltaPackedLongValues>,
+    max_length: usize,
+    bytes_input: PagedBytesDataInput<'static>,
+    docs_with_field: Arc<DocsWithFieldSet>,
+    sorted: Option<Arc<BinaryDVs>>,
+}
+
+producer_guard!(BufferedBinaryProducer);
+
+impl DocValuesProducer for BufferedBinaryProducer {
+    fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
+        self.check_field(field)?;
+        Ok(Some(match &self.sorted {
+            None => Box::new(BufferedBinary::new(
+                Arc::clone(&self.lengths),
+                self.max_length,
+                self.bytes_input.clone(),
+                &self.docs_with_field,
+            )),
+            Some(sorted) => Box::new(SortingBinary::new(Arc::clone(sorted))),
+        }))
+    }
+
+    empty_producer_methods!(numeric);
+    empty_producer_methods!(sorted);
+    empty_producer_methods!(sorted_numeric);
+    empty_producer_methods!(sorted_set);
+    empty_producer_methods!(common);
 }
 
 /// Iterates the buffered binary values of one field.
 ///
-/// Equivalent to `BinaryDocValuesWriter.BufferedBinaryDocValues`.
+/// Equivalent to `BinaryDocValuesWriter.BufferedBinaryDocValues`
+/// (`BinaryDocValuesWriter.java:165-224`): each document's length comes off the
+/// lengths iterator and its bytes off the sequential `PagedBytes` input.
 struct BufferedBinary {
-    docs: Arc<Vec<i32>>,
-    values: Arc<Vec<Vec<u8>>>,
-    index: i64,
+    /// `value`, a `BytesRefBuilder` grown to `maxLength` once.
+    value: Vec<u8>,
+    length: usize,
+    lengths_iterator: OwnedPackedLongValuesIterator<DeltaPackedLongValues>,
+    docs_with_field: Box<dyn DocIdSetIterator + Send + Sync>,
+    bytes_iterator: PagedBytesDataInput<'static>,
 }
 
 impl BufferedBinary {
-    fn new(docs: Arc<Vec<i32>>, values: Arc<Vec<Vec<u8>>>) -> Self {
-        debug_assert_eq!(docs.len(), values.len());
+    fn new(
+        lengths: Arc<DeltaPackedLongValues>,
+        max_length: usize,
+        bytes_iterator: PagedBytesDataInput<'static>,
+        docs_with_field: &Arc<DocsWithFieldSet>,
+    ) -> Self {
         Self {
-            docs,
-            values,
-            index: -1,
+            value: vec![0u8; max_length],
+            length: 0,
+            lengths_iterator: OwnedPackedLongValuesIterator::new(lengths),
+            docs_with_field: DocsWithFieldSet::shared_iterator(docs_with_field),
+            bytes_iterator,
         }
     }
 }
@@ -464,140 +1393,898 @@ impl BufferedBinary {
 impl fmt::Debug for BufferedBinary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BufferedBinary")
-            .field("count", &self.docs.len())
-            .field("index", &self.index)
+            .field("doc_id", &self.docs_with_field.doc_id())
             .finish()
     }
 }
 
 impl DocIdSetIterator for BufferedBinary {
     fn doc_id(&self) -> i32 {
-        if self.index < 0 {
-            -1
-        } else if self.index as usize >= self.docs.len() {
-            NO_MORE_DOCS
-        } else {
-            self.docs[self.index as usize]
-        }
+        self.docs_with_field.doc_id()
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        if self.index < self.docs.len() as i64 {
-            self.index += 1;
+        let doc_id = self.docs_with_field.next_doc()?;
+        if doc_id != NO_MORE_DOCS {
+            let length = usize::try_from(self.lengths_iterator.next_value()).map_err(|_| {
+                LuceneError::IllegalState("integer overflow in a binary value length".to_string())
+            })?;
+            self.length = length;
+            self.bytes_iterator.read_bytes(&mut self.value, 0, length)?;
         }
-        Ok(self.doc_id())
+        Ok(doc_id)
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
         Err(LuceneError::UnsupportedOperation(
-            "BufferedBinary does not support advance".to_string(),
+            "BufferedBinaryDocValues does not support advance".to_string(),
         ))
     }
 
     fn cost(&self) -> i64 {
-        self.docs.len() as i64
+        self.docs_with_field.cost()
+    }
+
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        self.docs_with_field.into_bit_set(up_to, bit_set, offset)
+    }
+
+    fn doc_id_run_end(&self) -> Result<i32> {
+        self.docs_with_field.doc_id_run_end()
     }
 }
 
 impl DocValuesIterator for BufferedBinary {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
         Err(LuceneError::UnsupportedOperation(
-            "BufferedBinary does not support advance_exact".to_string(),
+            "BufferedBinaryDocValues does not support advanceExact".to_string(),
         ))
     }
 }
 
 impl BinaryDocValues for BufferedBinary {
     fn binary_value(&self) -> Result<BytesRef> {
-        if self.index < 0 || self.index as usize >= self.values.len() {
-            return Err(LuceneError::IllegalState(
-                "binary_value called with no current document".to_string(),
-            ));
-        }
-        Ok(BytesRef::new(self.values[self.index as usize].clone()))
+        Ok(BytesRef::new(self.value[..self.length].to_vec()))
     }
 }
 
-/// Iterates the buffered sorted values of one field.
+/// The binary values of a field laid out by new document number.
 ///
-/// Equivalent to `SortedDocValuesWriter.BufferedSortedDocValues`: the ords are
-/// already the final ordinals (dictionary order), and `lookup_ord` walks the
-/// dictionary.
-struct BufferedSorted {
-    docs: Arc<Vec<i32>>,
-    /// Final ordinal (dictionary order) of each document that carried the
-    /// field, in document order.
-    ords: Arc<Vec<i32>>,
-    dictionary: Arc<Vec<Vec<u8>>>,
-    index: i64,
+/// Equivalent to `BinaryDocValuesWriter.BinaryDVs`
+/// (`BinaryDocValuesWriter.java:274-292`): `offsets[newDocID]` is one plus the
+/// value's index in a `BytesRefArray` charged to a fresh counter, `0` meaning
+/// the document has no value.
+#[derive(Debug)]
+struct BinaryDVs {
+    offsets: Vec<i32>,
+    values: BytesRefArray,
 }
 
-impl BufferedSorted {
-    fn new(docs: Arc<Vec<i32>>, ords: Arc<Vec<i32>>, dictionary: Arc<Vec<Vec<u8>>>) -> Self {
-        debug_assert_eq!(docs.len(), ords.len());
-        Self {
-            docs,
-            ords,
-            dictionary,
-            index: -1,
+impl BinaryDVs {
+    fn new(
+        max_doc: i32,
+        sort_map: &SorterDocMap,
+        old_values: &mut dyn BinaryDocValues,
+    ) -> Result<Self> {
+        let mut offsets = vec![0i32; max_doc as usize];
+        let mut values = BytesRefArray::new(Arc::new(Counter::new_counter()));
+        let mut offset = 1; // 0 means no values for this document
+        loop {
+            let doc_id = old_values.next_doc()?;
+            if doc_id == NO_MORE_DOCS {
+                break;
+            }
+            let new_doc_id = sort_map.old_to_new(doc_id);
+            values.append(&old_values.binary_value()?)?;
+            offsets[new_doc_id as usize] = offset;
+            offset += 1;
         }
+        Ok(Self { offsets, values })
     }
 }
 
-impl fmt::Debug for BufferedSorted {
+/// Iterates the binary doc values of a field after an index sort has
+/// reordered the segment.
+///
+/// Equivalent to `BinaryDocValuesWriter.SortingBinaryDocValues`
+/// (`BinaryDocValuesWriter.java:226-272`).
+struct SortingBinary {
+    dvs: Arc<BinaryDVs>,
+    doc_id: i32,
+}
+
+impl SortingBinary {
+    fn new(dvs: Arc<BinaryDVs>) -> Self {
+        Self { dvs, doc_id: -1 }
+    }
+}
+
+impl fmt::Debug for SortingBinary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BufferedSorted")
-            .field("count", &self.docs.len())
-            .field("index", &self.index)
+        f.debug_struct("SortingBinary")
+            .field("doc_id", &self.doc_id)
             .finish()
     }
 }
 
-impl DocIdSetIterator for BufferedSorted {
+impl DocIdSetIterator for SortingBinary {
     fn doc_id(&self) -> i32 {
-        if self.index < 0 {
-            -1
-        } else if self.index as usize >= self.docs.len() {
-            NO_MORE_DOCS
-        } else {
-            self.docs[self.index as usize]
-        }
+        self.doc_id
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        if self.index < self.docs.len() as i64 {
-            self.index += 1;
+        loop {
+            self.doc_id += 1;
+            if self.doc_id as usize == self.dvs.offsets.len() {
+                self.doc_id = NO_MORE_DOCS;
+                return Ok(self.doc_id);
+            }
+            if self.dvs.offsets[self.doc_id as usize] > 0 {
+                return Ok(self.doc_id);
+            }
         }
-        Ok(self.doc_id())
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
         Err(LuceneError::UnsupportedOperation(
-            "BufferedSorted does not support advance".to_string(),
+            "use nextDoc instead".to_string(),
         ))
     }
 
     fn cost(&self) -> i64 {
-        self.docs.len() as i64
+        self.dvs.values.size() as i64
     }
 }
 
-impl DocValuesIterator for BufferedSorted {
+impl DocValuesIterator for SortingBinary {
     fn advance_exact(&mut self, _target: i32) -> Result<bool> {
         Err(LuceneError::UnsupportedOperation(
-            "BufferedSorted does not support advance_exact".to_string(),
+            "use nextDoc instead".to_string(),
         ))
     }
 }
 
-impl SortedDocValues for BufferedSorted {
-    fn ord_value(&self) -> Result<i32> {
-        if self.index < 0 || self.index as usize >= self.ords.len() {
-            return Err(LuceneError::IllegalState(
-                "ord_value called with no current document".to_string(),
-            ));
+impl BinaryDocValues for SortingBinary {
+    fn binary_value(&self) -> Result<BytesRef> {
+        self.dvs
+            .values
+            .get((self.dvs.offsets[self.doc_id as usize] - 1) as usize)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// SortedDocValuesWriter
+// -----------------------------------------------------------------------------
+
+/// The largest value a sorted writer accepts: Java's `BYTE_BLOCK_SIZE - 2`.
+const SORTED_MAX_LENGTH: usize = MAX_TERM_LENGTH;
+
+/// The dictionary of a finished sorted variant.
+///
+/// Equivalent to what Java's buffered producers hold after `finish()`: the
+/// writer's `hash` over the chain's `docValuesBytePool`, and the
+/// `finalSortedValues` and `finalOrdMap` arrays (`SortedDocValuesWriter.java:214-226`,
+/// `SortedSetDocValuesWriter.java:222-236`). The hash and the pool are shared,
+/// not copied: a value is read with `hash.get(sortedValues[ord], scratch)`, as
+/// `BufferedSortedDocValues.lookupOrd` (`SortedDocValuesWriter.java:364-368`)
+/// and `BufferedSortedSetDocValues.lookupOrd`
+/// (`SortedSetDocValuesWriter.java:412-416`) do.
+#[derive(Debug, Clone)]
+struct Dictionary {
+    hash: Arc<BytesRefHash>,
+    pool: Arc<ByteBlockPool>,
+    /// `sortedValues`: the term id of each ordinal.
+    sorted_values: Arc<Vec<i32>>,
+    /// `ordMap[termID] = ord`.
+    ord_map: Arc<Vec<i32>>,
+}
+
+impl Dictionary {
+    /// `sortedValues = hash.sort()` and `ordMap[sortedValues[ord]] = ord`.
+    fn build(hash: &Arc<BytesRefHash>, pool: &Arc<ByteBlockPool>) -> Self {
+        let sorted_values = hash.sort(pool);
+        let mut ord_map = vec![0i32; sorted_values.len()];
+        for (ord, &term_id) in sorted_values.iter().enumerate() {
+            ord_map[term_id as usize] = ord as i32;
         }
-        Ok(self.ords[self.index as usize])
+        Self {
+            hash: Arc::clone(hash),
+            pool: Arc::clone(pool),
+            sorted_values: Arc::new(sorted_values),
+            ord_map: Arc::new(ord_map),
+        }
+    }
+
+    /// `valueCount`: the number of distinct values.
+    fn len(&self) -> usize {
+        self.sorted_values.len()
+    }
+
+    /// `hash.get(sortedValues[ord], scratch)`, refusing an out-of-range
+    /// ordinal (Java indexes the array and throws).
+    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+        usize::try_from(ord)
+            .ok()
+            .and_then(|ord| self.sorted_values.get(ord))
+            .map(|&term_id| BytesRef::new(self.hash.get(&self.pool, term_id).to_vec()))
+            .ok_or_else(|| {
+                LuceneError::IllegalArgument(format!(
+                    "ord={ord} is out of bounds 0 .. {}",
+                    self.len() as i64 - 1
+                ))
+            })
+    }
+}
+
+/// The writer's hash while values are being added.
+///
+/// Producers share the hash only once `finish` ran, after which `check_open`
+/// refuses every addition, so the hash is never shared here.
+fn hash_mut(hash: &mut Arc<BytesRefHash>) -> Result<&mut BytesRefHash> {
+    Arc::get_mut(hash).ok_or_else(already_built)
+}
+
+/// The chain's `docValuesBytePool` while values are being added.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalState`] while a producer over the pool is
+/// alive (see the module documentation).
+fn pool_mut(pool: &mut Arc<ByteBlockPool>) -> Result<&mut ByteBlockPool> {
+    Arc::get_mut(pool).ok_or_else(|| {
+        LuceneError::IllegalState("the doc-values byte pool is read by a live producer".to_string())
+    })
+}
+
+/// The ordinal-to-term-id table of a batch path:
+/// `dictSize <= SharedIndexingScratch.INTS_SCRATCH_SIZE ? scratch.intsScratch()
+/// : new int[dictSize]`, then `Arrays.fill(ordToHash, 0, dictSize, -1)`
+/// (`SortedDocValuesWriter.java:123-128`, `SortedSetDocValuesWriter.java:115-120`).
+fn ord_to_hash_table<'a>(
+    dict_size: usize,
+    scratch: &'a mut SharedIndexingScratch,
+    owned: &'a mut Vec<i32>,
+) -> &'a mut [i32] {
+    let table = if dict_size <= INTS_SCRATCH_SIZE {
+        &mut scratch.ints_scratch()[..dict_size]
+    } else {
+        *owned = vec![0i32; dict_size];
+        &mut owned[..]
+    };
+    table.fill(-1);
+    table
+}
+
+/// Buffers one binary value per document and builds the value dictionary.
+///
+/// Equivalent to `org.apache.lucene.index.SortedDocValuesWriter`
+/// (`index/SortedDocValuesWriter.java:45-404`). Values are interned into a
+/// [`BytesRefHash`] over the indexing chain's shared `docValuesBytePool`;
+/// `pending`, a delta-packed `PackedLongValues` builder, holds the hash term id
+/// of every document; at finish the term ids are ranked by unsigned byte order
+/// (the hash's sort) to produce the final ordinals.
+#[derive(Debug)]
+pub struct SortedDocValuesWriter {
+    hash: Arc<BytesRefHash>,
+    pending: Option<DeltaPackedLongValuesBuilder>,
+    docs_with_field: Arc<DocsWithFieldSet>,
+    iw_bytes_used: Arc<AtomicI64>,
+    /// What `updateBytesUsed` has charged: the builder and the document set.
+    bytes_used: i64,
+    /// What the writer charged the counter directly: `2 * Integer.BYTES` per
+    /// distinct value. Only kept so that `Drop` can give it back.
+    direct_charges: i64,
+    field_info: FieldInfo,
+    last_doc_id: i32,
+    final_ords: Option<Arc<DeltaPackedLongValues>>,
+    dictionary: Option<Dictionary>,
+    flushed: bool,
+}
+
+impl SortedDocValuesWriter {
+    /// Creates a writer for `field_info`, charging its initial footprint to
+    /// `iw_bytes_used`.
+    ///
+    /// Equivalent to `new SortedDocValuesWriter(FieldInfo, Counter,
+    /// ByteBlockPool, SharedIndexingScratch)` (`SortedDocValuesWriter.java:58-71`):
+    /// the hash is a `BytesRefHash(pool, DEFAULT_CAPACITY,
+    /// DirectBytesStartArray(DEFAULT_CAPACITY, iwBytesUsed))`. The pool itself is
+    /// the chain's, handed to every call that interns or reads values.
+    pub fn new(field_info: FieldInfo, iw_bytes_used: Arc<AtomicI64>) -> Self {
+        let hash = Arc::new(BytesRefHash::with_direct_bytes_start(
+            DEFAULT_CAPACITY,
+            Arc::clone(&iw_bytes_used),
+        ));
+        let pending = delta_packed_builder();
+        let docs_with_field = DocsWithFieldSet::new();
+        let bytes_used = pending.ram_bytes_used() + docs_with_field.ram_bytes_used();
+        iw_bytes_used.fetch_add(bytes_used, Ordering::AcqRel);
+        Self {
+            hash,
+            pending: Some(pending),
+            docs_with_field: Arc::new(docs_with_field),
+            iw_bytes_used,
+            bytes_used,
+            direct_charges: 0,
+            field_info,
+            last_doc_id: -1,
+            final_ords: None,
+            dictionary: None,
+            flushed: false,
+        }
+    }
+
+    /// Returns the field these values belong to.
+    pub fn field_info(&self) -> &FieldInfo {
+        &self.field_info
+    }
+
+    fn check_open(&self) -> Result<()> {
+        if self.flushed {
+            return Err(already_flushed(&self.field_info));
+        }
+        if self.pending.is_none() {
+            return Err(already_built());
+        }
+        Ok(())
+    }
+
+    /// Charges `bytes` straight to the counter, as Java's
+    /// `iwBytesUsed.addAndGet` does.
+    fn charge_directly(&mut self, bytes: i64) {
+        self.iw_bytes_used.fetch_add(bytes, Ordering::AcqRel);
+        self.direct_charges += bytes;
+    }
+
+    /// Buffers `value` as the doc value of `doc_id`.
+    ///
+    /// Equivalent to `SortedDocValuesWriter.addValue(int, BytesRef)`
+    /// (`SortedDocValuesWriter.java:73-95`), with the null check performed by
+    /// the caller (see [`DocValuesWriter::add_value`]). As in Java, the
+    /// document set grows after `addOneValue` has updated the counter, so its
+    /// growth is charged with the next value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` is not strictly
+    /// greater than the last document added, or when `value` is longer than
+    /// [`SORTED_MAX_LENGTH`], and [`LuceneError::IllegalState`] when the field
+    /// has already been built or flushed.
+    pub fn add_value(
+        &mut self,
+        doc_id: i32,
+        value: &[u8],
+        pool: &mut Arc<ByteBlockPool>,
+    ) -> Result<()> {
+        self.check_open()?;
+        if doc_id <= self.last_doc_id {
+            return Err(appears_more_than_once(&self.field_info));
+        }
+        if value.len() > SORTED_MAX_LENGTH {
+            return Err(LuceneError::IllegalArgument(format!(
+                "DocValuesField \"{}\" is too large, must be <= {SORTED_MAX_LENGTH}",
+                self.field_info.name
+            )));
+        }
+        self.add_one_value(value, pool)?;
+        docs_mut(&mut self.docs_with_field).add(doc_id)?;
+        self.last_doc_id = doc_id;
+        Ok(())
+    }
+
+    /// Equivalent to `SortedDocValuesWriter.addOneValue(BytesRef)`
+    /// (`SortedDocValuesWriter.java:97-112`).
+    fn add_one_value(&mut self, value: &[u8], pool: &mut Arc<ByteBlockPool>) -> Result<()> {
+        let mut term_id = hash_mut(&mut self.hash)?.add(pool_mut(pool)?, value)?;
+        if term_id < 0 {
+            term_id = -term_id - 1;
+        } else {
+            // reserve additional space for each unique value:
+            // 1. when indexing, when hash is 50% full, rehash() suddenly needs 2*size ints.
+            // 2. when flushing, we need 1 int per value (slot in the ordMap).
+            self.charge_directly(2 * i64::from(i32::BITS / 8));
+        }
+        self.pending
+            .as_mut()
+            .ok_or_else(already_built)?
+            .add(i64::from(term_id))?;
+        self.update_bytes_used();
+        Ok(())
+    }
+
+    /// Buffers one dictionary-encoded value per document the tuple cursor
+    /// names, at `base_doc_id` plus the batch-local id.
+    ///
+    /// Equivalent to `SortedDocValuesWriter.addOrdinalTuples(int, List,
+    /// OrdinalsTupleCursor)` (`SortedDocValuesWriter.java:114-147`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when a document repeats or an
+    /// ordinal is out of range, [`LuceneError::IllegalState`] when the field
+    /// has already been built or flushed, and whatever reading the cursor
+    /// raises.
+    pub fn add_ordinal_tuples(
+        &mut self,
+        base_doc_id: i32,
+        dictionary: &[BytesRef],
+        cursor: &mut dyn OrdinalsTupleCursor,
+        pool: &mut Arc<ByteBlockPool>,
+        scratch: &mut SharedIndexingScratch,
+    ) -> Result<()> {
+        self.check_open()?;
+        let mut owned = Vec::new();
+        let ord_to_hash = ord_to_hash_table(dictionary.len(), scratch, &mut owned);
+        loop {
+            let batch_doc_id = cursor.next_doc()?;
+            if batch_doc_id == NO_MORE_DOCS {
+                break;
+            }
+            let doc_id = base_doc_id + batch_doc_id;
+            if doc_id <= self.last_doc_id {
+                return Err(appears_more_than_once(&self.field_info));
+            }
+            let ord = cursor.ord_value();
+            let id = self.lookup_or_translate(ord, dictionary, ord_to_hash, pool)?;
+            self.pending
+                .as_mut()
+                .ok_or_else(already_built)?
+                .add(i64::from(id))?;
+            docs_mut(&mut self.docs_with_field).add(doc_id)?;
+            self.last_doc_id = doc_id;
+        }
+        self.update_bytes_used();
+        Ok(())
+    }
+
+    /// Buffers one dictionary-encoded value per consecutive document starting
+    /// at `first_doc_id`.
+    ///
+    /// Equivalent to `SortedDocValuesWriter.addDenseOrdinalValues(int, List,
+    /// OrdinalsCursor)` (`SortedDocValuesWriter.java:149-182`), which does one
+    /// hash lookup per distinct dictionary entry actually used rather than one
+    /// per document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the range does not start
+    /// after the last document written or an ordinal is out of range,
+    /// [`LuceneError::IllegalState`] when the field has already been built or
+    /// flushed, and whatever reading the cursor raises.
+    pub fn add_dense_ordinal_values(
+        &mut self,
+        first_doc_id: i32,
+        dictionary: &[BytesRef],
+        cursor: &mut dyn OrdinalsCursor,
+        pool: &mut Arc<ByteBlockPool>,
+        scratch: &mut SharedIndexingScratch,
+    ) -> Result<()> {
+        let n = cursor.size();
+        if n == 0 {
+            return Ok(());
+        }
+        self.check_open()?;
+        if first_doc_id <= self.last_doc_id {
+            return Err(LuceneError::IllegalArgument(format!(
+                "DocValuesField \"{}\": firstDocID={first_doc_id} must be > lastDocID={}",
+                self.field_info.name, self.last_doc_id
+            )));
+        }
+        let mut owned = Vec::new();
+        let ord_to_hash = ord_to_hash_table(dictionary.len(), scratch, &mut owned);
+        let mut processed = 0i32;
+        // Java commits whatever was processed even when a lookup throws, in a
+        // `finally`; the same is done here by recording the range before the
+        // error is returned.
+        let mut outcome = Ok(());
+        while processed < n {
+            let ord = match cursor.next_ord() {
+                Ok(ord) => ord,
+                Err(e) => {
+                    outcome = Err(e);
+                    break;
+                }
+            };
+            let added = self
+                .lookup_or_translate(ord, dictionary, ord_to_hash, pool)
+                .and_then(|id| {
+                    self.pending
+                        .as_mut()
+                        .ok_or_else(already_built)?
+                        .add(i64::from(id))
+                });
+            if let Err(e) = added {
+                outcome = Err(e);
+                break;
+            }
+            processed += 1;
+        }
+        if processed > 0 {
+            docs_mut(&mut self.docs_with_field)
+                .add_range(first_doc_id, first_doc_id + processed)?;
+            self.last_doc_id = first_doc_id + processed - 1;
+        }
+        self.update_bytes_used();
+        outcome
+    }
+
+    /// Interns the dictionary entry `ord` names, remembering the term id it was
+    /// given so the same entry costs one hash lookup per batch.
+    ///
+    /// Equivalent to the private `SortedDocValuesWriter.lookupOrTranslate(int,
+    /// List, int[])` (`SortedDocValuesWriter.java:184-206`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `ord` is outside the
+    /// dictionary, and whatever interning the value raises.
+    fn lookup_or_translate(
+        &mut self,
+        ord: i32,
+        dictionary: &[BytesRef],
+        ord_to_hash: &mut [i32],
+        pool: &mut Arc<ByteBlockPool>,
+    ) -> Result<i32> {
+        if ord < 0 || ord as usize >= dictionary.len() {
+            return Err(LuceneError::IllegalArgument(format!(
+                "DocValuesField \"{}\": ordinal {ord} is out of range [0, {})",
+                self.field_info.name,
+                dictionary.len()
+            )));
+        }
+        let mut id = ord_to_hash[ord as usize];
+        if id < 0 {
+            id =
+                hash_mut(&mut self.hash)?.add(pool_mut(pool)?, dictionary[ord as usize].slice())?;
+            if id < 0 {
+                id = -id - 1;
+            } else {
+                self.charge_directly(2 * i64::from(i32::BITS / 8));
+            }
+            ord_to_hash[ord as usize] = id;
+        }
+        Ok(id)
+    }
+
+    /// Equivalent to `SortedDocValuesWriter.updateBytesUsed`
+    /// (`SortedDocValuesWriter.java:208-212`).
+    fn update_bytes_used(&mut self) {
+        let Some(pending) = self.pending.as_ref() else {
+            return;
+        };
+        let new_bytes_used = pending.ram_bytes_used() + self.docs_with_field.ram_bytes_used();
+        self.iw_bytes_used
+            .fetch_add(new_bytes_used - self.bytes_used, Ordering::AcqRel);
+        self.bytes_used = new_bytes_used;
+    }
+
+    /// The bytes this writer has charged to the shared counter, other than the
+    /// hash's own slot array.
+    pub fn ram_bytes_used(&self) -> i64 {
+        self.bytes_used + self.direct_charges
+    }
+
+    /// Number of documents that have a value buffered.
+    pub fn num_docs_with_field(&self) -> i32 {
+        self.docs_with_field.cardinality()
+    }
+
+    /// Builds the final ordinals and the dictionary, once.
+    ///
+    /// Equivalent to `SortedDocValuesWriter.finish()`
+    /// (`SortedDocValuesWriter.java:214-226`): `updateBytesUsed()`, then
+    /// `hash.sort()`, `pending.build()` and the ordinal map.
+    fn finish(&mut self, pool: &Arc<ByteBlockPool>) -> Result<()> {
+        if self.dictionary.is_none() {
+            self.update_bytes_used();
+            let dictionary = Dictionary::build(&self.hash, pool);
+            let pending = self.pending.take().ok_or_else(already_built)?;
+            self.final_ords = Some(Arc::new(pending.build()?));
+            self.dictionary = Some(dictionary);
+        }
+        Ok(())
+    }
+
+    /// The finished ordinals and dictionary; [`Self::finish`] must have run.
+    fn finished(&self) -> (Arc<DeltaPackedLongValues>, &Dictionary) {
+        (
+            Arc::clone(self.final_ords.as_ref().expect("INVARIANT: finish() ran")),
+            self.dictionary.as_ref().expect("INVARIANT: finish() ran"),
+        )
+    }
+
+    /// Returns a read-only view over the values buffered so far.
+    ///
+    /// Equivalent to `SortedDocValuesWriter.getDocValues()`
+    /// (`SortedDocValuesWriter.java:228-232`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the ordinals raises.
+    pub fn get_doc_values(
+        &mut self,
+        pool: &Arc<ByteBlockPool>,
+    ) -> Result<Arc<dyn DocValuesProducer>> {
+        self.finish(pool)?;
+        let (ords, dictionary) = self.finished();
+        Self::get_doc_values_producer(
+            &self.field_info,
+            dictionary,
+            ords,
+            Arc::clone(&self.docs_with_field),
+            None,
+        )
+    }
+
+    /// Builds the ordered, per-new-document ordinal view that an index sort
+    /// produces: `-1` where the sorted document carries no value.
+    ///
+    /// Equivalent to the private `SortedDocValuesWriter.sortDocValues(int,
+    /// Sorter.DocMap, SortedDocValues)` (`SortedDocValuesWriter.java:234-244`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever iterating `old_values` raises.
+    fn sort_doc_values(
+        max_doc: i32,
+        sort_map: &SorterDocMap,
+        old_values: &mut dyn SortedDocValues,
+    ) -> Result<Vec<i32>> {
+        let mut ords = vec![-1i32; max_doc as usize];
+        loop {
+            let doc_id = old_values.next_doc()?;
+            if doc_id == NO_MORE_DOCS {
+                break;
+            }
+            let new_doc_id = sort_map.old_to_new(doc_id);
+            ords[new_doc_id as usize] = old_values.ord_value()?;
+        }
+        Ok(ords)
+    }
+
+    /// Hands the buffered values to `consumer`.
+    ///
+    /// Equivalent to `SortedDocValuesWriter.flush(SegmentWriteState,
+    /// Sorter.DocMap, DocValuesConsumer)` (`SortedDocValuesWriter.java:246-253`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the field has already been
+    /// flushed; otherwise propagates whatever the consumer raises.
+    pub fn flush(
+        &mut self,
+        _state: &SegmentWriteState<'_>,
+        sort_map: Option<&SorterDocMap>,
+        consumer: &mut dyn DocValuesConsumer,
+        pool: &Arc<ByteBlockPool>,
+    ) -> Result<()> {
+        if self.flushed {
+            return Err(already_flushed(&self.field_info));
+        }
+        self.finish(pool)?;
+        self.flushed = true;
+        let (ords, dictionary) = self.finished();
+        let producer = Self::get_doc_values_producer(
+            &self.field_info,
+            dictionary,
+            ords,
+            Arc::clone(&self.docs_with_field),
+            sort_map,
+        )?;
+        consumer.add_sorted_field(&self.field_info, &*producer)
+    }
+
+    /// Builds the [`DocValuesProducer`] `flush` and `get_doc_values` hand to
+    /// the codec: the plain buffered view when `sort_map` is `None`, or a view
+    /// reordered by the index sort otherwise.
+    ///
+    /// Equivalent to the static `SortedDocValuesWriter.getDocValuesProducer(
+    /// FieldInfo, BytesRefHash, PackedLongValues, int[], int[],
+    /// DocsWithFieldSet, Sorter.DocMap)` (`SortedDocValuesWriter.java:255-290`),
+    /// which `SortedSetDocValuesWriter` also calls for a single-valued field —
+    /// with plain packed term ids rather than delta-packed ones, hence the type
+    /// parameter.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`Self::sort_doc_values`] raises.
+    fn get_doc_values_producer<V>(
+        field_info: &FieldInfo,
+        dictionary: &Dictionary,
+        ords: Arc<V>,
+        docs_with_field: Arc<DocsWithFieldSet>,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<Arc<dyn DocValuesProducer>>
+    where
+        V: PackedLongValuesAccess + Send + Sync + fmt::Debug + 'static,
+    {
+        let mut producer = BufferedSortedProducer {
+            field_number: field_info.number,
+            field_name: field_info.name.clone(),
+            dictionary: dictionary.clone(),
+            ords,
+            docs_with_field,
+            sorted: None,
+        };
+        if let Some(sort_map) = sort_map {
+            let mut old_values = producer.buffered();
+            producer.sorted = Some(Arc::new(Self::sort_doc_values(
+                sort_map.size(),
+                sort_map,
+                &mut old_values,
+            )?));
+        }
+        Ok(Arc::new(producer))
+    }
+}
+
+impl Drop for SortedDocValuesWriter {
+    /// Gives back everything this writer charged to the shared counter: the
+    /// delta-tracked buffers, the direct charges and the hash's slot array.
+    /// The pool's blocks belong to the chain, which releases them; a producer
+    /// still holding the hash only reads it.
+    fn drop(&mut self) {
+        self.iw_bytes_used.fetch_sub(
+            self.bytes_used + self.direct_charges + self.hash.charged_bytes(),
+            Ordering::AcqRel,
+        );
+    }
+}
+
+/// Serves the buffered sorted values of one field to a [`DocValuesConsumer`].
+///
+/// Equivalent to the anonymous `EmptyDocValuesProducer` of
+/// `SortedDocValuesWriter.getDocValuesProducer`.
+#[derive(Debug)]
+struct BufferedSortedProducer<V> {
+    field_number: i32,
+    field_name: String,
+    dictionary: Dictionary,
+    ords: Arc<V>,
+    docs_with_field: Arc<DocsWithFieldSet>,
+    sorted: Option<Arc<Vec<i32>>>,
+}
+
+impl<V> Clone for BufferedSortedProducer<V> {
+    fn clone(&self) -> Self {
+        Self {
+            field_number: self.field_number,
+            field_name: self.field_name.clone(),
+            dictionary: self.dictionary.clone(),
+            ords: Arc::clone(&self.ords),
+            docs_with_field: Arc::clone(&self.docs_with_field),
+            sorted: self.sorted.clone(),
+        }
+    }
+}
+
+impl<V: PackedLongValuesAccess + Send + Sync + 'static> BufferedSortedProducer<V> {
+    fn buffered(&self) -> BufferedSorted<V> {
+        BufferedSorted::new(
+            self.dictionary.clone(),
+            Arc::clone(&self.ords),
+            &self.docs_with_field,
+        )
+    }
+
+    fn check_field(&self, field: &FieldInfo) -> Result<()> {
+        if field.number != self.field_number {
+            return Err(LuceneError::IllegalArgument(format!(
+                "wrong fieldInfo: expected {} ({}), got {} ({})",
+                self.field_name, self.field_number, field.name, field.number
+            )));
+        }
+        Ok(())
+    }
+
+    fn unsupported(&self, kind: &str) -> LuceneError {
+        LuceneError::UnsupportedOperation(format!(
+            "this producer only serves the {} values of field {} ({})",
+            kind, self.field_name, self.field_number
+        ))
+    }
+}
+
+impl<V> DocValuesProducer for BufferedSortedProducer<V>
+where
+    V: PackedLongValuesAccess + Send + Sync + fmt::Debug + 'static,
+{
+    fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
+        self.check_field(field)?;
+        let buf = self.buffered();
+        Ok(Some(match &self.sorted {
+            None => Box::new(buf),
+            Some(sorted) => Box::new(SortingSorted::new(Box::new(buf), Arc::clone(sorted))),
+        }))
+    }
+
+    empty_producer_methods!(numeric);
+    empty_producer_methods!(binary);
+    empty_producer_methods!(sorted_numeric);
+    empty_producer_methods!(sorted_set);
+    empty_producer_methods!(common);
+}
+
+/// Iterates the buffered sorted values of one field.
+///
+/// Equivalent to `SortedDocValuesWriter.BufferedSortedDocValues`
+/// (`SortedDocValuesWriter.java:292-362`): each document's term id comes off
+/// the ordinals iterator and is mapped through `ordMap`.
+struct BufferedSorted<V: PackedLongValuesAccess> {
+    dictionary: Dictionary,
+    ord: i32,
+    iter: OwnedPackedLongValuesIterator<V>,
+    docs_with_field: Box<dyn DocIdSetIterator + Send + Sync>,
+}
+
+impl<V: PackedLongValuesAccess> BufferedSorted<V> {
+    fn new(
+        dictionary: Dictionary,
+        doc_to_ord: Arc<V>,
+        docs_with_field: &Arc<DocsWithFieldSet>,
+    ) -> Self {
+        Self {
+            dictionary,
+            ord: 0,
+            iter: OwnedPackedLongValuesIterator::new(doc_to_ord),
+            docs_with_field: DocsWithFieldSet::shared_iterator(docs_with_field),
+        }
+    }
+}
+
+impl<V: PackedLongValuesAccess> fmt::Debug for BufferedSorted<V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BufferedSorted")
+            .field("doc_id", &self.docs_with_field.doc_id())
+            .field("ord", &self.ord)
+            .finish()
+    }
+}
+
+impl<V: PackedLongValuesAccess> DocIdSetIterator for BufferedSorted<V> {
+    fn doc_id(&self) -> i32 {
+        self.docs_with_field.doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        let doc_id = self.docs_with_field.next_doc()?;
+        if doc_id != NO_MORE_DOCS {
+            let term_id = to_int_exact(self.iter.next_value())?;
+            self.ord = self.dictionary.ord_map[term_id as usize];
+        }
+        Ok(doc_id)
+    }
+
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(
+            "BufferedSortedDocValues does not support advance".to_string(),
+        ))
+    }
+
+    fn cost(&self) -> i64 {
+        self.docs_with_field.cost()
+    }
+
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        self.docs_with_field.into_bit_set(up_to, bit_set, offset)
+    }
+
+    fn doc_id_run_end(&self) -> Result<i32> {
+        self.docs_with_field.doc_id_run_end()
+    }
+}
+
+impl<V: PackedLongValuesAccess> DocValuesIterator for BufferedSorted<V> {
+    fn advance_exact(&mut self, _target: i32) -> Result<bool> {
+        Err(LuceneError::UnsupportedOperation(
+            "BufferedSortedDocValues does not support advanceExact".to_string(),
+        ))
+    }
+}
+
+impl<V: PackedLongValuesAccess> SortedDocValues for BufferedSorted<V> {
+    fn ord_value(&self) -> Result<i32> {
+        Ok(self.ord)
     }
 
     fn get_value_count(&self) -> Result<i32> {
@@ -605,247 +2292,104 @@ impl SortedDocValues for BufferedSorted {
     }
 
     fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
-        let value = self.dictionary.get(ord as usize).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
-                "ord={ord} is out of bounds 0 .. {}",
-                self.dictionary.len()
-            ))
-        })?;
-        Ok(BytesRef::new(value.clone()))
+        self.dictionary.lookup_ord(i64::from(ord))
     }
 }
 
-/// Shared iteration state of the multi-valued buffered iterators: docs in
-/// document order, a flat value stream and a per-doc count.
-struct MultiValueCursor {
-    docs: Arc<Vec<i32>>,
-    counts: Arc<Vec<i32>>,
-    /// Absolute index of the current document's first unread value.
-    value_index: i64,
-    /// Values still unread for the current document.
-    value_upto: i64,
-    index: i64,
+/// `Math.toIntExact(long)`.
+fn to_int_exact(value: i64) -> Result<i32> {
+    i32::try_from(value).map_err(|_| LuceneError::IllegalState("integer overflow".to_string()))
 }
 
-impl MultiValueCursor {
-    fn new(docs: Arc<Vec<i32>>, counts: Arc<Vec<i32>>) -> Self {
-        debug_assert_eq!(docs.len(), counts.len());
+/// Iterates the sorted doc values of a field after an index sort has
+/// reordered the segment.
+///
+/// Equivalent to `SortedDocValuesWriter.SortingSortedDocValues`
+/// (`SortedDocValuesWriter.java:364-403`).
+struct SortingSorted {
+    in_values: Box<dyn SortedDocValues>,
+    ords: Arc<Vec<i32>>,
+    doc_id: i32,
+}
+
+impl SortingSorted {
+    fn new(in_values: Box<dyn SortedDocValues>, ords: Arc<Vec<i32>>) -> Self {
         Self {
-            docs,
-            counts,
-            value_index: 0,
-            value_upto: 0,
-            index: -1,
+            in_values,
+            ords,
+            doc_id: -1,
         }
-    }
-
-    fn doc_id(&self) -> i32 {
-        if self.index < 0 {
-            -1
-        } else if self.index as usize >= self.docs.len() {
-            NO_MORE_DOCS
-        } else {
-            self.docs[self.index as usize]
-        }
-    }
-
-    fn next_doc(&mut self) -> Result<i32> {
-        if self.index >= 0 && (self.index as usize) < self.docs.len() {
-            // Skip the values the consumer never read, as Java's
-            // `BufferedSortedNumericDocValues.nextDoc` does.
-            self.value_index += self.value_upto;
-        }
-        if self.index < self.docs.len() as i64 {
-            self.index += 1;
-        }
-        if (self.index as usize) < self.docs.len() {
-            self.value_upto = i64::from(self.counts[self.index as usize]);
-        }
-        Ok(self.doc_id())
-    }
-
-    fn doc_value_count(&self) -> Result<i32> {
-        if self.index < 0 || self.index as usize >= self.docs.len() {
-            return Err(LuceneError::IllegalState(
-                "doc_value_count called with no current document".to_string(),
-            ));
-        }
-        Ok(self.counts[self.index as usize])
-    }
-
-    fn cost(&self) -> i64 {
-        self.docs.len() as i64
     }
 }
 
-impl fmt::Debug for MultiValueCursor {
+impl fmt::Debug for SortingSorted {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MultiValueCursor")
-            .field("count", &self.docs.len())
-            .field("index", &self.index)
-            .field("value_index", &self.value_index)
-            .field("value_upto", &self.value_upto)
+        f.debug_struct("SortingSorted")
+            .field("doc_id", &self.doc_id)
             .finish()
     }
 }
 
-/// Iterates the buffered sorted-numeric values of one field.
-///
-/// Equivalent to `SortedNumericDocValuesWriter.BufferedSortedNumericDocValues`.
-struct BufferedSortedNumeric {
-    cursor: MultiValueCursor,
-    values: Arc<Vec<i64>>,
-}
-
-impl BufferedSortedNumeric {
-    fn new(docs: Arc<Vec<i32>>, counts: Arc<Vec<i32>>, values: Arc<Vec<i64>>) -> Self {
-        Self {
-            cursor: MultiValueCursor::new(docs, counts),
-            values,
-        }
-    }
-}
-
-impl DocIdSetIterator for BufferedSortedNumeric {
+impl DocIdSetIterator for SortingSorted {
     fn doc_id(&self) -> i32 {
-        self.cursor.doc_id()
+        self.doc_id
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        self.cursor.next_doc()
+        loop {
+            self.doc_id += 1;
+            if self.doc_id as usize == self.ords.len() {
+                self.doc_id = NO_MORE_DOCS;
+                break;
+            }
+            if self.ords[self.doc_id as usize] != -1 {
+                break;
+            }
+            // skip missing docs
+        }
+        Ok(self.doc_id)
     }
 
     fn advance(&mut self, _target: i32) -> Result<i32> {
         Err(LuceneError::UnsupportedOperation(
-            "BufferedSortedNumeric does not support advance".to_string(),
+            "use nextDoc instead".to_string(),
         ))
     }
 
     fn cost(&self) -> i64 {
-        self.cursor.cost()
+        self.in_values.cost()
     }
 }
 
-impl DocValuesIterator for BufferedSortedNumeric {
-    fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::UnsupportedOperation(
-            "BufferedSortedNumeric does not support advance_exact".to_string(),
-        ))
+impl DocValuesIterator for SortingSorted {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        // needed in IndexSorter#StringSorter
+        self.doc_id = target;
+        Ok(self.ords[target as usize] != -1)
     }
 }
 
-impl SortedNumericDocValues for BufferedSortedNumeric {
-    fn next_value(&mut self) -> Result<i64> {
-        if self.cursor.value_upto <= 0 || self.cursor.index < 0 {
-            return Err(LuceneError::IllegalState(
-                "next_value called with no current document or no values left".to_string(),
-            ));
-        }
-        let value = self.values[self.cursor.value_index as usize];
-        self.cursor.value_index += 1;
-        self.cursor.value_upto -= 1;
-        Ok(value)
+impl SortedDocValues for SortingSorted {
+    fn ord_value(&self) -> Result<i32> {
+        Ok(self.ords[self.doc_id as usize])
     }
 
-    fn doc_value_count(&self) -> Result<i32> {
-        self.cursor.doc_value_count()
+    fn get_value_count(&self) -> Result<i32> {
+        self.in_values.get_value_count()
+    }
+
+    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+        self.in_values.lookup_ord(ord)
     }
 }
 
-/// Iterates the buffered sorted-set values of one field.
+// -----------------------------------------------------------------------------
+// Single-valued views of the multi-valued kinds
+// -----------------------------------------------------------------------------
+
+/// Presents a single-valued numeric iterator as a sorted-numeric one.
 ///
-/// Equivalent to `SortedSetDocValuesWriter.BufferedSortedSetDocValues` after
-/// the per-doc ordinals have been mapped and sorted: Java does both inside the
-/// iterator's `nextDoc`, this port does them once at flush; the output is the
-/// same stream.
-struct BufferedSortedSet {
-    cursor: MultiValueCursor,
-    /// Final, per-doc-sorted ordinals of every document, concatenated.
-    ords: Arc<Vec<i64>>,
-    dictionary: Arc<Vec<Vec<u8>>>,
-}
-
-impl BufferedSortedSet {
-    fn new(
-        docs: Arc<Vec<i32>>,
-        counts: Arc<Vec<i32>>,
-        ords: Arc<Vec<i64>>,
-        dictionary: Arc<Vec<Vec<u8>>>,
-    ) -> Self {
-        Self {
-            cursor: MultiValueCursor::new(docs, counts),
-            ords,
-            dictionary,
-        }
-    }
-}
-
-impl DocIdSetIterator for BufferedSortedSet {
-    fn doc_id(&self) -> i32 {
-        self.cursor.doc_id()
-    }
-
-    fn next_doc(&mut self) -> Result<i32> {
-        self.cursor.next_doc()
-    }
-
-    fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
-            "BufferedSortedSet does not support advance".to_string(),
-        ))
-    }
-
-    fn cost(&self) -> i64 {
-        self.cursor.cost()
-    }
-}
-
-impl DocValuesIterator for BufferedSortedSet {
-    fn advance_exact(&mut self, _target: i32) -> Result<bool> {
-        Err(LuceneError::UnsupportedOperation(
-            "BufferedSortedSet does not support advance_exact".to_string(),
-        ))
-    }
-}
-
-impl SortedSetDocValues for BufferedSortedSet {
-    fn next_ord(&mut self) -> Result<i64> {
-        if self.cursor.value_upto <= 0 || self.cursor.index < 0 {
-            return Err(LuceneError::IllegalState(
-                "next_ord called with no current document or no values left".to_string(),
-            ));
-        }
-        let ord = self.ords[self.cursor.value_index as usize];
-        self.cursor.value_index += 1;
-        self.cursor.value_upto -= 1;
-        Ok(ord)
-    }
-
-    fn doc_value_count(&self) -> Result<i32> {
-        self.cursor.doc_value_count()
-    }
-
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
-        let value = self.dictionary.get(ord as usize).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
-                "ord={ord} is out of bounds 0 .. {}",
-                self.dictionary.len()
-            ))
-        })?;
-        Ok(BytesRef::new(value.clone()))
-    }
-
-    fn get_value_count(&self) -> Result<i64> {
-        Ok(self.dictionary.len() as i64)
-    }
-}
-
-/// Multi-valued view over a `Send + Sync` [`NumericDocValues`] iterator.
-///
-/// Equivalent to `DocValues.singleton(NumericDocValues)` as it appears in the
-/// anonymous producers of `NumericDocValuesWriter.getDocValuesProducer` and
-/// `SortedNumericDocValuesWriter.flush`; see the module documentation for why
-/// the shared wrapper cannot be reused here.
+/// Equivalent to `DocValues.singleton(NumericDocValues)`.
 struct SingletonNumericAsSortedNumeric {
     inner: Box<dyn NumericDocValues>,
 }
@@ -893,26 +2437,22 @@ impl SortedNumericDocValues for SingletonNumericAsSortedNumeric {
 impl fmt::Debug for SingletonNumericAsSortedNumeric {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SingletonNumericAsSortedNumeric")
-            .field("doc", &self.inner.doc_id())
+            .field("doc_id", &self.inner.doc_id())
             .finish()
     }
 }
 
-/// Multi-valued view over a `Send + Sync` [`SortedDocValues`] iterator.
+/// Presents a single-valued sorted iterator as a sorted-set one.
 ///
-/// Equivalent to `DocValues.singleton(SortedDocValues)` as it appears in the
-/// anonymous producer of `SortedSetDocValuesWriter.flush` for the
-/// single-valued case.
+/// Equivalent to `DocValues.singleton(SortedDocValues)`: one ordinal per
+/// document, served once.
 struct SingletonSortedAsSortedSet {
     inner: Box<dyn SortedDocValues>,
-    /// The single ordinal of the current document, fetched when the iterator
-    /// advanced, exactly as `SingletonSortedSetDocValues` does.
-    ord: i64,
 }
 
 impl SingletonSortedAsSortedSet {
     fn new(inner: Box<dyn SortedDocValues>) -> Self {
-        Self { inner, ord: -1 }
+        Self { inner }
     }
 }
 
@@ -922,19 +2462,11 @@ impl DocIdSetIterator for SingletonSortedAsSortedSet {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        let doc = self.inner.next_doc()?;
-        if doc != NO_MORE_DOCS {
-            self.ord = i64::from(self.inner.ord_value()?);
-        }
-        Ok(doc)
+        self.inner.next_doc()
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
-        let doc = self.inner.advance(target)?;
-        if doc != NO_MORE_DOCS {
-            self.ord = i64::from(self.inner.ord_value()?);
-        }
-        Ok(doc)
+        self.inner.advance(target)
     }
 
     fn cost(&self) -> i64 {
@@ -944,18 +2476,13 @@ impl DocIdSetIterator for SingletonSortedAsSortedSet {
 
 impl DocValuesIterator for SingletonSortedAsSortedSet {
     fn advance_exact(&mut self, target: i32) -> Result<bool> {
-        if self.inner.advance_exact(target)? {
-            self.ord = i64::from(self.inner.ord_value()?);
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        self.inner.advance_exact(target)
     }
 }
 
 impl SortedSetDocValues for SingletonSortedAsSortedSet {
     fn next_ord(&mut self) -> Result<i64> {
-        Ok(self.ord)
+        Ok(i64::from(self.inner.ord_value()?))
     }
 
     fn doc_value_count(&self) -> Result<i32> {
@@ -963,1818 +2490,68 @@ impl SortedSetDocValues for SingletonSortedAsSortedSet {
     }
 
     fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
-        self.inner.lookup_ord(ord as i32)
+        self.inner.lookup_ord(to_int_exact(ord)?)
     }
 
     fn get_value_count(&self) -> Result<i64> {
-        self.inner.get_value_count().map(i64::from)
+        Ok(i64::from(self.inner.get_value_count()?))
     }
 }
 
 impl fmt::Debug for SingletonSortedAsSortedSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SingletonSortedAsSortedSet")
-            .field("doc", &self.inner.doc_id())
+            .field("doc_id", &self.inner.doc_id())
             .finish()
     }
 }
 
-/// Shared "this producer serves another field" plumbing of the buffered
-/// producers below, mirroring the anonymous producers' guards.
-macro_rules! producer_guard {
-    ($type:ty) => {
-        impl $type {
-            fn check_field(&self, field: &FieldInfo) -> Result<()> {
-                if field.number != self.field_number {
-                    return Err(LuceneError::IllegalArgument(format!(
-                        "wrong fieldInfo: expected {} ({}), got {} ({})",
-                        self.field_name, self.field_number, field.name, field.number
-                    )));
-                }
-                Ok(())
-            }
-
-            fn unsupported(&self, kind: &str) -> LuceneError {
-                LuceneError::UnsupportedOperation(format!(
-                    "this producer only serves the {} values of field {} ({})",
-                    kind, self.field_name, self.field_number
-                ))
-            }
-        }
-    };
-}
-
-producer_guard!(BufferedNumericProducer);
-producer_guard!(BufferedBinaryProducer);
-producer_guard!(BufferedSortedProducer);
-producer_guard!(BufferedSortedNumericProducer);
-producer_guard!(BufferedSortedSetProducer);
-
-// -----------------------------------------------------------------------------
-// NumericDocValuesWriter
-// -----------------------------------------------------------------------------
-
-/// Buffers one numeric value per document for a single field.
+/// The producer a multi-valued writer hands over when every document carried
+/// exactly one value: the single-valued producer of the matching single-valued
+/// writer, viewed through `DocValues.singleton`.
 ///
-/// Equivalent to `org.apache.lucene.index.NumericDocValuesWriter`.
-#[derive(Debug)]
-pub struct NumericDocValuesWriter {
-    field_info: FieldInfo,
-    docs_with_field: DocsWithFieldSet,
-    pending: Vec<i64>,
-    last_doc_id: i32,
-    /// The number of bytes this writer has already reported to
-    /// [`Self::iw_bytes_used`], so that an update can report the delta.
-    bytes_used: i64,
-    iw_bytes_used: Arc<AtomicI64>,
-    flushed: bool,
-}
-
-impl NumericDocValuesWriter {
-    /// Creates a writer for `field_info`, charging its initial footprint to
-    /// `iw_bytes_used`.
-    ///
-    /// Equivalent to `new NumericDocValuesWriter(FieldInfo, Counter)`.
-    pub fn new(field_info: FieldInfo, iw_bytes_used: Arc<AtomicI64>) -> Self {
-        let docs_with_field = DocsWithFieldSet::new();
-        let bytes_used = docs_with_field.ram_bytes_used();
-        iw_bytes_used.fetch_add(bytes_used, Ordering::AcqRel);
-        Self {
-            field_info,
-            docs_with_field,
-            pending: Vec::new(),
-            last_doc_id: -1,
-            bytes_used,
-            iw_bytes_used,
-            flushed: false,
-        }
-    }
-
-    /// Returns the field these values belong to.
-    pub fn field_info(&self) -> &FieldInfo {
-        &self.field_info
-    }
-
-    /// Buffers `value` as the doc value of `doc_id`.
-    ///
-    /// Equivalent to `NumericDocValuesWriter.addValue(int, long)`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` is not strictly
-    /// greater than the last document added — which in Lucene means the field
-    /// appeared twice in one document — and
-    /// [`LuceneError::IllegalState`] when the field has already been flushed.
-    pub fn add_value(&mut self, doc_id: i32, value: i64) -> Result<()> {
-        if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
-                "the doc values of field \"{}\" have already been flushed",
-                self.field_info.name
-            )));
-        }
-        if doc_id <= self.last_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
-                "DocValuesField \"{}\" appears more than once in this document (only one value is allowed per field)",
-                self.field_info.name
-            )));
-        }
-        self.pending.push(value);
-        self.docs_with_field.add(doc_id)?;
-        self.update_bytes_used();
-        self.last_doc_id = doc_id;
-        Ok(())
-    }
-
-    /// Buffers `value` as the doc value of `count` consecutive documents
-    /// starting at `first_doc_id`.
-    ///
-    /// Equivalent to `NumericDocValuesWriter.addRepeatValues(int, long, int)`,
-    /// which the column path uses for the parent field: every document of a
-    /// batch is its own parent, so they all take the same value.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when `first_doc_id` is not
-    /// strictly greater than the last document added, and
-    /// [`LuceneError::IllegalState`] when the field has already been flushed.
-    pub fn add_repeat_values(&mut self, first_doc_id: i32, value: i64, count: i32) -> Result<()> {
-        if count == 0 {
-            return Ok(());
-        }
-        self.check_appendable(first_doc_id)?;
-        self.pending
-            .extend(std::iter::repeat_n(value, count as usize));
-        self.docs_with_field
-            .add_range(first_doc_id, first_doc_id + count)?;
-        self.update_bytes_used();
-        self.last_doc_id = first_doc_id + count - 1;
-        Ok(())
-    }
-
-    /// Buffers every value of `cursor` as the doc values of the consecutive
-    /// documents starting at `first_doc_id`.
-    ///
-    /// Equivalent to `NumericDocValuesWriter.addDenseValues(int,
-    /// LongValuesCursor)`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when `first_doc_id` is not
-    /// strictly greater than the last document added,
-    /// [`LuceneError::IllegalState`] when the field has already been flushed,
-    /// and whatever reading the cursor raises.
-    pub fn add_dense_values(
-        &mut self,
-        first_doc_id: i32,
-        cursor: &mut dyn LongValuesCursor,
-    ) -> Result<()> {
-        let num_values = cursor.size();
-        if num_values == 0 {
-            return Ok(());
-        }
-        self.check_appendable(first_doc_id)?;
-        let start = self.pending.len();
-        self.pending.resize(start + num_values as usize, 0);
-        cursor.fill_doc_values(&mut self.pending, start, num_values as usize)?;
-        self.docs_with_field
-            .add_range(first_doc_id, first_doc_id + num_values)?;
-        self.update_bytes_used();
-        self.last_doc_id = first_doc_id + num_values - 1;
-        Ok(())
-    }
-
-    /// The two checks every `add*` runs before buffering: the field must not
-    /// have been flushed, and the document must come after the last one.
-    fn check_appendable(&self, doc_id: i32) -> Result<()> {
-        if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
-                "the doc values of field \"{}\" have already been flushed",
-                self.field_info.name
-            )));
-        }
-        if doc_id <= self.last_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
-                "DocValuesField \"{}\" appears more than once in this document (only one value is allowed per field)",
-                self.field_info.name
-            )));
-        }
-        Ok(())
-    }
-
-    /// Number of documents that have a value buffered.
-    pub fn num_docs_with_field(&self) -> i32 {
-        self.docs_with_field.cardinality()
-    }
-
-    /// Equivalent to `NumericDocValuesWriter.updateBytesUsed`.
-    fn update_bytes_used(&mut self) {
-        let new_bytes_used = self.ram_bytes_used();
-        self.iw_bytes_used
-            .fetch_add(new_bytes_used - self.bytes_used, Ordering::AcqRel);
-        self.bytes_used = new_bytes_used;
-    }
-
-    /// Approximate heap held by the buffers.
-    ///
-    /// Equivalent to `pending.ramBytesUsed() + docsWithField.ramBytesUsed()`,
-    /// with the `Vec<i64>` standing in for `PackedLongValues`.
-    pub fn ram_bytes_used(&self) -> i64 {
-        self.pending.capacity() as i64 * std::mem::size_of::<i64>() as i64
-            + self.docs_with_field.ram_bytes_used()
-    }
-
-    /// Hands the buffered values to `consumer`.
-    ///
-    /// Equivalent to `NumericDocValuesWriter.flush` without the doc map.
-    ///
-    /// Flushing consumes the buffers, so the heap they held is given back to
-    /// the shared counter here rather than when the writer is dropped.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalState`] when the field has already been
-    /// flushed — writing it twice would put two metadata entries for one field
-    /// into the same segment. Otherwise propagates whatever the consumer
-    /// raises while writing the field.
-    pub fn flush(
-        &mut self,
-        consumer: &mut dyn DocValuesConsumer,
-        sort_map: Option<&SorterDocMap>,
-    ) -> Result<()> {
-        if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
-                "the doc values of field \"{}\" have already been flushed",
-                self.field_info.name
-            )));
-        }
-        self.flushed = true;
-        let values = std::mem::take(&mut self.pending);
-        let docs_with_field = std::mem::take(&mut self.docs_with_field);
-        let producer =
-            Self::get_doc_values_producer(&self.field_info, values, &docs_with_field, sort_map)?;
-        drop(docs_with_field);
-        self.update_bytes_used();
-        consumer.add_numeric_field(&self.field_info, &*producer)
-    }
-}
-
-impl NumericDocValuesWriter {
-    /// Returns a read-only view over the values buffered so far.
-    ///
-    /// Equivalent to `NumericDocValuesWriter.getDocValues()`, which
-    /// `IndexingChain.maybeSortSegment` reads to order the segment before
-    /// anything is written.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java's view reads the writer's live
-    /// buffers. Rust's borrow rules make a shared read-only view over buffers
-    /// the writer still owns awkward to express, so the view is taken over a
-    /// copy. The values are identical; the cost is one copy per sorted field,
-    /// paid only when the segment is index-sorted.
-    ///
-    /// # Errors
-    ///
-    /// Propagates whatever materialising the document set raises.
-    pub fn get_doc_values(&self) -> Result<Arc<dyn DocValuesProducer>> {
-        Self::get_doc_values_producer(
-            &self.field_info,
-            self.pending.clone(),
-            &self.docs_with_field,
-            None,
-        )
-    }
-
-    /// Builds the ordered, per-new-document view of `old_doc_values` that an
-    /// index sort produces.
-    ///
-    /// Equivalent to `NumericDocValuesWriter.sortDocValues(int, Sorter.DocMap,
-    /// NumericDocValues, boolean)`.
-    ///
-    /// # Errors
-    ///
-    /// Propagates whatever iterating `old_doc_values` raises.
-    pub(crate) fn sort_doc_values(
-        max_doc: i32,
-        sort_map: &SorterDocMap,
-        old_doc_values: &mut dyn NumericDocValues,
-        dense: bool,
-    ) -> Result<NumericDVs> {
-        let mut docs_with_field = if dense {
-            None
-        } else {
-            Some(FixedBitSet::new(max_doc as usize))
-        };
-
-        let mut values = vec![0i64; max_doc as usize];
-        loop {
-            let doc_id = old_doc_values.next_doc()?;
-            if doc_id == NO_MORE_DOCS {
-                break;
-            }
-            let new_doc_id = sort_map.old_to_new(doc_id);
-            if let Some(docs_with_field) = docs_with_field.as_mut() {
-                docs_with_field.set(new_doc_id as usize);
-            }
-            values[new_doc_id as usize] = old_doc_values.long_value()?;
-        }
-        Ok(NumericDVs {
-            values,
-            docs_with_field,
-            max_doc,
-        })
-    }
-
-    /// Builds the [`DocValuesProducer`] `flush` and `get_doc_values` hand to
-    /// the codec: the plain buffered view when `sort_map` is `None`, or a view
-    /// reordered by the index sort otherwise.
-    ///
-    /// Equivalent to `NumericDocValuesWriter.getDocValuesProducer(FieldInfo,
-    /// PackedLongValues, DocsWithFieldSet, Sorter.DocMap)`.
-    ///
-    /// # Errors
-    ///
-    /// Propagates whatever [`Self::sort_doc_values`] raises.
-    pub(crate) fn get_doc_values_producer(
-        field_info: &FieldInfo,
-        values: Vec<i64>,
-        docs_with_field: &DocsWithFieldSet,
-        sort_map: Option<&SorterDocMap>,
-    ) -> Result<Arc<dyn DocValuesProducer>> {
-        let mut producer = BufferedNumericProducer::new(field_info, docs_with_field, values)?;
-        if let Some(sort_map) = sort_map {
-            let mut old_doc_values =
-                BufferedNumeric::new(Arc::clone(&producer.docs), Arc::clone(&producer.values));
-            let dense = sort_map.size() == docs_with_field.cardinality();
-            producer.sorted = Some(Arc::new(Self::sort_doc_values(
-                sort_map.size(),
-                sort_map,
-                &mut old_doc_values,
-                dense,
-            )?));
-        }
-        Ok(Arc::new(producer))
-    }
-}
-
-impl Drop for NumericDocValuesWriter {
-    /// Gives back the bytes this writer charged to the shared counter.
-    ///
-    /// Java has no equivalent: `DocumentsWriterPerThread` throws its whole
-    /// `Counter` away with the chain. Rust drops writers individually — a
-    /// document that fails validation can leave one behind — so the counter is
-    /// balanced here instead of drifting upwards.
-    fn drop(&mut self) {
-        self.iw_bytes_used
-            .fetch_sub(self.bytes_used, Ordering::AcqRel);
-    }
-}
-
-/// Serves the buffered numeric values of one field to a [`DocValuesConsumer`].
-///
-/// Equivalent to the anonymous `DocValuesProducer` of
-/// `NumericDocValuesWriter.flush`, including its "wrong fieldInfo" guard.
-#[derive(Debug)]
-struct BufferedNumericProducer {
+/// Equivalent to the anonymous `EmptyDocValuesProducer`s of
+/// `SortedNumericDocValuesWriter.flush` (`SortedNumericDocValuesWriter.java:205-218`)
+/// and `SortedSetDocValuesWriter.flush` (`SortedSetDocValuesWriter.java:276-288`).
+#[derive(Debug, Clone)]
+struct SingletonProducer {
     field_number: i32,
     field_name: String,
-    docs: Arc<Vec<i32>>,
-    values: Arc<Vec<i64>>,
-    /// The field reordered by an index sort, when one applies.
-    sorted: Option<Arc<NumericDVs>>,
+    single_value_producer: Arc<dyn DocValuesProducer>,
 }
 
-impl BufferedNumericProducer {
-    fn new(
-        field_info: &FieldInfo,
-        docs_with_field: &DocsWithFieldSet,
-        values: Vec<i64>,
-    ) -> Result<Self> {
-        debug_assert_eq!(docs_with_field.cardinality() as usize, values.len());
-        Ok(Self {
-            field_number: field_info.number,
-            field_name: field_info.name.clone(),
-            docs: Arc::new(materialize_docs(docs_with_field)?),
-            values: Arc::new(values),
-            sorted: None,
-        })
-    }
-}
-
-impl DocValuesProducer for BufferedNumericProducer {
-    fn get_numeric(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
-        let values: Result<Box<dyn NumericDocValues>> = {
-            self.check_field(field)?;
-            match &self.sorted {
-                None => Ok(Box::new(BufferedNumeric::new(
-                    Arc::clone(&self.docs),
-                    Arc::clone(&self.values),
-                ))),
-                Some(sorted) => Ok(Box::new(SortingNumeric::new(Arc::clone(sorted)))),
-            }
-        };
-        Ok(Some(values?))
-    }
-
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
-        let values: Result<Box<dyn BinaryDocValues>> = { Err(self.unsupported("binary")) };
-        Ok(Some(values?))
-    }
-
-    fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
-        let values: Result<Box<dyn SortedDocValues>> = { Err(self.unsupported("sorted")) };
-        Ok(Some(values?))
-    }
-
-    fn get_sorted_numeric(
-        &self,
-        _field: &FieldInfo,
-    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
-        let values: Result<Box<dyn SortedNumericDocValues>> =
-            { Err(self.unsupported("sorted numeric")) };
-        Ok(Some(values?))
-    }
-
-    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
-        let values: Result<Box<dyn SortedSetDocValues>> = { Err(self.unsupported("sorted set")) };
-        Ok(Some(values?))
-    }
-
-    /// Inherited from `EmptyDocValuesProducer.getSkipper`
-    /// (`index/EmptyDocValuesProducer.java:54-57`) by the flush-time producer
-    /// of the matching `*DocValuesWriter`: unsupported.
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(unsupported_skipper())
-    }
-
-    fn check_integrity(&self) -> Result<()> {
-        Ok(())
-    }
-
-    fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-        Ok(Box::new(Self {
-            field_number: self.field_number,
-            field_name: self.field_name.clone(),
-            docs: Arc::clone(&self.docs),
-            values: Arc::clone(&self.values),
-            sorted: self.sorted.clone(),
-        }))
-    }
-
-    fn close(&mut self) -> Result<()> {
-        Ok(())
-    }
-}
-
-/// The numeric values of a field once an index sort has reordered the
-/// segment: one value per new document ID, plus which new document IDs
-/// actually carry the field.
-///
-/// Equivalent to `NumericDocValuesWriter.NumericDVs`.
-#[derive(Debug)]
-pub(crate) struct NumericDVs {
-    values: Vec<i64>,
-    /// `None` when every new document carries the field (the dense case),
-    /// exactly like Java's `docsWithField == null`.
-    docs_with_field: Option<FixedBitSet>,
-    max_doc: i32,
-}
-
-impl NumericDVs {
-    fn max_doc(&self) -> i32 {
-        self.max_doc
-    }
-
-    /// Equivalent to `NumericDVs.advanceExact(int)`.
-    fn advance_exact(&self, target: i32) -> bool {
-        match &self.docs_with_field {
-            Some(docs_with_field) => docs_with_field.get(target as usize),
-            None => true,
-        }
-    }
-
-    /// Equivalent to `NumericDVs.advance(int)`. Only called when `target` is
-    /// less than [`Self::max_doc`].
-    fn advance(&self, target: i32) -> i32 {
-        match &self.docs_with_field {
-            Some(docs_with_field) => bit_set_util::next_set_bit(docs_with_field, target as usize),
-            None => target,
-        }
-    }
-
-    /// Equivalent to `NumericDVs.cost()`.
-    fn cost(&self) -> i64 {
-        match &self.docs_with_field {
-            Some(docs_with_field) => docs_with_field.cardinality() as i64,
-            None => self.max_doc as i64,
-        }
-    }
-}
-
-/// Iterates the numeric doc values of a field after an index sort has
-/// reordered the segment.
-///
-/// Equivalent to `NumericDocValuesWriter.SortingNumericDocValues`.
-pub(crate) struct SortingNumeric {
-    dvs: Arc<NumericDVs>,
-    doc_id: i32,
-    /// Lazily computed and cached, like Java's `cost` field (sentinel `-1`).
-    cost: Cell<Option<i64>>,
-}
-
-impl SortingNumeric {
-    pub(crate) fn new(dvs: Arc<NumericDVs>) -> Self {
-        Self {
-            dvs,
-            doc_id: -1,
-            cost: Cell::new(None),
-        }
-    }
-}
-
-impl fmt::Debug for SortingNumeric {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SortingNumeric")
-            .field("doc_id", &self.doc_id)
-            .finish()
-    }
-}
-
-impl DocIdSetIterator for SortingNumeric {
-    fn doc_id(&self) -> i32 {
-        self.doc_id
-    }
-
-    fn next_doc(&mut self) -> Result<i32> {
-        self.doc_id = if self.doc_id + 1 == self.dvs.max_doc() {
-            NO_MORE_DOCS
-        } else {
-            self.dvs.advance(self.doc_id + 1)
-        };
-        Ok(self.doc_id)
-    }
-
-    fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
-            "use next_doc() instead".to_string(),
+impl SingletonProducer {
+    fn unsupported(&self, kind: &str) -> LuceneError {
+        LuceneError::UnsupportedOperation(format!(
+            "this producer only serves the single-valued view of field {} ({}), not its {} values",
+            self.field_name, self.field_number, kind
         ))
     }
-
-    fn cost(&self) -> i64 {
-        if let Some(cost) = self.cost.get() {
-            return cost;
-        }
-        let cost = self.dvs.cost();
-        self.cost.set(Some(cost));
-        cost
-    }
-
-    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
-        let up_to = up_to.min(self.dvs.max_doc());
-        if up_to > self.doc_id {
-            match &self.dvs.docs_with_field {
-                None => {
-                    bit_set.set_range((self.doc_id - offset) as usize, (up_to - offset) as usize);
-                    self.doc_id = up_to;
-                }
-                Some(docs_with_field) => {
-                    FixedBitSet::or_range(
-                        docs_with_field,
-                        self.doc_id as usize,
-                        bit_set,
-                        (self.doc_id - offset) as usize,
-                        (up_to - self.doc_id) as usize,
-                    );
-                    self.doc_id = if up_to < self.dvs.max_doc() {
-                        self.dvs.advance(up_to)
-                    } else {
-                        NO_MORE_DOCS
-                    };
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
-impl DocValuesIterator for SortingNumeric {
-    fn advance_exact(&mut self, target: i32) -> Result<bool> {
-        self.doc_id = target;
-        Ok(self.dvs.advance_exact(target))
-    }
-}
-
-impl NumericDocValues for SortingNumeric {
-    fn long_value(&self) -> Result<i64> {
-        Ok(self.dvs.values[self.doc_id as usize])
-    }
-}
-
-// -----------------------------------------------------------------------------
-// BinaryDocValuesWriter
-// -----------------------------------------------------------------------------
-
-/// Java's `BinaryDocValuesWriter.MAX_LENGTH = ArrayUtil.MAX_ARRAY_LENGTH`.
-const BINARY_MAX_LENGTH: usize = ArrayUtil::MAX_ARRAY_LENGTH;
-
-/// Buffers one binary value per document for a single field.
-///
-/// Equivalent to `org.apache.lucene.index.BinaryDocValuesWriter`: values are
-/// concatenated into one flat byte buffer (Java's `PagedBytes`) with one
-/// length per document (Java's `lengths` builder).
-#[derive(Debug)]
-pub struct BinaryDocValuesWriter {
-    field_info: FieldInfo,
-    data: Vec<u8>,
-    lengths: Vec<i64>,
-    docs_with_field: DocsWithFieldSet,
-    last_doc_id: i32,
-    max_length: usize,
-    bytes_used: i64,
-    iw_bytes_used: Arc<AtomicI64>,
-    flushed: bool,
-}
-
-impl BinaryDocValuesWriter {
-    /// Creates a writer for `field_info`.
-    ///
-    /// Equivalent to `new BinaryDocValuesWriter(FieldInfo, Counter)`.
-    pub fn new(field_info: FieldInfo, iw_bytes_used: Arc<AtomicI64>) -> Self {
-        let docs_with_field = DocsWithFieldSet::new();
-        let bytes_used = docs_with_field.ram_bytes_used();
-        iw_bytes_used.fetch_add(bytes_used, Ordering::AcqRel);
-        Self {
-            field_info,
-            data: Vec::new(),
-            lengths: Vec::new(),
-            docs_with_field,
-            last_doc_id: -1,
-            max_length: 0,
-            bytes_used,
-            iw_bytes_used,
-            flushed: false,
-        }
-    }
-
-    /// Returns the field these values belong to.
-    pub fn field_info(&self) -> &FieldInfo {
-        &self.field_info
-    }
-
-    /// Buffers `value` as the doc value of `doc_id`.
-    ///
-    /// Equivalent to `BinaryDocValuesWriter.addValue(int, BytesRef)`. Note the
-    /// validation order, which differs from the other writers: document order
-    /// first, then the null check (performed by the caller, which reads the
-    /// value off the field), then the length check.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` repeats or goes
-    /// backwards, or when `value` is longer than [`BINARY_MAX_LENGTH`], and
-    /// [`LuceneError::IllegalState`] when the field has already been flushed.
-    pub fn add_value(&mut self, doc_id: i32, value: &[u8]) -> Result<()> {
-        if doc_id <= self.last_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
-                "DocValuesField \"{}\" appears more than once in this document (only one value is allowed per field)",
-                self.field_info.name
-            )));
-        }
-        if value.len() > BINARY_MAX_LENGTH {
-            return Err(LuceneError::IllegalArgument(format!(
-                "DocValuesField \"{}\" is too large, must be <= {BINARY_MAX_LENGTH}",
-                self.field_info.name
-            )));
-        }
-
-        self.max_length = self.max_length.max(value.len());
-        self.lengths.push(value.len() as i64);
-        self.data.extend_from_slice(value);
-        self.docs_with_field.add(doc_id)?;
-        self.update_bytes_used();
-
-        self.last_doc_id = doc_id;
-        Ok(())
-    }
-
-    fn update_bytes_used(&mut self) {
-        let new_bytes_used = self.ram_bytes_used();
-        self.iw_bytes_used
-            .fetch_add(new_bytes_used - self.bytes_used, Ordering::AcqRel);
-        self.bytes_used = new_bytes_used;
-    }
-
-    /// Approximate heap held by the buffers.
-    ///
-    /// Equivalent to `lengths.ramBytesUsed() + bytes.ramBytesUsed() +
-    /// docsWithField.ramBytesUsed()`.
-    pub fn ram_bytes_used(&self) -> i64 {
-        self.lengths.capacity() as i64 * std::mem::size_of::<i64>() as i64
-            + self.data.capacity() as i64
-            + self.docs_with_field.ram_bytes_used()
-    }
-
-    /// Hands the buffered values to `consumer`.
-    ///
-    /// Equivalent to `BinaryDocValuesWriter.flush` without the doc map.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalState`] when the field has already been
-    /// flushed; otherwise propagates whatever the consumer raises.
-    pub fn flush(
-        &mut self,
-        consumer: &mut dyn DocValuesConsumer,
-        sort_map: Option<&SorterDocMap>,
-    ) -> Result<()> {
-        if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
-                "the doc values of field \"{}\" have already been flushed",
-                self.field_info.name
-            )));
-        }
-        self.flushed = true;
-        let lengths = std::mem::take(&mut self.lengths);
-        let data = std::mem::take(&mut self.data);
-        let docs_with_field = std::mem::take(&mut self.docs_with_field);
-        let mut producer =
-            BufferedBinaryProducer::new(&self.field_info, &docs_with_field, &lengths, &data)?;
-        // `new BinaryDVs(maxDoc, sortMap, ...)` and `SortingBinaryDocValues`
-        // (`BinaryDocValuesWriter.java:135-157`).
-        if let Some(sort_map) = sort_map {
-            let (docs, values) =
-                sort_per_document(&producer.docs, producer.values.to_vec(), sort_map);
-            producer.docs = Arc::new(docs);
-            producer.values = Arc::new(values);
-        }
-        drop((docs_with_field, lengths, data));
-        self.update_bytes_used();
-        consumer.add_binary_field(&self.field_info, &producer)
-    }
-}
-
-impl BinaryDocValuesWriter {
-    /// Returns a read-only view over the values buffered so far.
-    ///
-    /// Equivalent to `BinaryDocValuesWriter.getDocValues()`; the same
-    /// divergence as [`NumericDocValuesWriter::get_doc_values`] applies.
-    ///
-    /// # Errors
-    ///
-    /// Propagates whatever materialising the document set raises.
-    pub fn get_doc_values(&self) -> Result<Arc<dyn DocValuesProducer>> {
-        Ok(Arc::new(BufferedBinaryProducer::new(
-            &self.field_info,
-            &self.docs_with_field,
-            &self.lengths,
-            &self.data,
-        )?))
-    }
-}
-
-impl Drop for BinaryDocValuesWriter {
-    fn drop(&mut self) {
-        self.iw_bytes_used
-            .fetch_sub(self.bytes_used, Ordering::AcqRel);
-    }
-}
-
-/// Serves the buffered binary values of one field to a [`DocValuesConsumer`].
-///
-/// Equivalent to the anonymous `DocValuesProducer` of
-/// `BinaryDocValuesWriter.flush`, including its "wrong fieldInfo" guard.
-#[derive(Debug)]
-struct BufferedBinaryProducer {
-    field_number: i32,
-    field_name: String,
-    docs: Arc<Vec<i32>>,
-    /// One value per document that carried the field, in document order.
-    values: Arc<Vec<Vec<u8>>>,
-}
-
-impl BufferedBinaryProducer {
-    fn new(
-        field_info: &FieldInfo,
-        docs_with_field: &DocsWithFieldSet,
-        lengths: &[i64],
-        data: &[u8],
-    ) -> Result<Self> {
-        debug_assert_eq!(docs_with_field.cardinality() as usize, lengths.len());
-        let mut values = Vec::with_capacity(lengths.len());
-        let mut cursor = 0usize;
-        for &length in lengths {
-            let end = cursor + length as usize;
-            debug_assert!(end <= data.len());
-            values.push(data[cursor..end].to_vec());
-            cursor = end;
-        }
-        debug_assert_eq!(cursor, data.len());
-        Ok(Self {
-            field_number: field_info.number,
-            field_name: field_info.name.clone(),
-            docs: Arc::new(materialize_docs(docs_with_field)?),
-            values: Arc::new(values),
-        })
-    }
-}
-
-impl DocValuesProducer for BufferedBinaryProducer {
-    fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
-        let values: Result<Box<dyn NumericDocValues>> = { Err(self.unsupported("numeric")) };
-        Ok(Some(values?))
-    }
-
-    fn get_binary(&self, field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
-        let values: Result<Box<dyn BinaryDocValues>> = {
-            self.check_field(field)?;
-            Ok(Box::new(BufferedBinary::new(
-                Arc::clone(&self.docs),
-                Arc::clone(&self.values),
-            )))
-        };
-        Ok(Some(values?))
-    }
-
-    fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
-        let values: Result<Box<dyn SortedDocValues>> = { Err(self.unsupported("sorted")) };
-        Ok(Some(values?))
-    }
-
-    fn get_sorted_numeric(
-        &self,
-        _field: &FieldInfo,
-    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
-        let values: Result<Box<dyn SortedNumericDocValues>> =
-            { Err(self.unsupported("sorted numeric")) };
-        Ok(Some(values?))
-    }
-
-    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
-        let values: Result<Box<dyn SortedSetDocValues>> = { Err(self.unsupported("sorted set")) };
-        Ok(Some(values?))
-    }
-
-    /// Inherited from `EmptyDocValuesProducer.getSkipper`
-    /// (`index/EmptyDocValuesProducer.java:54-57`) by the flush-time producer
-    /// of the matching `*DocValuesWriter`: unsupported.
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(unsupported_skipper())
-    }
-
-    fn check_integrity(&self) -> Result<()> {
-        Ok(())
-    }
-
-    fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-        Ok(Box::new(Self {
-            field_number: self.field_number,
-            field_name: self.field_name.clone(),
-            docs: Arc::clone(&self.docs),
-            values: Arc::clone(&self.values),
-        }))
-    }
-
-    fn close(&mut self) -> Result<()> {
-        Ok(())
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Index-sort re-ordering of the materialised per-document values
-// -----------------------------------------------------------------------------
-
-/// Re-orders one entry per document — `per_doc[i]` belongs to `docs[i]` — into
-/// the order the index sort gives the documents, returning the new document
-/// numbers in increasing order with their entries.
-///
-/// This is the layout `BinaryDocValuesWriter.BinaryDVs`,
-/// `SortedNumericDocValuesWriter.LongValues` and
-/// `SortedSetDocValuesWriter.DocOrds` build — every document's values filed
-/// under `sortMap.oldToNew(docID)` — so iterating the result visits exactly
-/// what the matching `Sorting*DocValues` iterator visits.
-fn sort_per_document<T>(
-    docs: &[i32],
-    per_doc: Vec<T>,
-    sort_map: &SorterDocMap,
-) -> (Vec<i32>, Vec<T>) {
-    debug_assert_eq!(docs.len(), per_doc.len());
-    let mut entries: Vec<(i32, T)> = docs
-        .iter()
-        .map(|&doc| sort_map.old_to_new(doc))
-        .zip(per_doc)
-        .collect();
-    entries.sort_unstable_by_key(|&(doc, _)| doc);
-    entries.into_iter().unzip()
-}
-
-/// Splits a flat value stream into one slice per document, using the
-/// per-document counts, or one value per document when there are none.
-fn split_per_document<T: Clone>(values: &[T], counts: Option<&Vec<i32>>) -> Vec<Vec<T>> {
-    match counts {
-        None => values.iter().map(|value| vec![value.clone()]).collect(),
-        Some(counts) => {
-            let mut cursor = 0usize;
-            counts
-                .iter()
-                .map(|&count| {
-                    let end = cursor + count as usize;
-                    let slice = values[cursor..end].to_vec();
-                    cursor = end;
-                    slice
-                })
-                .collect()
-        }
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Shared sorted-writer plumbing
-// -----------------------------------------------------------------------------
-
-/// The largest value a sorted writer accepts: Java's `BYTE_BLOCK_SIZE - 2`.
-const SORTED_MAX_LENGTH: usize = MAX_TERM_LENGTH;
-
-/// Serves the buffered sorted values of one field to a [`DocValuesConsumer`].
-///
-/// Equivalent to the anonymous `DocValuesProducer` of
-/// `SortedDocValuesWriter.flush`.
-#[derive(Debug)]
-struct BufferedSortedProducer {
-    field_number: i32,
-    field_name: String,
-    docs: Arc<Vec<i32>>,
-    /// Final ordinal of each document, in document order.
-    ords: Arc<Vec<i32>>,
-    /// Distinct values in unsigned byte order; ordinal 0 first.
-    dictionary: Arc<Vec<Vec<u8>>>,
-    /// The field reordered by an index sort, when one applies: one ordinal
-    /// per new document ID, `-1` where the sorted document has none.
-    sorted: Option<Arc<Vec<i32>>>,
-}
-
-impl BufferedSortedProducer {
-    fn new(
-        field_info: &FieldInfo,
-        docs_with_field: &DocsWithFieldSet,
-        ords: Vec<i32>,
-        dictionary: Vec<Vec<u8>>,
-    ) -> Result<Self> {
-        debug_assert_eq!(docs_with_field.cardinality() as usize, ords.len());
-        Ok(Self {
-            field_number: field_info.number,
-            field_name: field_info.name.clone(),
-            docs: Arc::new(materialize_docs(docs_with_field)?),
-            ords: Arc::new(ords),
-            dictionary: Arc::new(dictionary),
-            sorted: None,
-        })
-    }
-}
-
-impl DocValuesProducer for BufferedSortedProducer {
-    fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
-        let values: Result<Box<dyn NumericDocValues>> = { Err(self.unsupported("numeric")) };
-        Ok(Some(values?))
-    }
-
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
-        let values: Result<Box<dyn BinaryDocValues>> = { Err(self.unsupported("binary")) };
-        Ok(Some(values?))
-    }
-
-    fn get_sorted(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
-        let values: Result<Box<dyn SortedDocValues>> = {
-            self.check_field(field)?;
-            match &self.sorted {
-                None => Ok(Box::new(BufferedSorted::new(
-                    Arc::clone(&self.docs),
-                    Arc::clone(&self.ords),
-                    Arc::clone(&self.dictionary),
-                ))),
-                Some(sorted) => Ok(Box::new(SortingSorted::new(
-                    Arc::clone(&self.dictionary),
-                    self.docs.len() as i64,
-                    Arc::clone(sorted),
-                ))),
-            }
-        };
-        Ok(Some(values?))
-    }
-
-    fn get_sorted_numeric(
-        &self,
-        _field: &FieldInfo,
-    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
-        let values: Result<Box<dyn SortedNumericDocValues>> =
-            { Err(self.unsupported("sorted numeric")) };
-        Ok(Some(values?))
-    }
-
-    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
-        let values: Result<Box<dyn SortedSetDocValues>> = { Err(self.unsupported("sorted set")) };
-        Ok(Some(values?))
-    }
-
-    /// Inherited from `EmptyDocValuesProducer.getSkipper`
-    /// (`index/EmptyDocValuesProducer.java:54-57`) by the flush-time producer
-    /// of the matching `*DocValuesWriter`: unsupported.
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(unsupported_skipper())
-    }
-
-    fn check_integrity(&self) -> Result<()> {
-        Ok(())
-    }
-
-    fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-        Ok(Box::new(Self {
-            field_number: self.field_number,
-            field_name: self.field_name.clone(),
-            docs: Arc::clone(&self.docs),
-            ords: Arc::clone(&self.ords),
-            dictionary: Arc::clone(&self.dictionary),
-            sorted: self.sorted.clone(),
-        }))
-    }
-
-    fn close(&mut self) -> Result<()> {
-        Ok(())
-    }
-}
-
-/// Iterates the sorted doc values of a field after an index sort has
-/// reordered the segment.
-///
-/// Equivalent to `SortedDocValuesWriter.SortingSortedDocValues`. Java keeps a
-/// reference to the unsorted `SortedDocValues` only to forward `cost()`,
-/// `lookupOrd()` and `getValueCount()`; this port keeps the dictionary and the
-/// unsorted cost directly instead of the whole buffered iterator.
-struct SortingSorted {
-    dictionary: Arc<Vec<Vec<u8>>>,
-    cost: i64,
-    /// One ordinal per new document ID, `-1` where that document has none.
-    ords: Arc<Vec<i32>>,
-    doc_id: i32,
-}
-
-impl SortingSorted {
-    fn new(dictionary: Arc<Vec<Vec<u8>>>, cost: i64, ords: Arc<Vec<i32>>) -> Self {
-        Self {
-            dictionary,
-            cost,
-            ords,
-            doc_id: -1,
-        }
-    }
-}
-
-impl fmt::Debug for SortingSorted {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SortingSorted")
-            .field("doc_id", &self.doc_id)
-            .finish()
-    }
-}
-
-impl DocIdSetIterator for SortingSorted {
-    fn doc_id(&self) -> i32 {
-        self.doc_id
-    }
-
-    fn next_doc(&mut self) -> Result<i32> {
-        loop {
-            self.doc_id += 1;
-            if self.doc_id as usize == self.ords.len() {
-                self.doc_id = NO_MORE_DOCS;
-                break;
-            }
-            if self.ords[self.doc_id as usize] != -1 {
-                break;
-            }
-        }
-        Ok(self.doc_id)
-    }
-
-    fn advance(&mut self, _target: i32) -> Result<i32> {
-        Err(LuceneError::UnsupportedOperation(
-            "use next_doc instead".to_string(),
-        ))
-    }
-
-    fn cost(&self) -> i64 {
-        self.cost
-    }
-}
-
-impl DocValuesIterator for SortingSorted {
-    fn advance_exact(&mut self, target: i32) -> Result<bool> {
-        self.doc_id = target;
-        Ok(self.ords[target as usize] != -1)
-    }
-}
-
-impl SortedDocValues for SortingSorted {
-    fn ord_value(&self) -> Result<i32> {
-        Ok(self.ords[self.doc_id as usize])
-    }
-
-    fn get_value_count(&self) -> Result<i32> {
-        Ok(self.dictionary.len() as i32)
-    }
-
-    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
-        let value = self.dictionary.get(ord as usize).ok_or_else(|| {
-            LuceneError::IllegalArgument(format!(
-                "ord={ord} is out of bounds 0 .. {}",
-                self.dictionary.len()
-            ))
-        })?;
-        Ok(BytesRef::new(value.clone()))
-    }
-}
-
-/// Serves the buffered sorted-numeric values of one field.
-///
-/// Equivalent to the anonymous `DocValuesProducer` of
-/// `SortedNumericDocValuesWriter.flush`: when every document turned out to
-/// carry exactly one value (`counts == None`) it serves a singleton view, the
-/// same producer Java hands over, and otherwise the multi-valued view.
-#[derive(Debug)]
-struct BufferedSortedNumericProducer {
-    field_number: i32,
-    field_name: String,
-    docs: Arc<Vec<i32>>,
-    values: Arc<Vec<i64>>,
-    /// `None` when every document carries exactly one value — Java's
-    /// `valueCounts == null` singleton case.
-    counts: Option<Arc<Vec<i32>>>,
-}
-
-impl BufferedSortedNumericProducer {
-    fn new(
-        field_info: &FieldInfo,
-        docs_with_field: &DocsWithFieldSet,
-        values: Vec<i64>,
-        counts: Option<Vec<i32>>,
-    ) -> Result<Self> {
-        if let Some(counts) = &counts {
-            debug_assert_eq!(docs_with_field.cardinality() as usize, counts.len());
-            debug_assert_eq!(
-                counts.iter().map(|&count| i64::from(count)).sum::<i64>(),
-                values.len() as i64
-            );
-        } else {
-            debug_assert_eq!(docs_with_field.cardinality() as usize, values.len());
-        }
-        Ok(Self {
-            field_number: field_info.number,
-            field_name: field_info.name.clone(),
-            docs: Arc::new(materialize_docs(docs_with_field)?),
-            values: Arc::new(values),
-            counts: counts.map(Arc::new),
-        })
-    }
-}
-
-impl DocValuesProducer for BufferedSortedNumericProducer {
-    fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
-        let values: Result<Box<dyn NumericDocValues>> = { Err(self.unsupported("numeric")) };
-        Ok(Some(values?))
-    }
-
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
-        let values: Result<Box<dyn BinaryDocValues>> = { Err(self.unsupported("binary")) };
-        Ok(Some(values?))
-    }
-
-    fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
-        let values: Result<Box<dyn SortedDocValues>> = { Err(self.unsupported("sorted")) };
-        Ok(Some(values?))
-    }
-
+impl DocValuesProducer for SingletonProducer {
     fn get_sorted_numeric(
         &self,
         field: &FieldInfo,
     ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
-        let values: Result<Box<dyn SortedNumericDocValues>> = {
-            self.check_field(field)?;
-            if let Some(counts) = &self.counts {
-                Ok(Box::new(BufferedSortedNumeric::new(
-                    Arc::clone(&self.docs),
-                    Arc::clone(counts),
-                    Arc::clone(&self.values),
-                )))
-            } else {
-                Ok(Box::new(SingletonNumericAsSortedNumeric::new(Box::new(
-                    BufferedNumeric::new(Arc::clone(&self.docs), Arc::clone(&self.values)),
-                ))))
-            }
-        };
-        Ok(Some(values?))
-    }
-
-    fn get_sorted_set(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
-        let values: Result<Box<dyn SortedSetDocValues>> = { Err(self.unsupported("sorted set")) };
-        Ok(Some(values?))
-    }
-
-    /// Inherited from `EmptyDocValuesProducer.getSkipper`
-    /// (`index/EmptyDocValuesProducer.java:54-57`) by the flush-time producer
-    /// of the matching `*DocValuesWriter`: unsupported.
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(unsupported_skipper())
-    }
-
-    fn check_integrity(&self) -> Result<()> {
-        Ok(())
-    }
-
-    fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-        Ok(Box::new(Self {
-            field_number: self.field_number,
-            field_name: self.field_name.clone(),
-            docs: Arc::clone(&self.docs),
-            values: Arc::clone(&self.values),
-            counts: self.counts.clone(),
+        let numeric = self.single_value_producer.get_numeric(field)?;
+        Ok(numeric.map(|numeric| {
+            Box::new(SingletonNumericAsSortedNumeric::new(numeric))
+                as Box<dyn SortedNumericDocValues>
         }))
-    }
-
-    fn close(&mut self) -> Result<()> {
-        Ok(())
-    }
-}
-
-/// Serves the buffered sorted-set values of one field.
-///
-/// Equivalent to the anonymous `DocValuesProducer` of
-/// `SortedSetDocValuesWriter.flush`: the singleton case serves a
-/// single-value view over the sorted doc values, the multi-valued case serves
-/// the buffered per-doc ordinal sets.
-#[derive(Debug)]
-struct BufferedSortedSetProducer {
-    field_number: i32,
-    field_name: String,
-    docs: Arc<Vec<i32>>,
-    /// Final, per-doc-sorted ordinals of every document, concatenated.
-    ords: Arc<Vec<i64>>,
-    /// One count per document, when any document carries more than one value.
-    ord_counts: Option<Arc<Vec<i32>>>,
-    dictionary: Arc<Vec<Vec<u8>>>,
-}
-
-impl BufferedSortedSetProducer {
-    fn new(
-        field_info: &FieldInfo,
-        docs_with_field: &DocsWithFieldSet,
-        ords: Vec<i64>,
-        ord_counts: Option<Vec<i32>>,
-        dictionary: Vec<Vec<u8>>,
-    ) -> Result<Self> {
-        debug_assert_eq!(
-            docs_with_field.cardinality() as usize,
-            ord_counts.as_ref().map_or(ords.len(), Vec::len)
-        );
-        Ok(Self {
-            field_number: field_info.number,
-            field_name: field_info.name.clone(),
-            docs: Arc::new(materialize_docs(docs_with_field)?),
-            ords: Arc::new(ords),
-            ord_counts: ord_counts.map(Arc::new),
-            dictionary: Arc::new(dictionary),
-        })
-    }
-}
-
-impl DocValuesProducer for BufferedSortedSetProducer {
-    fn get_numeric(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
-        let values: Result<Box<dyn NumericDocValues>> = { Err(self.unsupported("numeric")) };
-        Ok(Some(values?))
-    }
-
-    fn get_binary(&self, _field: &FieldInfo) -> Result<Option<Box<dyn BinaryDocValues>>> {
-        let values: Result<Box<dyn BinaryDocValues>> = { Err(self.unsupported("binary")) };
-        Ok(Some(values?))
-    }
-
-    fn get_sorted(&self, _field: &FieldInfo) -> Result<Option<Box<dyn SortedDocValues>>> {
-        let values: Result<Box<dyn SortedDocValues>> = { Err(self.unsupported("sorted")) };
-        Ok(Some(values?))
-    }
-
-    fn get_sorted_numeric(
-        &self,
-        _field: &FieldInfo,
-    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
-        let values: Result<Box<dyn SortedNumericDocValues>> =
-            { Err(self.unsupported("sorted numeric")) };
-        Ok(Some(values?))
     }
 
     fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
-        let values: Result<Box<dyn SortedSetDocValues>> = {
-            self.check_field(field)?;
-            if let Some(counts) = &self.ord_counts {
-                Ok(Box::new(BufferedSortedSet::new(
-                    Arc::clone(&self.docs),
-                    Arc::clone(counts),
-                    Arc::clone(&self.ords),
-                    Arc::clone(&self.dictionary),
-                )))
-            } else {
-                Ok(Box::new(SingletonSortedAsSortedSet::new(Box::new(
-                    BufferedSorted::new(
-                        Arc::clone(&self.docs),
-                        // The singleton view reports `i32` ordinals straight from
-                        // the per-doc stream.
-                        Arc::new(self.ords.iter().map(|&ord| ord as i32).collect()),
-                        Arc::clone(&self.dictionary),
-                    ),
-                ))))
-            }
-        };
-        Ok(Some(values?))
-    }
-
-    /// Inherited from `EmptyDocValuesProducer.getSkipper`
-    /// (`index/EmptyDocValuesProducer.java:54-57`) by the flush-time producer
-    /// of the matching `*DocValuesWriter`: unsupported.
-    fn get_skipper(&self, _field: &FieldInfo) -> Result<Option<Box<dyn DocValuesSkipper>>> {
-        Err(unsupported_skipper())
-    }
-
-    fn check_integrity(&self) -> Result<()> {
-        Ok(())
-    }
-
-    fn get_merge_instance(&self) -> Result<Box<dyn DocValuesProducer>> {
-        Ok(Box::new(Self {
-            field_number: self.field_number,
-            field_name: self.field_name.clone(),
-            docs: Arc::clone(&self.docs),
-            ords: Arc::clone(&self.ords),
-            ord_counts: self.ord_counts.clone(),
-            dictionary: Arc::clone(&self.dictionary),
+        let sorted = self.single_value_producer.get_sorted(field)?;
+        Ok(sorted.map(|sorted| {
+            Box::new(SingletonSortedAsSortedSet::new(sorted)) as Box<dyn SortedSetDocValues>
         }))
     }
 
-    fn close(&mut self) -> Result<()> {
-        Ok(())
-    }
-}
-
-// -----------------------------------------------------------------------------
-// SortedDocValuesWriter
-// -----------------------------------------------------------------------------
-
-/// Buffers one binary value per document and builds the value dictionary.
-///
-/// Equivalent to `org.apache.lucene.index.SortedDocValuesWriter`. Values are
-/// interned into a [`BytesRefHash`] over the writer's own [`ByteBlockPool`];
-/// `pending` holds hash term ids, and at flush the term ids are ranked by
-/// unsigned byte order (the hash's sort) to produce the final ordinals.
-#[derive(Debug)]
-pub struct SortedDocValuesWriter {
-    field_info: FieldInfo,
-    pool: ByteBlockPool,
-    hash: BytesRefHash,
-    /// Hash term id of every buffered value, in document order.
-    pending: Vec<i32>,
-    docs_with_field: DocsWithFieldSet,
-    last_doc_id: i32,
-    bytes_used: i64,
-    /// Headroom Java charges per distinct dictionary entry (the `ordMap`
-    /// rehash reserve); tracked as part of `bytes_used` — see the module
-    /// documentation.
-    ord_map_charge: i64,
-    iw_bytes_used: Arc<AtomicI64>,
-    flushed: bool,
-}
-
-impl SortedDocValuesWriter {
-    /// Creates a writer for `field_info`, charging its initial footprint to
-    /// `iw_bytes_used`.
-    ///
-    /// Equivalent to `new SortedDocValuesWriter(FieldInfo, Counter, pool,
-    /// scratch)` without the shared pool and the batch scratch.
-    pub fn new(field_info: FieldInfo, iw_bytes_used: Arc<AtomicI64>) -> Self {
-        let docs_with_field = DocsWithFieldSet::new();
-        let bytes_used = docs_with_field.ram_bytes_used();
-        iw_bytes_used.fetch_add(bytes_used, Ordering::AcqRel);
-        Self {
-            pool: ByteBlockPool::new(Arc::clone(&iw_bytes_used)),
-            hash: BytesRefHash::new(Arc::clone(&iw_bytes_used)),
-            field_info,
-            pending: Vec::new(),
-            docs_with_field,
-            last_doc_id: -1,
-            bytes_used,
-            ord_map_charge: 0,
-            iw_bytes_used,
-            flushed: false,
-        }
-    }
-
-    /// Returns the field these values belong to.
-    pub fn field_info(&self) -> &FieldInfo {
-        &self.field_info
-    }
-
-    /// Buffers `value` as the doc value of `doc_id`.
-    ///
-    /// Equivalent to `SortedDocValuesWriter.addValue(int, BytesRef)`, with the
-    /// null check performed by the caller (see [`DocValuesWriter::add_value`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` is not strictly
-    /// greater than the last document added, or when `value` is longer than
-    /// [`SORTED_MAX_LENGTH`], and [`LuceneError::IllegalState`] when the field
-    /// has already been flushed.
-    pub fn add_value(&mut self, doc_id: i32, value: &[u8]) -> Result<()> {
-        if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
-                "the doc values of field \"{}\" have already been flushed",
-                self.field_info.name
-            )));
-        }
-        if doc_id <= self.last_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
-                "DocValuesField \"{}\" appears more than once in this document (only one value is allowed per field)",
-                self.field_info.name
-            )));
-        }
-        if value.len() > SORTED_MAX_LENGTH {
-            return Err(LuceneError::IllegalArgument(format!(
-                "DocValuesField \"{}\" is too large, must be <= {SORTED_MAX_LENGTH}",
-                self.field_info.name
-            )));
-        }
-
-        self.add_one_value(value)?;
-        self.docs_with_field.add(doc_id)?;
-        self.update_bytes_used();
-        self.last_doc_id = doc_id;
-        Ok(())
-    }
-
-    /// Buffers one dictionary-encoded value per document the tuple cursor
-    /// names, at `base_doc_id` plus the batch-local id.
-    ///
-    /// Equivalent to `SortedDocValuesWriter.addOrdinalTuples(int, List,
-    /// OrdinalsTupleCursor)`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when a document repeats or an
-    /// ordinal is out of range, [`LuceneError::IllegalState`] when the field
-    /// has already been flushed, and whatever reading the cursor raises.
-    pub fn add_ordinal_tuples(
-        &mut self,
-        base_doc_id: i32,
-        dictionary: &[BytesRef],
-        cursor: &mut dyn OrdinalsTupleCursor,
-    ) -> Result<()> {
-        if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
-                "the doc values of field \"{}\" have already been flushed",
-                self.field_info.name
-            )));
-        }
-        let mut ord_to_hash = vec![-1i32; dictionary.len()];
-        loop {
-            let batch_doc_id = cursor.next_doc()?;
-            if batch_doc_id == NO_MORE_DOCS {
-                break;
-            }
-            let doc_id = base_doc_id + batch_doc_id;
-            if doc_id <= self.last_doc_id {
-                return Err(LuceneError::IllegalArgument(format!(
-                    "DocValuesField \"{}\" appears more than once in this document (only one value is allowed per field)",
-                    self.field_info.name
-                )));
-            }
-            let ord = cursor.ord_value();
-            let id = self.lookup_or_translate(ord, dictionary, &mut ord_to_hash)?;
-            self.pending.push(id);
-            self.docs_with_field.add(doc_id)?;
-            self.last_doc_id = doc_id;
-        }
-        self.update_bytes_used();
-        Ok(())
-    }
-
-    /// Buffers one dictionary-encoded value per consecutive document starting
-    /// at `first_doc_id`.
-    ///
-    /// Equivalent to `SortedDocValuesWriter.addDenseOrdinalValues(int, List,
-    /// OrdinalsCursor)`, which does one hash lookup per distinct dictionary
-    /// entry actually used rather than one per document.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when the range does not start
-    /// after the last document written or an ordinal is out of range,
-    /// [`LuceneError::IllegalState`] when the field has already been flushed,
-    /// and whatever reading the cursor raises.
-    pub fn add_dense_ordinal_values(
-        &mut self,
-        first_doc_id: i32,
-        dictionary: &[BytesRef],
-        cursor: &mut dyn OrdinalsCursor,
-    ) -> Result<()> {
-        let n = cursor.size();
-        if n == 0 {
-            return Ok(());
-        }
-        if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
-                "the doc values of field \"{}\" have already been flushed",
-                self.field_info.name
-            )));
-        }
-        if first_doc_id <= self.last_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
-                "DocValuesField \"{}\": firstDocID={first_doc_id} must be > lastDocID={}",
-                self.field_info.name, self.last_doc_id
-            )));
-        }
-        let mut ord_to_hash = vec![-1i32; dictionary.len()];
-        let mut processed = 0i32;
-        // Java commits whatever was processed even when a lookup throws, in a
-        // `finally`; the same is done here by recording the range before the
-        // error is returned.
-        let mut outcome = Ok(());
-        while processed < n {
-            let ord = match cursor.next_ord() {
-                Ok(ord) => ord,
-                Err(e) => {
-                    outcome = Err(e);
-                    break;
-                }
-            };
-            match self.lookup_or_translate(ord, dictionary, &mut ord_to_hash) {
-                Ok(id) => self.pending.push(id),
-                Err(e) => {
-                    outcome = Err(e);
-                    break;
-                }
-            }
-            processed += 1;
-        }
-        if processed > 0 {
-            self.docs_with_field
-                .add_range(first_doc_id, first_doc_id + processed)?;
-            self.last_doc_id = first_doc_id + processed - 1;
-        }
-        self.update_bytes_used();
-        outcome
-    }
-
-    /// Interns the dictionary entry `ord` names, remembering the term id it was
-    /// given so the same entry costs one hash lookup per batch.
-    ///
-    /// Equivalent to the private `SortedDocValuesWriter.lookupOrTranslate(int,
-    /// List, int[])`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when `ord` is outside the
-    /// dictionary, and whatever interning the value raises.
-    fn lookup_or_translate(
-        &mut self,
-        ord: i32,
-        dictionary: &[BytesRef],
-        ord_to_hash: &mut [i32],
-    ) -> Result<i32> {
-        if ord < 0 || ord as usize >= dictionary.len() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "DocValuesField \"{}\": ordinal {ord} is out of range [0, {})",
-                self.field_info.name,
-                dictionary.len()
-            )));
-        }
-        let mut id = ord_to_hash[ord as usize];
-        if id < 0 {
-            id = self
-                .hash
-                .add(&mut self.pool, dictionary[ord as usize].slice())?;
-            if id < 0 {
-                id = -id - 1;
-            } else {
-                self.ord_map_charge += 2 * std::mem::size_of::<i32>() as i64;
-            }
-            ord_to_hash[ord as usize] = id;
-        }
-        Ok(id)
-    }
-
-    /// Equivalent to `SortedDocValuesWriter.addOneValue`.
-    fn add_one_value(&mut self, value: &[u8]) -> Result<()> {
-        let term_id = self.hash.add(&mut self.pool, value)?;
-        let term_id = if term_id < 0 {
-            -term_id - 1
-        } else {
-            // Java reserves 2 * Integer.BYTES per unique value for the rehash
-            // headroom and the flush-time ordMap slot; folded into the
-            // delta-tracked footprint here.
-            self.ord_map_charge += 2 * std::mem::size_of::<i32>() as i64;
-            term_id
-        };
-        self.pending.push(term_id);
-        Ok(())
-    }
-
-    fn update_bytes_used(&mut self) {
-        let new_bytes_used = self.ram_bytes_used();
-        self.iw_bytes_used
-            .fetch_add(new_bytes_used - self.bytes_used, Ordering::AcqRel);
-        self.bytes_used = new_bytes_used;
-    }
-
-    /// Approximate heap held by the plain buffers.
-    ///
-    /// The pool and the hash charge the shared counter directly on growth and
-    /// are refunded at `Drop`, so they are not part of this figure.
-    pub fn ram_bytes_used(&self) -> i64 {
-        self.pending.capacity() as i64 * std::mem::size_of::<i32>() as i64
-            + self.ord_map_charge
-            + self.docs_with_field.ram_bytes_used()
-    }
-
-    /// Number of documents that have a value buffered.
-    pub fn num_docs_with_field(&self) -> i32 {
-        self.docs_with_field.cardinality()
-    }
-
-    /// Hands the buffered values to `consumer`.
-    ///
-    /// Equivalent to `SortedDocValuesWriter.flush` without the doc map. The
-    /// dictionary is materialised here, once, in unsigned byte order; the
-    /// ordinals handed to the consumer are the ranks in that order, exactly
-    /// what Java's `finalOrdMap` translation produces.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalState`] when the field has already been
-    /// flushed; otherwise propagates whatever the consumer raises.
-    pub fn flush(
-        &mut self,
-        consumer: &mut dyn DocValuesConsumer,
-        sort_map: Option<&SorterDocMap>,
-    ) -> Result<()> {
-        if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
-                "the doc values of field \"{}\" have already been flushed",
-                self.field_info.name
-            )));
-        }
-        self.flushed = true;
-
-        let dictionary = self.materialize_dictionary()?;
-        let ords: Vec<i32> = self
-            .pending
-            .iter()
-            .map(|&term_id| dictionary.ord_map[term_id as usize])
-            .collect();
-        let pending = std::mem::take(&mut self.pending);
-        let docs_with_field = std::mem::take(&mut self.docs_with_field);
-        let producer = Self::get_doc_values_producer(
-            &self.field_info,
-            &docs_with_field,
-            ords,
-            dictionary.values,
-            sort_map,
-        )?;
-        drop((docs_with_field, pending, dictionary.ord_map));
-        self.update_bytes_used();
-        consumer.add_sorted_field(&self.field_info, &*producer)
-    }
-
-    /// Sorts the distinct values by unsigned byte order and builds the
-    /// ordinal map.
-    ///
-    /// Equivalent to `SortedDocValuesWriter.finish`: `hash.sort()` yields the
-    /// term ids in dictionary order, and `ordMap[termID] = ord` inverts it.
-    fn materialize_dictionary(&self) -> Result<Dictionary> {
-        let sorted = self.hash.sort(&self.pool);
-        let mut dictionary = Vec::with_capacity(sorted.len());
-        let mut ord_map = vec![0i32; sorted.len()];
-        for (ord, &term_id) in sorted.iter().enumerate() {
-            ord_map[term_id as usize] = ord as i32;
-            let start = self.hash.byte_start(term_id);
-            dictionary.push(self.pool.term_bytes(start).to_vec());
-        }
-        Ok(Dictionary {
-            values: dictionary,
-            ord_map,
-        })
-    }
-}
-
-impl SortedDocValuesWriter {
-    /// Returns a read-only view over the values buffered so far.
-    ///
-    /// Equivalent to `SortedDocValuesWriter.getDocValues()`; the same
-    /// divergence as [`NumericDocValuesWriter::get_doc_values`] applies. The
-    /// dictionary is built here as it is at flush, because the ordinals a
-    /// sorter compares are dictionary ordinals.
-    ///
-    /// # Errors
-    ///
-    /// Propagates whatever building the dictionary raises.
-    pub fn get_doc_values(&self) -> Result<Arc<dyn DocValuesProducer>> {
-        let dictionary = self.materialize_dictionary()?;
-        let ords: Vec<i32> = self
-            .pending
-            .iter()
-            .map(|&term_id| dictionary.ord_map[term_id as usize])
-            .collect();
-        Self::get_doc_values_producer(
-            &self.field_info,
-            &self.docs_with_field,
-            ords,
-            dictionary.values,
-            None,
-        )
-    }
-
-    /// Builds the ordered, per-new-document ordinal view that an index sort
-    /// produces: `-1` where the sorted document carries no value.
-    ///
-    /// Equivalent to the private `SortedDocValuesWriter.sortDocValues(int,
-    /// Sorter.DocMap, SortedDocValues)`.
-    ///
-    /// # Errors
-    ///
-    /// Propagates whatever iterating `old_values` raises.
-    pub(crate) fn sort_doc_values(
-        max_doc: i32,
-        sort_map: &SorterDocMap,
-        old_values: &mut dyn SortedDocValues,
-    ) -> Result<Vec<i32>> {
-        let mut ords = vec![-1i32; max_doc as usize];
-        loop {
-            let doc_id = old_values.next_doc()?;
-            if doc_id == NO_MORE_DOCS {
-                break;
-            }
-            let new_doc_id = sort_map.old_to_new(doc_id);
-            ords[new_doc_id as usize] = old_values.ord_value()?;
-        }
-        Ok(ords)
-    }
-
-    /// Builds the [`DocValuesProducer`] `flush` and `get_doc_values` hand to
-    /// the codec: the plain buffered view when `sort_map` is `None`, or a view
-    /// reordered by the index sort otherwise.
-    ///
-    /// Equivalent to `SortedDocValuesWriter.getDocValuesProducer(FieldInfo,
-    /// BytesRefHash, PackedLongValues, int[], int[], DocsWithFieldSet,
-    /// Sorter.DocMap)`, with `hash`/`ords`/`sortedValues`/`ordMap` already
-    /// resolved to the final dictionary and per-document ordinals.
-    ///
-    /// # Errors
-    ///
-    /// Propagates whatever [`Self::sort_doc_values`] raises.
-    pub(crate) fn get_doc_values_producer(
-        field_info: &FieldInfo,
-        docs_with_field: &DocsWithFieldSet,
-        ords: Vec<i32>,
-        dictionary: Vec<Vec<u8>>,
-        sort_map: Option<&SorterDocMap>,
-    ) -> Result<Arc<dyn DocValuesProducer>> {
-        let mut producer =
-            BufferedSortedProducer::new(field_info, docs_with_field, ords, dictionary)?;
-        if let Some(sort_map) = sort_map {
-            let mut old_values = BufferedSorted::new(
-                Arc::clone(&producer.docs),
-                Arc::clone(&producer.ords),
-                Arc::clone(&producer.dictionary),
-            );
-            producer.sorted = Some(Arc::new(Self::sort_doc_values(
-                sort_map.size(),
-                sort_map,
-                &mut old_values,
-            )?));
-        }
-        Ok(Arc::new(producer))
-    }
-}
-
-impl Drop for SortedDocValuesWriter {
-    /// Gives back everything this writer charged to the shared counter: the
-    /// delta-tracked buffers, the hash's own arrays and every pool block.
-    fn drop(&mut self) {
-        self.iw_bytes_used
-            .fetch_sub(self.bytes_used, Ordering::AcqRel);
-        self.hash.release_accounting();
-        self.pool.reset();
-    }
-}
-
-/// The dictionary of a flushed sorted variant: distinct values in unsigned
-/// byte order plus the term-id → ordinal map.
-struct Dictionary {
-    values: Vec<Vec<u8>>,
-    ord_map: Vec<i32>,
+    empty_producer_methods!(numeric);
+    empty_producer_methods!(binary);
+    empty_producer_methods!(sorted);
+    empty_producer_methods!(common);
 }
 
 // -----------------------------------------------------------------------------
@@ -2783,20 +2560,29 @@ struct Dictionary {
 
 /// Buffers any number of numeric values per document, sorted per document.
 ///
-/// Equivalent to `org.apache.lucene.index.SortedNumericDocValuesWriter`.
+/// Equivalent to `org.apache.lucene.index.SortedNumericDocValuesWriter`
+/// (`index/SortedNumericDocValuesWriter.java:36-404`): every value goes to a
+/// delta-packed `pending` builder, and a second delta-packed builder of
+/// per-document counts is started the first time a document does not carry
+/// exactly one value.
 #[derive(Debug)]
 pub struct SortedNumericDocValuesWriter {
-    field_info: FieldInfo,
-    /// Flat stream of all values, in document order.
-    pending: Vec<i64>,
-    /// One count per document, only once some document carries more than one
-    /// value — Java's lazily created `pendingCounts`.
-    pending_counts: Option<Vec<i32>>,
-    docs_with_field: DocsWithFieldSet,
-    current_doc: i32,
-    current_values: Vec<i64>,
-    bytes_used: i64,
+    /// Stream of all values; `None` once built.
+    pending: Option<DeltaPackedLongValuesBuilder>,
+    /// Count of values per doc, created lazily.
+    pending_counts: Option<DeltaPackedLongValuesBuilder>,
+    docs_with_field: Arc<DocsWithFieldSet>,
     iw_bytes_used: Arc<AtomicI64>,
+    /// Tracks `pending`, `pendingCounts`, the document set and `currentValues`.
+    bytes_used: i64,
+    field_info: FieldInfo,
+    current_doc: i32,
+    /// `currentValues`, a `long[]` that starts at 8 and grows by
+    /// `ArrayUtil.grow`; only `[..current_upto]` is meaningful.
+    current_values: Vec<i64>,
+    current_upto: usize,
+    final_values: Option<Arc<DeltaPackedLongValues>>,
+    final_values_count: Option<Arc<DeltaPackedLongValues>>,
     flushed: bool,
 }
 
@@ -2804,20 +2590,28 @@ impl SortedNumericDocValuesWriter {
     /// Creates a writer for `field_info`, charging its initial footprint to
     /// `iw_bytes_used`.
     ///
-    /// Equivalent to `new SortedNumericDocValuesWriter(FieldInfo, Counter)`.
+    /// Equivalent to `new SortedNumericDocValuesWriter(FieldInfo, Counter)`
+    /// (`SortedNumericDocValuesWriter.java:50-60`).
     pub fn new(field_info: FieldInfo, iw_bytes_used: Arc<AtomicI64>) -> Self {
+        let pending = delta_packed_builder();
         let docs_with_field = DocsWithFieldSet::new();
-        let bytes_used = docs_with_field.ram_bytes_used();
+        let current_values = vec![0i64; 8];
+        let bytes_used = pending.ram_bytes_used()
+            + docs_with_field.ram_bytes_used()
+            + RamUsageEstimator::size_of_long(&current_values);
         iw_bytes_used.fetch_add(bytes_used, Ordering::AcqRel);
         Self {
-            field_info,
-            pending: Vec::new(),
+            pending: Some(pending),
             pending_counts: None,
-            docs_with_field,
-            current_doc: -1,
-            current_values: Vec::new(),
-            bytes_used,
+            docs_with_field: Arc::new(docs_with_field),
             iw_bytes_used,
+            bytes_used,
+            field_info,
+            current_doc: -1,
+            current_values,
+            current_upto: 0,
+            final_values: None,
+            final_values_count: None,
             flushed: false,
         }
     }
@@ -2827,37 +2621,41 @@ impl SortedNumericDocValuesWriter {
         &self.field_info
     }
 
+    fn check_open(&self) -> Result<()> {
+        if self.flushed {
+            return Err(already_flushed(&self.field_info));
+        }
+        if self.pending.is_none() {
+            return Err(already_built());
+        }
+        Ok(())
+    }
+
     /// Buffers `value` as one more value of `doc_id`.
     ///
-    /// Equivalent to `SortedNumericDocValuesWriter.addValue(int, long)`: the
-    /// values of a document accumulate, and moving to a new document commits
-    /// the previous one. Java only asserts `docID >= currentDoc`; this port
-    /// refuses a backwards document id, because with the assertion off Java
-    /// would silently corrupt the value stream.
+    /// Equivalent to `SortedNumericDocValuesWriter.addValue(int, long)`
+    /// (`SortedNumericDocValuesWriter.java:62-70`): the values of a document
+    /// accumulate, and moving to a new document commits the previous one.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` goes backwards,
-    /// and [`LuceneError::IllegalState`] when the field has already been
-    /// flushed.
+    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` goes backwards
+    /// (Java asserts), and [`LuceneError::IllegalState`] when the field has
+    /// already been built or flushed.
     pub fn add_value(&mut self, doc_id: i32, value: i64) -> Result<()> {
-        if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
-                "the doc values of field \"{}\" have already been flushed",
-                self.field_info.name
-            )));
-        }
+        self.check_open()?;
         if doc_id < self.current_doc {
-            return Err(LuceneError::IllegalArgument(format!(
-                "DocValuesField \"{}\" values must be added in increasing document order (doc {} after {})",
-                self.field_info.name, doc_id, self.current_doc
-            )));
+            return Err(backwards_document(
+                &self.field_info,
+                doc_id,
+                self.current_doc,
+            ));
         }
         if doc_id != self.current_doc {
             self.finish_current_doc()?;
             self.current_doc = doc_id;
         }
-        self.current_values.push(value);
+        self.add_one_value(value);
         self.update_bytes_used();
         Ok(())
     }
@@ -2866,16 +2664,14 @@ impl SortedNumericDocValuesWriter {
     /// document starting at `first_doc_id`.
     ///
     /// Equivalent to `SortedNumericDocValuesWriter.addDenseValues(int,
-    /// LongValuesCursor)`. Each value is one document's whole value list, so
-    /// nothing needs buffering or sorting; a count of one is recorded per
-    /// document when some earlier document was multi-valued.
+    /// LongValuesCursor)` (`SortedNumericDocValuesWriter.java:72-99`).
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalArgument`] when `first_doc_id` is not
-    /// strictly greater than the current document,
-    /// [`LuceneError::IllegalState`] when the field has already been flushed,
-    /// and whatever reading the cursor raises.
+    /// strictly greater than the current document (Java asserts),
+    /// [`LuceneError::IllegalState`] when the field has already been built or
+    /// flushed, and whatever reading the cursor raises.
     pub fn add_dense_values(
         &mut self,
         first_doc_id: i32,
@@ -2885,90 +2681,110 @@ impl SortedNumericDocValuesWriter {
         if num_values == 0 {
             return Ok(());
         }
-        if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
-                "the doc values of field \"{}\" have already been flushed",
-                self.field_info.name
-            )));
-        }
+        self.check_open()?;
         if first_doc_id <= self.current_doc {
-            return Err(LuceneError::IllegalArgument(format!(
-                "DocValuesField \"{}\" values must be added in increasing document order (doc {first_doc_id} after {})",
-                self.field_info.name, self.current_doc
-            )));
+            return Err(backwards_document(
+                &self.field_info,
+                first_doc_id,
+                self.current_doc,
+            ));
         }
         self.finish_current_doc()?;
 
-        // Write the values straight to the flat stream: each is one document's
-        // whole list, so there is nothing to buffer and nothing to sort.
-        let start = self.pending.len();
-        self.pending.resize(start + num_values as usize, 0);
-        cursor.fill_doc_values(&mut self.pending, start, num_values as usize)?;
-
-        // When the per-document counts are already being tracked — because some
-        // earlier document was multi-valued — record one per dense document.
-        if let Some(counts) = &mut self.pending_counts {
-            counts.extend(std::iter::repeat_n(1i32, num_values as usize));
+        // Write values directly to pending — each value is one doc, single-valued.
+        // No currentValues[] buffering, no sorting needed.
+        self.pending
+            .as_mut()
+            .ok_or_else(already_built)?
+            .add_cursor(cursor)?;
+        // If pendingCounts is active (some earlier doc was multi-valued),
+        // record count=1 for each dense doc.
+        if let Some(counts) = self.pending_counts.as_mut() {
+            for _ in 0..num_values {
+                counts.add(1)?;
+            }
         }
-
         let end_doc_id = first_doc_id + num_values;
-        self.docs_with_field.add_range(first_doc_id, end_doc_id)?;
-
-        // Leave `current_doc` on the last document written, so ordering holds;
-        // `current_values` stays empty, because nothing was buffered.
+        // Bulk-add consecutive doc-ids
+        docs_mut(&mut self.docs_with_field).add_range(first_doc_id, end_doc_id)?;
+        // Set currentDoc to last written doc so ordering is maintained.
+        // currentUpto stays 0 — nothing buffered.
         self.current_doc = end_doc_id - 1;
         self.update_bytes_used();
         Ok(())
     }
 
-    /// Equivalent to `SortedNumericDocValuesWriter.finishCurrentDoc`: sorts the
-    /// current document's values, commits them to the flat stream and records
-    /// the count — backfilling one count per already-seen document when the
-    /// first multi-valued document appears.
+    /// Finalizes the current document: sorts its values, commits them to
+    /// `pending` and records the count — starting the counts builder, with one
+    /// count per document already recorded, when the first document that does
+    /// not carry exactly one value appears.
+    ///
+    /// Equivalent to `SortedNumericDocValuesWriter.finishCurrentDoc()`
+    /// (`SortedNumericDocValuesWriter.java:101-128`).
     fn finish_current_doc(&mut self) -> Result<()> {
         if self.current_doc == -1 {
             return Ok(());
         }
-        if self.current_values.is_empty() {
-            // The document was committed directly, by `add_dense_values`.
-            return Ok(());
+        if self.current_upto == 0 {
+            return Ok(()); // doc already committed directly (e.g., via addDenseValues)
         }
-        let count = self.current_values.len();
-        if count > 1 {
-            self.current_values.sort_unstable();
+        let upto = self.current_upto;
+        if upto > 1 {
+            self.current_values[..upto].sort_unstable();
         }
-        self.pending.extend_from_slice(&self.current_values);
-        if let Some(counts) = &mut self.pending_counts {
-            counts.push(count as i32);
-        } else if count != 1 {
-            // Java fills one count per document already recorded in
-            // `docsWithField` — which still excludes the current document —
-            // and then records the multi-valued count that triggered the
-            // builder.
-            let mut counts = vec![1i32; self.docs_with_field.cardinality() as usize];
-            counts.push(count as i32);
+        let pending = self.pending.as_mut().ok_or_else(already_built)?;
+        for &value in &self.current_values[..upto] {
+            pending.add(value)?;
+        }
+        // record the number of values for this doc
+        if let Some(counts) = self.pending_counts.as_mut() {
+            counts.add(upto as i64)?;
+        } else if upto != 1 {
+            let mut counts = delta_packed_builder();
+            for _ in 0..self.docs_with_field.cardinality() {
+                counts.add(1)?;
+            }
+            counts.add(upto as i64)?;
             self.pending_counts = Some(counts);
         }
-        self.current_values.clear();
-        self.docs_with_field.add(self.current_doc)?;
+        self.current_upto = 0;
+        docs_mut(&mut self.docs_with_field).add(self.current_doc)?;
         Ok(())
     }
 
+    /// Equivalent to `SortedNumericDocValuesWriter.addOneValue(long)`
+    /// (`SortedNumericDocValuesWriter.java:130-137`).
+    fn add_one_value(&mut self, value: i64) {
+        if self.current_upto == self.current_values.len() {
+            let new_len = ArrayUtil::oversize(self.current_values.len() + 1, 8);
+            self.current_values.resize(new_len, 0);
+        }
+        self.current_values[self.current_upto] = value;
+        self.current_upto += 1;
+    }
+
+    /// Equivalent to `SortedNumericDocValuesWriter.updateBytesUsed()`
+    /// (`SortedNumericDocValuesWriter.java:139-147`).
     fn update_bytes_used(&mut self) {
-        let new_bytes_used = self.ram_bytes_used();
+        let Some(pending) = self.pending.as_ref() else {
+            return;
+        };
+        let new_bytes_used = pending.ram_bytes_used()
+            + self
+                .pending_counts
+                .as_ref()
+                .map_or(0, |counts| counts.ram_bytes_used())
+            + self.docs_with_field.ram_bytes_used()
+            + RamUsageEstimator::size_of_long(&self.current_values);
         self.iw_bytes_used
             .fetch_add(new_bytes_used - self.bytes_used, Ordering::AcqRel);
         self.bytes_used = new_bytes_used;
     }
 
-    /// Approximate heap held by the plain buffers.
+    /// The bytes this writer has charged to the shared counter as of the last
+    /// update.
     pub fn ram_bytes_used(&self) -> i64 {
-        self.pending.capacity() as i64 * std::mem::size_of::<i64>() as i64
-            + self.pending_counts.as_ref().map_or(0, |counts| {
-                counts.capacity() as i64 * std::mem::size_of::<i32>() as i64
-            })
-            + self.current_values.capacity() as i64 * std::mem::size_of::<i64>() as i64
-            + self.docs_with_field.ram_bytes_used()
+        self.bytes_used
     }
 
     /// Number of documents that have values buffered.
@@ -2976,12 +2792,55 @@ impl SortedNumericDocValuesWriter {
         self.docs_with_field.cardinality()
     }
 
+    /// Builds `finalValues` and `finalValuesCount` the first time they are
+    /// needed: the current document is finished, then both builders built.
+    fn finish(&mut self) -> Result<()> {
+        if self.final_values.is_none() {
+            self.finish_current_doc()?;
+            let pending = self.pending.take().ok_or_else(already_built)?;
+            self.final_values = Some(Arc::new(pending.build()?));
+            self.final_values_count = match self.pending_counts.take() {
+                Some(counts) => Some(Arc::new(counts.build()?)),
+                None => None,
+            };
+        }
+        Ok(())
+    }
+
+    /// Returns a read-only view over the values buffered so far.
+    ///
+    /// Equivalent to `SortedNumericDocValuesWriter.getDocValues()`
+    /// (`SortedNumericDocValuesWriter.java:149-158`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever finishing the current document or building the
+    /// values raises.
+    pub fn get_doc_values(&mut self) -> Result<Arc<dyn DocValuesProducer>> {
+        self.finish()?;
+        Ok(Arc::new(self.producer(None)))
+    }
+
+    fn producer(&self, sorted: Option<Arc<LongValues>>) -> BufferedSortedNumericProducer {
+        BufferedSortedNumericProducer {
+            field_number: self.field_info.number,
+            field_name: self.field_info.name.clone(),
+            values: Arc::clone(self.final_values.as_ref().expect("INVARIANT: finish() ran")),
+            value_counts: self.final_values_count.clone(),
+            docs_with_field: Arc::clone(&self.docs_with_field),
+            sorted,
+        }
+    }
+
     /// Hands the buffered values to `consumer`.
     ///
-    /// Equivalent to `SortedNumericDocValuesWriter.flush`: when every document
-    /// carries exactly one value the producer serves a singleton view — the
-    /// same shape Java hands over, and what makes the codec pick the
-    /// single-valued file layout.
+    /// Equivalent to `SortedNumericDocValuesWriter.flush(SegmentWriteState,
+    /// Sorter.DocMap, DocValuesConsumer)` (`SortedNumericDocValuesWriter.java:192-253`):
+    /// when every document carries exactly one value the field is handed over
+    /// through `NumericDocValuesWriter.getDocValuesProducer` viewed as a
+    /// singleton — the same shape Java hands over, and what makes the codec
+    /// pick the single-valued file layout; otherwise, with an index sort, the
+    /// values are first copied into `LongValues` by new document number.
     ///
     /// # Errors
     ///
@@ -2989,56 +2848,41 @@ impl SortedNumericDocValuesWriter {
     /// flushed; otherwise propagates whatever the consumer raises.
     pub fn flush(
         &mut self,
-        consumer: &mut dyn DocValuesConsumer,
+        state: &SegmentWriteState<'_>,
         sort_map: Option<&SorterDocMap>,
+        consumer: &mut dyn DocValuesConsumer,
     ) -> Result<()> {
         if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
-                "the doc values of field \"{}\" have already been flushed",
-                self.field_info.name
-            )));
+            return Err(already_flushed(&self.field_info));
         }
+        self.finish()?;
         self.flushed = true;
-        self.finish_current_doc()?;
-        let values = std::mem::take(&mut self.pending);
-        let counts = self.pending_counts.take();
-        let docs_with_field = std::mem::take(&mut self.docs_with_field);
-        let mut producer =
-            BufferedSortedNumericProducer::new(&self.field_info, &docs_with_field, values, counts)?;
-        // `new LongValues(maxDoc, sortMap, ...)` and
-        // `SortingSortedNumericDocValues` (`SortedNumericDocValuesWriter.java:230-253`).
-        if let Some(sort_map) = sort_map {
-            let per_doc = split_per_document(&producer.values, producer.counts.as_deref());
-            let (docs, per_doc) = sort_per_document(&producer.docs, per_doc, sort_map);
-            producer.counts = producer
-                .counts
-                .as_ref()
-                .map(|_| Arc::new(per_doc.iter().map(|values| values.len() as i32).collect()));
-            producer.docs = Arc::new(docs);
-            producer.values = Arc::new(per_doc.concat());
-        }
-        drop(docs_with_field);
-        self.update_bytes_used();
+        let values = Arc::clone(self.final_values.as_ref().expect("INVARIANT: finish() ran"));
+        let Some(value_counts) = self.final_values_count.clone() else {
+            let single_value_producer = NumericDocValuesWriter::get_doc_values_producer(
+                &self.field_info,
+                values,
+                Arc::clone(&self.docs_with_field),
+                sort_map,
+            )?;
+            let producer = SingletonProducer {
+                field_number: self.field_info.number,
+                field_name: self.field_info.name.clone(),
+                single_value_producer,
+            };
+            return consumer.add_sorted_numeric_field(&self.field_info, &producer);
+        };
+        let sorted = match sort_map {
+            Some(sort_map) => Some(Arc::new(LongValues::new(
+                state.segment_info.max_doc()?,
+                sort_map,
+                &mut BufferedSortedNumeric::new(values, value_counts, &self.docs_with_field),
+                PackedInts::FASTEST,
+            )?)),
+            None => None,
+        };
+        let producer = self.producer(sorted);
         consumer.add_sorted_numeric_field(&self.field_info, &producer)
-    }
-}
-
-impl SortedNumericDocValuesWriter {
-    /// Returns a read-only view over the values buffered so far.
-    ///
-    /// Equivalent to `SortedNumericDocValuesWriter.getDocValues()`; the same
-    /// divergence as [`NumericDocValuesWriter::get_doc_values`] applies.
-    ///
-    /// # Errors
-    ///
-    /// Propagates whatever materialising the document set raises.
-    pub fn get_doc_values(&self) -> Result<Arc<dyn DocValuesProducer>> {
-        Ok(Arc::new(BufferedSortedNumericProducer::new(
-            &self.field_info,
-            &self.docs_with_field,
-            self.pending.clone(),
-            self.pending_counts.clone(),
-        )?))
     }
 }
 
@@ -3049,35 +2893,327 @@ impl Drop for SortedNumericDocValuesWriter {
     }
 }
 
+/// Serves the buffered sorted-numeric values of one field.
+///
+/// Equivalent to the anonymous `EmptyDocValuesProducer` of
+/// `SortedNumericDocValuesWriter.flush` (`SortedNumericDocValuesWriter.java:237-252`)
+/// and to `getValues(values, valueCounts, docsWithField)`, which views a field
+/// without counts as a singleton.
+#[derive(Debug, Clone)]
+struct BufferedSortedNumericProducer {
+    field_number: i32,
+    field_name: String,
+    values: Arc<DeltaPackedLongValues>,
+    value_counts: Option<Arc<DeltaPackedLongValues>>,
+    docs_with_field: Arc<DocsWithFieldSet>,
+    sorted: Option<Arc<LongValues>>,
+}
+
+producer_guard!(BufferedSortedNumericProducer);
+
+impl BufferedSortedNumericProducer {
+    /// Equivalent to the private `SortedNumericDocValuesWriter.getValues(
+    /// PackedLongValues, PackedLongValues, DocsWithFieldSet)`
+    /// (`SortedNumericDocValuesWriter.java:182-190`).
+    fn get_values(&self) -> Box<dyn SortedNumericDocValues> {
+        match &self.value_counts {
+            None => Box::new(SingletonNumericAsSortedNumeric::new(Box::new(
+                BufferedNumeric::new(Arc::clone(&self.values), &self.docs_with_field),
+            ))),
+            Some(value_counts) => Box::new(BufferedSortedNumeric::new(
+                Arc::clone(&self.values),
+                Arc::clone(value_counts),
+                &self.docs_with_field,
+            )),
+        }
+    }
+}
+
+impl DocValuesProducer for BufferedSortedNumericProducer {
+    fn get_sorted_numeric(
+        &self,
+        field: &FieldInfo,
+    ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+        self.check_field(field)?;
+        let buf = self.get_values();
+        Ok(Some(match &self.sorted {
+            None => buf,
+            Some(sorted) => Box::new(SortingSortedNumeric::new(buf, Arc::clone(sorted))),
+        }))
+    }
+
+    empty_producer_methods!(numeric);
+    empty_producer_methods!(binary);
+    empty_producer_methods!(sorted);
+    empty_producer_methods!(sorted_set);
+    empty_producer_methods!(common);
+}
+
+/// The sorted-numeric values of a field laid out by new document number.
+///
+/// Equivalent to `SortedNumericDocValuesWriter.LongValues`
+/// (`SortedNumericDocValuesWriter.java:160-180`): `offsets[newDocID]` is one plus
+/// the position of the document's count in `values`, which holds each
+/// document's count followed by its values; `0` means no values.
+#[derive(Debug)]
+struct LongValues {
+    offsets: Vec<i64>,
+    values: PackedLongValues,
+}
+
+impl LongValues {
+    fn new(
+        max_doc: i32,
+        sort_map: &SorterDocMap,
+        old_values: &mut dyn SortedNumericDocValues,
+        acceptable_overhead_ratio: f32,
+    ) -> Result<Self> {
+        let mut offsets = vec![0i64; max_doc as usize];
+        let mut values_builder = packed_builder(acceptable_overhead_ratio);
+        let mut offset_index = 1i64; // 0 means the doc has no values
+        loop {
+            let doc_id = old_values.next_doc()?;
+            if doc_id == NO_MORE_DOCS {
+                break;
+            }
+            let new_doc_id = sort_map.old_to_new(doc_id);
+            let num_values = old_values.doc_value_count()?;
+            values_builder.add(i64::from(num_values))?;
+            offsets[new_doc_id as usize] = offset_index;
+            offset_index += 1;
+            for _ in 0..num_values {
+                values_builder.add(old_values.next_value()?)?;
+                offset_index += 1;
+            }
+        }
+        Ok(Self {
+            offsets,
+            values: values_builder.build()?,
+        })
+    }
+}
+
+/// Iterates the buffered values of a field some document of which carries
+/// other than one value.
+///
+/// Equivalent to `SortedNumericDocValuesWriter.BufferedSortedNumericDocValues`
+/// (`SortedNumericDocValuesWriter.java:255-325`).
+struct BufferedSortedNumeric {
+    values_iter: OwnedPackedLongValuesIterator<DeltaPackedLongValues>,
+    value_counts_iter: OwnedPackedLongValuesIterator<DeltaPackedLongValues>,
+    docs_with_field: Box<dyn DocIdSetIterator + Send + Sync>,
+    value_count: i32,
+    value_upto: i32,
+}
+
+impl BufferedSortedNumeric {
+    fn new(
+        values: Arc<DeltaPackedLongValues>,
+        value_counts: Arc<DeltaPackedLongValues>,
+        docs_with_field: &Arc<DocsWithFieldSet>,
+    ) -> Self {
+        Self {
+            values_iter: OwnedPackedLongValuesIterator::new(values),
+            value_counts_iter: OwnedPackedLongValuesIterator::new(value_counts),
+            docs_with_field: DocsWithFieldSet::shared_iterator(docs_with_field),
+            value_count: 0,
+            value_upto: 0,
+        }
+    }
+}
+
+impl fmt::Debug for BufferedSortedNumeric {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BufferedSortedNumeric")
+            .field("doc_id", &self.docs_with_field.doc_id())
+            .field("value_count", &self.value_count)
+            .finish()
+    }
+}
+
+impl DocIdSetIterator for BufferedSortedNumeric {
+    fn doc_id(&self) -> i32 {
+        self.docs_with_field.doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        for _ in self.value_upto..self.value_count {
+            self.values_iter.next_value();
+        }
+        let doc_id = self.docs_with_field.next_doc()?;
+        if doc_id != NO_MORE_DOCS {
+            self.value_count = to_int_exact(self.value_counts_iter.next_value())?;
+            self.value_upto = 0;
+        }
+        Ok(doc_id)
+    }
+
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(
+            "BufferedSortedNumericDocValues does not support advance".to_string(),
+        ))
+    }
+
+    fn cost(&self) -> i64 {
+        self.docs_with_field.cost()
+    }
+
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        self.docs_with_field.into_bit_set(up_to, bit_set, offset)
+    }
+
+    fn doc_id_run_end(&self) -> Result<i32> {
+        self.docs_with_field.doc_id_run_end()
+    }
+}
+
+impl DocValuesIterator for BufferedSortedNumeric {
+    fn advance_exact(&mut self, _target: i32) -> Result<bool> {
+        Err(LuceneError::UnsupportedOperation(
+            "BufferedSortedNumericDocValues does not support advanceExact".to_string(),
+        ))
+    }
+}
+
+impl SortedNumericDocValues for BufferedSortedNumeric {
+    fn next_value(&mut self) -> Result<i64> {
+        self.value_upto += 1;
+        Ok(self.values_iter.next_value())
+    }
+
+    fn doc_value_count(&self) -> Result<i32> {
+        Ok(self.value_count)
+    }
+}
+
+/// Iterates the sorted-numeric doc values of a field after an index sort has
+/// reordered the segment.
+///
+/// Equivalent to `SortedNumericDocValuesWriter.SortingSortedNumericDocValues`
+/// (`SortedNumericDocValuesWriter.java:327-389`).
+struct SortingSortedNumeric {
+    in_values: Box<dyn SortedNumericDocValues>,
+    values: Arc<LongValues>,
+    doc_id: i32,
+    upto: i64,
+    num_values: i32,
+}
+
+impl SortingSortedNumeric {
+    fn new(in_values: Box<dyn SortedNumericDocValues>, values: Arc<LongValues>) -> Self {
+        Self {
+            in_values,
+            values,
+            doc_id: -1,
+            upto: 0,
+            num_values: -1,
+        }
+    }
+}
+
+impl fmt::Debug for SortingSortedNumeric {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SortingSortedNumeric")
+            .field("doc_id", &self.doc_id)
+            .finish()
+    }
+}
+
+impl DocIdSetIterator for SortingSortedNumeric {
+    fn doc_id(&self) -> i32 {
+        self.doc_id
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        loop {
+            self.doc_id += 1;
+            if self.doc_id as usize >= self.values.offsets.len() {
+                self.doc_id = NO_MORE_DOCS;
+                return Ok(self.doc_id);
+            }
+            if self.values.offsets[self.doc_id as usize] > 0 {
+                break;
+            }
+        }
+        self.upto = self.values.offsets[self.doc_id as usize];
+        self.num_values = to_int_exact(self.values.values.get(self.upto - 1))?;
+        Ok(self.doc_id)
+    }
+
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(
+            "use nextDoc instead".to_string(),
+        ))
+    }
+
+    fn cost(&self) -> i64 {
+        self.in_values.cost()
+    }
+}
+
+impl DocValuesIterator for SortingSortedNumeric {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        self.doc_id = target;
+        self.upto = self.values.offsets[target as usize];
+        if self.upto > 0 {
+            self.num_values = to_int_exact(self.values.values.get(self.upto - 1))?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+impl SortedNumericDocValues for SortingSortedNumeric {
+    fn next_value(&mut self) -> Result<i64> {
+        let value = self.values.values.get(self.upto);
+        self.upto += 1;
+        Ok(value)
+    }
+
+    fn doc_value_count(&self) -> Result<i32> {
+        Ok(self.num_values)
+    }
+}
+
 // -----------------------------------------------------------------------------
 // SortedSetDocValuesWriter
 // -----------------------------------------------------------------------------
 
 /// Buffers any number of distinct binary values per document.
 ///
-/// Equivalent to `org.apache.lucene.index.SortedSetDocValuesWriter`: values
-/// are interned into the dictionary hash, the term ids of the current
-/// document are sorted and deduplicated when the document is committed, and
-/// the final ordinals are mapped at flush.
+/// Equivalent to `org.apache.lucene.index.SortedSetDocValuesWriter`
+/// (`index/SortedSetDocValuesWriter.java:46-524`): values are interned into a
+/// [`BytesRefHash`] over the chain's shared pool, the term ids of the current
+/// document are sorted and deduplicated when the document is committed into
+/// a packed `pending` builder, and a delta-packed builder of per-document
+/// counts is started the first time a document does not carry exactly one
+/// distinct value.
 #[derive(Debug)]
 pub struct SortedSetDocValuesWriter {
-    field_info: FieldInfo,
-    pool: ByteBlockPool,
-    hash: BytesRefHash,
-    /// Flat stream of deduplicated term ids, in document order.
-    pending: Vec<i32>,
-    /// One count of distinct values per document, only once some document
-    /// carries more than one — Java's lazily created `pendingCounts`.
-    pending_counts: Option<Vec<i32>>,
-    docs_with_field: DocsWithFieldSet,
-    current_doc: i32,
-    current_values: Vec<i32>,
-    /// Largest per-document distinct count, seen so far.
-    max_count: i32,
-    bytes_used: i64,
-    /// Headroom Java charges per unique value; folded into `bytes_used`.
-    ord_map_charge: i64,
+    hash: Arc<BytesRefHash>,
+    /// Stream of all term ids, a `PackedLongValues.packedBuilder(COMPACT)`;
+    /// `None` once built.
+    pending: Option<PackedLongValuesBuilder>,
+    /// Term ids per doc, created lazily.
+    pending_counts: Option<DeltaPackedLongValuesBuilder>,
+    docs_with_field: Arc<DocsWithFieldSet>,
     iw_bytes_used: Arc<AtomicI64>,
+    /// Tracks `pending`, `pendingCounts`, the document set and `currentValues`.
+    bytes_used: i64,
+    /// What the writer charged the counter directly (`2 * Integer.BYTES` per
+    /// distinct value, and the growth of `currentValues`); kept so that `Drop`
+    /// can give it back.
+    direct_charges: i64,
+    field_info: FieldInfo,
+    current_doc: i32,
+    /// `currentValues`, an `int[]` that starts at 8 and grows by
+    /// `ArrayUtil.grow`; only `[..current_upto]` is meaningful.
+    current_values: Vec<i32>,
+    current_upto: usize,
+    max_count: i32,
+    final_ords: Option<Arc<PackedLongValues>>,
+    final_ord_counts: Option<Arc<DeltaPackedLongValues>>,
+    dictionary: Option<Dictionary>,
     flushed: bool,
 }
 
@@ -3085,25 +3221,36 @@ impl SortedSetDocValuesWriter {
     /// Creates a writer for `field_info`, charging its initial footprint to
     /// `iw_bytes_used`.
     ///
-    /// Equivalent to `new SortedSetDocValuesWriter(FieldInfo, Counter, pool,
-    /// scratch)` without the shared pool and the batch paths.
+    /// Equivalent to `new SortedSetDocValuesWriter(FieldInfo, Counter,
+    /// ByteBlockPool, SharedIndexingScratch)` (`SortedSetDocValuesWriter.java:65-81`).
     pub fn new(field_info: FieldInfo, iw_bytes_used: Arc<AtomicI64>) -> Self {
+        let hash = Arc::new(BytesRefHash::with_direct_bytes_start(
+            DEFAULT_CAPACITY,
+            Arc::clone(&iw_bytes_used),
+        ));
+        let pending = packed_builder(PackedInts::COMPACT);
         let docs_with_field = DocsWithFieldSet::new();
-        let bytes_used = docs_with_field.ram_bytes_used();
+        let current_values = vec![0i32; 8];
+        let bytes_used = pending.ram_bytes_used()
+            + docs_with_field.ram_bytes_used()
+            + RamUsageEstimator::size_of_int(&current_values);
         iw_bytes_used.fetch_add(bytes_used, Ordering::AcqRel);
         Self {
-            pool: ByteBlockPool::new(Arc::clone(&iw_bytes_used)),
-            hash: BytesRefHash::new(Arc::clone(&iw_bytes_used)),
-            field_info,
-            pending: Vec::new(),
+            hash,
+            pending: Some(pending),
             pending_counts: None,
-            docs_with_field,
-            current_doc: -1,
-            current_values: Vec::new(),
-            max_count: 0,
-            bytes_used,
-            ord_map_charge: 0,
+            docs_with_field: Arc::new(docs_with_field),
             iw_bytes_used,
+            bytes_used,
+            direct_charges: 0,
+            field_info,
+            current_doc: -1,
+            current_values,
+            current_upto: 0,
+            max_count: 0,
+            final_ords: None,
+            final_ord_counts: None,
+            dictionary: None,
             flushed: false,
         }
     }
@@ -3113,25 +3260,49 @@ impl SortedSetDocValuesWriter {
         &self.field_info
     }
 
+    fn check_open(&self) -> Result<()> {
+        if self.flushed {
+            return Err(already_flushed(&self.field_info));
+        }
+        if self.pending.is_none() {
+            return Err(already_built());
+        }
+        Ok(())
+    }
+
+    /// Charges `bytes` straight to the counter, as Java's
+    /// `iwBytesUsed.addAndGet` does.
+    fn charge_directly(&mut self, bytes: i64) {
+        self.iw_bytes_used.fetch_add(bytes, Ordering::AcqRel);
+        self.direct_charges += bytes;
+    }
+
     /// Buffers `value` as one more value of `doc_id`.
     ///
-    /// Equivalent to `SortedSetDocValuesWriter.addValue(int, BytesRef)` with
-    /// the null check performed by the caller: repeated values of one document
-    /// accumulate and are deduplicated on commit. Java asserts
-    /// `docID >= currentDoc`; this port refuses a backwards document id, for
-    /// the same reason as [`SortedNumericDocValuesWriter::add_value`].
+    /// Equivalent to `SortedSetDocValuesWriter.addValue(int, BytesRef)`
+    /// (`SortedSetDocValuesWriter.java:83-105`) with the null check performed
+    /// by the caller: repeated values of one document accumulate and are
+    /// deduplicated on commit.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalArgument`] when `doc_id` goes backwards
-    /// or the value is too long, and [`LuceneError::IllegalState`] when the
-    /// field has already been flushed.
-    pub fn add_value(&mut self, doc_id: i32, value: &[u8]) -> Result<()> {
-        if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
-                "the doc values of field \"{}\" have already been flushed",
-                self.field_info.name
-            )));
+    /// (Java asserts) or the value is too long, and
+    /// [`LuceneError::IllegalState`] when the field has already been built or
+    /// flushed.
+    pub fn add_value(
+        &mut self,
+        doc_id: i32,
+        value: &[u8],
+        pool: &mut Arc<ByteBlockPool>,
+    ) -> Result<()> {
+        self.check_open()?;
+        if doc_id < self.current_doc {
+            return Err(backwards_document(
+                &self.field_info,
+                doc_id,
+                self.current_doc,
+            ));
         }
         if value.len() > SORTED_MAX_LENGTH {
             return Err(LuceneError::IllegalArgument(format!(
@@ -3139,54 +3310,53 @@ impl SortedSetDocValuesWriter {
                 self.field_info.name
             )));
         }
-        if doc_id < self.current_doc {
-            return Err(LuceneError::IllegalArgument(format!(
-                "DocValuesField \"{}\" values must be added in increasing document order (doc {} after {})",
-                self.field_info.name, doc_id, self.current_doc
-            )));
-        }
         if doc_id != self.current_doc {
             self.finish_current_doc()?;
             self.current_doc = doc_id;
         }
-
-        let term_id = self.hash.add(&mut self.pool, value)?;
-        if term_id < 0 {
-            // `-termID - 1`: the value is already in the dictionary.
-        } else {
-            self.ord_map_charge += 2 * std::mem::size_of::<i32>() as i64;
-        }
-        let term_id = if term_id < 0 { -term_id - 1 } else { term_id };
-        self.current_values.push(term_id);
+        self.add_one_value(value, pool)?;
         self.update_bytes_used();
         Ok(())
+    }
+
+    /// Appends `term_id` to the current document's values, growing
+    /// `currentValues` as Java does — including the direct charge of the new
+    /// slots, which Java makes on top of `updateBytesUsed`'s `sizeOf`.
+    fn push_current_value(&mut self, term_id: i32) {
+        if self.current_upto == self.current_values.len() {
+            let new_len = ArrayUtil::oversize(self.current_values.len() + 1, 4);
+            self.current_values.resize(new_len, 0);
+            self.charge_directly((new_len - self.current_upto) as i64 * i64::from(i32::BITS / 8));
+        }
+        self.current_values[self.current_upto] = term_id;
+        self.current_upto += 1;
     }
 
     /// Buffers one dictionary-encoded value per tuple the cursor names, at
     /// `base_doc_id` plus the batch-local id.
     ///
     /// Equivalent to `SortedSetDocValuesWriter.addOrdinalTuples(int, List,
-    /// OrdinalsTupleCursor)`. Several tuples may name the same document; their
-    /// values accumulate and are deduplicated when the document is committed.
+    /// OrdinalsTupleCursor)` (`SortedSetDocValuesWriter.java:107-153`). Several
+    /// tuples may name the same document; their values accumulate and are
+    /// deduplicated when the document is committed.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalArgument`] when a document goes backwards
     /// or an ordinal is out of range, [`LuceneError::IllegalState`] when the
-    /// field has already been flushed, and whatever reading the cursor raises.
+    /// field has already been built or flushed, and whatever reading the
+    /// cursor raises.
     pub fn add_ordinal_tuples(
         &mut self,
         base_doc_id: i32,
         dictionary: &[BytesRef],
         cursor: &mut dyn OrdinalsTupleCursor,
+        pool: &mut Arc<ByteBlockPool>,
+        scratch: &mut SharedIndexingScratch,
     ) -> Result<()> {
-        if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
-                "the doc values of field \"{}\" have already been flushed",
-                self.field_info.name
-            )));
-        }
-        let mut ord_to_hash = vec![-1i32; dictionary.len()];
+        self.check_open()?;
+        let mut owned = Vec::new();
+        let ord_to_hash = ord_to_hash_table(dictionary.len(), scratch, &mut owned);
         loop {
             let batch_doc_id = cursor.next_doc()?;
             if batch_doc_id == NO_MORE_DOCS {
@@ -3194,10 +3364,11 @@ impl SortedSetDocValuesWriter {
             }
             let doc_id = base_doc_id + batch_doc_id;
             if doc_id < self.current_doc {
-                return Err(LuceneError::IllegalArgument(format!(
-                    "DocValuesField \"{}\" values must be added in increasing document order (doc {doc_id} after {})",
-                    self.field_info.name, self.current_doc
-                )));
+                return Err(backwards_document(
+                    &self.field_info,
+                    doc_id,
+                    self.current_doc,
+                ));
             }
             if doc_id != self.current_doc {
                 self.finish_current_doc()?;
@@ -3213,69 +3384,102 @@ impl SortedSetDocValuesWriter {
             }
             let mut hash_id = ord_to_hash[ord as usize];
             if hash_id < 0 {
-                hash_id = self
-                    .hash
-                    .add(&mut self.pool, dictionary[ord as usize].slice())?;
+                hash_id = hash_mut(&mut self.hash)?
+                    .add(pool_mut(pool)?, dictionary[ord as usize].slice())?;
                 if hash_id < 0 {
                     hash_id = -hash_id - 1;
                 } else {
-                    self.ord_map_charge += 2 * std::mem::size_of::<i32>() as i64;
+                    self.charge_directly(2 * i64::from(i32::BITS / 8));
                 }
                 ord_to_hash[ord as usize] = hash_id;
             }
-            self.current_values.push(hash_id);
+            self.push_current_value(hash_id);
         }
         self.update_bytes_used();
         Ok(())
     }
 
-    /// Equivalent to `SortedSetDocValuesWriter.finishCurrentDoc`: sorts the
-    /// current term ids, deduplicates them into the flat stream and records
-    /// the distinct count — backfilling one count per already-seen document
-    /// when the first multi-valued document appears.
+    /// Finalizes the current document: sorts and deduplicates its term ids
+    /// into `pending` and records the distinct count — starting the counts
+    /// builder, with one count per document already recorded, when the first
+    /// document that does not carry exactly one distinct value appears.
+    ///
+    /// Equivalent to `SortedSetDocValuesWriter.finishCurrentDoc()`
+    /// (`SortedSetDocValuesWriter.java:155-189`).
     fn finish_current_doc(&mut self) -> Result<()> {
         if self.current_doc == -1 {
             return Ok(());
         }
-        self.current_values.sort_unstable();
-        let mut count = 0i32;
+        let upto = self.current_upto;
+        if upto > 1 {
+            self.current_values[..upto].sort_unstable();
+        }
+        let pending = self.pending.as_mut().ok_or_else(already_built)?;
         let mut last_value = -1i32;
-        for &term_id in &self.current_values {
+        let mut count = 0i32;
+        for &term_id in &self.current_values[..upto] {
+            // if it's not a duplicate
             if term_id != last_value {
-                self.pending.push(term_id);
+                pending.add(i64::from(term_id))?; // record the term id
                 count += 1;
             }
             last_value = term_id;
         }
-        if let Some(counts) = &mut self.pending_counts {
-            counts.push(count);
+        // record the number of unique term ids for this doc
+        if let Some(counts) = self.pending_counts.as_mut() {
+            counts.add(i64::from(count))?;
         } else if count != 1 {
-            let mut counts = vec![1i32; self.docs_with_field.cardinality() as usize];
-            counts.push(count);
+            let mut counts = delta_packed_builder();
+            for _ in 0..self.docs_with_field.cardinality() {
+                counts.add(1)?;
+            }
+            counts.add(i64::from(count))?;
             self.pending_counts = Some(counts);
         }
         self.max_count = self.max_count.max(count);
-        self.current_values.clear();
-        self.docs_with_field.add(self.current_doc)?;
+        self.current_upto = 0;
+        docs_mut(&mut self.docs_with_field).add(self.current_doc)?;
         Ok(())
     }
 
+    /// Equivalent to `SortedSetDocValuesWriter.addOneValue(BytesRef)`
+    /// (`SortedSetDocValuesWriter.java:191-210`).
+    fn add_one_value(&mut self, value: &[u8], pool: &mut Arc<ByteBlockPool>) -> Result<()> {
+        let mut term_id = hash_mut(&mut self.hash)?.add(pool_mut(pool)?, value)?;
+        if term_id < 0 {
+            term_id = -term_id - 1;
+        } else {
+            // reserve additional space for each unique value:
+            // 1. when indexing, when hash is 50% full, rehash() suddenly needs 2*size ints.
+            // 2. when flushing, we need 1 int per value (slot in the ordMap).
+            self.charge_directly(2 * i64::from(i32::BITS / 8));
+        }
+        self.push_current_value(term_id);
+        Ok(())
+    }
+
+    /// Equivalent to `SortedSetDocValuesWriter.updateBytesUsed()`
+    /// (`SortedSetDocValuesWriter.java:212-220`).
     fn update_bytes_used(&mut self) {
-        let new_bytes_used = self.ram_bytes_used();
+        let Some(pending) = self.pending.as_ref() else {
+            return;
+        };
+        let new_bytes_used = pending.ram_bytes_used()
+            + self
+                .pending_counts
+                .as_ref()
+                .map_or(0, |counts| counts.ram_bytes_used())
+            + self.docs_with_field.ram_bytes_used()
+            + RamUsageEstimator::size_of_int(&self.current_values);
         self.iw_bytes_used
             .fetch_add(new_bytes_used - self.bytes_used, Ordering::AcqRel);
         self.bytes_used = new_bytes_used;
     }
 
-    /// Approximate heap held by the plain buffers; the pool and the hash
-    /// charge the shared counter directly.
+    /// The bytes this writer has charged to the shared counter, other than the
+    /// hash's own slot array.
     pub fn ram_bytes_used(&self) -> i64 {
-        self.pending.capacity() as i64 * std::mem::size_of::<i32>() as i64
-            + self.pending_counts.as_ref().map_or(0, |counts| {
-                counts.capacity() as i64 * std::mem::size_of::<i32>() as i64
-            })
-            + self.current_values.capacity() as i64 * std::mem::size_of::<i32>() as i64
-            + self.docs_with_field.ram_bytes_used()
+        self.bytes_used + self.direct_charges
     }
 
     /// Number of documents that have values buffered.
@@ -3283,13 +3487,90 @@ impl SortedSetDocValuesWriter {
         self.docs_with_field.cardinality()
     }
 
+    /// Builds the final term ids, counts and dictionary, once.
+    ///
+    /// Equivalent to `SortedSetDocValuesWriter.finish()`
+    /// (`SortedSetDocValuesWriter.java:222-236`).
+    fn finish(&mut self, pool: &Arc<ByteBlockPool>) -> Result<()> {
+        if self.final_ords.is_none() {
+            self.finish_current_doc()?;
+            let pending = self.pending.take().ok_or_else(already_built)?;
+            self.final_ords = Some(Arc::new(pending.build()?));
+            self.final_ord_counts = match self.pending_counts.take() {
+                Some(counts) => Some(Arc::new(counts.build()?)),
+                None => None,
+            };
+            self.dictionary = Some(Dictionary::build(&self.hash, pool));
+        }
+        Ok(())
+    }
+
+    fn producer(&self, doc_ords: Option<Arc<DocOrds>>) -> BufferedSortedSetProducer {
+        let dictionary = self.dictionary.as_ref().expect("INVARIANT: finish() ran");
+        BufferedSortedSetProducer {
+            field_number: self.field_info.number,
+            field_name: self.field_info.name.clone(),
+            dictionary: dictionary.clone(),
+            ords: Arc::clone(self.final_ords.as_ref().expect("INVARIANT: finish() ran")),
+            ord_counts: Arc::clone(
+                self.final_ord_counts
+                    .as_ref()
+                    .expect("INVARIANT: the multi-valued producer is built with counts"),
+            ),
+            max_count: self.max_count,
+            docs_with_field: Arc::clone(&self.docs_with_field),
+            doc_ords,
+        }
+    }
+
+    /// The single-valued producer `SortedDocValuesWriter.getDocValuesProducer`
+    /// builds over this writer's term ids, for a field without counts.
+    fn single_value_producer(
+        &self,
+        sort_map: Option<&SorterDocMap>,
+    ) -> Result<Arc<dyn DocValuesProducer>> {
+        SortedDocValuesWriter::get_doc_values_producer(
+            &self.field_info,
+            self.dictionary.as_ref().expect("INVARIANT: finish() ran"),
+            Arc::clone(self.final_ords.as_ref().expect("INVARIANT: finish() ran")),
+            Arc::clone(&self.docs_with_field),
+            sort_map,
+        )
+    }
+
+    /// Returns a read-only view over the values buffered so far.
+    ///
+    /// Equivalent to `SortedSetDocValuesWriter.getDocValues()`
+    /// (`SortedSetDocValuesWriter.java:238-243`), which finishes the current
+    /// document first.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the term ids raises.
+    pub fn get_doc_values(
+        &mut self,
+        pool: &Arc<ByteBlockPool>,
+    ) -> Result<Arc<dyn DocValuesProducer>> {
+        self.finish(pool)?;
+        if self.final_ord_counts.is_none() {
+            let single_value_producer = self.single_value_producer(None)?;
+            return Ok(Arc::new(SingletonProducer {
+                field_number: self.field_info.number,
+                field_name: self.field_info.name.clone(),
+                single_value_producer,
+            }));
+        }
+        Ok(Arc::new(self.producer(None)))
+    }
+
     /// Hands the buffered values to `consumer`.
     ///
-    /// Equivalent to `SortedSetDocValuesWriter.flush`: the per-document
-    /// ordinals are mapped through the dictionary order and sorted eagerly
-    /// (Java sorts them inside the buffered iterator, producing the same
-    /// stream), and the singleton case wraps the sorted view, which is what
-    /// makes the codec pick the single-valued file layout.
+    /// Equivalent to `SortedSetDocValuesWriter.flush(SegmentWriteState,
+    /// Sorter.DocMap, DocValuesConsumer)` (`SortedSetDocValuesWriter.java:262-320`):
+    /// a field without counts is handed over through
+    /// `SortedDocValuesWriter.getDocValuesProducer` viewed as a singleton;
+    /// otherwise, with an index sort, the ordinals are first copied into
+    /// `DocOrds` by new document number.
     ///
     /// # Errors
     ///
@@ -3297,128 +3578,347 @@ impl SortedSetDocValuesWriter {
     /// flushed; otherwise propagates whatever the consumer raises.
     pub fn flush(
         &mut self,
-        consumer: &mut dyn DocValuesConsumer,
+        state: &SegmentWriteState<'_>,
         sort_map: Option<&SorterDocMap>,
+        consumer: &mut dyn DocValuesConsumer,
+        pool: &Arc<ByteBlockPool>,
     ) -> Result<()> {
         if self.flushed {
-            return Err(LuceneError::IllegalState(format!(
-                "the doc values of field \"{}\" have already been flushed",
-                self.field_info.name
-            )));
+            return Err(already_flushed(&self.field_info));
         }
+        self.finish(pool)?;
         self.flushed = true;
-        self.finish_current_doc()?;
-
-        let dictionary = self.materialize_dictionary()?;
-        // One count per document; when no document turned out multi-valued
-        // every count is one and the flat stream maps one to one.
-        let mut ord_counts = self.pending_counts.take().unwrap_or_default();
-        if ord_counts.is_empty() {
-            ord_counts = vec![1; self.pending.len()];
+        if self.final_ord_counts.is_none() {
+            let single_value_producer = self.single_value_producer(sort_map)?;
+            let producer = SingletonProducer {
+                field_number: self.field_info.number,
+                field_name: self.field_info.name.clone(),
+                single_value_producer,
+            };
+            return consumer.add_sorted_set_field(&self.field_info, &producer);
         }
-        let mut ords: Vec<i64> = Vec::with_capacity(self.pending.len());
-        let mut cursor = 0usize;
-        for &count in &ord_counts {
-            let end = cursor + count as usize;
-            for &term_id in &self.pending[cursor..end] {
-                ords.push(i64::from(dictionary.ord_map[term_id as usize]));
+        let doc_ords = match sort_map {
+            Some(sort_map) => {
+                let unsorted = self.producer(None);
+                Some(Arc::new(DocOrds::new(
+                    state.segment_info.max_doc()?,
+                    sort_map,
+                    &mut unsorted.buffered(),
+                    PackedInts::FASTEST,
+                    PackedInts::bits_required(i64::from(self.max_count))?,
+                )?))
             }
-            // Java's buffered iterator sorts each document's mapped ordinals
-            // in `nextDoc`; here the same stream is sorted eagerly at flush.
-            ords[cursor..end].sort_unstable();
-            cursor = end;
-        }
-
-        let docs_with_field = std::mem::take(&mut self.docs_with_field);
-        let mut producer = BufferedSortedSetProducer::new(
-            &self.field_info,
-            &docs_with_field,
-            ords,
-            if ord_counts.is_empty() {
-                None
-            } else {
-                Some(ord_counts)
-            },
-            dictionary.values,
-        )?;
-        // `new DocOrds(maxDoc, sortMap, ...)` and `SortingSortedSetDocValues`
-        // (`SortedSetDocValuesWriter.java:290-314`).
-        if let Some(sort_map) = sort_map {
-            let per_doc = split_per_document(&producer.ords, producer.ord_counts.as_deref());
-            let (docs, per_doc) = sort_per_document(&producer.docs, per_doc, sort_map);
-            producer.ord_counts = producer
-                .ord_counts
-                .as_ref()
-                .map(|_| Arc::new(per_doc.iter().map(|ords| ords.len() as i32).collect()));
-            producer.docs = Arc::new(docs);
-            producer.ords = Arc::new(per_doc.concat());
-        }
-        drop(docs_with_field);
-        self.update_bytes_used();
+            None => None,
+        };
+        let producer = self.producer(doc_ords);
         consumer.add_sorted_set_field(&self.field_info, &producer)
-    }
-
-    /// Sorts the distinct values by unsigned byte order and builds the
-    /// term-id → ordinal map. Equivalent to `SortedSetDocValuesWriter.finish`.
-    fn materialize_dictionary(&self) -> Result<Dictionary> {
-        let sorted = self.hash.sort(&self.pool);
-        let mut values = Vec::with_capacity(sorted.len());
-        let mut ord_map = vec![0i32; sorted.len()];
-        for (ord, &term_id) in sorted.iter().enumerate() {
-            ord_map[term_id as usize] = ord as i32;
-            let start = self.hash.byte_start(term_id);
-            values.push(self.pool.term_bytes(start).to_vec());
-        }
-        Ok(Dictionary { values, ord_map })
-    }
-}
-
-impl SortedSetDocValuesWriter {
-    /// Returns a read-only view over the values buffered so far.
-    ///
-    /// Equivalent to `SortedSetDocValuesWriter.getDocValues()`; the same
-    /// divergence as [`NumericDocValuesWriter::get_doc_values`] applies. The
-    /// document under construction is not included: Java calls `finishCurrentDoc`
-    /// before reading, and this view is taken between documents, where there is
-    /// none in flight.
-    ///
-    /// # Errors
-    ///
-    /// Propagates whatever building the dictionary raises.
-    pub fn get_doc_values(&self) -> Result<Arc<dyn DocValuesProducer>> {
-        let dictionary = self.materialize_dictionary()?;
-        let mut ord_counts = self.pending_counts.clone().unwrap_or_default();
-        if ord_counts.is_empty() {
-            ord_counts = vec![1; self.pending.len()];
-        }
-        let mut ords: Vec<i64> = Vec::with_capacity(self.pending.len());
-        let mut cursor = 0usize;
-        for &count in &ord_counts {
-            let end = cursor + count as usize;
-            for &term_id in &self.pending[cursor..end] {
-                ords.push(i64::from(dictionary.ord_map[term_id as usize]));
-            }
-            ords[cursor..end].sort_unstable();
-            cursor = end;
-        }
-        Ok(Arc::new(BufferedSortedSetProducer::new(
-            &self.field_info,
-            &self.docs_with_field,
-            ords,
-            self.pending_counts.clone(),
-            dictionary.values,
-        )?))
     }
 }
 
 impl Drop for SortedSetDocValuesWriter {
-    /// Gives back the delta-tracked buffers, the hash's arrays and the pool
-    /// blocks.
+    /// Gives back the delta-tracked buffers, the direct charges and the hash's
+    /// slot array; the pool's blocks belong to the chain.
     fn drop(&mut self) {
-        self.iw_bytes_used
-            .fetch_sub(self.bytes_used, Ordering::AcqRel);
-        self.hash.release_accounting();
-        self.pool.reset();
+        self.iw_bytes_used.fetch_sub(
+            self.bytes_used + self.direct_charges + self.hash.charged_bytes(),
+            Ordering::AcqRel,
+        );
+    }
+}
+
+/// Serves the buffered sorted-set values of a field some document of which
+/// carries other than one distinct value.
+///
+/// Equivalent to the anonymous `EmptyDocValuesProducer` of
+/// `SortedSetDocValuesWriter.flush` (`SortedSetDocValuesWriter.java:303-319`).
+#[derive(Debug, Clone)]
+struct BufferedSortedSetProducer {
+    field_number: i32,
+    field_name: String,
+    dictionary: Dictionary,
+    ords: Arc<PackedLongValues>,
+    ord_counts: Arc<DeltaPackedLongValues>,
+    max_count: i32,
+    docs_with_field: Arc<DocsWithFieldSet>,
+    doc_ords: Option<Arc<DocOrds>>,
+}
+
+producer_guard!(BufferedSortedSetProducer);
+
+impl BufferedSortedSetProducer {
+    /// Equivalent to the private `SortedSetDocValuesWriter.getValues(...)`
+    /// with counts (`SortedSetDocValuesWriter.java:245-260`).
+    fn buffered(&self) -> BufferedSortedSet {
+        BufferedSortedSet {
+            dictionary: self.dictionary.clone(),
+            ords_iter: OwnedPackedLongValuesIterator::new(Arc::clone(&self.ords)),
+            ord_counts_iter: OwnedPackedLongValuesIterator::new(Arc::clone(&self.ord_counts)),
+            docs_with_field: DocsWithFieldSet::shared_iterator(&self.docs_with_field),
+            current_doc: vec![0i32; self.max_count.max(0) as usize],
+            ord_count: 0,
+            ord_upto: 0,
+        }
+    }
+}
+
+impl DocValuesProducer for BufferedSortedSetProducer {
+    fn get_sorted_set(&self, field: &FieldInfo) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+        self.check_field(field)?;
+        let buf = Box::new(self.buffered());
+        Ok(Some(match &self.doc_ords {
+            None => buf,
+            Some(doc_ords) => Box::new(SortingSortedSet::new(buf, Arc::clone(doc_ords))),
+        }))
+    }
+
+    empty_producer_methods!(numeric);
+    empty_producer_methods!(binary);
+    empty_producer_methods!(sorted);
+    empty_producer_methods!(sorted_numeric);
+    empty_producer_methods!(common);
+}
+
+/// Iterates the buffered values of a sorted-set field.
+///
+/// Equivalent to `SortedSetDocValuesWriter.BufferedSortedSetDocValues`
+/// (`SortedSetDocValuesWriter.java:322-418`): each document's term ids are
+/// mapped through `ordMap` and sorted as the document is reached.
+struct BufferedSortedSet {
+    dictionary: Dictionary,
+    ords_iter: OwnedPackedLongValuesIterator<PackedLongValues>,
+    ord_counts_iter: OwnedPackedLongValuesIterator<DeltaPackedLongValues>,
+    docs_with_field: Box<dyn DocIdSetIterator + Send + Sync>,
+    current_doc: Vec<i32>,
+    ord_count: i32,
+    ord_upto: usize,
+}
+
+impl fmt::Debug for BufferedSortedSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BufferedSortedSet")
+            .field("doc_id", &self.docs_with_field.doc_id())
+            .field("ord_count", &self.ord_count)
+            .finish()
+    }
+}
+
+impl DocIdSetIterator for BufferedSortedSet {
+    fn doc_id(&self) -> i32 {
+        self.docs_with_field.doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        let doc_id = self.docs_with_field.next_doc()?;
+        if doc_id != NO_MORE_DOCS {
+            self.ord_count = self.ord_counts_iter.next_value() as i32;
+            debug_assert!(self.ord_count > 0);
+            for i in 0..self.ord_count as usize {
+                let term_id = to_int_exact(self.ords_iter.next_value())?;
+                self.current_doc[i] = self.dictionary.ord_map[term_id as usize];
+            }
+            self.current_doc[..self.ord_count as usize].sort_unstable();
+            self.ord_upto = 0;
+        }
+        Ok(doc_id)
+    }
+
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(
+            "BufferedSortedSetDocValues does not support advance".to_string(),
+        ))
+    }
+
+    fn cost(&self) -> i64 {
+        self.docs_with_field.cost()
+    }
+
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        self.docs_with_field.into_bit_set(up_to, bit_set, offset)
+    }
+
+    fn doc_id_run_end(&self) -> Result<i32> {
+        self.docs_with_field.doc_id_run_end()
+    }
+}
+
+impl DocValuesIterator for BufferedSortedSet {
+    fn advance_exact(&mut self, _target: i32) -> Result<bool> {
+        Err(LuceneError::UnsupportedOperation(
+            "BufferedSortedSetDocValues does not support advanceExact".to_string(),
+        ))
+    }
+}
+
+impl SortedSetDocValues for BufferedSortedSet {
+    fn next_ord(&mut self) -> Result<i64> {
+        let ord = self.current_doc[self.ord_upto];
+        self.ord_upto += 1;
+        Ok(i64::from(ord))
+    }
+
+    fn doc_value_count(&self) -> Result<i32> {
+        Ok(self.ord_count)
+    }
+
+    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+        self.dictionary.lookup_ord(ord)
+    }
+
+    fn get_value_count(&self) -> Result<i64> {
+        Ok(self.dictionary.len() as i64)
+    }
+}
+
+/// The ordinals of a sorted-set field laid out by new document number.
+///
+/// Equivalent to `SortedSetDocValuesWriter.DocOrds`
+/// (`SortedSetDocValuesWriter.java:487-523`): `offsets[newDocID]` is one plus
+/// the position of the document's first ordinal in `ords`, `0` meaning no
+/// values, and `docValueCounts` holds each new document's count.
+#[derive(Debug)]
+struct DocOrds {
+    offsets: Vec<i64>,
+    ords: PackedLongValues,
+    doc_value_counts: GrowableWriter,
+}
+
+impl DocOrds {
+    fn new(
+        max_doc: i32,
+        sort_map: &SorterDocMap,
+        old_values: &mut dyn SortedSetDocValues,
+        acceptable_overhead_ratio: f32,
+        bits_per_value: i32,
+    ) -> Result<Self> {
+        let mut offsets = vec![0i64; max_doc as usize];
+        let mut builder = packed_builder(acceptable_overhead_ratio);
+        let mut doc_value_counts =
+            GrowableWriter::new(bits_per_value, max_doc, acceptable_overhead_ratio)?;
+        let mut ord_offset = 1i64;
+        loop {
+            let doc_id = old_values.next_doc()?;
+            if doc_id == NO_MORE_DOCS {
+                break;
+            }
+            let new_doc_id = sort_map.old_to_new(doc_id);
+            let start_offset = ord_offset;
+            let doc_value_count = old_values.doc_value_count()?;
+            ord_offset += i64::from(doc_value_count);
+            for _ in 0..doc_value_count {
+                builder.add(old_values.next_ord()?)?;
+            }
+            doc_value_counts.set(new_doc_id, ord_offset - start_offset);
+            if start_offset != ord_offset {
+                // do we have any values?
+                offsets[new_doc_id as usize] = start_offset;
+            }
+        }
+        Ok(Self {
+            offsets,
+            ords: builder.build()?,
+            doc_value_counts,
+        })
+    }
+}
+
+/// Iterates the sorted-set doc values of a field after an index sort has
+/// reordered the segment.
+///
+/// Equivalent to `SortedSetDocValuesWriter.SortingSortedSetDocValues`
+/// (`SortedSetDocValuesWriter.java:420-485`).
+struct SortingSortedSet {
+    in_values: Box<dyn SortedSetDocValues>,
+    ords: Arc<DocOrds>,
+    doc_id: i32,
+    ord_upto: i64,
+    count: i32,
+}
+
+impl SortingSortedSet {
+    fn new(in_values: Box<dyn SortedSetDocValues>, ords: Arc<DocOrds>) -> Self {
+        Self {
+            in_values,
+            ords,
+            doc_id: -1,
+            ord_upto: 0,
+            count: 0,
+        }
+    }
+
+    /// Equivalent to `SortingSortedSetDocValues.initCount()`.
+    fn init_count(&mut self) {
+        debug_assert!(self.doc_id >= 0);
+        self.ord_upto = self.ords.offsets[self.doc_id as usize] - 1;
+        self.count = self.ords.doc_value_counts.get(self.doc_id) as i32;
+    }
+}
+
+impl fmt::Debug for SortingSortedSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SortingSortedSet")
+            .field("doc_id", &self.doc_id)
+            .finish()
+    }
+}
+
+impl DocIdSetIterator for SortingSortedSet {
+    fn doc_id(&self) -> i32 {
+        self.doc_id
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        loop {
+            self.doc_id += 1;
+            if self.doc_id as usize == self.ords.offsets.len() {
+                self.doc_id = NO_MORE_DOCS;
+                return Ok(self.doc_id);
+            }
+            if self.ords.offsets[self.doc_id as usize] > 0 {
+                break;
+            }
+        }
+        self.init_count();
+        Ok(self.doc_id)
+    }
+
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Err(LuceneError::UnsupportedOperation(
+            "use nextDoc instead".to_string(),
+        ))
+    }
+
+    fn cost(&self) -> i64 {
+        self.in_values.cost()
+    }
+}
+
+impl DocValuesIterator for SortingSortedSet {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        // needed in IndexSorter#StringSorter
+        self.doc_id = target;
+        self.init_count();
+        Ok(self.ords.offsets[self.doc_id as usize] > 0)
+    }
+}
+
+impl SortedSetDocValues for SortingSortedSet {
+    fn next_ord(&mut self) -> Result<i64> {
+        let ord = self.ords.ords.get(self.ord_upto);
+        self.ord_upto += 1;
+        Ok(ord)
+    }
+
+    fn doc_value_count(&self) -> Result<i32> {
+        debug_assert!(self.doc_id >= 0);
+        Ok(self.count)
+    }
+
+    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+        self.in_values.lookup_ord(ord)
+    }
+
+    fn get_value_count(&self) -> Result<i64> {
+        self.in_values.get_value_count()
     }
 }
 
@@ -3441,6 +3941,43 @@ mod tests {
 
     fn counter() -> Arc<AtomicI64> {
         Arc::new(AtomicI64::new(0))
+    }
+
+    /// The indexing chain's shared `docValuesBytePool`, standing alone.
+    fn test_pool() -> Arc<ByteBlockPool> {
+        Arc::new(ByteBlockPool::new(counter()))
+    }
+
+    /// Runs `f` with a write state for an unsorted segment of `max_doc`
+    /// documents, which is all a doc-values writer reads off the state.
+    fn with_state<R>(max_doc: i32, f: impl FnOnce(&SegmentWriteState<'_>) -> R) -> R {
+        let directory: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::RamDirectory::default());
+        let segment_info = crate::index::SegmentInfo::new(
+            Arc::clone(&directory),
+            crate::util::Version::LATEST,
+            Some(crate::util::Version::LATEST),
+            "_0".to_string(),
+            max_doc,
+            false,
+            false,
+            Arc::new(crate::codecs::Lucene104Codec::new()),
+            std::collections::HashMap::new(),
+            [7u8; 16],
+            std::collections::HashMap::new(),
+            Default::default(),
+        )
+        .expect("segment info");
+        let field_infos = crate::index::FieldInfos::default();
+        let state = SegmentWriteState::new(
+            &crate::util::NoOutputInfoStream,
+            directory,
+            &segment_info,
+            &field_infos,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
+            &*crate::store::DEFAULT_IO_CONTEXT,
+        );
+        f(&state)
     }
 
     /// Everything a consumer can be handed, captured generically so a test can
@@ -3715,7 +4252,7 @@ mod tests {
             writer.add_value(doc, value).unwrap();
         }
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
         assert_eq!(
             consumer.fields,
             vec![(
@@ -3733,7 +4270,7 @@ mod tests {
         let mut writer =
             NumericDocValuesWriter::new(field("count", 0, DocValuesType::NUMERIC), counter());
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
         assert_eq!(
             consumer.fields,
             vec![("count".to_string(), Recorded::Numeric(Vec::new()))]
@@ -3755,7 +4292,7 @@ mod tests {
         // values were not buffered.
         assert!(writer.add_value(3, 2).is_err());
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
         assert_eq!(consumer.fields[0].1, Recorded::Numeric(vec![(4, 1)]));
     }
 
@@ -3765,8 +4302,8 @@ mod tests {
             NumericDocValuesWriter::new(field("count", 0, DocValuesType::NUMERIC), counter());
         writer.add_value(0, 1).unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
-        let error = writer.flush(&mut consumer, None).unwrap_err();
+        with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
+        let error = with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap_err();
         assert!(
             matches!(error, LuceneError::IllegalState(ref m) if m.contains("already been flushed")),
             "unexpected error: {error:?}"
@@ -3864,7 +4401,7 @@ mod tests {
             writer.add_value(doc * 2, doc as i64 + 1).unwrap();
         }
         let mut consumer = ProbingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
         assert_eq!(consumer.passes.len(), 3);
         assert_eq!(consumer.passes[0], consumer.passes[1]);
         assert_eq!(consumer.passes[1], consumer.passes[2]);
@@ -3890,7 +4427,7 @@ mod tests {
             advance: Option<String>,
             advance_exact: Option<String>,
             after: Vec<i32>,
-            long_value_error: Option<String>,
+            long_value: Option<i64>,
         }
         impl DocValuesConsumer for ProbingConsumer {
             fn add_numeric_field(
@@ -3905,7 +4442,7 @@ mod tests {
                 for _ in 0..4 {
                     self.after.push(numeric.next_doc()?);
                 }
-                self.long_value_error = Some(numeric.long_value().unwrap_err().to_string());
+                self.long_value = Some(numeric.long_value()?);
                 Ok(())
             }
 
@@ -3947,14 +4484,13 @@ mod tests {
         }
 
         let mut consumer = ProbingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
         assert!(consumer.advance.unwrap().contains("advance"));
-        assert!(consumer.advance_exact.unwrap().contains("advance_exact"));
+        assert!(consumer.advance_exact.unwrap().contains("advanceExact"));
         assert_eq!(consumer.after, vec![NO_MORE_DOCS; 4]);
-        assert!(consumer
-            .long_value_error
-            .unwrap()
-            .contains("no current document"));
+        // Java's `BufferedNumericDocValues.longValue()` returns the last value
+        // read, whatever the position.
+        assert_eq!(consumer.long_value, Some(9));
     }
 
     // -----------------------------------------------------------------------
@@ -3971,7 +4507,7 @@ mod tests {
         writer.add_value(1, b"").unwrap();
         writer.add_value(5, b"tail").unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
         assert_eq!(
             consumer.fields,
             vec![(
@@ -3998,7 +4534,7 @@ mod tests {
         );
         assert!(writer.add_value(1, b"backwards").is_err());
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
         assert_eq!(
             consumer.fields[0].1,
             Recorded::Binary(vec![(2, b"one".to_vec())])
@@ -4011,17 +4547,18 @@ mod tests {
 
     #[test]
     fn the_sorted_dictionary_is_in_unsigned_byte_order_and_ordinals_follow_it() {
+        let mut pool = test_pool();
         // b"\xff" sorts *after* b"\x01" in unsigned byte order, although a
         // signed comparison would put it first — this is exactly the ordering
         // BytesRefHash.sort produces, and what Lucene's dictionary guarantees.
         let mut writer =
             SortedDocValuesWriter::new(field("tag", 0, DocValuesType::SORTED), counter());
-        writer.add_value(0, b"\xff").unwrap();
-        writer.add_value(1, b"abc").unwrap();
-        writer.add_value(2, b"\x01").unwrap();
-        writer.add_value(4, b"abc").unwrap();
+        writer.add_value(0, b"\xff", &mut pool).unwrap();
+        writer.add_value(1, b"abc", &mut pool).unwrap();
+        writer.add_value(2, b"\x01", &mut pool).unwrap();
+        writer.add_value(4, b"abc", &mut pool).unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap();
         let Recorded::Sorted {
             docs_ords,
             dictionary,
@@ -4040,19 +4577,20 @@ mod tests {
 
     #[test]
     fn a_sorted_value_repeated_in_one_document_is_refused() {
+        let mut pool = test_pool();
         let mut writer =
             SortedDocValuesWriter::new(field("tag", 0, DocValuesType::SORTED), counter());
-        writer.add_value(3, b"one").unwrap();
-        let error = writer.add_value(3, b"two").unwrap_err();
+        writer.add_value(3, b"one", &mut pool).unwrap();
+        let error = writer.add_value(3, b"two", &mut pool).unwrap_err();
         assert!(
             matches!(error, LuceneError::IllegalArgument(ref m)
                 if m.contains("appears more than once") && m.contains("only one value is allowed")),
             "unexpected error: {error:?}"
         );
         // A doc id that goes backwards is the same failure.
-        assert!(writer.add_value(2, b"two").is_err());
+        assert!(writer.add_value(2, b"two", &mut pool).is_err());
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap();
         let Recorded::Sorted { docs_ords, .. } = &consumer.fields[0].1 else {
             panic!("expected a sorted field");
         };
@@ -4079,7 +4617,7 @@ mod tests {
         writer.add_value(6, 9).unwrap();
         writer.add_value(6, 8).unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
         assert_eq!(
             consumer.fields,
             vec![(
@@ -4107,7 +4645,7 @@ mod tests {
             writer.add_value(doc, i64::from(doc) * 10).unwrap();
         }
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
         assert_eq!(
             consumer.fields[0].1,
             Recorded::SortedNumeric(vec![
@@ -4121,9 +4659,11 @@ mod tests {
 
     #[test]
     fn a_sorted_numeric_writer_refuses_a_backwards_document() {
-        // Java only asserts `docID >= currentDoc`; with assertions off a
-        // backwards id would silently corrupt the value stream, so this port
-        // refuses it.
+        // Java only asserts `docID >= currentDoc`; with assertions off the
+        // backwards id is refused later, when `finishCurrentDoc` adds it to the
+        // document set, which throws `IllegalArgumentException("Out of order
+        // doc ids: last=..., next=...")` (`DocsWithFieldSet.java:46-50`). This
+        // port refuses it at the call.
         let mut writer = SortedNumericDocValuesWriter::new(
             field("values", 0, DocValuesType::SORTED_NUMERIC),
             counter(),
@@ -4139,7 +4679,7 @@ mod tests {
         // The rejected document was not committed; the earlier document keeps
         // its values.
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
         assert_eq!(
             consumer.fields[0].1,
             Recorded::SortedNumeric(vec![(3, vec![1, 2])])
@@ -4152,18 +4692,19 @@ mod tests {
 
     #[test]
     fn sorted_set_values_are_deduplicated_sorted_per_document_and_dictionary_ordered() {
+        let mut pool = test_pool();
         // Two documents: the first carries a duplicate and an unordered pair,
         // the second reuses one value. The dictionary must be the distinct
         // value set in unsigned byte order, each document's ords deduplicated,
         // sorted and mapped into that dictionary.
         let mut writer =
             SortedSetDocValuesWriter::new(field("tags", 0, DocValuesType::SORTED_SET), counter());
-        writer.add_value(0, b"b").unwrap();
-        writer.add_value(0, b"a").unwrap();
-        writer.add_value(0, b"b").unwrap();
-        writer.add_value(2, b"c").unwrap();
+        writer.add_value(0, b"b", &mut pool).unwrap();
+        writer.add_value(0, b"a", &mut pool).unwrap();
+        writer.add_value(0, b"b", &mut pool).unwrap();
+        writer.add_value(2, b"c", &mut pool).unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap();
         let Recorded::SortedSet {
             docs_ords,
             dictionary,
@@ -4184,16 +4725,17 @@ mod tests {
 
     #[test]
     fn an_all_single_valued_sorted_set_field_reports_singleton_views() {
+        let mut pool = test_pool();
         // Same contract as the sorted-numeric singleton: one distinct value per
         // document makes the producer serve the singleton view, and the codec
         // then picks the single-valued layout.
         let mut writer =
             SortedSetDocValuesWriter::new(field("tags", 0, DocValuesType::SORTED_SET), counter());
-        writer.add_value(0, b"x").unwrap();
-        writer.add_value(1, b"y").unwrap();
-        writer.add_value(3, b"x").unwrap();
+        writer.add_value(0, b"x", &mut pool).unwrap();
+        writer.add_value(1, b"y", &mut pool).unwrap();
+        writer.add_value(3, b"x", &mut pool).unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap();
         let Recorded::SortedSet {
             docs_ords,
             dictionary,
@@ -4207,11 +4749,12 @@ mod tests {
 
     #[test]
     fn a_sorted_set_writer_refuses_a_backwards_document() {
+        let mut pool = test_pool();
         let mut writer =
             SortedSetDocValuesWriter::new(field("tags", 0, DocValuesType::SORTED_SET), counter());
-        writer.add_value(3, b"one").unwrap();
-        writer.add_value(3, b"two").unwrap();
-        let error = writer.add_value(2, b"three").unwrap_err();
+        writer.add_value(3, b"one", &mut pool).unwrap();
+        writer.add_value(3, b"two", &mut pool).unwrap();
+        let error = writer.add_value(2, b"three", &mut pool).unwrap_err();
         assert!(
             matches!(error, LuceneError::IllegalArgument(ref m)
                 if m.contains("increasing document order")),
@@ -4220,7 +4763,7 @@ mod tests {
         // The rejected document was not committed; the earlier document keeps
         // both of its distinct values.
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap();
         let Recorded::SortedSet { docs_ords, .. } = &consumer.fields[0].1 else {
             panic!("expected a sorted-set field");
         };
@@ -4234,6 +4777,7 @@ mod tests {
 
     #[test]
     fn the_dispatch_pulls_the_value_where_java_pulls_it() {
+        let mut pool = test_pool();
         // `IndexingChain.indexDocValue` reads a long off the NUMERIC and
         // SORTED_NUMERIC branches and bytes off the BINARY, SORTED and
         // SORTED_SET branches; the enum must route to the right writer.
@@ -4244,15 +4788,17 @@ mod tests {
             .add_value(
                 0,
                 &TestDocValuesField::numeric("n", DocValuesType::NUMERIC, NumericValue::Int(42)),
+                &mut pool,
             )
             .unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap();
         assert_eq!(consumer.fields[0].1, Recorded::Numeric(vec![(0, 42)]));
     }
 
     #[test]
     fn numeric_flavours_widen_like_java_number_long_value() {
+        let mut pool = test_pool();
         // Java's `Number.longValue()` truncates floats toward zero and maps
         // NaN to 0; the Rust `as` casts are specified to do the same, and the
         // dispatch must apply them.
@@ -4271,10 +4817,11 @@ mod tests {
                 .add_value(
                     0,
                     &TestDocValuesField::numeric("n", DocValuesType::NUMERIC, value),
+                    &mut pool,
                 )
                 .unwrap();
             let mut consumer = RecordingConsumer::default();
-            writer.flush(&mut consumer, None).unwrap();
+            with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap();
             assert_eq!(
                 consumer.fields[0].1,
                 Recorded::Numeric(vec![(0, expected)]),
@@ -4285,6 +4832,7 @@ mod tests {
 
     #[test]
     fn a_missing_value_is_refused_before_the_writer_sees_it() {
+        let mut pool = test_pool();
         // `indexDocValue` null-checks NUMERIC and BINARY; the message shape
         // differs: the NUMERIC branch uses `field="name":` and the SORTED
         // branch `field "name":` — both are locked in here.
@@ -4305,7 +4853,7 @@ mod tests {
         ];
         for (doc_values_type, field_value) in cases {
             let mut writer = DocValuesWriter::new(field("f", 0, doc_values_type), counter());
-            let error = writer.add_value(0, &field_value).unwrap_err();
+            let error = writer.add_value(0, &field_value, &mut pool).unwrap_err();
             assert!(
                 matches!(error, LuceneError::IllegalArgument(ref m)
                     if m.contains("null value not allowed")),
@@ -4316,6 +4864,7 @@ mod tests {
 
     #[test]
     fn sorted_numeric_dispatch_converts_like_the_numeric_branch() {
+        let mut pool = test_pool();
         // Java reaches `numericValue().longValue()` for SORTED_NUMERIC without
         // a null check; this port reports the NUMERIC-style message instead
         // (see the module documentation) and applies the same widening.
@@ -4329,10 +4878,11 @@ mod tests {
                     DocValuesType::SORTED_NUMERIC,
                     NumericValue::Double(9.7),
                 ),
+                &mut pool,
             )
             .unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap();
         assert_eq!(
             consumer.fields[0].1,
             Recorded::SortedNumeric(vec![(0, vec![9])])
@@ -4341,6 +4891,7 @@ mod tests {
 
     #[test]
     fn the_dispatch_routes_each_type_to_its_recorded_kind() {
+        let mut pool = test_pool();
         // One round trip per DocValuesType through the enum, proving the
         // `indexDocValue` switch and the flush dispatch agree.
         let mut numeric = DocValuesWriter::new(field("f", 0, DocValuesType::NUMERIC), counter());
@@ -4352,6 +4903,7 @@ mod tests {
                     DocValuesType::NUMERIC,
                     NumericValue::Long(3),
                 ),
+                &mut pool,
             )
             .unwrap();
         let mut binary = DocValuesWriter::new(field("b", 1, DocValuesType::BINARY), counter());
@@ -4359,6 +4911,7 @@ mod tests {
             .add_value(
                 0,
                 &TestDocValuesField::binary("b", DocValuesType::BINARY, b"bytes"),
+                &mut pool,
             )
             .unwrap();
         let mut sorted = DocValuesWriter::new(field("s", 2, DocValuesType::SORTED), counter());
@@ -4366,6 +4919,7 @@ mod tests {
             .add_value(
                 0,
                 &TestDocValuesField::binary("s", DocValuesType::SORTED, b"sorted"),
+                &mut pool,
             )
             .unwrap();
         let mut sorted_set =
@@ -4374,12 +4928,13 @@ mod tests {
             .add_value(
                 0,
                 &TestDocValuesField::binary("ss", DocValuesType::SORTED_SET, b"set"),
+                &mut pool,
             )
             .unwrap();
 
         let mut consumer = RecordingConsumer::default();
         for writer in [&mut numeric, &mut binary, &mut sorted, &mut sorted_set] {
-            writer.flush(&mut consumer, None).unwrap();
+            with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap();
         }
         assert!(matches!(consumer.fields[0].1, Recorded::Numeric(_)));
         assert!(matches!(consumer.fields[1].1, Recorded::Binary(_)));
@@ -4392,6 +4947,7 @@ mod tests {
 
     #[test]
     fn flushing_the_enum_twice_is_refused() {
+        let mut pool = test_pool();
         let mut writer =
             DocValuesWriter::new(field("f", 0, DocValuesType::SORTED_NUMERIC), counter());
         writer
@@ -4402,11 +4958,13 @@ mod tests {
                     DocValuesType::SORTED_NUMERIC,
                     NumericValue::Long(1),
                 ),
+                &mut pool,
             )
             .unwrap();
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
-        let error = writer.flush(&mut consumer, None).unwrap_err();
+        with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap();
+        let error =
+            with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap_err();
         assert!(
             matches!(error, LuceneError::IllegalState(ref m) if m.contains("already been flushed")),
             "unexpected error: {error:?}"
@@ -4418,7 +4976,8 @@ mod tests {
                     "f",
                     DocValuesType::SORTED_NUMERIC,
                     NumericValue::Long(2)
-                )
+                ),
+                &mut pool,
             )
             .is_err());
     }
@@ -4441,7 +5000,9 @@ mod tests {
             let empty = counter.load(Ordering::Acquire);
             assert!(empty > 0, "the empty buffers already cost something");
             for doc in 0..1_000 {
-                writer.add_value(doc, 1).unwrap();
+                // Distinct values: a constant run packs into zero-bit pages,
+                // which cost Java's builder nothing more.
+                writer.add_value(doc, i64::from(doc) * 1_000_003).unwrap();
             }
             let full = counter.load(Ordering::Acquire);
             assert!(
@@ -4458,10 +5019,12 @@ mod tests {
     }
 
     #[test]
-    fn the_sorted_writer_refunds_the_pool_and_the_hash_at_drop() {
-        // The sorted writers charge their ByteBlockPool and BytesRefHash to the
-        // shared counter on growth, outside the delta-tracked footprint; the
-        // Drop impl must refund those too, not just the plain buffers.
+    fn the_sorted_writer_refunds_its_buffers_and_the_hash_at_drop() {
+        let mut pool = test_pool();
+        // The sorted writers charge their BytesRefHash and the per-value
+        // headroom to the shared counter directly, outside the delta-tracked
+        // footprint; the Drop impl must refund those too, not just the plain
+        // buffers. The pool belongs to the indexing chain.
         let counter = counter();
         {
             let mut writer = SortedDocValuesWriter::new(
@@ -4470,12 +5033,12 @@ mod tests {
             );
             for doc in 0..500 {
                 writer
-                    .add_value(doc, format!("value-{doc}").as_bytes())
+                    .add_value(doc, format!("value-{doc}").as_bytes(), &mut pool)
                     .unwrap();
             }
             assert!(
                 counter.load(Ordering::Acquire) > 0,
-                "the sorted writer must charge pool, hash and buffers"
+                "the sorted writer must charge its hash and buffers"
             );
         }
         assert_eq!(
@@ -4486,7 +5049,7 @@ mod tests {
     }
 
     #[test]
-    fn flushing_gives_the_plain_buffers_back_to_the_counter() {
+    fn flushing_keeps_the_charge_as_lucene_does() {
         let counter = counter();
         let mut writer = NumericDocValuesWriter::new(
             field("n", 0, DocValuesType::NUMERIC),
@@ -4497,12 +5060,11 @@ mod tests {
         }
         let full = counter.load(Ordering::Acquire);
         let mut consumer = RecordingConsumer::default();
-        writer.flush(&mut consumer, None).unwrap();
+        with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
         let after = counter.load(Ordering::Acquire);
-        assert!(
-            after < full,
-            "flushing must release the buffers: {full} -> {after}"
-        );
+        // Java's `flush` builds the values without updating the counter; the
+        // charge goes when the indexing chain's counter is discarded.
+        assert_eq!(after, full, "flushing does not change the charge");
         assert_eq!(
             consumer.fields[0].1,
             Recorded::Numeric((0..1_000).map(|d| (d, 1)).collect())
@@ -4511,9 +5073,11 @@ mod tests {
 
     #[test]
     fn two_sorted_writers_share_one_counter_without_losing_bytes() {
-        // Two sorted writers each own a pool and a hash; the shared counter
-        // must account for both, and dropping one must not disturb the other's
-        // charges.
+        let mut pool = test_pool();
+        // Two sorted writers intern into one shared pool, as the indexing
+        // chain's `docValuesBytePool` is shared, and each owns a hash; the
+        // shared counter must account for both, and dropping one must not
+        // disturb the other's charges.
         let counter = counter();
         let mut left =
             SortedDocValuesWriter::new(field("l", 0, DocValuesType::SORTED), Arc::clone(&counter));
@@ -4522,16 +5086,16 @@ mod tests {
             Arc::clone(&counter),
         );
         for doc in 0..200 {
-            left.add_value(doc, format!("left-{doc}").as_bytes())
+            left.add_value(doc, format!("left-{doc}").as_bytes(), &mut pool)
                 .unwrap();
             right
-                .add_value(doc, format!("right-{doc}").as_bytes())
+                .add_value(doc, format!("right-{doc}").as_bytes(), &mut pool)
                 .unwrap();
         }
         let both = counter.load(Ordering::Acquire);
         assert!(
             both > left.ram_bytes_used() + right.ram_bytes_used(),
-            "the pools and hashes must be part of the total"
+            "the hashes must be part of the total"
         );
         drop(left);
         let after_left = counter.load(Ordering::Acquire);

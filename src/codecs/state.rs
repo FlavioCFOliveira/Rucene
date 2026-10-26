@@ -289,7 +289,10 @@ pub struct OwnedSegmentWriteState {
     pub field_infos: FieldInfos,
 
     /// Buffered deletes/updates for this segment while flushing.
-    pub seg_updates: BufferedUpdates,
+    ///
+    /// Shared, as Java's copy constructor shares the `segUpdates` reference
+    /// between a state and its suffixed copies.
+    pub seg_updates: Arc<BufferedUpdates>,
 
     /// I/O context for all writes.
     pub context: Arc<dyn IOContext>,
@@ -333,7 +336,7 @@ impl OwnedSegmentWriteState {
             directory,
             segment_info,
             field_infos,
-            seg_updates,
+            seg_updates: Arc::new(seg_updates),
             context,
             segment_suffix: String::new(),
             del_count_on_flush: 0,
@@ -369,7 +372,7 @@ impl OwnedSegmentWriteState {
             directory: Arc::clone(&self.directory),
             segment_info: self.segment_info.clone(),
             field_infos: self.field_infos.clone(),
-            seg_updates: self.seg_updates.clone(),
+            seg_updates: Arc::clone(&self.seg_updates),
             context: Arc::clone(&self.context),
             segment_suffix,
             del_count_on_flush: self.del_count_on_flush,

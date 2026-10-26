@@ -49,7 +49,7 @@ const INITIAL_PAGE_COUNT: usize = 16;
 ///
 /// Equivalent to `org.apache.lucene.util.packed.PackedLongValues`.
 pub struct PackedLongValues {
-    values: Vec<Box<dyn PackedIntsReader>>,
+    values: Vec<Box<dyn PackedIntsReader + Send + Sync>>,
     page_shift: i32,
     page_mask: i32,
     size: i64,
@@ -358,41 +358,77 @@ impl Accountable for MonotonicLongValues {
     }
 }
 
-/// An iterator over the values of a [`PackedLongValues`].
+/// The position of an iterator over a [`PackedLongValues`]: the decoded page
+/// and the offsets into it.
 ///
-/// Equivalent to the inner class `PackedLongValues.Iterator`.
-pub struct PackedLongValuesIterator<'a, V: PackedLongValuesAccess + ?Sized> {
-    values: &'a V,
+/// Holds the fields of the inner class `PackedLongValues.Iterator` other than
+/// the reference to the values, so that the borrowing
+/// [`PackedLongValuesIterator`] and the owning
+/// [`OwnedPackedLongValuesIterator`] share one body.
+struct IteratorCursor {
     current_values: Vec<i64>,
     v_off: usize,
     p_off: usize,
     current_count: usize,
 }
 
-impl<'a, V: PackedLongValuesAccess + ?Sized> PackedLongValuesIterator<'a, V> {
-    fn new(values: &'a V) -> Self {
+impl IteratorCursor {
+    /// Equivalent to the constructor of `PackedLongValues.Iterator`.
+    fn new<V: PackedLongValuesAccess + ?Sized>(values: &V) -> Self {
         let base = values.base();
         let capacity = std::cmp::min(base.size, i64::from(base.page_mask) + 1) as usize;
         let mut this = Self {
-            values,
             current_values: vec![0i64; capacity],
             v_off: 0,
             p_off: 0,
             current_count: 0,
         };
-        this.fill_block();
+        this.fill_block(values);
         this
     }
 
     /// Equivalent to `PackedLongValues.Iterator.fillBlock()`.
-    fn fill_block(&mut self) {
-        if self.v_off == self.values.base().values.len() {
+    fn fill_block<V: PackedLongValuesAccess + ?Sized>(&mut self, values: &V) {
+        if self.v_off == values.base().values.len() {
             self.current_count = 0;
         } else {
-            self.current_count =
-                self.values
-                    .decode_block(self.v_off, &mut self.current_values) as usize;
+            self.current_count = values.decode_block(self.v_off, &mut self.current_values) as usize;
             debug_assert!(self.current_count > 0);
+        }
+    }
+
+    /// Equivalent to `PackedLongValues.Iterator.hasNext()`.
+    fn has_next(&self) -> bool {
+        self.p_off < self.current_count
+    }
+
+    /// Equivalent to `PackedLongValues.Iterator.next()`.
+    fn next_value<V: PackedLongValuesAccess + ?Sized>(&mut self, values: &V) -> i64 {
+        debug_assert!(self.has_next());
+        let result = self.current_values[self.p_off];
+        self.p_off += 1;
+        if self.p_off == self.current_count {
+            self.v_off += 1;
+            self.p_off = 0;
+            self.fill_block(values);
+        }
+        result
+    }
+}
+
+/// An iterator over the values of a [`PackedLongValues`].
+///
+/// Equivalent to the inner class `PackedLongValues.Iterator`.
+pub struct PackedLongValuesIterator<'a, V: PackedLongValuesAccess + ?Sized> {
+    values: &'a V,
+    cursor: IteratorCursor,
+}
+
+impl<'a, V: PackedLongValuesAccess + ?Sized> PackedLongValuesIterator<'a, V> {
+    fn new(values: &'a V) -> Self {
+        Self {
+            values,
+            cursor: IteratorCursor::new(values),
         }
     }
 
@@ -400,7 +436,7 @@ impl<'a, V: PackedLongValuesAccess + ?Sized> PackedLongValuesIterator<'a, V> {
     ///
     /// Equivalent to `PackedLongValues.Iterator.hasNext()`.
     pub fn has_next(&self) -> bool {
-        self.p_off < self.current_count
+        self.cursor.has_next()
     }
 
     /// Returns the next value.
@@ -411,15 +447,7 @@ impl<'a, V: PackedLongValuesAccess + ?Sized> PackedLongValuesIterator<'a, V> {
     ///
     /// Panics when no value remains; Lucene asserts `hasNext()` here.
     pub fn next_value(&mut self) -> i64 {
-        debug_assert!(self.has_next());
-        let result = self.current_values[self.p_off];
-        self.p_off += 1;
-        if self.p_off == self.current_count {
-            self.v_off += 1;
-            self.p_off = 0;
-            self.fill_block();
-        }
-        result
+        self.cursor.next_value(self.values)
     }
 }
 
@@ -432,6 +460,57 @@ impl<V: PackedLongValuesAccess + ?Sized> Iterator for PackedLongValuesIterator<'
         } else {
             None
         }
+    }
+}
+
+/// An iterator over the values of a shared [`PackedLongValues`] that owns its
+/// reference to them.
+///
+/// Equivalent to `PackedLongValues.Iterator` as the flush-time doc-values
+/// iterators hold it (`NumericDocValuesWriter.BufferedNumericDocValues` and its
+/// siblings keep `values.iterator()` in a field). Java's iterator references the
+/// values through the garbage collector; Rust's
+/// [`PackedLongValuesIterator`] borrows them, which an iterator handed out as a
+/// `Box<dyn ...>` cannot do, so this one holds an [`Arc`](std::sync::Arc)
+/// instead. The values and their order are the same.
+pub struct OwnedPackedLongValuesIterator<V: PackedLongValuesAccess> {
+    values: std::sync::Arc<V>,
+    cursor: IteratorCursor,
+}
+
+impl<V: PackedLongValuesAccess> OwnedPackedLongValuesIterator<V> {
+    /// Equivalent to `PackedLongValues.iterator()`.
+    pub fn new(values: std::sync::Arc<V>) -> Self {
+        let cursor = IteratorCursor::new(values.as_ref());
+        Self { values, cursor }
+    }
+
+    /// Returns whether any value remains.
+    ///
+    /// Equivalent to `PackedLongValues.Iterator.hasNext()`.
+    pub fn has_next(&self) -> bool {
+        self.cursor.has_next()
+    }
+
+    /// Returns the next value.
+    ///
+    /// Equivalent to `PackedLongValues.Iterator.next()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when no value remains; Lucene asserts `hasNext()` here.
+    pub fn next_value(&mut self) -> i64 {
+        self.cursor.next_value(self.values.as_ref())
+    }
+}
+
+impl<V: PackedLongValuesAccess> std::fmt::Debug for OwnedPackedLongValuesIterator<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnedPackedLongValuesIterator")
+            .field("size", &self.values.size())
+            .field("v_off", &self.cursor.v_off)
+            .field("p_off", &self.cursor.p_off)
+            .finish()
     }
 }
 
@@ -451,7 +530,7 @@ pub struct PackedLongValuesBuilderState {
     acceptable_overhead_ratio: f32,
     pending: Option<Vec<i64>>,
     size: i64,
-    values: Vec<Option<Box<dyn PackedIntsReader>>>,
+    values: Vec<Option<Box<dyn PackedIntsReader + Send + Sync>>>,
     ram_bytes_used: i64,
     values_off: usize,
     pending_off: usize,
@@ -777,7 +856,9 @@ pub trait PackedLongValuesBuilderOps {
 /// Equivalent to `ArrayUtil.copyOfSubArray(this.values, 0, valuesOff)` in the
 /// three `build()` methods; the pages are moved rather than copied, because
 /// Rust cannot share one owned reader between the builder and the result.
-fn take_pages(state: &mut PackedLongValuesBuilderState) -> Vec<Box<dyn PackedIntsReader>> {
+fn take_pages(
+    state: &mut PackedLongValuesBuilderState,
+) -> Vec<Box<dyn PackedIntsReader + Send + Sync>> {
     let values_off = state.values_off;
     let mut pages = Vec::with_capacity(values_off);
     for slot in state.values.iter_mut().take(values_off) {
@@ -1062,5 +1143,75 @@ impl PackedLongValuesBuilderOps for MonotonicLongValuesBuilder {
         self.state.ram_bytes_used -= size_of_float(&self.averages);
         self.averages.resize(new_block_count, 0f32);
         self.state.ram_bytes_used += size_of_float(&self.averages);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Debug
+// -----------------------------------------------------------------------------
+
+/// Renders the shape of a sequence: its size, page count and heap estimate.
+///
+/// Java's `PackedLongValues` does not override `toString()`; these `Debug`
+/// renderings exist only so that structures holding the values can derive
+/// `Debug`.
+fn debug_values(
+    f: &mut std::fmt::Formatter<'_>,
+    name: &str,
+    base: &PackedLongValues,
+) -> std::fmt::Result {
+    f.debug_struct(name)
+        .field("size", &base.size)
+        .field("pages", &base.values.len())
+        .field("ram_bytes_used", &base.ram_bytes_used)
+        .finish()
+}
+
+impl std::fmt::Debug for PackedLongValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_values(f, "PackedLongValues", self)
+    }
+}
+
+impl std::fmt::Debug for DeltaPackedLongValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_values(f, "DeltaPackedLongValues", &self.base)
+    }
+}
+
+impl std::fmt::Debug for MonotonicLongValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_values(f, "MonotonicLongValues", &self.base.base)
+    }
+}
+
+/// Renders the shape of a builder: its size and heap estimate.
+fn debug_builder(
+    f: &mut std::fmt::Formatter<'_>,
+    name: &str,
+    state: &PackedLongValuesBuilderState,
+) -> std::fmt::Result {
+    f.debug_struct(name)
+        .field("size", &state.size)
+        .field("ram_bytes_used", &state.ram_bytes_used)
+        .field("built", &state.pending.is_none())
+        .finish()
+}
+
+impl std::fmt::Debug for PackedLongValuesBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_builder(f, "PackedLongValuesBuilder", &self.state)
+    }
+}
+
+impl std::fmt::Debug for DeltaPackedLongValuesBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_builder(f, "DeltaPackedLongValuesBuilder", &self.state)
+    }
+}
+
+impl std::fmt::Debug for MonotonicLongValuesBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_builder(f, "MonotonicLongValuesBuilder", &self.state)
     }
 }

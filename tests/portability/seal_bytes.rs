@@ -501,7 +501,7 @@ fn write_segment_info(out_dir: &Path, multi_file: bool) {
     } else {
         JavaHashSet::new()
     };
-    info.set_files(files);
+    info.set_files(files).unwrap();
     codec
         .segment_info_format()
         .write(dir.as_ref(), &info, &*DEFAULT_IO_CONTEXT)
@@ -549,7 +549,7 @@ fn write_multi_diagnostic_segment_info(out_dir: &Path) {
         Default::default(),
     )
     .expect("segment info");
-    info.set_files(JavaHashSet::new());
+    info.set_files(JavaHashSet::new()).unwrap();
     codec
         .segment_info_format()
         .write(dir.as_ref(), &info, &*DEFAULT_IO_CONTEXT)
@@ -579,7 +579,7 @@ fn write_compound_file(out_dir: &Path) {
     }
 
     let info = segment_info(&dir, &codec);
-    info.set_files(files);
+    info.set_files(files).unwrap();
     // `IndexWriter::create_compound_file` refuses a tracking directory that has
     // already created files, so it gets a fresh one over the same directory,
     // exactly as `sealFlushedSegment` gives it one.

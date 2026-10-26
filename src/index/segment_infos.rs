@@ -1460,7 +1460,8 @@ mod tests {
             "source".to_string(),
             "test".to_string(),
         )]));
-        info.set_files(HashSet::from(["_0.fnm".to_string(), "_0.fdt".to_string()]));
+        info.set_files(HashSet::from(["_0.fnm".to_string(), "_0.fdt".to_string()]))
+            .unwrap();
 
         write_segment_info_file(dir.as_ref(), &info).unwrap();
 

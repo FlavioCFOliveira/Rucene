@@ -4583,7 +4583,7 @@ mod tests {
             Arc::clone(&directory),
             &info,
             &infos,
-            &BufferedUpdates,
+            Box::leak(Box::new(BufferedUpdates::default())),
             &*DEFAULT_IO_CONTEXT,
         );
         let format = Lucene104ScalarQuantizedVectorsFormat::new();

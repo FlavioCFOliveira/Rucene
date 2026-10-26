@@ -235,7 +235,7 @@ fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &F
         Arc::clone(directory),
         info,
         &infos,
-        &BufferedUpdates,
+        Box::leak(Box::new(BufferedUpdates::default())),
         &*DEFAULT_IO_CONTEXT,
     );
     let mut consumer = codec()

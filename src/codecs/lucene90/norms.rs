@@ -1055,7 +1055,7 @@ mod tests {
             Arc::clone(dir),
             info,
             fis,
-            &BufferedUpdates,
+            Box::leak(Box::new(BufferedUpdates::default())),
             &*crate::store::DEFAULT_IO_CONTEXT,
         )
     }

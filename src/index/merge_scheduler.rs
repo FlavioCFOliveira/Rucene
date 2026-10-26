@@ -1529,3 +1529,40 @@ impl MergeScheduler for MultiIndexMergeScheduler {
         Ok(())
     }
 }
+
+// -----------------------------------------------------------------------------
+// TestSecrets registration
+// -----------------------------------------------------------------------------
+
+/// The [`ConcurrentMergeSchedulerAccess`](crate::internal::tests_hooks::ConcurrentMergeSchedulerAccess)
+/// `ConcurrentMergeScheduler` registers with
+/// [`TestSecrets`](crate::internal::tests_hooks::TestSecrets): the method
+/// reference `ConcurrentMergeScheduler::setSuppressExceptions`.
+#[derive(Debug)]
+struct ConcurrentMergeSchedulerAccessImpl;
+
+impl crate::internal::tests_hooks::ConcurrentMergeSchedulerAccess
+    for ConcurrentMergeSchedulerAccessImpl
+{
+    fn set_suppress_exceptions(&self, cms: &mut ConcurrentMergeScheduler) {
+        cms.set_suppress_exceptions();
+    }
+}
+
+/// Registers `ConcurrentMergeScheduler`'s accessor with
+/// [`TestSecrets`](crate::internal::tests_hooks::TestSecrets), once.
+///
+/// Equivalent to `ConcurrentMergeScheduler`'s `static {}` block
+/// (`ConcurrentMergeScheduler.java:944-946`), which
+/// `TestSecrets.ensureInitialized(ConcurrentMergeScheduler.class)` triggers.
+pub(crate) fn register_test_secrets() {
+    static INITIALIZED: std::sync::Once = std::sync::Once::new();
+    INITIALIZED.call_once(|| {
+        crate::internal::tests_hooks::TestSecrets::set_concurrent_merge_scheduler_access(
+            std::sync::Arc::new(ConcurrentMergeSchedulerAccessImpl),
+        )
+        .expect(
+            "INVARIANT: ConcurrentMergeScheduler's static initializer runs once, from this file",
+        );
+    });
+}

@@ -289,3 +289,44 @@ impl fmt::Display for BinarySortField {
         write!(f, "{}", self.sort_field)
     }
 }
+
+/// The `SortFieldProvider` for [`BinarySortField`], registered as [`BinarySortField::NAME`].
+///
+/// Equivalent to the nested class `BinarySortField.Provider` (`BinarySortField.java:105-132`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Provider;
+
+impl Provider {
+    /// Creates a new provider.
+    ///
+    /// Equivalent to `new BinarySortField.Provider()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl crate::util::spi::NamedSPI for Provider {
+    fn get_name(&self) -> &str {
+        BinarySortField::NAME
+    }
+}
+
+impl crate::index::index_sorter::SortFieldProvider for Provider {
+    /// Equivalent to `BinarySortField.Provider.readSortField(DataInput)`.
+    fn read_sort_field(
+        &self,
+        input: &mut dyn crate::store::DataInput,
+    ) -> Result<crate::search::SortField> {
+        Ok(BinarySortField::read_sort_field(input)?.into_sort_field())
+    }
+
+    /// Equivalent to `BinarySortField.Provider.writeSortField(SortField, DataOutput)`:
+    /// the field must be a `BinarySortField` (Java asserts it and casts).
+    fn write_sort_field(
+        &self,
+        sort_field: &crate::search::SortField,
+        output: &mut dyn crate::store::DataOutput,
+    ) -> Result<()> {
+        BinarySortField::from_sort_field(sort_field.clone())?.serialize(output)
+    }
+}

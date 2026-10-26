@@ -143,7 +143,11 @@ fn rucene_report(case: &Case) -> Report {
     let mut terms = Vec::new();
     let mut iterator = packed.iterator();
     while let Some(bytes) = iterator.next().expect("decode") {
-        terms.push(format!("{}:{}", iterator.field(), to_hex(bytes.slice())));
+        terms.push(format!(
+            "{}:{}",
+            iterator.field().unwrap(),
+            to_hex(bytes.slice())
+        ));
     }
     Report {
         size: packed.size(),

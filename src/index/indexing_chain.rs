@@ -45,12 +45,6 @@
 //!   guards borrowed from the stream, which cannot be stored next to the stream
 //!   they borrow from, so this port resolves which attributes are present once
 //!   per field instance and reads their values per token.
-//! * **Flush reports its result instead of mutating shared state.** Lucene lets
-//!   `FreqProxTermsWriter.applyDeletes` write straight into
-//!   `SegmentWriteState.liveDocs` / `.delCountOnFlush`. Here the chain returns
-//!   an [`IndexingChainFlushResult`] and the DWPT applies it, so no caller holds
-//!   a mutable alias of the flush state.
-//!
 //! # Scope
 //!
 //! Lucene's `IndexingChain` also drives doc values, points, vectors and norms.
@@ -96,12 +90,11 @@ use crate::document::{Document, InvertableType, NumericDocValuesField, StoredVal
 use crate::error::{LuceneError, Result};
 use crate::index::doc_values_writer::DocValuesWriter;
 use crate::index::documents_writer::{
-    IndexingChain, IndexingChainFlushResult, IndexingChainFlushState, SharedIndexingScratch,
-    MAX_STORED_STRING_LENGTH,
+    IndexingChain, SharedIndexingScratch, MAX_STORED_STRING_LENGTH,
 };
 use crate::index::field_infos::FieldInfosBuilder;
 use crate::index::freq_prox_terms_writer::{FreqProxTermsWriter, InvertedToken};
-use crate::index::index_sorter::{Sorter, SorterDocMap};
+use crate::index::index_sorter::{DocComparator, Sorter, SorterDocMap};
 use crate::index::index_writer_config::LiveIndexWriterConfig;
 use crate::index::norms_writer::NormValuesWriter;
 use crate::index::point_values_writer::PointValuesWriter;
@@ -123,7 +116,7 @@ use crate::store::TrackingDirectoryWrapper;
 use crate::util::byte_block_pool::MAX_TERM_LENGTH;
 use crate::util::java_collections::JavaStringMap;
 use crate::util::NumericUtils;
-use crate::util::{Accountable, AttributeSource, BytesRef, InfoStream};
+use crate::util::{Accountable, AttributeSource, ByteBlockPool, BytesRef, InfoStream, Version};
 
 /// Highest position a token may occupy.
 ///
@@ -156,12 +149,38 @@ fn java_string_hashcode(name: &str) -> i32 {
 /// sequence fixes the order of the per-field entries inside the `.dvm` and the
 /// `.kdm`. `writeNorms` is different: it iterates the field infos, so norms
 /// are in field-number order.
-fn field_hash_flush_order(fields: &[PerField]) -> Vec<usize> {
-    let names: Vec<&str> = fields
-        .iter()
-        .map(|per_field| per_field.field_info.name.as_str())
-        .collect();
+///
+/// When the configuration names a parent field, Java's constructor adds its
+/// `PerField` to the table before any document arrives
+/// (`IndexingChain.java:163-167`), whereas this port creates it with the first
+/// document that ends a block (see `get_or_add_parent_per_field`). The replay
+/// therefore inserts `parent_field` first, whatever its position in `fields`,
+/// so that the chains and the growth points are Java's; a parent field with no
+/// per-field state occupies its slot and is skipped in the result, as Java's
+/// flush loops skip a `PerField` without a writer.
+fn field_hash_flush_order(fields: &[PerField], parent_field: Option<&str>) -> Vec<usize> {
+    let parent_index = parent_field.and_then(|name| {
+        fields
+            .iter()
+            .position(|per_field| per_field.field_info.name == name)
+    });
+    let mut names: Vec<&str> = Vec::with_capacity(fields.len() + 1);
+    let mut indices: Vec<Option<usize>> = Vec::with_capacity(fields.len() + 1);
+    if let Some(name) = parent_field {
+        names.push(name);
+        indices.push(parent_index);
+    }
+    for (index, per_field) in fields.iter().enumerate() {
+        if Some(index) == parent_index {
+            continue;
+        }
+        names.push(per_field.field_info.name.as_str());
+        indices.push(Some(index));
+    }
     field_hash_order(&names)
+        .into_iter()
+        .filter_map(|position| indices[position])
+        .collect()
 }
 
 /// The core of [`field_hash_flush_order`], over the field names alone.
@@ -712,6 +731,18 @@ pub struct DefaultIndexingChain {
     bytes_used: Arc<AtomicI64>,
     scratch: SharedIndexingScratch,
     terms_writer: FreqProxTermsWriter,
+    /// The pool the sorted and sorted-set doc-values writers intern their
+    /// values into, shared by every field of the segment and charging its
+    /// blocks to [`Self::bytes_used`].
+    ///
+    /// Equivalent to `IndexingChain.docValuesBytePool`, built over the chain's
+    /// `DirectTrackingAllocator(bytesUsed)` (`IndexingChain.java:89-90,161`).
+    /// It is reference-counted so that the producers the writers hand out at
+    /// flush read it in place, as Java's do; the writers mutate it through
+    /// `Arc::get_mut` while documents are added (see the
+    /// [`doc_values_writer`](crate::index::doc_values_writer) module
+    /// documentation).
+    doc_values_byte_pool: Arc<ByteBlockPool>,
     per_fields: Vec<PerField>,
     per_field_index: HashMap<String, usize>,
     next_field_gen: i64,
@@ -831,6 +862,7 @@ impl DefaultIndexingChain {
         Self {
             scratch: SharedIndexingScratch::new(Arc::clone(&bytes_used)),
             terms_writer: FreqProxTermsWriter::new(Arc::clone(&bytes_used)),
+            doc_values_byte_pool: Arc::new(ByteBlockPool::new(Arc::clone(&bytes_used))),
             config,
             bytes_used,
             per_fields: Vec::new(),
@@ -1070,55 +1102,93 @@ impl DefaultIndexingChain {
         Ok(())
     }
 
+    /// Frees the blocks of the doc-values pool and gives their bytes back to
+    /// the counter, as `ByteBlockPool.reset` does.
+    ///
+    /// The flush's producers are dropped before the chain resets, so the pool
+    /// is not shared here; should a caller still hold one, the chain gives
+    /// back the old pool's block bytes exactly as `reset` would and starts a
+    /// new pool, and the old blocks are freed with the last producer.
+    fn reset_doc_values_byte_pool(&mut self) {
+        match Arc::get_mut(&mut self.doc_values_byte_pool) {
+            Some(pool) => pool.reset(),
+            None => {
+                self.bytes_used.fetch_sub(
+                    self.doc_values_byte_pool.charged_block_bytes(),
+                    Ordering::AcqRel,
+                );
+                self.doc_values_byte_pool =
+                    Arc::new(ByteBlockPool::new(Arc::clone(&self.bytes_used)));
+            }
+        }
+    }
+
     /// Returns a leaf reader over the doc values buffered so far, which is all
     /// the index sorter has to compare at flush time.
     ///
-    /// Equivalent to `IndexingChain.getDocValuesLeafReader()`, whose anonymous
+    /// Equivalent to `IndexingChain.getDocValuesLeafReader()`
+    /// (`IndexingChain.java:179-246`), whose anonymous
     /// `DocValuesLeafReader` answers each of the five doc-values kinds from the
-    /// per-field writer, and `null` for a field that either does not exist or
-    /// carries a different kind.
+    /// per-field writer — calling `docValuesWriter.getDocValues()`, which
+    /// finishes that writer, only for a field it is asked for — and `null` for
+    /// a field that either does not exist or carries a different kind.
     ///
-    /// # Errors
-    ///
-    /// Propagates whatever reading a writer's buffers raises.
-    fn get_doc_values_leaf_reader(&self, max_doc: i32) -> Result<BufferedDocValuesReader> {
-        let mut producers = HashMap::new();
-        for per_field in &self.per_fields {
-            let Some(writer) = per_field.doc_values.as_ref() else {
-                continue;
-            };
-            producers.insert(
-                per_field.field_info.name.clone(),
-                (per_field.field_info.clone(), writer.get_doc_values()?),
-            );
+    /// The writers move into the reader for as long as it lives, because a
+    /// [`LeafReader`](crate::index::LeafReader) owns what it reads; the caller
+    /// hands them back with
+    /// [`restore_doc_values_writers`](Self::restore_doc_values_writers).
+    fn get_doc_values_leaf_reader(&mut self, max_doc: i32) -> BufferedDocValuesReader {
+        let mut writers = HashMap::new();
+        for (index, per_field) in self.per_fields.iter_mut().enumerate() {
+            if let Some(writer) = per_field.doc_values.take() {
+                writers.insert(
+                    per_field.field_info.name.clone(),
+                    (index, per_field.field_info.clone(), writer),
+                );
+            }
         }
-        Ok(BufferedDocValuesReader { max_doc, producers })
+        BufferedDocValuesReader {
+            max_doc,
+            writers: std::sync::Mutex::new(writers),
+            pool: Arc::clone(&self.doc_values_byte_pool),
+        }
+    }
+
+    /// Puts back the writers [`get_doc_values_leaf_reader`]
+    /// (Self::get_doc_values_leaf_reader) lent to `reader`.
+    fn restore_doc_values_writers(&mut self, reader: BufferedDocValuesReader) {
+        let writers = reader
+            .writers
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (_, (index, _, writer)) in writers {
+            self.per_fields[index].doc_values = Some(writer);
+        }
     }
 
     /// Returns the document map that puts this segment in the configured index
     /// sort, or `None` when there is no sort or the documents already satisfy
-    /// it.
+    /// it. The map is left unpacked.
     ///
-    /// Equivalent to `IndexingChain.maybeSortSegment(SegmentWriteState)`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java also wraps every comparator so
-    /// that a segment holding document blocks compares each block by its parent
-    /// document, and refuses a blocked segment that names no parent field. This
-    /// port compares documents directly; the blocked case is refused outright
-    /// rather than sorted wrongly, which is the safe half of Lucene's
-    /// behaviour and never produces a differently ordered segment.
+    /// Equivalent to `IndexingChain.maybeSortSegment(SegmentWriteState)`
+    /// (`IndexingChain.java:248-296`). When the segment holds document blocks
+    /// and the index declares a parent field, every comparator compares the
+    /// parent (last) document of each block, so that a block's documents sort
+    /// together and stay contiguous, in their original order; a blocked segment
+    /// of an index created by Lucene 10 or later that declares no parent field
+    /// is refused.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneError::UnsupportedOperation`] when the sort names a
     /// field no [`IndexSorter`](crate::index::index_sorter::IndexSorter) can
-    /// read, and [`LuceneError::CorruptIndex`] for a blocked segment.
+    /// read, and [`LuceneError::CorruptIndex`] when the parent field has no
+    /// doc values or a blocked segment declares no parent field.
     fn maybe_sort_segment(
-        &self,
-        segment_info: &SegmentInfo,
-        field_infos: &crate::index::FieldInfos,
+        &mut self,
+        state: &SegmentWriteState<'_>,
     ) -> Result<Option<SorterDocMap>> {
-        let index_sort = segment_info.index_sort();
+        let index_sort = state.segment_info.index_sort();
         // **Divergence from Lucene 10.5.0.** `SegmentInfo.getIndexSort()`
         // returns `null` for an unsorted segment; this port carries a `Sort`
         // there and encodes "unsorted" as the relevance sort, which is what
@@ -1126,29 +1196,87 @@ impl DefaultIndexingChain {
         if index_sort.fields().is_empty() || *index_sort == crate::search::Sort::default() {
             return Ok(None);
         }
-        if segment_info.get_has_blocks() {
-            return Err(LuceneError::CorruptIndex(format!(
-                "segment {} has document blocks and uses index sorting, which this port cannot \
-                 order: the parent field is {}",
-                segment_info.name,
-                field_infos.get_parent_field().unwrap_or("not set")
-            )));
-        }
 
-        let max_doc = segment_info.max_doc()?;
-        let doc_values_reader = self.get_doc_values_leaf_reader(max_doc)?;
-        let mut comparators = Vec::with_capacity(index_sort.fields().len());
+        let max_doc = state.segment_info.max_doc()?;
+        let doc_values_reader = self.get_doc_values_leaf_reader(max_doc);
+        let sorted = self.sort_buffered_segment(state, &doc_values_reader, max_doc);
+        self.restore_doc_values_writers(doc_values_reader);
+        sorted
+    }
+
+    /// The body of [`maybe_sort_segment`](Self::maybe_sort_segment) once the
+    /// buffered doc-values reader is open (`IndexingChain.java:254-292`).
+    fn sort_buffered_segment(
+        &self,
+        state: &SegmentWriteState<'_>,
+        doc_values_reader: &BufferedDocValuesReader,
+        max_doc: i32,
+    ) -> Result<Option<SorterDocMap>> {
+        let index_sort = state.segment_info.index_sort();
+        let mut parents: Option<Arc<crate::util::FixedBitSet>> = None;
+
+        if state.segment_info.get_has_blocks() {
+            if let Some(parent_field) = state.field_infos.get_parent_field() {
+                let Some(mut reader_values) = crate::index::LeafReader::get_numeric_doc_values(
+                    doc_values_reader,
+                    parent_field,
+                )?
+                else {
+                    return Err(LuceneError::corrupt_index(
+                        format!("missing doc values for parent field \"{parent_field}\""),
+                        "IndexingChain",
+                    ));
+                };
+                // `BitSet.of(readerValues, maxDoc)`.
+                let mut bits = crate::util::FixedBitSet::new(max_doc as usize);
+                loop {
+                    let doc = reader_values.next_doc()?;
+                    if doc == NO_MORE_DOCS {
+                        break;
+                    }
+                    bits.set(doc as usize);
+                }
+                parents = Some(Arc::new(bits));
+            }
+        }
+        let index_created_version_major = self.config.index_created_version_major();
+        if state.segment_info.get_has_blocks()
+            && state.field_infos.get_parent_field().is_none()
+            && index_created_version_major >= Version::LUCENE_10_0_0.major as i32
+        {
+            return Err(LuceneError::corrupt_index(
+                format!(
+                    "parent field is not set but the index has blocks and uses index sorting. \
+                     indexCreatedVersionMajor: {index_created_version_major}"
+                ),
+                "IndexingChain",
+            ));
+        }
+        let mut comparators: Vec<DocComparator> = Vec::with_capacity(index_sort.fields().len());
         for sort_field in index_sort.fields() {
             let sorter = sort_field.get_index_sorter().ok_or_else(|| {
                 LuceneError::UnsupportedOperation(format!(
-                    "Cannot sort index using sort field {sort_field:?}"
+                    "Cannot sort index using sort field {sort_field}"
                 ))
             })?;
-            comparators.push(sorter.get_doc_comparator(&doc_values_reader, max_doc)?);
+            let doc_comparator = sorter.get_doc_comparator(doc_values_reader, max_doc)?;
+            // `comparatorWrapper.apply(docComparator)`: compare the parents of
+            // the two documents' blocks.
+            comparators.push(match &parents {
+                None => doc_comparator,
+                Some(parents) => {
+                    let parents = Arc::clone(parents);
+                    Box::new(move |doc_id1: i32, doc_id2: i32| {
+                        doc_comparator(
+                            crate::util::bit_set::BitSet::next_set_bit(parents.as_ref(), doc_id1),
+                            crate::util::bit_set::BitSet::next_set_bit(parents.as_ref(), doc_id2),
+                        )
+                    })
+                }
+            });
         }
-        // `Sorter.sort` answers `None` when the documents are already in order,
-        // which is what spares an unsorted rewrite of a segment that needs none.
-        Ok(Sorter::sort_multi(max_doc, comparators))
+        // returns null if the documents are already sorted
+        Ok(Sorter::sort_and_leave_unpacked(max_doc, comparators))
     }
 
     fn get_or_add_per_field(&mut self, field_info: &FieldInfo) -> Result<usize> {
@@ -1372,7 +1500,7 @@ impl DefaultIndexingChain {
                 .expect(
                     "INVARIANT: every field with a doc-values type gets a writer in get_or_add_per_field",
                 )
-                .add_value(doc_id, field)?;
+                .add_value(doc_id, field, &mut self.doc_values_byte_pool)?;
         }
         if field.field_type().point_dimension_count() != 0 {
             match field.binary_value() {
@@ -2048,7 +2176,10 @@ impl DefaultIndexingChain {
         // flush walks buckets in order and each chain head to tail.
         let mut consumer: Option<Box<dyn DocValuesConsumer + '_>> = None;
         let outcome: Result<()> = (|| {
-            for index in field_hash_flush_order(&self.per_fields) {
+            for index in field_hash_flush_order(
+                &self.per_fields,
+                self.parent_field.as_ref().map(|field| field.name()),
+            ) {
                 let per_field = &mut self.per_fields[index];
                 let Some(writer) = per_field.doc_values.as_mut() else {
                     if per_field.field_info.doc_values_type != DocValuesType::NONE {
@@ -2077,7 +2208,7 @@ impl DefaultIndexingChain {
                 let consumer = consumer
                     .as_mut()
                     .expect("INVARIANT: the consumer was just created if it was missing");
-                writer.flush(&mut **consumer, sort_map)?;
+                writer.flush(state, sort_map, &mut **consumer, &self.doc_values_byte_pool)?;
                 // Java nulls `perField.docValuesWriter` here; this port drops
                 // the whole per-field table at the end of `flush` instead.
             }
@@ -2146,7 +2277,10 @@ impl DefaultIndexingChain {
     ) -> Result<()> {
         let mut writer: Option<Box<dyn PointsWriter>> = None;
         let outcome: Result<()> = (|| {
-            for index in field_hash_flush_order(&self.per_fields) {
+            for index in field_hash_flush_order(
+                &self.per_fields,
+                self.parent_field.as_ref().map(|field| field.name()),
+            ) {
                 let per_field = &mut self.per_fields[index];
                 let Some(points) = per_field.point_values.as_mut() else {
                     continue;
@@ -2743,10 +2877,10 @@ impl DefaultIndexingChain {
                     w.add_value(seg_doc_id, value.slice())?;
                 }
                 (DocValuesType::SORTED, Some(DocValuesWriter::Sorted(w))) => {
-                    w.add_value(seg_doc_id, value.slice())?;
+                    w.add_value(seg_doc_id, value.slice(), &mut self.doc_values_byte_pool)?;
                 }
                 (DocValuesType::SORTED_SET, Some(DocValuesWriter::SortedSet(w))) => {
-                    w.add_value(seg_doc_id, value.slice())?;
+                    w.add_value(seg_doc_id, value.slice(), &mut self.doc_values_byte_pool)?;
                 }
                 _ => return Err(Self::incompatible_dv("BinaryColumn", &name, dv_type)),
             }
@@ -2793,10 +2927,10 @@ impl DefaultIndexingChain {
                         w.add_value(doc, value.slice())?;
                     }
                     (DocValuesType::SORTED, Some(DocValuesWriter::Sorted(w))) => {
-                        w.add_value(doc, value.slice())?;
+                        w.add_value(doc, value.slice(), &mut self.doc_values_byte_pool)?;
                     }
                     (DocValuesType::SORTED_SET, Some(DocValuesWriter::SortedSet(w))) => {
-                        w.add_value(doc, value.slice())?;
+                        w.add_value(doc, value.slice(), &mut self.doc_values_byte_pool)?;
                     }
                     _ => return Err(Self::incompatible_dv("BinaryColumn", &name, dv_type)),
                 }
@@ -2844,7 +2978,13 @@ impl DefaultIndexingChain {
                     ColumnValidation::check_dense_count(&name, cursor.size(), num_docs)?;
                     match self.per_fields[pf].doc_values.as_mut() {
                         Some(DocValuesWriter::Sorted(w)) => {
-                            w.add_dense_ordinal_values(base_doc_id, dict, cursor.as_mut())?;
+                            w.add_dense_ordinal_values(
+                                base_doc_id,
+                                dict,
+                                cursor.as_mut(),
+                                &mut self.doc_values_byte_pool,
+                                &mut self.scratch,
+                            )?;
                         }
                         _ => return Err(Self::incompatible_dv("DictionaryColumn", &name, dv_type)),
                     }
@@ -2852,7 +2992,13 @@ impl DefaultIndexingChain {
                     let mut cursor = column.tuples()?;
                     match self.per_fields[pf].doc_values.as_mut() {
                         Some(DocValuesWriter::Sorted(w)) => {
-                            w.add_ordinal_tuples(base_doc_id, dict, cursor.as_mut())?;
+                            w.add_ordinal_tuples(
+                                base_doc_id,
+                                dict,
+                                cursor.as_mut(),
+                                &mut self.doc_values_byte_pool,
+                                &mut self.scratch,
+                            )?;
                         }
                         _ => return Err(Self::incompatible_dv("DictionaryColumn", &name, dv_type)),
                     }
@@ -2862,7 +3008,13 @@ impl DefaultIndexingChain {
                 let mut cursor = column.tuples()?;
                 match self.per_fields[pf].doc_values.as_mut() {
                     Some(DocValuesWriter::SortedSet(w)) => {
-                        w.add_ordinal_tuples(base_doc_id, dict, cursor.as_mut())?;
+                        w.add_ordinal_tuples(
+                            base_doc_id,
+                            dict,
+                            cursor.as_mut(),
+                            &mut self.doc_values_byte_pool,
+                            &mut self.scratch,
+                        )?;
                     }
                     _ => return Err(Self::incompatible_dv("DictionaryColumn", &name, dv_type)),
                 }
@@ -3188,19 +3340,21 @@ impl IndexingChain for DefaultIndexingChain {
     /// # Errors
     ///
     /// Propagates whatever opening the buffered doc-values view raises.
-    fn get_has_doc_values(&self, field: &str) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+    fn get_has_doc_values(&mut self, field: &str) -> Result<Option<Box<dyn DocIdSetIterator>>> {
         let Some(index) = self.per_field_index.get(field) else {
             return Ok(None);
         };
-        let per_field = &self.per_fields[*index];
-        let Some(writer) = per_field.doc_values.as_ref() else {
+        let per_field = &mut self.per_fields[*index];
+        let Some(writer) = per_field.doc_values.as_mut() else {
             return Ok(None);
         };
         let info = &per_field.field_info;
         if info.doc_values_type == DocValuesType::NONE {
             return Ok(None);
         }
-        let producer = writer.get_doc_values()?;
+        // `perField.docValuesWriter.getDocValues()` finishes the writer, as
+        // in Java (`IndexingChain.java:2077-2093`).
+        let producer = writer.get_doc_values(&self.doc_values_byte_pool)?;
         Ok(Some(match info.doc_values_type {
             DocValuesType::NONE => return Ok(None),
             DocValuesType::NUMERIC => numeric_as_iterator(crate::codecs::doc_values::non_null(
@@ -3571,7 +3725,7 @@ impl IndexingChain for DefaultIndexingChain {
             if field.field_type().doc_values_type() != DocValuesType::NONE {
                 let result = self.per_fields[index].doc_values.as_mut().expect(
                     "INVARIANT: every field with a doc-values type gets a writer in get_or_add_per_field",
-                ).add_value(doc_id, field.as_ref());
+                ).add_value(doc_id, field.as_ref(), &mut self.doc_values_byte_pool);
                 if let Err(error) = result {
                     if !matches!(
                         error,
@@ -3803,36 +3957,30 @@ impl IndexingChain for DefaultIndexingChain {
         }
         self.per_fields.clear();
         self.per_field_index.clear();
+        self.reset_doc_values_byte_pool();
         self.bytes_used.store(0, Ordering::Release);
     }
 
-    fn flush(&mut self, state: &IndexingChainFlushState<'_>) -> Result<IndexingChainFlushResult> {
-        let seg_updates = crate::codecs::stub::BufferedUpdates;
-        let mut write_state = SegmentWriteState::new(
-            state.info_stream,
-            Arc::clone(state.directory) as Arc<dyn crate::store::Directory>,
-            state.segment_info,
-            state.field_infos,
-            &seg_updates,
-            state.context,
-        );
-        write_state.live_docs = state.live_docs.cloned();
-        write_state.del_count_on_flush = state.del_count_on_flush;
-
-        // Lucene writes the norms first, then the doc values, then the points,
-        // then the stored fields, then `termsHash.flush`, whose `super.flush`
-        // finishes the term vectors before the postings format runs
-        // (`IndexingChain.java:305`, `:319`, `:326`, `:340-370`,
-        // `FreqProxTermsWriter.java:118`). They write different files, so only
-        // the order of the calls is reproduced here.
-        let max_doc = state.segment_info.max_doc()?;
+    /// Equivalent to `IndexingChain.flush(SegmentWriteState)`
+    /// (`IndexingChain.java:298-394`).
+    fn flush(&mut self, state: &mut SegmentWriteState<'_>) -> Result<Option<SorterDocMap>> {
+        // NOTE: caller (DocumentsWriterPerThread) handles
+        // aborting on any exception from this method
+        //
         // `maybeSortSegment` runs first, before a single file is written: every
         // consumer below needs the map to write its column in the sorted order
         // (`IndexingChain.java:302`).
-        let sort_map = self.maybe_sort_segment(state.segment_info, state.field_infos)?;
-        self.write_norms(&write_state, max_doc, sort_map.as_ref())?;
-        self.write_doc_values(&write_state, sort_map.as_ref())?;
-        self.write_points(&write_state, sort_map.as_ref())?;
+        let sort_map = self.maybe_sort_segment(state)?;
+        let max_doc = state.segment_info.max_doc()?;
+
+        // Lucene writes the norms first, then the doc values, then the points,
+        // then the vectors, then the stored fields, then `termsHash.flush`,
+        // whose `super.flush` finishes the term vectors before the postings
+        // format runs (`IndexingChain.java:305`, `:319`, `:326`, `:333`,
+        // `:340-370`, `FreqProxTermsWriter.java:118`).
+        self.write_norms(state, max_doc, sort_map.as_ref())?;
+        self.write_doc_values(state, sort_map.as_ref())?;
+        self.write_points(state, sort_map.as_ref())?;
 
         // `vectorValuesConsumer.flush(state, sortMap)` runs between the points
         // and the stored fields (`IndexingChain.java:333`).
@@ -3886,14 +4034,17 @@ impl IndexingChain for DefaultIndexingChain {
         } else {
             None
         };
+        // `FreqProxTermsWriter.applyDeletes(state, fields)` reads the delete
+        // terms off `state.segUpdates` (`FreqProxTermsWriter.java:43-46`).
+        let delete_terms = state.seg_updates.delete_terms();
         let flushed = (|| -> Result<()> {
             let norms_merge_instance = norms
                 .as_ref()
                 .map(|norms| norms.get_merge_instance())
                 .transpose()?;
             self.terms_writer.flush(
-                &mut write_state,
-                state.delete_terms,
+                state,
+                &delete_terms,
                 sort_map.as_ref(),
                 norms_merge_instance.as_deref(),
             )
@@ -3923,20 +4074,17 @@ impl IndexingChain for DefaultIndexingChain {
                     "flushed postings and stored fields for segment {} ({} fields, {} deleted docs)",
                     state.segment_info.name,
                     state.field_infos.size(),
-                    write_state.del_count_on_flush
+                    state.del_count_on_flush
                 ),
             );
         }
 
         self.per_fields.clear();
         self.per_field_index.clear();
+        self.reset_doc_values_byte_pool();
         self.bytes_used.store(0, Ordering::Release);
 
-        Ok(IndexingChainFlushResult {
-            live_docs: write_state.live_docs,
-            del_count_on_flush: write_state.del_count_on_flush,
-            sort_map,
-        })
+        Ok(sort_map)
     }
 
     fn take_aborting_error(&mut self) -> Option<LuceneError> {
@@ -4120,6 +4268,82 @@ mod tests {
         FieldInfosBuilder::new(Arc::new(
             FieldNumbers::new(None, None).expect("field numbers"),
         ))
+    }
+
+    /// Resetting the doc-values pool gives back the same block bytes whether
+    /// or not a producer still holds the old pool (`ByteBlockPool.reset`).
+    #[test]
+    fn resetting_a_shared_doc_values_pool_refunds_its_blocks_exactly() {
+        use crate::document::SortedDocValuesField;
+        let refund = |hold: bool| {
+            let mut chain = DefaultIndexingChain::new(config());
+            let mut field_infos = builder();
+            let mut document = Document::new();
+            document.add(Box::new(SortedDocValuesField::new(
+                "tag",
+                crate::util::BytesRef::new(b"a".to_vec()),
+            )));
+            chain
+                .process_document(0, &document, true, &mut field_infos)
+                .expect("process document");
+            let blocks = chain.doc_values_byte_pool.charged_block_bytes();
+            assert!(blocks > 0, "interning the value allocated a block");
+            let held = hold.then(|| Arc::clone(&chain.doc_values_byte_pool));
+            let before = chain.bytes_used.load(Ordering::Acquire);
+            chain.reset_doc_values_byte_pool();
+            drop(held);
+            (before - chain.bytes_used.load(Ordering::Acquire), blocks)
+        };
+        let (unshared, blocks) = refund(false);
+        let (shared, _) = refund(true);
+        assert_eq!(unshared, blocks);
+        assert_eq!(shared, unshared, "the swap path refunds what reset refunds");
+    }
+
+    /// `IndexingChain.getDocValuesLeafReader()` finishes a writer only when
+    /// the sorter asks for its field (`IndexingChain.java:179-246`): reading
+    /// the sort field must leave every other field's writer open.
+    #[test]
+    fn the_buffered_doc_values_reader_finishes_only_the_fields_it_reads() {
+        use crate::document::{NumericDocValuesField, SortedDocValuesField};
+        use crate::index::doc_values_writer::DocValuesWriter;
+        let mut chain = DefaultIndexingChain::new(config());
+        let mut field_infos = builder();
+        for (doc_id, (n, tag)) in [(3i64, "b"), (1, "a")].into_iter().enumerate() {
+            let mut document = Document::new();
+            document.add(Box::new(NumericDocValuesField::new("n", n)));
+            document.add(Box::new(SortedDocValuesField::new(
+                "tag",
+                crate::util::BytesRef::new(tag.as_bytes().to_vec()),
+            )));
+            chain
+                .process_document(doc_id as i32, &document, true, &mut field_infos)
+                .expect("process document");
+        }
+
+        let reader = chain.get_doc_values_leaf_reader(2);
+        assert!(
+            crate::index::LeafReader::get_numeric_doc_values(&reader, "n")
+                .expect("read the sort field")
+                .is_some()
+        );
+        chain.restore_doc_values_writers(reader);
+
+        let n = chain.per_field_index["n"];
+        let tag = chain.per_field_index["tag"];
+        match chain.per_fields[n].doc_values.as_mut() {
+            Some(DocValuesWriter::Numeric(writer)) => assert!(
+                writer.add_value(2, 5).is_err(),
+                "the sort field's writer was finished by getDocValues()"
+            ),
+            other => panic!("expected the numeric writer, got {other:?}"),
+        }
+        match chain.per_fields[tag].doc_values.as_mut() {
+            Some(DocValuesWriter::Sorted(writer)) => writer
+                .add_value(2, b"c", &mut chain.doc_values_byte_pool)
+                .expect("a field the sorter did not read is still open"),
+            other => panic!("expected the sorted writer, got {other:?}"),
+        }
     }
 
     // -- FieldInvertState --------------------------------------------------
@@ -4702,6 +4926,25 @@ mod tests {
         (chain, tracking, make_info(max_doc))
     }
 
+    /// What `IndexingChain.flush` left in the `SegmentWriteState`.
+    #[derive(Debug)]
+    struct IndexingChainFlushResult {
+        live_docs: Option<crate::util::FixedBitSet>,
+        del_count_on_flush: i32,
+    }
+
+    /// The segment-private updates of a flush: `delete_terms`, as the DWPT's
+    /// `pendingUpdates` buffers them.
+    fn segment_updates(
+        delete_terms: &[TermDelete],
+    ) -> crate::index::documents_writer::BufferedUpdates {
+        let mut updates = crate::index::documents_writer::BufferedUpdates::new("_0");
+        for delete in delete_terms {
+            updates.add_term(delete.term.clone(), delete.doc_id_upto);
+        }
+        updates
+    }
+
     /// Indexes `documents` and flushes them into a fresh in-memory directory.
     fn flush_documents(
         documents: Vec<Document>,
@@ -4734,17 +4977,21 @@ mod tests {
 
         let info_stream = NoOutputInfoStream;
         let context = flush_io_context(FlushInfo::new(max_doc, 0));
-        let state = IndexingChainFlushState {
-            info_stream: &info_stream,
-            directory: &tracking,
-            segment_info: &segment_info,
-            field_infos: &finished,
-            context: context.as_ref(),
-            live_docs: None,
-            del_count_on_flush: 0,
-            delete_terms,
+        let seg_updates = segment_updates(delete_terms);
+        let mut state = SegmentWriteState::new(
+            &info_stream,
+            Arc::clone(&tracking) as Arc<dyn Directory>,
+            &segment_info,
+            &finished,
+            &seg_updates,
+            context.as_ref(),
+        );
+        let sort_map = chain.flush(&mut state).expect("flush");
+        assert!(sort_map.is_none(), "these segments carry no index sort");
+        let result = IndexingChainFlushResult {
+            live_docs: state.live_docs.take(),
+            del_count_on_flush: state.del_count_on_flush,
         };
-        let result = chain.flush(&state).expect("flush");
         let mut files: Vec<String> = tracking.get_created_files().into_iter().collect();
         files.sort();
         (files, result, segment_info, tracking)
@@ -4826,17 +5073,16 @@ mod tests {
         let segment_info = make_info(max_doc);
         let info_stream = NoOutputInfoStream;
         let context = flush_io_context(FlushInfo::new(max_doc, 0));
-        let state = IndexingChainFlushState {
-            info_stream: &info_stream,
-            directory: &tracking,
-            segment_info: &segment_info,
-            field_infos: &finished,
-            context: context.as_ref(),
-            live_docs: None,
-            del_count_on_flush: 0,
-            delete_terms: &[],
-        };
-        chain.flush(&state).expect("flush");
+        let seg_updates = segment_updates(&[]);
+        let mut state = SegmentWriteState::new(
+            &info_stream,
+            Arc::clone(&tracking) as Arc<dyn Directory>,
+            &segment_info,
+            &finished,
+            &seg_updates,
+            context.as_ref(),
+        );
+        chain.flush(&mut state).expect("flush");
 
         let mut files: Vec<String> = tracking.get_created_files().into_iter().collect();
         files.sort();
@@ -4914,17 +5160,16 @@ mod tests {
         assert!(!finished.has_norms());
         let info_stream = NoOutputInfoStream;
         let context = flush_io_context(FlushInfo::new(2, 0));
-        let state = IndexingChainFlushState {
-            info_stream: &info_stream,
-            directory: &tracking,
-            segment_info: &segment_info,
-            field_infos: &finished,
-            context: context.as_ref(),
-            live_docs: None,
-            del_count_on_flush: 0,
-            delete_terms: &[],
-        };
-        chain.flush(&state).expect("the segment still flushes");
+        let seg_updates = segment_updates(&[]);
+        let mut state = SegmentWriteState::new(
+            &info_stream,
+            Arc::clone(&tracking) as Arc<dyn Directory>,
+            &segment_info,
+            &finished,
+            &seg_updates,
+            context.as_ref(),
+        );
+        chain.flush(&mut state).expect("the segment still flushes");
     }
 
     #[test]
@@ -5413,17 +5658,16 @@ mod tests {
         let finished = field_infos.finish().expect("field infos");
         let info_stream = NoOutputInfoStream;
         let context = flush_io_context(FlushInfo::new(max_doc, 0));
-        let state = IndexingChainFlushState {
-            info_stream: &info_stream,
-            directory: &tracking,
-            segment_info: &segment_info,
-            field_infos: &finished,
-            context: context.as_ref(),
-            live_docs: None,
-            del_count_on_flush: 0,
-            delete_terms: &[],
-        };
-        chain.flush(&state).expect("flush");
+        let seg_updates = segment_updates(&[]);
+        let mut state = SegmentWriteState::new(
+            &info_stream,
+            Arc::clone(&tracking) as Arc<dyn Directory>,
+            &segment_info,
+            &finished,
+            &seg_updates,
+            context.as_ref(),
+        );
+        chain.flush(&mut state).expect("flush");
 
         let documents = read_back(&segment_info, &tracking, &finished);
         assert_eq!(
@@ -5486,17 +5730,16 @@ mod tests {
         let finished = field_infos.finish().expect("field infos");
         let info_stream = NoOutputInfoStream;
         let context = flush_io_context(FlushInfo::new(max_doc, 0));
-        let state = IndexingChainFlushState {
-            info_stream: &info_stream,
-            directory: &tracking,
-            segment_info: &segment_info,
-            field_infos: &finished,
-            context: context.as_ref(),
-            live_docs: None,
-            del_count_on_flush: 0,
-            delete_terms: &[],
-        };
-        chain.flush(&state).expect("flush");
+        let seg_updates = segment_updates(&[]);
+        let mut state = SegmentWriteState::new(
+            &info_stream,
+            Arc::clone(&tracking) as Arc<dyn Directory>,
+            &segment_info,
+            &finished,
+            &seg_updates,
+            context.as_ref(),
+        );
+        chain.flush(&mut state).expect("flush");
 
         assert_eq!(
             read_back(&segment_info, &tracking, &finished),
@@ -5742,17 +5985,16 @@ mod tests {
 
         let info_stream = NoOutputInfoStream;
         let context = flush_io_context(FlushInfo::new(max_doc, 0));
-        let state = IndexingChainFlushState {
-            info_stream: &info_stream,
-            directory: &tracking,
-            segment_info: &segment_info,
-            field_infos: &finished,
-            context: context.as_ref(),
-            live_docs: None,
-            del_count_on_flush: 0,
-            delete_terms: &[],
-        };
-        chain.flush(&state).expect("flush");
+        let seg_updates = segment_updates(&[]);
+        let mut state = SegmentWriteState::new(
+            &info_stream,
+            Arc::clone(&tracking) as Arc<dyn Directory>,
+            &segment_info,
+            &finished,
+            &seg_updates,
+            context.as_ref(),
+        );
+        chain.flush(&mut state).expect("flush");
 
         let mut files: Vec<String> = tracking.get_created_files().into_iter().collect();
         files.sort();
@@ -6432,14 +6674,39 @@ mod tests {
 /// comparators do.
 struct BufferedDocValuesReader {
     max_doc: i32,
-    /// The buffered producer of each field, with the field info it answers for.
-    producers: HashMap<
-        String,
-        (
+    /// The doc-values writer of each field, with its slot in the chain's
+    /// per-field list and the field info it answers for.
+    writers: std::sync::Mutex<HashMap<String, (usize, FieldInfo, DocValuesWriter)>>,
+    /// The chain's `docValuesBytePool`, which the sorted writers read.
+    pool: Arc<ByteBlockPool>,
+}
+
+impl BufferedDocValuesReader {
+    /// `getPerField(field)`, the doc-values type check, and
+    /// `pf.docValuesWriter.getDocValues()` — which finishes the writer — for
+    /// a field of kind `kind`.
+    fn producer(
+        &self,
+        field: &str,
+        kind: DocValuesType,
+    ) -> Result<
+        Option<(
             FieldInfo,
             Arc<dyn crate::codecs::doc_values::DocValuesProducer>,
-        ),
-    >,
+        )>,
+    > {
+        let mut writers = self
+            .writers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some((_, info, writer)) = writers.get_mut(field) else {
+            return Ok(None);
+        };
+        if info.doc_values_type != kind {
+            return Ok(None);
+        }
+        Ok(Some((info.clone(), writer.get_doc_values(&self.pool)?)))
+    }
 }
 
 impl std::fmt::Display for BufferedDocValuesReader {
@@ -6509,65 +6776,50 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
         &self,
         field: &str,
     ) -> Result<Option<Box<dyn crate::index::doc_values::NumericDocValues>>> {
-        let Some((info, producer)) = self.producers.get(field) else {
+        let Some((info, producer)) = self.producer(field, DocValuesType::NUMERIC)? else {
             return Ok(None);
         };
-        if info.doc_values_type != DocValuesType::NUMERIC {
-            return Ok(None);
-        }
-        producer.get_numeric(info)
+        producer.get_numeric(&info)
     }
 
     fn get_binary_doc_values(
         &self,
         field: &str,
     ) -> Result<Option<Box<dyn crate::index::doc_values::BinaryDocValues>>> {
-        let Some((info, producer)) = self.producers.get(field) else {
+        let Some((info, producer)) = self.producer(field, DocValuesType::BINARY)? else {
             return Ok(None);
         };
-        if info.doc_values_type != DocValuesType::BINARY {
-            return Ok(None);
-        }
-        producer.get_binary(info)
+        producer.get_binary(&info)
     }
 
     fn get_sorted_doc_values(
         &self,
         field: &str,
     ) -> Result<Option<Box<dyn crate::index::doc_values::SortedDocValues>>> {
-        let Some((info, producer)) = self.producers.get(field) else {
+        let Some((info, producer)) = self.producer(field, DocValuesType::SORTED)? else {
             return Ok(None);
         };
-        if info.doc_values_type != DocValuesType::SORTED {
-            return Ok(None);
-        }
-        producer.get_sorted(info)
+        producer.get_sorted(&info)
     }
 
     fn get_sorted_numeric_doc_values(
         &self,
         field: &str,
     ) -> Result<Option<Box<dyn crate::index::doc_values::SortedNumericDocValues>>> {
-        let Some((info, producer)) = self.producers.get(field) else {
+        let Some((info, producer)) = self.producer(field, DocValuesType::SORTED_NUMERIC)? else {
             return Ok(None);
         };
-        if info.doc_values_type != DocValuesType::SORTED_NUMERIC {
-            return Ok(None);
-        }
-        producer.get_sorted_numeric(info)
+        producer.get_sorted_numeric(&info)
     }
 
     fn get_sorted_set_doc_values(
         &self,
         field: &str,
     ) -> Result<Option<Box<dyn crate::index::doc_values::SortedSetDocValues>>> {
-        let Some((info, producer)) = self.producers.get(field) else {
+        let Some((info, producer)) = self.producer(field, DocValuesType::SORTED_SET)? else {
             return Ok(None);
         };
-        if info.doc_values_type != DocValuesType::SORTED_SET {
-            return Ok(None);
-        }
-        producer.get_sorted_set(info)
+        producer.get_sorted_set(&info)
     }
 
     fn get_norm_values(

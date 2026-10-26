@@ -160,7 +160,7 @@ fn write_with_rucene(
         Arc::clone(&directory),
         &info,
         &infos,
-        &BufferedUpdates,
+        Box::leak(Box::new(BufferedUpdates::default())),
         &*DEFAULT_IO_CONTEXT,
     );
 
@@ -231,7 +231,7 @@ fn merge_with_rucene(
         Arc::clone(&directory),
         &merged_info,
         &infos,
-        &BufferedUpdates,
+        Box::leak(Box::new(BufferedUpdates::default())),
         &*DEFAULT_IO_CONTEXT,
     );
     let merge_state = MergeState::new(
@@ -308,7 +308,7 @@ fn scores_with_rucene(
         Arc::clone(&directory),
         &score_info,
         &infos,
-        &BufferedUpdates,
+        Box::leak(Box::new(BufferedUpdates::default())),
         &*DEFAULT_IO_CONTEXT,
     );
     let field_info = infos.field_info_by_number(0).expect("field info").clone();

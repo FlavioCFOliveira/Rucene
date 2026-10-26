@@ -3,9 +3,8 @@
 //! `FieldInfo`, `FieldInfos`, `SegmentInfo`, `SegmentCommitInfo`,
 //! `StoredFieldVisitor`, `TermVectors` and the terms hierarchy are now
 //! re-exported from `crate::index` and kept here so that existing codec modules
-//! can continue to import them from `crate::codecs::stub`. Only
-//! `BufferedUpdates` remains a simple placeholder until its full
-//! `crate::index` equivalent is ported.
+//! can continue to import them from `crate::codecs::stub`, as is
+//! `BufferedUpdates`, the type of `SegmentWriteState.segUpdates`.
 
 pub use crate::index::FieldInfo;
 
@@ -15,9 +14,7 @@ pub use crate::index::SegmentCommitInfo;
 
 pub use crate::index::SegmentInfo;
 
-/// Placeholder for `org.apache.lucene.index.BufferedUpdates`.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct BufferedUpdates;
+pub use crate::index::documents_writer::BufferedUpdates;
 
 pub use crate::index::{StoredFieldVisitor, StoredFieldVisitorStatus};
 

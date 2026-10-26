@@ -1089,7 +1089,7 @@ mod tests {
         let data2 = format!("{name}.fdt");
         touch(dir, &data);
         touch(dir, &data2);
-        info.set_files(HashSet::from([data, data2]));
+        info.set_files(HashSet::from([data, data2])).unwrap();
         Lucene99SegmentInfoFormat::new()
             .write(dir, &info, &*crate::store::DEFAULT_IO_CONTEXT)
             .unwrap();

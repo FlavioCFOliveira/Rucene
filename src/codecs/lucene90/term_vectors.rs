@@ -4128,7 +4128,9 @@ mod tests {
             .iter()
             .map(|name| (*name).to_string())
             .collect();
-        segment_info.set_files(loose.iter().cloned().collect::<Vec<String>>());
+        segment_info
+            .set_files(loose.iter().cloned().collect::<Vec<String>>())
+            .unwrap();
         let compound_format = crate::codecs::lucene90::compound::Lucene90CompoundFormat;
         compound_format
             .write(directory.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)

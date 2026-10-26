@@ -2159,7 +2159,7 @@ mod tests {
         let seg_info = make_segment_info(&dir, 3)?;
         let field_info = float_field_info("float_field", 0, 2)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;
-        let seg_updates = BufferedUpdates;
+        let seg_updates = BufferedUpdates::default();
         let io_ctx = DefaultIOContext::default();
         let (write_state, read_state) =
             make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
@@ -2211,7 +2211,7 @@ mod tests {
         let seg_info = make_segment_info(&dir, 5)?;
         let field_info = byte_field_info("byte_field", 0, 2)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;
-        let seg_updates = BufferedUpdates;
+        let seg_updates = BufferedUpdates::default();
         let io_ctx = DefaultIOContext::default();
         let (write_state, read_state) =
             make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
@@ -2255,7 +2255,7 @@ mod tests {
         let seg_info = make_segment_info(&dir, 1)?;
         let field_info = float_field_info("f", 0, 1)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;
-        let seg_updates = BufferedUpdates;
+        let seg_updates = BufferedUpdates::default();
         let io_ctx = DefaultIOContext::default();
         let (write_state, _read_state) =
             make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);

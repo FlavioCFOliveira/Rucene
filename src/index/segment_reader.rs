@@ -2202,6 +2202,42 @@ impl CacheHelper for SegmentReaderCoreCacheHelper {
 // Tests
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// TestSecrets registration
+// -----------------------------------------------------------------------------
+
+/// The [`SegmentReaderAccess`](crate::internal::tests_hooks::SegmentReaderAccess)
+/// `SegmentReader` registers with
+/// [`TestSecrets`](crate::internal::tests_hooks::TestSecrets).
+///
+/// Equivalent to the anonymous `SegmentReaderAccess` of `SegmentReader`'s
+/// static initializer (`SegmentReader.java:408-414`), which returns the
+/// reader's `core`.
+#[derive(Debug)]
+struct SegmentReaderAccessImpl;
+
+impl crate::internal::tests_hooks::SegmentReaderAccess for SegmentReaderAccessImpl {
+    fn get_core(&self, segment_reader: &SegmentReader) -> Arc<dyn std::any::Any + Send + Sync> {
+        Arc::clone(segment_reader.core_readers()) as Arc<dyn std::any::Any + Send + Sync>
+    }
+}
+
+/// Registers `SegmentReader`'s accessor with
+/// [`TestSecrets`](crate::internal::tests_hooks::TestSecrets), once.
+///
+/// Equivalent to `SegmentReader`'s `static {}` block
+/// (`SegmentReader.java:407-415`), which
+/// `TestSecrets.ensureInitialized(SegmentReader.class)` triggers.
+pub(crate) fn register_test_secrets() {
+    static INITIALIZED: std::sync::Once = std::sync::Once::new();
+    INITIALIZED.call_once(|| {
+        crate::internal::tests_hooks::TestSecrets::set_segment_reader_access(Arc::new(
+            SegmentReaderAccessImpl,
+        ))
+        .expect("INVARIANT: SegmentReader's static initializer runs once, from this file");
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

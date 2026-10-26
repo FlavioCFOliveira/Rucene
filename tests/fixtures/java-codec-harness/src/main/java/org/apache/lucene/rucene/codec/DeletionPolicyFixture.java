@@ -130,6 +130,7 @@ public final class DeletionPolicyFixture {
             case "no-deletion" -> runPolicy(outDir, shape, NoDeletionPolicy.INSTANCE);
             case "snapshot" -> runSnapshot(outDir);
             case "persistent-snapshot" -> runPersistentSnapshot(outDir);
+            case "persistent-snapshot-order" -> runPersistentSnapshotOrder(outDir);
             case "read-snapshots" -> readSnapshots(outDir);
             case "reopen-snapshot" -> runReopenSnapshot(outDir);
             case "release" -> runRelease(outDir);
@@ -245,6 +246,48 @@ public final class DeletionPolicyFixture {
             System.out.println("created_generations=" + join(created));
             System.out.println("snapshotted_generations=" + join(snapshotted));
             System.out.println("surviving_generations=" + join(commitGenerations(dir)));
+        }
+    }
+
+    /**
+     * Snapshots generations 2 and 17, which a 16-bucket {@code HashMap<Long, Integer>} iterates
+     * as {@code [17, 2]}, so the persisted {@code snapshots_N} lists them out of ascending order.
+     */
+    private static void runPersistentSnapshotOrder(Path outDir) throws IOException {
+        Path indexDir = outDir.resolve("index");
+        Path snapshotsDir = outDir.resolve("snapshots");
+        deleteRecursively(indexDir);
+        deleteRecursively(snapshotsDir);
+        Files.createDirectories(indexDir);
+        Files.createDirectories(snapshotsDir);
+
+        try (Directory dir = FSDirectory.open(indexDir);
+                Directory snapDir = FSDirectory.open(snapshotsDir)) {
+            SnapshotProbe policy =
+                    new SnapshotProbe(
+                            new KeepOnlyLastCommitDeletionPolicy(), snapDir, OpenMode.CREATE);
+            IndexWriterConfig config = new IndexWriterConfig(new WhitespaceAnalyzer());
+            config.setOpenMode(OpenMode.CREATE);
+            config.setIndexDeletionPolicy(policy);
+
+            List<Long> created = new ArrayList<>();
+            List<Long> snapshotted = new ArrayList<>();
+            try (IndexWriter writer = new IndexWriter(dir, config)) {
+                SnapshotProbe live =
+                        (SnapshotProbe) writer.getConfig().getIndexDeletionPolicy();
+                for (int i = 0; i < 17; i++) {
+                    writer.addDocument(doc(i));
+                    writer.commit();
+                    long generation = lastGeneration(dir);
+                    created.add(generation);
+                    if (generation == 2 || generation == 17) {
+                        snapshotted.add(live.snapshot().getGeneration());
+                    }
+                }
+                System.out.println("last_save_file=" + live.getLastSaveFile());
+            }
+            System.out.println("created_generations=" + join(created));
+            System.out.println("snapshotted_generations=" + join(snapshotted));
         }
     }
 

@@ -1710,7 +1710,7 @@ mod tests {
             Arc::clone(dir),
             info,
             infos,
-            &crate::codecs::stub::BufferedUpdates,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
             &*crate::store::DEFAULT_IO_CONTEXT,
         )
     }

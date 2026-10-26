@@ -376,11 +376,19 @@ impl IndexWriter {
         let info_stream = config.info_stream();
         let open_mode = config.open_mode();
 
-        let create = match open_mode {
-            OpenMode::CREATE => true,
-            OpenMode::APPEND => false,
+        // `IndexWriter.java:966-979`: CREATE and CREATE_OR_APPEND ask whether
+        // an index exists; APPEND assumes it does.
+        let (index_exists, create) = match open_mode {
+            OpenMode::CREATE => (
+                SegmentInfos::get_last_commit_segments_file_name_dir(directory.as_ref())?.is_some(),
+                true,
+            ),
+            OpenMode::APPEND => (true, false),
             OpenMode::CREATE_OR_APPEND => {
-                SegmentInfos::get_last_commit_segments_file_name_dir(directory.as_ref())?.is_none()
+                let index_exists =
+                    SegmentInfos::get_last_commit_segments_file_name_dir(directory.as_ref())?
+                        .is_some();
+                (index_exists, !index_exists)
             }
         };
 
@@ -388,7 +396,17 @@ impl IndexWriter {
         // into `change_count` once it exists.
         let mut initial_change_count = 0i64;
         let mut segment_infos = if create {
-            let mut sis = SegmentInfos::new(Version::LATEST.major as i32)?;
+            // Try to read first. This is to allow create against an index
+            // that's currently open for searching. In this case we write the
+            // next segments_N file with no segments (`IndexWriter.java:1009-1017`):
+            // the new commit continues the old one's generation, version and
+            // segment counter, so it neither overwrites `segments_N` nor reuses
+            // a segment name a reader may still have open.
+            let mut sis = SegmentInfos::new(config.index_created_version_major())?;
+            if index_exists {
+                let previous = SegmentInfos::read_latest_commit(Arc::clone(&directory))?;
+                sis.update_generation_version_and_counter(&previous);
+            }
             // Record that we have a change (zero out all segments) pending
             // (`IndexWriter.java:1022-1024`).
             sis.changed();
@@ -397,9 +415,10 @@ impl IndexWriter {
         } else {
             SegmentInfos::read_latest_commit(Arc::clone(&directory))?
         };
+        if info_stream.is_enabled(IW) {
+            info_stream.message(IW, &format!("init {}", segment_infos.to_string_verbose()));
+        }
 
-        let initial_index_exists =
-            SegmentInfos::get_last_commit_segments_file_name_dir(directory.as_ref())?.is_some();
         let files: Vec<String> = directory.list_all()?;
 
         let tragedy: Mutex<Option<String>> = Mutex::new(None);
@@ -416,7 +435,7 @@ impl IndexWriter {
             config.index_deletion_policy(),
             &mut segment_infos,
             Arc::clone(&info_stream),
-            initial_index_exists,
+            index_exists,
             false,
         )?;
         if deleter.starting_commit_deleted {
@@ -477,6 +496,9 @@ impl IndexWriter {
             }
         }
 
+        // `validateIndexSort()` (`IndexWriter.java:1138`).
+        Self::validate_index_sort(&live_config, &segment_infos)?;
+
         let buffered_updates_stream = Arc::new(BufferedUpdatesStream::with_info_stream(
             Arc::clone(&info_stream),
         ));
@@ -503,7 +525,7 @@ impl IndexWriter {
 
         let soft_deletes_enabled = live_config.soft_deletes_field().is_some();
 
-        Ok(Self {
+        let writer = Self {
             directory,
             config: live_config,
             info_stream: Arc::clone(&info_stream),
@@ -552,7 +574,16 @@ impl IndexWriter {
             write_doc_values_lock: Mutex::new(()),
             pending_seq_no: AtomicI64::new(0),
             self_ref: OnceLock::new(),
-        })
+        };
+        // `IndexWriter.java:1202-1205`. This port never opens from a reader,
+        // so `reader` is always `null`.
+        if writer.info_stream.is_enabled(IW) {
+            writer
+                .info_stream
+                .message(IW, &format!("init: create={create} reader=null"));
+            writer.message_state()?;
+        }
+        Ok(writer)
     }
 
     /// Moves this writer into an `Arc` and records the weak self-reference the
@@ -3114,7 +3145,9 @@ impl IndexWriter {
         }
 
         let merged_info = merger.into_segment_info();
-        merged_info.set_files(dir_wrapper.get_created_files());
+        merged_info.set_files(crate::index::documents_writer::copy_of_created_files(
+            dir_wrapper,
+        ))?;
         let merged_max_doc = merged_info.max_doc()?;
         if let Some(info) = merge.info().as_mut() {
             info.info = merged_info;
@@ -3452,12 +3485,9 @@ impl IndexWriter {
             -1,
             StringHelper::random_id(),
         )?);
-        merge
-            .info()
-            .as_ref()
-            .expect("just set")
-            .info
-            .set_files(tracking_dir.get_created_files());
+        merge.info().as_ref().expect("just set").info.set_files(
+            crate::index::documents_writer::copy_of_created_files(&tracking_dir),
+        )?;
         tracking_dir.clear_created_files();
 
         Self::set_diagnostics(
@@ -4451,8 +4481,6 @@ impl IndexWriter {
         Ok(())
     }
 
-    /// [`message_state`](Self::message_state) for a caller that holds the
-    /// writer's lock; Java's `messageState` is `synchronized`.
     /// Test-only: runs the hook installed by a unit test, if any.
     #[cfg(test)]
     fn run_point_in_time_merge_registered_hook(&self) {
@@ -4466,6 +4494,8 @@ impl IndexWriter {
         }
     }
 
+    /// [`message_state`](Self::message_state) for a caller that holds the
+    /// writer's lock; Java's `messageState` is `synchronized`.
     fn message_state_with(&self, state: &WriterState) -> Result<()> {
         if self.info_stream.is_enabled(IW) && !self.did_message_state.swap(true, Ordering::AcqRel) {
             self.info_stream.message(
@@ -4487,19 +4517,37 @@ impl IndexWriter {
     /// Fails when a segment of the index carries a sort incompatible with the
     /// configured one.
     ///
-    /// Equivalent to `IndexWriter.validateIndexSort()`.
-    fn validate_index_sort(&self, state: &WriterState) -> Result<()> {
-        let Some(index_sort) = self.config.index_sort() else {
+    /// Equivalent to `IndexWriter.validateIndexSort()` (`IndexWriter.java:1221-1236`),
+    /// which the constructor calls once the field numbers are loaded
+    /// (`IndexWriter.java:1138`). Java reads the writer's fields; the
+    /// constructor here runs before the writer exists, so the configuration and
+    /// the segments are passed in.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] with Lucene's message when a
+    /// segment is unsorted or sorted by a sort the configured one is not a
+    /// prefix of.
+    fn validate_index_sort(
+        config: &LiveIndexWriterConfig,
+        segment_infos: &SegmentInfos,
+    ) -> Result<()> {
+        let Some(index_sort) = config.index_sort() else {
             return Ok(());
         };
-        for info in state.segment_infos.iter() {
+        for info in segment_infos.iter() {
             let segment_sort = info.info.index_sort();
-            if segment_sort.fields().is_empty()
-                || !Self::is_congruent_sort(index_sort, segment_sort)
-            {
+            // `SegmentInfo.getIndexSort()` is `null` for an unsorted segment;
+            // this port stores the relevance sort there instead.
+            let unsorted = segment_sort.fields().is_empty() || *segment_sort == Sort::default();
+            if unsorted || !Self::is_congruent_sort(index_sort, segment_sort) {
+                let segment_sort = if unsorted {
+                    "null".to_string()
+                } else {
+                    segment_sort.to_string()
+                };
                 return Err(LuceneError::IllegalArgument(format!(
-                    "cannot change previous indexSort={segment_sort:?} (from segment={}) to new indexSort={index_sort:?}",
-                    info.info.name
+                    "cannot change previous indexSort={segment_sort} (from segment={info}) to new indexSort={index_sort}"
                 )));
             }
         }
@@ -4910,14 +4958,11 @@ impl IndexWriter {
     /// Writes every pending live-docs and doc-values update the reader pool
     /// holds.
     ///
-    /// Equivalent to `IndexWriter.writeReaderPool(boolean)`.
-    fn write_reader_pool(&self, write_deletes: bool) -> Result<()> {
-        let mut state = self.state()?;
-        self.write_reader_pool_with(&mut state, write_deletes)
-    }
-
-    /// [`write_reader_pool`](Self::write_reader_pool) for a caller that holds
-    /// the writer's lock, which Java asserts (`IndexWriter.java:4101`).
+    /// Equivalent to `IndexWriter.writeReaderPool(boolean)`
+    /// (`IndexWriter.java:4100-4129`), which asserts that the caller holds the
+    /// writer's lock (`IndexWriter.java:4101`); every Java caller does —
+    /// `getReader` (`:603`), `prepareCommitInternal` (`:3805`) and `doFlush`
+    /// (`:4407`) — and so does each of their ports, which hand over the guard.
     fn write_reader_pool_with(&self, state: &mut WriterState, write_deletes: bool) -> Result<()> {
         self.ensure_open_with(false)?;
         // `IndexWriter.java:4102-4110`: with deletes, `readerPool.commit` writes
@@ -5663,7 +5708,7 @@ impl IndexWriter {
             info.info.get_attributes(),
             info.info.index_sort().clone(),
         )?;
-        new_info.set_files(info.info.files_ordered()?);
+        new_info.set_files(info.info.files_ordered()?)?;
 
         let mut new_info_per_commit = SegmentCommitInfo::new(
             new_info,
@@ -5732,7 +5777,9 @@ impl IndexWriter {
             return Err(error);
         }
         // Replace all previous files with the CFS/CFE files.
-        info.set_files(directory.get_created_files());
+        info.set_files(crate::index::documents_writer::copy_of_created_files(
+            directory,
+        ))?;
         Ok(())
     }
 
@@ -7724,6 +7771,133 @@ impl IndexWriterTrait for IndexWriter {
                 Ok(Arc::clone(&reader) as Arc<dyn crate::index::codec_reader::CodecReader>)
             })
     }
+}
+
+// -----------------------------------------------------------------------------
+// TestSecrets registration
+// -----------------------------------------------------------------------------
+
+/// The [`IndexWriterAccess`](crate::internal::tests_hooks::IndexWriterAccess)
+/// `IndexWriter` registers with
+/// [`TestSecrets`](crate::internal::tests_hooks::TestSecrets).
+///
+/// Equivalent to the anonymous `IndexWriterAccess` of `IndexWriter`'s static
+/// initializer (`IndexWriter.java:6714-6751`).
+#[derive(Debug)]
+struct IndexWriterAccessImpl;
+
+impl crate::internal::tests_hooks::IndexWriterAccess for IndexWriterAccessImpl {
+    fn seg_string(&self, iw: &IndexWriter) -> Result<String> {
+        iw.seg_string()
+    }
+
+    fn get_segment_count(&self, iw: &IndexWriter) -> Result<i32> {
+        Ok(iw.get_segment_count()? as i32)
+    }
+
+    fn is_closed(&self, iw: &IndexWriter) -> bool {
+        iw.is_closed()
+    }
+
+    fn get_reader(
+        &self,
+        iw: &IndexWriter,
+        apply_deletions: bool,
+        write_all_deletes: bool,
+    ) -> Result<Arc<dyn DirectoryReader>> {
+        IndexWriterTrait::get_reader(iw, apply_deletions, write_all_deletes)
+    }
+
+    /// `iw.docWriter.perThreadPool.size()`.
+    fn get_doc_writer_thread_pool_size(&self, iw: &IndexWriter) -> i32 {
+        iw.documents_writer.per_thread_pool().size() as i32
+    }
+
+    fn is_deleter_closed(&self, iw: &IndexWriter) -> Result<bool> {
+        iw.is_deleter_closed()
+    }
+
+    fn newest_segment(&self, iw: &IndexWriter) -> Result<Option<SegmentCommitInfo>> {
+        iw.newest_segment()
+    }
+}
+
+/// The [`IndexPackageAccess`](crate::internal::tests_hooks::IndexPackageAccess)
+/// `IndexWriter` registers with
+/// [`TestSecrets`](crate::internal::tests_hooks::TestSecrets) on behalf of the
+/// whole package ("Piggyback general package-scope accessors").
+///
+/// Equivalent to the anonymous `IndexPackageAccess` of `IndexWriter`'s static
+/// initializer (`IndexWriter.java:6753-6793`).
+#[derive(Debug)]
+struct IndexPackageAccessImpl;
+
+impl crate::internal::tests_hooks::IndexPackageAccess for IndexPackageAccessImpl {
+    fn new_cache_key(&self) -> crate::index::CacheKey {
+        crate::index::CacheKey
+    }
+
+    fn set_index_writer_max_docs(&self, limit: i32) -> Result<()> {
+        set_max_docs(limit)
+    }
+
+    fn new_field_infos_builder(
+        &self,
+        soft_deletes_field_name: Option<&str>,
+        parent_field_name: Option<&str>,
+    ) -> Result<Box<dyn crate::internal::tests_hooks::FieldInfosBuilder>> {
+        let field_numbers = FieldNumbers::new(
+            soft_deletes_field_name.map(str::to_string),
+            parent_field_name.map(str::to_string),
+        )?;
+        Ok(Box::new(PackageFieldInfosBuilder {
+            builder: crate::index::field_infos::FieldInfosBuilder::new(Arc::new(field_numbers)),
+        }))
+    }
+
+    fn check_impacts(&self, impacts: &dyn crate::index::Impacts, max: i32) -> Result<()> {
+        crate::index::check_index::check_impacts(impacts, max)
+    }
+}
+
+/// The `FieldInfosBuilder` `IndexPackageAccess.newFieldInfosBuilder` returns: a
+/// `FieldInfos.Builder` over fresh `FieldNumbers` (`IndexWriter.java:6767-6786`).
+struct PackageFieldInfosBuilder {
+    builder: crate::index::field_infos::FieldInfosBuilder,
+}
+
+impl crate::internal::tests_hooks::FieldInfosBuilder for PackageFieldInfosBuilder {
+    fn add(&mut self, fi: &crate::index::FieldInfo) -> Result<()> {
+        self.builder.add(fi)?;
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<crate::index::FieldInfos> {
+        self.builder.finish()
+    }
+}
+
+/// Registers `IndexWriter`'s accessors with
+/// [`TestSecrets`](crate::internal::tests_hooks::TestSecrets), once.
+///
+/// Equivalent to `IndexWriter`'s `static {}` block (`IndexWriter.java:6713-6794`),
+/// which the class loader runs before the class is first used and which
+/// `TestSecrets.ensureInitialized(IndexWriter.class)` triggers. The setters
+/// check that they are called from this file, as Java checks the calling
+/// class.
+pub(crate) fn register_test_secrets() {
+    static INITIALIZED: std::sync::Once = std::sync::Once::new();
+    INITIALIZED.call_once(|| {
+        crate::internal::tests_hooks::TestSecrets::set_index_writer_access(Arc::new(
+            IndexWriterAccessImpl,
+        ))
+        .expect("INVARIANT: IndexWriter's static initializer runs once, from this file");
+        // Piggyback general package-scope accessors.
+        crate::internal::tests_hooks::TestSecrets::set_index_package_access(Arc::new(
+            IndexPackageAccessImpl,
+        ))
+        .expect("INVARIANT: IndexWriter's static initializer runs once, from this file");
+    });
 }
 
 #[cfg(test)]

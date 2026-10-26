@@ -194,7 +194,8 @@ mod tests {
             name,
             "",
             FIELD_INFO_EXTENSION,
-        )]));
+        )]))
+        .unwrap();
         write_segment_info_file(directory, &info);
         info
     }

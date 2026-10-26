@@ -164,10 +164,9 @@ pub use documents_writer::{
     DocumentsWriterFlushControl, DocumentsWriterFlushQueue, DocumentsWriterPerThread,
     DocumentsWriterPerThreadPool, DocumentsWriterShared, DocumentsWriterStallControl, DwptGuard,
     FlushByRamOrCountsPolicy, FlushControlHandle, FlushNotifications, FlushPolicy, FlushTicket,
-    FlushedSegment, FrozenBufferedUpdates, IndexingChain, IndexingChainFactory,
-    IndexingChainFlushState, LockAllGuard, NoOpFlushNotifications, SegmentNameSupplier,
-    SharedIndexingScratch, TermDelete, BYTES_PER_DEL_QUERY, BYTES_SCRATCH_SIZE, INTS_SCRATCH_SIZE,
-    MAX_DOCS, SOURCE_FLUSH,
+    FlushedSegment, FrozenBufferedUpdates, IndexingChain, IndexingChainFactory, LockAllGuard,
+    NoOpFlushNotifications, SegmentNameSupplier, SharedIndexingScratch, TermDelete,
+    BYTES_PER_DEL_QUERY, BYTES_SCRATCH_SIZE, INTS_SCRATCH_SIZE, MAX_DOCS, SOURCE_FLUSH,
 };
 
 // Directory/segment reader exports.

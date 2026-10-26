@@ -52,8 +52,9 @@ pub use packed64::{Packed64, Packed64SingleBlock};
 pub use packed_data_io::{PackedDataInput, PackedDataOutput};
 pub use packed_long_values::{
     DeltaPackedLongValues, DeltaPackedLongValuesBuilder, MonotonicLongValues,
-    MonotonicLongValuesBuilder, PackedLongValues, PackedLongValuesAccess, PackedLongValuesBuilder,
-    PackedLongValuesBuilderOps, PackedLongValuesBuilderState, PackedLongValuesIterator,
+    MonotonicLongValuesBuilder, OwnedPackedLongValuesIterator, PackedLongValues,
+    PackedLongValuesAccess, PackedLongValuesBuilder, PackedLongValuesBuilderOps,
+    PackedLongValuesBuilderState, PackedLongValuesIterator,
 };
 pub use packed_writer::{PackedReaderIterator, PackedWriter};
 pub use paged_mutable::{

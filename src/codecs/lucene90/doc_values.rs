@@ -4581,7 +4581,7 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
         let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
         let segment_info = make_segment_info(Arc::clone(&dir), "_0", max_doc);
-        let seg_updates = BufferedUpdates;
+        let seg_updates = BufferedUpdates::default();
         let write_state = SegmentWriteState::new(
             default_info_stream(),
             Arc::clone(&dir),
@@ -4613,7 +4613,7 @@ mod tests {
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
-            &BufferedUpdates,
+            Box::leak(Box::new(BufferedUpdates::default())),
             &*DEFAULT_IO_CONTEXT,
         );
         let mut consumer = Lucene90DocValuesFormat::new()
@@ -4643,7 +4643,7 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
         let field_infos = FieldInfos::new(vec![field.clone()]).unwrap();
         let segment_info = make_segment_info(Arc::clone(&dir), "_0", max_doc);
-        let seg_updates = BufferedUpdates;
+        let seg_updates = BufferedUpdates::default();
         let write_state = SegmentWriteState::new(
             default_info_stream(),
             Arc::clone(&dir),

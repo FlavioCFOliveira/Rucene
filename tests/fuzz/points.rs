@@ -297,7 +297,7 @@ fn fixtures() -> Vec<Fixture> {
 
 fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &Fixture) {
     let infos = field_infos();
-    let updates = BufferedUpdates;
+    let updates = BufferedUpdates::default();
     let info_stream = default_info_stream();
     let state = SegmentWriteState::new(
         info_stream,

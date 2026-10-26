@@ -18,18 +18,32 @@ use crate::index::SegmentCommitInfo;
 /// * **`newest_segment` returns an owned value.** Java hands back the live
 ///   `SegmentCommitInfo` the writer holds; Rust cannot lend it out past the
 ///   writer's lock, so the port returns a clone.
+/// * **`Result` where the writer's method returns one.** The port's
+///   `IndexWriter::seg_string`, `get_segment_count`, `is_deleter_closed` and
+///   `newest_segment` report a poisoned writer lock as an error, which Java's
+///   monitors cannot be; the accessor passes it on.
+/// * **`get_reader` returns an `Arc`.** It is what `IndexWriter::get_reader`
+///   returns, readers being shared in this crate.
 /// * **`Send + Sync + Debug` bounds.** Needed because
 ///   [`TestSecrets`](super::TestSecrets) keeps the accessor in a `static`.
 pub trait IndexWriterAccess: Send + Sync + Debug {
     /// Returns a human-readable description of the writer's segments.
     ///
     /// Equivalent to `IndexWriterAccess.segString(IndexWriter)`.
-    fn seg_string(&self, iw: &IndexWriter) -> String;
+    ///
+    /// # Errors
+    ///
+    /// Returns the error the writer raises when its lock is poisoned.
+    fn seg_string(&self, iw: &IndexWriter) -> Result<String>;
 
     /// Returns how many segments the writer currently holds.
     ///
     /// Equivalent to `IndexWriterAccess.getSegmentCount(IndexWriter)`.
-    fn get_segment_count(&self, iw: &IndexWriter) -> i32;
+    ///
+    /// # Errors
+    ///
+    /// Returns the error the writer raises when its lock is poisoned.
+    fn get_segment_count(&self, iw: &IndexWriter) -> Result<i32>;
 
     /// Returns whether the writer has been closed.
     ///
@@ -49,7 +63,7 @@ pub trait IndexWriterAccess: Send + Sync + Debug {
         iw: &IndexWriter,
         apply_deletions: bool,
         write_all_deletes: bool,
-    ) -> Result<Box<dyn DirectoryReader>>;
+    ) -> Result<std::sync::Arc<dyn DirectoryReader>>;
 
     /// Returns the size of the writer's per-thread document writer pool.
     ///
@@ -60,11 +74,19 @@ pub trait IndexWriterAccess: Send + Sync + Debug {
     /// Returns whether the writer's index file deleter has been closed.
     ///
     /// Equivalent to `IndexWriterAccess.isDeleterClosed(IndexWriter)`.
-    fn is_deleter_closed(&self, iw: &IndexWriter) -> bool;
+    ///
+    /// # Errors
+    ///
+    /// Returns the error the writer raises when its lock is poisoned.
+    fn is_deleter_closed(&self, iw: &IndexWriter) -> Result<bool>;
 
     /// Returns the most recently flushed segment, if there is one.
     ///
     /// Equivalent to `IndexWriterAccess.newestSegment(IndexWriter)`, which
     /// returns `null` when the writer has no segment yet.
-    fn newest_segment(&self, iw: &IndexWriter) -> Option<SegmentCommitInfo>;
+    ///
+    /// # Errors
+    ///
+    /// Returns the error the writer raises when its lock is poisoned.
+    fn newest_segment(&self, iw: &IndexWriter) -> Result<Option<SegmentCommitInfo>>;
 }

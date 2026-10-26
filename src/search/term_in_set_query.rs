@@ -207,7 +207,7 @@ impl TermInSetQuery {
         let mut bytes = 0i64;
         let mut iterator = term_data.iterator();
         while let Some(term) = iterator.next()? {
-            iterator.field().hash(&mut hasher);
+            iterator.field().unwrap_or_default().hash(&mut hasher);
             term.slice().hash(&mut hasher);
             // The encoder writes the shared-prefix length, the suffix length
             // and the suffix bytes.

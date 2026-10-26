@@ -35,12 +35,16 @@ use crate::util::{FixedBitSet, RamUsageEstimator};
 // DocsWithFieldSet
 // -----------------------------------------------------------------------------
 
-/// Accumulator for documents that have a value for a vector field.
+/// Accumulator for documents that have a value for a field.
 ///
-/// Equivalent to `org.apache.lucene.index.DocsWithFieldSet`.
+/// Equivalent to `org.apache.lucene.index.DocsWithFieldSet`
+/// (`index/DocsWithFieldSet.java:24-118`).
 ///
 /// This is optimized for the dense case where every document has a value: in
 /// that case no bit set is allocated and the cardinality alone is tracked.
+/// The first gap migrates the set to a [`FixedBitSet`], which then grows
+/// through [`FixedBitSet::ensure_capacity`] exactly as Java's does, so the
+/// heap estimate follows Java's step for step.
 #[derive(Debug, Clone)]
 pub struct DocsWithFieldSet {
     set: Option<FixedBitSet>,
@@ -59,29 +63,50 @@ impl Default for DocsWithFieldSet {
 }
 
 impl DocsWithFieldSet {
+    /// `RamUsageEstimator.shallowSizeOfInstance(DocsWithFieldSet.class)`: an
+    /// object header, the `set` reference and the `int` fields `cardinality`
+    /// and `lastDocId`, aligned — 24 bytes with compressed references.
+    ///
+    /// Equivalent to the private `DocsWithFieldSet.BASE_RAM_BYTES_USED`
+    /// (`DocsWithFieldSet.java:28-29`).
+    pub const BASE_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + 2 * 4,
+    );
+
     /// Creates an empty `DocsWithFieldSet`.
+    ///
+    /// Equivalent to `new DocsWithFieldSet()`.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Adds a single document ID to the set.
     ///
-    /// Document IDs must be added in strictly increasing order.
+    /// Equivalent to `DocsWithFieldSet.add(int)` (`DocsWithFieldSet.java:41-59`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `doc_id` is not strictly
+    /// greater than the last document added, with Lucene's message.
     pub fn add(&mut self, doc_id: i32) -> Result<()> {
         if doc_id <= self.last_doc_id {
             return Err(LuceneError::IllegalArgument(format!(
-                "out-of-order doc ids: last={}, next={}",
+                "Out of order doc ids: last={}, next={}",
                 self.last_doc_id, doc_id
             )));
         }
-        match &mut self.set {
+        match self.set.take() {
             Some(set) => {
-                grow_fixed_bit_set(set, doc_id as usize + 1);
+                let mut set = FixedBitSet::ensure_capacity(set, doc_id as usize);
                 set.set(doc_id as usize);
+                self.set = Some(set);
             }
             None if doc_id != self.cardinality => {
+                // migrate to a sparse encoding using a bit set
                 let mut set = FixedBitSet::new(doc_id as usize + 1);
-                set_range(&mut set, 0, self.cardinality as usize);
+                set.set_range(0, self.cardinality as usize);
                 set.set(doc_id as usize);
                 self.set = Some(set);
             }
@@ -94,42 +119,58 @@ impl DocsWithFieldSet {
 
     /// Adds a contiguous range of document IDs.
     ///
-    /// `from` must be strictly greater than the last document already added.
+    /// Equivalent to `DocsWithFieldSet.addRange(int, int)`
+    /// (`DocsWithFieldSet.java:67-93`): `from` must be strictly greater than the
+    /// last document already added.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `from > to_exclusive` or
+    /// when `from` is not after the last document added.
     pub fn add_range(&mut self, from: i32, to_exclusive: i32) -> Result<()> {
-        if from > to_exclusive {
-            return Err(LuceneError::IllegalArgument(format!(
-                "from={from} must be <= toExclusive={to_exclusive}"
-            )));
-        }
-        if from == to_exclusive {
+        if from >= to_exclusive {
+            if from > to_exclusive {
+                return Err(LuceneError::IllegalArgument(format!(
+                    "from={from} must be <= toExclusive={to_exclusive}"
+                )));
+            }
             return Ok(());
         }
         if from <= self.last_doc_id {
             return Err(LuceneError::IllegalArgument(format!(
-                "out-of-order doc ids: last={}, next={}",
+                "Out of order doc ids: last={}, next={}",
                 self.last_doc_id, from
             )));
         }
-        let count = (to_exclusive - from) as usize;
-        match &mut self.set {
+        let count = to_exclusive - from;
+        match self.set.take() {
             Some(set) => {
-                grow_fixed_bit_set(set, to_exclusive as usize);
-                set_range(set, from as usize, to_exclusive as usize);
+                let mut set = FixedBitSet::ensure_capacity(set, (to_exclusive - 1) as usize);
+                set.set_range(from as usize, to_exclusive as usize);
+                self.set = Some(set);
             }
             None if from != self.cardinality => {
+                // migrate to a sparse encoding using a bit set
                 let mut set = FixedBitSet::new(to_exclusive as usize);
-                set_range(&mut set, 0, self.cardinality as usize);
-                set_range(&mut set, from as usize, to_exclusive as usize);
+                set.set_range(0, self.cardinality as usize);
+                set.set_range(from as usize, to_exclusive as usize);
                 self.set = Some(set);
             }
             None => {}
         }
         self.last_doc_id = to_exclusive - 1;
-        self.cardinality += count as i32;
+        self.cardinality += count;
         Ok(())
     }
 
     /// Returns an iterator over the document IDs in this set.
+    ///
+    /// Equivalent to `DocsWithFieldSet.iterator()`: a `BitSetIterator` over the
+    /// bit set when there is one, `DocIdSetIterator.all(cardinality)` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error building the dense iterator raises.
     pub fn iterator(&self) -> Result<Box<dyn crate::search::DocIdSetIterator + '_>> {
         match &self.set {
             Some(set) => Ok(Box::new(FixedBitSetIterator::new(
@@ -142,47 +183,95 @@ impl DocsWithFieldSet {
         }
     }
 
+    /// Returns an iterator over the document IDs of a shared set that owns its
+    /// reference to the set.
+    ///
+    /// Equivalent to `DocsWithFieldSet.iterator()` as the flush-time doc-values
+    /// iterators hold it: Java's iterator references the set through the
+    /// garbage collector, while [`Self::iterator`] borrows it, which an
+    /// iterator handed out as an owned `Box<dyn ...>` cannot do. The documents,
+    /// their order and the cost are those of [`Self::iterator`].
+    pub fn shared_iterator(
+        set: &std::sync::Arc<Self>,
+    ) -> Box<dyn crate::search::DocIdSetIterator + Send + Sync> {
+        Box::new(SharedDocsWithFieldIterator {
+            set: std::sync::Arc::clone(set),
+            doc: -1,
+        })
+    }
+
     /// Returns the number of documents in this set.
+    ///
+    /// Equivalent to `DocsWithFieldSet.cardinality()`.
     pub fn cardinality(&self) -> i32 {
         self.cardinality
     }
 
     /// Returns the approximate RAM bytes used by this set.
+    ///
+    /// Equivalent to `DocsWithFieldSet.ramBytesUsed()`
+    /// (`DocsWithFieldSet.java:95-98`):
+    /// `BASE_RAM_BYTES_USED + (set == null ? 0 : set.ramBytesUsed())`.
     pub fn ram_bytes_used(&self) -> i64 {
-        // Approximate shallow object size: object header + three fields.
-        let base = crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + 16;
-        crate::util::RamUsageEstimator::align_object_size(base)
+        use crate::util::Accountable;
+        Self::BASE_RAM_BYTES_USED
             + self
                 .set
                 .as_ref()
-                .map(fixed_bit_set_ram_bytes_used)
+                .map(Accountable::ram_bytes_used)
                 .unwrap_or(0)
     }
 }
 
-/// Sets all bits in `[from, to)` on `set`.
-fn set_range(set: &mut FixedBitSet, from: usize, to: usize) {
-    for i in from..to {
-        set.set(i);
-    }
+/// The iterator [`DocsWithFieldSet::shared_iterator`] returns.
+///
+/// Equivalent to the `BitSetIterator` or `DocIdSetIterator.all(int)` that
+/// `DocsWithFieldSet.iterator()` builds, over a set held by an `Arc`.
+struct SharedDocsWithFieldIterator {
+    set: std::sync::Arc<DocsWithFieldSet>,
+    doc: i32,
 }
 
-/// Grows `set` so it can hold at least `min_bits` bits, preserving existing
-/// set bits.
-fn grow_fixed_bit_set(set: &mut FixedBitSet, min_bits: usize) {
-    let current = set.length();
-    if min_bits <= current {
-        return;
+impl crate::search::DocIdSetIterator for SharedDocsWithFieldIterator {
+    fn doc_id(&self) -> i32 {
+        self.doc
     }
-    let num_words = FixedBitSet::bits2words(min_bits);
-    let mut words = set.get_bits().to_vec();
-    words.resize(num_words, 0u64);
-    *set = FixedBitSet::from_bits(words, min_bits);
-}
 
-/// Returns the approximate RAM bytes used by a `FixedBitSet`.
-fn fixed_bit_set_ram_bytes_used(set: &FixedBitSet) -> i64 {
-    RamUsageEstimator::size_of_u64(set.get_bits())
+    fn next_doc(&mut self) -> Result<i32> {
+        // Exhausted iterators stay exhausted: Java's `advance(doc + 1)` would
+        // overflow past `NO_MORE_DOCS`, which callers never trigger.
+        if self.doc == crate::search::NO_MORE_DOCS {
+            return Ok(self.doc);
+        }
+        self.advance(self.doc + 1)
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        let target = target.max(0);
+        self.doc = match &self.set.set {
+            // `BitSetIterator.advance`: `nextSetBit(target)` within the bit set.
+            Some(bits) => {
+                if target as usize >= bits.length() {
+                    crate::search::NO_MORE_DOCS
+                } else {
+                    crate::util::bit_set::BitSet::next_set_bit(bits, target)
+                }
+            }
+            // `DocIdSetIterator.all(maxDoc).advance`.
+            None => {
+                if target >= self.set.cardinality {
+                    crate::search::NO_MORE_DOCS
+                } else {
+                    target
+                }
+            }
+        };
+        Ok(self.doc)
+    }
+
+    fn cost(&self) -> i64 {
+        i64::from(self.set.cardinality)
+    }
 }
 
 /// Iterator over the set bits of a `FixedBitSet`.

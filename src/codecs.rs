@@ -125,9 +125,10 @@ pub use term_vectors::{
     TermVectorsReader, TermVectorsWriter,
 };
 
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, LazyLock, RwLock};
+
+use crate::util::spi::{NamedSPI, NamedSPILoader};
 
 use crate::error::{LuceneError, Result};
 
@@ -197,7 +198,7 @@ impl fmt::Display for dyn Codec + '_ {
 
 /// A registry mapping codec short names to [`Codec`] implementations.
 ///
-/// The registry intentionally does not use reflection or SPI loading. Codecs are
+/// Rust has no run-time service discovery, so codecs are
 /// registered explicitly with [`CodecRegistry::register`] and looked up by
 /// name with [`CodecRegistry::for_name`].
 ///
@@ -207,9 +208,31 @@ impl fmt::Display for dyn Codec + '_ {
 ///
 /// Lucene Core equivalent: the static registry backing
 /// `org.apache.lucene.codecs.Codec#forName`.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct CodecRegistry {
-    codecs: Arc<RwLock<HashMap<String, Arc<dyn Codec>>>>,
+    /// The providers, kept by a [`NamedSPILoader`] exactly as Java's
+    /// `Codec.Holder.LOADER` keeps them: first registration for a
+    /// name wins, lookups fail with the loader's message, and iteration is in
+    /// insertion order.
+    codecs: Arc<RwLock<NamedSPILoader<dyn Codec>>>,
+}
+
+impl Default for CodecRegistry {
+    fn default() -> Self {
+        Self {
+            codecs: Arc::new(RwLock::new(NamedSPILoader::new(
+                "org.apache.lucene.codecs.Codec",
+            ))),
+        }
+    }
+}
+
+impl NamedSPI for dyn Codec {
+    /// Equivalent to `NamedSPILoader.NamedSPI.getName()`, which every
+    /// `Codec` implements by returning the name it was constructed with.
+    fn get_name(&self) -> &str {
+        self.name()
+    }
 }
 
 impl CodecRegistry {
@@ -236,13 +259,12 @@ impl CodecRegistry {
             LuceneError::IllegalState("codec registry lock was poisoned".to_string())
         })?;
 
-        if codecs.contains_key(&name) {
+        if codecs.lookup(&name).is_ok() {
             return Err(LuceneError::IllegalState(format!(
                 "codec already registered: {name}"
             )));
         }
-
-        codecs.insert(name, Arc::new(codec));
+        codecs.register_as(&name, Arc::new(codec))?;
         Ok(())
     }
 
@@ -266,8 +288,9 @@ impl CodecRegistry {
             LuceneError::IllegalState("codec registry lock was poisoned".to_string())
         })?;
 
-        // Only new codecs are added; an existing one is never replaced.
-        codecs.entry(name).or_insert(codec);
+        // Only new providers are added; an existing one is never replaced
+        // (`NamedSPILoader.reload`, `NamedSPILoader.java:59-79`).
+        codecs.reload([codec])?;
         Ok(())
     }
 
@@ -279,18 +302,23 @@ impl CodecRegistry {
             .read()
             .map_err(|_| LuceneError::IllegalState("codec registry lock was poisoned".to_string()))
             .ok()?
-            .get(name)
-            .cloned()
+            .lookup(name)
+            .ok()
     }
 
-    /// Returns the names of all registered codecs, sorted alphabetically.
+    /// Returns the names of all registered codecs, in registration order.
+    ///
+    /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
+    /// Java's insertion-ordered `LinkedHashMap`.
     pub fn available_codecs(&self) -> Vec<String> {
         let Ok(codecs) = self.codecs.read() else {
             return Vec::new();
         };
-        let mut names: Vec<String> = codecs.keys().cloned().collect();
-        names.sort();
-        names
+        codecs
+            .available_services()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
     }
 
     /// Returns the codec registered under [`DEFAULT_CODEC_NAME`], if any.
@@ -598,6 +626,8 @@ impl Codec for FilterCodec {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::collections::HashMap;
+
     use super::doc_values::EmptyDocValuesConsumer;
     use super::norms::{EmptyNormsConsumer, EmptyNormsProducer};
     use super::stub::*;

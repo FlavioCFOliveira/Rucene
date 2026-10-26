@@ -14,9 +14,10 @@
 
 #![deny(unsafe_code)]
 
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, LazyLock, RwLock};
+
+use crate::util::spi::{NamedSPI, NamedSPILoader};
 
 use crate::error::{LuceneError, Result};
 
@@ -309,12 +310,34 @@ impl fmt::Display for dyn DocValuesFormat + '_ {
 /// A registry mapping doc-values-format short names to [`DocValuesFormat`]
 /// implementations.
 ///
-/// The registry intentionally does not use reflection or SPI loading. Formats
+/// Rust has no run-time service discovery, so formats
 /// are registered explicitly with [`DocValuesFormatRegistry::register`] and
 /// looked up by name with [`DocValuesFormatRegistry::for_name`].
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct DocValuesFormatRegistry {
-    formats: Arc<RwLock<HashMap<String, Arc<dyn DocValuesFormat>>>>,
+    /// The providers, kept by a [`NamedSPILoader`] exactly as Java's
+    /// `DocValuesFormat.Holder.LOADER` keeps them: first registration for a
+    /// name wins, lookups fail with the loader's message, and iteration is in
+    /// insertion order.
+    formats: Arc<RwLock<NamedSPILoader<dyn DocValuesFormat>>>,
+}
+
+impl Default for DocValuesFormatRegistry {
+    fn default() -> Self {
+        Self {
+            formats: Arc::new(RwLock::new(NamedSPILoader::new(
+                "org.apache.lucene.codecs.DocValuesFormat",
+            ))),
+        }
+    }
+}
+
+impl NamedSPI for dyn DocValuesFormat {
+    /// Equivalent to `NamedSPILoader.NamedSPI.getName()`, which every
+    /// `DocValuesFormat` implements by returning the name it was constructed with.
+    fn get_name(&self) -> &str {
+        self.name()
+    }
 }
 
 impl DocValuesFormatRegistry {
@@ -341,13 +364,12 @@ impl DocValuesFormatRegistry {
             LuceneError::IllegalState("doc-values format registry lock was poisoned".to_string())
         })?;
 
-        if formats.contains_key(&name) {
+        if formats.lookup(&name).is_ok() {
             return Err(LuceneError::IllegalState(format!(
                 "doc-values format already registered: {name}"
             )));
         }
-
-        formats.insert(name, Arc::new(format));
+        formats.register_as(&name, Arc::new(format))?;
         Ok(())
     }
 
@@ -370,8 +392,9 @@ impl DocValuesFormatRegistry {
         let mut formats = self.formats.write().map_err(|_| {
             LuceneError::IllegalState("doc-values format registry lock was poisoned".to_string())
         })?;
-        // Only new formats are added; an existing one is never replaced.
-        formats.entry(name).or_insert(format);
+        // Only new providers are added; an existing one is never replaced
+        // (`NamedSPILoader.reload`, `NamedSPILoader.java:59-79`).
+        formats.reload([format])?;
         Ok(())
     }
 
@@ -384,19 +407,23 @@ impl DocValuesFormatRegistry {
                 )
             })
             .ok()?
-            .get(name)
-            .cloned()
+            .lookup(name)
+            .ok()
     }
 
-    /// Returns the names of all registered doc-values formats, sorted
-    /// alphabetically.
+    /// Returns the names of all registered doc-values formats, in registration order.
+    ///
+    /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
+    /// Java's insertion-ordered `LinkedHashMap`.
     pub fn available_doc_values_formats(&self) -> Vec<String> {
         let Ok(formats) = self.formats.read() else {
             return Vec::new();
         };
-        let mut names: Vec<String> = formats.keys().cloned().collect();
-        names.sort();
-        names
+        formats
+            .available_services()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
     }
 }
 
@@ -657,7 +684,7 @@ mod tests {
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
-            &BufferedUpdates,
+            Box::leak(Box::new(BufferedUpdates::default())),
             context,
         );
         let _consumer = format.fields_consumer(&state).unwrap();

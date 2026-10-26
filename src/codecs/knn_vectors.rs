@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, LazyLock, RwLock};
 
+use crate::util::spi::{NamedSPI, NamedSPILoader};
+
 use crate::error::{LuceneError, Result};
 use crate::index::merge::{DocIDMerger, DocIDMergerSub, DocMap};
 pub use crate::index::vector_values::{
@@ -1187,12 +1189,34 @@ pub trait KnnVectorsFormat: Send + Sync + fmt::Debug {
 /// A registry mapping KNN-vectors-format short names to [`KnnVectorsFormat`]
 /// implementations.
 ///
-/// The registry intentionally does not use reflection or SPI loading. Formats
+/// Rust has no run-time service discovery, so formats
 /// are registered explicitly with [`KnnVectorsFormatRegistry::register`] and
 /// looked up by name with [`KnnVectorsFormatRegistry::for_name`].
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct KnnVectorsFormatRegistry {
-    formats: Arc<RwLock<HashMap<String, Arc<dyn KnnVectorsFormat>>>>,
+    /// The providers, kept by a [`NamedSPILoader`] exactly as Java's
+    /// `KnnVectorsFormat.Holder.LOADER` keeps them: first registration for a
+    /// name wins, lookups fail with the loader's message, and iteration is in
+    /// insertion order.
+    formats: Arc<RwLock<NamedSPILoader<dyn KnnVectorsFormat>>>,
+}
+
+impl Default for KnnVectorsFormatRegistry {
+    fn default() -> Self {
+        Self {
+            formats: Arc::new(RwLock::new(NamedSPILoader::new(
+                "org.apache.lucene.codecs.KnnVectorsFormat",
+            ))),
+        }
+    }
+}
+
+impl NamedSPI for dyn KnnVectorsFormat {
+    /// Equivalent to `NamedSPILoader.NamedSPI.getName()`, which every
+    /// `KnnVectorsFormat` implements by returning the name it was constructed with.
+    fn get_name(&self) -> &str {
+        self.name()
+    }
 }
 
 impl KnnVectorsFormatRegistry {
@@ -1219,13 +1243,12 @@ impl KnnVectorsFormatRegistry {
             LuceneError::IllegalState("KNN-vectors format registry lock was poisoned".to_string())
         })?;
 
-        if formats.contains_key(&name) {
+        if formats.lookup(&name).is_ok() {
             return Err(LuceneError::IllegalState(format!(
                 "KNN-vectors format already registered: {name}"
             )));
         }
-
-        formats.insert(name, Arc::new(format));
+        formats.register_as(&name, Arc::new(format))?;
         Ok(())
     }
 
@@ -1248,8 +1271,9 @@ impl KnnVectorsFormatRegistry {
         let mut formats = self.formats.write().map_err(|_| {
             LuceneError::IllegalState("KNN vectors format registry lock was poisoned".to_string())
         })?;
-        // Only new formats are added; an existing one is never replaced.
-        formats.entry(name).or_insert(format);
+        // Only new providers are added; an existing one is never replaced
+        // (`NamedSPILoader.reload`, `NamedSPILoader.java:59-79`).
+        formats.reload([format])?;
         Ok(())
     }
 
@@ -1262,19 +1286,23 @@ impl KnnVectorsFormatRegistry {
                 )
             })
             .ok()?
-            .get(name)
-            .cloned()
+            .lookup(name)
+            .ok()
     }
 
-    /// Returns the names of all registered KNN-vectors formats, sorted
-    /// alphabetically.
+    /// Returns the names of all registered KNN-vectors formats, in registration order.
+    ///
+    /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
+    /// Java's insertion-ordered `LinkedHashMap`.
     pub fn available_knn_vectors_formats(&self) -> Vec<String> {
         let Ok(formats) = self.formats.read() else {
             return Vec::new();
         };
-        let mut names: Vec<String> = formats.keys().cloned().collect();
-        names.sort();
-        names
+        formats
+            .available_services()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
     }
 }
 
@@ -1750,7 +1778,7 @@ mod tests {
             Arc::clone(&dir),
             segment_info.clone(),
             field_infos.clone(),
-            BufferedUpdates,
+            BufferedUpdates::default(),
             Arc::new(crate::store::DefaultIOContext::default()),
         );
         // `KnnVectorsFormat.EMPTY` throws when written

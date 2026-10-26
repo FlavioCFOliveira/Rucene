@@ -16,7 +16,9 @@
 
 #![deny(unsafe_code)]
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
+
+use crate::util::java_collections::JavaLongHashMap;
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
@@ -274,19 +276,17 @@ impl IndexDeletionPolicy for NoDeletionPolicy {
 struct SnapshotState {
     /// Records how many snapshots are held against each commit generation.
     ///
-    /// A `BTreeMap` is used instead of Java's `HashMap` so that the persisted
-    /// `snapshots_N` file (see [`PersistentSnapshotDeletionPolicy`]) has a
-    /// deterministic entry order: ascending commit generation.
-    ///
-    /// Entry order is not part of the file format — both readers rebuild a map
-    /// — but it does mean the two implementations only emit the *same bytes*
-    /// when Java's `HashMap` happens to iterate in ascending order too. Java
-    /// walks its buckets, i.e. `generation & (capacity - 1)`, so `{2, 4}` comes
-    /// out as `[2, 4]` while `{2, 17}` comes out as `[17, 2]`. See the
-    /// "Interoperability" section on [`PersistentSnapshotDeletionPolicy`].
-    ref_counts: BTreeMap<i64, i32>,
+    /// Equivalent to `SnapshotDeletionPolicy.refCounts`, a `HashMap<Long,
+    /// Integer>` (`SnapshotDeletionPolicy.java:44`), with its iteration order:
+    /// [`PersistentSnapshotDeletionPolicy`] writes the entries of `snapshots_N`
+    /// in that order, so `{2, 17}` comes out as `[17, 2]`, as in Lucene.
+    ref_counts: JavaLongHashMap<i32>,
     /// Maps a generation to its commit point.
-    index_commits: BTreeMap<i64, Arc<dyn IndexCommit>>,
+    ///
+    /// Equivalent to `SnapshotDeletionPolicy.indexCommits`, a `HashMap<Long,
+    /// IndexCommit>` (`SnapshotDeletionPolicy.java:47`), whose order
+    /// `getSnapshots()` returns.
+    index_commits: JavaLongHashMap<Arc<dyn IndexCommit>>,
     /// The most recently committed commit point.
     last_commit: Option<Arc<dyn IndexCommit>>,
     /// Used to detect misuse: `snapshot`/`release` before `on_init`.
@@ -498,7 +498,7 @@ impl SnapshotDeletionPolicy {
     pub(crate) fn release_gen_locked(&self, gen: i64) -> Result<()> {
         let mut state = self.lock();
         Self::check_init_called(&state)?;
-        let Some(ref_count) = state.ref_counts.get(&gen).copied() else {
+        let Some(ref_count) = state.ref_counts.get(gen).copied() else {
             return Err(LuceneError::IllegalArgument(format!(
                 "commit gen={gen} is not currently snapshotted"
             )));
@@ -506,8 +506,8 @@ impl SnapshotDeletionPolicy {
         debug_assert!(ref_count > 0);
         let ref_count = ref_count - 1;
         if ref_count == 0 {
-            state.ref_counts.remove(&gen);
-            state.index_commits.remove(&gen);
+            state.ref_counts.remove(gen);
+            state.index_commits.remove(gen);
         } else {
             state.ref_counts.insert(gen, ref_count);
         }
@@ -527,7 +527,7 @@ impl SnapshotDeletionPolicy {
 
     fn inc_ref_state(state: &mut SnapshotState, ic: &dyn IndexCommit) {
         let gen = ic.get_generation();
-        let ref_count = match state.ref_counts.get(&gen).copied() {
+        let ref_count = match state.ref_counts.get(gen).copied() {
             Some(count) => count,
             None => {
                 // Faithful to Java, which registers `lastCommit` here rather
@@ -578,7 +578,7 @@ impl SnapshotDeletionPolicy {
     pub fn get_index_commit(&self, gen: i64) -> Option<Arc<dyn IndexCommit>> {
         // `synchronized` in Java: see `get_snapshots`.
         let _operation = self.lock_operation();
-        self.lock().index_commits.get(&gen).cloned()
+        self.lock().index_commits.get(gen).cloned()
     }
 
     /// Returns a copy of the current reference counts, keyed by commit
@@ -590,7 +590,7 @@ impl SnapshotDeletionPolicy {
     /// Callers must already hold the operation mutex — this takes the state
     /// mutex alone, so that [`PersistentSnapshotDeletionPolicy::persist`] can
     /// read the counts from inside its critical section.
-    fn ref_counts(&self) -> BTreeMap<i64, i32> {
+    fn ref_counts(&self) -> JavaLongHashMap<i32> {
         self.lock().ref_counts.clone()
     }
 
@@ -652,7 +652,7 @@ impl SnapshotDeletionPolicy {
         let mut state = self.lock();
         for commit in commits {
             let gen = commit.get_generation();
-            if state.ref_counts.contains_key(&gen) {
+            if state.ref_counts.contains_key(gen) {
                 state.index_commits.insert(gen, Arc::clone(commit));
             }
         }
@@ -747,7 +747,7 @@ impl IndexCommit for SnapshotCommitPoint {
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.ref_counts.contains_key(&self.cp.get_generation())
+            state.ref_counts.contains_key(self.cp.get_generation())
         };
         // Suppress the delete request if this commit point is currently
         // snapshotted. The wrapped `delete()` runs after the guard is dropped so
@@ -822,16 +822,10 @@ const VERSION_CURRENT: i32 = VERSION_START;
 ///
 /// # Interoperability
 ///
-/// Compatibility with Lucene 10.5.0 holds at the level of the **format**, not
-/// of the exact byte string: entry order is not part of the format, and neither
-/// implementation depends on it, because both rebuild a map from the entries.
-/// Rucene emits the entries ordered by ascending commit generation; Java emits
-/// them in `HashMap` bucket order, which is `generation & (capacity - 1)` and
-/// therefore only coincides with ascending order for some sets of generations
-/// (`{2, 4}` does, `{2, 17}` does not — it comes out as `[17, 2]`).
-///
-/// So a Rucene-written file is always readable by Lucene and vice versa, and
-/// the two files are byte-identical exactly when both orders agree.
+/// The entries are written in the iteration order of Java's `HashMap<Long,
+/// Integer> refCounts`, which this port reproduces, so a `snapshots_N` file is
+/// byte-identical to the one Lucene writes for the same sequence of snapshots
+/// and releases — `{2, 17}` comes out as `[17, 2]` in both.
 pub struct PersistentSnapshotDeletionPolicy {
     /// The in-memory snapshot bookkeeping this policy persists.
     ///
@@ -1038,71 +1032,58 @@ impl PersistentSnapshotDeletionPolicy {
     ///
     /// Equivalent to the private `PersistentSnapshotDeletionPolicy.persist()`.
     ///
-    /// # Deliberate divergence: a save file that fails to close
-    ///
     /// Java writes the file inside a try-with-resources and sets its `success`
     /// flag as the **last statement of the block body**
-    /// (`PersistentSnapshotDeletionPolicy.java:174-186`), so the flag is already
-    /// `true` when `out.close()` runs. If closing fails — a disk that fills up
-    /// while the last buffered bytes are flushed is the realistic case — the
-    /// `finally` sees `success == true` and does **not** delete the file, while
-    /// the exception still propagates before `nextWriteGen++` (`:196`). Both
-    /// implementations create the file with `CREATE_NEW` semantics
-    /// (`FSDirectory.java:230`), so the leftover `snapshots_N` blocks the next
-    /// attempt at the very same generation.
+    /// (`PersistentSnapshotDeletionPolicy.java:171-197`), so the flag is
+    /// already `true` when `out.close()` runs, and the `finally` deletes the
+    /// file only when creating or writing it failed. This port does the same:
+    ///
+    /// * a failure to create the output (for instance `AlreadyExists` for a
+    ///   leftover file of the same generation) or to write it deletes the file,
+    ///   ignoring any error doing so, and propagates the failure;
+    /// * a failure to close an output whose body was written does **not**
+    ///   delete it; the failure still propagates before the generation
+    ///   advances.
     ///
     /// Measured against the reference (fixture shape `persist-close-failure`),
-    /// Lucene 10.5.0 behaves like this:
-    ///
-    /// | attempt | outcome                        | `snapshots_0` afterwards |
-    /// |---------|--------------------------------|--------------------------|
-    /// | 1st     | `IOException` from `close()`   | present                  |
-    /// | 2nd     | `FileAlreadyExistsException`   | deleted by its `finally` |
-    /// | 3rd     | succeeds                       | present and valid        |
-    ///
-    /// So the cost is one **extra** failed `snapshot()`/`release()`, not a
-    /// permanently broken policy — the second attempt's own cleanup path
-    /// unblocks the generation again. Rucene instead treats a failed `close()`
-    /// like any other write failure and removes the unusable file immediately,
-    /// so the very next attempt succeeds and no caller ever sees the spurious
-    /// `AlreadyExists` failure.
-    ///
-    /// The divergence is confined to **error recovery**. The bytes of a
-    /// successfully written file, its name and the generation sequence are
-    /// unchanged, so a `snapshots_N` produced by Rucene is still read by Java
-    /// and vice versa. See
-    /// `persistent_snapshot_recovers_when_the_save_file_fails_to_close` and the
-    /// `persist_close_failure_diverges_from_lucene_only_in_recovery`
-    /// portability test.
+    /// a failing `close()` therefore costs one extra failed call in both
+    /// implementations: the leftover `snapshots_N` makes the next attempt fail
+    /// with `AlreadyExists`, whose own cleanup deletes it, and the attempt after
+    /// that succeeds.
     fn persist(&self, next_write_gen: &mut i64) -> Result<()> {
         let file_name = format!("{SNAPSHOTS_PREFIX}{}", *next_write_gen);
         let ref_counts = self.inner.ref_counts();
 
+        let mut success = false;
         let written = (|| -> Result<()> {
             let mut out = self.dir.create_output(&file_name, &*DEFAULT_IO_CONTEXT)?;
             let body = (|| -> Result<()> {
                 codec_util::write_header(out.as_mut(), CODEC_NAME, VERSION_CURRENT)?;
                 out.write_v_int(ref_counts.len() as i32)?;
-                for (commit_gen, ref_count) in &ref_counts {
-                    out.write_v_long(*commit_gen)?;
+                for (commit_gen, ref_count) in ref_counts.iter() {
+                    out.write_v_long(commit_gen)?;
                     out.write_v_int(*ref_count)?;
                 }
                 Ok(())
             })();
             match body {
-                Ok(()) => out.close(),
+                Ok(()) => {
+                    success = true;
+                    out.close()
+                }
                 Err(err) => {
+                    // The try-with-resources closes the output and suppresses
+                    // a second failure.
                     let _ = out.close();
                     Err(err)
                 }
             }
         })();
-
-        if written.is_err() {
-            // Exception OK: the partial file may not even exist.
+        if !success {
+            // `IOUtils.deleteFilesIgnoringExceptions(dir, fileName)`.
             let _ = self.dir.delete_file(&file_name);
-            return written;
         }
+        written?;
 
         self.dir.sync(std::slice::from_ref(&file_name))?;
 
@@ -1163,7 +1144,7 @@ impl PersistentSnapshotDeletionPolicy {
             }
             snapshot_files.push(file.clone());
 
-            let mut loaded: BTreeMap<i64, i32> = BTreeMap::new();
+            let mut loaded: JavaLongHashMap<i32> = JavaLongHashMap::new();
             let mut input = self.dir.open_input(&file, &*DEFAULT_IO_CONTEXT)?;
             let read = (|| -> Result<()> {
                 codec_util::check_header(input.as_mut(), CODEC_NAME, VERSION_START, VERSION_START)?;
@@ -1189,7 +1170,12 @@ impl PersistentSnapshotDeletionPolicy {
             gen_loaded = gen;
             let mut state = self.inner.lock();
             state.ref_counts.clear();
-            state.ref_counts.extend(loaded);
+            state.ref_counts.put_all(
+                loaded
+                    .iter()
+                    .map(|(gen, count)| (gen, *count))
+                    .collect::<Vec<_>>(),
+            );
         }
 
         if gen_loaded == -1 {
@@ -2107,13 +2093,16 @@ mod tests {
         assert_eq!(policy.get_snapshot_count(), 6);
         assert_eq!(policy.get_last_save_file().as_deref(), Some("snapshots_4"));
 
-        // Re-persisting normalises the order, which is what makes Rucene's own
-        // output deterministic without changing what the file means.
+        // Re-persisting writes the entries in the order of Lucene's
+        // `HashMap<Long, Integer> refCounts`, which `loadPriorSnapshots` fills
+        // with `putAll` of three entries: `putMapEntries` pre-sizes the table
+        // to four buckets, so 17 and 9 share bucket 1, in insertion order, and
+        // 2 is in bucket 2.
         policy.on_init(&commits(&dir, &[9])).unwrap();
         policy.release_gen(9).unwrap();
         assert_eq!(
             read_file(dir.as_ref(), "snapshots_5"),
-            expected_snapshots_file(&[(2, 1), (9, 1), (17, 3)])
+            expected_snapshots_file(&[(17, 3), (9, 1), (2, 1)])
         );
     }
 
@@ -2732,7 +2721,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_snapshot_recovers_when_the_save_file_fails_to_close() {
+    fn persistent_snapshot_keeps_a_save_file_that_fails_to_close_as_lucene_does() {
         let backing = ram_directory();
         let dir = FailingCloseDirectory::new(Arc::clone(&backing));
         let policy = PersistentSnapshotDeletionPolicy::new(
@@ -2758,15 +2747,25 @@ mod tests {
         assert_eq!(policy.get_snapshot_count(), 0);
         assert_eq!(policy.get_last_save_file(), None);
 
-        // ... and the unusable save file must not be left behind, so the next
-        // attempt can reuse the same generation. This is the deliberate
-        // divergence documented on `persist()`: Lucene 10.5.0 keeps the file
-        // (PersistentSnapshotDeletionPolicy.java:174-186), so its next
-        // `snapshot()` fails a second time with `FileAlreadyExistsException`
-        // before the generation frees up again.
+        // ... and, as in Lucene 10.5.0, whose `success` flag is already set
+        // when the try-with-resources closes the output
+        // (PersistentSnapshotDeletionPolicy.java:171-186), the file is kept.
+        assert_eq!(snapshot_files(backing.as_ref()), vec!["snapshots_0"]);
+
+        // The leftover blocks the next attempt at the same generation, whose
+        // own cleanup deletes it...
+        dir.set_failing(false);
+        let err = policy
+            .snapshot()
+            .expect_err("the leftover save file must block the next attempt");
+        assert!(
+            matches!(&err, LuceneError::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(policy.get_snapshot_count(), 0);
         assert_eq!(snapshot_files(backing.as_ref()), Vec::<String>::new());
 
-        dir.set_failing(false);
+        // ... so the attempt after that succeeds.
         let pinned = policy.snapshot().expect("the policy must still be usable");
         assert_eq!(pinned.get_generation(), 7);
         assert_eq!(policy.get_snapshot_count(), 1);

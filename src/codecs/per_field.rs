@@ -1636,7 +1636,7 @@ mod tests {
             crate::codecs::tests::test_segment_info("test", 10),
         ));
         let field_infos: &'static FieldInfos = Box::leak(Box::new(FieldInfos::default()));
-        let seg_updates: &'static BufferedUpdates = Box::leak(Box::new(BufferedUpdates));
+        let seg_updates: &'static BufferedUpdates = Box::leak(Box::new(BufferedUpdates::default()));
         let context: &'static dyn crate::store::IOContext = &*DEFAULT_IO_CONTEXT;
 
         SegmentWriteState::new(

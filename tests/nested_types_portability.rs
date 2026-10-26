@@ -832,7 +832,7 @@ fn tiered_merge_score_and_explanation_match_lucene() {
             .unwrap();
         output.write_bytes(&vec![0u8; size], 0, size).unwrap();
         output.close().unwrap();
-        info.set_files([format!("{name}.bin")]);
+        info.set_files([format!("{name}.bin")]).unwrap();
         infos
             .add(
                 SegmentCommitInfo::new(info, del_count, 0, -1, -1, -1, StringHelper::random_id())

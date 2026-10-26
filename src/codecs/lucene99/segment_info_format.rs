@@ -153,7 +153,7 @@ fn parse_segment_info(
         attributes.to_std(),
         index_sort.unwrap_or_default(),
     )?;
-    info.set_files(files);
+    info.set_files(files)?;
     Ok(info)
 }
 
@@ -263,7 +263,8 @@ mod tests {
                 .into_iter()
                 .collect(),
         );
-        info.set_files(HashSet::from(["_0.fnm".to_string(), "_0.fdt".to_string()]));
+        info.set_files(HashSet::from(["_0.fnm".to_string(), "_0.fdt".to_string()]))
+            .unwrap();
         info.set_use_compound_file(true);
         info.set_index_sort(
             Sort::new_fields(vec![SortField::new(

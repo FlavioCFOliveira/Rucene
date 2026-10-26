@@ -442,7 +442,8 @@ mod tests {
             "_0.fdt".to_string(),
             "_0.fdx".to_string(),
             "_0.fnm".to_string(),
-        ]));
+        ]))
+        .unwrap();
 
         write_dummy_file(&dir, "_0.fdt", "DummyStoredFields", b"hello stored fields").unwrap();
         write_dummy_file(&dir, "_0.fdx", "DummyStoredFieldsIndex", b"index data").unwrap();

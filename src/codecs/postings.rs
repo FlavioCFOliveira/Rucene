@@ -19,9 +19,10 @@
 
 #![deny(unsafe_code)]
 
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, LazyLock, RwLock};
+
+use crate::util::spi::{NamedSPI, NamedSPILoader};
 
 use crate::codecs::doc_values::DocValuesProducer;
 use crate::codecs::knn_vectors::KnnVectorsReader;
@@ -329,12 +330,34 @@ impl fmt::Display for dyn PostingsFormat + '_ {
 /// A registry mapping postings-format short names to [`PostingsFormat`]
 /// implementations.
 ///
-/// The registry intentionally does not use reflection or SPI loading. Formats
+/// Rust has no run-time service discovery, so formats
 /// are registered explicitly with [`PostingsFormatRegistry::register`] and
 /// looked up by name with [`PostingsFormatRegistry::for_name`].
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct PostingsFormatRegistry {
-    formats: Arc<RwLock<HashMap<String, Arc<dyn PostingsFormat>>>>,
+    /// The providers, kept by a [`NamedSPILoader`] exactly as Java's
+    /// `PostingsFormat.Holder.LOADER` keeps them: first registration for a
+    /// name wins, lookups fail with the loader's message, and iteration is in
+    /// insertion order.
+    formats: Arc<RwLock<NamedSPILoader<dyn PostingsFormat>>>,
+}
+
+impl Default for PostingsFormatRegistry {
+    fn default() -> Self {
+        Self {
+            formats: Arc::new(RwLock::new(NamedSPILoader::new(
+                "org.apache.lucene.codecs.PostingsFormat",
+            ))),
+        }
+    }
+}
+
+impl NamedSPI for dyn PostingsFormat {
+    /// Equivalent to `NamedSPILoader.NamedSPI.getName()`, which every
+    /// `PostingsFormat` implements by returning the name it was constructed with.
+    fn get_name(&self) -> &str {
+        self.name()
+    }
 }
 
 impl PostingsFormatRegistry {
@@ -361,13 +384,12 @@ impl PostingsFormatRegistry {
             LuceneError::IllegalState("postings format registry lock was poisoned".to_string())
         })?;
 
-        if formats.contains_key(&name) {
+        if formats.lookup(&name).is_ok() {
             return Err(LuceneError::IllegalState(format!(
                 "postings format already registered: {name}"
             )));
         }
-
-        formats.insert(name, Arc::new(format));
+        formats.register_as(&name, Arc::new(format))?;
         Ok(())
     }
 
@@ -390,8 +412,9 @@ impl PostingsFormatRegistry {
         let mut formats = self.formats.write().map_err(|_| {
             LuceneError::IllegalState("postings format registry lock was poisoned".to_string())
         })?;
-        // Only new formats are added; an existing one is never replaced.
-        formats.entry(name).or_insert(format);
+        // Only new providers are added; an existing one is never replaced
+        // (`NamedSPILoader.reload`, `NamedSPILoader.java:59-79`).
+        formats.reload([format])?;
         Ok(())
     }
 
@@ -402,19 +425,23 @@ impl PostingsFormatRegistry {
                 LuceneError::IllegalState("postings format registry lock was poisoned".to_string())
             })
             .ok()?
-            .get(name)
-            .cloned()
+            .lookup(name)
+            .ok()
     }
 
-    /// Returns the names of all registered postings formats, sorted
-    /// alphabetically.
+    /// Returns the names of all registered postings formats, in registration order.
+    ///
+    /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
+    /// Java's insertion-ordered `LinkedHashMap`.
     pub fn available_postings_formats(&self) -> Vec<String> {
         let Ok(formats) = self.formats.read() else {
             return Vec::new();
         };
-        let mut names: Vec<String> = formats.keys().cloned().collect();
-        names.sort();
-        names
+        formats
+            .available_services()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
     }
 }
 
@@ -1350,7 +1377,7 @@ mod tests {
         .unwrap();
         let field_infos = crate::codecs::stub::FieldInfos::default();
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
-        let seg_updates = crate::codecs::stub::BufferedUpdates;
+        let seg_updates = crate::codecs::stub::BufferedUpdates::default();
         let info_stream = crate::util::default_info_stream();
         let write_state = SegmentWriteState::new(
             info_stream,
@@ -1458,7 +1485,7 @@ mod tests {
         .unwrap();
         let field_infos = crate::codecs::stub::FieldInfos::default();
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
-        let seg_updates = crate::codecs::stub::BufferedUpdates;
+        let seg_updates = crate::codecs::stub::BufferedUpdates::default();
         let info_stream = crate::util::default_info_stream();
         let write_state = SegmentWriteState::new(
             info_stream,
@@ -1525,7 +1552,7 @@ mod tests {
         .unwrap();
         let field_infos = crate::codecs::stub::FieldInfos::default();
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
-        let seg_updates = crate::codecs::stub::BufferedUpdates;
+        let seg_updates = crate::codecs::stub::BufferedUpdates::default();
         let info_stream = crate::util::default_info_stream();
         let write_state = SegmentWriteState::new(
             info_stream,

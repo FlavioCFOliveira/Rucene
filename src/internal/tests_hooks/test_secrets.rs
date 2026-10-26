@@ -33,14 +33,14 @@ use crate::internal::tests_hooks::{
 ///   made against a *source file* rather than a class name — [`TEST_FRAMEWORK_DIR`]
 ///   for the getters, [`Owner::file`] for the setters. The *set-once* half of
 ///   `ensureCallerForSetter` is reproduced exactly.
-/// * **Nothing to initialize.** Java calls
+/// * **Registration is run on first use, not by the class loader.** Java calls
 ///   `MethodHandles.Lookup.ensureInitialized(Class)` so that the owning class's
-///   static initializer runs and registers its accessor on first use, and turns
-///   the `IllegalAccessException` of a class that cannot be initialized into an
-///   `AssertionError`. Rust has no lazy per-type initialization to trigger, so
-///   [`TestSecrets::ensure_initialized`] can only ever take that second branch:
-///   registration in this port is explicit, and a getter called before its
-///   setter reports the owner that never registered.
+///   static initializer runs and registers its accessor on first use. Rust has
+///   no per-type static initializer, so each owner exposes the body of its
+///   `static {}` block as a function guarded by a [`std::sync::Once`], and
+///   [`TestSecrets::ensure_initialized`] runs it: the accessors are registered
+///   lazily, by their owners, exactly once — the same moment and the same
+///   registrar as Java's.
 /// * **`Result` instead of exceptions.** A missing accessor is
 ///   [`LuceneError::IllegalState`] where Java throws `NullPointerException`
 ///   from `Objects.requireNonNull`; a second registration is
@@ -88,6 +88,9 @@ struct Owner {
     /// The source file the registration must be made from, standing in for the
     /// class name Java's `StackWalker` compares against.
     file: &'static str,
+    /// The owner's static initializer: the body of its `static {}` block,
+    /// which registers its accessors and runs at most once.
+    init: fn(),
 }
 
 /// `IndexWriter`, which installs both [`IndexWriterAccess`] and
@@ -95,6 +98,7 @@ struct Owner {
 const INDEX_WRITER: Owner = Owner {
     name: "IndexWriter",
     file: "src/index/index_writer.rs",
+    init: crate::index::index_writer::register_test_secrets,
 };
 
 /// `ConcurrentMergeScheduler`, which installs
@@ -102,18 +106,21 @@ const INDEX_WRITER: Owner = Owner {
 const CONCURRENT_MERGE_SCHEDULER: Owner = Owner {
     name: "ConcurrentMergeScheduler",
     file: "src/index/merge_scheduler.rs",
+    init: crate::index::merge_scheduler::register_test_secrets,
 };
 
 /// `SegmentReader`, which installs [`SegmentReaderAccess`].
 const SEGMENT_READER: Owner = Owner {
     name: "SegmentReader",
     file: "src/index/segment_reader.rs",
+    init: crate::index::segment_reader::register_test_secrets,
 };
 
 /// `FilterIndexInput`, which installs [`FilterIndexInputAccess`].
 const FILTER_INDEX_INPUT: Owner = Owner {
     name: "FilterIndexInput",
     file: "src/store.rs",
+    init: crate::store::register_test_secrets,
 };
 
 /// The directory a getter's caller must live in, standing in for the
@@ -131,21 +138,19 @@ impl TestSecrets {
     /// `MethodHandles.Lookup.ensureInitialized(Class)` forces a class's static
     /// initializer to run.
     ///
-    /// Equivalent to `TestSecrets.ensureInitialized(Class)`. Java initializes
-    /// the owning class, whose static initializer calls the matching setter,
-    /// and turns the `IllegalAccessException` of a class it may not initialize
-    /// into an `AssertionError`. This port registers accessors explicitly and
-    /// has no per-type initializer to trigger, so it can only take that second
-    /// branch and report the owner that never registered.
+    /// Equivalent to `TestSecrets.ensureInitialized(Class)`
+    /// (`TestSecrets.java:52-58`): the owner's static initializer runs — at most
+    /// once, however many threads ask — and calls the matching setter. Java
+    /// turns the `IllegalAccessException` of a class it may not initialize
+    /// into an `AssertionError`; every owner here is the crate's own, so there
+    /// is no such case.
     ///
     /// # Errors
     ///
-    /// Always returns [`LuceneError::IllegalState`], naming `owner`.
+    /// Never fails; the `Result` keeps the getters' shape.
     fn ensure_initialized(owner: Owner) -> Result<()> {
-        Err(LuceneError::IllegalState(format!(
-            "{} has not registered its accessor with TestSecrets.",
-            owner.name
-        )))
+        (owner.init)();
+        Ok(())
     }
 
     /// Checks that a setter was called from the type whose internals it

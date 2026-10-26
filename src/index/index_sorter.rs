@@ -11,6 +11,12 @@ use crate::index::leaf_reader::LeafReader;
 use crate::index::{BinaryDocValues, NumericDocValues, SortedDocValues};
 use crate::search::SortField;
 use crate::search::NO_MORE_DOCS;
+use crate::util::packed::{
+    MonotonicLongValues, PackedInts, PackedLongValues, PackedLongValuesBuilderOps,
+};
+use crate::util::selector::PivotOps;
+use crate::util::sorter::{ordering_to_int, Sorter as UtilSorter, TimSorter, TimSorterState};
+use crate::util::spi::{NamedSPI, NamedSPILoader};
 use crate::util::{BytesRef, FixedBitSet};
 
 /// Maps a document to a `long` that orders it against the other documents of a
@@ -622,40 +628,107 @@ impl IndexSorter for BinarySorter {
 // Sorter
 // -----------------------------------------------------------------------------
 
+/// The `oldToNew` half of a [`SorterDocMap`], in either of the two forms
+/// `Sorter.PackableDocMap` keeps it in.
+///
+/// Equivalent to the pair of fields `PackableDocMap.oldToNewUnpacked` (an
+/// `int[]`) and `PackableDocMap.oldToNewPacked` (a monotonic
+/// `PackedLongValues`), exactly one of which is non-null (`Sorter.java:268-283`).
+#[derive(Debug, Clone)]
+enum OldToNew {
+    /// `oldToNewUnpacked`: the `int[]` the sort built.
+    Unpacked(Arc<Vec<i32>>),
+    /// `oldToNewPacked`: the same mapping compressed by
+    /// [`PackableDocMap.pack()`](SorterDocMap::pack).
+    Packed(Arc<MonotonicLongValues>),
+}
+
 /// Maps document numbers between the sorted and unsorted views of a segment.
 ///
-/// Equivalent to `org.apache.lucene.index.Sorter.DocMap`.
+/// Equivalent to `org.apache.lucene.index.Sorter.DocMap` as implemented by
+/// `Sorter.PackableDocMap` (`Sorter.java:260-310`), the only implementation
+/// `Sorter` produces: `newToOld` is a monotonic `PackedLongValues`, and
+/// `oldToNew` is either the `int[]` the sort built or, once
+/// [`pack`](Self::pack)ed, a monotonic `PackedLongValues` too.
 ///
-/// **Divergence from Lucene 10.5.0.** Java holds `oldToNew` and `newToOld` in
-/// `PackedLongValues`, which compresses an almost-sorted permutation to a
-/// fraction of its size. `PackedLongValues` is not ported yet, so this port
-/// keeps both directions in plain `Vec<i32>`, as `norms_writer.rs` already does
-/// for the same reason. The mapping is identical; only the memory footprint
-/// differs.
+/// Java also lets other classes subclass `Sorter.DocMap` (for example the
+/// anonymous maps `SortingCodecReader` tests build); in this port every map is
+/// a `SorterDocMap`, built by the sort or from explicit arrays with
+/// [`from_old_to_new`](Self::from_old_to_new).
 #[derive(Debug, Clone)]
 pub struct SorterDocMap {
-    old_to_new: Vec<i32>,
-    new_to_old: Vec<i32>,
+    new_to_old: Arc<MonotonicLongValues>,
+    max_doc: i32,
+    old_to_new: OldToNew,
 }
 
 impl SorterDocMap {
+    /// Builds the unpacked form from the two arrays.
+    ///
+    /// Equivalent to the private constructor
+    /// `PackableDocMap(int[] oldToNewUnpacked, PackedLongValues newToOld, int maxDoc)`.
+    fn unpacked(old_to_new: Vec<i32>, new_to_old: MonotonicLongValues, max_doc: i32) -> Self {
+        Self {
+            new_to_old: Arc::new(new_to_old),
+            max_doc,
+            old_to_new: OldToNew::Unpacked(Arc::new(old_to_new)),
+        }
+    }
+
     /// Returns the new document number of `doc_id`.
     ///
-    /// Equivalent to `Sorter.DocMap.oldToNew(int)`.
+    /// Equivalent to `PackableDocMap.oldToNew(int)`.
     pub fn old_to_new(&self, doc_id: i32) -> i32 {
-        self.old_to_new[doc_id as usize]
+        match &self.old_to_new {
+            OldToNew::Unpacked(old_to_new) => old_to_new[doc_id as usize],
+            OldToNew::Packed(old_to_new) => old_to_new.get(i64::from(doc_id)) as i32,
+        }
     }
 
     /// Returns the old document number of `doc_id`.
     ///
-    /// Equivalent to `Sorter.DocMap.newToOld(int)`.
+    /// Equivalent to `PackableDocMap.newToOld(int)`.
     pub fn new_to_old(&self, doc_id: i32) -> i32 {
-        self.new_to_old[doc_id as usize]
+        self.new_to_old.get(i64::from(doc_id)) as i32
     }
 
     /// Returns how many documents the map covers.
+    ///
+    /// Equivalent to `PackableDocMap.size()`.
     pub fn size(&self) -> i32 {
-        self.old_to_new.len() as i32
+        self.max_doc
+    }
+
+    /// Returns whether `oldToNew` is held packed.
+    pub fn is_packed(&self) -> bool {
+        matches!(self.old_to_new, OldToNew::Packed(_))
+    }
+
+    /// Packs `oldToNew` into a monotonic `PackedLongValues`; a map that is
+    /// already packed is returned as is.
+    ///
+    /// Equivalent to `PackableDocMap.pack()` (`Sorter.java:295-305`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error building the packed values raises.
+    pub fn pack(self) -> Result<Self> {
+        match &self.old_to_new {
+            OldToNew::Packed(_) => Ok(self),
+            OldToNew::Unpacked(old_to_new) => {
+                let packed = build_monotonic(
+                    old_to_new
+                        .iter()
+                        .take(self.max_doc as usize)
+                        .map(|&d| i64::from(d)),
+                )?;
+                Ok(Self {
+                    new_to_old: self.new_to_old,
+                    max_doc: self.max_doc,
+                    old_to_new: OldToNew::Packed(Arc::new(packed)),
+                })
+            }
+        }
     }
 
     /// Checks that the two directions invert each other.
@@ -663,10 +736,103 @@ impl SorterDocMap {
     /// Equivalent to `Sorter.isConsistent(DocMap)`, which Java only calls from
     /// assertions.
     pub fn is_consistent(&self) -> bool {
-        (0..self.size()).all(|doc| {
-            self.new_to_old(self.old_to_new(doc)) == doc
-                && self.old_to_new(self.new_to_old(doc)) == doc
+        (0..self.size()).all(|i| {
+            let new_id = self.old_to_new(i);
+            new_id >= 0 && new_id < self.size() && self.new_to_old(new_id) == i
         })
+    }
+}
+
+/// Fills `PackedLongValues.monotonicBuilder(PackedInts.COMPACT)` with `values`
+/// and builds it.
+fn build_monotonic(values: impl Iterator<Item = i64>) -> Result<MonotonicLongValues> {
+    let mut builder = PackedLongValues::monotonic_builder(
+        PackedLongValues::DEFAULT_PAGE_SIZE as usize,
+        PackedInts::COMPACT,
+    )?;
+    for value in values {
+        builder.add(value)?;
+    }
+    builder.build()
+}
+
+/// The `TimSorter` `Sorter.sort(int, DocComparator)` sorts the document ids
+/// with.
+///
+/// Equivalent to the private `Sorter.DocValueSorter extends TimSorter`
+/// (`Sorter.java:79-125`): `maxTempSlots = docs.length / 64` and a `tmp` array
+/// of the same length.
+struct DocValueSorter<'a> {
+    docs: &'a mut [i32],
+    comparator: &'a DocComparator,
+    tmp: Vec<i32>,
+    pivot_index: usize,
+    state: TimSorterState,
+}
+
+impl<'a> DocValueSorter<'a> {
+    /// Equivalent to `DocValueSorter(int[], DocComparator)`.
+    fn new(docs: &'a mut [i32], comparator: &'a DocComparator) -> Self {
+        let max_temp_slots = docs.len() / 64;
+        Self {
+            docs,
+            comparator,
+            tmp: vec![0i32; max_temp_slots],
+            pivot_index: 0,
+            state: TimSorterState::new(max_temp_slots),
+        }
+    }
+}
+
+impl PivotOps for DocValueSorter<'_> {
+    fn swap(&mut self, i: usize, j: usize) {
+        self.docs.swap(i, j);
+    }
+
+    /// `Sorter.setPivot(int)`, which `DocValueSorter` inherits.
+    fn set_pivot(&mut self, i: usize) {
+        self.pivot_index = i;
+    }
+
+    /// `Sorter.comparePivot(int)`, which `DocValueSorter` inherits.
+    fn compare_pivot(&mut self, j: usize) -> i32 {
+        self.compare(self.pivot_index, j)
+    }
+
+    fn compare(&mut self, i: usize, j: usize) -> i32 {
+        ordering_to_int((self.comparator)(self.docs[i], self.docs[j]))
+    }
+}
+
+impl UtilSorter for DocValueSorter<'_> {
+    fn sort(&mut self, from: usize, to: usize) {
+        self.tim_sort(from, to);
+    }
+
+    fn do_rotate(&mut self, lo: usize, mid: usize, hi: usize) {
+        self.tim_do_rotate(lo, mid, hi);
+    }
+}
+
+impl TimSorter for DocValueSorter<'_> {
+    fn tim_state(&mut self) -> &mut TimSorterState {
+        &mut self.state
+    }
+
+    fn copy(&mut self, src: usize, dest: usize) {
+        self.docs[dest] = self.docs[src];
+    }
+
+    fn save(&mut self, i: usize, len: usize) {
+        self.tmp[..len].copy_from_slice(&self.docs[i..i + len]);
+    }
+
+    fn restore(&mut self, i: usize, j: usize) {
+        self.docs[j] = self.tmp[i];
+    }
+
+    fn compare_saved(&mut self, i: usize, j: usize) -> i32 {
+        ordering_to_int((self.comparator)(self.tmp[i], self.docs[j]))
     }
 }
 
@@ -692,55 +858,91 @@ impl Sorter {
     }
 
     /// Sorts `max_doc` documents by `comparator`, returning `None` when they are
-    /// already in order.
+    /// already in order. The map is returned unpacked.
     ///
-    /// Equivalent to the private `Sorter.sort(int, DocComparator)`.
+    /// Equivalent to the private `Sorter.sort(int, DocComparator)`
+    /// (`Sorter.java:128-169`): the document ids are sorted with
+    /// `DocValueSorter`, a `TimSorter` with `maxDoc / 64` temporary slots;
+    /// `newToOld` is stored in a monotonic `PackedLongValues` and inverted into
+    /// the `int[]` `oldToNew`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java sorts with `TimSorter`, which is
-    /// not ported. This port uses the standard library's stable sort, which is
-    /// also an adaptive stable merge sort and so produces the same permutation
-    /// for the same comparator.
+    /// # Panics
+    ///
+    /// Only when building the monotonic values fails, which cannot happen with
+    /// the default page size; Java's builder throws nothing there either.
     pub fn sort(max_doc: i32, comparator: &DocComparator) -> Option<SorterDocMap> {
-        let n = max_doc.max(0) as usize;
-        let already_sorted =
-            (1..n).all(|i| comparator(i as i32 - 1, i as i32) != Ordering::Greater);
-        if already_sorted {
+        // check if the index is sorted
+        let mut sorted = true;
+        for i in 1..max_doc {
+            if comparator(i - 1, i) == Ordering::Greater {
+                sorted = false;
+                break;
+            }
+        }
+        if sorted {
             return None;
         }
 
-        let mut docs: Vec<i32> = (0..n as i32).collect();
-        docs.sort_by(|a, b| comparator(*a, *b));
-
-        // `docs` is now the newToOld mapping; invert it for oldToNew.
-        let new_to_old = docs;
-        let mut old_to_new = vec![0i32; n];
-        for (new_doc, &old_doc) in new_to_old.iter().enumerate() {
-            old_to_new[old_doc as usize] = new_doc as i32;
+        // sort doc IDs
+        let mut docs: Vec<i32> = (0..max_doc).collect();
+        {
+            let mut sorter = DocValueSorter::new(&mut docs, comparator);
+            // It can be common to sort a reader, add docs, sort it again, ...
+            // and in that case timSort can save a lot of time
+            UtilSorter::sort(&mut sorter, 0, max_doc as usize); // docs is now the newToOld mapping
         }
 
-        Some(SorterDocMap {
-            old_to_new,
-            new_to_old,
-        })
+        // The reason why we use MonotonicAppendingLongBuffer here is that it
+        // wastes very little memory if the index is in random order but can
+        // save a lot of memory if the index is already "almost" sorted
+        let new_to_old = build_monotonic(docs.iter().map(|&d| i64::from(d)))
+            .expect("INVARIANT: the default page size is a valid monotonic page size");
+
+        // invert the docs mapping:
+        for i in 0..max_doc {
+            docs[new_to_old.get(i64::from(i)) as usize] = i;
+        } // docs is now the oldToNew mapping
+
+        Some(SorterDocMap::unpacked(docs, new_to_old, max_doc))
     }
 
     /// Sorts `max_doc` documents by several comparators applied in order,
-    /// returning `None` when they are already in order.
+    /// returning `None` when they are already in order. The map is returned
+    /// packed.
     ///
-    /// Equivalent to `Sorter.sort(int, DocComparator[])` and to the
-    /// `Sorter.sortAndLeaveUnpacked(int, DocComparator[])` it delegates to.
-    /// Java splits the two because `sort` packs the map afterwards, through
-    /// `PackableDocMap.pack()`; this port's [`SorterDocMap`] is the unpacked
-    /// form and is never packed, so the two collapse into one function.
-    pub fn sort_multi(max_doc: i32, comparators: Vec<DocComparator>) -> Option<SorterDocMap> {
-        let combined: DocComparator = Box::new(move |a: i32, b: i32| {
+    /// Equivalent to `Sorter.sort(int, DocComparator[])` (`Sorter.java:213-216`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error packing the map raises.
+    pub fn sort_multi(
+        max_doc: i32,
+        comparators: Vec<DocComparator>,
+    ) -> Result<Option<SorterDocMap>> {
+        Self::sort_and_leave_unpacked(max_doc, comparators)
+            .map(SorterDocMap::pack)
+            .transpose()
+    }
+
+    /// Sorts `max_doc` documents by several comparators applied in order, then
+    /// by document id, returning `None` when they are already in order. The
+    /// map is returned unpacked.
+    ///
+    /// Equivalent to `Sorter.sortAndLeaveUnpacked(int, DocComparator[])`
+    /// (`Sorter.java:218-231`), which `IndexingChain.maybeSortSegment` calls so
+    /// that the flush can read `oldToNew` from the `int[]`.
+    pub fn sort_and_leave_unpacked(
+        max_doc: i32,
+        comparators: Vec<DocComparator>,
+    ) -> Option<SorterDocMap> {
+        let combined: DocComparator = Box::new(move |doc_id1: i32, doc_id2: i32| {
             for comparator in &comparators {
-                let ordering = comparator(a, b);
-                if ordering != Ordering::Equal {
-                    return ordering;
+                let comp = comparator(doc_id1, doc_id2);
+                if comp != Ordering::Equal {
+                    return comp;
                 }
             }
-            Ordering::Equal
+            doc_id1.cmp(&doc_id2) // docid order tiebreak
         });
         Sorter::sort(max_doc, &combined)
     }
@@ -756,6 +958,33 @@ struct LeafAndDocId {
     doc_id: i32,
     max_doc: i32,
     live_docs: Option<Box<dyn crate::util::Bits>>,
+}
+
+/// The `lessThan` of the anonymous `PriorityQueue<LeafAndDocID>` of
+/// `MultiSorter.sort` (`MultiSorter.java:87-104`): the sort fields' cached
+/// values in order, each reversed by its `reverseMul`, then the reader index,
+/// then the document id.
+struct LeafAndDocIdLess<'a> {
+    comparables: &'a std::cell::RefCell<Vec<Box<dyn ComparableValues>>>,
+    reverse_muls: &'a [i32],
+}
+
+impl crate::util::extra::PriorityQueueComparator<LeafAndDocId> for LeafAndDocIdLess<'_> {
+    fn less_than(&self, a: &LeafAndDocId, b: &LeafAndDocId) -> bool {
+        let comparables = self.comparables.borrow();
+        for (i, comparable) in comparables.iter().enumerate() {
+            let cmp = comparable.compare(a.reader_index, b.reader_index);
+            if cmp != Ordering::Equal {
+                return self.reverse_muls[i] * ordering_to_int(cmp) < 0;
+            }
+        }
+        // tie-break by docID natural order:
+        if a.reader_index != b.reader_index {
+            a.reader_index < b.reader_index
+        } else {
+            a.doc_id < b.doc_id
+        }
+    }
 }
 
 /// Interleaves several already-sorted segments into one sorted order.
@@ -800,9 +1029,26 @@ impl MultiSorter {
     /// its parent (last) document, found through the parent field
     /// (`MultiSorter.java:47-66`).
     ///
-    /// **Divergence from Lucene 10.5.0.** Java keeps the remapped document
-    /// numbers in `PackedLongValues`, which is not ported, so the remapping is
-    /// a plain `Vec<i32>`; the numbers are the same.
+    /// The remapped document numbers of each reader are kept in a monotonic
+    /// `PackedLongValues`, filled in the merged order (`MultiSorter.java:107-152`).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java queues every reader, including
+    /// one with `maxDoc == 0`, positioned on document 0
+    /// (`MultiSorter.java:107-115`). When that reader reaches the top of the
+    /// queue it adds one entry to its builder and, having no live docs,
+    /// increments `mappedDocID` (`MultiSorter.java:128-131`), so every document
+    /// that surfaces after it is mapped one past its slot and the last one to
+    /// the merged segment's `maxDoc`. The case is reachable: `addIndexes(
+    /// CodecReader...)` does not filter empty readers
+    /// (`IndexWriter.java:3264-3296`), and `MergeState.buildDocMaps` hands
+    /// them to `MultiSorter.sort` (`MergeState.java:214-224`). Observed against
+    /// `lucene-core-10.5.0.jar` with readers `[{1, 3}, empty, {2}]` sorted by a
+    /// long field: Java maps the three documents to `1, 3` and `2`, leaving
+    /// slot 0 to the empty reader and mapping a document to 3 in a three-
+    /// document segment. Reproducing that would write document numbers out of
+    /// the segment's range, so this port does not queue an empty reader and
+    /// maps the documents to `0, 2` and `1`. Readers that are not empty are
+    /// merged exactly as Java merges them.
     ///
     /// # Errors
     ///
@@ -874,105 +1120,78 @@ impl MultiSorter {
             comparables.push(sorter.get_comparable_values(readers)?);
         }
 
-        // One cursor per reader, each positioned on its first document.
-        let mut cursors: Vec<LeafAndDocId> = Vec::with_capacity(leaf_count);
+        let comparables = std::cell::RefCell::new(comparables);
+        let mut queue = crate::util::extra::PriorityQueue::new(
+            leaf_count,
+            LeafAndDocIdLess {
+                comparables: &comparables,
+                reverse_muls,
+            },
+        )?;
+
+        // `builders[i] = PackedLongValues.monotonicBuilder(PackedInts.COMPACT)`
+        // (`MultiSorter.java:107-114`).
+        let mut builders = Vec::with_capacity(leaf_count);
         for (reader_index, reader) in readers.iter().enumerate() {
             let max_doc = reader.max_doc();
-            if max_doc == 0 {
-                continue;
+            // See the divergence note above: Java queues an empty reader too.
+            if max_doc != 0 {
+                // `setComparableValues(comparables, parents[i], i, leaf.docID)`,
+                // with `leaf.docID` still 0, then `queue.add(leaf)`.
+                Self::set_comparable_values(
+                    &mut comparables.borrow_mut(),
+                    parents[reader_index]
+                        .as_ref()
+                        .map(|bits| bits as &dyn crate::util::bit_set::BitSet),
+                    reader_index,
+                    0,
+                )?;
+                queue.add(LeafAndDocId {
+                    reader_index,
+                    doc_id: 0,
+                    max_doc,
+                    live_docs: reader.get_live_docs(),
+                });
             }
-            // Java: `setComparableValues(comparables, parents[i], i, leaf.docID)`
-            // (`MultiSorter.java:112`), with `leaf.docID` still 0.
-            Self::set_comparable_values(
-                &mut comparables,
-                parents[reader_index]
-                    .as_ref()
-                    .map(|bits| bits as &dyn crate::util::bit_set::BitSet),
-                reader_index,
-                0,
-            )?;
-            cursors.push(LeafAndDocId {
-                reader_index,
-                doc_id: 0,
-                max_doc,
-                live_docs: reader.get_live_docs(),
-            });
+            builders.push(PackedLongValues::monotonic_builder(
+                PackedLongValues::DEFAULT_PAGE_SIZE as usize,
+                PackedInts::COMPACT,
+            )?);
         }
 
-        let mut remapped: Vec<Vec<i32>> = readers
-            .iter()
-            .map(|reader| vec![-1i32; reader.max_doc().max(0) as usize])
-            .collect();
-
+        // merge sort:
         let mut mapped_doc_id = 0i32;
         let mut last_reader_index = 0usize;
         let mut is_sorted = true;
-
-        while !cursors.is_empty() {
-            // Pick the smallest cursor under the comparators, breaking ties by
-            // reader index then document id, as Java's priority queue does.
-            let mut top = 0usize;
-            for candidate in 1..cursors.len() {
-                let mut less = false;
-                let mut decided = false;
-                for (i, comparable) in comparables.iter().enumerate() {
-                    let cmp = comparable
-                        .compare(cursors[candidate].reader_index, cursors[top].reader_index);
-                    if cmp != Ordering::Equal {
-                        let signed = if reverse_muls[i] < 0 {
-                            cmp.reverse()
-                        } else {
-                            cmp
-                        };
-                        less = signed == Ordering::Less;
-                        decided = true;
-                        break;
-                    }
-                }
-                if !decided {
-                    less = if cursors[candidate].reader_index != cursors[top].reader_index {
-                        cursors[candidate].reader_index < cursors[top].reader_index
-                    } else {
-                        cursors[candidate].doc_id < cursors[top].doc_id
-                    };
-                }
-                if less {
-                    top = candidate;
-                }
-            }
-
-            let reader_index = cursors[top].reader_index;
-            if last_reader_index > reader_index {
-                // The readers interleave, so a real merge sort is needed.
+        while queue.size() != 0 {
+            let top = queue.top_mut().expect("INVARIANT: the queue is not empty");
+            if last_reader_index > top.reader_index {
+                // merge sort is needed
                 is_sorted = false;
             }
-            last_reader_index = reader_index;
-
-            let doc_id = cursors[top].doc_id;
-            remapped[reader_index][doc_id as usize] = mapped_doc_id;
-            let alive = match &cursors[top].live_docs {
-                Some(live_docs) => live_docs.get(doc_id as usize),
+            last_reader_index = top.reader_index;
+            builders[top.reader_index].add(i64::from(mapped_doc_id))?;
+            let alive = match &top.live_docs {
+                Some(live_docs) => live_docs.get(top.doc_id as usize),
                 None => true,
             };
             if alive {
                 mapped_doc_id += 1;
             }
-
-            cursors[top].doc_id += 1;
-            if cursors[top].doc_id < cursors[top].max_doc {
-                let next = cursors[top].doc_id;
-                // Java: `setComparableValues(comparables, parents[top.readerIndex],
-                // top.readerIndex, top.docID)` (`MultiSorter.java:134`).
+            top.doc_id += 1;
+            if top.doc_id < top.max_doc {
+                let (reader_index, next) = (top.reader_index, top.doc_id);
                 Self::set_comparable_values(
-                    &mut comparables,
+                    &mut comparables.borrow_mut(),
                     parents[reader_index]
                         .as_ref()
                         .map(|bits| bits as &dyn crate::util::bit_set::BitSet),
                     reader_index,
                     next,
                 )?;
+                queue.update_top();
             } else {
-                cursors.remove(top);
+                queue.pop();
             }
         }
 
@@ -981,8 +1200,8 @@ impl MultiSorter {
         }
 
         let mut doc_maps: Vec<crate::index::merge::DocMap> = Vec::with_capacity(leaf_count);
-        for (index, reader) in readers.iter().enumerate() {
-            let mapping = std::mem::take(&mut remapped[index]);
+        for (builder, reader) in builders.into_iter().zip(readers.iter()) {
+            let remapped = builder.build()?;
             let live_docs = reader.get_live_docs();
             doc_maps.push(Arc::new(move |doc_id: i32| {
                 let alive = match &live_docs {
@@ -990,7 +1209,7 @@ impl MultiSorter {
                     None => true,
                 };
                 if alive {
-                    mapping.get(doc_id as usize).copied().unwrap_or(-1)
+                    remapped.get(i64::from(doc_id)) as i32
                 } else {
                     -1
                 }
@@ -1006,23 +1225,37 @@ impl MultiSorter {
 
 /// Serialises and deserialises a `SortField` so an index sort survives a commit.
 ///
-/// Equivalent to `org.apache.lucene.index.SortFieldProvider`.
-pub trait SortFieldProvider: Send + Sync {
-    /// The SPI name this provider is registered under, which is what the segment
-    /// info file records.
-    ///
-    /// Equivalent to `NamedSPILoader.NamedSPI.getName()`.
-    fn name(&self) -> &str;
-
+/// Equivalent to `org.apache.lucene.index.SortFieldProvider`
+/// (`index/SortFieldProvider.java:28-116`), an abstract class implementing
+/// `NamedSPILoader.NamedSPI`: [`NamedSPI::get_name`] is the name the provider
+/// is registered and serialised under.
+///
+/// Lucene core ships four providers, listed in its
+/// `META-INF/services/org.apache.lucene.index.SortFieldProvider`:
+/// [`SortField`'s](crate::search::sort::Provider),
+/// [`SortedNumericSortField`'s](crate::search::sorted_numeric_sort_field::Provider),
+/// [`SortedSetSortField`'s](crate::search::sorted_set_sort_field::Provider) and
+/// [`BinarySortField`'s](crate::search::binary_sort_field::Provider).
+pub trait SortFieldProvider: NamedSPI + Send + Sync {
     /// Reads a sort field from `input`.
     ///
     /// Equivalent to `SortFieldProvider.readSortField(DataInput)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading `input` raises.
     fn read_sort_field(&self, input: &mut dyn crate::store::DataInput) -> Result<SortField>;
 
     /// Writes `sort_field` to `output`, without the provider name, which the
-    /// registry writes first.
+    /// caller writes first.
     ///
     /// Equivalent to `SortFieldProvider.writeSortField(SortField, DataOutput)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `sort_field` is not of the
+    /// provider's kind (Java's `assert sf instanceof ...`), and propagates
+    /// whatever writing raises.
     fn write_sort_field(
         &self,
         sort_field: &SortField,
@@ -1030,79 +1263,32 @@ pub trait SortFieldProvider: Send + Sync {
     ) -> Result<()>;
 }
 
-/// The registry of [`SortFieldProvider`] implementations, by name.
-///
-/// **Divergence from Lucene 10.5.0.** Java discovers providers through
-/// `NamedSPILoader`, which reads `META-INF/services` off the classpath. Rust has
-/// no equivalent at run time, so providers are registered explicitly into this
-/// registry, exactly as the crate already does for doc-values and postings
-/// formats.
-#[derive(Default)]
-pub struct SortFieldProviders {
-    providers: std::collections::HashMap<String, Arc<dyn SortFieldProvider>>,
-}
+/// The class name `NamedSPILoader` reports in its lookup error.
+const SORT_FIELD_PROVIDER_CLASS: &str = "org.apache.lucene.index.SortFieldProvider";
 
-impl SortFieldProviders {
-    /// Creates an empty registry.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Registers `provider` under its own name.
-    pub fn register(&mut self, provider: Arc<dyn SortFieldProvider>) {
-        self.providers.insert(provider.name().to_string(), provider);
-    }
-
-    /// Looks a provider up by name.
-    ///
-    /// Equivalent to `SortFieldProvider.forName(String)`.
-    pub fn for_name(&self, name: &str) -> Result<Arc<dyn SortFieldProvider>> {
-        self.providers.get(name).cloned().ok_or_else(|| {
-            LuceneError::IllegalArgument(format!("no SortFieldProvider registered as '{name}'"))
-        })
-    }
-
-    /// Returns every registered provider name.
-    ///
-    /// Equivalent to `SortFieldProvider.availableSortFieldProviders()`.
-    pub fn available_sort_field_providers(&self) -> Vec<String> {
-        self.available()
-    }
-
-    /// Returns every registered provider name.
-    ///
-    /// Equivalent to `SortFieldProvider.availableSortFieldProviders()`.
-    pub fn available(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.providers.keys().cloned().collect();
-        names.sort();
-        names
-    }
-
-    /// Writes `sort_field` preceded by its provider name.
-    ///
-    /// Equivalent to `SortFieldProvider.write(SortField, DataOutput)`.
-    pub fn write(
-        &self,
-        provider_name: &str,
-        sort_field: &SortField,
-        output: &mut dyn crate::store::DataOutput,
-    ) -> Result<()> {
-        let provider = self.for_name(provider_name)?;
-        output.write_string(provider_name)?;
-        provider.write_sort_field(sort_field, output)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// The global registry behind SortFieldProvider's static entry points
-// ---------------------------------------------------------------------------
-
-/// The registry behind [`SortFieldProvider`]'s static entry points.
+/// The loader behind [`SortFieldProvider`]'s static entry points.
 ///
 /// Equivalent to `SortFieldProvider.Holder.LOADER`, which Java hides in a
-/// holder class so the providers are only discovered when first needed.
-static SORT_FIELD_PROVIDERS: std::sync::LazyLock<std::sync::RwLock<SortFieldProviders>> =
-    std::sync::LazyLock::new(|| std::sync::RwLock::new(SortFieldProviders::new()));
+/// holder class so the providers are only discovered when first needed. It is
+/// seeded with the four providers `lucene-core` lists in
+/// `META-INF/services/org.apache.lucene.index.SortFieldProvider`, in the order
+/// of that file, which is what Java's service loader registers. Rust has no
+/// run-time service discovery, so a provider defined outside the crate is added
+/// with [`reload_sort_field_providers`].
+static SORT_FIELD_PROVIDERS: std::sync::LazyLock<
+    std::sync::RwLock<NamedSPILoader<dyn SortFieldProvider>>,
+> = std::sync::LazyLock::new(|| {
+    let providers: [Arc<dyn SortFieldProvider>; 4] = [
+        Arc::new(crate::search::sort::Provider::new()),
+        Arc::new(crate::search::sorted_numeric_sort_field::Provider::new()),
+        Arc::new(crate::search::sorted_set_sort_field::Provider::new()),
+        Arc::new(crate::search::binary_sort_field::Provider::new()),
+    ];
+    std::sync::RwLock::new(
+        NamedSPILoader::with_providers(SORT_FIELD_PROVIDER_CLASS, providers)
+            .expect("INVARIANT: the built-in provider names are legal service names"),
+    )
+});
 
 /// Looks a sort-field provider up by name.
 ///
@@ -1111,39 +1297,180 @@ static SORT_FIELD_PROVIDERS: std::sync::LazyLock<std::sync::RwLock<SortFieldProv
 /// # Errors
 ///
 /// Returns [`LuceneError::IllegalArgument`] when no provider is registered
-/// under `name`.
+/// under `name`, with `NamedSPILoader.lookup`'s message.
 pub fn sort_field_provider_for_name(name: &str) -> Result<Arc<dyn SortFieldProvider>> {
     SORT_FIELD_PROVIDERS
         .read()
         .expect("INVARIANT: the sort-field provider lock is never poisoned")
-        .for_name(name)
+        .lookup(name)
 }
 
-/// Returns the names of every registered sort-field provider.
+/// Returns the names of every registered sort-field provider, in registration
+/// order.
 ///
 /// Equivalent to `SortFieldProvider.availableSortFieldProviders()`.
 pub fn available_sort_field_providers() -> Vec<String> {
     SORT_FIELD_PROVIDERS
         .read()
         .expect("INVARIANT: the sort-field provider lock is never poisoned")
-        .available()
+        .available_services()
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
-/// Adds `provider` to the global registry under its own name.
+/// Adds `providers` to the global loader; a name already registered keeps its
+/// first provider.
 ///
 /// Equivalent to `SortFieldProvider.reloadSortFieldProviders(ClassLoader)`,
 /// which rescans a classloader for providers it has not seen. Rust has no
-/// run-time service discovery, so the caller supplies the provider.
-pub fn reload_sort_field_providers(provider: Arc<dyn SortFieldProvider>) {
+/// run-time service discovery, so the caller supplies the providers.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when a provider's name is not a
+/// legal service name.
+pub fn reload_sort_field_providers(
+    providers: impl IntoIterator<Item = Arc<dyn SortFieldProvider>>,
+) -> Result<()> {
     SORT_FIELD_PROVIDERS
         .write()
         .expect("INVARIANT: the sort-field provider lock is never poisoned")
-        .register(provider);
+        .reload(providers)
+}
+
+/// Writes `sort_field` with the provider its index sorter names.
+///
+/// Equivalent to the static `SortFieldProvider.write(SortField, DataOutput)`
+/// (`SortFieldProvider.java:79-86`), which does not write the provider name:
+/// `Lucene99SegmentInfoFormat.write` writes it first.
+///
+/// # Errors
+///
+/// Returns [`LuceneError::IllegalArgument`] when the sort field has no index
+/// sorter ("Cannot serialize sort field ...") or names an unregistered
+/// provider, and propagates whatever the provider raises.
+pub fn write_sort_field(
+    sort_field: &SortField,
+    output: &mut dyn crate::store::DataOutput,
+) -> Result<()> {
+    let Some(sorter) = sort_field.get_index_sorter() else {
+        return Err(LuceneError::IllegalArgument(format!(
+            "Cannot serialize sort field {sort_field}"
+        )));
+    };
+    let provider = sort_field_provider_for_name(sorter.get_provider_name())?;
+    provider.write_sort_field(sort_field, output)
 }
 
 impl std::fmt::Display for Sorter {
     /// Port of `Sorter.toString()`, which is `getID()`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.get_id())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A comparator over a value per document, so ties are easy to set up.
+    fn by_value(values: Vec<i64>) -> DocComparator {
+        Box::new(move |a: i32, b: i32| values[a as usize].cmp(&values[b as usize]))
+    }
+
+    #[test]
+    fn sorted_documents_need_no_map() {
+        assert!(Sorter::sort_and_leave_unpacked(5, vec![by_value(vec![1, 1, 2, 3, 3])]).is_none());
+        assert!(Sorter::sort_multi(0, vec![by_value(vec![])])
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn ties_keep_document_order_and_both_forms_agree() {
+        // Many ties over a long, partly ordered run, so the `TimSorter` merges
+        // runs with its temporary slots (`maxDoc / 64` of them).
+        let max_doc = 1_000;
+        let values: Vec<i64> = (0..max_doc).map(|doc| ((doc * 7919) % 13) as i64).collect();
+        let unpacked =
+            Sorter::sort_and_leave_unpacked(max_doc, vec![by_value(values.clone())]).unwrap();
+        assert!(!unpacked.is_packed());
+        assert!(unpacked.is_consistent());
+        let mut expected: Vec<i32> = (0..max_doc).collect();
+        expected.sort_by_key(|&doc| (values[doc as usize], doc));
+        for (new_doc, &old_doc) in expected.iter().enumerate() {
+            assert_eq!(unpacked.new_to_old(new_doc as i32), old_doc);
+            assert_eq!(unpacked.old_to_new(old_doc), new_doc as i32);
+        }
+
+        let packed = Sorter::sort_multi(max_doc, vec![by_value(values)])
+            .unwrap()
+            .unwrap();
+        assert!(packed.is_packed());
+        for doc in 0..max_doc {
+            assert_eq!(packed.old_to_new(doc), unpacked.old_to_new(doc));
+            assert_eq!(packed.new_to_old(doc), unpacked.new_to_old(doc));
+        }
+        assert_eq!(packed.size(), max_doc);
+    }
+
+    #[test]
+    fn the_sort_field_providers_load_through_the_named_spi_loader() {
+        // `META-INF/services/org.apache.lucene.index.SortFieldProvider` of
+        // `lucene-core`, in file order.
+        let available = available_sort_field_providers();
+        assert_eq!(
+            &available[..4],
+            &[
+                "SortField",
+                "SortedNumericSortField",
+                "SortedSetSortField",
+                "BinarySortField"
+            ]
+        );
+        assert_eq!(
+            sort_field_provider_for_name("SortedSetSortField")
+                .unwrap()
+                .get_name(),
+            "SortedSetSortField"
+        );
+        let error = sort_field_provider_for_name("NoSuchProvider")
+            .err()
+            .expect("an unknown name is refused");
+        assert!(
+            error.to_string().contains(
+                "An SPI class of type org.apache.lucene.index.SortFieldProvider with name 'NoSuchProvider' does not exist"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn a_sort_field_is_written_by_the_provider_its_sorter_names() {
+        use crate::search::sorted_numeric_selector::SortedNumericSelectorType;
+        use crate::search::sorted_numeric_sort_field::SortedNumericSortField;
+        use crate::search::{read_sort, write_sort, Sort, SortFieldType};
+        use crate::store::{ByteArrayDataInput, VecDataOutput};
+
+        let field = SortedNumericSortField::with_selector(
+            "multi",
+            SortFieldType::Long,
+            true,
+            SortedNumericSelectorType::MAX,
+        )
+        .unwrap()
+        .into_sort_field();
+        assert_eq!(
+            field.get_index_sorter().unwrap().get_provider_name(),
+            "SortedNumericSortField"
+        );
+        let sort = Sort::new_fields(vec![field.clone()]).unwrap();
+        let mut out = VecDataOutput::new();
+        write_sort(&mut out, &sort).unwrap();
+        let bytes = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&bytes);
+        let read = read_sort(&mut input).unwrap().unwrap();
+        assert_eq!(read.fields(), &[field]);
     }
 }

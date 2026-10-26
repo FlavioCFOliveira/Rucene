@@ -42,6 +42,24 @@ pub trait FieldTermIterator {
     fn del_gen(&self) -> i64;
 }
 
+impl FieldTermIterator for crate::index::PrefixCodedTermsIterator {
+    /// Equivalent to `PrefixCodedTerms.TermIterator.next()`.
+    fn next(&mut self) -> Result<Option<BytesRef>> {
+        crate::index::PrefixCodedTermsIterator::next(self)
+    }
+
+    /// Equivalent to `PrefixCodedTerms.TermIterator.field()`, which is `null`
+    /// once the iteration is exhausted.
+    fn field(&self) -> Option<&str> {
+        crate::index::PrefixCodedTermsIterator::field(self)
+    }
+
+    /// Equivalent to `PrefixCodedTerms.TermIterator.delGen()`.
+    fn del_gen(&self) -> i64 {
+        crate::index::PrefixCodedTermsIterator::del_gen(self)
+    }
+}
+
 /// What applying a batch of packets achieved.
 ///
 /// Equivalent to `BufferedUpdatesStream.ApplyDeletesResult`.

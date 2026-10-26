@@ -977,7 +977,11 @@ pub struct PrefixCodedTermsIterator {
     input: ByteBuffersDataInput,
     end: i64,
     del_gen: i64,
-    field: String,
+    /// `TermIterator.field`: `""` before the first term, the current term's
+    /// field while iterating, and `null` — `None` — once exhausted. An empty
+    /// field name is a legal field (`TestIndexWriter.java:640-680`), so
+    /// exhaustion is not encoded in the name.
+    field: Option<String>,
     bytes: Vec<u8>,
 }
 
@@ -988,7 +992,7 @@ impl PrefixCodedTermsIterator {
             input,
             end,
             del_gen,
-            field: String::new(),
+            field: Some(String::new()),
             bytes: Vec::new(),
         }
     }
@@ -998,16 +1002,20 @@ impl PrefixCodedTermsIterator {
         self.del_gen
     }
 
-    /// Returns the current field. Use `==` to detect field changes.
-    pub fn field(&self) -> &str {
-        &self.field
+    /// Returns the current field, or `None` once the iteration is done.
+    ///
+    /// Equivalent to `PrefixCodedTerms.TermIterator.field()`
+    /// (`PrefixCodedTerms.java:150-158`), which is `null` only after `next()`
+    /// returned `null`. Use `==` to detect field changes.
+    pub fn field(&self) -> Option<&str> {
+        self.field.as_deref()
     }
 
     /// Returns the current term bytes, or `None` when exhausted.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<BytesRef>> {
         if (self.input.position() as i64) >= self.end {
-            self.field = String::new();
+            self.field = None;
             return Ok(None);
         }
 
@@ -1016,7 +1024,7 @@ impl PrefixCodedTermsIterator {
         let prefix = code >> 1;
 
         if new_field {
-            self.field = self.input.read_string()?;
+            self.field = Some(self.input.read_string()?);
         }
 
         let suffix = self.input.read_v_int()? as usize;
@@ -1669,11 +1677,26 @@ mod tests {
 
         let mut it = terms.iterator();
         assert_eq!(it.next().unwrap().unwrap().slice(), b"apple");
-        assert_eq!(it.field(), "body");
+        assert_eq!(it.field(), Some("body"));
         assert_eq!(it.next().unwrap().unwrap().slice(), b"apricot");
         assert_eq!(it.next().unwrap().unwrap().slice(), b"banana");
-        assert_eq!(it.field(), "title");
+        assert_eq!(it.field(), Some("title"));
         assert!(it.next().unwrap().is_none());
+        assert_eq!(it.field(), None, "`field` is null once exhausted");
+    }
+
+    /// An empty field name is a field like any other: only exhaustion makes
+    /// `field()` null (`PrefixCodedTerms.java:126-140`).
+    #[test]
+    fn prefix_coded_terms_keep_an_empty_field_name() {
+        let mut builder = PrefixCodedTermsBuilder::new();
+        builder.add(&Term::from_text("", "a")).unwrap();
+        let terms = builder.finish();
+        let mut it = terms.iterator();
+        assert_eq!(it.next().unwrap().unwrap().slice(), b"a");
+        assert_eq!(it.field(), Some(""));
+        assert!(it.next().unwrap().is_none());
+        assert_eq!(it.field(), None);
     }
 
     #[test]

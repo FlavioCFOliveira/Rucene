@@ -339,7 +339,7 @@ impl PackedIntsMutable for Packed64 {
         self
     }
 
-    fn into_packed_ints_reader(self: Box<Self>) -> Box<dyn PackedIntsReader> {
+    fn into_packed_ints_reader(self: Box<Self>) -> Box<dyn PackedIntsReader + Send + Sync> {
         self
     }
 }
@@ -640,7 +640,7 @@ impl PackedIntsMutable for Packed64SingleBlock {
         self
     }
 
-    fn into_packed_ints_reader(self: Box<Self>) -> Box<dyn PackedIntsReader> {
+    fn into_packed_ints_reader(self: Box<Self>) -> Box<dyn PackedIntsReader + Send + Sync> {
         self
     }
 }

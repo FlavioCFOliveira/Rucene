@@ -332,3 +332,44 @@ impl fmt::Display for SortedNumericSortField {
         write!(f, "{}", self.sort_field)
     }
 }
+
+/// The `SortFieldProvider` for [`SortedNumericSortField`], registered as [`SortedNumericSortField::NAME`].
+///
+/// Equivalent to the nested class `SortedNumericSortField.Provider` (`SortedNumericSortField.java:116-180`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Provider;
+
+impl Provider {
+    /// Creates a new provider.
+    ///
+    /// Equivalent to `new SortedNumericSortField.Provider()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl crate::util::spi::NamedSPI for Provider {
+    fn get_name(&self) -> &str {
+        SortedNumericSortField::NAME
+    }
+}
+
+impl crate::index::index_sorter::SortFieldProvider for Provider {
+    /// Equivalent to `SortedNumericSortField.Provider.readSortField(DataInput)`.
+    fn read_sort_field(
+        &self,
+        input: &mut dyn crate::store::DataInput,
+    ) -> Result<crate::search::SortField> {
+        Ok(SortedNumericSortField::read_sort_field(input)?.into_sort_field())
+    }
+
+    /// Equivalent to `SortedNumericSortField.Provider.writeSortField(SortField, DataOutput)`:
+    /// the field must be a `SortedNumericSortField` (Java asserts it and casts).
+    fn write_sort_field(
+        &self,
+        sort_field: &crate::search::SortField,
+        output: &mut dyn crate::store::DataOutput,
+    ) -> Result<()> {
+        SortedNumericSortField::from_sort_field(sort_field.clone())?.serialize(output)
+    }
+}

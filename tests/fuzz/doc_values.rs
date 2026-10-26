@@ -155,7 +155,7 @@ use rucene::index::{
 use rucene::search::{DocIdSetIterator, NO_MORE_DOCS};
 use rucene::store::{Directory, RamDirectory, DEFAULT_IO_CONTEXT};
 use rucene::util::string_helper::StringHelper;
-use rucene::util::{default_info_stream, BytesRef, Version};
+use rucene::util::{default_info_stream, ByteBlockPool, BytesRef, Version};
 
 /// Every file the consumer produces, so a corrupted copy is a complete
 /// segment. `.dvs` is written but never read by this format's producer, so it
@@ -505,7 +505,7 @@ fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &F
         Arc::clone(directory),
         info,
         &infos,
-        &BufferedUpdates,
+        Box::leak(Box::new(BufferedUpdates::default())),
         &*DEFAULT_IO_CONTEXT,
     );
     let mut consumer = Lucene90DocValuesFormat::new()
@@ -517,38 +517,51 @@ fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, fixture: &F
             .field_info_by_number(number as i32)
             .expect("field info")
             .clone();
-        write_field(consumer.as_mut(), info, values, Arc::clone(&bytes_used));
+        write_field(
+            &write_state,
+            consumer.as_mut(),
+            info,
+            values,
+            Arc::clone(&bytes_used),
+        );
     }
     consumer.close().expect("close");
 }
 
 fn write_field(
+    state: &SegmentWriteState<'_>,
     consumer: &mut dyn DocValuesConsumer,
     info: FieldInfo,
     values: &Values,
     bytes_used: Arc<AtomicI64>,
 ) {
+    // The indexing chain's shared `docValuesBytePool`.
+    let mut pool = Arc::new(ByteBlockPool::new(Arc::clone(&bytes_used)));
     match values {
         Values::Numeric(pairs) => {
             let mut writer = NumericDocValuesWriter::new(info, bytes_used);
             for (doc, value) in pairs {
                 writer.add_value(*doc, *value).expect("add numeric");
             }
-            writer.flush(consumer, None).expect("flush numeric");
+            writer.flush(state, None, consumer).expect("flush numeric");
         }
         Values::Binary(pairs) => {
             let mut writer = BinaryDocValuesWriter::new(info, bytes_used);
             for (doc, value) in pairs {
                 writer.add_value(*doc, value).expect("add binary");
             }
-            writer.flush(consumer, None).expect("flush binary");
+            writer.flush(state, None, consumer).expect("flush binary");
         }
         Values::Sorted(pairs) => {
             let mut writer = SortedDocValuesWriter::new(info, bytes_used);
             for (doc, value) in pairs {
-                writer.add_value(*doc, value).expect("add sorted");
+                writer
+                    .add_value(*doc, value, &mut pool)
+                    .expect("add sorted");
             }
-            writer.flush(consumer, None).expect("flush sorted");
+            writer
+                .flush(state, None, consumer, &pool)
+                .expect("flush sorted");
         }
         Values::SortedNumeric(pairs) => {
             let mut writer = SortedNumericDocValuesWriter::new(info, bytes_used);
@@ -557,16 +570,22 @@ fn write_field(
                     writer.add_value(*doc, *value).expect("add sorted numeric");
                 }
             }
-            writer.flush(consumer, None).expect("flush sorted numeric");
+            writer
+                .flush(state, None, consumer)
+                .expect("flush sorted numeric");
         }
         Values::SortedSet(pairs) => {
             let mut writer = SortedSetDocValuesWriter::new(info, bytes_used);
             for (doc, values) in pairs {
                 for value in values {
-                    writer.add_value(*doc, value).expect("add sorted set");
+                    writer
+                        .add_value(*doc, value, &mut pool)
+                        .expect("add sorted set");
                 }
             }
-            writer.flush(consumer, None).expect("flush sorted set");
+            writer
+                .flush(state, None, consumer, &pool)
+                .expect("flush sorted set");
         }
     }
 }

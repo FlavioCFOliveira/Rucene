@@ -16,11 +16,9 @@
 //! - Rucene writes a `snapshots_N` file that Java reads back with its own
 //!   `PersistentSnapshotDeletionPolicy`.
 //!
-//! Entry order inside `snapshots_N` is not part of the format: Rucene sorts by
-//! commit generation, Java emits `HashMap` bucket order. The two files are
-//! byte-identical exactly when those orders agree — which they do for the
-//! generations the reference fixture produces, and which the test therefore
-//! asserts as a *property of that vector*, not as a general guarantee.
+//! The entries of `snapshots_N` are written in Java's `HashMap` iteration
+//! order, which Rucene reproduces, so the files are byte-identical — also for
+//! generations whose bucket order is not ascending (`{2, 17}`).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -521,23 +519,6 @@ fn persistent_snapshot_deletion_policy_is_index_compatible_with_lucene() {
     assert_eq!(rucene_save_file, java_save_file);
     let rucene_bytes = std::fs::read(rucene_dir.join(&rucene_save_file)).unwrap();
 
-    // Byte identity is a property of *this vector*, not a general guarantee.
-    // Entry order is not part of the format: Rucene emits ascending commit
-    // generations, Java emits `HashMap` bucket order, i.e.
-    // `generation & (capacity - 1)`. For the generations this fixture pins —
-    // 2 and 4, both below the initial capacity of 16 — the two orders coincide,
-    // and only then are the files identical. With, say, generations 2 and 17
-    // Java would emit `[17, 2]` and the bytes would differ while both files
-    // stayed perfectly readable by both implementations.
-    let mut java_generations: Vec<i64> = expected_counts.keys().copied().collect();
-    java_generations.sort_unstable();
-    assert!(
-        java_generations
-            .iter()
-            .all(|generation| *generation < 16 && *generation >= 0),
-        "this vector only pins byte identity while Java's bucket order is \
-         ascending; generations {java_generations:?} no longer guarantee that"
-    );
     assert_eq!(
         rucene_bytes, java_bytes,
         "for this vector Rucene must write a byte-identical snapshots_N file:\n rucene={rucene_bytes:02x?}\n   java={java_bytes:02x?}"
@@ -1097,21 +1078,16 @@ impl Directory for FailingCloseDirectory {
     }
 }
 
-/// Locks in the one deliberate behavioural divergence of this port.
+/// Locks in Lucene's recovery from a save file that fails to close.
 ///
-/// Both implementations create `snapshots_N` with `CREATE_NEW` semantics. Lucene
-/// sets its `success` flag before the try-with-resources closes the output
-/// (`PersistentSnapshotDeletionPolicy.java:174-186`), so a failing `close()`
+/// Both implementations create `snapshots_N` with `CREATE_NEW` semantics and
+/// set their `success` flag before the output is closed
+/// (`PersistentSnapshotDeletionPolicy.java:171-186`), so a failing `close()`
 /// leaves the file behind; the next `snapshot()` then fails a second time, with
-/// `FileAlreadyExistsException`, and only the attempt after that succeeds.
-/// Rucene deletes the unusable file immediately, so the next attempt already
-/// succeeds — it never surfaces the spurious `AlreadyExists` failure.
-///
-/// This is error recovery only: the bytes, the file name and the generation
-/// sequence of a successfully written save file are unaffected, so the format
-/// stays interoperable in both directions.
+/// an "already exists" error whose cleanup deletes the file, and only the
+/// attempt after that succeeds.
 #[test]
-fn persist_close_failure_diverges_from_lucene_only_in_recovery() {
+fn persist_close_failure_recovers_as_lucene_does() {
     let out = scratch_dir("persist-close-failure");
     let stdout = run_java_fixture(&out, "persist-close-failure");
 
@@ -1162,25 +1138,31 @@ fn persist_close_failure_diverges_from_lucene_only_in_recovery() {
         matches!(&err, LuceneError::Io(io) if io.to_string().contains("no space left")),
         "unexpected error: {err:?}"
     );
-    // Same as Java up to here.
     assert_eq!(policy.get_snapshot_count(), 0);
     assert_eq!(policy.get_last_save_file(), None);
-    // And here is the divergence: no leftover.
-    assert!(
-        snapshot_file_names(&snapshots_dir).is_empty(),
-        "Rucene must not leave a save file it could not close"
+    assert_eq!(
+        snapshot_file_names(&snapshots_dir).join(","),
+        field(&stdout, "files_after_failure"),
+        "the save file that could not be closed is kept, as in Lucene"
     );
 
     dir.failing.store(false, AtomicOrdering::SeqCst);
+    let err = policy
+        .snapshot()
+        .expect_err("the leftover blocks the very next attempt, as in Lucene");
+    assert!(
+        matches!(&err, LuceneError::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists),
+        "unexpected error: {err:?}"
+    );
+    assert_eq!(
+        snapshot_file_names(&snapshots_dir).join(","),
+        field(&stdout, "files_after_retry")
+    );
+
     let pinned = policy
         .snapshot()
-        .expect("Rucene's next attempt succeeds where Lucene's raises AlreadyExists");
+        .expect("the third attempt succeeds, as in Lucene");
     assert_eq!(pinned.get_generation(), 1);
-    assert_eq!(policy.get_snapshot_count(), 1);
-    assert_eq!(policy.get_last_save_file().as_deref(), Some("snapshots_0"));
-    assert_eq!(snapshot_file_names(&snapshots_dir), vec!["snapshots_0"]);
-
-    // The end state is the same one Lucene reaches, one failed call later.
     assert_eq!(
         field(&stdout, "files_after_third"),
         snapshot_file_names(&snapshots_dir).join(",")
@@ -1188,6 +1170,45 @@ fn persist_close_failure_diverges_from_lucene_only_in_recovery() {
     assert_eq!(
         field(&stdout, "count_after_third"),
         policy.get_snapshot_count().to_string()
+    );
+}
+
+/// `snapshots_N` lists its entries in the iteration order of Lucene's
+/// `HashMap<Long, Integer> refCounts`, which is not ascending once a generation
+/// lands in a lower bucket than a smaller one: generations 2 and 17 of a
+/// 16-bucket map iterate as `[17, 2]`. Rucene must write the same bytes.
+#[test]
+fn persistent_snapshot_file_lists_generations_in_lucenes_hash_order() {
+    let out = scratch_dir("persistent-snapshot-order");
+    let stdout = run_java_fixture(&out, "persistent-snapshot-order");
+
+    let created = generations(&stdout, "created_generations");
+    let snapshotted = generations(&stdout, "snapshotted_generations");
+    let java_save_file = field(&stdout, "last_save_file").to_string();
+    assert_eq!(snapshotted, vec![2, 17]);
+    let java_bytes = std::fs::read(out.join("snapshots").join(&java_save_file))
+        .expect("Java must have written a snapshots file");
+
+    let rucene_dir = scratch_dir("persistent-snapshot-order-rucene");
+    let policy = PersistentSnapshotDeletionPolicy::new(
+        Arc::new(KeepOnlyLastCommitDeletionPolicy::new()),
+        Arc::new(NIOFSDirectory::open(&rucene_dir).unwrap()),
+    )
+    .unwrap();
+    let mut pinned = Vec::new();
+    replay_commits(&policy, &created, |generation| {
+        if snapshotted.contains(&generation) {
+            pinned.push(policy.snapshot().unwrap().get_generation());
+        }
+    });
+    assert_eq!(pinned, snapshotted);
+
+    let rucene_save_file = policy.get_last_save_file().expect("a file must be saved");
+    assert_eq!(rucene_save_file, java_save_file);
+    let rucene_bytes = std::fs::read(rucene_dir.join(&rucene_save_file)).unwrap();
+    assert_eq!(
+        rucene_bytes, java_bytes,
+        "Rucene must list the generations in Lucene's HashMap order:\n rucene={rucene_bytes:02x?}\n   java={java_bytes:02x?}"
     );
 }
 

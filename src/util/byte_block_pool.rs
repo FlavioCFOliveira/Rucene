@@ -236,6 +236,12 @@ impl ByteBlockPool {
         Ok(())
     }
 
+    /// The bytes of the allocated blocks, which the allocator charged to the
+    /// counter and [`reset`](Self::reset) gives back.
+    pub fn charged_block_bytes(&self) -> i64 {
+        (self.buffer_upto as i64 + 1) * BYTE_BLOCK_SIZE as i64
+    }
+
     /// Drops every block and returns the pool to its initial state.
     ///
     /// Equivalent to `ByteBlockPool.reset(false, false)`. Blocks are always
@@ -244,8 +250,8 @@ impl ByteBlockPool {
         if self.buffer_upto == -1 {
             return;
         }
-        let released = (self.buffer_upto as i64 + 1) * BYTE_BLOCK_SIZE as i64;
-        self.bytes_used.fetch_sub(released, Ordering::AcqRel);
+        self.bytes_used
+            .fetch_sub(self.charged_block_bytes(), Ordering::AcqRel);
         // `buffers_length` is deliberately left alone: Java nulls the slots and
         // recycles the blocks but never shrinks the reference array, so a reset
         // pool still reports the larger shallow size it grew to.

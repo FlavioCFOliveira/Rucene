@@ -15,16 +15,29 @@ use crate::search::reference_manager::{ManagedReference, ReferenceManager, Refre
 ///
 /// **Divergence from Lucene 10.5.0.** Java's constructor takes an
 /// `IndexWriter` and calls `writer.getMaxCompletedSequenceNumber()` from its
-/// refresh listener. The port's writer seam,
-/// [`crate::index::DirectoryReaderIndexWriter`], does not expose sequence
-/// numbers yet, so the thread depends on this one-method trait instead; the
-/// real `IndexWriter` implements it once it is ported, and nothing else about
-/// the class changes.
+/// refresh listener. The thread takes this one-method trait instead, which
+/// [`IndexWriter`](crate::index::index_writer::IndexWriter) implements; an
+/// `Arc<IndexWriter>` is what a caller hands over, exactly as Java hands over
+/// the writer.
 pub trait MaxCompletedSequenceNumberSource: Send + Sync {
     /// Returns the sequence number of the last completed operation.
     ///
     /// Equivalent to `IndexWriter.getMaxCompletedSequenceNumber()`.
-    fn get_max_completed_sequence_number(&self) -> i64;
+    ///
+    /// # Errors
+    ///
+    /// Returns the error Java's `ensureOpen()` throws when the writer is
+    /// closed.
+    fn get_max_completed_sequence_number(&self) -> Result<i64>;
+}
+
+impl MaxCompletedSequenceNumberSource for crate::index::index_writer::IndexWriter {
+    /// Equivalent to `IndexWriter.getMaxCompletedSequenceNumber()`
+    /// (`IndexWriter.java:6219-6222`), which `HandleRefresh.beforeRefresh`
+    /// calls on the writer the thread was built with.
+    fn get_max_completed_sequence_number(&self) -> Result<i64> {
+        crate::index::index_writer::IndexWriter::get_max_completed_sequence_number(self)
+    }
 }
 
 /// The mutable state a [`ControlledRealTimeReopenThread`] shares with its
@@ -79,7 +92,8 @@ impl RefreshListener for HandleRefresh {
     fn before_refresh(&self) -> Result<()> {
         // Save the generation as of when the reopen started; `after_refresh`
         // copies it to `searching_gen` once the reopen completes.
-        self.shared.lock().refresh_start_gen = self.writer.get_max_completed_sequence_number();
+        let refresh_start_gen = self.writer.get_max_completed_sequence_number()?;
+        self.shared.lock().refresh_start_gen = refresh_start_gen;
         Ok(())
     }
 

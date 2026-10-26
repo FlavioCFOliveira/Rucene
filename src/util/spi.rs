@@ -37,6 +37,10 @@ pub trait NamedSPI {
 pub struct NamedSPILoader<S: NamedSPI + ?Sized> {
     /// Insertion-ordered providers, matching Java's `LinkedHashMap`.
     services: Vec<Arc<S>>,
+    /// The key each provider of `services` is registered under, in the same
+    /// order: its own name, or the name [`register_as`](Self::register_as)
+    /// gave it.
+    names: Vec<String>,
     index: HashMap<String, usize>,
     /// The SPI name reported in the lookup error, standing in for
     /// `clazz.getName()`.
@@ -57,6 +61,7 @@ impl<S: NamedSPI + ?Sized> NamedSPILoader<S> {
     pub fn new(clazz_name: &'static str) -> Self {
         Self {
             services: Vec::new(),
+            names: Vec::new(),
             index: HashMap::new(),
             clazz_name,
         }
@@ -98,10 +103,37 @@ impl<S: NamedSPI + ?Sized> NamedSPILoader<S> {
                 continue;
             }
             Self::check_service_name(&name)?;
-            self.index.insert(name, self.services.len());
+            self.index.insert(name.clone(), self.services.len());
+            self.names.push(name);
             self.services.push(service);
         }
         Ok(())
+    }
+
+    /// Registers `service` under `name`, which need not be the name the
+    /// service reports.
+    ///
+    /// Port-only: Java discovers every provider from a `META-INF/services`
+    /// entry and keys it by `getName()`, so it has no way to register a
+    /// provider by hand. The crate's registries expose explicit registration
+    /// (an application adds its own codec or format there instead of to a
+    /// service file), and this is the operation behind it. As in
+    /// [`reload`](Self::reload), a name that is already taken is left alone;
+    /// the return value says whether `service` was added.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when `name` is not a legal
+    /// service name.
+    pub fn register_as(&mut self, name: &str, service: Arc<S>) -> Result<bool> {
+        if self.index.contains_key(name) {
+            return Ok(false);
+        }
+        Self::check_service_name(name)?;
+        self.index.insert(name.to_string(), self.services.len());
+        self.names.push(name.to_string());
+        self.services.push(service);
+        Ok(true)
     }
 
     /// Validates a service name.
@@ -154,7 +186,7 @@ impl<S: NamedSPI + ?Sized> NamedSPILoader<S> {
 
     /// Returns the registered names, in insertion order.
     pub fn available_services(&self) -> Vec<&str> {
-        self.services.iter().map(|s| s.get_name()).collect()
+        self.names.iter().map(String::as_str).collect()
     }
 
     /// Iterates over the providers in insertion order.

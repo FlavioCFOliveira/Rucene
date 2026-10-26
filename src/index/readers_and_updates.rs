@@ -2037,7 +2037,7 @@ impl ReadersAndUpdates {
             }
 
             {
-                let empty_updates = crate::codecs::stub::BufferedUpdates;
+                let empty_updates = crate::codecs::stub::BufferedUpdates::default();
                 let write_state = SegmentWriteState::with_suffix(
                     &NoOutputInfoStream,
                     Arc::clone(&field_tracking) as Arc<dyn Directory>,

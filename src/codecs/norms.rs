@@ -270,7 +270,7 @@ mod tests {
             Arc::clone(&dir),
             &segment_info,
             &field_infos,
-            &BufferedUpdates,
+            Box::leak(Box::new(BufferedUpdates::default())),
             context,
         );
         let _consumer = format.norms_consumer(&write_state).unwrap();

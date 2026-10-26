@@ -128,8 +128,12 @@ impl<T> ApproximatePriorityQueue<T> {
     pub fn add(&mut self, entry: T, weight: i64) {
         let expected_slot = (weight as u64).leading_zeros() as usize;
         let free_slots = !self.used_slots;
-        let destination_slot =
-            expected_slot + (free_slots >> expected_slot).trailing_zeros() as usize;
+        // Java's `>>>` takes the shift count modulo 64, so a weight of zero
+        // (64 leading zeros) shifts by nothing; `wrapping_shr` does the same.
+        let destination_slot = expected_slot
+            + free_slots
+                .wrapping_shr(expected_slot as u32)
+                .trailing_zeros() as usize;
         if destination_slot < SPARSE_SLOTS {
             self.used_slots |= 1u64 << destination_slot;
             self.slots[destination_slot] = Some(entry);
@@ -350,7 +354,10 @@ impl<T: PartialEq> ConcurrentApproximatePriorityQueue<T> {
 /// **Divergence from Lucene 10.5.0.** Java bounds the queue's element type on
 /// `java.util.concurrent.locks.Lock` and calls `tryLock`/`unlock` on the entry
 /// itself. Rust's standard library has no object-safe lock trait to bound on, so
-/// the port declares the two operations it actually uses.
+/// the port declares the two operations it actually uses. The lock taken by
+/// [`try_lock_entry`](Self::try_lock_entry) is held by the entry until
+/// [`unlock_entry`](Self::unlock_entry), or until the owner takes it over, as
+/// `DocumentsWriterPerThreadPool.getAndLock` does with the DWPT it polls.
 pub trait TryLockable {
     /// Attempts to take the entry's lock without blocking.
     fn try_lock_entry(&self) -> bool;
@@ -406,13 +413,21 @@ impl<T: TryLockable> LockableConcurrentApproximatePriorityQueue<T> {
         }
     }
 
-    /// Adds `entry` and releases its lock.
+    /// Adds `entry`, then releases its lock.
     ///
-    /// Equivalent to `LockableConcurrentApproximatePriorityQueue.addAndUnlock`.
-    pub fn add_and_unlock(&self, entry: T, weight: i64) {
-        self.queue.add(entry, weight);
-        // The entry was unlocked by `add`'s move, so the counter bump is what
-        // tells a concurrent `lock_and_poll` that retrying is worthwhile.
+    /// Equivalent to `LockableConcurrentApproximatePriorityQueue.addAndUnlock`
+    /// (`LockableConcurrentApproximatePriorityQueue.java:69-73`): the entry is
+    /// queued while still locked, so a concurrent `lock_and_poll` cannot take
+    /// it before it is released, and the counter bump tells such a poller that
+    /// retrying is worthwhile. Java keeps a reference to the entry after
+    /// handing it to the queue; here the caller's handle is cloned, which is
+    /// why `T` must be `Clone` (an `Arc` in practice).
+    pub fn add_and_unlock(&self, entry: T, weight: i64)
+    where
+        T: Clone,
+    {
+        self.queue.add(entry.clone(), weight);
+        entry.unlock_entry();
         self.add_and_unlock_counter.fetch_add(1, Ordering::Release);
     }
 }

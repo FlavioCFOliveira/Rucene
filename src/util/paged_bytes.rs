@@ -22,7 +22,10 @@ use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
 use crate::store::{DataInput, DataOutput, IndexInput};
-use crate::util::{Accountable, BytesRef, RamUsageEstimator};
+use crate::util::{Accountable, ArrayUtil, BytesRef, RamUsageEstimator};
+
+/// Initial length of Java's `byte[][] blocks` (`new byte[16][]`).
+const INITIAL_BLOCKS_LENGTH: usize = 16;
 
 /// An empty block, used when nothing was ever written.
 /// `PagedBytes.EMPTY_BYTES`.
@@ -34,6 +37,11 @@ const EMPTY_BYTES: &[u8] = &[];
 #[derive(Debug)]
 pub struct PagedBytes {
     blocks: Vec<Arc<Vec<u8>>>,
+    /// Length of the `byte[][] blocks` array Java would be holding: it starts
+    /// at 16 and grows through `ArrayUtil.grow` (`PagedBytes.java:35,165-168`).
+    /// Only [`ram_bytes_used`](Accountable::ram_bytes_used) reads it, because
+    /// Java charges the whole reference array, empty slots included.
+    blocks_length: usize,
     block_size: usize,
     block_bits: u32,
     block_mask: usize,
@@ -55,6 +63,7 @@ impl PagedBytes {
         let block_size = 1usize << block_bits;
         Self {
             blocks: Vec::new(),
+            blocks_length: INITIAL_BLOCKS_LENGTH,
             block_size,
             block_bits,
             block_mask: block_size - 1,
@@ -73,8 +82,14 @@ impl PagedBytes {
         self.block_size
     }
 
-    /// Equivalent to the private `PagedBytes.addBlock`.
+    /// Equivalent to the private `PagedBytes.addBlock`: `blocks =
+    /// ArrayUtil.grow(blocks, numBlocks + 1)`, then the block is appended.
     fn add_block(&mut self, block: Vec<u8>) {
+        let min_size = self.blocks.len() + 1;
+        if self.blocks_length < min_size {
+            self.blocks_length =
+                ArrayUtil::oversize(min_size, RamUsageEstimator::NUM_BYTES_OBJECT_REF as usize);
+        }
         self.blocks.push(Arc::new(block));
     }
 
@@ -270,7 +285,37 @@ impl PagedBytes {
             ));
         }
         Ok(PagedBytesDataInput {
-            blocks: &self.blocks,
+            blocks: std::borrow::Cow::Borrowed(&self.blocks),
+            block_size: self.block_size,
+            block_bits: self.block_bits,
+            block_mask: self.block_mask,
+            current_block_index: 0,
+            current_block_upto: 0,
+        })
+    }
+
+    /// Returns a reader over the frozen content that holds its own references
+    /// to the blocks, so it can outlive the borrow of this arena.
+    ///
+    /// Equivalent to `PagedBytes.getDataInput()` as
+    /// `BinaryDocValuesWriter.BufferedBinaryDocValues` keeps it: Java's input
+    /// references the blocks through the garbage collector, while
+    /// [`get_data_input`](Self::get_data_input) borrows them, which an iterator
+    /// handed out as an owned `Box<dyn ...>` cannot do. The blocks are shared,
+    /// not copied: only their `Arc`s are cloned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the arena is not frozen,
+    /// reproducing Lucene's "must call freeze() before getDataInput".
+    pub fn get_shared_data_input(&self) -> Result<PagedBytesDataInput<'static>> {
+        if !self.frozen {
+            return Err(LuceneError::IllegalState(
+                "must call freeze() before getDataInput".to_string(),
+            ));
+        }
+        Ok(PagedBytesDataInput {
+            blocks: std::borrow::Cow::Owned(self.blocks.clone()),
             block_size: self.block_size,
             block_bits: self.block_bits,
             block_mask: self.block_mask,
@@ -295,13 +340,33 @@ impl PagedBytes {
     }
 }
 
+impl PagedBytes {
+    /// `RamUsageEstimator.shallowSizeOfInstance(PagedBytes.class)`: an object
+    /// header, the references `blocks` and `currentBlock`, the five `int`s
+    /// `numBlocks`, `blockSize`, `blockBits`, `blockMask` and `upto`, the two
+    /// `boolean`s `didSkipBytes` and `frozen`, and the `long`
+    /// `bytesUsedPerBlock`, aligned — 56 bytes with compressed references.
+    ///
+    /// Equivalent to the private `PagedBytes.BASE_RAM_BYTES_USED`
+    /// (`PagedBytes.java:33-34`).
+    pub const BASE_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + 2 * RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + 5 * 4
+            + 2
+            + 8,
+    );
+}
+
 impl Accountable for PagedBytes {
+    /// Equivalent to `PagedBytes.ramBytesUsed()` (`PagedBytes.java:248-259`).
     fn ram_bytes_used(&self) -> i64 {
-        let base = RamUsageEstimator::align_object_size(
-            RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
-                + 4 * RamUsageEstimator::NUM_BYTES_OBJECT_REF,
-        );
-        let mut size = base + RamUsageEstimator::shallow_size_of(&self.blocks);
+        // `RamUsageEstimator.shallowSizeOf(byte[][])` over the whole array.
+        let mut size = Self::BASE_RAM_BYTES_USED
+            + RamUsageEstimator::align_object_size(
+                RamUsageEstimator::NUM_BYTES_ARRAY_HEADER
+                    + RamUsageEstimator::NUM_BYTES_OBJECT_REF * self.blocks_length as i64,
+            );
         if !self.blocks.is_empty() {
             size += (self.blocks.len() as i64 - 1) * self.bytes_used_per_block;
             size += RamUsageEstimator::size_of(self.blocks[self.blocks.len() - 1].as_slice());
@@ -389,13 +454,28 @@ impl PagedBytesReader {
     }
 }
 
+impl PagedBytesReader {
+    /// `RamUsageEstimator.shallowSizeOfInstance(PagedBytes.Reader.class)`: an
+    /// object header, the `blocks` reference, the three `int`s `blockBits`,
+    /// `blockMask` and `blockSize`, and the `long` `bytesUsedPerBlock`,
+    /// aligned — 40 bytes with compressed references.
+    ///
+    /// Equivalent to the private `PagedBytes.Reader.BASE_RAM_BYTES_USED`
+    /// (`PagedBytes.java:55-56`).
+    pub const BASE_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + 3 * 4
+            + 8,
+    );
+}
+
 impl Accountable for PagedBytesReader {
+    /// Equivalent to `PagedBytes.Reader.ramBytesUsed()` (`PagedBytes.java:138-145`);
+    /// the reader's array is `copyOfSubArray(blocks, 0, numBlocks)`, exactly as
+    /// long as the blocks it holds.
     fn ram_bytes_used(&self) -> i64 {
-        let base = RamUsageEstimator::align_object_size(
-            RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
-                + 4 * RamUsageEstimator::NUM_BYTES_OBJECT_REF,
-        );
-        let mut size = base + RamUsageEstimator::shallow_size_of(&self.blocks);
+        let mut size = Self::BASE_RAM_BYTES_USED + RamUsageEstimator::shallow_size_of(&self.blocks);
         if !self.blocks.is_empty() {
             size += (self.blocks.len() as i64 - 1) * self.bytes_used_per_block;
             size += RamUsageEstimator::size_of(self.blocks[self.blocks.len() - 1].as_slice());
@@ -415,7 +495,11 @@ impl std::fmt::Display for PagedBytesReader {
 /// Port of the nested class `PagedBytes.PagedBytesDataInput`.
 #[derive(Debug, Clone)]
 pub struct PagedBytesDataInput<'a> {
-    blocks: &'a [Arc<Vec<u8>>],
+    /// The frozen blocks: borrowed from the arena by
+    /// [`PagedBytes::get_data_input`], or holding their own references
+    /// (cloned `Arc`s, never the bytes) when built by
+    /// [`PagedBytes::get_shared_data_input`].
+    blocks: std::borrow::Cow<'a, [Arc<Vec<u8>>]>,
     block_size: usize,
     block_bits: u32,
     block_mask: usize,

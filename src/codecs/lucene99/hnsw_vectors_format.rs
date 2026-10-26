@@ -2773,7 +2773,7 @@ mod tests {
         dir: &'a Arc<dyn crate::store::Directory>,
         seg_info: &'a SegmentInfo,
         field_infos: &'a FieldInfos,
-        seg_updates: &'a BufferedUpdates,
+        _seg_updates: &'a BufferedUpdates,
         io_ctx: &'a DefaultIOContext,
     ) -> (OwnedSegmentWriteState, SegmentReadState<'a>) {
         let write_state = OwnedSegmentWriteState::new(
@@ -2781,7 +2781,7 @@ mod tests {
             Arc::clone(dir),
             seg_info.clone(),
             field_infos.clone(),
-            seg_updates.clone(),
+            BufferedUpdates::default(),
             Arc::new(DefaultIOContext::default()),
         );
         let read_state = SegmentReadState::new(dir.as_ref(), seg_info, field_infos, io_ctx);
@@ -2847,7 +2847,7 @@ mod tests {
         let seg_info = make_segment_info(&dir, 3)?;
         let field_info = float_field_info("float_field", 0, 2)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;
-        let seg_updates = BufferedUpdates;
+        let seg_updates = BufferedUpdates::default();
         let io_ctx = DefaultIOContext::default();
         let (write_state, read_state) =
             make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
@@ -2893,7 +2893,7 @@ mod tests {
         let seg_info = make_segment_info(&dir, 3)?;
         let field_info = byte_field_info("byte_field", 0, 2)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;
-        let seg_updates = BufferedUpdates;
+        let seg_updates = BufferedUpdates::default();
         let io_ctx = DefaultIOContext::default();
         let (write_state, read_state) =
             make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
@@ -2932,7 +2932,7 @@ mod tests {
         let seg_info = make_segment_info(&dir, 1)?;
         let field_info = float_field_info("f", 0, 1)?;
         let field_infos = FieldInfos::new(vec![field_info.clone()])?;
-        let seg_updates = BufferedUpdates;
+        let seg_updates = BufferedUpdates::default();
         let io_ctx = DefaultIOContext::default();
         let (write_state, read_state) =
             make_states(&dir, &seg_info, &field_infos, &seg_updates, &io_ctx);
@@ -3010,7 +3010,7 @@ mod tests {
         field_infos: &FieldInfos,
         num_docs: i32,
     ) -> Result<()> {
-        let seg_updates = BufferedUpdates;
+        let seg_updates = BufferedUpdates::default();
         let write_state = OwnedSegmentWriteState::new(
             Arc::new(crate::util::NoOutputInfoStream),
             Arc::clone(dir),

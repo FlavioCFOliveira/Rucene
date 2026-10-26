@@ -804,6 +804,1010 @@ impl<V> JavaIntHashMap<V> {
     }
 }
 
+/// A `java.util.HashMap<Long, V>` with Java's iteration order, treeified bins
+/// included.
+///
+/// `Long.hashCode()` is `(int) (value ^ (value >>> 32))`, spread by
+/// `h ^ (h >>> 16)`; the bucket is that hash modulo the table length.
+/// Everything that decides the iteration order is reproduced from the JDK's
+/// `java.util.HashMap` (identical in JDK 21 and 25):
+///
+/// * lazy allocation, the load factor and the doubling resize, which keeps the
+///   order of each list bin and splits a tree bin with `TreeNode.split`;
+/// * `treeifyBin` once a bin holds more than `TREEIFY_THRESHOLD` (8) nodes —
+///   a resize instead while the table is shorter than `MIN_TREEIFY_CAPACITY`
+///   (64);
+/// * the red-black tree of a treeified bin, ordered by hash and then by
+///   `Long.compareTo` (so `tieBreakOrder` is never reached), with the linked
+///   list that iteration walks: `putTreeVal` links a new node right after its
+///   tree parent, `treeify`, `putTreeVal` and `removeTreeNode` move the root to
+///   the front of the bin (`moveRootToFront`), `removeTreeNode` unlinks the
+///   node and untreeifies a tree that became too small, and `split` untreeifies
+///   a half of at most `UNTREEIFY_THRESHOLD` (6) nodes;
+/// * `remove` unlinking from a list bin, `clear` keeping the table, and
+///   `putAll` pre-sizing.
+///
+/// Lucene keys `SnapshotDeletionPolicy.refCounts` and `indexCommits` by commit
+/// generation with such maps, and `PersistentSnapshotDeletionPolicy.persist`
+/// writes `refCounts` in this order (`PersistentSnapshotDeletionPolicy.java:176-180`).
+#[derive(Clone, Debug)]
+pub struct JavaLongHashMap<V> {
+    table: Vec<LongBin<V>>,
+    size: usize,
+    threshold: i32,
+}
+
+/// One bin of a [`JavaLongHashMap`]: a plain chain, or a treeified one.
+#[derive(Clone, Debug)]
+enum LongBin<V> {
+    /// `Node` chain, head to tail.
+    List(Vec<(i64, V)>),
+    /// `TreeNode` bin.
+    Tree(TreeBin<V>),
+}
+
+/// The `TreeNode`s of one treeified bin, in an arena.
+#[derive(Clone, Debug)]
+struct TreeBin<V> {
+    nodes: Vec<Option<TreeNode<V>>>,
+    /// `tab[index]`: the head of the bin's linked list.
+    first: Option<usize>,
+}
+
+/// `HashMap.TreeNode`: the tree links and the linked-list links.
+#[derive(Clone, Debug)]
+struct TreeNode<V> {
+    hash: i32,
+    key: i64,
+    value: V,
+    parent: Option<usize>,
+    left: Option<usize>,
+    right: Option<usize>,
+    prev: Option<usize>,
+    next: Option<usize>,
+    red: bool,
+}
+
+/// `HashMap.UNTREEIFY_THRESHOLD`.
+const UNTREEIFY_THRESHOLD: usize = 6;
+
+impl<V> Default for JavaLongHashMap<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// `HashMap.hash(Object)` of a `Long`: `Long.hashCode()` spread.
+fn spread_long(key: i64) -> i32 {
+    let h = (key ^ ((key as u64) >> 32) as i64) as i32;
+    h ^ ((h as u32) >> 16) as i32
+}
+
+/// The `dir` of `treeify` and `putTreeVal` for a key `(h, k)` against a node
+/// `(ph, pk)`: by hash, then by `Long.compareTo`. Distinct `Long`s never compare
+/// equal, so `tieBreakOrder` is never consulted.
+fn tree_dir(h: i32, k: i64, ph: i32, pk: i64) -> i32 {
+    if ph > h {
+        -1
+    } else if ph < h {
+        1
+    } else {
+        match k.cmp(&pk) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Greater => 1,
+            std::cmp::Ordering::Equal => 0,
+        }
+    }
+}
+
+impl<V> TreeBin<V> {
+    fn node(&self, i: usize) -> &TreeNode<V> {
+        self.nodes[i]
+            .as_ref()
+            .expect("INVARIANT: a linked tree node is live")
+    }
+
+    fn node_mut(&mut self, i: usize) -> &mut TreeNode<V> {
+        self.nodes[i]
+            .as_mut()
+            .expect("INVARIANT: a linked tree node is live")
+    }
+
+    /// The entries in linked-list order, from `tab[index]`.
+    fn list_order(&self) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut at = self.first;
+        while let Some(i) = at {
+            out.push(i);
+            at = self.node(i).next;
+        }
+        out
+    }
+
+    /// `TreeNode.root()`.
+    fn root_of(&self, mut i: usize) -> usize {
+        while let Some(p) = self.node(i).parent {
+            i = p;
+        }
+        i
+    }
+
+    /// Builds a bin from a list chain and treeifies it:
+    /// `treeifyBin`'s relinking followed by `TreeNode.treeify`.
+    fn from_list(entries: Vec<(i64, V)>) -> Self {
+        let n = entries.len();
+        let nodes = entries
+            .into_iter()
+            .enumerate()
+            .map(|(i, (key, value))| {
+                Some(TreeNode {
+                    hash: spread_long(key),
+                    key,
+                    value,
+                    parent: None,
+                    left: None,
+                    right: None,
+                    prev: i.checked_sub(1),
+                    next: (i + 1 < n).then_some(i + 1),
+                    red: false,
+                })
+            })
+            .collect();
+        let mut bin = Self {
+            nodes,
+            first: (n > 0).then_some(0),
+        };
+        bin.treeify();
+        bin
+    }
+
+    /// `TreeNode.treeify(tab)`: builds the tree over the list, in list order,
+    /// then moves the root to the front.
+    fn treeify(&mut self) {
+        let mut root: Option<usize> = None;
+        let mut at = self.first;
+        while let Some(x) = at {
+            at = self.node(x).next;
+            {
+                let node = self.node_mut(x);
+                node.left = None;
+                node.right = None;
+            }
+            match root {
+                None => {
+                    let node = self.node_mut(x);
+                    node.parent = None;
+                    node.red = false;
+                    root = Some(x);
+                }
+                Some(r) => {
+                    let (h, k) = (self.node(x).hash, self.node(x).key);
+                    let mut p = r;
+                    loop {
+                        let dir = tree_dir(h, k, self.node(p).hash, self.node(p).key);
+                        let xp = p;
+                        let child = if dir <= 0 {
+                            self.node(p).left
+                        } else {
+                            self.node(p).right
+                        };
+                        match child {
+                            Some(c) => p = c,
+                            None => {
+                                self.node_mut(x).parent = Some(xp);
+                                if dir <= 0 {
+                                    self.node_mut(xp).left = Some(x);
+                                } else {
+                                    self.node_mut(xp).right = Some(x);
+                                }
+                                root = Some(self.balance_insertion(r, x));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(r) = root {
+            self.move_root_to_front(r);
+        }
+    }
+
+    /// `TreeNode.moveRootToFront(tab, root)`.
+    fn move_root_to_front(&mut self, root: usize) {
+        let first = self.first;
+        if Some(root) != first {
+            self.first = Some(root);
+            let rp = self.node(root).prev;
+            let rn = self.node(root).next;
+            if let Some(rn) = rn {
+                self.node_mut(rn).prev = rp;
+            }
+            if let Some(rp) = rp {
+                self.node_mut(rp).next = rn;
+            }
+            if let Some(first) = first {
+                self.node_mut(first).prev = Some(root);
+            }
+            let node = self.node_mut(root);
+            node.next = first;
+            node.prev = None;
+        }
+    }
+
+    /// `TreeNode.find(h, k, kc)` from `p`.
+    fn find(&self, mut p: Option<usize>, h: i32, k: i64) -> Option<usize> {
+        while let Some(i) = p {
+            let node = self.node(i);
+            let (pl, pr) = (node.left, node.right);
+            if node.hash > h {
+                p = pl;
+            } else if node.hash < h {
+                p = pr;
+            } else if node.key == k {
+                return Some(i);
+            } else if pl.is_none() {
+                p = pr;
+            } else if pr.is_none() {
+                p = pl;
+            } else {
+                p = if k < node.key { pl } else { pr };
+            }
+        }
+        None
+    }
+
+    /// `TreeNode.putTreeVal`: returns the existing node of `key`, or links a
+    /// new one after its tree parent and rebalances.
+    fn put_tree_val(&mut self, key: i64, value: V) -> Result<(), (usize, V)> {
+        let h = spread_long(key);
+        let first = self.first.expect("INVARIANT: a tree bin is never empty");
+        let root = self.root_of(first);
+        let mut p = root;
+        loop {
+            let (ph, pk) = (self.node(p).hash, self.node(p).key);
+            if ph == h && pk == key {
+                return Err((p, value));
+            }
+            let dir = tree_dir(h, key, ph, pk);
+            let xp = p;
+            let child = if dir <= 0 {
+                self.node(p).left
+            } else {
+                self.node(p).right
+            };
+            match child {
+                Some(c) => p = c,
+                None => {
+                    let xpn = self.node(xp).next;
+                    let x = self.nodes.len();
+                    self.nodes.push(Some(TreeNode {
+                        hash: h,
+                        key,
+                        value,
+                        parent: Some(xp),
+                        left: None,
+                        right: None,
+                        prev: Some(xp),
+                        next: xpn,
+                        red: false,
+                    }));
+                    if dir <= 0 {
+                        self.node_mut(xp).left = Some(x);
+                    } else {
+                        self.node_mut(xp).right = Some(x);
+                    }
+                    self.node_mut(xp).next = Some(x);
+                    if let Some(xpn) = xpn {
+                        self.node_mut(xpn).prev = Some(x);
+                    }
+                    let root = self.balance_insertion(root, x);
+                    self.move_root_to_front(root);
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    /// `TreeNode.removeTreeNode(map, tab, movable = true)`. Returns the
+    /// removed value, and whether the bin must be untreeified ("too small").
+    fn remove_tree_node(&mut self, this: usize) -> (V, bool) {
+        let first = self.first.expect("INVARIANT: a tree bin is never empty");
+        let succ = self.node(this).next;
+        let pred = self.node(this).prev;
+        let mut first_now = Some(first);
+        match pred {
+            None => {
+                self.first = succ;
+                first_now = succ;
+            }
+            Some(pred) => self.node_mut(pred).next = succ,
+        }
+        if let Some(succ) = succ {
+            self.node_mut(succ).prev = pred;
+        }
+        let Some(first_now) = first_now else {
+            let removed = self.nodes[this].take().expect("INVARIANT: live").value;
+            return (removed, false);
+        };
+        let mut root = first_now;
+        if self.node(root).parent.is_some() {
+            root = self.root_of(root);
+        }
+        let too_small = {
+            let r = self.node(root);
+            r.right.is_none()
+                || match r.left {
+                    None => true,
+                    Some(rl) => self.node(rl).left.is_none(),
+                }
+        };
+        if too_small {
+            let removed = self.nodes[this].take().expect("INVARIANT: live").value;
+            return (removed, true);
+        }
+        let p = this;
+        let pl = self.node(p).left;
+        let pr = self.node(p).right;
+        let replacement;
+        if let (Some(pl), Some(pr)) = (pl, pr) {
+            let mut s = pr;
+            while let Some(sl) = self.node(s).left {
+                s = sl;
+            }
+            let c = self.node(s).red;
+            let pred_red = self.node(p).red;
+            self.node_mut(s).red = pred_red;
+            self.node_mut(p).red = c;
+            let sr = self.node(s).right;
+            let pp = self.node(p).parent;
+            if s == pr {
+                self.node_mut(p).parent = Some(s);
+                self.node_mut(s).right = Some(p);
+            } else {
+                let sp = self.node(s).parent;
+                self.node_mut(p).parent = sp;
+                if let Some(sp) = sp {
+                    if self.node(sp).left == Some(s) {
+                        self.node_mut(sp).left = Some(p);
+                    } else {
+                        self.node_mut(sp).right = Some(p);
+                    }
+                }
+                self.node_mut(s).right = Some(pr);
+                self.node_mut(pr).parent = Some(s);
+            }
+            self.node_mut(p).left = None;
+            self.node_mut(p).right = sr;
+            if let Some(sr) = sr {
+                self.node_mut(sr).parent = Some(p);
+            }
+            self.node_mut(s).left = Some(pl);
+            self.node_mut(pl).parent = Some(s);
+            self.node_mut(s).parent = pp;
+            match pp {
+                None => root = s,
+                Some(pp) => {
+                    if self.node(pp).left == Some(p) {
+                        self.node_mut(pp).left = Some(s);
+                    } else {
+                        self.node_mut(pp).right = Some(s);
+                    }
+                }
+            }
+            replacement = sr.unwrap_or(p);
+        } else if let Some(pl) = pl {
+            replacement = pl;
+        } else if let Some(pr) = pr {
+            replacement = pr;
+        } else {
+            replacement = p;
+        }
+        if replacement != p {
+            let pp = self.node(p).parent;
+            self.node_mut(replacement).parent = pp;
+            match pp {
+                None => {
+                    root = replacement;
+                    self.node_mut(replacement).red = false;
+                }
+                Some(pp) => {
+                    if self.node(pp).left == Some(p) {
+                        self.node_mut(pp).left = Some(replacement);
+                    } else {
+                        self.node_mut(pp).right = Some(replacement);
+                    }
+                }
+            }
+            let node = self.node_mut(p);
+            node.left = None;
+            node.right = None;
+            node.parent = None;
+        }
+        let r = if self.node(p).red {
+            root
+        } else {
+            self.balance_deletion(root, Some(replacement))
+        };
+        if replacement == p {
+            // detach
+            let pp = self.node(p).parent;
+            self.node_mut(p).parent = None;
+            if let Some(pp) = pp {
+                if self.node(pp).left == Some(p) {
+                    self.node_mut(pp).left = None;
+                } else if self.node(pp).right == Some(p) {
+                    self.node_mut(pp).right = None;
+                }
+            }
+        }
+        self.move_root_to_front(r);
+        let removed = self.nodes[this].take().expect("INVARIANT: live").value;
+        (removed, false)
+    }
+
+    /// `TreeNode.untreeify(map)`: the list, in order.
+    fn untreeify(self) -> Vec<(i64, V)> {
+        let order = self.list_order();
+        let mut nodes = self.nodes;
+        order
+            .into_iter()
+            .map(|i| {
+                let node = nodes[i].take().expect("INVARIANT: live");
+                (node.key, node.value)
+            })
+            .collect()
+    }
+
+    /// `TreeNode.rotateLeft(root, p)`.
+    fn rotate_left(&mut self, mut root: usize, p: usize) -> usize {
+        if let Some(r) = self.node(p).right {
+            let rl = self.node(r).left;
+            self.node_mut(p).right = rl;
+            if let Some(rl) = rl {
+                self.node_mut(rl).parent = Some(p);
+            }
+            let pp = self.node(p).parent;
+            self.node_mut(r).parent = pp;
+            match pp {
+                None => {
+                    root = r;
+                    self.node_mut(r).red = false;
+                }
+                Some(pp) => {
+                    if self.node(pp).left == Some(p) {
+                        self.node_mut(pp).left = Some(r);
+                    } else {
+                        self.node_mut(pp).right = Some(r);
+                    }
+                }
+            }
+            self.node_mut(r).left = Some(p);
+            self.node_mut(p).parent = Some(r);
+        }
+        root
+    }
+
+    /// `TreeNode.rotateRight(root, p)`.
+    fn rotate_right(&mut self, mut root: usize, p: usize) -> usize {
+        if let Some(l) = self.node(p).left {
+            let lr = self.node(l).right;
+            self.node_mut(p).left = lr;
+            if let Some(lr) = lr {
+                self.node_mut(lr).parent = Some(p);
+            }
+            let pp = self.node(p).parent;
+            self.node_mut(l).parent = pp;
+            match pp {
+                None => {
+                    root = l;
+                    self.node_mut(l).red = false;
+                }
+                Some(pp) => {
+                    if self.node(pp).right == Some(p) {
+                        self.node_mut(pp).right = Some(l);
+                    } else {
+                        self.node_mut(pp).left = Some(l);
+                    }
+                }
+            }
+            self.node_mut(l).right = Some(p);
+            self.node_mut(p).parent = Some(l);
+        }
+        root
+    }
+
+    fn is_red(&self, i: Option<usize>) -> bool {
+        i.is_some_and(|i| self.node(i).red)
+    }
+
+    /// `TreeNode.balanceInsertion(root, x)`.
+    fn balance_insertion(&mut self, mut root: usize, mut x: usize) -> usize {
+        self.node_mut(x).red = true;
+        loop {
+            let Some(mut xp) = self.node(x).parent else {
+                self.node_mut(x).red = false;
+                return x;
+            };
+            if !self.node(xp).red {
+                return root;
+            }
+            let Some(mut xpp) = self.node(xp).parent else {
+                return root;
+            };
+            let xppl = self.node(xpp).left;
+            if Some(xp) == xppl {
+                let xppr = self.node(xpp).right;
+                if self.is_red(xppr) {
+                    self.node_mut(xppr.expect("red implies present")).red = false;
+                    self.node_mut(xp).red = false;
+                    self.node_mut(xpp).red = true;
+                    x = xpp;
+                } else {
+                    let mut xp_opt = Some(xp);
+                    let mut xpp_opt = Some(xpp);
+                    if Some(x) == self.node(xp).right {
+                        x = xp;
+                        root = self.rotate_left(root, x);
+                        xp_opt = self.node(x).parent;
+                        xpp_opt = xp_opt.and_then(|xp| self.node(xp).parent);
+                    }
+                    if let Some(xp2) = xp_opt {
+                        xp = xp2;
+                        self.node_mut(xp).red = false;
+                        if let Some(xpp2) = xpp_opt {
+                            xpp = xpp2;
+                            self.node_mut(xpp).red = true;
+                            root = self.rotate_right(root, xpp);
+                        }
+                    }
+                }
+            } else if self.is_red(xppl) {
+                self.node_mut(xppl.expect("red implies present")).red = false;
+                self.node_mut(xp).red = false;
+                self.node_mut(xpp).red = true;
+                x = xpp;
+            } else {
+                let mut xp_opt = Some(xp);
+                let mut xpp_opt = Some(xpp);
+                if Some(x) == self.node(xp).left {
+                    x = xp;
+                    root = self.rotate_right(root, x);
+                    xp_opt = self.node(x).parent;
+                    xpp_opt = xp_opt.and_then(|xp| self.node(xp).parent);
+                }
+                if let Some(xp2) = xp_opt {
+                    xp = xp2;
+                    self.node_mut(xp).red = false;
+                    if let Some(xpp2) = xpp_opt {
+                        xpp = xpp2;
+                        self.node_mut(xpp).red = true;
+                        root = self.rotate_left(root, xpp);
+                    }
+                }
+            }
+        }
+    }
+
+    /// `TreeNode.balanceDeletion(root, x)`.
+    fn balance_deletion(&mut self, mut root: usize, mut x: Option<usize>) -> usize {
+        loop {
+            let Some(xi) = x else {
+                return root;
+            };
+            if xi == root {
+                return root;
+            }
+            let Some(mut xp) = self.node(xi).parent else {
+                self.node_mut(xi).red = false;
+                return xi;
+            };
+            if self.node(xi).red {
+                self.node_mut(xi).red = false;
+                return root;
+            }
+            let xpl = self.node(xp).left;
+            if xpl == Some(xi) {
+                let mut xpr = self.node(xp).right;
+                let mut xp_opt = Some(xp);
+                if self.is_red(xpr) {
+                    self.node_mut(xpr.expect("red implies present")).red = false;
+                    self.node_mut(xp).red = true;
+                    root = self.rotate_left(root, xp);
+                    xp_opt = self.node(xi).parent;
+                    xpr = xp_opt.and_then(|xp| self.node(xp).right);
+                }
+                match xpr {
+                    None => x = xp_opt,
+                    Some(xpr_i) => {
+                        let sl = self.node(xpr_i).left;
+                        let sr = self.node(xpr_i).right;
+                        if !self.is_red(sr) && !self.is_red(sl) {
+                            self.node_mut(xpr_i).red = true;
+                            x = xp_opt;
+                        } else {
+                            let mut xpr2 = Some(xpr_i);
+                            if !self.is_red(sr) {
+                                if let Some(sl) = sl {
+                                    self.node_mut(sl).red = false;
+                                }
+                                self.node_mut(xpr_i).red = true;
+                                root = self.rotate_right(root, xpr_i);
+                                xp_opt = self.node(xi).parent;
+                                xpr2 = xp_opt.and_then(|xp| self.node(xp).right);
+                            }
+                            if let Some(xpr2) = xpr2 {
+                                let red = xp_opt.is_some_and(|xp| self.node(xp).red);
+                                self.node_mut(xpr2).red = red;
+                                if let Some(sr) = self.node(xpr2).right {
+                                    self.node_mut(sr).red = false;
+                                }
+                            }
+                            if let Some(xp2) = xp_opt {
+                                xp = xp2;
+                                self.node_mut(xp).red = false;
+                                root = self.rotate_left(root, xp);
+                            }
+                            x = Some(root);
+                        }
+                    }
+                }
+            } else {
+                let mut xpl = xpl;
+                let mut xp_opt = Some(xp);
+                if self.is_red(xpl) {
+                    self.node_mut(xpl.expect("red implies present")).red = false;
+                    self.node_mut(xp).red = true;
+                    root = self.rotate_right(root, xp);
+                    xp_opt = self.node(xi).parent;
+                    xpl = xp_opt.and_then(|xp| self.node(xp).left);
+                }
+                match xpl {
+                    None => x = xp_opt,
+                    Some(xpl_i) => {
+                        let sl = self.node(xpl_i).left;
+                        let sr = self.node(xpl_i).right;
+                        if !self.is_red(sl) && !self.is_red(sr) {
+                            self.node_mut(xpl_i).red = true;
+                            x = xp_opt;
+                        } else {
+                            let mut xpl2 = Some(xpl_i);
+                            if !self.is_red(sl) {
+                                if let Some(sr) = sr {
+                                    self.node_mut(sr).red = false;
+                                }
+                                self.node_mut(xpl_i).red = true;
+                                root = self.rotate_left(root, xpl_i);
+                                xp_opt = self.node(xi).parent;
+                                xpl2 = xp_opt.and_then(|xp| self.node(xp).left);
+                            }
+                            if let Some(xpl2) = xpl2 {
+                                let red = xp_opt.is_some_and(|xp| self.node(xp).red);
+                                self.node_mut(xpl2).red = red;
+                                if let Some(sl) = self.node(xpl2).left {
+                                    self.node_mut(sl).red = false;
+                                }
+                            }
+                            if let Some(xp2) = xp_opt {
+                                xp = xp2;
+                                self.node_mut(xp).red = false;
+                                root = self.rotate_right(root, xp);
+                            }
+                            x = Some(root);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<V> LongBin<V> {
+    /// The entries in iteration order.
+    fn entries(&self) -> Vec<(i64, &V)> {
+        match self {
+            Self::List(entries) => entries.iter().map(|(k, v)| (*k, v)).collect(),
+            Self::Tree(tree) => tree
+                .list_order()
+                .into_iter()
+                .map(|i| {
+                    let node = tree.node(i);
+                    (node.key, &node.value)
+                })
+                .collect(),
+        }
+    }
+}
+
+impl<V> JavaLongHashMap<V> {
+    /// `new HashMap<>()`.
+    pub fn new() -> Self {
+        Self {
+            table: Vec::new(),
+            size: 0,
+            threshold: 0,
+        }
+    }
+
+    /// `HashMap.size()`.
+    pub fn len(&self) -> usize {
+        self.size
+    }
+
+    /// `HashMap.isEmpty()`.
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
+    }
+
+    /// The current table length, or 0 while the table is unallocated.
+    pub fn table_length(&self) -> usize {
+        self.table.len()
+    }
+
+    /// Whether the bin `key` falls in is treeified.
+    pub fn is_treeified_at(&self, key: i64) -> bool {
+        !self.table.is_empty()
+            && matches!(
+                self.table[index_for(spread_long(key), self.table.len())],
+                LongBin::Tree(_)
+            )
+    }
+
+    /// `HashMap.get(Object)`.
+    pub fn get(&self, key: i64) -> Option<&V> {
+        if self.table.is_empty() {
+            return None;
+        }
+        match &self.table[index_for(spread_long(key), self.table.len())] {
+            LongBin::List(entries) => entries.iter().find(|(k, _)| *k == key).map(|(_, v)| v),
+            LongBin::Tree(tree) => {
+                let root = tree.root_of(tree.first?);
+                tree.find(Some(root), spread_long(key), key)
+                    .map(|i| &tree.node(i).value)
+            }
+        }
+    }
+
+    /// `HashMap.containsKey(Object)`.
+    pub fn contains_key(&self, key: i64) -> bool {
+        self.get(key).is_some()
+    }
+
+    /// `HashMap.put(K, V)` — `putVal` — returning the previous value.
+    pub fn insert(&mut self, key: i64, value: V) -> Option<V> {
+        if self.table.is_empty() {
+            self.resize();
+        }
+        let n = self.table.len();
+        let index = index_for(spread_long(key), n);
+        let treeify = match &mut self.table[index] {
+            LongBin::Tree(tree) => match tree.put_tree_val(key, value) {
+                Ok(()) => false,
+                Err((existing, value)) => {
+                    return Some(std::mem::replace(&mut tree.node_mut(existing).value, value));
+                }
+            },
+            LongBin::List(entries) => {
+                if let Some(entry) = entries.iter_mut().find(|(k, _)| *k == key) {
+                    return Some(std::mem::replace(&mut entry.1, value));
+                }
+                entries.push((key, value));
+                // `binCount >= TREEIFY_THRESHOLD - 1`: the bin now holds more
+                // than `TREEIFY_THRESHOLD` nodes.
+                entries.len() > TREEIFY_THRESHOLD
+            }
+        };
+        if treeify {
+            self.treeify_bin(index);
+        }
+        self.size += 1;
+        if self.size as i32 > self.threshold {
+            self.resize();
+        }
+        None
+    }
+
+    /// `HashMap.treeifyBin(tab, hash)`: a resize while the table is shorter
+    /// than `MIN_TREEIFY_CAPACITY`, otherwise the bin becomes a tree.
+    fn treeify_bin(&mut self, index: usize) {
+        if self.table.len() < MIN_TREEIFY_CAPACITY {
+            self.resize();
+        } else {
+            let bin = std::mem::replace(&mut self.table[index], LongBin::List(Vec::new()));
+            self.table[index] = match bin {
+                LongBin::List(entries) => LongBin::Tree(TreeBin::from_list(entries)),
+                tree => tree,
+            };
+        }
+    }
+
+    /// `HashMap.remove(Object)` — `removeNode(..., movable = true)`.
+    pub fn remove(&mut self, key: i64) -> Option<V> {
+        if self.table.is_empty() {
+            return None;
+        }
+        let n = self.table.len();
+        let index = index_for(spread_long(key), n);
+        let removed = match &mut self.table[index] {
+            LongBin::List(entries) => {
+                let position = entries.iter().position(|(k, _)| *k == key)?;
+                entries.remove(position).1
+            }
+            LongBin::Tree(tree) => {
+                let first = tree.first?;
+                let node = if tree.node(first).key == key {
+                    first
+                } else {
+                    let root = tree.root_of(first);
+                    tree.find(Some(root), spread_long(key), key)?
+                };
+                let (value, too_small) = tree.remove_tree_node(node);
+                if too_small || tree.first.is_none() {
+                    let bin = std::mem::replace(&mut self.table[index], LongBin::List(Vec::new()));
+                    if let LongBin::Tree(tree) = bin {
+                        self.table[index] = LongBin::List(tree.untreeify());
+                    }
+                }
+                value
+            }
+        };
+        self.size -= 1;
+        Some(removed)
+    }
+
+    /// `HashMap.clear()`, which keeps the table it has.
+    pub fn clear(&mut self) {
+        for bin in self.table.iter_mut() {
+            *bin = LongBin::List(Vec::new());
+        }
+        self.size = 0;
+    }
+
+    /// Iterates the entries in `HashMap.entrySet()` order.
+    pub fn iter(&self) -> impl Iterator<Item = (i64, &V)> {
+        self.table.iter().flat_map(|bin| bin.entries())
+    }
+
+    /// Iterates the keys in `HashMap.keySet()` order.
+    pub fn keys(&self) -> impl Iterator<Item = i64> + '_ {
+        self.iter().map(|(k, _)| k)
+    }
+
+    /// Iterates the values in `HashMap.values()` order.
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.iter().map(|(_, v)| v)
+    }
+
+    /// `HashMap.putAll(Map)`: `putMapEntries` pre-sizes an unallocated table
+    /// from the source's size (or doubles an allocated one until it fits),
+    /// then inserts the entries in the source's iteration order.
+    pub fn put_all<I>(&mut self, entries: I)
+    where
+        I: IntoIterator<Item = (i64, V)>,
+        I::IntoIter: ExactSizeIterator,
+    {
+        let entries = entries.into_iter();
+        let size = entries.len();
+        if size == 0 {
+            return;
+        }
+        if self.table.is_empty() {
+            let dt = (size as f64 / DEFAULT_LOAD_FACTOR as f64).ceil();
+            let t = if dt < MAXIMUM_CAPACITY as f64 {
+                dt as i32
+            } else {
+                MAXIMUM_CAPACITY as i32
+            };
+            if t > self.threshold {
+                self.threshold = table_size_for(t);
+            }
+        } else {
+            while size as i32 > self.threshold && self.table.len() < MAXIMUM_CAPACITY {
+                self.resize();
+            }
+        }
+        for (key, value) in entries {
+            self.insert(key, value);
+        }
+    }
+
+    /// `HashMap.resize()`: list bins keep their order when split; tree bins
+    /// split with `TreeNode.split`.
+    fn resize(&mut self) {
+        let old_cap = self.table.len();
+        let old_thr = self.threshold;
+        let new_cap: usize;
+        let mut new_thr: i32 = 0;
+        if old_cap > 0 {
+            if old_cap >= MAXIMUM_CAPACITY {
+                self.threshold = i32::MAX;
+                return;
+            }
+            new_cap = old_cap << 1;
+            if new_cap < MAXIMUM_CAPACITY && old_cap >= DEFAULT_INITIAL_CAPACITY {
+                new_thr = old_thr << 1;
+            }
+        } else if old_thr > 0 {
+            new_cap = old_thr as usize;
+        } else {
+            new_cap = DEFAULT_INITIAL_CAPACITY;
+            new_thr = (DEFAULT_LOAD_FACTOR * DEFAULT_INITIAL_CAPACITY as f32) as i32;
+        }
+        if new_thr == 0 {
+            let ft = new_cap as f32 * DEFAULT_LOAD_FACTOR;
+            new_thr = if new_cap < MAXIMUM_CAPACITY && ft < MAXIMUM_CAPACITY as f32 {
+                ft as i32
+            } else {
+                i32::MAX
+            };
+        }
+        self.threshold = new_thr;
+        let old_table = std::mem::take(&mut self.table);
+        let mut new_table: Vec<LongBin<V>> = Vec::with_capacity(new_cap);
+        new_table.resize_with(new_cap, || LongBin::List(Vec::new()));
+        for (j, bin) in old_table.into_iter().enumerate() {
+            match bin {
+                LongBin::List(entries) => {
+                    // preserve order
+                    for (key, value) in entries {
+                        if let LongBin::List(target) =
+                            &mut new_table[index_for(spread_long(key), new_cap)]
+                        {
+                            target.push((key, value));
+                        }
+                    }
+                }
+                LongBin::Tree(tree) => {
+                    let (lo, hi) = Self::split(tree, old_cap);
+                    new_table[j] = lo;
+                    new_table[j + old_cap] = hi;
+                }
+            }
+        }
+        self.table = new_table;
+    }
+
+    /// `TreeNode.split(map, tab, index, bit)`: relinks into lo and hi lists
+    /// preserving order; a half of at most `UNTREEIFY_THRESHOLD` nodes is
+    /// untreeified, a larger one is treeified again unless every node stayed
+    /// on its side, in which case the tree is kept as it is.
+    fn split(tree: TreeBin<V>, bit: usize) -> (LongBin<V>, LongBin<V>) {
+        let mut lo: Vec<(i64, V)> = Vec::new();
+        let mut hi: Vec<(i64, V)> = Vec::new();
+        let order = tree.list_order();
+        let all_lo = order
+            .iter()
+            .all(|&i| (tree.node(i).hash as u32 as usize) & bit == 0);
+        let all_hi = order
+            .iter()
+            .all(|&i| (tree.node(i).hash as u32 as usize) & bit != 0);
+        let count = order.len();
+        if (all_lo || all_hi) && count > UNTREEIFY_THRESHOLD {
+            // `else is already treeified`: the same nodes, list and tree.
+            let kept = LongBin::Tree(tree);
+            let empty = LongBin::List(Vec::new());
+            return if all_lo { (kept, empty) } else { (empty, kept) };
+        }
+        let mut nodes = tree.nodes;
+        for i in order {
+            let node = nodes[i].take().expect("INVARIANT: live");
+            if (node.hash as u32 as usize) & bit == 0 {
+                lo.push((node.key, node.value));
+            } else {
+                hi.push((node.key, node.value));
+            }
+        }
+        let rebuild = |entries: Vec<(i64, V)>| {
+            if entries.len() <= UNTREEIFY_THRESHOLD {
+                LongBin::List(entries)
+            } else {
+                LongBin::Tree(TreeBin::from_list(entries))
+            }
+        };
+        (rebuild(lo), rebuild(hi))
+    }
+}
+
 /// A `java.util.HashSet<String>` with Java's iteration order.
 ///
 /// `java.util.HashSet` is a `HashMap` whose values are all one shared sentinel

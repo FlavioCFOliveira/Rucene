@@ -920,11 +920,11 @@ impl FilterIndexInput {
     /// Divergence: Java keeps the set of test wrapper classes in the static
     /// `TEST_FILTER_INPUTS` list, which `TestSecrets` fills in, and walks the
     /// chain with `instanceof` plus `getClass()` membership
-    /// (`FilterIndexInput.java:33-59`). Rust trait objects carry no such
-    /// runtime type information and this port has no `TestSecrets`, so, exactly
-    /// as [`unwrap`](Self::unwrap) already does, this helper returns the input
-    /// unchanged; callers holding a concrete `FilterIndexInput` should inspect
-    /// its delegate directly.
+    /// (`FilterIndexInput.java:33-59`). The list is kept here too
+    /// ([`is_test_filter_input`]), but a `&dyn IndexInput` carries no runtime
+    /// type to test against it, so, exactly as [`unwrap`](Self::unwrap)
+    /// already does, this helper returns the input unchanged; callers holding
+    /// a concrete `FilterIndexInput` should inspect its delegate directly.
     ///
     /// Equivalent to `org.apache.lucene.store.FilterIndexInput#unwrapOnlyTest`.
     pub fn unwrap_only_test(input: &dyn IndexInput) -> &dyn IndexInput {
@@ -9061,6 +9061,62 @@ impl std::fmt::Debug for NIOFSIndexInput {
             .field("inner", &self.inner.resource_description())
             .finish()
     }
+}
+
+// -----------------------------------------------------------------------------
+// TestSecrets registration
+// -----------------------------------------------------------------------------
+
+/// The test-only filtering input types `FilterIndexInput.unwrapOnlyTest`
+/// peels off.
+///
+/// Equivalent to `FilterIndexInput.TEST_FILTER_INPUTS`, a
+/// `CopyOnWriteArrayList<Class<?>>` the test framework fills through
+/// `TestSecrets` (`FilterIndexInput.java:34`).
+static TEST_FILTER_INPUTS: std::sync::RwLock<Vec<std::any::TypeId>> =
+    std::sync::RwLock::new(Vec::new());
+
+/// The [`FilterIndexInputAccess`](crate::internal::tests_hooks::FilterIndexInputAccess)
+/// `FilterIndexInput` registers with
+/// [`TestSecrets`](crate::internal::tests_hooks::TestSecrets): the method
+/// reference `TEST_FILTER_INPUTS::add`.
+#[derive(Debug)]
+struct FilterIndexInputAccessImpl;
+
+impl crate::internal::tests_hooks::FilterIndexInputAccess for FilterIndexInputAccessImpl {
+    fn add_test_filter_type(&self, type_id: std::any::TypeId) {
+        TEST_FILTER_INPUTS
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(type_id);
+    }
+}
+
+/// Returns whether `type_id` was registered as a test filtering input.
+///
+/// Equivalent to `TEST_FILTER_INPUTS.contains(in.getClass())` in
+/// `FilterIndexInput.unwrapOnlyTest`.
+pub fn is_test_filter_input(type_id: std::any::TypeId) -> bool {
+    TEST_FILTER_INPUTS
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(&type_id)
+}
+
+/// Registers `FilterIndexInput`'s accessor with
+/// [`TestSecrets`](crate::internal::tests_hooks::TestSecrets), once.
+///
+/// Equivalent to `FilterIndexInput`'s `static {}` block
+/// (`FilterIndexInput.java:36-38`), which
+/// `TestSecrets.ensureInitialized(FilterIndexInput.class)` triggers.
+pub(crate) fn register_test_secrets() {
+    static INITIALIZED: std::sync::Once = std::sync::Once::new();
+    INITIALIZED.call_once(|| {
+        crate::internal::tests_hooks::TestSecrets::set_filter_input_index_access(
+            std::sync::Arc::new(FilterIndexInputAccessImpl),
+        )
+        .expect("INVARIANT: FilterIndexInput's static initializer runs once, from this file");
+    });
 }
 
 #[cfg(test)]
