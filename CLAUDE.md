@@ -4,6 +4,8 @@
 
 Rucene is a port of **Apache Lucene Core** to **Rust**. It aims to provide a Rust crate that preserves the same functionality and module organization as the original Lucene, while leveraging Rust's advantages: better performance and safer memory management.
 
+**Rucene is a faithful port of the `Apache Lucene` library to Rust.** Every work effort must focus on translating Lucene faithfully and empirically: reproduce what the Lucene source does, and prove it with evidence (see sections 7, 8, 14.5 and 16.4).
+
 - **Reference source:** Apache Lucene Core `10.5.0`
 - **Project type:** Rust library crate
 - **Reference site/organization:** [Apache Lucene](https://lucene.apache.org/)
@@ -40,20 +42,41 @@ Internal module organization should mirror the Lucene Core Java structure as clo
 1. **Do not make decisions alone.** Whenever instructions are insufficient, unclear, unspecific, or concrete, or when contradictions or ambiguities exist, **always ask the user** how to proceed.
    - When asking, always provide multiple options (a, b, c, ...) and indicate which one is recommended.
    - When several questions need clarification, ask them one at a time (sequentially), not all at once.
-   - **Boundary between acting and asking:** obvious, low-risk fixes (for example, a pre-existing bug with an unambiguous solution) proceed immediately; any decision that changes scope, expected behavior, architecture, or requirements requires prior user input.
-2. **Documentation in English.** All project documentation (including this `CLAUDE.md`) must be written in correct English, without spelling, grammar, or syntax errors. Use clear, simple, unambiguous technical language intended for human readers.
+   - **Boundary between acting and asking:** a decision inside the scope of the task in progress that has one obvious, low-risk answer proceeds immediately. Any work outside that scope (see 3.2), and any decision that changes scope, expected behavior, architecture, or requirements, requires prior user input.
+2. **Language.**
+   - **English documentation.** All project documentation — the `README.md`, this `CLAUDE.md`, the specifications, and code documentation — is written in correct, professional English, with no spelling, grammar, or syntax errors.
+   - **Writing style.** Write every text (documentation, task definitions, `rmp` comments, subagent briefs, and messages) so that it is:
+     - **explicit** — it states clearly what is intended;
+     - **objective** — it states what is to be executed;
+     - **closed** — it defines the scope of the work;
+     - **concise** — it uses few words.
+   - **Interpretation.** Interpret every instruction the same way: by what it states explicitly, within the scope it defines.
 3. **Documentation faithful to the code.** Documentation must be accurate and always reflect the actual state of the code.
-4. **Work flow.** Work always follows this order: **Specify → Implement → Test → Document.**
-5. **Open-source inspired.** For every project component, seek inspiration from open-source projects that implement the same component in an exemplary way. Whenever possible, use multiple (more than one) reference projects so that the positive and negative aspects of each approach can be evaluated. Always use the source code as the absolute source of truth when necessary.
+4. **Work flow.** Work always follows this order: **Specify → Implement → Test → Document.** When several tasks share one effort (see 5.3), each step covers the whole effort.
+5. **Open-source first.** For every component, identify the trustworthy open-source projects that already implement or solve it, and use them as the starting point: copy from them when possible, or study them. Whenever possible, use more than one reference project, so that the positive and negative aspects of each approach can be evaluated. Use the source code as the absolute source of truth. See section 13.
+6. **ALWAYS converge — this rule is mandatory and has no exceptions.** Every development effort **MUST** seek convergence with the other open tasks, so that work synergy is maximized. Before starting any work, find every task that touches the same files, subsystem, or tests, and join them into **one** effort. Then:
+   - **write the code of all those tasks at once**, in a single pass;
+   - **test the code of all those tasks at once**, in a single run;
+   - **audit, commit, and document them together**, once.
+
+   Developing converging tasks one by one is a **defect in how the work is done**, not a style choice. See section 5.3.
 
 ---
 
-## 3. Self-contained development policy
+## 3. Scope and completeness
 
-- All development cycles must be **self-contained**: each cycle produces a complete, usable result. Never deliver only part of a task.
-- When unforeseen needs arise during a task, resolve them in the same development cycle as quickly as possible (create new tasks and execute them immediately).
+### 3.1 Task completeness
+
+- Execute every task and every piece of work in full. **Never leave a task half-done or partially done.**
+- Every development cycle is **self-contained**: it produces a complete, usable result.
 - All code must be **full-fledged** (complete and ready to use). Do not create tests with `skip` or placeholder stubs.
-- Whenever a pre-existing bug is found, fix it on the spot and then resume the original work.
+
+### 3.2 No unrequested work
+
+- Act strictly toward the objective of the work in progress.
+- **Never start work that was not explicitly requested.** This applies equally to new tasks, fixes, refactorings, and improvements.
+- When you identify a need outside the scope of the task in progress — including a pre-existing bug — ask the user how to proceed (see rule 1). Never start that work proactively.
+- The scope of a task is its objectives, functional and technical requirements, and acceptance criteria. Work strictly required to meet them is in scope, and is completed in the same cycle (see 3.1).
 
 ---
 
@@ -65,7 +88,7 @@ Internal module organization should mirror the Lucene Core Java structure as clo
 
 Every project component must be an **exemplary** piece for the purpose it serves. Each component must have a clearly and explicitly defined responsibility so that its boundaries of action and responsibility are unambiguous.
 
-To **design, implement, and evaluate** each component, research which open-source projects implement the same functionality in an exemplary way and use that implementation as inspiration for this project. Multiple open-source projects may be used for the same functionality or component.
+To **design, implement, and evaluate** each component, research which open-source projects implement the same functionality in an exemplary way and use that implementation as the starting point for this project (see section 13). Multiple open-source projects may be used for the same functionality or component.
 
 ### 4.2 Perfect architecture
 
@@ -75,7 +98,7 @@ The overall project architecture and the design of its components must be based 
 
 ## 5. Task and sprint planning and execution
 
-For operations related to tasks or sprints, use the `roadmap-manager` skill.
+Use the `roadmap-manager` skill for tasks, sprints, and comments, and for every `rmp` command except `rmp graph` (see 10.2).
 
 - Treat `rmp` (the roadmap management tool available in the environment) as the **single source of truth** for planning and executing project tasks. No other task management method should be used for this purpose.
 - Use the **Knowledge Graph** to understand the project, its components, and the relationships between them, so that the scope and impact of each task can be identified more easily.
@@ -96,6 +119,7 @@ For operations related to tasks or sprints, use the `roadmap-manager` skill.
   In both steps, use `rmp` as the single source of truth.
 - Use the **Knowledge Graph** to identify tasks with the highest gain or impact, foundational tasks, and tasks that unlock other tasks or features, in order to optimize execution order.
 - **Prioritization:** by default, always work from highest-gain/highest-impact tasks to least essential. Foundational tasks and tasks that unblock others are always prioritized.
+- **Shared effort:** identify which tasks can share one development effort (see 5.3). Each of them remains a separate task in `rmp`.
 - When a task is too large for an AI agent like Claude Code to execute in one go, subdivide it into parts while respecting the principles already defined (especially the self-contained task principle).
 
 ### 5.2 Task execution
@@ -103,27 +127,65 @@ For operations related to tasks or sprints, use the `roadmap-manager` skill.
 Execution follows planning. Always use `rmp` and follow this sequence:
 
 1. Check whether any open task is not yet completed, and continue it.
-2. Identify the next task.
-3. Understand the objective of the task to be started, based on its description and functional and technical requirements.
-4. Determine the most appropriate subagent and delegate execution to it.
-5. Always validate the acceptance criteria before closing the task.
-6. Close the task with a brief summary of what was done.
-7. After closing the task and before moving on, make a `git commit` following best practices, explaining what was done.
-8. Update the Knowledge Graph.
+2. Identify the next task, and the tasks that can share its development effort (see 5.3).
+3. Understand the objective of each task, based on its description and functional and technical requirements.
+4. Delegate execution to the most suitable subagent (see 10.1).
+5. Validate each task's acceptance criteria before closing it.
+6. Close each task individually, with a brief summary of what was done.
+7. After closing the task(s) and before moving on, commit the work through the `gitflow` skill (see 10.2). A commit that records a shared effort names every task it covers.
+8. Update the Knowledge Graph through the `knowledge-authority` skill (see 10.2).
 
 Execution notes:
 
 - Whenever possible, adapt the model and effort level to the requirements of each individual operation within the task.
-- Task and sprint execution is **sequential**.
-- Subagent-based work (including evaluations and audits) may run in parallel **only when the user has explicitly authorized it for that specific operation**.
-  - Any authorization is strictly scope-bound and one-time: it applies only to the operation for which it was granted and never establishes a standing exception.
-  - **Even when authorized, never run more than two subagent operations concurrently.** Plan all required parallel work, but execute at most two operations at a time: as one finishes, start the next, always keeping the limit of two concurrent runs.
+- Sprints are executed **sequentially**. Tasks are executed **sequentially**, in priority order; a shared effort (see 5.3) counts as one unit of execution.
+- Subagent concurrency follows 10.1.
+
+### 5.3 Work synergy and convergence
+
+Guiding principle: **make the effort pay — deliver the most with the least work.**
+
+**MANDATORY: developments ALWAYS seek convergence with one another, so that work synergy is maximized (section 2, rule 6).** Write the code of multiple tasks at once, test the code of multiple tasks at once, and likewise audit, commit, and document them together. Never develop converging tasks one by one.
+
+This is the default way of working for all project work, both `rmp` tasks and ad hoc requests. It requires no request from the user, and it is never recorded as an `rmp` task.
+
+- **Convergence.** Always look for tasks whose objectives are complementary, or whose functional or technical proximity can be verified (use the Knowledge Graph). Turn every such convergence into synergy.
+- **Synergy between tasks.** Join converging tasks into a single development effort.
+- **Synergy within the effort.** Group work of the same type: write all the code at once, then run the tests for all the changed code at once, then write all the documentation at once, instead of writing and testing small pieces one by one. When the scope is too large for one pass, split it into the largest blocks that can each be handled in one pass. Apply this principle to all work.
+- **Fewest iterations.** Reach the objectives with the fewest tasks and iterations possible.
+- **Quality bar.** Group work only when grouping makes delivery faster without lowering its quality. A shared effort must deliver better work than task-by-task development, never worse.
+- **Resources.** Make full use of the internal resources available (subagents, skills, local CLIs, and the Knowledge Graph), so that deliveries are faster and cost the user less.
+- **Tasks stay separate.** Grouping joins only the work effort, during development and testing. In `rmp`, each task keeps its own definition, status, acceptance criteria, and closing summary.
+
+### 5.4 Work log — `rmp` comments
+
+Use the `rmp` comment feature to track the progress of the work **as it happens**. Comment **both the sprints and the tasks**, always with the comment type whose meaning fits. Write each entry at the moment it happens, never reconstructed at closing time.
+
+**Comment types and their meaning:**
+
+| Type | Write it when… | The entry contains | Task | Sprint |
+|---|---|---|---|---|
+| `HYPOTHESIS` | a proposition is about to be tested, **before** the result is known | the proposition, and what would confirm or refute it | ✓ | — |
+| `TEST` | a test, benchmark, or verification was run | the exact command or procedure, and what it showed (pass/fail, numbers) | ✓ | — |
+| `FINDING` | something was discovered: a behavior, a measurement, a cause, or a **refuted** hypothesis | the observation, concretely, with its evidence | ✓ | ✓ |
+| `DECISION` | a choice was made between viable options | the choice, the reasoning, and the **rejected options** | ✓ | ✓ |
+| `PROGRESS` | the work advanced materially (a part delivered, a blocker cleared) | what is now done and what remains | ✓ | ✓ |
+| `UPDATE` | the task's or sprint's **definition** changed (always with `task edit` / `sprint update`) | **why** it changed, not the new text | ✓ | ✓ |
+| `NOTE` | something worth keeping fits none of the above | the thing worth keeping, and why | ✓ | — |
+
+**Rules:**
+
+- **Chain.** Investigative work follows `HYPOTHESIS → TEST → FINDING → DECISION`. Every `HYPOTHESIS` is closed by a later `FINDING`, including when it is refuted.
+- **Never fall back on `NOTE`** when a typed entry applies.
+- **Task log.** Record, per task: the grouping `DECISION` when an effort starts; `FINDING` and `TEST` entries from each subagent report and each audit; a `DECISION` for each round's scope; `PROGRESS` per round.
+- **Sprint log.** Record how the sprint goes: `PROGRESS` when an effort closes, `DECISION` for scope or sequencing changes, `UPDATE` when the sprint's definition changes, and `FINDING` for observations that span several tasks.
+- **Before closing a task**, its log holds a `TEST` proving the acceptance criteria and a `DECISION` for every non-obvious choice. The closing summary states the outcome; the log keeps the route.
 
 ---
 
 ## 6. Knowledge Graph
 
-The Knowledge Graph (KG) must be managed with the help of the `knowledge-authority` skill.
+The Knowledge Graph (KG) is managed exclusively through the `knowledge-authority` skill (see 10.2).
 
 - Use the "Graph" features of `rmp` (Groadmap) to create, maintain (update), and query a project knowledge graph.
 - This graph **must contain everything** useful to know about the project. Examples:
@@ -146,12 +208,12 @@ The Knowledge Graph holds a **central responsibility in coordinating the porting
 
 ### 6.2 The KG coordinates development
 
-The KG also holds a **central role in coordinating development tasks**, so that it can always present the **most optimised paths** through the remaining work, and the work proceeds as quickly and efficiently as possible.
+The KG also holds a **central role in coordinating development tasks**, so that it can always present the **most optimized paths** through the remaining work, and the work proceeds as quickly and efficiently as possible.
 
 **The KG is the right instrument for setting priorities because it holds the widest view of the port** — it is the only place that knows, at the same time, the **current state** of the project and the **target state** the port is trying to reach: the structure of Apache Lucene Core 10.5.0. A priority decided from either half alone is a guess about the other. Seen from the graph, the distance between the two states is a measurable thing, and the ordering of the work follows from it.
 
-- Dependencies between components, and between tasks and the components they need, must be modelled so that the graph can compute what unlocks the most work.
-- **Use the graph to plan**, in the sense of rule 5.1: identify foundational tasks, tasks that unblock others, and the shortest route to a solid deliverable. The prioritisation stated in 5.1 is meant to be *derived from the graph*, not asserted from memory or from reading files.
+- Dependencies between components, and between tasks and the components they need, must be modeled so that the graph can compute what unlocks the most work.
+- **Use the graph to plan**, in the sense of rule 5.1: identify foundational tasks, tasks that unblock others, and the shortest route to a solid deliverable. The prioritization stated in 5.1 is meant to be *derived from the graph*, not asserted from memory or from reading files.
 - When the graph cannot yet answer such a question, say so plainly and treat closing that gap as work in its own right, rather than substituting an impression for an answer (see rule 7).
 
 ---
@@ -168,22 +230,42 @@ The KG also holds a **central role in coordinating development tasks**, so that 
 
 Whenever performance, completeness, or correctness needs to be evaluated, always gather evidence from the project to determine the facts. Decide empirically.
 
+**Trace, never guess.** Whenever it is needed, use profiling and tracing to determine **exactly and empirically** what must be implemented or fixed. Never fix by trial and error; evaluate directly what needs to be done.
+
+- **Choose the diagnostic technique deliberately.** Whenever you investigate the cause of a problem in the code, first decide which technique, or which combination of techniques, will identify and locate it: profiling, tracing, metrics, logs, differential runs against the Java oracle, or others. Use them alone or together, and keep dissecting the problem until its cause is absolutely clear.
+- **Find the cause before the fix.** Instrument the failing path: trace logs, differential traces of Rucene against the Java oracle, and profilers (`perf`, flame graphs, `dhat`) for cost questions.
+- **Prove the cause.** A positive control must show the defect with the cause present and its absence with the fix applied.
+- **Observed, not inferred.** Every report states, per cause, whether it was **observed** (with the trace or command that shows it) or **inferred**. An inferred cause is traced before it is acted on.
+- **Briefs require it.** Every subagent brief for a defect, divergence, or performance issue requires this evidence, and a report whose cause is only inferred is not accepted.
+
 ---
 
 ## 9. Regression prevention
 
-Whenever a bug is identified, create the necessary regression tests to ensure the same bug does not recur as a result of future development. When the bug relates to functional parity or index-file compatibility with Lucene Core 10.5.0, the regression test should be a **portability test** that reproduces the divergence and locks in the correct behavior.
+Whenever a bug is fixed, create the necessary regression tests to ensure the same bug does not recur as a result of future development. When the bug relates to functional parity or index-file compatibility with Lucene Core 10.5.0, the regression test should be a **portability test** that reproduces the divergence and locks in the correct behavior.
 
 ---
 
-## 10. Subagent team
+## 10. Subagents and skills
 
-- A team composed of all available subagents (global, user-defined, or project-defined) is available.
-- Use them collaboratively and complementarily so that every task is completed with maximum confidence, effectiveness, and accuracy.
-- Each subagent should contribute proactively with its specialty.
-- **Subagents must never be run in parallel unless the user has explicitly approved parallel execution for that specific operation.**
-- Any approval for parallel subagent execution is **strictly scope-bound and one-time**: it applies only to the operation for which it was granted and never establishes a standing exception.
-- **Even when parallel execution is authorized, never run more than two subagent operations concurrently.**
+### 10.1 Subagents
+
+- **Delegate all project work.** The execution of every piece of work is delegated to the subagent specialized in the objectives that work must achieve. Always choose the most suitable subagent (global, user-defined, or project-defined).
+- **One subagent at a time.** Run **at most one** subagent alongside the main conversation. Never run more than one concurrently.
+- **Serial, not parallel.** Use as many subagents as the objective needs, one after another.
+- **Exception.** The user may explicitly authorize more than one subagent in parallel. That authorization applies only to the task for which it was granted, covers at most the number of subagents the user authorized, and is always revoked when that task ends.
+- Use the subagents collaboratively and complementarily, each contributing its specialty, so that every task is completed with maximum confidence, effectiveness, and accuracy.
+
+### 10.2 Skills
+
+The following operations must go through these Claude Code skills:
+
+| Skill | Operations |
+|---|---|
+| `gitflow` | Every git write command, following the gitflow branching model for this repository. |
+| `roadmap-manager` | Coordination and management of tasks, sprints, and comments, and every `rmp` command except `rmp graph`. |
+| `knowledge-authority` | All management of the project Knowledge Graph (`rmp graph`). No other means may manage it. |
+| `tpl` | Operation of the `tpl` CLI, which supports and speeds up development through code generation. Create templates whenever needed; they render against the structure of the application's database. |
 
 ---
 
@@ -229,7 +311,7 @@ If the answer to any of these questions is "no" or "I don't know," the economica
 - Examples:
   - Use `git log`, `git show`, `git diff`, and `git blame` locally instead of browsing the repository web interface;
   - Use `gh issue view`, `gh pr view`, and `gh api` instead of opening the corresponding GitHub web pages;
-  - Use `rmp` for all task, sprint, and Knowledge Graph operations (see 5 and 6), since it is also the single source of truth;
+  - Use `rmp`, through the `roadmap-manager` and `knowledge-authority` skills (see 10.2), for all task, sprint, and Knowledge Graph operations, since it is also the single source of truth;
   - Use `--help`, `man`, or the command's own documentation instead of searching online for the same information;
   - Filter and aggregate data locally (for example with `grep`, `jq`, `sort`, `wc`) instead of pulling the full dataset into the context.
 - Reserve more expensive paths (web, browser, remote services) for cases where **no local CLI can produce the same result**.
@@ -269,14 +351,14 @@ If the answer to any of these questions is "no" or "I don't know," the economica
 
 **Tests and validation**
 
-- During iteration, run the specific test or package at stake; reserve the full suite for the final validation of the task.
+- Write all the code of the effort first, then run the tests covering all the changed code in one run (see 5.3); do not test small pieces one by one. Reserve the full suite for the final validation of the effort.
 - Do not run the full suite repeatedly to verify changes that only affect an isolated component.
 
 **Model, effort, and parallelism**
 
 - Adapt the model and effort level to the real difficulty of each operation (see 5.2): mechanical and simple operations do not justify the most expensive model or effort level.
 - Group in a single message tool calls that are independent of each other, instead of making them one by one.
-- Respect the limit of two concurrent evaluations/audits (see 5.2): excessive parallelism multiplies cost without accelerating the result.
+- Respect the limit of one subagent at a time (see 10.1).
 
 ### 12.3 Safeguard
 
@@ -286,13 +368,16 @@ If, during execution, you verify that the economical path you chose is not yield
 
 ---
 
-## 13. Open-source inspiration policy
+## 13. Open-source policy
 
 ### 13.1 Acting principle
 
-Before designing or implementing any component, **clearly and objectively identify what that component is intended to do.** Only then, and **always in service of that objective** (first and foremost the macro objective), study how successful or reference open-source projects solved the same problem, and use that knowledge to make more informed decisions for **this** project.
-
-Reference projects are treated as **good practice to analyze**, not as solutions to adopt automatically. What is extracted from them is **understanding** (structure, algorithm, reason for the decision, trade-offs), never code to transcribe.
+- At every moment of analysis, exploration, and development, identify whether a reference open-source project already implements or solves what is needed, as a whole or in part.
+- **Do not reinvent.** For existing problems, new features, and refactorings alike, do not design a solution from scratch. Base the work first on the knowledge already available on the subject and, wherever possible, on the knowledge, engineering, architecture, and approach of an open-source project that already solves the problem, as a whole or in part.
+- Use such a project to **copy from** (fully or partially) when possible, or to **study** as an example.
+- Use **only reference projects that bring real utility and trust** to the intended contribution.
+- A reference project is only the **starting point**. Never stay bound to its source code: the borrowed code must serve this project, adapted to its objectives, its conventions (see 14.1), and the fidelity principle (see 14.5).
+- Before using a reference, **clearly and objectively define what the component is intended to do.** The reference always serves that objective, first and foremost the macro objective.
 
 ### 13.2 Protocol
 
@@ -301,7 +386,7 @@ Follow this sequence for each component:
 1. **Define the macro objective of the component.** What problem it solves, what role it plays in the project, what guarantees it must offer and under what constraints (correctness, safety, performance, durability, concurrency). Written explicitly and unambiguously.
 2. **Define the micro objectives.** The concrete functionalities and behaviors: inputs and outputs, invariants, edge cases, quality and performance requirements, and acceptance criteria (see 5.1).
 3. **Register objectives and decisions in the Knowledge Graph** (see 6), so they are consultable and traceable.
-4. **Identify reference projects.** Select open-source projects that solve the same class of problem with recognized success. Selection criteria: maturity and real adoption, active maintenance, demonstrable engineering quality, documented design, and production use — **not** isolated popularity. Identification must be verified, never assumed (see 7).
+4. **Identify reference projects.** Select open-source projects that solve the same class of problem with recognized success, and that bring real utility and trust to the intended contribution. Selection criteria: maturity and real adoption, active maintenance, demonstrable engineering quality, documented design, and production use — **not** isolated popularity. Identification must be verified, never assumed (see 7).
 5. **Study the approach in primary sources.** Source code at a concrete version/tag, official documentation, design documents, ADRs, papers, and issue/PR discussions — rather than secondary sources. The goal is to understand **why** the decision was made, not just what it was. To study a repository, apply rule 12 (local clone instead of multiple remote lookups).
 6. **Analyze favorable AND unfavorable aspects.** For each approach, explicitly list:
    - what serves this component's objective and why;
@@ -309,17 +394,18 @@ Follow this sequence for each component:
    - what trade-offs the approach assumes;
    - what the reference project's premises and context were (scale, language, concurrency model, durability requirements, runtime environment) and **whether those premises hold for this project**;
    - what the reference project **abandoned** over time and why — negative evidence is often the most valuable.
-7. **Decide for this project.** The decision results from the objectives defined in 1 and 2 and the decision framework (see 11: correct → safe → fast). The decision is expected to be an **adaptation or synthesis** — it may combine ideas from several references, or reject them all, as long as it is justified.
-8. **Document the decision.** Record the decision made, the alternatives considered, the sources consulted, and the reasoning, in an auditable and revisitable form.
+7. **Decide for this project.** The decision results from the objectives defined in 1 and 2 and the decision framework (see 11: correct → safe → fast). It may copy a reference fully or partially, adapt it, combine ideas from several references, or reject them all, as long as it is justified.
+8. **Document the decision.** Record the decision made, what was copied or adapted and from where, the alternatives considered, the sources consulted, and the reasoning, in an auditable and revisitable form.
 9. **Validate empirically.** When the approach has measurable impact, measure it in this project rather than trusting the reference's claims (see 8).
 
-### 13.3 Prohibition of direct copying
+### 13.3 Copying and reuse
 
-- **It is forbidden to copy directly** code from open-source projects into this project: files, code blocks, or line-by-line transcription/translation into another language.
-- The implementation must be **original**, idiomatic for the language and the conventions of this project, and designed for the objectives defined in 13.2.
-- **It is also forbidden to copy a decision without understanding it.** Adopting an approach just because a reference project uses it is a form of guessing (see 7). If you cannot explain why it is appropriate for this component, do not adopt it.
-- **Licenses and legal obligations.** Inspiration does not exempt respect for the source project's license. Never incorporate third-party code without verifying the license and **without explicit user authorization**. If you conclude that reusing code or adopting a dependency is the best path, **ask the user first** (see 1), presenting the options and identifying the license of each.
-- **Attribution.** Record in the Knowledge Graph and documentation which source inspired each decision — for traceability and credit, never as a way to legitimize copying.
+- **Copying is authorized.** Code from reference open-source projects may be copied, fully or partially: files, code blocks, or line-by-line translation into Rust.
+- **Adapt what you copy.** Copied code must become idiomatic Rust, follow this project's conventions (see 14.1), and satisfy the fidelity principle (see 14.5).
+- **Understand what you adopt.** Adopt code or a decision only when you can explain why it serves this component's objective (see 7).
+- **Licenses.** Copy only from sources whose license allows inclusion in this MIT-licensed crate, and meet that license's obligations, such as preserving copyright and license notices. When a license is incompatible or unclear, ask the user (see 1).
+- **Dependencies.** Adding a third-party crate as a dependency is an architecture decision and requires prior user approval (see 1). Present the options and the license of each.
+- **Attribution.** Record in the Knowledge Graph and in the code documentation the source of each copied or adapted piece and of each decision it inspired.
 
 ### 13.4 Safeguards
 
@@ -373,19 +459,19 @@ Portability tests are treated as first-class citizens: they must pass before a t
 5. Run `cargo test`, `cargo fmt`, and `cargo clippy`.
 6. Update `README.md` and relevant documentation if there are changes to public behavior.
 
-### 14.5 Fidelity first — minimise divergences
+### 14.5 Fidelity first — minimize divergences
 
 Rucene is a **port**, not a reinterpretation. The governing principle for every design and implementation decision is therefore:
 
 > **Be as faithful as possible to Apache Lucene Core 10.5.0, and keep the number and the size of divergences to a minimum.**
 
-This principle applies to structure, behaviour, contracts, and file formats alike:
+This principle applies to structure, behavior, contracts, and file formats alike:
 
 - **The default answer is "the same as Lucene".** When Lucene's approach can be reproduced in idiomatic Rust, reproduce it. Do not substitute a different algorithm, a different data structure, a different laziness or ownership strategy, or a different error surface simply because it looks cleaner, simpler, or faster in Rust.
 - **A divergence is an exception that must be earned.** It is only acceptable when Lucene's approach is genuinely impossible or unsafe in Rust (for example, a construct that Rust's ownership or thread-safety rules forbid), or when it would violate rule 11 (correct → safe → fast) in that order. Convenience, taste, and "it was easier" are never sufficient reasons.
 - **Never paper over a divergence with an arbitrary limit.** If the port's own design (rather than Lucene's) creates a hazard, the correct fix is to remove the divergence that caused it, not to add a constant, threshold, or cap that Lucene does not have. Introducing a bound Lucene lacks changes which indexes the crate accepts and is itself a new divergence.
 - **A divergence must be minimal in blast radius.** Where one is unavoidable, confine it to the smallest possible surface and keep everything around it faithful.
-- **Every divergence must be declared.** Document it at the point of divergence (module or item docs), stating exactly what Lucene does, what this port does instead, and why the Lucene approach could not be used. Record it in the Knowledge Graph as well, citing the Lucene 10.5.0 source file and lines that define the original behaviour.
+- **Every divergence must be declared.** Document it at the point of divergence (module or item docs), stating exactly what Lucene does, what this port does instead, and why the Lucene approach could not be used. Record it in the Knowledge Graph as well, citing the Lucene 10.5.0 source file and lines that define the original behavior.
 - **Any new divergence requires prior user approval** (see rule 1). Present the options and the reasoning; never introduce one unilaterally.
 - **Existing divergences are debt.** When a task touches code that already diverges, re-evaluate whether the divergence is still justified, and propose removing it when it is not.
 
