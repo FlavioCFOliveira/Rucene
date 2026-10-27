@@ -316,6 +316,8 @@ impl SegmentInfos {
         self.as_slice()
     }
 
+    /// Returns the segments as a slice; the same view as
+    /// [`as_list`](Self::as_list).
     pub fn as_slice(&self) -> &[SegmentCommitInfo] {
         &self.segments
     }
@@ -525,7 +527,13 @@ impl SegmentInfos {
         self.user_data.clone_from(&other.user_data);
     }
 
-    fn rollback_segment_infos(&mut self, infos: &[SegmentCommitInfo]) {
+    /// Replaces every segment with `infos`, leaving the generation, version,
+    /// counter and user data as they are.
+    ///
+    /// Equivalent to the package-private
+    /// `SegmentInfos.rollbackSegmentInfos(List<SegmentCommitInfo>)`
+    /// (`SegmentInfos.java:1132-1135`).
+    pub(crate) fn rollback_segment_infos(&mut self, infos: &[SegmentCommitInfo]) {
         self.clear();
         self.segments.extend_from_slice(infos);
     }

@@ -758,7 +758,7 @@ pub(crate) mod tests {
 
         fn fields_writer(
             &self,
-            _directory: &dyn crate::store::Directory,
+            _directory: &std::sync::Arc<dyn crate::store::Directory>,
             _segment_info: &SegmentInfo,
             _context: &dyn crate::store::IOContext,
         ) -> crate::error::Result<Box<dyn StoredFieldsWriter>> {
@@ -783,7 +783,7 @@ pub(crate) mod tests {
 
         fn vectors_writer(
             &self,
-            _directory: &dyn crate::store::Directory,
+            _directory: &std::sync::Arc<dyn crate::store::Directory>,
             _segment_info: &SegmentInfo,
             _context: &dyn crate::store::IOContext,
         ) -> crate::error::Result<Box<dyn TermVectorsWriter>> {

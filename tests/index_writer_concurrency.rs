@@ -107,7 +107,7 @@ fn scenario(sorted: bool) {
             )
             .unwrap();
     }
-    let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap().shared();
+    let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
 
     let done = Arc::new(AtomicBool::new(false));
     let indexers: Vec<_> = (0..INDEXERS)
@@ -201,9 +201,7 @@ fn an_nrt_reopen_over_changes_asks_for_merges_without_deadlocking() {
     run_with_watchdog("an NRT reopen", || {
         ensure_codec();
         let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new())
-            .unwrap()
-            .shared();
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         writer.add_document(&doc(0, 0)).unwrap();
         let reader = directory_reader::open_with_writer(writer.as_ref()).unwrap();
         assert_eq!(reader.num_docs(), 1);
@@ -355,7 +353,7 @@ fn the_merge_asks_use_compound_file_under_the_writers_lock() {
     config
         .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
         .unwrap();
-    let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap().shared();
+    let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     let _ = writer_slot.set(Arc::downgrade(&writer));
     for id in 0..20 {
         writer.add_document(&doc(id, id as i64)).unwrap();
@@ -474,9 +472,7 @@ fn concurrent_commits_are_serialised() {
     run_with_watchdog("concurrent commits", || {
         ensure_codec();
         let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new())
-            .unwrap()
-            .shared();
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         let threads: Vec<_> = (0..4)
             .map(|t| {
                 let writer = Arc::clone(&writer);

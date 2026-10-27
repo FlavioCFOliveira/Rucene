@@ -66,6 +66,7 @@ use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::merge::MergeState;
 use rucene::index::merge_policy::NoMergePolicy;
+use rucene::index::merge_scheduler::SerialMergeScheduler;
 use rucene::index::segment_merger::SegmentMerger;
 use rucene::index::segment_reader::SegmentReader;
 use rucene::index::{
@@ -495,7 +496,7 @@ fn assert_same_files_except_segment_id(dir: &dyn Directory, reference: &[(&str, 
 fn two_segments(
     codec: Option<Arc<dyn Codec>>,
     deletable: bool,
-) -> (Arc<dyn Directory>, IndexWriter) {
+) -> (Arc<dyn Directory>, Arc<IndexWriter>) {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
     let mut config = IndexWriterConfig::new();
@@ -1171,6 +1172,15 @@ fn a_merged_field_no_source_holds_fails_the_merge_without_a_panic() {
                 )))
                 .unwrap();
             config.set_use_compound_file(false).unwrap();
+            // The merge runs on the calling thread, so the tragic event it
+            // raises has closed the writer by the time `force_merge` returns.
+            // Under `ConcurrentMergeScheduler` the merge thread records the
+            // tragedy and then closes the writer, and a `close` racing between
+            // the two fails, in Lucene too (`IndexWriter.tragicEvent`,
+            // `IndexWriter.java:5868-5884`).
+            config
+                .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+                .unwrap();
             config
         };
         let writer = IndexWriter::new(Arc::clone(&dir), config()).unwrap();

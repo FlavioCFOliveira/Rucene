@@ -1663,16 +1663,6 @@ impl ReadersAndUpdates {
         copy
     }
 
-    /// Returns `true` if the segment is fully deleted.
-    ///
-    /// Equivalent to `ReadersAndUpdates.isFullyDeleted()`, which forwards to
-    /// `pendingDeletes.isFullyDeleted(this::getLatestReader)`; the soft-delete
-    /// implementation initialises its counts first, and only then are they
-    /// accurate enough to answer.
-    ///
-    /// # Errors
-    ///
-    /// Propagates whatever initialising the soft-delete counts raises.
     /// Returns whether `policy` wants a fully deleted segment kept anyway.
     ///
     /// Equivalent to `ReadersAndUpdates.keepFullyDeletedSegment(MergePolicy)`
@@ -1694,6 +1684,16 @@ impl ReadersAndUpdates {
         policy.keep_fully_deleted_segment(&mut reader_supplier)
     }
 
+    /// Returns `true` if the segment is fully deleted.
+    ///
+    /// Equivalent to `ReadersAndUpdates.isFullyDeleted()`, which forwards to
+    /// `pendingDeletes.isFullyDeleted(this::getLatestReader)`; the soft-delete
+    /// implementation initialises its counts first, and only then are they
+    /// accurate enough to answer.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever initialising the soft-delete counts raises.
     pub fn is_fully_deleted(&self) -> Result<bool> {
         let mut state = self.state.lock().expect("state mutex poisoned");
         if matches!(state.pending_deletes, PendingDeletesKind::Soft(_)) {
@@ -1705,10 +1705,6 @@ impl ReadersAndUpdates {
         }
     }
 
-    /// Writes doc-values updates to disk.  Returns `true` if any files were
-    /// written.
-    ///
-    /// Equivalent to `ReadersAndUpdates.writeFieldUpdates(Directory, FieldNumbers, long, InfoStream)`.
     /// Writes the field infos of the next generation, and returns the files it
     /// created.
     ///
@@ -1749,6 +1745,10 @@ impl ReadersAndUpdates {
         Ok(tracking.get_created_files_ordered())
     }
 
+    /// Writes doc-values updates to disk.  Returns `true` if any files were
+    /// written.
+    ///
+    /// Equivalent to `ReadersAndUpdates.writeFieldUpdates(Directory, FieldNumbers, long, InfoStream)`.
     pub fn write_field_updates(
         &self,
         dir: &Arc<dyn Directory>,

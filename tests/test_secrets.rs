@@ -24,7 +24,7 @@ use rucene::index::FieldInfo;
 use rucene::internal::tests_hooks::TestSecrets;
 use rucene::store::{Directory, RamDirectory};
 
-fn writer_with_one_segment() -> (Arc<dyn Directory>, IndexWriter) {
+fn writer_with_one_segment() -> (Arc<dyn Directory>, Arc<IndexWriter>) {
     let _ = register_codec("Lucene104", Lucene104Codec::new());
     let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();

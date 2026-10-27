@@ -94,9 +94,7 @@ fn prices(reader: &Arc<dyn DirectoryReader>) -> Vec<i64> {
 fn a_segment_emptied_over_two_commits_is_dropped_with_both_deletes() {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
-    let writer = IndexWriter::new(Arc::clone(&dir), no_merges())
-        .unwrap()
-        .shared();
+    let writer = IndexWriter::new(Arc::clone(&dir), no_merges()).unwrap();
     writer.add_document(&doc("a", 1)).unwrap();
     writer.add_document(&doc("b", 2)).unwrap();
     writer.commit().unwrap();
@@ -192,7 +190,7 @@ fn doc_values_gen_after_write_some(ram_buffer_size_mb: f64) -> i64 {
     let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
     let mut config = no_merges();
     config.set_ram_buffer_size_mb(ram_buffer_size_mb).unwrap();
-    let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap().shared();
+    let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     writer.add_document(&doc("a", 1)).unwrap();
     writer.commit().unwrap();
     let reader = directory_reader::open_with_writer(writer.as_ref()).unwrap();
@@ -336,7 +334,7 @@ fn updates_carried_over_by_a_merge_keep_the_value_of_the_highest_generation() {
     config
         .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
         .unwrap();
-    let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap().shared();
+    let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
     let _ = writer_slot.set(Arc::downgrade(&writer));
     writer.add_document(&doc("a", 1)).unwrap();
     writer.commit().unwrap();

@@ -96,7 +96,6 @@ impl SparseFixedBitSet {
         self.non_zero_long_count = 0;
     }
 
-    /// Returns the number of bits the set can hold.
     /// Returns whether `index` is inside this set's range.
     ///
     /// Equivalent to the private `SparseFixedBitSet.consistent(int)`, which
@@ -106,6 +105,7 @@ impl SparseFixedBitSet {
         true
     }
 
+    /// Returns the number of bits the set can hold.
     pub fn length(&self) -> usize {
         self.length
     }

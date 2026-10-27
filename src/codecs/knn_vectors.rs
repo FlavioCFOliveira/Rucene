@@ -1252,9 +1252,6 @@ impl KnnVectorsFormatRegistry {
         Ok(())
     }
 
-    /// Looks up a KNN-vectors format by name.
-    ///
-    /// Returns `None` if no format has been registered under the given name.
     /// Registers an already-shared format under its own name.
     ///
     /// The counterpart of [`register`](Self::register) for a format the caller
@@ -1277,6 +1274,9 @@ impl KnnVectorsFormatRegistry {
         Ok(())
     }
 
+    /// Looks up a KNN-vectors format by name.
+    ///
+    /// Returns `None` if no format has been registered under the given name.
     pub fn for_name(&self, name: &str) -> Option<Arc<dyn KnnVectorsFormat>> {
         self.formats
             .read()

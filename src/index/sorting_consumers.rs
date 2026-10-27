@@ -337,7 +337,7 @@ impl SortingStoredFieldsConsumer {
             // sequential access while stored fields are consumed in random
             // order here.
             let sort_writer = self.codec.stored_fields_format().fields_writer(
-                self.directory.as_ref(),
+                &self.directory,
                 segment_info,
                 context,
             )?;
@@ -501,7 +501,7 @@ impl SortingTermVectorsConsumer {
             // sequential access while term vectors will likely be accessed in
             // random order here.
             let writer = self.codec.term_vectors_format().vectors_writer(
-                self.directory.as_ref(),
+                &self.directory,
                 segment_info,
                 context,
             )?;

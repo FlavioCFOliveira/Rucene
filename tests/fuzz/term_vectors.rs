@@ -116,7 +116,7 @@ fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs: i32) 
     let infos = field_infos();
     let mut writer = codec()
         .term_vectors_format()
-        .vectors_writer(directory.as_ref(), info, &*DEFAULT_IO_CONTEXT)
+        .vectors_writer(directory, info, &*DEFAULT_IO_CONTEXT)
         .expect("vectors writer");
     for doc in 0..docs {
         if doc % 5 == 4 {
@@ -188,7 +188,7 @@ fn write_mixed_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs:
     let infos = field_infos();
     let mut writer = codec()
         .term_vectors_format()
-        .vectors_writer(directory.as_ref(), info, &*DEFAULT_IO_CONTEXT)
+        .vectors_writer(directory, info, &*DEFAULT_IO_CONTEXT)
         .expect("vectors writer");
     for doc in 0..docs {
         writer.start_document(4).unwrap();
@@ -266,7 +266,7 @@ fn write_wide_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs: 
     let infos = field_infos();
     let mut writer = codec()
         .term_vectors_format()
-        .vectors_writer(directory.as_ref(), info, &*DEFAULT_IO_CONTEXT)
+        .vectors_writer(directory, info, &*DEFAULT_IO_CONTEXT)
         .expect("vectors writer");
     writer.start_document(9).unwrap();
     for (ordinal, name) in FIELDS.iter().take(9).enumerate() {

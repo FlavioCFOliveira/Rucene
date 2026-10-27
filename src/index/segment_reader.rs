@@ -1483,7 +1483,6 @@ impl SegmentReader {
         &self.core_readers
     }
 
-    /// Returns the live docs that are not hard-deleted, if any.
     /// Returns whether this reader was opened over an in-memory segment that
     /// the writer may still be changing.
     ///
@@ -1494,6 +1493,7 @@ impl SegmentReader {
         self.is_nrt
     }
 
+    /// Returns the live docs that are not hard-deleted, if any.
     pub fn get_hard_live_docs(&self) -> Option<Box<dyn Bits>> {
         self.hard_live_docs
             .as_ref()
@@ -2994,7 +2994,7 @@ mod tests {
 
         fn fields_writer(
             &self,
-            directory: &dyn Directory,
+            directory: &std::sync::Arc<dyn Directory>,
             segment_info: &SegmentInfo,
             context: &dyn IOContext,
         ) -> Result<Box<dyn StoredFieldsWriter>> {
@@ -3048,7 +3048,7 @@ mod tests {
 
         fn vectors_writer(
             &self,
-            directory: &dyn Directory,
+            directory: &std::sync::Arc<dyn Directory>,
             segment_info: &SegmentInfo,
             context: &dyn IOContext,
         ) -> Result<Box<dyn TermVectorsWriter>> {

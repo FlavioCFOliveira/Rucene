@@ -240,10 +240,10 @@ impl StoredFieldsConsumer {
         if self.writer.is_none() {
             let writer = match &self.format {
                 Some(format) => {
-                    format.fields_writer(self.directory.as_ref(), &self.info, &*DEFAULT_IO_CONTEXT)
+                    format.fields_writer(&self.directory, &self.info, &*DEFAULT_IO_CONTEXT)
                 }
                 None => self.codec.stored_fields_format().fields_writer(
-                    self.directory.as_ref(),
+                    &self.directory,
                     &self.info,
                     &*DEFAULT_IO_CONTEXT,
                 ),
@@ -639,7 +639,7 @@ mod tests {
 
         fn fields_writer(
             &self,
-            _directory: &dyn Directory,
+            _directory: &std::sync::Arc<dyn Directory>,
             _segment_info: &SegmentInfo,
             _context: &dyn IOContext,
         ) -> Result<Box<dyn StoredFieldsWriter>> {
@@ -1274,9 +1274,18 @@ mod tests {
             .filter_map(|name| name.rsplit_once('.').map(|(_, ext)| ext.to_string()))
             .collect();
         extensions.sort();
+        // The index is streamed to two temporary outputs until the segment is
+        // finished (`FieldsIndexWriter.java:83-87`); the tracking wrapper
+        // records them, as Java's `TrackingDirectoryWrapper.createTempOutput`
+        // does.
         assert_eq!(
             extensions,
-            vec!["fdm".to_string(), "fdt".to_string(), "fdx".to_string()],
+            vec![
+                "fdm".to_string(),
+                "fdt".to_string(),
+                "tmp".to_string(),
+                "tmp".to_string()
+            ],
             "the consumer must write through the tracking wrapper so the segment lists its files"
         );
     }

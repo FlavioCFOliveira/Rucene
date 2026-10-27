@@ -87,7 +87,7 @@ fn write_segment(directory: &Arc<dyn Directory>, info: &SegmentInfo, docs: i32) 
     let blob = infos.field_info("blob").unwrap();
     let mut writer = codec()
         .stored_fields_format()
-        .fields_writer(directory.as_ref(), info, &*DEFAULT_IO_CONTEXT)
+        .fields_writer(directory, info, &*DEFAULT_IO_CONTEXT)
         .expect("fields writer");
     for doc in 0..docs {
         writer.start_document().unwrap();

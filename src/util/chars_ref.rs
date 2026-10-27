@@ -220,6 +220,14 @@ impl CharsRef {
         a.length.cmp(&b.length)
     }
 
+    /// Performs internal consistency checks.
+    ///
+    /// Equivalent to `CharsRef.isValid()`, which always returns `true` or throws
+    /// `IllegalStateException`; this returns `Ok(())` or the matching error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when a check fails.
     pub fn is_valid(&self) -> Result<(), LuceneError> {
         if self.length > self.chars.len() {
             return Err(LuceneError::IllegalState(format!(

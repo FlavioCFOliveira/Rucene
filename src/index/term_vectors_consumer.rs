@@ -902,10 +902,10 @@ impl TermVectorsConsumer {
             ));
             let writer = match &self.format {
                 Some(format) => {
-                    format.vectors_writer(self.directory.as_ref(), &self.info, context.as_ref())
+                    format.vectors_writer(&self.directory, &self.info, context.as_ref())
                 }
                 None => self.codec.term_vectors_format().vectors_writer(
-                    self.directory.as_ref(),
+                    &self.directory,
                     &self.info,
                     context.as_ref(),
                 ),

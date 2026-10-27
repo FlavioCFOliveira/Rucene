@@ -143,15 +143,6 @@ pub struct IntArrayDocIdSet {
 }
 
 impl IntArrayDocIdSet {
-    /// Wraps the first `length` entries of `docs`.
-    ///
-    /// `docs[length]` must be [`NO_MORE_DOCS`], as Lucene requires, and
-    /// `docs[..length]` must be sorted.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] when the sentinel is missing,
-    /// which is Java's bare `IllegalArgumentException`.
     /// Returns whether the first `length` entries of `docs` are non-decreasing.
     ///
     /// Equivalent to the private `IntArrayDocIdSet.assertArraySorted(int[],
@@ -165,6 +156,15 @@ impl IntArrayDocIdSet {
         true
     }
 
+    /// Wraps the first `length` entries of `docs`.
+    ///
+    /// `docs[length]` must be [`NO_MORE_DOCS`], as Lucene requires, and
+    /// `docs[..length]` must be sorted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the sentinel is missing,
+    /// which is Java's bare `IllegalArgumentException`.
     pub fn new(docs: Vec<i32>, length: usize) -> Result<Self> {
         if docs[length] != NO_MORE_DOCS {
             return Err(LuceneError::IllegalArgument(

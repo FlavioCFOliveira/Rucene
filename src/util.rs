@@ -1406,13 +1406,13 @@ impl GroupVIntUtil {
 // ArrayUtil
 // ---------------------------------------------------------------------------
 
-/// Methods for manipulating arrays, matching Lucene's `ArrayUtil`.
 /// A comparator over two byte slices at given offsets, returning a negative,
 /// zero or positive `i32` as Java's comparators do.
 ///
 /// Equivalent to the functional interface `ArrayUtil.ByteArrayComparator`.
 pub type ByteArrayComparator = fn(&[u8], usize, &[u8], usize) -> i32;
 
+/// Methods for manipulating arrays, matching Lucene's `ArrayUtil`.
 pub struct ArrayUtil;
 
 impl ArrayUtil {
@@ -2340,9 +2340,14 @@ impl RamUsageEstimator {
     ///
     /// Equivalent to `RamUsageEstimator.STRING_SIZE`, which Java derives at class
     /// initialisation with `shallowSizeOfInstance(String.class)`. Rust has no
-    /// reflection, so the same arithmetic is spelled out: the object header, the
-    /// cached hash, and the reference to the character array, aligned.
-    pub const STRING_SIZE: i64 = Self::NUM_BYTES_OBJECT_HEADER + 4 + Self::NUM_BYTES_OBJECT_REF;
+    /// reflection, so the same arithmetic is spelled out over the fields of the
+    /// JDK 9+ `String` the 10.5.0 jar runs on: the object header, the reference
+    /// to the value array, the `byte coder`, the `int hash` and the `boolean
+    /// hashIsZero`, aligned — 24 bytes, as measured against
+    /// `lucene-core-10.5.0.jar` on a 64-bit JVM with compressed object pointers.
+    pub const STRING_SIZE: i64 = Self::align_object_size(
+        Self::NUM_BYTES_OBJECT_HEADER + Self::NUM_BYTES_OBJECT_REF + 1 + 4 + 1,
+    );
 
     /// Returns the size in bytes of a `bool` array.
     ///

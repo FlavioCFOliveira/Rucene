@@ -62,7 +62,6 @@ impl<O1: Outputs, O2: Outputs> PairOutputs<O1, O2> {
         }
     }
 
-    /// Returns the outputs of the first half of every pair.
     /// Returns whether `pair` is a well-formed output of this pair.
     ///
     /// Equivalent to the private `PairOutputs.valid(Pair)`.
@@ -88,6 +87,7 @@ impl<O1: Outputs, O2: Outputs> PairOutputs<O1, O2> {
         true
     }
 
+    /// Returns the outputs of the first half of every pair.
     pub fn outputs1(&self) -> &O1 {
         &self.outputs1
     }

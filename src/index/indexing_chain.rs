@@ -65,10 +65,9 @@
 
 #![deny(unsafe_code)]
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::analysis::tokenattributes::{
     BytesTermAttributeImpl, CharTermAttributeImpl, OffsetAttribute, OffsetAttributeImpl,
@@ -4094,6 +4093,7 @@ impl IndexingChain for DefaultIndexingChain {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::rc::Rc;
 
     use super::*;
@@ -4940,7 +4940,9 @@ mod tests {
     ) -> crate::index::documents_writer::BufferedUpdates {
         let mut updates = crate::index::documents_writer::BufferedUpdates::new("_0");
         for delete in delete_terms {
-            updates.add_term(delete.term.clone(), delete.doc_id_upto);
+            updates
+                .add_term(delete.term.clone(), delete.doc_id_upto)
+                .unwrap();
         }
         updates
     }

@@ -590,9 +590,6 @@ impl BytesRefHash {
         self.count = 0;
     }
 
-    /// Removes every term, keeping the table allocated for reuse.
-    ///
-    /// Equivalent to `BytesRefHash.clear(false)`.
     /// Restores the table's buffers after a [`close`](Self::clear) that
     /// released them.
     ///
@@ -622,6 +619,9 @@ impl BytesRefHash {
         }
     }
 
+    /// Removes every term, keeping the table allocated for reuse.
+    ///
+    /// Equivalent to `BytesRefHash.clear(false)`.
     pub fn clear(&mut self) {
         if self.charges_bytes_start {
             self.bytes_used.fetch_sub(

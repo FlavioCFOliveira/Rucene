@@ -739,8 +739,8 @@ impl SortingCodecReaderState {
     }
 }
 
-/// Warms a merged segment by touching each kind of data it holds, so the first
-/// search does not pay for the cold read.
+/// A very simple merged-segment warmer that just ensures the data structures
+/// of each kind the segment holds are initialized.
 ///
 /// Equivalent to `org.apache.lucene.index.SimpleMergedSegmentWarmer`.
 pub struct SimpleMergedSegmentWarmer {
@@ -748,31 +748,56 @@ pub struct SimpleMergedSegmentWarmer {
 }
 
 impl SimpleMergedSegmentWarmer {
-    /// Creates the warmer.
+    /// Creates the warmer, which logs statistics about warming to
+    /// `info_stream`.
+    ///
+    /// Equivalent to `SimpleMergedSegmentWarmer(InfoStream)`.
     pub fn new(info_stream: Arc<dyn InfoStream>) -> Self {
         Self { info_stream }
     }
+}
 
-    /// Touches every indexed field, doc-values field, norm and vector of
-    /// `reader`.
+impl std::fmt::Debug for SimpleMergedSegmentWarmer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimpleMergedSegmentWarmer")
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for SimpleMergedSegmentWarmer {
+    /// `SimpleMergedSegmentWarmer` declares no `toString()`, so Java falls back
+    /// to `Object.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.SimpleMergedSegmentWarmer",
+            self,
+        ))
+    }
+}
+
+impl crate::index::index_writer_config::MergedSegmentWarmer for SimpleMergedSegmentWarmer {
+    /// Touches the terms and norms of every indexed field, the doc values of
+    /// every doc-values field, and the stored fields and term vectors of the
+    /// first document.
     ///
-    /// Equivalent to `SimpleMergedSegmentWarmer.warm(LeafReader)`.
-    pub fn warm(&self, reader: &dyn LeafReader) -> Result<()> {
-        let start = std::time::Instant::now();
+    /// Equivalent to `SimpleMergedSegmentWarmer.warm(LeafReader)`
+    /// (`SimpleMergedSegmentWarmer.java:35-90`).
+    fn warm(&self, reader: &dyn LeafReader) -> Result<()> {
+        let start_time = crate::index::merge_scheduler::current_time_millis();
         let mut indexed_count = 0;
         let mut doc_values_count = 0;
         let mut norms_count = 0;
-
-        let field_infos = reader.get_field_infos();
-        for info in field_infos.iter() {
+        for info in reader.get_field_infos().iter() {
             if info.index_options != crate::index::IndexOptions::NONE {
                 reader.terms(&info.name)?;
                 indexed_count += 1;
+
                 if info.has_norms() {
                     reader.get_norm_values(&info.name)?;
                     norms_count += 1;
                 }
             }
+
             if info.doc_values_type != crate::index::DocValuesType::NONE {
                 match info.doc_values_type {
                     crate::index::DocValuesType::NUMERIC => {
@@ -790,18 +815,23 @@ impl SimpleMergedSegmentWarmer {
                     crate::index::DocValuesType::SORTED_SET => {
                         reader.get_sorted_set_doc_values(&info.name)?;
                     }
+                    // Unreachable: the enclosing test excludes it. Java's
+                    // `default` arm asserts the same.
                     crate::index::DocValuesType::NONE => {}
                 }
                 doc_values_count += 1;
             }
         }
 
+        reader.stored_fields()?.document(0)?;
+        reader.term_vectors()?.get(0)?;
+
         if self.info_stream.is_enabled("SMSW") {
             self.info_stream.message(
                 "SMSW",
                 &format!(
-                    "warmed segment: {indexed_count} indexed fields, {doc_values_count} doc values fields, {norms_count} norms fields in {} ms",
-                    start.elapsed().as_millis()
+                    "Finished warming segment: {reader}, indexed={indexed_count}, docValues={doc_values_count}, norms={norms_count}, time={}",
+                    crate::index::merge_scheduler::current_time_millis() - start_time
                 ),
             );
         }

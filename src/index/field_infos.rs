@@ -1405,6 +1405,10 @@ impl FieldInfos {
         fields
     }
 
+    /// Returns the soft-deletes field name, if any.
+    ///
+    /// Equivalent to `FieldInfos.getSoftDeletesField()`, which returns `null`
+    /// where this returns `None`.
     pub fn get_soft_deletes_field(&self) -> Option<&str> {
         self.soft_deletes_field.as_deref()
     }

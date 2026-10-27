@@ -63,7 +63,13 @@ struct WriterState {
     /// The segments this writer knows about, committed or not.
     segment_infos: SegmentInfos,
     /// The segments as of the last commit, used to roll back.
-    rollback_segments: Vec<String>,
+    ///
+    /// Equivalent to `IndexWriter.rollbackSegments`: clones made by
+    /// `SegmentInfos.createBackupSegmentInfos()` when the writer opens and
+    /// whenever a commit finishes (`IndexWriter.java:1020, 1117, 4295`), which
+    /// `rollbackInternalNoCommit` restores through
+    /// `SegmentInfos.rollbackSegmentInfos` (`IndexWriter.java:2615`).
+    rollback_segments: Vec<SegmentCommitInfo>,
     /// The commit under way between `prepare_commit` and `commit`.
     pending_commit: Option<SegmentInfos>,
     /// The files of the commit under way, which the deleter holds a reference
@@ -82,7 +88,8 @@ struct WriterState {
     ///
     /// Equivalent to `IndexWriter.runningMerges`. This port's `OneMerge` is a
     /// value the merge thread owns, so the writer keeps a clone, recognised by
-    /// its `merge_gen`.
+    /// [`OneMerge::is_same_merge`] — the identity Java's
+    /// `runningMerges.remove(merge)` compares by.
     running_merges: Vec<OneMerge>,
     /// The segments a forced merge must merge, mapped to whether they were
     /// part of the index when it was requested (`true`) or produced by it
@@ -93,7 +100,13 @@ struct WriterState {
     segments_to_merge: HashMap<String, bool>,
     /// Segments taking part in a running merge, by name.
     merging_segments: HashSet<String>,
-    /// Bumped on every merge registration, as Java's `mergeGen` is.
+    /// The generation of [`merge_exceptions`](Self::merge_exceptions): bumped
+    /// only when they are reset, and stamped on every merge registered since,
+    /// so that only the failures of merges registered after the last reset
+    /// are recorded.
+    ///
+    /// Equivalent to `IndexWriter.mergeGen` (`IndexWriter.java:392, 3014,
+    /// 4996, 5601`).
     merge_gen: i64,
     /// User data to attach to the next commit.
     /// Equivalent to `private Iterable<Map.Entry<String, String>> commitUserData`
@@ -132,6 +145,12 @@ pub struct IndexWriter {
     /// Equivalent to `IndexWriter.globalFieldNumberMap`.
     global_field_numbers: Arc<FieldNumbers>,
     state: Mutex<WriterState>,
+    /// The `wait`/`notifyAll` of the writer's monitor, paired with
+    /// [`state`](Self::state).
+    ///
+    /// Equivalent to the `Object.wait(1000)` in `IndexWriter.doWait()` and the
+    /// `notifyAll()` calls that wake it (`mergeFinish`, `abortMerges`, …).
+    state_changed: std::sync::Condvar,
     /// Held from construction until the writer closes, so only one writer
     /// opens a directory at a time.
     ///
@@ -226,13 +245,13 @@ pub struct IndexWriter {
     /// updates, so the pass is repeated against the new segment.
     merge_finished_gen: AtomicI64,
     /// The callbacks installed on the documents writer, kept so that the writer
-    /// can drain the events they record.
+    /// can drain the files they record.
     ///
-    /// Equivalent to holding the anonymous `DocumentsWriter.FlushNotifications`
-    /// together with `IndexWriter.eventQueue`: Java's notifications push a
-    /// closure onto the queue and `processEvents` runs it, so the writer needs a
-    /// handle on the queue. Here the queue lives inside the notifications and
-    /// [`process_events`](Self::process_events) drains it.
+    /// Equivalent to the anonymous `DocumentsWriter.FlushNotifications`
+    /// `IndexWriter` installs (`IndexWriter.java:427-466`). Its
+    /// `deleteUnusedFiles` and `flushFailed` events are recorded inside it and
+    /// drained by [`process_events`](Self::process_events); the others reach
+    /// the writer through its weak handle.
     flush_notifications: Arc<WriterFlushNotifications>,
     /// Serialises the two-stage full flushes, so that only one runs at a time.
     ///
@@ -252,19 +271,23 @@ pub struct IndexWriter {
     /// that merge. Compiled into unit tests only.
     #[cfg(test)]
     point_in_time_merge_registered_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
-    /// The packets `publish_frozen_updates` pushed, each waiting for its
-    /// `tryApply` event.
+    /// The events waiting to run on this writer.
     ///
-    /// Equivalent to the `w -> w.tryApply(packet)` events `publishFrozenUpdates`
-    /// adds to `IndexWriter.eventQueue`.
-    apply_events: Mutex<
-        std::collections::VecDeque<Arc<crate::index::documents_writer::FrozenBufferedUpdates>>,
-    >,
+    /// Equivalent to `IndexWriter.eventQueue`. The `deleteUnusedFiles` and
+    /// `flushFailed` events are kept apart, in
+    /// [`WriterFlushNotifications::orphaned_files`], and drained by the same
+    /// [`process_events`](Self::process_events); Java's queue guarantees no
+    /// order between events (`IndexWriter.java:6146-6150`).
+    event_queue: EventQueue,
     /// Serialises commits, and keeps a rollback from closing the writer while a
     /// commit is still syncing.
     ///
-    /// Equivalent to `IndexWriter.commitLock`.
-    commit_lock: Mutex<()>,
+    /// Equivalent to `IndexWriter.commitLock`, a monitor and therefore
+    /// reentrant: a tragedy hit inside `commitInternal` or
+    /// `prepareCommitInternal` closes the writer through `rollbackInternal`,
+    /// which takes the lock again on the same thread
+    /// (`IndexWriter.java:2545-2549, 3862, 4314`).
+    commit_lock: ReentrantLock,
     /// Lets only one thread at a time write doc-values updates to relieve RAM.
     ///
     /// Equivalent to `IndexWriter.writeDocValuesLock`.
@@ -274,19 +297,18 @@ pub struct IndexWriter {
     ///
     /// Equivalent to `IndexWriter.pendingSeqNo`.
     pending_seq_no: AtomicI64,
-    /// A weak handle on this writer, once it has been shared with
-    /// [`shared`](Self::shared).
+    /// A weak handle on this writer, recorded by [`new`](Self::new).
     ///
-    /// **Divergence from Lucene 10.5.0.** `IndexWriter.getReader` hands `this`
-    /// to `StandardDirectoryReader.open` (`IndexWriter.java:610`) so the
-    /// near-real-time reader can call back into the writer, and
+    /// `IndexWriter.getReader` hands `this` to `StandardDirectoryReader.open`
+    /// (`IndexWriter.java:610`), the writer hands `IndexWriterMergeSource(this)`
+    /// to its merge scheduler (`IndexWriter.java:2411`), and
     /// `preparePointInTimeMerge` captures `IndexWriter.this` in the merge hooks
     /// it installs (`IndexWriter.java:3941-4053`). A Rust `&self` cannot be
-    /// turned into the shared handle those two need, so the writer records a
-    /// weak self-reference when it is moved into an `Arc` by
-    /// [`shared`](Self::shared). The reference is weak rather than strong
-    /// because the merge hooks live inside the writer's own pending merges, and
-    /// a strong handle there would keep the writer alive for ever.
+    /// turned into the shared handle those need, so the writer — always created
+    /// inside an `Arc`, as a Java object is always reached through a reference
+    /// — keeps a weak reference to itself. It is weak because the merge hooks
+    /// live inside the writer's own pending merges, and a strong handle there
+    /// would keep the writer alive for ever.
     self_ref: OnceLock<Weak<IndexWriter>>,
 }
 
@@ -298,15 +320,198 @@ impl std::fmt::Debug for IndexWriter {
     }
 }
 
+/// A mutual-exclusion lock the thread holding it may take again.
+///
+/// Equivalent to a Java monitor (`synchronized (commitLock)`), which is
+/// reentrant. `std::sync::Mutex` is not, and the writer re-enters its commit
+/// lock when a tragedy inside a commit closes it (see
+/// [`IndexWriter::commit_lock`]).
+#[derive(Default)]
+struct ReentrantLock {
+    /// The owning thread and how many times it holds the lock.
+    owner: Mutex<(Option<std::thread::ThreadId>, usize)>,
+    /// Signalled when the owner releases the lock for the last time.
+    released: std::sync::Condvar,
+}
+
+impl ReentrantLock {
+    /// Takes the lock, waiting while another thread holds it.
+    fn lock(&self) -> ReentrantGuard<'_> {
+        let me = std::thread::current().id();
+        let mut owner = self
+            .owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            match owner.0 {
+                None => {
+                    *owner = (Some(me), 1);
+                    break;
+                }
+                Some(holder) if holder == me => {
+                    owner.1 += 1;
+                    break;
+                }
+                Some(_) => {
+                    owner = self
+                        .released
+                        .wait(owner)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+            }
+        }
+        ReentrantGuard {
+            lock: self,
+            _not_send: std::marker::PhantomData,
+        }
+    }
+}
+
+/// One hold of a [`ReentrantLock`], released when dropped.
+///
+/// The hold belongs to the thread that took it, as a Java monitor's does, so
+/// the guard is `!Send`: dropping it on another thread would release a lock
+/// that thread does not own.
+struct ReentrantGuard<'a> {
+    lock: &'a ReentrantLock,
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl Drop for ReentrantGuard<'_> {
+    fn drop(&mut self) {
+        let mut owner = self
+            .lock
+            .owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        owner.1 -= 1;
+        if owner.1 == 0 {
+            owner.0 = None;
+            self.lock.released.notify_one();
+        }
+    }
+}
+
+/// One event waiting in the writer's [`EventQueue`].
+///
+/// Equivalent to the `IndexWriter.Event` lambdas Java adds to
+/// `IndexWriter.eventQueue`.
+enum WriterEvent {
+    /// `w -> tryApply(packet)`, added by `publishFrozenUpdates`
+    /// (`IndexWriter.java:2895-2918`).
+    TryApply(Arc<crate::index::documents_writer::FrozenBufferedUpdates>),
+    /// `w -> w.publishFlushedSegments(true)`, added by `onTicketBacklog`
+    /// (`IndexWriter.java:462-465`) and, with `count_flush`, by
+    /// `onDeletesApplied`, whose `finally` increments `flushCount`
+    /// (`IndexWriter.java:450-460`).
+    PublishFlushedSegments {
+        /// Whether `flushCount` is incremented once the publication ends.
+        count_flush: bool,
+    },
+}
+
+/// Whether the [`EventQueue`] is closed, and how many permits are taken.
+#[derive(Default)]
+struct EventQueuePermits {
+    closed: bool,
+    held: usize,
+}
+
+/// The events a writer runs when its callers come back up the stack.
+///
+/// Equivalent to `IndexWriter.EventQueue` (`IndexWriter.java:294-366`). Java
+/// guards it with a `Semaphore(Integer.MAX_VALUE)` so that any number of
+/// threads may add and process events at once, while `close` takes every
+/// permit and so waits for them; [`EventQueuePermits`] counts the permits held
+/// and [`close`](IndexWriter::close_event_queue) waits for none to be.
+#[derive(Default)]
+struct EventQueue {
+    queue: Mutex<std::collections::VecDeque<WriterEvent>>,
+    permits: Mutex<EventQueuePermits>,
+    released: std::sync::Condvar,
+}
+
+/// One permit of an [`EventQueue`], given back when dropped.
+struct EventPermit<'a> {
+    queue: &'a EventQueue,
+}
+
+impl Drop for EventPermit<'_> {
+    fn drop(&mut self) {
+        let mut permits = self
+            .queue
+            .permits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        permits.held -= 1;
+        if permits.held == 0 {
+            self.queue.released.notify_all();
+        }
+    }
+}
+
+impl EventQueue {
+    /// Takes a permit, failing once the queue is closed.
+    ///
+    /// Equivalent to `EventQueue.acquire()` (`IndexWriter.java:307-315`).
+    fn acquire(&self) -> Result<EventPermit<'_>> {
+        let mut permits = self
+            .permits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if permits.closed {
+            return Err(LuceneError::AlreadyClosed("queue is closed".to_string()));
+        }
+        permits.held += 1;
+        Ok(EventPermit { queue: self })
+    }
+
+    /// Queues `event`.
+    ///
+    /// Equivalent to `EventQueue.add(Event)` (`IndexWriter.java:317-324`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::AlreadyClosed`] once the queue is closed.
+    fn add(&self, event: WriterEvent) -> Result<()> {
+        let _permit = self.acquire()?;
+        self.queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back(event);
+        Ok(())
+    }
+
+    /// Takes the next event, if any.
+    fn poll(&self) -> Option<WriterEvent> {
+        self.queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop_front()
+    }
+}
+
 /// Bridges the flush machinery's callbacks back onto the writer.
 ///
 /// Equivalent to the anonymous `IndexWriter.EventQueue` / `FlushNotifications`
 /// Java's `IndexWriter` installs on its `DocumentsWriter`.
 struct WriterFlushNotifications {
+    /// The writer these notifications report to, set once it exists.
+    ///
+    /// Java's anonymous `FlushNotifications` is an inner class of
+    /// `IndexWriter` and reaches it through `IndexWriter.this`. The writer
+    /// owns this object, so the handle is weak, as
+    /// [`IndexWriter::self_ref`] is.
+    writer: OnceLock<Weak<IndexWriter>>,
     info_stream: Arc<dyn InfoStream>,
-    /// Files a failed flush left behind, to be deleted at the next checkpoint.
+    /// Files a flush left behind, to be deleted when the writer next runs its
+    /// events.
+    ///
+    /// Equivalent to the `w -> w.deleteNewFiles(files)` and `w ->
+    /// w.flushFailed(info)` events Java adds to `IndexWriter.eventQueue`
+    /// (`IndexWriter.java:430-438`); adding one fails once the queue is
+    /// closed, exactly as `EventQueue.add` does.
     orphaned_files: Mutex<HashSet<String>>,
-    tragedy: Mutex<Option<String>>,
 }
 
 impl std::fmt::Debug for WriterFlushNotifications {
@@ -317,42 +522,106 @@ impl std::fmt::Debug for WriterFlushNotifications {
 }
 
 impl FlushNotifications for WriterFlushNotifications {
-    fn delete_unused_files(&self, files: &HashSet<String>) {
-        if let Ok(mut guard) = self.orphaned_files.lock() {
-            guard.extend(files.iter().cloned());
-        }
+    /// Equivalent to `deleteUnusedFiles(Collection<String>)` of
+    /// `IndexWriter`'s `FlushNotifications` (`IndexWriter.java:430-433`):
+    /// `eventQueue.add(w -> w.deleteNewFiles(files))`.
+    fn delete_unused_files(&self, files: &HashSet<String>) -> Result<()> {
+        self.add_orphaned_files(files.iter().cloned())
     }
 
-    fn flush_failed(&self, info: &SegmentInfo) {
-        if let Ok(files) = info.files() {
-            if let Ok(mut guard) = self.orphaned_files.lock() {
-                guard.extend(files);
-            }
-        }
+    /// Equivalent to `flushFailed(SegmentInfo)` of `IndexWriter`'s
+    /// `FlushNotifications` (`IndexWriter.java:435-438`): `eventQueue.add(w
+    /// -> w.flushFailed(info))`, whose event deletes `info.files()`
+    /// (`IndexWriter.java:6023-6037`); an `IllegalStateException` from
+    /// `info.files()` means there is nothing to delete.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java reads `info.files()` when the
+    /// event runs, this port when it is queued; nothing changes the files of
+    /// a segment whose flush failed in between.
+    fn flush_failed(&self, info: &SegmentInfo) -> Result<()> {
+        let files = info.files().unwrap_or_default();
+        self.add_orphaned_files(files)
     }
 
+    /// Equivalent to `afterSegmentsFlushed()` of `IndexWriter`'s
+    /// `FlushNotifications` (`IndexWriter.java:440-443`), which is
+    /// `publishFlushedSegments(false)`: publish whatever tickets are ready
+    /// unless another thread is already publishing. The merge the published
+    /// segments may enable is asked for afterwards, by the indexing call that
+    /// flushed (`maybeProcessEvents`, `IndexWriter.java:5578-5583`).
     fn after_segments_flushed(&self) -> Result<()> {
-        Ok(())
+        match self.writer.get().and_then(Weak::upgrade) {
+            Some(writer) => writer.publish_flushed_segments(false),
+            // The writer is being dropped: no one is left to publish to.
+            None => Ok(()),
+        }
     }
 
+    /// Equivalent to `onTragicEvent(Throwable, String)` of `IndexWriter`'s
+    /// `FlushNotifications` (`IndexWriter.java:445-448`), which is
+    /// `IndexWriter.this.onTragicEvent(event, message)`: the aborting failure
+    /// of a per-thread writer (`DocumentsWriterPerThread.java:594-604`)
+    /// becomes the writer's tragedy.
     fn on_tragic_event(&self, error: &LuceneError, message: &str) {
-        if let Ok(mut guard) = self.tragedy.lock() {
-            if guard.is_none() {
-                *guard = Some(format!("{message}: {error}"));
+        match self.writer.get().and_then(Weak::upgrade) {
+            Some(writer) => writer.on_tragic_event(error, message),
+            // The writer is being dropped: no one is left to close.
+            None => {
+                if self.info_stream.is_enabled(IW) {
+                    self.info_stream
+                        .message(IW, &format!("hit tragic error inside {message}: {error}"));
+                }
             }
         }
-        if self.info_stream.is_enabled(IW) {
-            self.info_stream
-                .message(IW, &format!("hit tragic event in {message}: {error}"));
+    }
+
+    /// Equivalent to `onDeletesApplied()` of `IndexWriter`'s
+    /// `FlushNotifications` (`IndexWriter.java:450-460`): queue
+    /// `publishFlushedSegments(true)`, incrementing `flushCount` in its
+    /// `finally`.
+    fn on_deletes_applied(&self) -> Result<()> {
+        match self.writer.get().and_then(Weak::upgrade) {
+            Some(writer) => writer
+                .event_queue
+                .add(WriterEvent::PublishFlushedSegments { count_flush: true }),
+            None => Ok(()),
         }
     }
 
-    fn on_deletes_applied(&self) {}
-
-    fn on_ticket_backlog(&self) {}
+    /// Equivalent to `onTicketBacklog()` of `IndexWriter`'s
+    /// `FlushNotifications` (`IndexWriter.java:462-465`): queue
+    /// `publishFlushedSegments(true)`.
+    fn on_ticket_backlog(&self) -> Result<()> {
+        match self.writer.get().and_then(Weak::upgrade) {
+            Some(writer) => writer
+                .event_queue
+                .add(WriterEvent::PublishFlushedSegments { count_flush: false }),
+            None => Ok(()),
+        }
+    }
 }
 
 impl WriterFlushNotifications {
+    /// Records `files` for deletion, as an event added to the writer's event
+    /// queue.
+    ///
+    /// Equivalent to `EventQueue.add(Event)` (`IndexWriter.java:317-324`):
+    /// the event is refused with [`LuceneError::AlreadyClosed`] once the queue
+    /// is closed. Before the writer exists, and while it is being dropped,
+    /// there is no queue to refuse it.
+    fn add_orphaned_files(&self, files: impl IntoIterator<Item = String>) -> Result<()> {
+        let writer = self.writer.get().and_then(Weak::upgrade);
+        let _permit = match &writer {
+            Some(writer) => Some(writer.event_queue.acquire()?),
+            None => None,
+        };
+        self.orphaned_files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(files);
+        Ok(())
+    }
+
     /// Takes the files recorded so far, leaving the set empty.
     ///
     /// Equivalent to draining the `deleteUnusedFiles` events off
@@ -369,11 +638,16 @@ impl IndexWriter {
     /// Opens a writer over `directory`.
     ///
     /// Equivalent to `IndexWriter(Directory, IndexWriterConfig)`. The write lock
-    /// is taken first and held until the writer is dropped, so a second writer
-    /// on the same directory fails rather than corrupting it.
-    pub fn new(directory: Arc<dyn Directory>, config: IndexWriterConfig) -> Result<Self> {
+    /// is taken first and held until the writer is closed or rolled back
+    /// (`rollbackInternalNoCommit` releases it, `IndexWriter.java:2645`), so a
+    /// second writer on the same directory fails rather than corrupting it.
+    pub fn new(directory: Arc<dyn Directory>, config: IndexWriterConfig) -> Result<Arc<Self>> {
         let write_lock = directory.obtain_lock(WRITE_LOCK_NAME)?;
         let info_stream = config.info_stream();
+        // `IndexWriter.java:964-965`.
+        config
+            .merge_scheduler()
+            .initialize(Arc::clone(&info_stream), &directory)?;
         let open_mode = config.open_mode();
 
         // `IndexWriter.java:966-979`: CREATE and CREATE_OR_APPEND ask whether
@@ -415,6 +689,9 @@ impl IndexWriter {
         } else {
             SegmentInfos::read_latest_commit(Arc::clone(&directory))?
         };
+        // `rollbackSegments = segmentInfos.createBackupSegmentInfos()`
+        // (`IndexWriter.java:1020, 1117`), taken before the deleter is built.
+        let rollback_segments = segment_infos.create_backup_segment_infos();
         if info_stream.is_enabled(IW) {
             info_stream.message(IW, &format!("init {}", segment_infos.to_string_verbose()));
         }
@@ -423,9 +700,9 @@ impl IndexWriter {
 
         let tragedy: Mutex<Option<String>> = Mutex::new(None);
         let notifications = Arc::new(WriterFlushNotifications {
+            writer: OnceLock::new(),
             info_stream: Arc::clone(&info_stream),
             orphaned_files: Mutex::new(HashSet::new()),
-            tragedy: Mutex::new(None),
         });
 
         let deleter = IndexFileDeleter::new(
@@ -445,11 +722,6 @@ impl IndexWriter {
             segment_infos.changed();
             initial_change_count += 1;
         }
-
-        let rollback_segments = segment_infos
-            .iter()
-            .map(|info| info.info.name.clone())
-            .collect();
 
         let live_config = Arc::new(config.into_live());
         let pending_num_docs = Arc::new(AtomicI64::new(i64::from(segment_infos.total_max_doc())));
@@ -532,6 +804,7 @@ impl IndexWriter {
             documents_writer,
             reader_pool,
             global_field_numbers,
+            state_changed: std::sync::Condvar::new(),
             state: Mutex::new(WriterState {
                 segment_infos,
                 rollback_segments,
@@ -567,10 +840,10 @@ impl IndexWriter {
             flush_notifications: notifications,
             full_flush_lock: Mutex::new(()),
             maybe_merge: AtomicBool::new(false),
-            apply_events: Mutex::new(std::collections::VecDeque::new()),
+            event_queue: EventQueue::default(),
             #[cfg(test)]
             point_in_time_merge_registered_hook: Mutex::new(None),
-            commit_lock: Mutex::new(()),
+            commit_lock: ReentrantLock::default(),
             write_doc_values_lock: Mutex::new(()),
             pending_seq_no: AtomicI64::new(0),
             self_ref: OnceLock::new(),
@@ -583,40 +856,27 @@ impl IndexWriter {
                 .message(IW, &format!("init: create={create} reader=null"));
             writer.message_state()?;
         }
-        Ok(writer)
-    }
-
-    /// Moves this writer into an `Arc` and records the weak self-reference the
-    /// near-real-time reader path needs.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java has no counterpart: an
-    /// `IndexWriter` there can always hand `this` to the readers and merge
-    /// hooks it creates. Rust cannot produce a shared handle from `&self`, so a
-    /// writer that is going to serve `get_reader` must be shared through this
-    /// method; see [`self_ref`](Self::self_ref) and
-    /// [`IndexWriter::get_reader`](crate::index::directory_reader::IndexWriter::get_reader).
-    pub fn shared(self) -> Arc<Self> {
-        let writer = Arc::new(self);
+        let writer = Arc::new(writer);
         // `OnceLock::set` fails only when the cell is already filled, which
         // cannot happen for a writer that has just been moved into this `Arc`.
         let _ = writer.self_ref.set(Arc::downgrade(&writer));
-        writer
+        let _ = writer
+            .flush_notifications
+            .writer
+            .set(Arc::downgrade(&writer));
+        Ok(writer)
     }
 
     /// Returns the shared handle on this writer recorded by
-    /// [`shared`](Self::shared).
+    /// [`new`](Self::new).
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] when this writer was never shared,
-    /// because there is then no handle a reader or a merge hook could hold.
+    /// Returns [`LuceneError::AlreadyClosed`] when the last handle on the
+    /// writer is being dropped, so no new reference can be made.
     fn shared_self(&self) -> Result<Arc<IndexWriter>> {
         self.self_ref.get().and_then(Weak::upgrade).ok_or_else(|| {
-            LuceneError::IllegalState(
-                "this IndexWriter was not shared; a near-real-time reader needs a writer \
-                     moved into an Arc by IndexWriter::shared"
-                    .to_string(),
-            )
+            LuceneError::AlreadyClosed("this IndexWriter is being dropped".to_string())
         })
     }
 
@@ -680,11 +940,11 @@ impl IndexWriter {
 
     /// Fails once the writer has been closed, and optionally while it closes.
     ///
-    /// Equivalent to `IndexWriter.ensureOpen(boolean)`.
-    ///
-    /// This port has no separate `closing` phase — `close` and `rollback` flip
-    /// `closed` under the writer's own lock — so `fail_if_closing` selects the
-    /// same two behaviours Java offers over one flag.
+    /// Equivalent to `IndexWriter.ensureOpen(boolean)`
+    /// (`IndexWriter.java:917-921`): fails once `closed` is set, and, when
+    /// `fail_if_closing`, also while another call is closing the writer
+    /// (`closing`), which is what lets `close` keep flushing and committing
+    /// after it has claimed the close.
     pub fn ensure_open_with(&self, fail_if_closing: bool) -> Result<()> {
         if self.closed.load(Ordering::Acquire)
             || (fail_if_closing && self.closing.load(Ordering::Acquire))
@@ -833,13 +1093,6 @@ impl IndexWriter {
     /// chance to run — outside the writer's lock, because taking it there
     /// deadlocks — and then waits for the pending and running sets to empty.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java waits on the writer's own
-    /// monitor and is woken by `notifyAll()`; this port has no monitor to wait
-    /// on, so it polls through [`do_wait`](Self::do_wait), which is the
-    /// adaptation that method already declares. Java's own wait carries a
-    /// one-second timeout for exactly the missed-notification case, so the
-    /// worst-case latency is the same.
-    ///
     /// # Errors
     ///
     /// Returns [`LuceneError::AlreadyClosed`] when the writer is closed, and
@@ -850,19 +1103,17 @@ impl IndexWriter {
         // a merge while holding it can deadlock.
         self.execute_merge(MergeTrigger::Closing)?;
 
+        let mut state = self.state()?;
         self.ensure_open_with(false)?;
         if self.info_stream.is_enabled(IW) {
             self.info_stream.message(IW, "waitForMerges");
         }
-        loop {
-            {
-                let state = self.state()?;
-                if state.pending_merges.is_empty() && state.merging_segments.is_empty() {
-                    break;
-                }
-            }
-            self.do_wait();
+        while !state.pending_merges.is_empty() || !state.running_merges.is_empty() {
+            state = self.do_wait(state)?;
         }
+        // Sanity check.
+        debug_assert!(state.merging_segments.is_empty());
+        drop(state);
         if self.info_stream.is_enabled(IW) {
             self.info_stream.message(IW, "waitForMerges done");
         }
@@ -1079,23 +1330,20 @@ impl IndexWriter {
         &self.config
     }
 
-    /// Fails once the writer has been closed or hit a tragic event.
+    /// Fails once the writer is closed or closing.
     ///
-    /// Equivalent to `IndexWriter.ensureOpen()`.
+    /// Equivalent to `IndexWriter.ensureOpen()`, which is `ensureOpen(true)`
+    /// (`IndexWriter.java:931-933`). A tragedy closes the writer
+    /// (`maybeCloseOnTragicEvent`), so a tragic writer fails here with
+    /// [`LuceneError::AlreadyClosed`] as Java's does.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java attaches the tragedy as the
+    /// `AlreadyClosedException`'s cause (`IndexWriter.java:919`);
+    /// [`LuceneError::AlreadyClosed`] carries only the message, so the
+    /// tragedy is read through
+    /// [`get_tragic_exception`](Self::get_tragic_exception).
     pub fn ensure_open(&self) -> Result<()> {
-        if let Ok(guard) = self.tragedy.lock() {
-            if let Some(reason) = guard.as_ref() {
-                return Err(LuceneError::IllegalState(format!(
-                    "this writer hit an unrecoverable error: {reason}"
-                )));
-            }
-        }
-        if self.closed.load(Ordering::Acquire) {
-            return Err(LuceneError::AlreadyClosed(
-                "this IndexWriter is closed".to_string(),
-            ));
-        }
-        Ok(())
+        self.ensure_open_with(true)
     }
 
     fn state(&self) -> Result<MutexGuard<'_, WriterState>> {
@@ -1121,8 +1369,33 @@ impl IndexWriter {
     /// operation was assigned.
     pub fn add_document(&self, doc: &Document) -> Result<i64> {
         self.ensure_open()?;
-        let seq_no = self.documents_writer.update_document(doc, None)?;
-        self.maybe_process_events(seq_no)
+        let outcome = self
+            .documents_writer
+            .update_document(doc, None)
+            .and_then(|seq_no| self.maybe_process_events(seq_no));
+        self.finish_update_documents(outcome)
+    }
+
+    /// The `finally` of `IndexWriter.updateDocuments(Node, Iterable)`
+    /// (`IndexWriter.java:1645-1653`), which every document-adding call goes
+    /// through: a failed update closes the writer when it recorded a tragedy —
+    /// the aborting failure of a per-thread writer does, through
+    /// `FlushNotifications.onTragicEvent` — and a failure to close replaces
+    /// the original one, as an exception thrown from `finally` does.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `catch (Error tragedy)`
+    /// records a JVM `Error` as a tragic event (`IndexWriter.java:1643-1645`);
+    /// [`LuceneError`] has no counterpart of `Error`, so only the `finally`
+    /// remains.
+    fn finish_update_documents(&self, outcome: Result<i64>) -> Result<i64> {
+        if outcome.is_err() {
+            if self.info_stream.is_enabled(IW) {
+                self.info_stream
+                    .message(IW, "hit exception updating document");
+            }
+            self.maybe_close_on_tragic_event()?;
+        }
+        outcome
     }
 
     /// Adds `docs` as one block, so they stay adjacent in the segment.
@@ -1130,8 +1403,11 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.addDocuments`.
     pub fn add_documents(&self, docs: &[Document]) -> Result<i64> {
         self.ensure_open()?;
-        let seq_no = self.documents_writer.update_documents(docs, None)?;
-        self.maybe_process_events(seq_no)
+        let outcome = self
+            .documents_writer
+            .update_documents(docs, None)
+            .and_then(|seq_no| self.maybe_process_events(seq_no));
+        self.finish_update_documents(outcome)
     }
 
     /// Adds a batch of documents presented column by column.
@@ -1172,8 +1448,19 @@ impl IndexWriter {
         column_batch: &dyn crate::document::column::ColumnBatch,
     ) -> Result<i64> {
         self.ensure_open()?;
-        let seq_no = self.documents_writer.update_batch(column_batch, del_node)?;
-        self.maybe_process_events(seq_no)
+        let outcome = self
+            .documents_writer
+            .update_batch(column_batch, del_node)
+            .and_then(|seq_no| self.maybe_process_events(seq_no));
+        // `IndexWriter.java:1588-1597`.
+        if let Err(error) = &outcome {
+            if self.info_stream.is_enabled(IW) {
+                self.info_stream
+                    .message(IW, &format!("hit exception adding batch: {error}"));
+            }
+            self.maybe_close_on_tragic_event()?;
+        }
+        outcome
     }
 
     /// Replaces every document matching `term` with `doc`.
@@ -1181,10 +1468,11 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.updateDocument(Term, Iterable)`.
     pub fn update_document(&self, term: Term, doc: &Document) -> Result<i64> {
         self.ensure_open()?;
-        let seq_no = self
+        let outcome = self
             .documents_writer
-            .update_document(doc, Some(DeleteNode::new_term(term)))?;
-        self.maybe_process_events(seq_no)
+            .update_document(doc, Some(DeleteNode::new_term(term)))
+            .and_then(|seq_no| self.maybe_process_events(seq_no));
+        self.finish_update_documents(outcome)
     }
 
     /// Replaces every document matching `term` with the block `docs`.
@@ -1192,10 +1480,11 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.updateDocuments(Term, Iterable)`.
     pub fn update_documents(&self, term: Term, docs: &[Document]) -> Result<i64> {
         self.ensure_open()?;
-        let seq_no = self
+        let outcome = self
             .documents_writer
-            .update_documents(docs, Some(DeleteNode::new_term(term)))?;
-        self.maybe_process_events(seq_no)
+            .update_documents(docs, Some(DeleteNode::new_term(term)))
+            .and_then(|seq_no| self.maybe_process_events(seq_no));
+        self.finish_update_documents(outcome)
     }
 
     /// Deletes every document matching any of `terms`.
@@ -1249,10 +1538,11 @@ impl IndexWriter {
         }
         self.ensure_open()?;
         let updates = self.build_doc_values_update(&term, soft_deletes)?;
-        let seq_no = self
+        let outcome = self
             .documents_writer
-            .update_document(doc, Some(DeleteNode::new_doc_values_updates(updates)))?;
-        self.maybe_process_events(seq_no)
+            .update_document(doc, Some(DeleteNode::new_doc_values_updates(updates)))
+            .and_then(|seq_no| self.maybe_process_events(seq_no));
+        self.finish_update_documents(outcome)
     }
 
     /// Replaces every document matching `term` with the block `docs`, marking the
@@ -1277,10 +1567,11 @@ impl IndexWriter {
         }
         self.ensure_open()?;
         let updates = self.build_doc_values_update(&term, soft_deletes)?;
-        let seq_no = self
+        let outcome = self
             .documents_writer
-            .update_documents(docs, Some(DeleteNode::new_doc_values_updates(updates)))?;
-        self.maybe_process_events(seq_no)
+            .update_documents(docs, Some(DeleteNode::new_doc_values_updates(updates)))
+            .and_then(|seq_no| self.maybe_process_events(seq_no));
+        self.finish_update_documents(outcome)
     }
 
     /// Sets the numeric doc-values of `field` to `value` on every document
@@ -1428,21 +1719,110 @@ impl IndexWriter {
 
     /// Deletes every document in the index.
     ///
-    /// Equivalent to `IndexWriter.deleteAll()`. Java discards the buffered
-    /// documents and drops every segment from `segmentInfos`, which is what
-    /// makes this far cheaper than deleting by query.
+    /// Equivalent to `IndexWriter.deleteAll()` (`IndexWriter.java:2710-2785`).
+    /// Java discards the buffered documents and drops every segment from
+    /// `segmentInfos`, which is what makes this far cheaper than deleting by
+    /// query. It forcefully aborts every merge in progress, so a merge of the
+    /// dropped segments cannot bring their documents back; another thread
+    /// running such a merge may see it aborted.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `catch (Error tragedy)`
+    /// records a JVM `Error` as a tragic event (`IndexWriter.java:2778-2781`);
+    /// [`LuceneError`] has no counterpart of `Error`, so there is nothing to
+    /// record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::AlreadyClosed`] once the writer is closed, and
+    /// propagates what aborting the buffered documents or the merges, or
+    /// checkpointing the empty index, raised.
     pub fn delete_all(&self) -> Result<i64> {
         self.ensure_open()?;
-        let seq_no = self.documents_writer.next_sequence_number();
-        self.documents_writer.abort()?;
+        // Hold the full flush lock to prevent concurrent commits / NRT
+        // reopens from getting in our way and doing unnecessary work.
+        let _full_flush = self.lock_full_flush()?;
+        // We first abort and trash everything we have in memory and keep the
+        // thread states locked; `lockAndAbortAll` also guarantees "point in
+        // time" semantics, the checkpoint we need in terms of logical
+        // happens-before in the documents writer. Global field numbering is
+        // dropped too, so the index is just like a fresh one.
+        let _finalizer = self.documents_writer.lock_and_abort_all()?;
+        self.process_events(false)?;
+        let state = self.state()?;
+        // Abort any running merges. `abortMerges` disables all merges; the
+        // `finally` re-enables them whatever happens, so the writer can
+        // function properly (`IndexWriter.java:2734-2747`). `merges.enable()`
+        // calls `ensureOpen()` (`IndexWriter.java:6705-6709`): on a closed or
+        // closing writer it throws, merges stay disabled, and its exception
+        // replaces whatever `abortMerges` threw, as a Java `finally` does.
+        let aborted = self.abort_merges(state);
+        let mut state = match aborted {
+            Ok(mut state) => {
+                debug_assert!(
+                    state.merging_segments.is_empty(),
+                    "found merging segments but merges are disabled: {:?}",
+                    state.merging_segments
+                );
+                if let Err(error) = self.enable_merges(&mut state) {
+                    self.log_delete_all_failure();
+                    return Err(error);
+                }
+                state
+            }
+            Err(error) => {
+                let enabled = self
+                    .state()
+                    .and_then(|mut state| self.enable_merges(&mut state));
+                self.log_delete_all_failure();
+                return Err(enabled.err().unwrap_or(error));
+            }
+        };
+        let outcome = (|| -> Result<i64> {
+            self.adjust_pending_num_docs(-i64::from(state.segment_infos.total_max_doc()));
+            // Remove all segments.
+            state.segment_infos.clear();
+            // Ask the deleter to locate unreferenced files and remove them.
+            // It is not refreshed: concurrent indexing requests may be opening
+            // files after the abort above, and would hit missing files; they
+            // are removed incrementally as we go.
+            let infos = clone_infos(&state.segment_infos)?;
+            state.deleter.checkpoint(&infos, false)?;
+            // Don't bother saving any changes in our segmentInfos.
+            self.reader_pool.drop_all()?;
+            // Mark that the index has changed.
+            self.change_count.fetch_add(1, Ordering::AcqRel);
+            state.segment_infos.changed();
+            self.global_field_numbers.clear();
+            Ok(self.documents_writer.next_sequence_number())
+        })();
+        if outcome.is_err() {
+            self.log_delete_all_failure();
+        }
+        outcome
+    }
 
-        let mut state = self.state()?;
-        state.segment_infos.clear();
-        state.segment_infos.changed();
-        self.pending_num_docs.store(0, Ordering::Release);
-        let infos = clone_infos(&state.segment_infos)?;
-        state.deleter.checkpoint(&infos, false)?;
-        Ok(seq_no)
+    /// The `success == false` branch of `deleteAll`'s `finally`
+    /// (`IndexWriter.java:2766-2772`).
+    fn log_delete_all_failure(&self) {
+        if self.info_stream.is_enabled(IW) {
+            self.info_stream
+                .message(IW, "hit exception during deleteAll");
+        }
+    }
+
+    /// Re-enables merges after [`Self::abort_merges`] disabled them.
+    ///
+    /// Equivalent to `IndexWriter.Merges.enable()` (`IndexWriter.java:6705-6709`),
+    /// which runs `ensureOpen()` first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::AlreadyClosed`] when the writer is closed or
+    /// closing; merges then stay disabled.
+    fn enable_merges(&self, state: &mut WriterState) -> Result<()> {
+        self.ensure_open()?;
+        state.stop_merges = false;
+        Ok(())
     }
 
     /// Returns how many documents the index holds, including buffered ones and
@@ -1458,37 +1838,45 @@ impl IndexWriter {
         Ok(count)
     }
 
-    /// Returns whether the index holds any deletions not yet merged away.
+    /// Returns whether the index has deletions, including buffered ones.
     ///
-    /// Equivalent to `IndexWriter.hasDeletions()`.
+    /// Equivalent to `IndexWriter.hasDeletions()`. As in Lucene, buffered term
+    /// or query deletions count even when they turn out to match nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::AlreadyClosed`] once the writer is closed.
     pub fn has_deletions(&self) -> Result<bool> {
-        if self.documents_writer.any_deletions() {
+        // `IndexWriter.hasDeletions()` is `synchronized` and starts with
+        // `ensureOpen()` (`IndexWriter.java:1457-1462`).
+        self.ensure_open()?;
+        let state = self.state()?;
+        if self.buffered_updates_stream.any()
+            || self.documents_writer.any_deletions()
+            || self.reader_pool.any_deletions()
+        {
             return Ok(true);
         }
-        let state = self.state()?;
         let any = state.segment_infos.iter().any(|info| info.has_deletions());
         Ok(any)
     }
 
-    /// Returns whether anything has changed since the last commit.
+    /// Returns whether there may be changes that have not been committed.
     ///
-    /// Equivalent to `IndexWriter.hasUncommittedChanges()`.
+    /// Equivalent to `IndexWriter.hasUncommittedChanges()`
+    /// (`IndexWriter.java:4207-4209`): `changeCount != lastCommitChangeCount
+    /// || hasChangesInRam()`. As in Lucene it may return `true` when nothing
+    /// "real" changed — a delete that matches no document, a writer opened
+    /// with `CREATE` over an existing index (`IndexWriter.java:1022-1024`), or a
+    /// merge that finished after the last commit.
+    ///
+    /// # Errors
+    ///
+    /// Never fails; the `Result` is kept for API stability.
     pub fn has_uncommitted_changes(&self) -> Result<bool> {
-        if self.documents_writer.any_changes() {
-            return Ok(true);
-        }
-        let state = self.state()?;
-        if state.pending_commit.is_some()
-            || state.segment_infos.size() != state.rollback_segments.len()
-        {
-            return Ok(true);
-        }
-        let rollback = &state.rollback_segments;
-        let any = state
-            .segment_infos
-            .iter()
-            .any(|info| !rollback.contains(&info.info.name));
-        Ok(any)
+        Ok(self.change_count.load(Ordering::Acquire)
+            != self.last_commit_change_count.load(Ordering::Acquire)
+            || self.has_changes_in_ram())
     }
 
     // -------------------------------------------------------------------------
@@ -1517,7 +1905,7 @@ impl IndexWriter {
             any_changes
         });
         let published = match &flush_result {
-            Ok(_) => self.publish_flushed_segments(),
+            Ok(_) => self.publish_flushed_segments(true),
             Err(_) => Ok(()),
         };
         // Finish the full flush whichever way the two steps went, as Java's
@@ -1535,10 +1923,13 @@ impl IndexWriter {
         Ok(any_changes)
     }
 
-    /// Moves every flushed segment and every frozen delete packet from the
-    /// ticket queue into the index.
+    /// Moves every publishable flushed segment and frozen delete packet from
+    /// the ticket queue into the index.
     ///
-    /// Equivalent to `IndexWriter.publishFlushedSegments(boolean)`. A ticket
+    /// Equivalent to `IndexWriter.publishFlushedSegments(boolean)`
+    /// (`IndexWriter.java:6049-6085`): `forced` waits for a thread already
+    /// publishing; otherwise the call returns at once and leaves the tickets
+    /// to that thread. A ticket
     /// carries a flushed segment, a packet of frozen global deletes, or both,
     /// and both halves have to be published: a ticket with no segment is a
     /// pure delete packet, which goes straight to the buffered-updates stream,
@@ -1549,12 +1940,12 @@ impl IndexWriter {
     /// # Errors
     ///
     /// Propagates whatever purging the tickets or publishing a segment raises.
-    fn publish_flushed_segments(&self) -> Result<()> {
+    fn publish_flushed_segments(&self, forced: bool) -> Result<()> {
         // The closure borrows `self` immutably and each publication takes the
         // writer state on its own, exactly as Java's per-ticket
         // `publishFlushedSegment` does; nothing is batched, so a ticket is
         // fully published before the next one is looked at.
-        self.documents_writer.purge_flush_tickets(true, |ticket| {
+        self.documents_writer.purge_flush_tickets(forced, |ticket| {
             let new_segment = ticket.take_flushed_segment();
             let buffered_updates = ticket.take_frozen_updates();
             ticket.mark_published();
@@ -1598,13 +1989,53 @@ impl IndexWriter {
 
     /// Sets the user data written into the next commit.
     ///
-    /// Equivalent to `IndexWriter.setLiveCommitData`.
+    /// Calling this method is a committable change: the next commit writes
+    /// a new `segments_N` even when nothing else changed, and it advances
+    /// the [`SegmentInfos`] version.
+    ///
+    /// Equivalent to `IndexWriter.setLiveCommitData(Iterable)`
+    /// (`IndexWriter.java:4138-4141`), which delegates to
+    /// [`set_live_commit_data_with_increment`](Self::set_live_commit_data_with_increment)
+    /// with `do_increment_version = true`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the writer's state lock is poisoned.
     pub fn set_live_commit_data<I>(&self, data: I) -> Result<()>
     where
         I: IntoIterator<Item = (String, String)>,
     {
+        self.set_live_commit_data_with_increment(data, true)
+    }
+
+    /// Sets the user data written into the next commit, controlling whether
+    /// the [`SegmentInfos`] version advances.
+    ///
+    /// The change count always advances, so the next commit is never
+    /// skipped as empty.
+    ///
+    /// Equivalent to `IndexWriter.setLiveCommitData(Iterable, boolean)`
+    /// (`IndexWriter.java:4150-4157`).
+    ///
+    /// # Errors
+    ///
+    /// Fails when the writer's state lock is poisoned.
+    pub fn set_live_commit_data_with_increment<I>(
+        &self,
+        data: I,
+        do_increment_version: bool,
+    ) -> Result<()>
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        // Java's method is `synchronized` on the writer: the state lock is
+        // held across the three steps.
         let mut state = self.state()?;
         state.commit_user_data = data.into_iter().collect();
+        if do_increment_version {
+            state.segment_infos.changed();
+        }
+        self.change_count.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
@@ -1684,7 +2115,7 @@ impl IndexWriter {
                     // increments the flushcount if we flushed anything.
                     self.flush_count.fetch_add(1, Ordering::AcqRel);
                 }
-                self.publish_flushed_segments()?;
+                self.publish_flushed_segments(true)?;
                 // Cannot pass triggerMerges=true here, else it can lead to
                 // deadlock.
                 self.process_events(false)?;
@@ -1767,7 +2198,10 @@ impl IndexWriter {
                 Ok(prepared)
             })
         };
-        self.maybe_close_on_tragic_event();
+        // Java's `finally { maybeCloseOnTragicEvent(); }`
+        // (`IndexWriter.java:3861-3863`): a failure to close replaces the
+        // original one, as an exception thrown from `finally` does.
+        self.maybe_close_on_tragic_event()?;
         let (seq_no, to_commit, point_in_time_merges) = prepared?;
 
         if let Some(point_in_time_merges) =
@@ -2060,8 +2494,9 @@ impl IndexWriter {
                     self.pending_commit_change_count.load(Ordering::Acquire),
                     Ordering::Release,
                 );
-                state.rollback_segments =
-                    pending.iter().map(|info| info.info.name.clone()).collect();
+                // `rollbackSegments = pendingCommit.createBackupSegmentInfos()`
+                // (`IndexWriter.java:4295`).
+                state.rollback_segments = pending.create_backup_segment_infos();
                 Ok(())
             })();
             let released = match commit_files {
@@ -2077,7 +2512,7 @@ impl IndexWriter {
                     .message(IW, &format!("hit exception during finishCommit: {error}"));
             }
             if commit_completed {
-                self.tragic_event(&error, "finishCommit");
+                self.tragic_event(&error, "finishCommit")?;
             }
             return Err(error);
         }
@@ -2093,7 +2528,7 @@ impl IndexWriter {
     pub fn rollback(&self) -> Result<()> {
         // Ensure that only one thread actually gets to do the closing, and make
         // sure no commit is also in progress, exactly as Java does.
-        if self.should_close(true) {
+        if self.should_close(true)? {
             self.rollback_internal()?;
         }
         Ok(())
@@ -2101,32 +2536,114 @@ impl IndexWriter {
 
     /// Returns whether this thread is the one that gets to close the writer.
     ///
-    /// Equivalent to `IndexWriter.shouldClose(boolean)`.
+    /// Equivalent to `IndexWriter.shouldClose(boolean)`
+    /// (`IndexWriter.java:1382-1400`): returns `true` to the caller that gets
+    /// to close, `false` once the writer is closed; while another thread is
+    /// closing, returns `false` at once when `wait_for_close` is unset, and
+    /// otherwise waits until that thread finishes closing — successfully, or
+    /// not, in which case this caller may get to close after all.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java blocks a second caller in
-    /// `doWait()` until the first one finishes closing, then returns `false`.
-    /// This port claims `closing` with one atomic swap and lets the loser return
-    /// `false` at once, rather than waiting for a result it would discard. The
-    /// observable contract — exactly one caller closes — is the same.
-    fn should_close(&self, _wait_for_close: bool) -> bool {
-        if self.closed.load(Ordering::Acquire) {
-            return false;
+    /// `closed` and `closing` change only under the writer's state lock, and
+    /// every change is followed by a notification of
+    /// [`state_changed`](Self::state_changed), which is Java's `synchronized`
+    /// method with its `doWait()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the writer's lock is
+    /// poisoned.
+    fn should_close(&self, wait_for_close: bool) -> Result<bool> {
+        let mut state = self.state()?;
+        loop {
+            if self.closed.load(Ordering::Acquire) {
+                return Ok(false);
+            }
+            if !self.closing.load(Ordering::Acquire) {
+                // We get to close.
+                self.closing.store(true, Ordering::Release);
+                return Ok(true);
+            }
+            if !wait_for_close {
+                return Ok(false);
+            }
+            // Another thread is presently trying to close; wait until it
+            // finishes one way (closes successfully) or another (fails to
+            // close).
+            state = self.do_wait(state)?;
         }
-        !self.closing.swap(true, Ordering::AcqRel)
     }
 
-    /// Discards everything since the last commit, without closing the deleter.
+    /// Marks the writer closed and wakes the threads waiting for that.
     ///
-    /// Equivalent to `IndexWriter.rollbackInternalNoCommit()`.
+    /// Equivalent to the `cleanupAndNotify` closeable of
+    /// `IndexWriter.rollbackInternalNoCommit()` (`IndexWriter.java:2559-2568`),
+    /// run while the writer's lock is held: `writeLock = null` (the caller
+    /// has released the lock), `closed = true`, `closing = false`,
+    /// `notifyAll()`, so "concurrently closing" threads wake up and see that
+    /// the close has completed.
+    fn cleanup_and_notify(&self, _state: &mut WriterState) {
+        self.closed.store(true, Ordering::Release);
+        self.closing.store(false, Ordering::Release);
+        self.state_changed.notify_all();
+    }
+
+    /// Discards everything since the last commit and closes the writer.
+    ///
+    /// Equivalent to `IndexWriter.rollbackInternalNoCommit()`
+    /// (`IndexWriter.java:2552-2685`). When any step fails, the writer is
+    /// still closed: the merge scheduler, a pending commit, the reader pool,
+    /// the deleter and the write lock are released while the failure is
+    /// handled, and the first error is returned, as Java's `catch` block does.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `catch` block also records a
+    /// JVM `Error` as a tragic event; [`LuceneError`] has no counterpart of
+    /// `Error`, so there is nothing to record.
     fn rollback_internal_no_commit(&self) -> Result<()> {
         if self.info_stream.is_enabled(IW) {
             self.info_stream.message(IW, "rollback");
         }
-        {
-            let mut state = self.state()?;
-            self.abort_merges(&mut state)?;
+        match self.rollback_internal_no_commit_steps() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.close_after_failed_rollback();
+                Err(error)
+            }
         }
+    }
+
+    /// The `try` block of `IndexWriter.rollbackInternalNoCommit()`.
+    fn rollback_internal_no_commit_steps(&self) -> Result<()> {
+        {
+            // Must be synced, otherwise registering a merge might fail if merges
+            // change concurrently; this disables merges for ever, since we are
+            // closing and cannot re-enable them.
+            let state = self.state()?;
+            let state = self.abort_merges(state)?;
+            debug_assert!(
+                state.merging_segments.is_empty(),
+                "we aborted all merges but still have merging segments: {:?}",
+                state.merging_segments
+            );
+        }
+        if self.info_stream.is_enabled(IW) {
+            self.info_stream.message(IW, "rollback: done finish merges");
+        }
+
+        // Must pre-close in case it increments changeCount so that we can then
+        // set it to false before calling rollbackInternal
+        // (`IndexWriter.java:2589-2591`).
+        self.config.merge_scheduler().close()?;
+
+        // Mark it as closed first to prevent subsequent indexing actions and
+        // flushes (`IndexWriter.java:2593-2599`).
+        self.documents_writer.close();
         self.documents_writer.abort()?;
+        // Wait for all concurrently running flushes.
+        self.documents_writer.flush_control().wait_for_flush();
+        // Empty the flush ticket queue, otherwise we might not have cleaned up
+        // all resources.
+        self.publish_flushed_segments(true)?;
+        self.close_event_queue()?;
 
         let mut state = self.state()?;
         // `IndexWriter.java:2602-2610`: a prepared commit is rolled back and
@@ -2134,44 +2651,84 @@ impl IndexWriter {
         if let Some(mut pending) = state.pending_commit.take() {
             pending.rollback_commit(self.directory.as_ref());
             state.files_to_commit = None;
-            state.deleter.dec_ref_segment_infos(&pending)?;
+            let released = state.deleter.dec_ref_segment_infos(&pending);
+            self.state_changed.notify_all();
+            released?;
         }
-        state.pending_merges.clear();
-        state.merging_segments.clear();
-
-        // Restore the segments the last commit recorded.
-        let restored = match SegmentInfos::read_latest_commit(Arc::clone(&self.directory)) {
-            Ok(infos) => infos,
-            // An index with no commit rolls back to empty.
-            Err(_) => SegmentInfos::new(Version::LATEST.major as i32)?,
-        };
-        state.segment_infos.replace(&restored);
-        state.rollback_segments = state
+        let total_max_doc = state.segment_infos.total_max_doc();
+        // Keep the same segment infos but replace all of its segments, so the
+        // deleter below removes any segment flushed since the last commit
+        // (`IndexWriter.java:2612-2615`).
+        let rollback_segments = state.rollback_segments.clone();
+        state
             .segment_infos
-            .iter()
-            .map(|info| info.info.name.clone())
-            .collect();
-        self.pending_num_docs.store(
-            i64::from(state.segment_infos.total_max_doc()),
-            Ordering::Release,
-        );
-        let infos = clone_infos(&state.segment_infos)?;
-        state.deleter.checkpoint(&infos, false)?;
-        state.deleter.refresh()?;
+            .rollback_segment_infos(&rollback_segments);
+        let rollback_max_doc = state.segment_infos.total_max_doc();
+        // Adjust the pending count back to the rolled-back segments, but do
+        // not set it to the absolute value, otherwise we might hide internal
+        // bugs (`IndexWriter.java:2617-2619`).
+        self.adjust_pending_num_docs(-(i64::from(total_max_doc) - i64::from(rollback_max_doc)));
+        if self.info_stream.is_enabled(IW) {
+            let infos = self.seg_string_of(&state, state.segment_infos.as_slice())?;
+            self.info_stream
+                .message(IW, &format!("rollback: infos={infos}"));
+        }
+        self.test_point("rollback before checkpoint");
+
+        // Ask the deleter to locate unreferenced files and remove them — only
+        // when we are not experiencing a tragedy, else these methods throw
+        // AlreadyClosedException in Java (`IndexWriter.java:2627-2634`).
+        if self.get_tragic_exception().is_none() {
+            let infos = clone_infos(&state.segment_infos)?;
+            state.deleter.checkpoint(&infos, false)?;
+            state.deleter.refresh()?;
+            state.deleter.close()?;
+        }
+
         // Java discards any change the rollback undid, so the next writer over
         // this index starts level with the commit on disk
         // (`IndexWriter.java:2636`).
         self.last_commit_change_count
             .store(self.change_count.load(Ordering::Acquire), Ordering::Release);
-        // Must set `closed` before releasing the writer's state, so no
-        // concurrent thread sneaks a flush in behind the rollback.
+        // Don't bother saving any changes in our segmentInfos.
+        self.reader_pool.close()?;
+        // Must set `closed` while inside the same hold of the writer's lock
+        // that refreshed the deleter, else concurrent threads may try to sneak
+        // a flush in (`IndexWriter.java:2639-2643`). Java sets it before it
+        // closes the write lock, then runs `cleanupAndNotify` in the same
+        // `IOUtils.close`, which runs the second even when the first fails
+        // (`IndexWriter.java:2645`).
         self.closed.store(true, Ordering::Release);
-        // Java closes the write lock and nulls the field in the same
-        // synchronized block, so the directory is free the moment the writer
-        // is closed rather than whenever the object is finally dropped.
-        self.release_write_lock()?;
-        self.closing.store(false, Ordering::Release);
-        Ok(())
+        let released = self.release_write_lock();
+        self.cleanup_and_notify(&mut state);
+        released
+    }
+
+    /// The `catch` block of `IndexWriter.rollbackInternalNoCommit()`
+    /// (`IndexWriter.java:2648-2683`): we tried to be nice about it; do the
+    /// minimum. Every failure here is swallowed, as
+    /// `IOUtils.closeWhileHandlingException` does, so the original error is
+    /// the one reported.
+    fn close_after_failed_rollback(&self) {
+        // Must not hold the writer's lock while closing the merge scheduler:
+        // this can lead to deadlock.
+        let _ = self.config.merge_scheduler().close();
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        // Don't leak a segments_N file if there is a pending commit.
+        if let Some(mut pending) = state.pending_commit.take() {
+            pending.rollback_commit(self.directory.as_ref());
+            state.files_to_commit = None;
+            let _ = state.deleter.dec_ref_segment_infos(&pending);
+        }
+        // Close all the closeables we can (but important is the reader pool
+        // and the write lock, to prevent leaks).
+        let _ = self.reader_pool.close();
+        let _ = state.deleter.close();
+        let _ = self.release_write_lock();
+        self.cleanup_and_notify(&mut state);
     }
 
     /// Releases the directory's write lock, so another writer may open it.
@@ -2192,18 +2749,14 @@ impl IndexWriter {
         }
     }
 
-    /// Discards everything since the last commit and closes the deleter.
+    /// Discards everything since the last commit and closes the writer.
     ///
-    /// Equivalent to `IndexWriter.rollbackInternal()`.
+    /// Equivalent to `IndexWriter.rollbackInternal()`
+    /// (`IndexWriter.java:2545-2550`): make sure no commit is running, else
+    /// e.g. we can close while another thread is still fsync'ing.
     fn rollback_internal(&self) -> Result<()> {
-        // Make sure no commit is running, else e.g. we can close while another
-        // thread is still fsync'ing (`IndexWriter.java:2545-2549`).
         let _commit = self.lock_commit()?;
-        self.rollback_internal_no_commit()?;
-        let mut state = self.state()?;
-        state.deleter.close()?;
-        self.reader_pool.close()?;
-        Ok(())
+        self.rollback_internal_no_commit()
     }
 
     /// Commits if the configuration says to, then closes the writer.
@@ -2220,50 +2773,39 @@ impl IndexWriter {
     /// Closes gracefully: flushes, waits for the merges and commits, rolling
     /// back if anything fails so the writer always ends up closed.
     ///
-    /// Equivalent to `IndexWriter.shutdown()`, called by `close` when
-    /// `IndexWriterConfig.commitOnClose` is `true`.
+    /// Equivalent to `IndexWriter.shutdown()` (`IndexWriter.java:1319-1344`),
+    /// called by `close` when `IndexWriterConfig.commitOnClose` is `true`.
+    /// Once the commit succeeded, the writer closes through
+    /// [`rollback_internal`](Self::rollback_internal), as Java does: the
+    /// rollback finds nothing to undo except the merges that finished after
+    /// the commit, whose files the deleter's checkpoint then removes.
     fn shutdown(&self) -> Result<()> {
-        {
-            let state = self.state()?;
-            if state.pending_commit.is_some() {
-                return Err(LuceneError::IllegalState(
-                    "cannot close: prepareCommit was already called with no corresponding call to commit"
-                        .to_string(),
-                ));
-            }
+        if self.state()?.pending_commit.is_some() {
+            return Err(LuceneError::IllegalState(
+                "cannot close: prepareCommit was already called with no corresponding call to commit"
+                    .to_string(),
+            ));
         }
         // Ensure that only one thread actually gets to do the closing.
-        if !self.should_close(true) {
-            return Ok(());
-        }
-        if self.info_stream.is_enabled(IW) {
-            self.info_stream.message(IW, "now flush at close");
-        }
-        let outcome = (|| -> Result<()> {
-            self.flush_with(true, true)?;
-            self.commit_internal()?;
-            Ok(())
-        })();
-        match outcome {
-            Ok(()) => {
-                let mut state = self.state()?;
-                state.deleter.close()?;
-                self.reader_pool.close()?;
-                self.closed.store(true, Ordering::Release);
-                // Java reaches this through `rollbackInternal()`, which closes
-                // the write lock; this port inlines that tail, so it must
-                // release the lock here too.
-                drop(state);
-                self.release_write_lock()?;
-                self.closing.store(false, Ordering::Release);
+        if self.should_close(true)? {
+            let outcome = (|| -> Result<()> {
+                if self.info_stream.is_enabled(IW) {
+                    self.info_stream.message(IW, "now flush at close");
+                }
+                self.flush_with(true, true)?;
+                self.wait_for_merges()?;
+                self.commit_internal()?;
                 Ok(())
-            }
-            Err(error) => {
-                // Be certain to close the index on any error.
+            })();
+            if let Err(error) = outcome {
+                // Be certain to close the index on any exception.
                 let _ = self.rollback_internal();
-                Err(error)
+                return Err(error);
             }
+            // If we got that far, let's roll back and close.
+            self.rollback_internal()?;
         }
+        Ok(())
     }
 
     // -------------------------------------------------------------------------
@@ -2315,18 +2857,25 @@ impl IndexWriter {
     /// Propagates whatever the merge scheduler raises.
     fn execute_merge(&self, trigger: MergeTrigger) -> Result<()> {
         let scheduler = self.config.merge_scheduler();
-        scheduler.merge(self, trigger)
+        scheduler.merge(self.merge_source()?, trigger)
     }
 
-    /// Asks the writer's own policy for merges and queues them.
+    /// Returns the [`MergeSource`] the merge scheduler pulls this writer's
+    /// merges from.
     ///
-    /// Equivalent to `IndexWriter.updatePendingMerges(MergeTrigger, int)` in
-    /// the shape every caller but `preparePointInTimeMerge` uses it, which
-    /// always passes `config.getMergePolicy()`.
-    fn update_pending_merges(&self, trigger: MergeTrigger, max_num_segments: i32) -> Result<()> {
-        let policy = self.config.merge_policy();
-        self.update_pending_merges_with_policy(policy.as_ref(), trigger, max_num_segments)?;
-        Ok(())
+    /// Equivalent to `IndexWriter.mergeSource`, the
+    /// `new IndexWriterMergeSource(this)` the constructor creates
+    /// (`IndexWriter.java:938`). Java keeps the one instance; it holds a strong
+    /// reference to the writer, which here would be a reference cycle, so a
+    /// fresh one is made for each call — the record has no state of its own.
+    ///
+    /// # Errors
+    ///
+    /// As [`shared_self`](Self::shared_self).
+    fn merge_source(&self) -> Result<Arc<dyn MergeSource>> {
+        Ok(Arc::new(IndexWriterMergeSource {
+            writer: self.shared_self()?,
+        }))
     }
 
     /// Asks `merge_policy` for merges, queues them, and returns the
@@ -2421,7 +2970,7 @@ impl IndexWriter {
                 )?;
                 if let Some(spec) = spec.as_mut() {
                     for merge in &mut spec.merges {
-                        merge.max_num_segments = max_num_segments;
+                        merge.set_max_num_segments(max_num_segments);
                     }
                 }
                 spec
@@ -2516,7 +3065,8 @@ impl IndexWriter {
 
         self.ensure_valid_merge(state, &merge)?;
 
-        state.merge_gen += 1;
+        // `merge.mergeGen = mergeGen;` (`IndexWriter.java:4996`): the
+        // generation is only bumped by `resetMergeExceptions`.
         merge.merge_gen = state.merge_gen;
         merge.register_done = true;
         merge.is_external = is_external;
@@ -2527,7 +3077,7 @@ impl IndexWriter {
             .iter()
             .any(|info| state.segments_to_merge.contains_key(&info.info.name))
         {
-            merge.max_num_segments = state.merge_max_num_segments;
+            merge.set_max_num_segments(state.merge_max_num_segments);
         }
         for segment in &merge.segments {
             state.merging_segments.insert(segment.info.name.clone());
@@ -2586,7 +3136,8 @@ impl IndexWriter {
         self.test_point("startMergeInit");
         debug_assert!(merge.register_done);
         debug_assert!(
-            merge.max_num_segments == UNBOUNDED_MAX_MERGE_SEGMENTS || merge.max_num_segments > 0
+            merge.max_num_segments() == UNBOUNDED_MAX_MERGE_SEGMENTS
+                || merge.max_num_segments() > 0
         );
 
         if let Some(tragedy) = self.get_tragic_exception() {
@@ -2598,7 +3149,7 @@ impl IndexWriter {
             // `merge_init` already ran.
             return Ok(());
         }
-        merge.merge_start_ns = crate::index::merge_scheduler::now_ns();
+        merge.set_merge_start_ns(crate::index::merge_scheduler::now_ns());
         if merge.is_aborted() {
             return Ok(());
         }
@@ -2648,7 +3199,7 @@ impl IndexWriter {
         let details = HashMap::from([
             (
                 "mergeMaxNumSegments".to_string(),
-                merge.max_num_segments.to_string(),
+                merge.max_num_segments().to_string(),
             ),
             ("mergeFactor".to_string(), merge.segments.len().to_string()),
         ]);
@@ -2819,7 +3370,7 @@ impl IndexWriter {
         closed?;
         checkpointed?;
 
-        if merge.max_num_segments != UNBOUNDED_MAX_MERGE_SEGMENTS && !drop_segment {
+        if merge.max_num_segments() != UNBOUNDED_MAX_MERGE_SEGMENTS && !drop_segment {
             // Cascade the forceMerge (`IndexWriter.java:4798-4803`).
             if let Some(info) = merge.info().as_ref() {
                 state
@@ -2844,23 +3395,16 @@ impl IndexWriter {
     /// of documents the merged segment holds, or `0` when the merge produced
     /// nothing (every input was fully deleted, or the merge was aborted).
     ///
-    /// **Divergences from Lucene 10.5.0**, each forced by machinery this port
-    /// does not carry:
+    /// The merge writes through `mergeScheduler.wrapForMerge(merge, directory)`
+    /// (`IndexWriter.java:5255`), so the scheduler can throttle it, and the
+    /// merged segment is warmed with the configured
+    /// [`MergedSegmentWarmer`](crate::index::index_writer_config::MergedSegmentWarmer)
+    /// before it is committed (`IndexWriter.java:5562-5574`).
     ///
-    /// * Java throttles the merge's writes by wrapping the directory with
-    ///   `mergeScheduler.wrapForMerge(merge, directory)`. This port's
-    ///   [`MergeScheduler`](crate::index::merge_scheduler::MergeScheduler) hands
-    ///   out a [`MergeRateLimiter`](crate::index::merge_scheduler::MergeRateLimiter)
-    ///   rather than a wrapped `Directory`, so the merge writes straight to the
-    ///   directory and is not rate-limited.
-    /// * Java passes an intra-merge `Executor` to `SegmentMerger` so a codec can
-    ///   parallelise one merge; `SegmentMerger` carries none here, so the merge
-    ///   runs on the calling thread.
-    /// * Java warms the merged segment through
-    ///   `IndexWriterConfig.getMergedSegmentWarmer()`. The port's
-    ///   [`MergedSegmentWarmer`](crate::index::index_writer_config::MergedSegmentWarmer)
-    ///   is still an empty marker trait with no `warm` method, so there is
-    ///   nothing to call.
+    /// **Divergence from Lucene 10.5.0.** Java passes an intra-merge
+    /// `Executor` to `SegmentMerger` so a codec can parallelise one merge;
+    /// `SegmentMerger` carries none here, so the merge runs on the calling
+    /// thread.
     ///
     /// # Errors
     ///
@@ -2873,8 +3417,12 @@ impl IndexWriter {
         // `IndexWriter.java:5256`.
         let context: Arc<dyn IOContext> =
             Arc::from(crate::store::merge_io_context(merge.get_store_merge_info()));
+        let merge_directory = self
+            .config
+            .merge_scheduler()
+            .wrap_for_merge(merge, Arc::clone(&self.directory))?;
         let dir_wrapper = Arc::new(crate::store::TrackingDirectoryWrapper::new(Box::new(
-            SharedDirectory(Arc::clone(&self.directory)),
+            SharedDirectory(merge_directory),
         )));
 
         if self.info_stream.is_enabled(IW) {
@@ -3136,7 +3684,7 @@ impl IndexWriter {
             }
         };
 
-        merge.merge_start_ns = crate::index::merge_scheduler::now_ns();
+        merge.set_merge_start_ns(crate::index::merge_scheduler::now_ns());
 
         // This is where all the work happens.
         let should_merge = merger.should_merge()?;
@@ -3156,7 +3704,7 @@ impl IndexWriter {
         if self.info_stream.is_enabled(IW) {
             if should_merge {
                 let sec = crate::index::merge_scheduler::ns_to_sec(
-                    crate::index::merge_scheduler::now_ns() - merge.merge_start_ns,
+                    crate::index::merge_scheduler::now_ns() - merge.merge_start_ns(),
                 );
                 self.info_stream.message(
                     IW,
@@ -3300,6 +3848,34 @@ impl IndexWriter {
             }
         }
 
+        // `IndexWriter.java:5562-5574`: warm the merged segment through a pooled
+        // reader before it becomes visible.
+        if let Some(merged_segment_warmer) = self.config.merged_segment_warmer() {
+            if self.reader_pool.is_reader_pooling_enabled() {
+                let merged_info = merge
+                    .info()
+                    .clone()
+                    .expect("merge info was set by mergeInit");
+                let rld = self
+                    .get_pooled_instance(&merged_info, true)?
+                    .ok_or_else(|| {
+                        LuceneError::IllegalState(format!(
+                            "segment {} has no pooled reader",
+                            merged_info.info.name
+                        ))
+                    })?;
+                let sr = rld.get_reader(&*crate::store::DEFAULT_IO_CONTEXT)?;
+                let warmed = merged_segment_warmer.warm(sr.as_ref());
+                let released = {
+                    let mut state = self.state()?;
+                    rld.release(&sr)
+                        .and_then(|()| self.release_with(&mut state, &rld, true))
+                };
+                warmed?;
+                released?;
+            }
+        }
+
         if !self.commit_merge(merge, &doc_maps)? {
             // `commit_merge` returns false when the merge was aborted.
             return Ok(0);
@@ -3316,13 +3892,16 @@ impl IndexWriter {
     /// with the writer: an `addIndexes` call registers all of its merges
     /// together, so that the operation stays transactional.
     ///
-    /// **Divergences from Lucene 10.5.0**, both shared with
-    /// [`merge_middle`](Self::merge_middle): the merge directory is not
-    /// throttled, because this port's merge scheduler hands out a rate limiter
-    /// rather than a wrapped `Directory`; and `SegmentMerger` gets no
-    /// intra-merge executor. In addition, Java walks `reader.codecReader.leaves()`
-    /// to decide `hasBlocks`; a `CodecReader` *is* a leaf, so its own metadata
-    /// is consulted directly here.
+    /// As in Java (`IndexWriter.java:3488`), the merge writes through the
+    /// directory the merge scheduler's `wrapForMerge` returns, which
+    /// [`ConcurrentMergeScheduler`](crate::index::merge_scheduler::ConcurrentMergeScheduler)
+    /// throttles with the merge thread's rate limiter.
+    ///
+    /// **Divergences from Lucene 10.5.0.** `SegmentMerger` gets no intra-merge
+    /// executor, as in [`merge_middle`](Self::merge_middle). In addition, Java
+    /// walks `reader.codecReader.leaves()` to decide `hasBlocks`; a
+    /// `CodecReader` *is* a leaf, so its own metadata is consulted directly
+    /// here.
     ///
     /// # Errors
     ///
@@ -3338,6 +3917,11 @@ impl IndexWriter {
             let mut state = self.state()?;
             self.new_segment_name(&mut state)
         };
+        // `IndexWriter.java:3488`.
+        let merge_directory = self
+            .config
+            .merge_scheduler()
+            .wrap_for_merge(merge, Arc::clone(&self.directory))?;
         let mut num_soft_deleted = 0i32;
         let mut has_blocks = false;
         let merge_readers = merge.get_merge_reader();
@@ -3380,7 +3964,7 @@ impl IndexWriter {
             crate::store::MergeInfo::new(total_max_doc, -1, false, UNBOUNDED_MAX_MERGE_SEGMENTS),
         ));
         let tracking_dir = Arc::new(crate::store::TrackingDirectoryWrapper::new(Box::new(
-            SharedDirectory(Arc::clone(&self.directory)),
+            SharedDirectory(merge_directory),
         )));
         let codec = self.config.codec();
         // The minimum version is left null for now; `SegmentMerger` sets it.
@@ -3472,7 +4056,7 @@ impl IndexWriter {
         }
 
         merge.check_aborted()?;
-        merge.merge_start_ns = crate::index::merge_scheduler::now_ns();
+        merge.set_merge_start_ns(crate::index::merge_scheduler::now_ns());
         merger.merge()?;
 
         let merged_info = merger.into_segment_info();
@@ -3884,52 +4468,147 @@ impl IndexWriter {
     /// Returns whether the policy has queued merges the scheduler has not
     /// started yet.
     ///
-    /// Equivalent to `IndexWriter.hasPendingMerges()`.
+    /// Equivalent to the public `IndexWriter.hasPendingMerges()`, the same
+    /// method `IndexWriterMergeSource` calls: it does not check that the
+    /// writer is open, only that it did not hit a tragedy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] once the writer hit a tragedy.
     pub fn has_pending_merges_pub(&self) -> Result<bool> {
-        self.ensure_open()?;
-        Ok(!self.state()?.pending_merges.is_empty())
+        self.has_pending_merges()
     }
 }
 
-impl MergeSource for IndexWriter {
-    /// Equivalent to the writer's `MergeSource.getNextMerge()`
-    /// (`IndexWriter.java:2498-2512`): the merge advances from pending to
-    /// running.
-    fn get_next_merge(&self) -> Option<OneMerge> {
-        self.state().ok().and_then(|mut state| {
-            if state.pending_merges.is_empty() {
-                None
-            } else {
-                let merge = state.pending_merges.remove(0);
-                state.running_merges.push(merge.clone());
-                Some(merge)
+/// The [`MergeSource`] through which a merge scheduler pulls and runs a
+/// writer's merges.
+///
+/// Equivalent to the private record `IndexWriter.IndexWriterMergeSource`
+/// (`IndexWriter.java:6658-6697`).
+struct IndexWriterMergeSource {
+    writer: Arc<IndexWriter>,
+}
+
+impl std::fmt::Display for IndexWriterMergeSource {
+    /// Equivalent to `IndexWriterMergeSource.toString()`, which is
+    /// `writer.segString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.writer.seg_string() {
+            Ok(seg_string) => f.write_str(&seg_string),
+            Err(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl MergeSource for IndexWriterMergeSource {
+    /// Equivalent to `IndexWriterMergeSource.getNextMerge()`
+    /// (`IndexWriter.java:6660-6670`).
+    fn get_next_merge(&self) -> Result<Option<OneMerge>> {
+        let next_merge = self.writer.get_next_merge()?;
+        if let Some(next_merge) = next_merge.as_ref() {
+            let scheduler = self.writer.config.merge_scheduler();
+            if scheduler.verbose() {
+                if let Ok(segments) = self.writer.seg_string_infos(&next_merge.segments) {
+                    scheduler.message(&format!("  checked out merge {segments}"));
+                }
             }
-        })
+        }
+        Ok(next_merge)
     }
 
-    /// Equivalent to the writer's `MergeSource.onMergeFinished(OneMerge)`,
-    /// which is `mergeFinish(merge)`. Java's `mergeFinish` is a no-op for a
+    /// Equivalent to `IndexWriterMergeSource.onMergeFinished(OneMerge)`, which
+    /// is `writer.mergeFinish(merge)`.
+    fn on_merge_finished(&self, merge: &OneMerge) {
+        self.writer.on_merge_finished(merge);
+    }
+
+    /// Equivalent to `IndexWriterMergeSource.hasPendingMerges()`.
+    fn has_pending_merges(&self) -> Result<bool> {
+        self.writer.has_pending_merges()
+    }
+
+    /// Equivalent to `IndexWriterMergeSource.merge(OneMerge)`, which is
+    /// `writer.merge(merge)`.
+    fn merge(&self, merge: OneMerge) -> Result<()> {
+        self.writer.merge(merge)
+    }
+}
+
+impl IndexWriter {
+    /// Equivalent to `IndexWriter.getNextMerge()`
+    /// (`IndexWriter.java:2498-2512`): the merge advances from pending to
+    /// running.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] once the writer hit a tragedy,
+    /// as Java throws `IllegalStateException`, and when the writer's lock is
+    /// poisoned.
+    fn get_next_merge(&self) -> Result<Option<OneMerge>> {
+        let mut state = self.state()?;
+        self.ensure_no_tragedy_for_merge()?;
+        if state.pending_merges.is_empty() {
+            Ok(None)
+        } else {
+            // Advance the merge from pending to running.
+            let merge = state.pending_merges.remove(0);
+            state.running_merges.push(merge.clone());
+            Ok(Some(merge))
+        }
+    }
+
+    /// Fails once the writer hit a tragedy.
+    ///
+    /// Equivalent to the check that opens `IndexWriter.getNextMerge()` and
+    /// `IndexWriter.hasPendingMerges()` (`IndexWriter.java:2499-2502,
+    /// 2520-2523`): `throw new IllegalStateException("this writer hit an
+    /// unrecoverable error; cannot merge", tragedy)`.
+    fn ensure_no_tragedy_for_merge(&self) -> Result<()> {
+        match self.get_tragic_exception() {
+            Some(tragedy) => Err(LuceneError::IllegalState(format!(
+                "this writer hit an unrecoverable error; cannot merge: {tragedy}"
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// Equivalent to `IndexWriter.mergeFinish(OneMerge)` as
+    /// `IndexWriterMergeSource.onMergeFinished(OneMerge)` calls it. Java's `mergeFinish` is a no-op for a
     /// merge already finished (`registerDone` is cleared on the shared
     /// object); here the scheduler holds its own copy, so a merge still listed
     /// as running is the sign that it has not been finished yet.
     fn on_merge_finished(&self, merge: &OneMerge) {
         if let Ok(mut state) = self.state() {
-            let Some(position) = state
-                .running_merges
-                .iter()
-                .position(|running| running.merge_gen == merge.merge_gen)
-            else {
-                return;
-            };
-            let mut running = state.running_merges.remove(position);
-            self.merge_finish(&mut state, &mut running);
+            self.on_merge_finished_with(&mut state, merge);
         }
     }
 
-    fn has_pending_merges(&self) -> bool {
-        self.state()
-            .map(|state| !state.pending_merges.is_empty())
-            .unwrap_or(false)
+    /// [`on_merge_finished`](Self::on_merge_finished) for a caller that holds
+    /// the writer's lock.
+    fn on_merge_finished_with(&self, state: &mut WriterState, merge: &OneMerge) {
+        let Some(position) = state
+            .running_merges
+            .iter()
+            .position(|running| running.is_same_merge(merge))
+        else {
+            return;
+        };
+        let mut running = state.running_merges.remove(position);
+        self.merge_finish(state, &mut running);
+    }
+
+    /// Equivalent to `IndexWriter.hasPendingMerges()`
+    /// (`IndexWriter.java:2519-2525`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] once the writer hit a tragedy,
+    /// as Java throws `IllegalStateException`, and when the writer's lock is
+    /// poisoned.
+    fn has_pending_merges(&self) -> Result<bool> {
+        let state = self.state()?;
+        self.ensure_no_tragedy_for_merge()?;
+        Ok(!state.pending_merges.is_empty())
     }
 
     /// Merges the indicated segments, replacing them in the stack with a single
@@ -3937,7 +4616,12 @@ impl MergeSource for IndexWriter {
     ///
     /// Equivalent to the protected `IndexWriter.merge(MergePolicy.OneMerge)`,
     /// which `MergeScheduler` reaches through `MergeSource`.
-    fn merge(&self, merge: OneMerge) -> Result<()> {
+    ///
+    /// # Errors
+    ///
+    /// Propagates the merge's failure, after recording it as a tragic event,
+    /// unless it is an abort the writer itself requested.
+    pub fn merge(&self, merge: OneMerge) -> Result<()> {
         let mut merge = merge;
         let merge_policy = self.config.merge_policy();
 
@@ -3958,7 +4642,7 @@ impl MergeSource for IndexWriter {
         });
         let mut result = match outcome {
             Ok(()) => Ok(()),
-            Err(error) => self.handle_merge_exception(&error, &mut merge),
+            Err(error) => self.handle_merge_exception(error, &mut merge),
         };
         let success = result.is_ok();
 
@@ -3967,25 +4651,39 @@ impl MergeSource for IndexWriter {
         if !success {
             let _ = self.close_merge_readers(&merge, true, false);
         }
-        {
-            if let Ok(mut state) = self.state() {
+        // `synchronized (this)` (`IndexWriter.java:4866-4885`): finishing the
+        // merge and asking the policy for the merges it enables happen under one
+        // hold of the writer's lock, so a thread waiting for merges — `forceMerge`,
+        // `waitForMerges` — never sees the moment in between, when this merge has
+        // left the running set and its successors are not pending yet.
+        match self.state() {
+            Ok(mut state) => {
                 self.merge_finish(&mut state, &mut merge);
+                self.on_merge_finished_with(&mut state, &merge);
+                if !success {
+                    if self.info_stream.is_enabled(IW) {
+                        self.info_stream.message(IW, "hit exception during merge");
+                    }
+                } else if !merge.is_aborted()
+                    && (merge.max_num_segments() != UNBOUNDED_MAX_MERGE_SEGMENTS
+                        || (!self.is_closed() && !self.closing.load(Ordering::Acquire)))
+                {
+                    // This merge — and, generally, any change to the segments —
+                    // may now enable new merges, so ask the policy again.
+                    let merge_policy = self.config.merge_policy();
+                    if let Err(error) = self.update_pending_merges_with_policy_with(
+                        &mut state,
+                        merge_policy.as_ref(),
+                        MergeTrigger::MergeFinished,
+                        merge.max_num_segments(),
+                    ) {
+                        if result.is_ok() {
+                            result = Err(error);
+                        }
+                    }
+                }
             }
-        }
-        self.on_merge_finished(&merge);
-        if !success {
-            if self.info_stream.is_enabled(IW) {
-                self.info_stream.message(IW, "hit exception during merge");
-            }
-        } else if !merge.is_aborted()
-            && (merge.max_num_segments != UNBOUNDED_MAX_MERGE_SEGMENTS
-                || (!self.is_closed() && !self.closing.load(Ordering::Acquire)))
-        {
-            // This merge — and, generally, any change to the segments — may now
-            // enable new merges, so ask the policy again.
-            if let Err(error) =
-                self.update_pending_merges(MergeTrigger::MergeFinished, merge.max_num_segments)
-            {
+            Err(error) => {
                 if result.is_ok() {
                     result = Err(error);
                 }
@@ -3994,7 +4692,7 @@ impl MergeSource for IndexWriter {
         if let Err(error) = result.as_ref() {
             // Important that this runs after `merge_finish`, or a waiter blocks
             // on a merge that never leaves the running set.
-            self.tragic_event(error, "merge");
+            self.tragic_event(error, "merge")?;
         }
         result
     }
@@ -4742,7 +5440,7 @@ impl IndexWriter {
             .pending_merges
             .iter()
             .chain(state.running_merges.iter())
-            .any(|merge| merge.max_num_segments != UNBOUNDED_MAX_MERGE_SEGMENTS)
+            .any(|merge| merge.max_num_segments() != UNBOUNDED_MAX_MERGE_SEGMENTS)
     }
 
     /// Fails when a merge selects a segment the index does not hold.
@@ -4764,9 +5462,13 @@ impl IndexWriter {
 
     /// Releases the segments a merge held, whatever its outcome.
     ///
-    /// Equivalent to `IndexWriter.mergeFinish(OneMerge)`. Java notifies the
-    /// waiters here; this port's waiters block on the scheduler instead.
+    /// Equivalent to `IndexWriter.mergeFinish(OneMerge)`
+    /// (`IndexWriter.java:5156-5173`), which first wakes the waiters:
+    /// `forceMerge`, `addIndexes` or `waitForMerges` may be waiting on merges
+    /// to finish.
     fn merge_finish(&self, state: &mut WriterState, merge: &mut OneMerge) {
+        self.state_changed.notify_all();
+
         // It's possible we are called twice, eg if there was an exception
         // inside mergeInit.
         if merge.register_done {
@@ -4775,10 +5477,10 @@ impl IndexWriter {
             }
             merge.register_done = false;
         }
-        let gen = merge.merge_gen;
+        // `runningMerges.remove(merge)`: by identity.
         state
             .running_merges
-            .retain(|running| running.merge_gen != gen);
+            .retain(|running| !running.is_same_merge(merge));
     }
 
     /// Records a failed merge, so `force_merge` sees the root cause.
@@ -4786,10 +5488,12 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.addMergeException(OneMerge)`.
     fn add_merge_exception(&self, state: &mut WriterState, merge: &OneMerge) {
         debug_assert!(merge.get_error().is_some());
+        // `mergeExceptions.contains(merge)`: `OneMerge` keeps `Object`'s
+        // identity `equals`.
         let already = state
             .merge_exceptions
             .iter()
-            .any(|m| m.segments == merge.segments);
+            .any(|m| m.is_same_merge(merge));
         if !already && state.merge_gen == merge.merge_gen {
             state.merge_exceptions.push(merge.clone());
         }
@@ -4808,7 +5512,10 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.handleMergeException(Throwable, OneMerge)`.
     /// An aborted merge is expected — `rollback` and `delete_all` abort merges —
     /// and is swallowed unless the merge read from an external directory.
-    fn handle_merge_exception(&self, error: &LuceneError, merge: &mut OneMerge) -> Result<()> {
+    /// Any other error is returned unchanged, as Java rethrows the original
+    /// throwable (`IndexWriter.java:4808-4835`): the caller sees the class and
+    /// message the merge itself raised.
+    fn handle_merge_exception(&self, error: LuceneError, merge: &mut OneMerge) -> Result<()> {
         if self.info_stream.is_enabled(IW) {
             self.info_stream.message(
                 IW,
@@ -4826,7 +5533,7 @@ impl IndexWriter {
         if matches!(error, LuceneError::MergeAborted(_)) && !merge.is_external {
             return Ok(());
         }
-        Err(LuceneError::Merge(error.to_string()))
+        Err(error)
     }
 
     /// Aborts one merge and drops the files it wrote.
@@ -4838,11 +5545,25 @@ impl IndexWriter {
         Ok(())
     }
 
-    /// Aborts every pending and running merge.
+    /// Aborts every pending and running merge, and waits for the running ones
+    /// to stop.
     ///
-    /// Equivalent to `IndexWriter.abortMerges()`.
-    fn abort_merges(&self, state: &mut WriterState) -> Result<()> {
+    /// Equivalent to `IndexWriter.abortMerges()` (`IndexWriter.java:2788-2840`),
+    /// which runs under the writer's monitor and releases it only while it
+    /// waits; so does this, taking and handing back the held lock. The merges
+    /// `addIndexes(CodecReader...)` queues are not aborted here because that
+    /// method is not ported.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever aborting a pending merge raises.
+    fn abort_merges<'a>(
+        &'a self,
+        mut state: MutexGuard<'a, WriterState>,
+    ) -> Result<MutexGuard<'a, WriterState>> {
+        let start_ns = crate::index::merge_scheduler::now_ns();
         state.stop_merges = true;
+        // Abort all pending & running merges.
         let pending: Vec<OneMerge> = std::mem::take(&mut state.pending_merges);
         for mut merge in pending {
             if self.info_stream.is_enabled(IW) {
@@ -4852,10 +5573,45 @@ impl IndexWriter {
                 );
             }
             self.abort_one_merge(&merge)?;
-            self.merge_finish(state, &mut merge);
+            self.merge_finish(&mut state, &mut merge);
         }
-        state.merging_segments.clear();
-        Ok(())
+
+        for merge in &state.running_merges {
+            if self.info_stream.is_enabled(IW) {
+                self.info_stream.message(
+                    IW,
+                    &format!("now abort running merge {}", merge.seg_string()),
+                );
+            }
+            merge.set_aborted();
+        }
+
+        // We wait here to make all merges stop. It should not take very long
+        // because they periodically check if they are aborted.
+        while !state.running_merges.is_empty() {
+            if self.info_stream.is_enabled(IW) {
+                self.info_stream.message(
+                    IW,
+                    &format!(
+                        "now wait for {} running merge/s to abort; currently running addIndexes: 0",
+                        state.running_merges.len()
+                    ),
+                );
+            }
+            state = self.do_wait(state)?;
+        }
+
+        self.state_changed.notify_all();
+        if self.info_stream.is_enabled(IW) {
+            let elapsed_sec = crate::index::merge_scheduler::ns_to_sec(
+                crate::index::merge_scheduler::now_ns() - start_ns,
+            );
+            self.info_stream.message(
+                IW,
+                &format!("all running merges have aborted [{elapsed_sec:.3} seconds]"),
+            );
+        }
+        Ok(state)
     }
 
     // -- Flush and merge entry points ---------------------------------------
@@ -4882,6 +5638,11 @@ impl IndexWriter {
     /// applied.
     ///
     /// Equivalent to `IndexWriter.doFlush(boolean)` (`IndexWriter.java:4363-4423`).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `catch (Error tragedy)`
+    /// records a JVM `Error` as a tragic event (`IndexWriter.java:4412-4414`);
+    /// [`LuceneError`] has no counterpart of `Error`, so only the `finally`
+    /// remains.
     fn do_flush_internal(&self, apply_all_deletes: bool) -> Result<bool> {
         if let Some(tragedy) = self.get_tragic_exception() {
             return Err(LuceneError::IllegalState(format!(
@@ -4896,37 +5657,57 @@ impl IndexWriter {
                 &format!("  start flush: applyAllDeletes={apply_all_deletes}"),
             );
         }
-        let mut any_changes = self.do_flush()?;
-        if apply_all_deletes {
-            self.apply_all_deletes_and_updates()?;
+        let outcome = (|| -> Result<bool> {
+            let mut any_changes = self.do_flush()?;
+            if apply_all_deletes {
+                self.apply_all_deletes_and_updates()?;
+            }
+            any_changes |= self.maybe_merge.swap(false, Ordering::AcqRel);
+            // Java's `doFlush` runs `writeReaderPool(applyAllDeletes)` under
+            // the writer monitor right after applying the deletes: resolving
+            // a packet only marks documents deleted in the pooled
+            // `ReadersAndUpdates`, so the new live docs and doc-values updates
+            // still have to be written out before `doAfterFlush`.
+            let mut state = self.state()?;
+            self.write_reader_pool_with(&mut state, apply_all_deletes)?;
+            self.do_after_flush()?;
+            Ok(any_changes)
+        })();
+        // The `finally` of `IndexWriter.java:4415-4421`: a failed flush closes
+        // the writer when it recorded a tragedy — the aborting failure of a
+        // per-thread writer does, through
+        // `FlushNotifications.onTragicEvent` — and a failure to close replaces
+        // the original one, as an exception thrown from `finally` does.
+        if outcome.is_err() {
+            if self.info_stream.is_enabled(IW) {
+                self.info_stream.message(IW, "hit exception during flush");
+            }
+            self.maybe_close_on_tragic_event()?;
         }
-        any_changes |= self.maybe_merge.swap(false, Ordering::AcqRel);
-        // Java's `doFlush` runs `writeReaderPool(applyAllDeletes)` under the
-        // writer monitor right after applying the deletes: resolving a packet
-        // only marks documents deleted in the pooled `ReadersAndUpdates`, so
-        // the new live docs and doc-values updates still have to be written out
-        // before `doAfterFlush`.
-        let mut state = self.state()?;
-        self.write_reader_pool_with(&mut state, apply_all_deletes)?;
-        self.do_after_flush()?;
-        Ok(any_changes)
+        outcome
     }
 
     /// Flushes the largest buffer without flushing the others.
     ///
     /// Equivalent to `IndexWriter.flushNextBuffer()`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `catch (Error tragedy)`
+    /// records a JVM `Error` as a tragic event (`IndexWriter.java:3742-3744`);
+    /// [`LuceneError`] has no counterpart of `Error`, so only the `finally`
+    /// remains. An aborting failure of the flushed per-thread writer is still
+    /// the writer's tragedy: the per-thread writer reports it through
+    /// [`FlushNotifications::on_tragic_event`] before the error reaches here.
     pub fn flush_next_buffer(&self) -> Result<bool> {
-        match self.documents_writer.flush_one_dwpt() {
-            Ok(true) => {
-                self.process_events(true)?;
-                Ok(true)
-            }
-            Ok(false) => Ok(false),
-            Err(error) => {
-                self.tragic_event(&error, "flushNextBuffer");
-                Err(error)
-            }
-        }
+        let outcome = match self.documents_writer.flush_one_dwpt() {
+            // We wrote a segment.
+            Ok(true) => self.process_events(true).map(|()| true),
+            other => other,
+        };
+        // The `finally { maybeCloseOnTragicEvent(); }` of
+        // `IndexWriter.java:3745-3747`: a failure to close replaces the
+        // original one, as an exception thrown from `finally` does.
+        self.maybe_close_on_tragic_event()?;
+        outcome
     }
 
     /// Applies every buffered delete and doc-values update.
@@ -5189,19 +5970,38 @@ impl IndexWriter {
 
     /// Records a tragic error and closes the writer.
     ///
-    /// Equivalent to `IndexWriter.tragicEvent(Throwable, String)`.
-    fn tragic_event(&self, error: &LuceneError, location: &str) {
+    /// Equivalent to `IndexWriter.tragicEvent(Throwable, String)`
+    /// (`IndexWriter.java:5868-5874`), which does not rethrow `error`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates what closing the writer raised, as Java's
+    /// `maybeCloseOnTragicEvent` throws it from the `finally` block.
+    fn tragic_event(&self, error: &LuceneError, location: &str) -> Result<()> {
         self.on_tragic_event(error, location);
-        self.maybe_close_on_tragic_event();
+        self.maybe_close_on_tragic_event()
     }
 
-    /// Closes the writer once a tragedy has been recorded.
+    /// Closes the writer once a tragedy has been recorded, unless it is
+    /// already closed or another thread is closing it.
     ///
-    /// Equivalent to `IndexWriter.maybeCloseOnTragicEvent()`.
-    fn maybe_close_on_tragic_event(&self) {
-        if self.get_tragic_exception().is_some() {
-            self.closed.store(true, Ordering::Release);
+    /// Equivalent to `IndexWriter.maybeCloseOnTragicEvent()`
+    /// (`IndexWriter.java:5876-5884`): `shouldClose(false)`, then
+    /// `rollbackInternal()`, which aborts the merges, closes the merge
+    /// scheduler and the reader pool and releases the write lock. The caller
+    /// must not hold the writer's state lock or the full-flush lock, as Java
+    /// asserts.
+    ///
+    /// # Errors
+    ///
+    /// Propagates what the rollback raised.
+    fn maybe_close_on_tragic_event(&self) -> Result<()> {
+        // If we are already closed (e.g. called by rollback), this will be a
+        // no-op.
+        if self.get_tragic_exception().is_some() && self.should_close(false)? {
+            self.rollback_internal()?;
         }
+        Ok(())
     }
 
     /// Drains the event queue the flush machinery filled.
@@ -5209,33 +6009,11 @@ impl IndexWriter {
     /// Equivalent to `IndexWriter.processEvents(boolean)`.
     fn process_events(&self, trigger_merge: bool) -> Result<()> {
         // Java drains the event queue first, and skips it once the writer is
-        // tragic (`IndexWriter.java:5568-5576`). The events this port records
-        // are `deleteUnusedFiles`, which a flush raises for the raw segment
-        // files a compound file has just replaced, and the `tryApply` of each
-        // packet `publishFrozenUpdates` pushed (`IndexWriter.java:2895-2918`).
+        // tragic (`IndexWriter.java:6136-6144`).
         if self.get_tragic_exception().is_none() {
-            let files = self.flush_notifications.take_orphaned_files();
-            if !files.is_empty() {
-                self.delete_new_files(files)?;
-            }
-            loop {
-                let next = self
-                    .apply_events
-                    .lock()
-                    .map_err(|_| {
-                        LuceneError::IllegalState("event queue lock poisoned".to_string())
-                    })?
-                    .pop_front();
-                let Some(packet) = next else { break };
-                // We call `tryApply` since we don't want to block if a refresh
-                // or a flush is already applying the packet; the flush will
-                // retry it anyway to ensure all of them are applied.
-                if let Err(error) = self.try_apply(&packet) {
-                    self.on_tragic_event(&error, "applyUpdatesPacket");
-                    return Err(error);
-                }
-                self.flush_deletes_count.fetch_add(1, Ordering::AcqRel);
-            }
+            // `EventQueue.processEvents()` (`IndexWriter.java:326-333`).
+            let _permit = self.event_queue.acquire()?;
+            self.process_events_internal()?;
         }
         if trigger_merge {
             self.maybe_merge_with(
@@ -5257,6 +6035,90 @@ impl IndexWriter {
             return Ok(-seq_no);
         }
         Ok(seq_no)
+    }
+
+    /// Runs every queued event; the caller holds a permit of the queue, or
+    /// all of them.
+    ///
+    /// Equivalent to `EventQueue.processEventsInternal()`
+    /// (`IndexWriter.java:335-342`), with the `deleteUnusedFiles` /
+    /// `flushFailed` events the notifications record apart (see
+    /// [`Self::event_queue`]).
+    fn process_events_internal(&self) -> Result<()> {
+        let files = self.flush_notifications.take_orphaned_files();
+        if !files.is_empty() {
+            self.delete_new_files(files)?;
+        }
+        while let Some(event) = self.event_queue.poll() {
+            match event {
+                WriterEvent::TryApply(packet) => {
+                    // We call `tryApply` since we don't want to block if a
+                    // refresh or a flush is already applying the packet; the
+                    // flush will retry it anyway to ensure all of them are
+                    // applied (`IndexWriter.java:2900-2917`).
+                    if let Err(error) = self.try_apply(&packet) {
+                        self.on_tragic_event(&error, "applyUpdatesPacket");
+                        return Err(error);
+                    }
+                    self.flush_deletes_count.fetch_add(1, Ordering::AcqRel);
+                }
+                WriterEvent::PublishFlushedSegments { count_flush } => {
+                    let published = self.publish_flushed_segments(true);
+                    if count_flush {
+                        self.flush_count.fetch_add(1, Ordering::AcqRel);
+                    }
+                    published?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Closes the event queue, running what it still holds unless the writer
+    /// is tragic.
+    ///
+    /// Equivalent to `EventQueue.close()` (`IndexWriter.java:344-365`): once
+    /// closed, adding or processing an event fails with
+    /// [`LuceneError::AlreadyClosed`]; a tragic writer drops the queued events
+    /// on the floor, any other takes every permit — waiting for the threads
+    /// processing events to finish — and runs them.
+    ///
+    /// # Errors
+    ///
+    /// Propagates what running an event raised.
+    fn close_event_queue(&self) -> Result<()> {
+        let mut permits = self
+            .event_queue
+            .permits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        debug_assert!(!permits.closed, "we should never close this twice");
+        permits.closed = true;
+        // It's possible that we close this queue while we are in a
+        // `processEvents` call.
+        if self.get_tragic_exception().is_some() {
+            // We are already handling a tragic exception: drop it all on the
+            // floor and return.
+            drop(permits);
+            while self.event_queue.poll().is_some() {}
+            let _ = self.flush_notifications.take_orphaned_files();
+            return Ok(());
+        }
+        // Now take all the permits, so we are the only one processing the
+        // queue.
+        while permits.held > 0 {
+            permits = self
+                .event_queue
+                .released
+                .wait(permits)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        // No permit is held and `closed` refuses every new one, so this
+        // thread is the only one processing the queue, as after
+        // `permits.acquire(Integer.MAX_VALUE)`; an event that adds another
+        // one fails with `AlreadyClosed`, as Java's `tryAcquire` does then.
+        drop(permits);
+        self.process_events_internal()
     }
 
     // -- Field numbers and field infos ---------------------------------------
@@ -5830,13 +6692,19 @@ impl IndexWriter {
             // Now mark all pending & running merges for forced merge. The info
             // can be missing, since a merge is registered before `mergeInit`
             // names its segment.
+            //
+            // Java assigns the field of the one `OneMerge` object the merge
+            // thread also runs (`IndexWriter.java:2229-2237`); the clone kept
+            // here shares the value with the merge thread's copy, so a merge
+            // already running sees it too, and asks the policy for the next
+            // forced merge when it finishes (`IndexWriter.java:4877-4883`).
             let state = &mut *state;
             for merge in state
                 .pending_merges
-                .iter_mut()
-                .chain(state.running_merges.iter_mut())
+                .iter()
+                .chain(state.running_merges.iter())
             {
-                merge.max_num_segments = max_num_segments;
+                merge.set_max_num_segments(max_num_segments);
                 if let Some(info) = merge.info().as_ref() {
                     state.segments_to_merge.insert(info.info.name.clone(), true);
                 }
@@ -5850,9 +6718,9 @@ impl IndexWriter {
         )?;
 
         if do_wait {
+            let mut state = self.state()?;
             loop {
                 {
-                    let state = self.state()?;
                     if let Some(tragedy) = self.get_tragic_exception() {
                         return Err(LuceneError::IllegalState(format!(
                             "this writer hit an unrecoverable error; cannot complete \
@@ -5862,7 +6730,7 @@ impl IndexWriter {
                     // Forward any exceptions in background merge threads to the
                     // current thread.
                     for merge in &state.merge_exceptions {
-                        if merge.max_num_segments != UNBOUNDED_MAX_MERGE_SEGMENTS {
+                        if merge.max_num_segments() != UNBOUNDED_MAX_MERGE_SEGMENTS {
                             return Err(LuceneError::Io(std::io::Error::other(format!(
                                 "background merge hit exception: {}: {}",
                                 merge.seg_string(),
@@ -5875,8 +6743,9 @@ impl IndexWriter {
                     }
                 }
                 self.test_point("forceMergeBeforeWait");
-                self.do_wait();
+                state = self.do_wait(state)?;
             }
+            drop(state);
             // If close is called while we are still running, throw an exception
             // so the calling thread will know merging did not complete.
             self.ensure_open()?;
@@ -5924,9 +6793,6 @@ impl IndexWriter {
         }
 
         let merge_policy = self.config.merge_policy();
-        // The merges the writer registered, as the clones that share their
-        // completion state with the pending copies.
-        let mut registered: Vec<OneMerge> = Vec::new();
         // `synchronized (this)` (`IndexWriter.java:2318-2325`): the policy reads
         // the live segments and its merges are registered under one hold of
         // the writer's lock, so no delete applied in between can make a
@@ -5943,12 +6809,7 @@ impl IndexWriter {
             };
             if let Some(spec) = spec.as_ref() {
                 for merge in &spec.merges {
-                    let before = state.pending_merges.len();
-                    if self.register_merge(&mut state, merge.clone())?
-                        && state.pending_merges.len() == before + 1
-                    {
-                        registered.push(state.pending_merges[before].clone());
-                    }
+                    self.register_merge(&mut state, merge.clone())?;
                 }
             }
             spec
@@ -5957,6 +6818,7 @@ impl IndexWriter {
         self.execute_merge(MergeTrigger::Explicit)?;
 
         if let (Some(spec), true) = (spec.as_ref(), do_wait) {
+            let mut state = self.state()?;
             loop {
                 if let Some(tragedy) = self.get_tragic_exception() {
                     return Err(LuceneError::IllegalState(format!(
@@ -5966,8 +6828,16 @@ impl IndexWriter {
                 }
                 // Check each merge the policy asked for: whether any of them
                 // is still pending or running, and whether any failed.
-                let running = registered.iter().any(|merge| !merge.has_finished());
+                let mut running = false;
                 for merge in &spec.merges {
+                    if state
+                        .pending_merges
+                        .iter()
+                        .chain(state.running_merges.iter())
+                        .any(|queued| queued.is_same_merge(merge))
+                    {
+                        running = true;
+                    }
                     if let Some(error) = merge.get_error() {
                         return Err(LuceneError::Io(std::io::Error::other(format!(
                             "background merge hit exception: {}: {error}",
@@ -5975,10 +6845,11 @@ impl IndexWriter {
                         ))));
                     }
                 }
+                // If any of our merges are still running, wait.
                 if !running {
                     break;
                 }
-                self.do_wait();
+                state = self.do_wait(state)?;
             }
         }
 
@@ -6034,14 +6905,25 @@ pub fn set_max_docs(max_docs: i32) -> Result<()> {
 }
 
 impl IndexWriter {
-    /// Waits briefly for a condition another thread will satisfy.
+    /// Waits on the writer's monitor for a condition another thread will
+    /// satisfy, releasing the monitor meanwhile.
     ///
-    /// Equivalent to `IndexWriter.doWait()`. Java waits on the writer's monitor
-    /// for at most one second, as a defence against a missed notification; this
-    /// port sleeps for the same second, because its waiters are woken by the
-    /// scheduler rather than by the writer's monitor.
-    fn do_wait(&self) {
-        std::thread::sleep(std::time::Duration::from_secs(1));
+    /// Equivalent to `IndexWriter.doWait()` (`IndexWriter.java:5640-5652`):
+    /// the callers could in theory simply wait, but as a defence against a
+    /// missed `notifyAll()` the wait lasts at most one second, after which the
+    /// caller re-checks its condition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when the monitor is poisoned.
+    fn do_wait<'a>(
+        &'a self,
+        state: MutexGuard<'a, WriterState>,
+    ) -> Result<MutexGuard<'a, WriterState>> {
+        self.state_changed
+            .wait_timeout(state, std::time::Duration::from_secs(1))
+            .map(|(state, _)| state)
+            .map_err(|_| LuceneError::IllegalState("IndexWriter state lock poisoned".to_string()))
     }
 
     /// Counts the soft and hard deletions a reader carries.
@@ -6253,10 +7135,7 @@ impl IndexWriter {
         let next_gen = self.buffered_updates_stream.push(Arc::clone(&packet))?;
         // Do this as an event so it applies higher in the stack, when we are
         // not holding the flush queue's purge lock.
-        self.apply_events
-            .lock()
-            .map_err(|_| LuceneError::IllegalState("event queue lock poisoned".to_string()))?
-            .push_back(packet);
+        self.event_queue.add(WriterEvent::TryApply(packet))?;
         Ok(next_gen)
     }
 
@@ -6874,6 +7753,11 @@ fn lock_reader_map<'a>(
 }
 
 impl IndexWriter {
+    /// Takes `commit_lock`, which the calling thread may already hold.
+    fn lock_commit(&self) -> Result<ReentrantGuard<'_>> {
+        Ok(self.commit_lock.lock())
+    }
+
     /// Takes the lock that lets a single full flush run at a time.
     ///
     /// Equivalent to entering `synchronized (fullFlushLock)`.
@@ -6881,13 +7765,6 @@ impl IndexWriter {
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalState`] when the lock is poisoned.
-    /// Takes `commit_lock`.
-    fn lock_commit(&self) -> Result<MutexGuard<'_, ()>> {
-        self.commit_lock
-            .lock()
-            .map_err(|_| LuceneError::IllegalState("commit lock poisoned".to_string()))
-    }
-
     fn lock_full_flush(&self) -> Result<MutexGuard<'_, ()>> {
         self.full_flush_lock
             .lock()
@@ -6977,7 +7854,7 @@ impl IndexWriter {
             // flushcount if we flushed anything.
             self.flush_count.fetch_add(1, Ordering::AcqRel);
         }
-        self.publish_flushed_segments()?;
+        self.publish_flushed_segments(true)?;
         self.process_events(false)?;
 
         if apply_all_deletes {
@@ -7577,8 +8454,8 @@ impl IndexWriterTrait for IndexWriter {
     /// # Errors
     ///
     /// Returns [`LuceneError::IllegalArgument`] when `write_all_deletes` is set
-    /// without `apply_all_deletes`, [`LuceneError::IllegalState`] when the
-    /// writer is closed or was never shared with [`IndexWriter::shared`], and
+    /// without `apply_all_deletes`, [`LuceneError::AlreadyClosed`] when the
+    /// writer is closed or being dropped, and
     /// otherwise propagates whatever the flush, the reader or the merges raise.
     fn get_reader(
         &self,
@@ -7710,7 +8587,7 @@ impl IndexWriterTrait for IndexWriter {
                         &nrt.merged_readers,
                     );
                 }
-                self.maybe_close_on_tragic_event();
+                self.maybe_close_on_tragic_event()?;
                 Err(error)
             }
         }
@@ -7925,7 +8802,7 @@ mod tests {
                 crate::index::merge_scheduler::SerialMergeScheduler::new(),
             ))
             .unwrap();
-        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap().shared();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         let id_doc = |id: i32| {
             let mut doc = Document::new();
             doc.add(Box::new(
@@ -8104,7 +8981,7 @@ mod tests {
         config
             .set_info_stream(Arc::clone(&stream) as Arc<dyn InfoStream>)
             .unwrap();
-        let writer = Arc::new(IndexWriter::new(Arc::clone(&dir), config).unwrap());
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         for i in 0..10 {
             let mut doc = Document::new();
             doc.add(Box::new(
@@ -8183,7 +9060,7 @@ mod tests {
                 crate::index::merge_scheduler::SerialMergeScheduler::new(),
             ))
             .unwrap();
-        let writer = Arc::new(IndexWriter::new(Arc::clone(&dir), config).unwrap());
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
         writer_slot.set(Arc::clone(&writer)).unwrap();
         for segment in 0..2 {
             for k in 0..20 {
@@ -8222,5 +9099,189 @@ mod tests {
             "the merge it chose was registered and ran"
         );
         writer.rollback().unwrap();
+    }
+
+    fn one_doc_writer() -> (Arc<dyn Directory>, Arc<IndexWriter>, Document) {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_merge_scheduler(Arc::new(
+                crate::index::merge_scheduler::SerialMergeScheduler::new(),
+            ))
+            .unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        let mut doc = Document::new();
+        doc.add(Box::new(
+            StringField::new("id", "d0".to_string(), Store::YES).unwrap(),
+        ));
+        writer.add_document(&doc).unwrap();
+        writer.commit().unwrap();
+        (dir, writer, doc)
+    }
+
+    /// `rollbackInternalNoCommit` closes the documents writer before it
+    /// aborts it (`IndexWriter.java:2593`), so a thread that passed
+    /// `IndexWriter.ensureOpen` before the rollback cannot obtain a new
+    /// per-thread writer afterwards — and so cannot flush it after the write
+    /// lock is released. It fails with `AlreadyClosed` instead.
+    #[test]
+    fn rollback_closes_the_documents_writer_against_racing_adds() {
+        let (dir, writer, doc) = one_doc_writer();
+        let committed = {
+            let mut files = dir.list_all().unwrap();
+            files.retain(|name| name != WRITE_LOCK_NAME);
+            files
+        };
+        writer.rollback().unwrap();
+        // The documents-writer half of `addDocument`, as a thread already past
+        // `IndexWriter.ensureOpen` runs it.
+        let raced = writer.documents_writer.update_document(&doc, None);
+        assert!(
+            matches!(raced, Err(LuceneError::AlreadyClosed(_))),
+            "an add racing the rollback must fail with AlreadyClosed: {raced:?}"
+        );
+        assert_eq!(writer.documents_writer.num_docs(), 0);
+        let mut after = dir.list_all().unwrap();
+        after.retain(|name| name != WRITE_LOCK_NAME);
+        assert_eq!(
+            after, committed,
+            "no file may be written after the rollback"
+        );
+    }
+
+    /// `rollbackInternalNoCommit` empties the flush ticket queue with
+    /// `publishFlushedSegments(true)` after waiting for the running flushes
+    /// (`IndexWriter.java:2596-2599`): a ticket a concurrent flush left behind
+    /// — its own non-forced publication skipped because another thread was
+    /// publishing — is not left in the queue of a closed writer.
+    #[test]
+    fn rollback_publishes_the_flush_tickets_left_in_the_queue() {
+        let (_dir, writer, _doc) = one_doc_writer();
+        writer
+            .documents_writer
+            .ticket_queue()
+            .add_ticket(|| {
+                Ok(Some(crate::index::documents_writer::FlushTicket::new(
+                    None, false,
+                )))
+            })
+            .unwrap();
+        assert!(writer.documents_writer.ticket_queue().has_tickets());
+        writer.rollback().unwrap();
+        assert!(
+            !writer.documents_writer.ticket_queue().has_tickets(),
+            "the rollback left a flush ticket unpublished"
+        );
+    }
+
+    /// The writer's event queue is closed by the rollback
+    /// (`IndexWriter.java:2600`): adding an event afterwards fails with
+    /// `AlreadyClosed`, as `EventQueue.add` does (`IndexWriter.java:307-324`).
+    #[test]
+    fn rollback_closes_the_event_queue() {
+        let (_dir, writer, _doc) = one_doc_writer();
+        writer.rollback().unwrap();
+        let added = writer
+            .event_queue
+            .add(WriterEvent::PublishFlushedSegments { count_flush: false });
+        assert!(matches!(added, Err(LuceneError::AlreadyClosed(_))));
+    }
+
+    /// `rollbackInternalNoCommit` restores the segments the writer recorded
+    /// when it opened or last committed — `rollbackSegments`, cloned by
+    /// `createBackupSegmentInfos` (`IndexWriter.java:1020, 1117, 4295`) —
+    /// not the newest commit on disk (`IndexWriter.java:2615`). A writer that
+    /// opened an existing index with `OpenMode.CREATE` recorded no segment,
+    /// so it rolls back to none, although the old commit is still on disk.
+    #[test]
+    fn rollback_restores_the_segments_the_writer_recorded() {
+        let (dir, writer, doc) = one_doc_writer();
+        writer.add_document(&doc).unwrap();
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let mut config = IndexWriterConfig::new();
+        config
+            .set_open_mode(crate::index::index_writer_config::OpenMode::CREATE)
+            .unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        writer.add_document(&doc).unwrap();
+        writer.flush().unwrap();
+        writer.rollback().unwrap();
+        let state = writer.state.lock().unwrap();
+        assert_eq!(state.segment_infos.size(), 0);
+        assert_eq!(writer.pending_num_docs.load(Ordering::Acquire), 0);
+        drop(state);
+        assert_eq!(
+            SegmentInfos::read_latest_commit(Arc::clone(&dir))
+                .unwrap()
+                .total_max_doc(),
+            2,
+            "the rollback must not touch the commit on disk"
+        );
+    }
+
+    /// The hold of the commit lock belongs to the thread that took it, as a
+    /// Java monitor's does: [`ReentrantGuard`] must not be `Send`. The
+    /// assertion is `static_assertions::assert_not_impl_any!`'s: were the
+    /// guard `Send`, both blanket impls would apply and the item reference
+    /// below would be ambiguous, failing to compile.
+    #[test]
+    fn the_commit_lock_guard_is_not_send() {
+        trait AmbiguousIfSend<A> {
+            fn some_item() {}
+        }
+        impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+        impl<T: ?Sized + Send> AmbiguousIfSend<u8> for T {}
+        let _ = <ReentrantGuard<'static> as AmbiguousIfSend<_>>::some_item;
+    }
+
+    /// `deleteAll` re-enables merges through `Merges.enable()`, which calls
+    /// `ensureOpen()` first (`IndexWriter.java:6705-6709`): on a closing
+    /// writer it fails and merges stay disabled.
+    #[test]
+    fn merges_are_reenabled_only_on_an_open_writer() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        {
+            let mut state = writer.state().unwrap();
+            state.stop_merges = true;
+            writer.closing.store(true, Ordering::Release);
+            let refused = writer.enable_merges(&mut state);
+            assert!(
+                matches!(refused, Err(LuceneError::AlreadyClosed(_))),
+                "{refused:?}"
+            );
+            assert!(
+                state.stop_merges,
+                "a refused enable must leave merges disabled"
+            );
+            writer.closing.store(false, Ordering::Release);
+            writer.enable_merges(&mut state).unwrap();
+            assert!(!state.stop_merges);
+        }
+        writer.rollback().unwrap();
+    }
+
+    /// `deleteUnusedFiles` and `flushFailed` are `eventQueue.add(...)`
+    /// (`IndexWriter.java:430-438`), which throws `AlreadyClosedException` once
+    /// the queue is closed (`IndexWriter.java:307-324`): nothing is recorded.
+    #[test]
+    fn flush_notifications_refuse_files_once_the_event_queue_is_closed() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        writer.close().unwrap();
+        let files: HashSet<String> = HashSet::from(["_0.fdt".to_string()]);
+        let refused = writer.flush_notifications.delete_unused_files(&files);
+        assert!(
+            matches!(refused, Err(LuceneError::AlreadyClosed(_))),
+            "{refused:?}"
+        );
+        assert!(
+            writer.flush_notifications.take_orphaned_files().is_empty(),
+            "a refused event must not be recorded"
+        );
     }
 }

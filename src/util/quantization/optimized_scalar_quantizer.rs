@@ -493,6 +493,10 @@ impl OptimizedScalarQuantizer {
         }
     }
 
+    /// Packs the vector as a binary array: bit `7 - i % 8` of byte `i / 8` is
+    /// set when `vector[i]` is non-zero.
+    ///
+    /// Equivalent to `OptimizedScalarQuantizer.packAsBinary(byte[], byte[])`.
     pub fn pack_as_binary(vector: &[u8], packed: &mut [u8]) {
         packed.fill(0);
         for (i, &v) in vector.iter().enumerate() {

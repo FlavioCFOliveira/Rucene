@@ -140,7 +140,7 @@ impl TermVectorsFormat for Lucene90TermVectorsFormat {
 
     fn vectors_writer(
         &self,
-        directory: &dyn Directory,
+        directory: &std::sync::Arc<dyn Directory>,
         segment_info: &SegmentInfo,
         context: &dyn IOContext,
     ) -> Result<Box<dyn TermVectorsWriter>> {
@@ -237,7 +237,7 @@ impl TermVectorsFormat for Lucene90CompressingTermVectorsFormat {
 
     fn vectors_writer(
         &self,
-        directory: &dyn Directory,
+        directory: &std::sync::Arc<dyn Directory>,
         segment_info: &SegmentInfo,
         context: &dyn IOContext,
     ) -> Result<Box<dyn TermVectorsWriter>> {
@@ -527,7 +527,7 @@ fn next_term_vectors_step(
 impl Lucene90CompressingTermVectorsWriter {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        directory: &dyn Directory,
+        directory: &Arc<dyn Directory>,
         segment_info: &SegmentInfo,
         segment_suffix: &str,
         context: &dyn IOContext,
@@ -540,39 +540,68 @@ impl Lucene90CompressingTermVectorsWriter {
         let segment = segment_info.name.clone();
         let id = segment_info.id();
 
-        let meta_file = segment_file_name(&segment, segment_suffix, META_EXTENSION);
-        let mut meta_stream = directory.create_output(&meta_file, context)?;
-        write_index_header(
-            meta_stream.as_mut(),
-            &format!("{INDEX_CODEC_NAME}Meta"),
-            VERSION_CURRENT,
-            &id,
-            segment_suffix,
-        )?;
+        // `boolean success = false; try { ... } finally { if (!success)
+        // IOUtils.closeWhileHandlingException(metaStream, vectorsStream,
+        // indexWriter, indexWriter); }`
+        // (`Lucene90CompressingTermVectorsWriter.java:256-304`): whatever
+        // fails, everything opened so far is closed, and the index writer's
+        // close deletes its temporary files.
+        let mut meta_stream: Option<Box<dyn IndexOutput>> = None;
+        let mut vectors_stream: Option<Box<dyn IndexOutput>> = None;
+        let mut index_writer: Option<FieldsIndexWriter> = None;
+        let opened = (|| -> Result<()> {
+            let meta_file = segment_file_name(&segment, segment_suffix, META_EXTENSION);
+            let meta = meta_stream.insert(directory.create_output(&meta_file, context)?);
+            write_index_header(
+                meta.as_mut(),
+                &format!("{INDEX_CODEC_NAME}Meta"),
+                VERSION_CURRENT,
+                &id,
+                segment_suffix,
+            )?;
 
-        let vectors_file = segment_file_name(&segment, segment_suffix, VECTORS_EXTENSION);
-        let mut vectors_stream = directory.create_output(&vectors_file, context)?;
-        write_index_header(
-            vectors_stream.as_mut(),
-            format_name,
-            VERSION_CURRENT,
-            &id,
-            segment_suffix,
-        )?;
+            let vectors_file = segment_file_name(&segment, segment_suffix, VECTORS_EXTENSION);
+            let vectors = vectors_stream.insert(directory.create_output(&vectors_file, context)?);
+            write_index_header(
+                vectors.as_mut(),
+                format_name,
+                VERSION_CURRENT,
+                &id,
+                segment_suffix,
+            )?;
 
-        let index_writer = FieldsIndexWriter::new(
-            directory,
-            &segment,
-            segment_suffix,
-            INDEX_EXTENSION,
-            INDEX_CODEC_NAME,
-            id,
-            block_shift,
-            context,
-        )?;
+            index_writer = Some(FieldsIndexWriter::new(
+                directory,
+                &segment,
+                segment_suffix,
+                INDEX_EXTENSION,
+                INDEX_CODEC_NAME,
+                id,
+                block_shift,
+                context,
+            )?);
 
-        meta_stream.write_v_int(PackedInts::VERSION_CURRENT)?;
-        meta_stream.write_v_int(chunk_size)?;
+            meta.write_v_int(PackedInts::VERSION_CURRENT)?;
+            meta.write_v_int(chunk_size)?;
+            Ok(())
+        })();
+        if let Err(error) = opened {
+            if let Some(mut out) = meta_stream {
+                let _ = out.close();
+            }
+            if let Some(mut out) = vectors_stream {
+                let _ = out.close();
+            }
+            if let Some(mut writer) = index_writer {
+                let _ = writer.close();
+            }
+            return Err(error);
+        }
+        let (Some(meta_stream), Some(vectors_stream), Some(index_writer)) =
+            (meta_stream, vectors_stream, index_writer)
+        else {
+            unreachable!("INVARIANT: a successful open set all three resources");
+        };
 
         Ok(Self {
             segment,
@@ -1520,10 +1549,19 @@ impl TermVectorsWriter for Lucene90CompressingTermVectorsWriter {
         Ok(doc_count)
     }
 
+    /// Equivalent to `Lucene90CompressingTermVectorsWriter.close()`
+    /// (`Lucene90CompressingTermVectorsWriter.java:307-316`), which is
+    /// `IOUtils.close(metaStream, vectorsStream, indexWriter)`: all three are
+    /// closed even when one fails, the first failure propagates, and the
+    /// index writer's close deletes its temporary files. Java does not close
+    /// the compressor here; neither does this.
     fn close(&mut self) -> Result<()> {
-        self.meta_stream.close()?;
-        self.vectors_stream.close()?;
-        self.compressor.close()
+        let outcomes = [
+            self.meta_stream.close(),
+            self.vectors_stream.close(),
+            self.index_writer.close(),
+        ];
+        outcomes.into_iter().find(Result::is_err).unwrap_or(Ok(()))
     }
 }
 
@@ -3482,7 +3520,7 @@ mod tests {
 
         {
             let mut writer = format
-                .vectors_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                .vectors_writer(&dir, &segment_info, &*DEFAULT_IO_CONTEXT)
                 .unwrap();
 
             // Document 0: body with positions and offsets.
@@ -3634,7 +3672,7 @@ mod tests {
 
         {
             let mut writer = format
-                .vectors_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                .vectors_writer(&dir, &segment_info, &*DEFAULT_IO_CONTEXT)
                 .unwrap();
             writer.start_document(1).unwrap();
             writer
@@ -3720,7 +3758,7 @@ mod tests {
     /// Writes one document made of `fields`, exactly as a
     /// `TermVectorsConsumer` would.
     fn write_document(
-        directory: &dyn Directory,
+        directory: &Arc<dyn Directory>,
         segment_info: &SegmentInfo,
         field_infos: &FieldInfos,
         fields: &[ScriptedField<'_>],
@@ -3783,7 +3821,7 @@ mod tests {
             (3, 15, 19, None),
         ];
         write_document(
-            dir.as_ref(),
+            &dir,
             &segment_info,
             &field_infos,
             &[("body", true, true, false, vec![("zeta", occurrences)])],
@@ -3830,7 +3868,7 @@ mod tests {
         let segment_info = test_segment_info(Arc::clone(&dir), "_0", 1);
 
         write_document(
-            dir.as_ref(),
+            &dir,
             &segment_info,
             &field_infos,
             &[
@@ -3939,7 +3977,7 @@ mod tests {
                 vec![("t", vec![(0, 0, 0, None)])],
             ),
         ];
-        write_document(dir.as_ref(), &segment_info, &field_infos, &fields);
+        write_document(&dir, &segment_info, &field_infos, &fields);
 
         let mut input = dir
             .open_input("_0.tvd", &*DEFAULT_IO_CONTEXT)
@@ -3986,7 +4024,7 @@ mod tests {
             .unwrap();
             {
                 let mut writer = format
-                    .vectors_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                    .vectors_writer(&dir, &segment_info, &*DEFAULT_IO_CONTEXT)
                     .unwrap();
                 for doc in 0..2u8 {
                     writer.start_document(1).unwrap();
@@ -4044,7 +4082,10 @@ mod tests {
 
     /// Writes one document's term vector into `directory` and returns the field
     /// infos the reader needs.
-    fn write_one_document(directory: &dyn Directory, segment_info: &SegmentInfo) -> FieldInfos {
+    fn write_one_document(
+        directory: &Arc<dyn Directory>,
+        segment_info: &SegmentInfo,
+    ) -> FieldInfos {
         let field_infos = make_field_infos();
         let format = Lucene90TermVectorsFormat::new();
         let mut writer = format
@@ -4100,7 +4141,7 @@ mod tests {
         let placeholder: Arc<dyn Directory> = Arc::new(RamDirectory::new());
         let segment_info = test_segment_info(Arc::clone(&placeholder), "_0", 1);
 
-        let field_infos = write_one_document(files.as_ref(), &segment_info);
+        let field_infos = write_one_document(&files, &segment_info);
         assert!(
             placeholder.list_all().expect("list").is_empty(),
             "the writer must not create files in SegmentInfo.directory"
@@ -4122,7 +4163,7 @@ mod tests {
     fn term_vectors_are_readable_from_a_compound_file_segment() {
         let directory: Arc<dyn Directory> = Arc::new(RamDirectory::new());
         let segment_info = test_segment_info(Arc::clone(&directory), "_0", 1);
-        let field_infos = write_one_document(directory.as_ref(), &segment_info);
+        let field_infos = write_one_document(&directory, &segment_info);
 
         let loose: Vec<String> = ["_0.tvd", "_0.tvx", "_0.tvm"]
             .iter()
@@ -4191,7 +4232,7 @@ mod tests {
         chunk_size: i32,
     ) -> Lucene90CompressingTermVectorsWriter {
         Lucene90CompressingTermVectorsWriter::new(
-            dir.as_ref(),
+            dir,
             &test_segment_info(Arc::clone(dir), name, 0),
             "",
             &*DEFAULT_IO_CONTEXT,
@@ -4300,7 +4341,7 @@ mod tests {
         let field_infos = make_field_infos();
         let segment_info = test_segment_info(Arc::clone(dir), name, count);
         let mut writer = merge_test_format()
-            .vectors_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+            .vectors_writer(dir, &segment_info, &*DEFAULT_IO_CONTEXT)
             .unwrap();
         for n in first..first + count {
             let fields = tv_merge_doc(n).unwrap_or_default();
@@ -4598,7 +4639,7 @@ mod tests {
         let info = test_segment_info(Arc::clone(&dir), "_m", total_docs);
         {
             let mut writer = merge_test_format()
-                .vectors_writer(dir.as_ref(), &info, &*DEFAULT_IO_CONTEXT)
+                .vectors_writer(&dir, &info, &*DEFAULT_IO_CONTEXT)
                 .unwrap();
             assert_eq!(
                 writer.merge(merge_state).unwrap(),

@@ -11,7 +11,7 @@ use crate::codecs::lucene90::indexed_disi::{write_bit_set, IndexedDISI, DEFAULT_
 use crate::error::Result;
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::DocIdSetIterator;
-use crate::store::{DataInput, DataOutput, IndexInput, IndexOutput, RandomAccessInput};
+use crate::store::{DataInput, IndexInput, IndexOutput, RandomAccessInput};
 
 /// Block shift the vector formats use for their monotonic ord-to-doc mapping.
 ///

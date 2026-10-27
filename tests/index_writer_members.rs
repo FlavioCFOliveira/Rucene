@@ -41,7 +41,7 @@ fn add_doc(writer: &IndexWriter, id: &str) {
     writer.add_document(&doc).unwrap();
 }
 
-fn writer_on_ram() -> (Arc<dyn Directory>, IndexWriter) {
+fn writer_on_ram() -> (Arc<dyn Directory>, Arc<IndexWriter>) {
     ensure_codec();
     let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
     let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();

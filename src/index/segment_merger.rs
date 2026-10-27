@@ -280,12 +280,16 @@ impl SegmentMerger {
     /// were written.
     fn merge_fields(&mut self) -> Result<i32> {
         let mut writer = self.codec.stored_fields_format().fields_writer(
-            &*self.directory,
+            &self.directory,
             self.segment_info(),
             &*self.context,
         )?;
-        let merged = writer.merge(self.merge_state())?;
-        writer.close()?;
+        // try-with-resources (`SegmentMerger.java:246-251`): the writer is
+        // closed on every exit, and a failed merge keeps its own error.
+        let merged = writer.merge(self.merge_state());
+        let closed = writer.close();
+        let merged = merged?;
+        closed?;
         Ok(merged)
     }
 
@@ -294,13 +298,19 @@ impl SegmentMerger {
     /// Equivalent to `SegmentMerger.mergeTermVectors()`.
     fn merge_term_vectors(&mut self) -> Result<i32> {
         let mut writer = self.codec.term_vectors_format().vectors_writer(
-            &*self.directory,
+            &self.directory,
             self.segment_info(),
             &*self.context,
         )?;
-        let merged = writer.merge(self.merge_state())?;
-        debug_assert_eq!(merged, self.segment_info().max_doc()?);
-        writer.close()?;
+        // try-with-resources (`SegmentMerger.java:259-266`): the writer is
+        // closed on every exit, and a failed merge keeps its own error.
+        let merged = writer.merge(self.merge_state());
+        if let Ok(merged) = &merged {
+            debug_assert_eq!(Some(*merged), self.segment_info().max_doc().ok());
+        }
+        let closed = writer.close();
+        let merged = merged?;
+        closed?;
         Ok(merged)
     }
 
@@ -310,8 +320,11 @@ impl SegmentMerger {
     fn merge_norms(&mut self) -> Result<()> {
         let state = self.segment_write_state();
         let mut consumer = self.codec.norms_format().norms_consumer(&state)?;
-        consumer.merge(self.merge_state())?;
-        consumer.close()
+        // try-with-resources (`SegmentMerger.java:202-207`).
+        let merged = consumer.merge(self.merge_state());
+        let closed = consumer.close();
+        merged?;
+        closed
     }
 
     /// Merges the doc values.
@@ -320,8 +333,11 @@ impl SegmentMerger {
     fn merge_doc_values(&mut self) -> Result<()> {
         let state = self.segment_write_state();
         let mut consumer = self.codec.doc_values_format().fields_consumer(&state)?;
-        consumer.merge(self.merge_state())?;
-        consumer.close()
+        // try-with-resources (`SegmentMerger.java:186-191`).
+        let merged = consumer.merge(self.merge_state());
+        let closed = consumer.close();
+        merged?;
+        closed
     }
 
     /// Merges the points.
@@ -330,8 +346,11 @@ impl SegmentMerger {
     fn merge_points(&mut self) -> Result<()> {
         let state = self.segment_write_state();
         let mut writer = self.codec.points_format().fields_writer(&state)?;
-        writer.merge(self.merge_state())?;
-        writer.close()
+        // try-with-resources (`SegmentMerger.java:194-199`).
+        let merged = writer.merge(self.merge_state());
+        let closed = writer.close();
+        merged?;
+        closed
     }
 
     /// Merges the KNN vectors.
@@ -350,8 +369,11 @@ impl SegmentMerger {
             Arc::clone(&self.context),
         );
         let mut writer = self.codec.knn_vectors_format().fields_writer(&state)?;
-        writer.merge(self.merge_state())?;
-        writer.close()
+        // try-with-resources (`SegmentMerger.java:269-274`).
+        let merged = writer.merge(self.merge_state());
+        let closed = writer.close();
+        merged?;
+        closed
     }
 
     /// Runs one merge phase and reports how long it took.

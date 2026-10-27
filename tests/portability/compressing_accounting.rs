@@ -159,7 +159,7 @@ fn compressing_accounting_matches_lucene() {
     .expect("segment info");
     let writer = codec()
         .term_vectors_format()
-        .vectors_writer(directory.as_ref(), &info, &*DEFAULT_IO_CONTEXT)
+        .vectors_writer(&directory, &info, &*DEFAULT_IO_CONTEXT)
         .expect("term vectors writer");
     assert_eq!(
         writer.ram_bytes_used(),
@@ -205,7 +205,7 @@ fn compressing_readers_report_already_closed() {
     // An empty segment is enough: the guard is on the reader's own state.
     let mut writer = codec()
         .term_vectors_format()
-        .vectors_writer(directory.as_ref(), &info, &*DEFAULT_IO_CONTEXT)
+        .vectors_writer(&directory, &info, &*DEFAULT_IO_CONTEXT)
         .expect("term vectors writer");
     writer.finish(0).expect("finish");
     writer.close().expect("close writer");

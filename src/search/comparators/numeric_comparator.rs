@@ -269,9 +269,6 @@ impl NumericComparator {
         }
     }
 
-    /// The name of the sort field.
-    ///
-    /// Equivalent to reading the `protected final String field` field.
     /// Returns the missing value in the comparable long encoding.
     ///
     /// Equivalent to the abstract
@@ -282,6 +279,9 @@ impl NumericComparator {
         self.missing_value_as_long
     }
 
+    /// The name of the sort field.
+    ///
+    /// Equivalent to reading the `protected final String field` field.
     pub fn field(&self) -> &str {
         &self.field
     }

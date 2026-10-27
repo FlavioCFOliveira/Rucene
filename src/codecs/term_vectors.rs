@@ -35,9 +35,15 @@ pub trait TermVectorsFormat: Send + Sync + fmt::Debug {
     ) -> Result<Box<dyn TermVectorsReader>>;
 
     /// Returns a [`TermVectorsWriter`] to write term vectors.
+    ///
+    /// The directory is shared, not borrowed: as Java's writer keeps its
+    /// `Directory` reference, the writer may create, read back and delete
+    /// files after this call returns — the fields index streams to temporary
+    /// files it only turns into the `.fdx`/`.tvx` at `finish`
+    /// (`FieldsIndexWriter.java:83-87, 105-181`).
     fn vectors_writer(
         &self,
-        directory: &dyn Directory,
+        directory: &std::sync::Arc<dyn Directory>,
         segment_info: &SegmentInfo,
         context: &dyn IOContext,
     ) -> Result<Box<dyn TermVectorsWriter>>;
@@ -361,7 +367,7 @@ impl TermVectorsFormat for EmptyTermVectorsFormat {
 
     fn vectors_writer(
         &self,
-        _directory: &dyn Directory,
+        _directory: &std::sync::Arc<dyn Directory>,
         _segment_info: &SegmentInfo,
         _context: &dyn IOContext,
     ) -> Result<Box<dyn TermVectorsWriter>> {

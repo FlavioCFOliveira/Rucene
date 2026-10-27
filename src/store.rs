@@ -62,7 +62,7 @@ use fslock::LockFile;
 use crate::{
     error::{LuceneError, Result},
     util::java_collections::{
-        JavaHashMap, JavaHashSet, JavaOrderedMap, JavaOrderedSet, JavaStringMap, JavaStringSet,
+        JavaHashSet, JavaOrderedMap, JavaOrderedSet, JavaStringMap, JavaStringSet,
     },
     util::BitUtil,
 };
@@ -411,7 +411,7 @@ pub trait DataOutput {
     /// # Errors
     ///
     /// Returns `LuceneError::IllegalArgument` if `i` is negative.
-    fn write_v_long(&mut self, mut i: i64) -> Result<()> {
+    fn write_v_long(&mut self, i: i64) -> Result<()> {
         if i < 0 {
             return Err(LuceneError::IllegalArgument(format!(
                 "cannot write negative vLong (got: {i})"
@@ -576,6 +576,14 @@ pub trait DataOutput {
         crate::util::GroupVIntUtil::write_group_vints_output_long(self, &mut scratch, values, limit)
     }
 
+    /// Copies `num_bytes` bytes from `input` to this output.
+    ///
+    /// Equivalent to `DataOutput.copyBytes(DataInput, long)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LuceneError::IllegalArgument` when `num_bytes` is negative, and
+    /// propagates whatever reading or writing raises.
     fn copy_bytes(&mut self, input: &mut dyn DataInput, mut num_bytes: i64) -> Result<()> {
         if num_bytes < 0 {
             return Err(LuceneError::IllegalArgument(format!(
@@ -4943,7 +4951,16 @@ impl std::fmt::Debug for FilterDirectory {
 /// bytes.
 pub trait RateLimiter: Send + Sync {
     /// Sets the rate limit in MB/s.
-    fn set_mb_per_sec(&self, mb_per_sec: f64);
+    ///
+    /// Equivalent to `RateLimiter.setMBPerSec(double)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns what the implementation rejects: Java's abstract method lets
+    /// a subclass throw an unchecked exception, as `MergeRateLimiter` does
+    /// with `IllegalArgumentException` for a negative rate
+    /// (`MergeRateLimiter.java:58-62`).
+    fn set_mb_per_sec(&self, mb_per_sec: f64) -> Result<()>;
 
     /// Returns the current rate limit in MB/s.
     fn get_mb_per_sec(&self) -> f64;
@@ -4964,7 +4981,7 @@ pub trait RateLimiter: Send + Sync {
 /// Equivalent to `org.apache.lucene.store.RateLimiter.SimpleRateLimiter`.
 pub struct SimpleRateLimiter {
     mb_per_sec: std::sync::atomic::AtomicU64,
-    min_pause_check_bytes: std::sync::atomic::AtomicU64,
+    min_pause_check_bytes: AtomicI64,
     last_ns: Mutex<i64>,
 }
 
@@ -4976,10 +4993,12 @@ impl SimpleRateLimiter {
     pub fn new(mb_per_sec: f64) -> Self {
         let slf = Self {
             mb_per_sec: std::sync::atomic::AtomicU64::new(0),
-            min_pause_check_bytes: std::sync::atomic::AtomicU64::new(0),
+            min_pause_check_bytes: AtomicI64::new(0),
             last_ns: Mutex::new(Self::now_ns()),
         };
-        slf.set_mb_per_sec(mb_per_sec);
+        // `SimpleRateLimiter.setMBPerSec` accepts every rate, so this never
+        // fails.
+        let _ = slf.set_mb_per_sec(mb_per_sec);
         slf
     }
 
@@ -5000,18 +5019,17 @@ impl SimpleRateLimiter {
 }
 
 impl RateLimiter for SimpleRateLimiter {
-    fn set_mb_per_sec(&self, mb_per_sec: f64) {
-        Self::store_f64(
-            &self.mb_per_sec,
-            if mb_per_sec.is_finite() && mb_per_sec > 0.0 {
-                mb_per_sec
-            } else {
-                0.0
-            },
-        );
+    /// Equivalent to `SimpleRateLimiter.setMBPerSec(double)`
+    /// (`RateLimiter.java:74-77`): the rate is stored as given, and
+    /// `minPauseCheckBytes = (long) ((MIN_PAUSE_CHECK_MSEC / 1000.0) *
+    /// mbPerSec * 1024 * 1024)`. Rust's `f64 as i64` is Java's `(long)` cast:
+    /// NaN becomes 0 and out-of-range values saturate.
+    fn set_mb_per_sec(&self, mb_per_sec: f64) -> Result<()> {
+        Self::store_f64(&self.mb_per_sec, mb_per_sec);
         let min_bytes = (Self::MIN_PAUSE_CHECK_MSEC as f64 / 1000.0) * mb_per_sec * 1024.0 * 1024.0;
         self.min_pause_check_bytes
-            .store(min_bytes.max(0.0) as u64, Ordering::Relaxed);
+            .store(min_bytes as i64, Ordering::Relaxed);
+        Ok(())
     }
 
     fn get_mb_per_sec(&self) -> f64 {
@@ -5019,7 +5037,7 @@ impl RateLimiter for SimpleRateLimiter {
     }
 
     fn get_min_pause_check_bytes(&self) -> i64 {
-        self.min_pause_check_bytes.load(Ordering::Relaxed) as i64
+        self.min_pause_check_bytes.load(Ordering::Relaxed)
     }
 
     fn pause(&self, bytes: i64) -> Result<i64> {
@@ -9122,6 +9140,7 @@ pub(crate) fn register_test_secrets() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::java_collections::JavaHashMap;
     use tempfile::TempDir;
 
     /// Writes all primitive encodings to a [`VecDataOutput`] and reads
@@ -11513,6 +11532,36 @@ mod tests {
         let bytes = min_check * 2;
         let pause = limiter.pause(bytes).unwrap();
         assert!(pause >= 0);
+    }
+
+    /// `SimpleRateLimiter.setMBPerSec` stores the rate as given and casts the
+    /// minimum pause check bytes with Java's `(long)`. The expected values were
+    /// measured against `lucene-core-10.5.0.jar`
+    /// (`new RateLimiter.SimpleRateLimiter(d)`, then the two getters).
+    #[test]
+    fn simple_rate_limiter_stores_the_rate_as_lucene_does() {
+        let cases: [(f64, i64); 7] = [
+            (f64::NAN, 0),
+            (f64::INFINITY, i64::MAX),
+            (f64::NEG_INFINITY, i64::MIN),
+            (-1.0, -5242),
+            (0.0, 0),
+            (1.0, 5242),
+            (2.5, 13107),
+        ];
+        for (rate, min_pause_check_bytes) in cases {
+            let limiter = SimpleRateLimiter::new(rate);
+            let stored = limiter.get_mb_per_sec();
+            assert!(
+                stored.to_bits() == rate.to_bits(),
+                "rate {rate} stored as {stored}"
+            );
+            assert_eq!(
+                limiter.get_min_pause_check_bytes(),
+                min_pause_check_bytes,
+                "rate {rate}"
+            );
+        }
     }
 
     /// A very high rate limit produces only a negligible pause (less than 1 ms).

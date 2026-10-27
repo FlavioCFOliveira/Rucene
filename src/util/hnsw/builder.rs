@@ -5,8 +5,6 @@
 
 #![deny(unsafe_code)]
 
-use std::f32;
-
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;

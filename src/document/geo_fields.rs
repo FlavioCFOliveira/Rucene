@@ -343,6 +343,16 @@ impl LatLonPoint {
         Ok(Arc::new(ConstantScoreQuery::new(Arc::new(builder.build()))))
     }
 
+    /// Encodes a bounding box into the lower and upper packed points a box
+    /// query compares against.
+    ///
+    /// Equivalent to the `encodeCeil(minLatitude, minLongitude)` and
+    /// `encode(maxLatitude, maxLongitude)` calls of
+    /// `LatLonPoint.newBoxQuery(String, double, double, double, double)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever encoding a coordinate raises.
     pub fn encode_box(rectangle: &Rectangle) -> Result<(Vec<u8>, Vec<u8>)> {
         let mut lower = vec![0u8; 2 * COORDINATE_BYTES];
         let mut upper = vec![0u8; 2 * COORDINATE_BYTES];

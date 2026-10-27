@@ -37,11 +37,24 @@ use crate::util::InfoStream;
 // Placeholder traits for subsystems that have not been ported yet.
 // -----------------------------------------------------------------------------
 
-/// Placeholder for `org.apache.lucene.index.IndexWriter.IndexReaderWarmer`.
+/// Warms a newly merged segment before it becomes visible to near-real-time
+/// readers, so the first search on it does not pay for the cold read.
 ///
-/// Only the minimal trait bounds needed by `IndexWriterConfig` are enforced;
-/// warmer logic will be added in a later task.
-pub trait MergedSegmentWarmer: Send + Sync + Debug + fmt::Display {}
+/// Equivalent to the functional interface
+/// `org.apache.lucene.index.IndexWriter.IndexReaderWarmer`, which
+/// `IndexWriter.mergeMiddle` calls once per merged segment, with a pooled
+/// reader over it, when reader pooling is enabled (`IndexWriter.java:5562-5574`).
+pub trait MergedSegmentWarmer: Send + Sync + Debug + fmt::Display {
+    /// Warms `reader`, a reader over the newly merged segment.
+    ///
+    /// Equivalent to `IndexReaderWarmer.warm(LeafReader)`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the warmer raises fails the merge, as Java's `IOException`
+    /// does.
+    fn warm(&self, reader: &dyn LeafReader) -> crate::error::Result<()>;
+}
 
 /// The `java.util.Comparator<LeafReader>` that sorts the leaves of a
 /// `DirectoryReader` opened from an `IndexWriter`.

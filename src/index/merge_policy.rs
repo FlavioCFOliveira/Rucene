@@ -6,7 +6,7 @@
 //! `LogByteSizeMergePolicy` and `LogDocMergePolicy`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::error::Result;
@@ -209,7 +209,17 @@ pub struct OneMerge {
     pub total_merge_bytes: i64,
     /// Target segment count when this merge came from `forceMerge`; `-1`
     /// otherwise.
-    pub max_num_segments: i32,
+    ///
+    /// Equivalent to `OneMerge.maxNumSegments`. Java mutates the field of the
+    /// one `OneMerge` object the writer, the scheduler's merge thread and the
+    /// policy's `MergeSpecification` all hold: `forceMerge` marks pending and
+    /// running merges (`IndexWriter.java:2229-2237`) and the merge thread
+    /// reads the value back when it finishes (`IndexWriter.java:4877-4883`).
+    /// `OneMerge` is `Clone` here, so the value is shared through an `Arc`, as
+    /// [`merge_start_ns`](Self::merge_start_ns) is; read it with
+    /// [`max_num_segments`](Self::max_num_segments) and set it with
+    /// [`set_max_num_segments`](Self::set_max_num_segments).
+    max_num_segments: Arc<AtomicI32>,
     /// Whether the merge reads through the writer's pooled readers.
     pub uses_pooled_readers: bool,
     /// Whether the merge was registered with the writer.
@@ -225,6 +235,13 @@ pub struct OneMerge {
     /// thread; `OneMerge` is `Clone` here, so the flag is shared through an
     /// `Arc` and a clone still observes the abort.
     aborted: Arc<AtomicBool>,
+    /// The lock and condition a merge paused by its rate limiter waits on.
+    ///
+    /// Equivalent to `OneMergeProgress.pauseLock` and `pausing`: shared with
+    /// the [`MergeRateLimiter`](crate::index::merge_scheduler::MergeRateLimiter)
+    /// built for this merge, so that [`set_aborted`](Self::set_aborted) wakes a
+    /// paused merge, as `OneMergeProgress.abort()` does.
+    pause_signal: Arc<(Mutex<()>, std::sync::Condvar)>,
     /// Set once the merge has run to completion, successfully or not.
     ///
     /// Equivalent to the `mergeCompleted` future's completion in Java.
@@ -245,10 +262,18 @@ pub struct OneMerge {
     /// `getMergeInfo()`. `OneMerge` is `Clone` here, so the slot is shared
     /// through an `Arc<Mutex<_>>`, as [`error`](Self::get_error) is.
     info: Arc<Mutex<Option<SegmentCommitInfo>>>,
-    /// When the merge started, in nanoseconds.
+    /// When the merge started, in nanoseconds on
+    /// [`now_ns`](crate::index::merge_scheduler::now_ns)'s clock, or `-1`
+    /// before the writer starts it.
     ///
-    /// Equivalent to `OneMerge.mergeStartNS`.
-    pub merge_start_ns: i64,
+    /// Equivalent to `OneMerge.mergeStartNS`, a `volatile long` the writer sets
+    /// in `mergeInit`/`addIndexesReaderMerge` and `ConcurrentMergeScheduler`
+    /// reads from its own reference to the same `OneMerge` (`isBacklog`,
+    /// `updateMergeThreads`; `ConcurrentMergeScheduler.java:420, 822`).
+    /// `OneMerge` is `Clone` here and the scheduler holds a clone, so the
+    /// value is shared through an `Arc`, as [`aborted`](Self::is_aborted) is;
+    /// read it with [`merge_start_ns`](Self::merge_start_ns).
+    merge_start_ns: Arc<AtomicI64>,
     /// The readers the writer opened over [`segments`](Self::segments).
     ///
     /// Equivalent to `OneMerge.mergeReaders`. Java replaces the list wholesale
@@ -298,13 +323,13 @@ impl std::fmt::Debug for OneMerge {
             .field("total_max_doc", &self.total_max_doc)
             .field("estimated_merge_bytes", &self.estimated_merge_bytes)
             .field("total_merge_bytes", &self.total_merge_bytes)
-            .field("max_num_segments", &self.max_num_segments)
+            .field("max_num_segments", &self.max_num_segments())
             .field("uses_pooled_readers", &self.uses_pooled_readers)
             .field("register_done", &self.register_done)
             .field("merge_gen", &self.merge_gen)
             .field("is_external", &self.is_external)
             .field("info", &self.info)
-            .field("merge_start_ns", &self.merge_start_ns)
+            .field("merge_start_ns", &self.merge_start_ns())
             .finish_non_exhaustive()
     }
 }
@@ -329,16 +354,17 @@ impl OneMerge {
             total_max_doc,
             estimated_merge_bytes: 0,
             total_merge_bytes: 0,
-            max_num_segments: -1,
+            max_num_segments: Arc::new(AtomicI32::new(-1)),
             uses_pooled_readers: true,
             register_done: false,
             merge_gen: 0,
             is_external: false,
             aborted: Arc::new(AtomicBool::new(false)),
+            pause_signal: Arc::new((Mutex::new(()), std::sync::Condvar::new())),
             merged: Arc::new(AtomicBool::new(false)),
             error: Arc::new(Mutex::new(None)),
             info: Arc::new(Mutex::new(None)),
-            merge_start_ns: -1,
+            merge_start_ns: Arc::new(AtomicI64::new(-1)),
             merge_readers: Arc::new(Mutex::new(Vec::new())),
             wrap_for_merge: None,
             reorder: None,
@@ -370,16 +396,17 @@ impl OneMerge {
             total_max_doc: total_docs,
             estimated_merge_bytes: 0,
             total_merge_bytes: 0,
-            max_num_segments: -1,
+            max_num_segments: Arc::new(AtomicI32::new(-1)),
             uses_pooled_readers: false,
             register_done: false,
             merge_gen: 0,
             is_external: false,
             aborted: Arc::new(AtomicBool::new(false)),
+            pause_signal: Arc::new((Mutex::new(()), std::sync::Condvar::new())),
             merged: Arc::new(AtomicBool::new(false)),
             error: Arc::new(Mutex::new(None)),
             info: Arc::new(Mutex::new(None)),
-            merge_start_ns: -1,
+            merge_start_ns: Arc::new(AtomicI64::new(-1)),
             merge_readers: Arc::new(Mutex::new(readers)),
             wrap_for_merge: None,
             reorder: None,
@@ -595,7 +622,7 @@ impl OneMerge {
             self.total_max_doc,
             self.estimated_merge_bytes,
             self.is_external,
-            self.max_num_segments,
+            self.max_num_segments(),
         )
     }
 
@@ -608,11 +635,81 @@ impl OneMerge {
     /// the sequence `IndexWriter` performs.
     pub fn merge_init(&self) {}
 
+    /// Returns when the merge started, in nanoseconds on
+    /// [`now_ns`](crate::index::merge_scheduler::now_ns)'s clock, or `-1`
+    /// when it has not started.
+    ///
+    /// Equivalent to reading `OneMerge.mergeStartNS`.
+    pub fn merge_start_ns(&self) -> i64 {
+        self.merge_start_ns.load(Ordering::Acquire)
+    }
+
+    /// Returns the segment count the forced merge this merge belongs to is
+    /// driving towards, or `-1` when it is not part of a forced merge.
+    ///
+    /// Equivalent to reading `OneMerge.maxNumSegments`.
+    pub fn max_num_segments(&self) -> i32 {
+        self.max_num_segments.load(Ordering::Acquire)
+    }
+
+    /// Marks this merge as part of a forced merge down to `max_num_segments`.
+    ///
+    /// Equivalent to assigning `OneMerge.maxNumSegments`
+    /// (`IndexWriter.java:2229-2237, 4979`). Every clone of this merge observes
+    /// the new value, as every holder of Java's single object does — in
+    /// particular the merge thread already running it.
+    pub fn set_max_num_segments(&self, max_num_segments: i32) {
+        self.max_num_segments
+            .store(max_num_segments, Ordering::Release);
+    }
+
+    /// Records when the merge started.
+    ///
+    /// Equivalent to assigning `OneMerge.mergeStartNS`
+    /// (`IndexWriter.java:3575, 5017`). Every clone of this merge observes the
+    /// new value, as every holder of Java's single object does.
+    pub fn set_merge_start_ns(&self, merge_start_ns: i64) {
+        self.merge_start_ns.store(merge_start_ns, Ordering::Release);
+    }
+
+    /// Returns the flag [`set_aborted`](Self::set_aborted) raises, shared with
+    /// every clone of this merge.
+    ///
+    /// `ConcurrentMergeScheduler` builds the merge's
+    /// [`MergeRateLimiter`](crate::index::merge_scheduler::MergeRateLimiter)
+    /// over it, as Java builds the limiter over `merge.getMergeProgress()`
+    /// (`ConcurrentMergeScheduler.java:719`), so a paused merge sees the abort.
+    pub(crate) fn aborted_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.aborted)
+    }
+
+    /// Returns whether `other` is this very merge — a clone of it, or the
+    /// value it was cloned from.
+    ///
+    /// Equivalent to Java's identity comparison of two `OneMerge` references
+    /// (`mergeThread.merge != merge`, `ConcurrentMergeScheduler.java:808`):
+    /// clones share their abort flag, so its address identifies the merge.
+    pub fn is_same_merge(&self, other: &OneMerge) -> bool {
+        Arc::ptr_eq(&self.aborted, &other.aborted)
+    }
+
     /// Marks this merge aborted, so the running merge stops at its next check.
     ///
     /// Equivalent to `OneMerge.setAborted()`.
     pub fn set_aborted(&self) {
         self.aborted.store(true, Ordering::Release);
+        // `OneMergeProgress.abort()` wakes up any paused merge thread.
+        let (lock, pausing) = &*self.pause_signal;
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        pausing.notify_all();
+    }
+
+    /// Returns the lock and condition a paused merge waits on, shared with
+    /// every clone of this merge.
+    pub(crate) fn pause_signal(&self) -> Arc<(Mutex<()>, std::sync::Condvar)> {
+        Arc::clone(&self.pause_signal)
     }
 
     /// Returns whether this merge was aborted.
@@ -737,8 +834,9 @@ impl OneMerge {
             out.push_str(" into ");
             out.push_str(&info.info.name);
         }
-        if self.max_num_segments != -1 {
-            out.push_str(&format!(" [maxNumSegments={}]", self.max_num_segments));
+        let max_num_segments = self.max_num_segments();
+        if max_num_segments != -1 {
+            out.push_str(&format!(" [maxNumSegments={max_num_segments}]"));
         }
         if self.is_aborted() {
             out.push_str(" [ABORTED]");
@@ -3454,6 +3552,33 @@ impl MergePolicy for UpgradeIndexMergePolicy {
 // TemporalMergePolicy
 // -----------------------------------------------------------------------------
 
+/// Returns whether `c` is white space by Java's `Character.isWhitespace(int)`,
+/// the predicate `String.isBlank()` applies to every code point.
+///
+/// It is not Rust's [`char::is_whitespace`] (the Unicode `White_Space`
+/// property): Java excludes the no-break spaces U+00A0, U+2007 and U+202F and
+/// the next-line control U+0085, and includes the separator controls
+/// U+001C–U+001F. Java's rule is a space, line or paragraph separator
+/// (categories `Zs`, `Zl`, `Zp`) other than a no-break space, or one of
+/// U+0009–U+000D and U+001C–U+001F. The set below is the one
+/// `Character.isWhitespace` accepts when enumerated over every code point on
+/// OpenJDK 25.
+fn is_java_whitespace(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0009}'..='\u{000D}'
+            | '\u{001C}'..='\u{001F}'
+            | '\u{0020}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{2006}'
+            | '\u{2008}'..='\u{200A}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{205F}'
+            | '\u{3000}'
+    )
+}
+
 /// The span of a segment's temporal field, in milliseconds since the epoch.
 ///
 /// Equivalent to `TemporalMergePolicy.SegmentDateRange`.
@@ -3471,14 +3596,10 @@ pub struct SegmentDateRange {
 ///
 /// Equivalent to `org.apache.lucene.index.TemporalMergePolicy`.
 ///
-/// **Divergence from Lucene 10.5.0.** Java reads each segment's temporal range
-/// out of its point values through `extractSegmentDateRanges`. Reaching the
-/// point values from a policy needs a reader, which a `MergeContext` does not
-/// supply in this port, so the ranges are handed in through
-/// [`set_segment_date_ranges`](Self::set_segment_date_ranges) — the same hook
-/// Java exposes for testing, here made the only source. Without ranges the
-/// policy selects nothing, which is what Java does when the temporal field is
-/// unset.
+/// Each segment's temporal range is read straight from its files through the
+/// codec (`TemporalMergePolicy.java:592-700`), so flushed segments that are not
+/// yet committed take part too; tests can override the ranges with
+/// [`set_segment_date_range_overrides`](Self::set_segment_date_range_overrides).
 #[derive(Debug, Clone)]
 pub struct TemporalMergePolicy {
     temporal_field: String,
@@ -3490,7 +3611,9 @@ pub struct TemporalMergePolicy {
     max_age_seconds: i64,
     compaction_ratio: f64,
     force_merge_deletes_pct_allowed: f64,
-    segment_date_ranges: HashMap<String, SegmentDateRange>,
+    /// Equivalent to `TemporalMergePolicy.segmentDateRangeOverrides`, `null`
+    /// (here `None`) unless a test installed overrides.
+    segment_date_range_overrides: Option<HashMap<String, SegmentDateRange>>,
 }
 
 impl Default for TemporalMergePolicy {
@@ -3512,7 +3635,7 @@ impl TemporalMergePolicy {
             max_age_seconds: i64::MAX,
             compaction_ratio: 1.2,
             force_merge_deletes_pct_allowed: 10.0,
-            segment_date_ranges: HashMap::new(),
+            segment_date_range_overrides: None,
         }
     }
 
@@ -3563,27 +3686,64 @@ impl TemporalMergePolicy {
     }
 
     /// Sets the field carrying each document's timestamp.
-    pub fn set_temporal_field(&mut self, field: impl Into<String>) -> &mut Self {
-        self.temporal_field = field.into();
-        self
+    ///
+    /// Equivalent to `TemporalMergePolicy.setTemporalField(String)`
+    /// (`TemporalMergePolicy.java:128-134`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// when the name is blank — empty or made only of the characters Java's
+    /// `String.isBlank()` treats as white space ([`is_java_whitespace`]).
+    pub fn set_temporal_field(&mut self, field: impl Into<String>) -> Result<&mut Self> {
+        let field = field.into();
+        if field.chars().all(is_java_whitespace) {
+            return Err(crate::error::LuceneError::IllegalArgument(
+                "temporalField cannot be blank".to_string(),
+            ));
+        }
+        self.temporal_field = field;
+        Ok(self)
     }
 
     /// Sets the width of the newest bucket, in seconds.
+    ///
+    /// Equivalent to `TemporalMergePolicy.setBaseTimeInSeconds(long)`
+    /// (`TemporalMergePolicy.java:159-165`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// when the value is not positive.
     pub fn set_base_time_in_seconds(&mut self, v: i64) -> Result<&mut Self> {
         if v <= 0 {
-            return Err(crate::error::LuceneError::IllegalArgument(format!(
-                "baseTimeInSeconds must be > 0 (got {v})"
-            )));
+            return Err(crate::error::LuceneError::IllegalArgument(
+                "baseTimeSeconds must be positive".to_string(),
+            ));
         }
         self.base_time_seconds = v;
         Ok(self)
     }
 
     /// Sets how many segments a window needs before it is merged.
+    ///
+    /// Equivalent to `TemporalMergePolicy.setMinThreshold(int)`
+    /// (`TemporalMergePolicy.java:188-198`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// when the value is below 2 or above the maximum threshold.
     pub fn set_min_threshold(&mut self, v: usize) -> Result<&mut Self> {
         if v < 2 {
+            return Err(crate::error::LuceneError::IllegalArgument(
+                "minThreshold must be at least 2".to_string(),
+            ));
+        }
+        if v > self.max_threshold {
             return Err(crate::error::LuceneError::IllegalArgument(format!(
-                "minThreshold must be >= 2 (got {v})"
+                "minThreshold cannot exceed maxThreshold ({})",
+                self.max_threshold
             )));
         }
         self.min_threshold = v;
@@ -3591,10 +3751,19 @@ impl TemporalMergePolicy {
     }
 
     /// Sets how many segments may be merged from one window at a time.
+    ///
+    /// Equivalent to `TemporalMergePolicy.setMaxThreshold(int)`
+    /// (`TemporalMergePolicy.java:243-250`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// when the value is below the minimum threshold.
     pub fn set_max_threshold(&mut self, v: usize) -> Result<&mut Self> {
         if v < self.min_threshold {
             return Err(crate::error::LuceneError::IllegalArgument(format!(
-                "maxThreshold must be >= minThreshold (got {v})"
+                "maxThreshold must be >= minThreshold ({})",
+                self.min_threshold
             )));
         }
         self.max_threshold = v;
@@ -3608,30 +3777,57 @@ impl TemporalMergePolicy {
     }
 
     /// Sets the ratio of merged documents to largest input that triggers a merge.
-    pub fn set_compaction_ratio(&mut self, v: f64) -> &mut Self {
+    ///
+    /// Equivalent to `TemporalMergePolicy.setCompactionRatio(double)`
+    /// (`TemporalMergePolicy.java:279-285`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// when the ratio is below `1.0`. As in Java, `NaN` passes the check.
+    pub fn set_compaction_ratio(&mut self, v: f64) -> Result<&mut Self> {
+        if v < 1.0 {
+            return Err(crate::error::LuceneError::IllegalArgument(
+                "compactionRatio must be >= 1.0".to_string(),
+            ));
+        }
         self.compaction_ratio = v;
-        self
+        Ok(self)
     }
 
     /// Sets the age past which segments are left alone.
-    pub fn set_max_age_seconds(&mut self, v: i64) -> &mut Self {
+    ///
+    /// Equivalent to `TemporalMergePolicy.setMaxAgeSeconds(long)`
+    /// (`TemporalMergePolicy.java:334-340`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`](crate::error::LuceneError::IllegalArgument)
+    /// when the value is not positive.
+    pub fn set_max_age_seconds(&mut self, v: i64) -> Result<&mut Self> {
+        if v <= 0 {
+            return Err(crate::error::LuceneError::IllegalArgument(
+                "maxAgeSeconds must be positive".to_string(),
+            ));
+        }
         self.max_age_seconds = v;
-        self
+        Ok(self)
     }
 
-    /// Supplies each segment's temporal range, by segment name.
+    /// Overrides the date ranges read from the segments, by segment name.
     ///
     /// Equivalent to
-    /// `TemporalMergePolicy.setSegmentDateRangeOverrides(Map<SegmentCommitInfo, SegmentDateRange>)`,
-    /// which Java marks "visible for testing" and this port makes the only
-    /// source of the ranges — the divergence declared on the type. The map is
-    /// keyed by segment name rather than by `SegmentCommitInfo` because a
+    /// `TemporalMergePolicy.setSegmentDateRangeOverrides(Map<SegmentCommitInfo, SegmentDateRange>)`
+    /// (`TemporalMergePolicy.java:373-375`), which Java marks "visible for
+    /// testing": once set, the policy plans against these ranges instead of
+    /// reading the segments' point values. The map is keyed by segment name,
+    /// the identity this port's `SegmentInfos` uses, because a
     /// `SegmentCommitInfo` is not hashable here.
-    pub fn set_segment_date_ranges(
+    pub fn set_segment_date_range_overrides(
         &mut self,
-        ranges: HashMap<String, SegmentDateRange>,
+        overrides: HashMap<String, SegmentDateRange>,
     ) -> &mut Self {
-        self.segment_date_ranges = ranges;
+        self.segment_date_range_overrides = Some(overrides);
         self
     }
 
@@ -3660,9 +3856,6 @@ impl TemporalMergePolicy {
         (timestamp_seconds / bucket_size) * bucket_size
     }
 
-    /// Plans the merges of one window, newest segment first.
-    ///
-    /// Equivalent to `TemporalMergePolicy.planWindowMerges`.
     /// Returns the configured maximum window size, in seconds.
     ///
     /// Equivalent to `TemporalMergePolicy.getMaxWindowSizeSeconds()`.
@@ -3746,31 +3939,42 @@ impl TemporalMergePolicy {
 
     /// Places one segment in the bucket its newest value falls into.
     ///
-    /// Equivalent to `TemporalMergePolicy.assignToBucket(Map, long, SegmentCommitInfo, SegmentDateRange)`.
+    /// Equivalent to `TemporalMergePolicy.assignToBucket(Map, long, SegmentCommitInfo, SegmentDateRange)`
+    /// (`TemporalMergePolicy.java:728-736`).
     fn assign_to_bucket(
         &self,
         buckets: &mut BTreeMap<i64, Vec<SegmentCommitInfo>>,
-        now_millis: i64,
+        now: i64,
         segment: &SegmentCommitInfo,
         date_range: &SegmentDateRange,
     ) {
         let max_date_seconds = date_range.max_date / 1000;
-        let bucket = self.bucket_for_timestamp(max_date_seconds, now_millis / 1000);
+        let bucket = self.bucket_for_timestamp(max_date_seconds, now / 1000);
         buckets.entry(bucket).or_default().push(segment.clone());
     }
 
     /// Groups the segments into time windows by their newest value.
     ///
-    /// Equivalent to `TemporalMergePolicy.groupSegmentsByTimeWindow(Map)`. The
-    /// map is ordered by bucket, so the windows come out oldest first.
+    /// Equivalent to `TemporalMergePolicy.groupSegmentsByTimeWindow(Map)`
+    /// (`TemporalMergePolicy.java:715-726`). The `TreeMap` Java fills is a
+    /// [`BTreeMap`] here, so the windows come out oldest first in both.
+    ///
+    /// Java iterates a `HashMap<SegmentCommitInfo, SegmentDateRange>`, whose
+    /// keys hash by identity (`SegmentCommitInfo` does not override
+    /// `hashCode`), so the order of the segments inside one window is
+    /// unspecified and changes from one JVM run to the next. This port walks
+    /// the ranges in the order [`resolve_segment_date_ranges`](Self::resolve_segment_date_ranges)
+    /// lists them — `SegmentInfos` order — which is one of the orders Java may
+    /// produce.
     fn group_segments_by_time_window(
         &self,
         segment_date_ranges: &[(SegmentCommitInfo, SegmentDateRange)],
     ) -> BTreeMap<i64, Vec<SegmentCommitInfo>> {
+        // Map from window identifier (bucket start timestamp) to segments.
         let mut buckets: BTreeMap<i64, Vec<SegmentCommitInfo>> = BTreeMap::new();
-        let now_millis = now_millis();
+        let now = now_millis();
         for (segment, date_range) in segment_date_ranges {
-            self.assign_to_bucket(&mut buckets, now_millis, segment, date_range);
+            self.assign_to_bucket(&mut buckets, now, segment, date_range);
         }
         buckets
     }
@@ -3778,16 +3982,22 @@ impl TemporalMergePolicy {
     /// Plans the merges that bring `candidates` down to `max_segment_count`
     /// segments.
     ///
-    /// Equivalent to `TemporalMergePolicy.buildForcedMerges(List, int)`. Each
-    /// batch is sized to the reduction still needed, capped at the maximum
-    /// number of inputs one merge may take.
+    /// Equivalent to `TemporalMergePolicy.buildForcedMerges(List, int)`
+    /// (`TemporalMergePolicy.java:928-951`). Each batch is sized to the
+    /// reduction still needed, capped at the maximum number of inputs one merge
+    /// may take.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building a [`OneMerge`] raises, as Java's
+    /// `new OneMerge(List)` does.
     fn build_forced_merges(
         &self,
         candidates: &[SegmentCommitInfo],
         max_segment_count: usize,
-    ) -> Option<MergeSpecification> {
+    ) -> Result<Option<MergeSpecification>> {
         if candidates.len() < 2 {
-            return None;
+            return Ok(None);
         }
         let mut spec: Option<MergeSpecification> = None;
         let mut remaining = candidates.len();
@@ -3799,24 +4009,29 @@ impl TemporalMergePolicy {
             merge_inputs = merge_inputs.min(candidates.len() - offset);
 
             let batch = candidates[offset..offset + merge_inputs].to_vec();
-            if let Ok(merge) = OneMerge::new(batch) {
-                spec.get_or_insert_with(MergeSpecification::new).add(merge);
-            }
+            spec.get_or_insert_with(MergeSpecification::new)
+                .add(OneMerge::new(batch)?);
             offset += merge_inputs;
             remaining -= merge_inputs - 1;
         }
-        spec
+        Ok(spec)
     }
 
-    /// Plans one merge per full batch of `max_threshold` segments, in order.
+    /// Plans one merge per full batch of `max_threshold` segments, in order,
+    /// plus one for a trailing batch of at least two.
     ///
-    /// Equivalent to `TemporalMergePolicy.buildSequentialMerges(List)`.
+    /// Equivalent to `TemporalMergePolicy.buildSequentialMerges(List)`
+    /// (`TemporalMergePolicy.java:953-977`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building a [`OneMerge`] raises.
     fn build_sequential_merges(
         &self,
         candidates: &[SegmentCommitInfo],
-    ) -> Option<MergeSpecification> {
+    ) -> Result<Option<MergeSpecification>> {
         if candidates.len() < 2 {
-            return None;
+            return Ok(None);
         }
         let mut spec: Option<MergeSpecification> = None;
         let mut batch: Vec<SegmentCommitInfo> = Vec::with_capacity(self.max_threshold);
@@ -3824,26 +4039,34 @@ impl TemporalMergePolicy {
         for info in candidates {
             batch.push(info.clone());
             if batch.len() == self.max_threshold {
-                if let Ok(merge) = OneMerge::new(std::mem::take(&mut batch)) {
-                    spec.get_or_insert_with(MergeSpecification::new).add(merge);
-                }
-                batch.clear();
+                spec.get_or_insert_with(MergeSpecification::new)
+                    .add(OneMerge::new(std::mem::take(&mut batch))?);
             }
         }
         if batch.len() > 1 {
-            if let Ok(merge) = OneMerge::new(batch) {
-                spec.get_or_insert_with(MergeSpecification::new).add(merge);
-            }
+            spec.get_or_insert_with(MergeSpecification::new)
+                .add(OneMerge::new(batch)?);
         }
-        spec
+        Ok(spec)
     }
 
-    /// Reads the newest and oldest value of the temporal field in one segment.
+    /// Reads the newest and oldest value of the temporal field in one segment,
+    /// straight from the segment's files through its codec.
     ///
-    /// Equivalent to `TemporalMergePolicy.extractDateRangeFromSegment(SegmentCommitInfo)`.
-    /// Returns `None` when the segment does not carry the field, or carries it
-    /// as something other than a point field — a legacy segment, or one written
-    /// before a schema change.
+    /// Equivalent to `TemporalMergePolicy.extractDateRangeFromSegment(SegmentCommitInfo)`
+    /// (`TemporalMergePolicy.java:629-700`). The codec is used rather than a
+    /// reader so that segments flushed but not yet committed are seen too.
+    /// Returns `None` when the segment does not carry the field, carries it as
+    /// something other than a point field — a legacy segment, or one written
+    /// before a schema change — or has no point values for it.
+    ///
+    /// Java also logs a warning through `java.util.logging` for the non-point
+    /// case; this port has no such logger, so the segment is skipped silently.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening the compound file, the field infos or the
+    /// points reader raises.
     fn extract_date_range_from_segment(
         &self,
         segment_info: &SegmentCommitInfo,
@@ -3854,8 +4077,8 @@ impl TemporalMergePolicy {
         })?;
         let context = &*crate::store::READONCE_IO_CONTEXT;
 
-        // The compound reader is opened and dropped here; `si.directory` is
-        // never closed.
+        // The compound reader is dropped — Java closes it — when this returns;
+        // `si.directory` itself is never closed.
         let compound;
         let reader_dir: &dyn crate::store::Directory = if si.get_use_compound_file() {
             compound = codec
@@ -3869,15 +4092,15 @@ impl TemporalMergePolicy {
         let field_infos = codec
             .field_infos_format()
             .read(reader_dir, si, "", context)?;
+        // Validate that the temporal field exists and is a point field.
         let Some(field_info) = field_infos.field_info(&self.temporal_field) else {
             return Ok(None);
         };
         if field_info.point_dimension_count == 0 {
-            // The temporal field is not a point field here, so this segment
-            // cannot take part in date-tiered merging.
             return Ok(None);
         }
 
+        // Read point values using the codec.
         let read_state =
             crate::codecs::state::SegmentReadState::new(reader_dir, si, &field_infos, context);
         let points_reader = codec.points_format().fields_reader(&read_state)?;
@@ -3891,14 +4114,18 @@ impl TemporalMergePolicy {
             return Ok(None);
         };
 
-        // The schema is not available, so the values are decoded as `long`
-        // points and their unit inferred from their magnitude.
+        // Decode the packed values as longs: the schema is not available, so
+        // the unit is inferred from their magnitude.
         let min_date = crate::document::LongPoint::decode_dimension(&min_packed, 0);
         let max_date = crate::document::LongPoint::decode_dimension(&max_packed, 0);
+        // Convert to milliseconds based on the detected unit.
         let divisor = self.get_temporal_field_divisor(max_date);
         let (min_date_millis, max_date_millis) = if divisor < 0 {
             let multiplier = -divisor;
-            (min_date * multiplier, max_date * multiplier)
+            (
+                min_date.wrapping_mul(multiplier),
+                max_date.wrapping_mul(multiplier),
+            )
         } else {
             (min_date / divisor, max_date / divisor)
         };
@@ -3910,9 +4137,15 @@ impl TemporalMergePolicy {
 
     /// Reads the date range of every segment that carries the temporal field.
     ///
-    /// Equivalent to `TemporalMergePolicy.extractSegmentDateRanges(SegmentInfos)`.
-    /// A segment whose points cannot be read is skipped rather than failing the
-    /// whole planning pass, as Java's does.
+    /// Equivalent to `TemporalMergePolicy.extractSegmentDateRanges(SegmentInfos)`
+    /// (`TemporalMergePolicy.java:592-620`). A segment whose files cannot be
+    /// read is skipped rather than failing the whole planning pass, as Java's
+    /// `catch (IOException)` does; Java also logs the failure through
+    /// `java.util.logging`, which this port does not have.
+    ///
+    /// The ranges are returned in `SegmentInfos` order; see
+    /// [`group_segments_by_time_window`](Self::group_segments_by_time_window)
+    /// for why that is one of the orders Java's `HashMap` may yield.
     fn extract_segment_date_ranges(
         &self,
         segments: &SegmentInfos,
@@ -3926,19 +4159,23 @@ impl TemporalMergePolicy {
         ranges
     }
 
-    /// Returns the date ranges to plan against: the ones set on the policy when
-    /// there are any, otherwise the ones read from the segments.
+    /// Returns the date ranges to plan against: the overrides set through
+    /// [`set_segment_date_range_overrides`](Self::set_segment_date_range_overrides)
+    /// when there are any, otherwise the ones read from the segments' files.
     ///
-    /// Equivalent to `TemporalMergePolicy.resolveSegmentDateRanges(SegmentInfos)`.
+    /// Equivalent to `TemporalMergePolicy.resolveSegmentDateRanges(SegmentInfos)`
+    /// (`TemporalMergePolicy.java:979-984`). Java returns the override map
+    /// itself; every caller only looks up the segments of `segments` in it, so
+    /// this port returns those entries, in `SegmentInfos` order.
     fn resolve_segment_date_ranges(
         &self,
         segments: &SegmentInfos,
     ) -> Vec<(SegmentCommitInfo, SegmentDateRange)> {
-        if !self.segment_date_ranges.is_empty() {
+        if let Some(overrides) = self.segment_date_range_overrides.as_ref() {
             return segments
                 .iter()
                 .filter_map(|info| {
-                    self.segment_date_ranges
+                    overrides
                         .get(&info.info.name)
                         .map(|range| (info.clone(), *range))
                 })
@@ -3957,52 +4194,62 @@ impl TemporalMergePolicy {
     /// run that plans nothing returns `None` rather than an empty
     /// specification.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java's second argument is the
-    /// segment-to-range map, which `planWindowMerges` sorts by; this port reads
-    /// the ranges from the policy's own
-    /// [`set_segment_date_ranges`](Self::set_segment_date_ranges) map, the
-    /// divergence already declared on the type, so there is no second argument
-    /// to take. Java also passes `windowStart` down to `planWindowMerges`,
-    /// which does not read it.
-    ///
     /// # Errors
     ///
     /// Propagates whatever building a [`OneMerge`] raises.
     fn find_merge_candidates(
         &self,
-        buckets: std::collections::BTreeMap<i64, Vec<SegmentCommitInfo>>,
+        buckets: BTreeMap<i64, Vec<SegmentCommitInfo>>,
+        segment_date_ranges: &HashMap<String, SegmentDateRange>,
     ) -> Result<Option<MergeSpecification>> {
         let mut spec: Option<MergeSpecification> = None;
-        for (window_start, segments) in buckets {
-            // The sentinel bucket holds data too old to be worth rewriting.
-            if window_start == -1 || segments.len() < self.min_threshold {
+        for (window_start, segments_in_window) in buckets {
+            // Skip old data bucket (-1 sentinel) - don't merge very old data.
+            if window_start == -1 {
                 continue;
             }
-            for merge_segments in self.plan_window_merges(segments)? {
-                spec.get_or_insert_with(MergeSpecification::new)
-                    .add(OneMerge::new(merge_segments)?);
+            if segments_in_window.len() < self.min_threshold {
+                continue;
+            }
+            let merges_for_window =
+                self.plan_window_merges(window_start, segments_in_window, segment_date_ranges)?;
+            if merges_for_window.is_empty() {
+                continue;
+            }
+            let spec = spec.get_or_insert_with(MergeSpecification::new);
+            for merge_segments in merges_for_window {
+                spec.add(OneMerge::new(merge_segments)?);
             }
         }
         Ok(spec)
     }
 
+    /// Plans the merges of one window, enforcing the compaction ratio and the
+    /// thresholds; segments are sorted by their newest timestamp so that recent
+    /// data is merged first.
+    ///
+    /// Equivalent to `TemporalMergePolicy.planWindowMerges(long, List, Map)`
+    /// (`TemporalMergePolicy.java:861-926`). `window_start` is unused, as in
+    /// Java. The sort is stable, as Java's `List.sort` is.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading a segment's `max_doc` raises.
     fn plan_window_merges(
         &self,
-        mut ordered: Vec<SegmentCommitInfo>,
+        _window_start: i64,
+        segments_in_window: Vec<SegmentCommitInfo>,
+        segment_date_ranges: &HashMap<String, SegmentDateRange>,
     ) -> Result<Vec<Vec<SegmentCommitInfo>>> {
-        ordered.sort_by(|a, b| {
-            let a_max = self
-                .segment_date_ranges
-                .get(&a.info.name)
-                .map(|r| r.max_date)
-                .unwrap_or(i64::MIN);
-            let b_max = self
-                .segment_date_ranges
-                .get(&b.info.name)
-                .map(|r| r.max_date)
-                .unwrap_or(i64::MIN);
-            b_max.cmp(&a_max)
-        });
+        let max_date = |sci: &SegmentCommitInfo| {
+            segment_date_ranges
+                .get(&sci.info.name)
+                .map(|range| range.max_date)
+                .expect("INVARIANT: every bucketed segment was bucketed by its date range")
+        };
+        let mut ordered = segments_in_window;
+        // `Comparator.comparingLong(maxDate).reversed()`.
+        ordered.sort_by_key(|sci| std::cmp::Reverse(max_date(sci)));
 
         let mut planned: Vec<Vec<SegmentCommitInfo>> = Vec::new();
         let mut cursor = 0usize;
@@ -4011,7 +4258,7 @@ impl TemporalMergePolicy {
             let mut total_docs = 0i64;
             let mut largest_docs = 0i64;
             let mut end = cursor;
-            let mut emitted = false;
+            let mut emitted_merge = false;
 
             while end < ordered.len() && end - cursor < self.max_threshold {
                 let doc_count = i64::from(ordered[end].info.max_doc()?);
@@ -4024,120 +4271,243 @@ impl TemporalMergePolicy {
                     continue;
                 }
                 let reached_max = candidate_size == self.max_threshold;
-                let exhausted = end == ordered.len();
+                let exhausted_segments = end == ordered.len();
 
+                // In aggressive mode (ratio <= 1.0), merge when the window is
+                // full or there is nothing left to add; in normal mode, when
+                // the ratio is satisfied or the window is full.
                 let emit = if self.compaction_ratio <= 1.0 {
-                    // Aggressive mode: merge as soon as the window is full or
-                    // there is nothing left to add.
-                    reached_max || exhausted
+                    reached_max || exhausted_segments
                 } else {
                     let ratio_satisfied =
                         total_docs as f64 >= (largest_docs as f64 * self.compaction_ratio).ceil();
                     ratio_satisfied || reached_max
                 };
-
                 if emit {
                     planned.push(ordered[cursor..end].to_vec());
                     cursor = end;
-                    emitted = true;
+                    emitted_merge = true;
                     break;
                 }
             }
 
-            if !emitted {
+            if !emitted_merge {
                 break;
             }
         }
         Ok(planned)
     }
+
+    /// Returns whether the temporal field is unset: Java's
+    /// `temporalField == null || temporalField.isBlank()`.
+    fn temporal_field_is_blank(&self) -> bool {
+        self.temporal_field.chars().all(is_java_whitespace)
+    }
+}
+
+/// Indexes resolved date ranges by segment name, the identity this port's
+/// `SegmentInfos` uses for a `SegmentCommitInfo`.
+fn ranges_by_name(
+    ranges: &[(SegmentCommitInfo, SegmentDateRange)],
+) -> HashMap<String, SegmentDateRange> {
+    ranges
+        .iter()
+        .map(|(info, range)| (info.info.name.clone(), *range))
+        .collect()
 }
 
 impl MergePolicy for TemporalMergePolicy {
+    /// Equivalent to `TemporalMergePolicy.findMerges(MergeTrigger, SegmentInfos, MergeContext)`
+    /// (`TemporalMergePolicy.java:380-423`).
     fn find_merges(
         &self,
         _merge_trigger: MergeTrigger,
         segment_infos: &SegmentInfos,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
-        if self.temporal_field.is_empty()
-            || segment_infos.size() == 0
-            || self.segment_date_ranges.is_empty()
-        {
+        if self.temporal_field_is_blank() || segment_infos.size() == 0 {
+            // No date field configured, nothing to do.
             return Ok(None);
         }
 
+        // Identify which segments are already being processed by the merge
+        // scheduler, to avoid already-merging errors.
         let already_merging = merge_context.get_merging_segments();
-        let now_seconds = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
 
-        // Group the segments that are free into time windows.
-        let mut buckets: std::collections::BTreeMap<i64, Vec<SegmentCommitInfo>> =
-            std::collections::BTreeMap::new();
+        // Resolve date ranges for all segments.
+        let all_ranges = self.resolve_segment_date_ranges(segment_infos);
+        if all_ranges.is_empty() {
+            return Ok(None);
+        }
+        let all_ranges = ranges_by_name(&all_ranges);
+
+        // Group only segments that are NOT already merging into time windows.
+        let mut window_buckets: BTreeMap<i64, Vec<SegmentCommitInfo>> = BTreeMap::new();
+        let now = now_millis();
         for info in segment_infos.iter() {
+            // Skip segments that are already being merged.
             if already_merging.contains(&info.info.name) {
                 continue;
             }
-            let Some(range) = self.segment_date_ranges.get(&info.info.name) else {
-                continue;
-            };
-            let bucket = self.bucket_for_timestamp(range.max_date / 1000, now_seconds);
-            buckets.entry(bucket).or_default().push(info.clone());
+            if let Some(range) = all_ranges.get(&info.info.name) {
+                self.assign_to_bucket(&mut window_buckets, now, info, range);
+            }
+        }
+        if window_buckets.is_empty() {
+            return Ok(None);
         }
 
-        self.find_merge_candidates(buckets)
+        // Find merge candidates within time windows (only considering
+        // available segments).
+        self.find_merge_candidates(window_buckets, &all_ranges)
     }
 
+    /// Equivalent to `TemporalMergePolicy.findForcedMerges(SegmentInfos, int, Map, MergeContext)`
+    /// (`TemporalMergePolicy.java:425-525`). The segments to merge are keyed by
+    /// segment name, the identity this port's `SegmentInfos` uses.
     fn find_forced_merges(
         &self,
         segment_infos: &SegmentInfos,
-        max_num_segments: i32,
-        _segments_to_merge: &HashMap<String, bool>,
+        max_segment_count: i32,
+        segments_to_merge: &HashMap<String, bool>,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
-        if max_num_segments < 1 {
+        if max_segment_count < 1 {
             return Err(crate::error::LuceneError::IllegalArgument(
                 "maxSegmentCount must be >= 1".to_string(),
             ));
         }
-        let already_merging = merge_context.get_merging_segments();
-        let segments: Vec<SegmentCommitInfo> = segment_infos
-            .iter()
-            .filter(|info| !already_merging.contains(&info.info.name))
-            .cloned()
-            .collect();
-        if segments.len() as i32 <= max_num_segments {
+
+        let segment_date_ranges = self.resolve_segment_date_ranges(segment_infos);
+        if segment_date_ranges.is_empty() {
             return Ok(None);
         }
-        let mut spec = MergeSpecification::new();
-        for chunk in segments.chunks(self.max_threshold.max(2)) {
-            if chunk.len() >= 2 {
-                spec.add(OneMerge::new(chunk.to_vec())?);
+        let segment_date_ranges = ranges_by_name(&segment_date_ranges);
+
+        let merge_all = segments_to_merge.is_empty();
+        let merging = merge_context.get_merging_segments();
+        let mut eligible_ranges: Vec<(SegmentCommitInfo, SegmentDateRange)> = Vec::new();
+        let mut force_merge_running = false;
+
+        for info in segment_infos.iter() {
+            let include = merge_all || segments_to_merge.contains_key(&info.info.name);
+            if include {
+                if merging.contains(&info.info.name) {
+                    force_merge_running = true;
+                    break;
+                }
+                if let Some(range) = segment_date_ranges.get(&info.info.name) {
+                    eligible_ranges.push((info.clone(), *range));
+                }
             }
         }
-        Ok(if spec.is_empty() { None } else { Some(spec) })
+
+        if force_merge_running {
+            return Ok(None);
+        }
+        if eligible_ranges.is_empty() {
+            return Ok(None);
+        }
+
+        let window_buckets = self.group_segments_by_time_window(&eligible_ranges);
+        let window_count = window_buckets.len();
+        if window_count == 0 {
+            return Ok(None);
+        }
+
+        // Calculate target segments per window based on max_segment_count.
+        // IMPORTANT: we NEVER merge across time buckets, even in forceMerge. If
+        // max_segment_count < window_count, we end up with more segments than
+        // requested.
+        let eligible_windows = window_buckets.len();
+        let mut segments_per_window = 1.max(max_segment_count as usize / eligible_windows);
+        // Cap at max_threshold to ensure we still merge aggressively even with
+        // few windows: without this cap, a single window with 27 segments and
+        // max_segment_count = 32 would schedule no merges.
+        segments_per_window = segments_per_window.min(self.max_threshold);
+
+        let mut spec: Option<MergeSpecification> = None;
+        for (window_start, bucket_segments) in window_buckets {
+            // Skip old data bucket (-1 sentinel) - don't merge very old data.
+            if window_start == -1 {
+                continue;
+            }
+            if bucket_segments.len() < 2 {
+                continue;
+            }
+            let Some(bucket_spec) =
+                self.build_forced_merges(&bucket_segments, segments_per_window)?
+            else {
+                continue;
+            };
+            let spec = spec.get_or_insert_with(MergeSpecification::new);
+            for merge in bucket_spec.merges {
+                spec.add(merge);
+            }
+        }
+        Ok(spec)
     }
 
+    /// Equivalent to `TemporalMergePolicy.findForcedDeletesMerges(SegmentInfos, MergeContext)`
+    /// (`TemporalMergePolicy.java:527-582`). Java first returns `null` for a
+    /// `null` context; a Rust reference is never null.
     fn find_forced_deletes_merges(
         &self,
         segment_infos: &SegmentInfos,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
-        let mut spec = MergeSpecification::new();
+        let segment_date_ranges = self.resolve_segment_date_ranges(segment_infos);
+        if segment_date_ranges.is_empty() {
+            return Ok(None);
+        }
+        let segment_date_ranges = ranges_by_name(&segment_date_ranges);
+
+        let merging = merge_context.get_merging_segments();
+        let mut candidate_ranges: Vec<(SegmentCommitInfo, SegmentDateRange)> = Vec::new();
+        let mut delete_ratios: HashMap<String, f64> = HashMap::new();
+
         for info in segment_infos.iter() {
-            let max_doc = info.info.max_doc()?;
-            if max_doc == 0 {
+            if merging.contains(&info.info.name) {
                 continue;
             }
             let del_count = merge_context.num_deletes_to_merge(info)?;
-            if 100.0 * f64::from(del_count) / f64::from(max_doc)
-                > self.force_merge_deletes_pct_allowed
-            {
-                spec.add(OneMerge::new(vec![info.clone()])?);
+            if del_count <= 0 {
+                continue;
+            }
+            let max_doc = 1.max(info.info.max_doc()?);
+            let pct_deletes = (100.0 * f64::from(del_count)) / f64::from(max_doc);
+            if pct_deletes > self.force_merge_deletes_pct_allowed {
+                if let Some(range) = segment_date_ranges.get(&info.info.name) {
+                    candidate_ranges.push((info.clone(), *range));
+                    delete_ratios.insert(info.info.name.clone(), pct_deletes);
+                }
             }
         }
-        Ok(if spec.is_empty() { None } else { Some(spec) })
+
+        if candidate_ranges.is_empty() {
+            return Ok(None);
+        }
+
+        let window_buckets = self.group_segments_by_time_window(&candidate_ranges);
+        let mut spec: Option<MergeSpecification> = None;
+        for (_, mut bucket_segments) in window_buckets {
+            if bucket_segments.len() < 2 {
+                continue;
+            }
+            // Most deletions first; `Double.compare` is a total order, as
+            // `f64::total_cmp` is, and both sorts are stable.
+            let ratio =
+                |sci: &SegmentCommitInfo| delete_ratios.get(&sci.info.name).copied().unwrap_or(0.0);
+            bucket_segments.sort_by(|a, b| ratio(b).total_cmp(&ratio(a)));
+            let Some(bucket_spec) = self.build_sequential_merges(&bucket_segments)? else {
+                continue;
+            };
+            let spec = spec.get_or_insert_with(MergeSpecification::new);
+            for merge in bucket_spec.merges {
+                spec.add(merge);
+            }
+        }
+        Ok(spec)
     }
 }
 
@@ -4730,18 +5100,88 @@ mod merge_policy_setting_tests {
     #[test]
     fn temporal_getters_read_back_what_the_setters_stored() {
         let mut p = TemporalMergePolicy::new();
-        p.set_temporal_field("timestamp");
+        p.set_temporal_field("timestamp").unwrap();
         p.set_base_time_in_seconds(60).unwrap();
         p.set_max_threshold(16).unwrap();
         p.set_min_threshold(3).unwrap();
-        p.set_compaction_ratio(2.5);
-        p.set_max_age_seconds(86_400);
+        p.set_compaction_ratio(2.5).unwrap();
+        p.set_max_age_seconds(86_400).unwrap();
         assert_eq!(p.get_temporal_field(), "timestamp");
         assert_eq!(p.get_base_time_in_seconds(), 60);
         assert_eq!(p.get_min_threshold(), 3);
         assert_eq!(p.get_max_threshold(), 16);
         assert_eq!(p.get_compaction_ratio(), 2.5);
         assert_eq!(p.get_max_age_seconds(), 86_400);
+    }
+
+    /// `TemporalMergePolicy.java:128-365`: every setter rejects what Java's
+    /// rejects, with Java's message, and leaves the old value in place.
+    #[test]
+    fn temporal_setters_reject_what_java_rejects() {
+        fn message(result: Result<&mut TemporalMergePolicy>) -> String {
+            match result {
+                Err(crate::error::LuceneError::IllegalArgument(message)) => message,
+                other => panic!(
+                    "expected IllegalArgumentException, got {:?}",
+                    other.map(|_| ())
+                ),
+            }
+        }
+        let mut p = TemporalMergePolicy::new();
+        for blank in [
+            "",
+            " ",
+            "\t\n\u{000B}\u{000C}\r",
+            "\u{001C}\u{001D}\u{001E}\u{001F}",
+            "\u{2028}\u{3000}",
+        ] {
+            assert_eq!(
+                message(p.set_temporal_field(blank)),
+                "temporalField cannot be blank",
+                "{blank:?}"
+            );
+        }
+        // Not blank to Java although Rust's `char::is_whitespace` says white
+        // space: the no-break spaces and NEL.
+        assert!(p.temporal_field_is_blank(), "the default field is blank");
+        for not_blank in ["\u{00A0}", "\u{2007}", "\u{202F}", "\u{0085}"] {
+            p.set_temporal_field(not_blank).unwrap();
+            assert_eq!(p.get_temporal_field(), not_blank);
+            // The policy is active: `findMerges` does not treat it as unset.
+            assert!(!p.temporal_field_is_blank(), "{not_blank:?}");
+        }
+        assert_eq!(
+            message(p.set_min_threshold(1)),
+            "minThreshold must be at least 2"
+        );
+        assert_eq!(
+            message(p.set_min_threshold(9)),
+            "minThreshold cannot exceed maxThreshold (8)"
+        );
+        assert_eq!(p.get_min_threshold(), 4);
+        p.set_min_threshold(8).unwrap();
+        assert_eq!(
+            message(p.set_max_threshold(7)),
+            "maxThreshold must be >= minThreshold (8)"
+        );
+        assert_eq!(
+            message(p.set_compaction_ratio(0.99)),
+            "compactionRatio must be >= 1.0"
+        );
+        p.set_compaction_ratio(1.0).unwrap();
+        assert_eq!(
+            message(p.set_max_age_seconds(0)),
+            "maxAgeSeconds must be positive"
+        );
+        assert_eq!(
+            message(p.set_max_age_seconds(-1)),
+            "maxAgeSeconds must be positive"
+        );
+        assert_eq!(p.get_max_age_seconds(), i64::MAX);
+        assert_eq!(
+            message(p.set_base_time_in_seconds(0)),
+            "baseTimeSeconds must be positive"
+        );
     }
 }
 

@@ -5,8 +5,6 @@
 
 #![deny(unsafe_code)]
 
-use std::f32;
-
 use crate::search::knn::{KnnCollector, KnnSearchStrategy, TopKnnCollector};
 use crate::search::NO_MORE_DOCS;
 use crate::util::bit_set::BitSet;

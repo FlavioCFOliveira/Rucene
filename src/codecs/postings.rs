@@ -24,14 +24,9 @@ use std::sync::{Arc, LazyLock, RwLock};
 
 use crate::util::spi::{NamedSPI, NamedSPILoader};
 
-use crate::codecs::doc_values::DocValuesProducer;
-use crate::codecs::knn_vectors::KnnVectorsReader;
 use crate::codecs::norms::NormsProducer;
-use crate::codecs::points::PointsReader;
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
-use crate::codecs::stored_fields::StoredFieldsReader;
 use crate::codecs::stub::FieldInfo;
-use crate::codecs::term_vectors::TermVectorsReader;
 use crate::error::{LuceneError, Result};
 use crate::index::{IndexOptions, NumericDocValues};
 use crate::search::NO_MORE_DOCS;
@@ -393,9 +388,6 @@ impl PostingsFormatRegistry {
         Ok(())
     }
 
-    /// Looks up a postings format by name.
-    ///
-    /// Returns `None` if no format has been registered under the given name.
     /// Registers an already-shared format under its own name.
     ///
     /// The counterpart of [`register`](Self::register) for a format the caller
@@ -418,6 +410,9 @@ impl PostingsFormatRegistry {
         Ok(())
     }
 
+    /// Looks up a postings format by name.
+    ///
+    /// Returns `None` if no format has been registered under the given name.
     pub fn for_name(&self, name: &str) -> Option<Arc<dyn PostingsFormat>> {
         self.formats
             .read()

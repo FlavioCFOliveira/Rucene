@@ -57,8 +57,8 @@ use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 
 use crate::codecs::codec_util::{
-    check_footer, check_index_header, checksum_entire_file, retrieve_checksum, write_footer,
-    write_index_header,
+    check_footer, check_footer_with_prior, check_header, check_index_header, checksum_entire_file,
+    retrieve_checksum, write_footer, write_header, write_index_header,
 };
 use crate::codecs::compressing::{CompressionMode, Compressor, Decompressor, MatchingReaders};
 use crate::codecs::stored_fields::{
@@ -757,71 +757,154 @@ pub(crate) fn declare_no_fields_index_chunks(
 
 /// Port of `org.apache.lucene.codecs.lucene90.compressing.FieldsIndexWriter`.
 ///
-/// Writer side of the block index. Accumulates per-chunk first doc IDs and
-/// start pointers in memory and flushes them as monotonic arrays when the
-/// segment is finished.
+/// Writer side of the block index. As in Lucene, the per-chunk document
+/// counts and start-pointer deltas are streamed to two temporary outputs
+/// (`FieldsIndexWriter.java:83-87`) and only turned into the index file — two
+/// monotonic arrays — by [`finish`](Self::finish), which then deletes the
+/// temporary files. A writer that is closed without finishing, such as the one
+/// of an aborted flush, deletes them and leaves no index file behind.
 pub(crate) struct FieldsIndexWriter {
-    data_out: Box<dyn IndexOutput>,
+    dir: Arc<dyn Directory>,
+    name: String,
+    suffix: String,
+    extension: String,
+    codec_name: String,
+    id: [u8; 16],
     block_shift: i32,
-    doc_counts: Vec<i32>,
-    start_pointer_deltas: Vec<i64>,
+    io_context: Box<dyn IOContext>,
+    /// `docsOut`: the output while open, and its name until the file is
+    /// deleted. Java keeps one nullable field; Rust closes an output by value,
+    /// so the two halves of its life are kept apart.
+    docs_out: Option<Box<dyn IndexOutput>>,
+    docs_out_name: Option<String>,
+    /// `filePointersOut`, kept as [`Self::docs_out`] is.
+    file_pointers_out: Option<Box<dyn IndexOutput>>,
+    file_pointers_out_name: Option<String>,
     total_docs: i32,
+    total_chunks: i32,
     previous_fp: i64,
-    closed: bool,
 }
 
 impl fmt::Debug for FieldsIndexWriter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FieldsIndexWriter")
+            .field("name", &self.name)
             .field("block_shift", &self.block_shift)
-            .field("num_chunks", &self.doc_counts.len())
+            .field("total_chunks", &self.total_chunks)
             .field("total_docs", &self.total_docs)
             .finish_non_exhaustive()
     }
 }
 
 impl FieldsIndexWriter {
+    /// Opens the two temporary outputs and writes their headers.
+    ///
+    /// Equivalent to the `FieldsIndexWriter` constructor
+    /// (`FieldsIndexWriter.java:64-93`): when a header or the second output
+    /// fails, the outputs opened so far are closed and deleted.
+    ///
+    /// # Errors
+    ///
+    /// Propagates what creating or writing a temporary output raised.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        directory: &dyn Directory,
-        segment: &str,
+        dir: &Arc<dyn Directory>,
+        name: &str,
         suffix: &str,
         extension: &str,
         codec_name: &str,
         id: [u8; 16],
         block_shift: i32,
-        context: &dyn IOContext,
+        io_context: &dyn IOContext,
     ) -> Result<Self> {
-        let index_file = segment_file_name(segment, suffix, extension);
-        let mut data_out = directory.create_output(&index_file, context)?;
-        write_index_header(
-            data_out.as_mut(),
-            &format!("{codec_name}Idx"),
-            INDEX_VERSION_CURRENT,
-            &id,
-            suffix,
-        )?;
-
-        Ok(Self {
-            data_out,
+        let docs_out =
+            dir.create_temp_output(name, &format!("{codec_name}-doc_ids"), io_context)?;
+        let docs_out_name = docs_out.name().to_string();
+        let mut writer = Self {
+            dir: Arc::clone(dir),
+            name: name.to_string(),
+            suffix: suffix.to_string(),
+            extension: extension.to_string(),
+            codec_name: codec_name.to_string(),
+            id,
             block_shift,
-            doc_counts: Vec::new(),
-            start_pointer_deltas: Vec::new(),
+            io_context: io_context.with_hints(io_context.hints()),
+            docs_out: Some(docs_out),
+            docs_out_name: Some(docs_out_name),
+            file_pointers_out: None,
+            file_pointers_out_name: None,
             total_docs: 0,
+            total_chunks: 0,
             previous_fp: 0,
-            closed: false,
-        })
+        };
+        let opened = (|| -> Result<()> {
+            let docs_out = writer
+                .docs_out
+                .as_mut()
+                .expect("INVARIANT: docs_out was just opened");
+            write_header(
+                docs_out.as_mut(),
+                &format!("{codec_name}Docs"),
+                INDEX_VERSION_CURRENT,
+            )?;
+            let mut file_pointers_out = writer.dir.create_temp_output(
+                name,
+                &format!("{codec_name}file_pointers"),
+                io_context,
+            )?;
+            writer.file_pointers_out_name = Some(file_pointers_out.name().to_string());
+            let written = write_header(
+                file_pointers_out.as_mut(),
+                &format!("{codec_name}FilePointers"),
+                INDEX_VERSION_CURRENT,
+            );
+            writer.file_pointers_out = Some(file_pointers_out);
+            written
+        })();
+        if let Err(error) = opened {
+            let _ = writer.close();
+            return Err(error);
+        }
+        Ok(writer)
     }
 
+    /// Records one chunk.
+    ///
+    /// Equivalent to `FieldsIndexWriter.writeIndex(int, long)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates what writing to a temporary output raised.
     pub(crate) fn write_index(&mut self, num_docs: i32, start_pointer: i64) -> Result<()> {
         debug_assert!(start_pointer >= self.previous_fp);
-        self.doc_counts.push(num_docs);
-        self.start_pointer_deltas
-            .push(start_pointer - self.previous_fp);
+        Self::open_output(&mut self.docs_out)?.write_v_int(num_docs)?;
+        Self::open_output(&mut self.file_pointers_out)?
+            .write_v_long(start_pointer - self.previous_fp)?;
         self.previous_fp = start_pointer;
         self.total_docs += num_docs;
+        self.total_chunks += 1;
         Ok(())
     }
 
+    fn open_output(
+        output: &mut Option<Box<dyn IndexOutput>>,
+    ) -> Result<&mut (dyn IndexOutput + 'static)> {
+        output
+            .as_deref_mut()
+            .ok_or_else(|| LuceneError::AlreadyClosed("this FieldsIndexWriter is closed".into()))
+    }
+
+    /// Writes the index file from the two temporary outputs, then deletes
+    /// them.
+    ///
+    /// Equivalent to `FieldsIndexWriter.finish(int, long, IndexOutput)`
+    /// (`FieldsIndexWriter.java:105-181`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalState`] when `num_docs` is not the number
+    /// of documents indexed, [`LuceneError::CorruptIndex`] when a temporary
+    /// file does not read back as written, and propagates I/O failures.
     pub(crate) fn finish(
         &mut self,
         num_docs: i32,
@@ -834,76 +917,171 @@ impl FieldsIndexWriter {
                 self.total_docs
             )));
         }
-        let total_chunks = self.doc_counts.len();
-        let num_values = total_chunks as i64 + 1;
+        // `CodecUtil.writeFooter(docsOut); CodecUtil.writeFooter(filePointersOut);
+        // IOUtils.close(docsOut, filePointersOut);`
+        write_footer(Self::open_output(&mut self.docs_out)?)?;
+        write_footer(Self::open_output(&mut self.file_pointers_out)?)?;
+        let closed = [
+            self.docs_out.take().map_or(Ok(()), |mut out| out.close()),
+            self.file_pointers_out
+                .take()
+                .map_or(Ok(()), |mut out| out.close()),
+        ];
+        closed.into_iter().find(Result::is_err).unwrap_or(Ok(()))?;
 
-        let docs_start_pointer = self.data_out.file_pointer();
-        meta_out.write_int(num_docs)?;
-        meta_out.write_int(self.block_shift)?;
-        meta_out.write_int(num_values as i32)?;
-        meta_out.write_long(docs_start_pointer)?;
-
-        {
-            let mut writer = DirectMonotonicWriter::new(
-                meta_out,
-                self.data_out.as_mut(),
-                num_values,
-                self.block_shift,
-            )?;
-            let mut doc = 0i64;
-            writer.add(doc)?;
-            for &count in &self.doc_counts {
-                doc += count as i64;
-                writer.add(doc)?;
-            }
-            writer.finish()?;
-        }
-
-        let start_pointers_start_pointer = self.data_out.file_pointer();
-        meta_out.write_long(start_pointers_start_pointer)?;
-        {
-            let mut writer = DirectMonotonicWriter::new(
-                meta_out,
-                self.data_out.as_mut(),
-                num_values,
-                self.block_shift,
-            )?;
-            let mut fp = 0i64;
-            for &delta in &self.start_pointer_deltas {
-                fp += delta;
-                writer.add(fp)?;
-            }
-            if max_pointer < fp {
-                return Err(LuceneError::CorruptIndex(
-                    "File pointers don't add up".to_string(),
-                ));
-            }
-            writer.add(max_pointer)?;
-            writer.finish()?;
-        }
-
-        let start_pointers_end_pointer = self.data_out.file_pointer();
-        meta_out.write_long(start_pointers_end_pointer)?;
-        meta_out.write_long(max_pointer)?;
-
-        write_footer(self.data_out.as_mut())?;
-        self.close()
+        let data_file = segment_file_name(&self.name, &self.suffix, &self.extension);
+        let mut data_out = self
+            .dir
+            .create_output(&data_file, self.io_context.as_ref())?;
+        // `try (IndexOutput dataOut = ...)`: closed whatever the body does.
+        let written = self.write_data(data_out.as_mut(), num_docs, max_pointer, meta_out);
+        let closed = data_out.close();
+        written.and(closed)
     }
 
-    /// Releases the `.fdx` output.
-    ///
-    /// Equivalent to `FieldsIndexWriter.close()`, which Lucene's
-    /// `Lucene90CompressingStoredFieldsWriter.close()` calls alongside the two
-    /// streams. The `.fdx` is created eagerly in the constructor, so without
-    /// this the handle survives every abort until the value is dropped.
-    /// Closing twice is a no-op, because [`Self::finish`] already closes it on
-    /// the success path.
-    pub(crate) fn close(&mut self) -> Result<()> {
-        if self.closed {
-            return Ok(());
+    /// The body of `finish`'s `try (IndexOutput dataOut = ...)`.
+    fn write_data(
+        &mut self,
+        data_out: &mut dyn IndexOutput,
+        num_docs: i32,
+        max_pointer: i64,
+        meta_out: &mut dyn IndexOutput,
+    ) -> Result<()> {
+        let codec_name = self.codec_name.clone();
+        write_index_header(
+            data_out,
+            &format!("{codec_name}Idx"),
+            INDEX_VERSION_CURRENT,
+            &self.id,
+            &self.suffix,
+        )?;
+
+        let num_values = i64::from(self.total_chunks) + 1;
+        meta_out.write_int(num_docs)?;
+        meta_out.write_int(self.block_shift)?;
+        meta_out.write_int(self.total_chunks + 1)?;
+        meta_out.write_long(data_out.file_pointer())?;
+
+        let docs_name = self
+            .docs_out_name
+            .clone()
+            .expect("INVARIANT: the doc ids file exists until finish deletes it");
+        {
+            let mut docs_in = self.dir.open_checksum_input(&docs_name)?;
+            check_header(
+                docs_in.as_mut(),
+                &format!("{codec_name}Docs"),
+                INDEX_VERSION_CURRENT,
+                INDEX_VERSION_CURRENT,
+            )?;
+            let read = (|| -> Result<()> {
+                let mut docs =
+                    DirectMonotonicWriter::new(meta_out, data_out, num_values, self.block_shift)?;
+                let mut doc = 0i64;
+                docs.add(doc)?;
+                for _ in 0..self.total_chunks {
+                    doc += i64::from(docs_in.read_v_int()?);
+                    docs.add(doc)?;
+                }
+                docs.finish()?;
+                if doc != i64::from(self.total_docs) {
+                    return Err(LuceneError::CorruptIndex(format!(
+                        "Docs don't add up (resource={docs_name})"
+                    )));
+                }
+                Ok(())
+            })();
+            // `CodecUtil.checkFooter(docsIn, priorE)`.
+            match read {
+                Ok(()) => {
+                    check_footer(docs_in.as_mut())?;
+                }
+                Err(prior) => return Err(check_footer_with_prior(docs_in.as_mut(), prior)),
+            }
         }
-        self.closed = true;
-        self.data_out.close()
+        self.dir.delete_file(&docs_name)?;
+        self.docs_out_name = None;
+
+        meta_out.write_long(data_out.file_pointer())?;
+        let file_pointers_name = self
+            .file_pointers_out_name
+            .clone()
+            .expect("INVARIANT: the file pointers file exists until finish deletes it");
+        {
+            let mut file_pointers_in = self.dir.open_checksum_input(&file_pointers_name)?;
+            check_header(
+                file_pointers_in.as_mut(),
+                &format!("{codec_name}FilePointers"),
+                INDEX_VERSION_CURRENT,
+                INDEX_VERSION_CURRENT,
+            )?;
+            let read = (|| -> Result<()> {
+                let mut file_pointers =
+                    DirectMonotonicWriter::new(meta_out, data_out, num_values, self.block_shift)?;
+                let mut fp = 0i64;
+                for _ in 0..self.total_chunks {
+                    fp += file_pointers_in.read_v_long()?;
+                    file_pointers.add(fp)?;
+                }
+                if max_pointer < fp {
+                    return Err(LuceneError::CorruptIndex(format!(
+                        "File pointers don't add up (resource={file_pointers_name})"
+                    )));
+                }
+                file_pointers.add(max_pointer)?;
+                file_pointers.finish()?;
+                Ok(())
+            })();
+            match read {
+                Ok(()) => {
+                    check_footer(file_pointers_in.as_mut())?;
+                }
+                Err(prior) => {
+                    return Err(check_footer_with_prior(file_pointers_in.as_mut(), prior));
+                }
+            }
+        }
+        self.dir.delete_file(&file_pointers_name)?;
+        self.file_pointers_out_name = None;
+
+        meta_out.write_long(data_out.file_pointer())?;
+        meta_out.write_long(max_pointer)?;
+
+        write_footer(data_out)
+    }
+
+    /// Closes the temporary outputs still open and deletes the temporary
+    /// files still there.
+    ///
+    /// Equivalent to `FieldsIndexWriter.close()` (`FieldsIndexWriter.java:183-201`):
+    /// after [`finish`](Self::finish) there is nothing left, so closing twice
+    /// is a no-op. Both outputs are closed and both files deleted even when
+    /// one step fails; as in a Java `finally`, a failure to delete replaces a
+    /// failure to close.
+    pub(crate) fn close(&mut self) -> Result<()> {
+        let closed = [
+            self.docs_out.take().map_or(Ok(()), |mut out| out.close()),
+            self.file_pointers_out
+                .take()
+                .map_or(Ok(()), |mut out| out.close()),
+        ]
+        .into_iter()
+        .find(Result::is_err)
+        .unwrap_or(Ok(()));
+        // `IOUtils.deleteFiles(dir, fileNames)` tries every file and throws
+        // the first failure.
+        let deleted = [
+            self.docs_out_name.take(),
+            self.file_pointers_out_name.take(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|name| self.dir.delete_file(&name))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .find(Result::is_err)
+        .unwrap_or(Ok(()));
+        deleted.and(closed)
     }
 }
 
@@ -1043,7 +1221,7 @@ pub struct Lucene90CompressingStoredFieldsWriter {
 
 impl Lucene90CompressingStoredFieldsWriter {
     fn new(
-        directory: &dyn Directory,
+        directory: &Arc<dyn Directory>,
         segment_info: &SegmentInfo,
         segment_suffix: &str,
         context: &dyn IOContext,
@@ -1056,38 +1234,66 @@ impl Lucene90CompressingStoredFieldsWriter {
         let segment = segment_info.name.clone();
         let id = segment_info.id();
 
-        let meta_file = segment_file_name(&segment, segment_suffix, META_EXTENSION);
-        let mut meta_stream = directory.create_output(&meta_file, context)?;
-        write_index_header(
-            meta_stream.as_mut(),
-            &format!("{INDEX_CODEC_NAME}Meta"),
-            DATA_VERSION_CURRENT,
-            &id,
-            segment_suffix,
-        )?;
+        // `boolean success = false; try { ... } finally { if (!success)
+        // IOUtils.closeWhileHandlingException(metaStream, fieldsStream,
+        // indexWriter); }` (`Lucene90CompressingStoredFieldsWriter.java:127-162`):
+        // whatever fails, everything opened so far is closed, and the index
+        // writer's close deletes its temporary files.
+        let mut meta_stream: Option<Box<dyn IndexOutput>> = None;
+        let mut fields_stream: Option<Box<dyn IndexOutput>> = None;
+        let mut index_writer: Option<FieldsIndexWriter> = None;
+        let opened = (|| -> Result<()> {
+            let meta_file = segment_file_name(&segment, segment_suffix, META_EXTENSION);
+            let meta = meta_stream.insert(directory.create_output(&meta_file, context)?);
+            write_index_header(
+                meta.as_mut(),
+                &format!("{INDEX_CODEC_NAME}Meta"),
+                DATA_VERSION_CURRENT,
+                &id,
+                segment_suffix,
+            )?;
 
-        let fields_file = segment_file_name(&segment, segment_suffix, FIELDS_EXTENSION);
-        let mut fields_stream = directory.create_output(&fields_file, context)?;
-        write_index_header(
-            fields_stream.as_mut(),
-            format_name,
-            DATA_VERSION_CURRENT,
-            &id,
-            segment_suffix,
-        )?;
+            let fields_file = segment_file_name(&segment, segment_suffix, FIELDS_EXTENSION);
+            let fields = fields_stream.insert(directory.create_output(&fields_file, context)?);
+            write_index_header(
+                fields.as_mut(),
+                format_name,
+                DATA_VERSION_CURRENT,
+                &id,
+                segment_suffix,
+            )?;
 
-        let index_writer = FieldsIndexWriter::new(
-            directory,
-            &segment,
-            segment_suffix,
-            INDEX_EXTENSION,
-            INDEX_CODEC_NAME,
-            id,
-            block_shift,
-            context,
-        )?;
+            index_writer = Some(FieldsIndexWriter::new(
+                directory,
+                &segment,
+                segment_suffix,
+                INDEX_EXTENSION,
+                INDEX_CODEC_NAME,
+                id,
+                block_shift,
+                context,
+            )?);
 
-        meta_stream.write_v_int(chunk_size as i32)?;
+            meta.write_v_int(chunk_size as i32)?;
+            Ok(())
+        })();
+        if let Err(error) = opened {
+            if let Some(mut out) = meta_stream {
+                let _ = out.close();
+            }
+            if let Some(mut out) = fields_stream {
+                let _ = out.close();
+            }
+            if let Some(mut writer) = index_writer {
+                let _ = writer.close();
+            }
+            return Err(error);
+        }
+        let (Some(meta_stream), Some(fields_stream), Some(index_writer)) =
+            (meta_stream, fields_stream, index_writer)
+        else {
+            unreachable!("INVARIANT: a successful open set all three resources");
+        };
 
         Ok(Self {
             index_writer,
@@ -2720,7 +2926,7 @@ impl StoredFieldsFormat for Lucene90CompressingStoredFieldsFormat {
 
     fn fields_writer(
         &self,
-        directory: &dyn Directory,
+        directory: &std::sync::Arc<dyn Directory>,
         segment_info: &SegmentInfo,
         context: &dyn IOContext,
     ) -> Result<Box<dyn StoredFieldsWriter>> {
@@ -2864,7 +3070,7 @@ impl StoredFieldsFormat for Lucene90StoredFieldsFormat {
 
     fn fields_writer(
         &self,
-        directory: &dyn Directory,
+        directory: &std::sync::Arc<dyn Directory>,
         segment_info: &SegmentInfo,
         context: &dyn IOContext,
     ) -> Result<Box<dyn StoredFieldsWriter>> {
@@ -2995,7 +3201,7 @@ mod tests {
         let format = Lucene90StoredFieldsFormat::with_mode(mode);
         {
             let mut writer = format
-                .fields_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                .fields_writer(&dir, &segment_info, &*DEFAULT_IO_CONTEXT)
                 .unwrap();
 
             // Document 0: one string
@@ -3183,7 +3389,7 @@ mod tests {
         let format = Lucene90StoredFieldsFormat::new();
         {
             let mut writer = format
-                .fields_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                .fields_writer(&dir, &segment_info, &*DEFAULT_IO_CONTEXT)
                 .unwrap();
             for value in values {
                 writer.start_document().unwrap();
@@ -3234,7 +3440,7 @@ mod tests {
             let format = Lucene90StoredFieldsFormat::new();
             {
                 let mut writer = format
-                    .fields_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                    .fields_writer(&dir, &segment_info, &*DEFAULT_IO_CONTEXT)
                     .unwrap();
                 writer.start_document().unwrap();
                 if streamed {
@@ -3310,7 +3516,7 @@ mod tests {
         let format = Lucene90StoredFieldsFormat::new();
         {
             let mut writer = format
-                .fields_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                .fields_writer(&dir, &segment_info, &*DEFAULT_IO_CONTEXT)
                 .unwrap();
             writer.start_document().unwrap();
             writer.write_field_bytes(text_field, b"first").unwrap();
@@ -3449,7 +3655,7 @@ mod tests {
         let format = Lucene90StoredFieldsFormat::new();
         {
             let mut writer = format
-                .fields_writer(data_dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                .fields_writer(&data_dir, &segment_info, &*DEFAULT_IO_CONTEXT)
                 .unwrap();
             writer.start_document().unwrap();
             writer
@@ -3511,7 +3717,7 @@ mod tests {
         let format = Lucene90StoredFieldsFormat::new();
         {
             let mut writer = format
-                .fields_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                .fields_writer(&dir, &segment_info, &*DEFAULT_IO_CONTEXT)
                 .unwrap();
             for value in &values {
                 writer.start_document().unwrap();
@@ -3606,9 +3812,11 @@ mod tests {
     /// first failure, and must include the fields index.
     ///
     /// Equivalent to `IOUtils.close(metaStream, fieldsStream, indexWriter,
-    /// compressor)`. `FieldsIndexWriter` opens the `.fdx` eagerly, so a writer
-    /// that is closed without being finished — the abort path — used to leave
-    /// that handle open.
+    /// compressor)`. `FieldsIndexWriter` streams the index to two temporary
+    /// outputs (`FieldsIndexWriter.java:83-87`); a writer closed without being
+    /// finished — the abort path — closes and deletes them
+    /// (`FieldsIndexWriter.java:183-201`), so no `.fdx` and no temporary file
+    /// is left behind.
     #[test]
     fn closing_the_writer_releases_every_stream() {
         let dir = Arc::new(CountingDirectory::new(RamDirectory::new()));
@@ -3616,14 +3824,22 @@ mod tests {
         let segment_info = make_segment_info(Arc::clone(&dir) as Arc<dyn Directory>, "_0", 1);
         let format = Lucene90StoredFieldsFormat::new();
         let mut writer = format
-            .fields_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+            .fields_writer(
+                &(Arc::clone(&dir) as Arc<dyn Directory>),
+                &segment_info,
+                &*DEFAULT_IO_CONTEXT,
+            )
             .unwrap();
         writer.start_document().unwrap();
         writer
             .write_field_string(field_infos.field_info("id").unwrap(), "abandoned")
             .unwrap();
         writer.finish_document().unwrap();
-        assert_eq!(dir.opened(), 3, "the .fdm, .fdt and .fdx are all created");
+        assert_eq!(
+            dir.opened(),
+            4,
+            "the .fdm, the .fdt and the index's two temporary outputs are all created"
+        );
         assert_eq!(dir.closed(), 0);
 
         // Abort: close without finishing, exactly as `StoredFieldsConsumer.abort`
@@ -3631,8 +3847,15 @@ mod tests {
         writer.close().unwrap();
         assert_eq!(
             dir.closed(),
-            3,
-            "the fields index must be closed alongside the two streams"
+            4,
+            "the fields index's outputs must be closed alongside the two streams"
+        );
+        let mut files = dir.list_all().unwrap();
+        files.sort();
+        assert_eq!(
+            files,
+            vec!["_0.fdm".to_string(), "_0.fdt".to_string()],
+            "the aborted fields index must delete its temporary files and write no .fdx"
         );
     }
 
@@ -3736,7 +3959,13 @@ mod tests {
             suffix: &str,
             context: &dyn IOContext,
         ) -> Result<Box<dyn IndexOutput>> {
-            self.inner.create_temp_output(prefix, suffix, context)
+            self.opened
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Box::new(CountingOutput {
+                inner: self.inner.create_temp_output(prefix, suffix, context)?,
+                closed: Arc::clone(&self.closed),
+                already: false,
+            }))
         }
         fn sync(&self, names: &[String]) -> Result<()> {
             self.inner.sync(names)
@@ -3825,7 +4054,7 @@ mod tests {
             let format = Lucene90StoredFieldsFormat::with_mode(mode);
             {
                 let mut writer = format
-                    .fields_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+                    .fields_writer(&dir, &segment_info, &*DEFAULT_IO_CONTEXT)
                     .unwrap();
                 writer.start_document().unwrap();
                 writer.write_field_string(id_field, "before").unwrap();
@@ -4046,7 +4275,7 @@ mod tests {
         chunk_size: usize,
     ) -> Lucene90CompressingStoredFieldsWriter {
         Lucene90CompressingStoredFieldsWriter::new(
-            dir.as_ref(),
+            dir,
             &make_segment_info(Arc::clone(dir), name, 0),
             "",
             &*DEFAULT_IO_CONTEXT,
@@ -4106,7 +4335,7 @@ mod tests {
         let field_infos = make_field_infos();
         let segment_info = make_segment_info(Arc::clone(dir), name, count);
         let mut writer = merge_test_format()
-            .fields_writer(dir.as_ref(), &segment_info, &*DEFAULT_IO_CONTEXT)
+            .fields_writer(dir, &segment_info, &*DEFAULT_IO_CONTEXT)
             .unwrap();
         for n in first..first + count {
             writer.start_document().unwrap();
@@ -4329,7 +4558,7 @@ mod tests {
         let stored_fields = merge_test_format();
         {
             let mut writer = stored_fields
-                .fields_writer(dir.as_ref(), &info, &*DEFAULT_IO_CONTEXT)
+                .fields_writer(&dir, &info, &*DEFAULT_IO_CONTEXT)
                 .unwrap();
             assert_eq!(
                 writer.merge(merge_state).unwrap(),

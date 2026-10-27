@@ -215,8 +215,6 @@ pub use vector_values::{
 pub use doc_values_field_updates::DocValuesFieldUpdates;
 pub use readers_and_updates::{PendingDeletes, PendingSoftDeletes, ReaderPool, ReadersAndUpdates};
 
-use std::collections::HashMap;
-
 use crate::{
     analysis::{Analyzer, TokenStream},
     document::{InvertableType, NumericValue, StoredValue},

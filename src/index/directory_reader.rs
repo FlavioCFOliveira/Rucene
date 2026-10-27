@@ -1864,9 +1864,7 @@ mod tests {
             .set_merge_policy(Arc::new(crate::index::merge_policy::NoMergePolicy::new()))
             .unwrap();
         config.set_leaf_sorter(Some(Arc::new(ByMaxDocDescending)));
-        let writer = RealIndexWriter::new(Arc::clone(&dir), config)
-            .unwrap()
-            .shared();
+        let writer = RealIndexWriter::new(Arc::clone(&dir), config).unwrap();
         let add = |count: i32| {
             for i in 0..count {
                 let mut doc = Document::new();

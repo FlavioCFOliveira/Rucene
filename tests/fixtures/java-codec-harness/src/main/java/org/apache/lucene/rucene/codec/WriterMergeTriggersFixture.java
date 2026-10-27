@@ -44,6 +44,7 @@ import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
+import org.apache.lucene.store.ByteBuffersDirectory;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
@@ -86,6 +87,23 @@ import org.apache.lucene.store.FSDirectory;
  *   <li>{@code counts}: the package-private {@code getFlushCount()} and {@code
  *       getFlushDeletesCount()}, read by reflection, after flushes with and
  *       without changes and after a delete.
+ *   <li>{@code deletes-applied}: a 0.01 MB RAM buffer and no merging; one
+ *       committed document, then deletes of distinct missing terms until
+ *       {@code getFlushCount()} moves from its value after the commit,
+ *       printing both counts before, and whether that happened and both
+ *       counts after. How many deletes it takes depends on the RAM the
+ *       buffered deletes account for, which this case does not compare. The delete RAM crossing the buffer makes {@code
+ *       DocumentsWriter.applyAllDeletes} freeze the global deletes into a
+ *       ticket and call {@code onDeletesApplied}, whose event publishes the
+ *       ticket and increments {@code flushCount}
+ *       ({@code IndexWriter.java:450-460}, {@code DocumentsWriter.java:168-185}).
+ *   <li>{@code flush-publish}: ten documents with {@code maxBufferedDocs=2} and
+ *       a {@link SerialMergeScheduler}, first under {@link NoMergePolicy} and
+ *       then under a {@link LogDocMergePolicy} of merge factor 2 and minimum
+ *       merge size 1; after each {@code addDocument}, the package-private
+ *       {@code getSegmentCount()}, read by reflection: the segments a flush
+ *       triggered by {@code addDocument} produces are published at once
+ *       ({@code afterSegmentsFlushed}) and may trigger a merge.
  * </ul>
  */
 public final class WriterMergeTriggersFixture {
@@ -307,6 +325,59 @@ public final class WriterMergeTriggersFixture {
     }
   }
 
+  static void deletesApplied() throws IOException, ReflectiveOperationException {
+    Method flushCount = IndexWriter.class.getDeclaredMethod("getFlushCount");
+    flushCount.setAccessible(true);
+    try (Directory dir = new ByteBuffersDirectory()) {
+      IndexWriterConfig config = new IndexWriterConfig();
+      config.setRAMBufferSizeMB(0.01);
+      config.setMergePolicy(NoMergePolicy.INSTANCE);
+      config.setMergeScheduler(new SerialMergeScheduler());
+      try (IndexWriter writer = new IndexWriter(dir, config)) {
+        writer.addDocument(idDoc(0));
+        writer.commit();
+        int base = (int) flushCount.invoke(writer);
+        System.out.println("before " + counts(writer));
+        int deletes = 0;
+        while ((int) flushCount.invoke(writer) == base && deletes < 100_000) {
+          writer.deleteDocuments(new Term("id", "missing" + deletes));
+          deletes++;
+        }
+        System.out.println("applied=" + (deletes < 100_000) + " " + counts(writer));
+      }
+    }
+  }
+
+  static void flushPublish() throws IOException, ReflectiveOperationException {
+    Method segmentCount = IndexWriter.class.getDeclaredMethod("getSegmentCount");
+    segmentCount.setAccessible(true);
+    for (String kase : new String[] {"none", "logdoc2"}) {
+      try (Directory dir = new ByteBuffersDirectory()) {
+        IndexWriterConfig config = new IndexWriterConfig();
+        config.setMaxBufferedDocs(2);
+        config.setMergeScheduler(new SerialMergeScheduler());
+        if (kase.equals("none")) {
+          config.setMergePolicy(NoMergePolicy.INSTANCE);
+        } else {
+          LogDocMergePolicy policy = new LogDocMergePolicy();
+          policy.setMergeFactor(2);
+          policy.setMinMergeDocs(1);
+          config.setMergePolicy(policy);
+        }
+        try (IndexWriter writer = new IndexWriter(dir, config)) {
+          StringBuilder counts = new StringBuilder();
+          for (int i = 0; i < 10; i++) {
+            writer.addDocument(idDoc(i));
+            counts.append(i == 0 ? "" : " ").append(segmentCount.invoke(writer));
+          }
+          writer.commit();
+          System.out.println(
+              "flush-publish " + kase + " counts=" + counts + " segments=" + segments(dir));
+        }
+      }
+    }
+  }
+
   /** Runs one case. */
   public static void main(String[] args) throws IOException, ReflectiveOperationException {
     switch (args[0]) {
@@ -330,6 +401,8 @@ public final class WriterMergeTriggersFixture {
       case "blocks" -> blocks(Paths.get(args[1]));
       case "force-merge" -> forceMerge();
       case "counts" -> counts();
+      case "flush-publish" -> flushPublish();
+      case "deletes-applied" -> deletesApplied();
       case "log-packing" -> logMerge("log-packing", 2, new int[] {400, 400, 400, 400});
       case "log-levels" -> logMerge("log-levels", 4, new int[] {24, 3, 3, 3});
       default -> throw new IllegalArgumentException("unknown case: " + args[0]);

@@ -358,6 +358,9 @@ impl GeoEncodingUtils {
         }
     }
 
+    /// Smallest encoded longitude.
+    ///
+    /// Equivalent to `GeoEncodingUtils.MIN_LON_ENCODED`.
     pub fn min_lon_encoded() -> i32 {
         Self::encode_longitude(GeoUtils::MIN_LON_INCL).unwrap_or(i32::MIN)
     }

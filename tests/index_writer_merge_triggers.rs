@@ -26,6 +26,14 @@
 //!   levels in `float` (`LogMergePolicy.java:94-250`).
 //! * `counts`: `flushCount` and `flushDeletesCount` move as Lucene's do
 //!   (`IndexWriter.java:3003-3009, 4342-4344`).
+//! * `deletes-applied`: delete RAM crossing the buffer makes the documents
+//!   writer freeze the global deletes into a ticket and call
+//!   `onDeletesApplied`, whose event publishes the ticket and increments
+//!   `flushCount` (`IndexWriter.java:450-460`, `DocumentsWriter.java:168-185`).
+//! * `flush-publish`: a segment that `addDocument` flushes is published at
+//!   once by `afterSegmentsFlushed` (`IndexWriter.java:440-443`,
+//!   `DocumentsWriter.java:579`) and may trigger a merge
+//!   (`maybeProcessEvents`, `IndexWriter.java:5578-5583`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -372,6 +380,90 @@ fn flush_counters_move_as_lucene_does() {
     assert_eq!(lines.join("\n"), run_java(&["counts"]).trim());
 }
 
+/// `deletes-applied`: with a 0.01 MB RAM buffer, deletes until `flushCount`
+/// moves past its value after the first commit, and both counts. How many
+/// deletes that takes depends on the RAM the buffered deletes account for,
+/// which is not compared here.
+#[test]
+fn applied_deletes_publish_and_count_a_flush_as_lucene_does() {
+    ensure_codec();
+    let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+    let mut config = IndexWriterConfig::new();
+    config.set_ram_buffer_size_mb(0.01).unwrap();
+    config
+        .set_merge_policy(Arc::new(NoMergePolicy::new()))
+        .unwrap();
+    config
+        .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+        .unwrap();
+    let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+    let counts = |writer: &IndexWriter| {
+        format!(
+            "flushCount={} flushDeletesCount={}",
+            writer.get_flush_count(),
+            writer.get_flush_deletes_count()
+        )
+    };
+    writer.add_document(&id_doc(0)).unwrap();
+    writer.commit().unwrap();
+    let base = writer.get_flush_count();
+    let mut lines = vec![format!("before {}", counts(&writer))];
+    let mut deletes = 0;
+    while writer.get_flush_count() == base && deletes < 100_000 {
+        writer
+            .delete_documents_by_terms(vec![Term::new(
+                "id",
+                BytesRef::new(format!("missing{deletes}").into_bytes()),
+            )])
+            .unwrap();
+        deletes += 1;
+    }
+    lines.push(format!("applied={} {}", deletes < 100_000, counts(&writer)));
+    writer.close().unwrap();
+    assert_eq!(lines.join("\n"), run_java(&["deletes-applied"]).trim());
+}
+
+/// `flush-publish`: after each of ten `addDocument` calls with
+/// `maxBufferedDocs=2`, the writer's segment count, without and with a merge
+/// policy that merges what the flushes publish.
+#[test]
+fn segments_flushed_by_add_document_are_published_and_merged_as_lucene_does() {
+    ensure_codec();
+    let mut lines = Vec::new();
+    for case in ["none", "logdoc2"] {
+        let dir: Arc<dyn Directory> = Arc::new(RamDirectory::new());
+        let mut config = IndexWriterConfig::new();
+        config.set_max_buffered_docs(2).unwrap();
+        config
+            .set_merge_scheduler(Arc::new(SerialMergeScheduler::new()))
+            .unwrap();
+        if case == "none" {
+            config
+                .set_merge_policy(Arc::new(NoMergePolicy::new()))
+                .unwrap();
+        } else {
+            let mut policy = LogMergePolicy::by_doc_count();
+            policy.set_merge_factor(2).unwrap();
+            policy.set_min_merge_docs(1);
+            config.set_merge_policy(Arc::new(policy)).unwrap();
+        }
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        let mut counts = Vec::new();
+        for i in 0..10 {
+            writer.add_document(&id_doc(i)).unwrap();
+            counts.push(writer.get_segment_count().unwrap().to_string());
+        }
+        writer.commit().unwrap();
+        lines.push(format!(
+            "flush-publish {case} counts={} segments={}",
+            counts.join(" "),
+            segments(&dir)
+        ));
+        writer.close().unwrap();
+    }
+    assert_eq!(lines.join("\n"), run_java(&["flush-publish"]).trim());
+}
+
 /// `WriterMergeTriggersFixture.logMerge`: segments of `sizes` documents written
 /// without merging, then one `maybeMerge` with a `LogDocMergePolicy`.
 fn log_merge(case: &str, merge_factor: i32, sizes: &[i32]) -> String {
@@ -442,9 +534,7 @@ fn concurrent_merges_on_get_reader_each_keep_their_own_segment() {
 
         // The default `TieredMergePolicy` merges at most ten segments at once,
         // so the full-flush merges over 41 tiny segments are several.
-        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new())
-            .unwrap()
-            .shared();
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         writer.add_document(&id_doc(40)).unwrap();
         let reader = directory_reader::open_with_writer(writer.as_ref()).unwrap();
         assert_eq!(reader.max_doc(), 41);

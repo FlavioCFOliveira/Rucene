@@ -375,7 +375,7 @@ impl SegmentTermsEnumFrame {
             next_floor_label,
             ..
         } = self;
-        let mut new_fp = *fp_orig;
+        let mut new_fp;
         let mut reader = ByteArrayDataInput::new(floor_data);
         reader.set_position(*floor_data_pos);
         loop {

@@ -102,8 +102,11 @@ use crate::store::{
     flush_io_context, BufferedChecksumIndexInput, Directory, FlushInfo, IOContext, IndexInput,
     IndexOutput, Lock, TrackingDirectoryWrapper,
 };
+use crate::util::byte_block_pool::ByteBlockPool;
+use crate::util::bytes_ref_hash::BytesRefHash;
 use crate::util::string_helper::StringHelper;
 use crate::util::{Accountable, BytesRef, FixedBitSet, InfoStream, Version};
+use crate::util::{ArrayUtil, RamUsageEstimator};
 
 /// Maximum number of documents a single index may contain.
 ///
@@ -236,13 +239,214 @@ pub const BYTES_PER_DEL_QUERY: i64 = 76;
 /// + 24`: 32 bytes on a 64-bit JVM with compressed object pointers.
 pub const FROZEN_BYTES_PER_DEL_QUERY: i64 = 32;
 
-/// Estimated RAM cost of one buffered delete-by-term entry, excluding the term
-/// bytes themselves.
+/// The deleted terms of a [`BufferedUpdates`], each mapped to the newest
+/// `docIDUpto` it applies to.
 ///
-/// Lucene stores delete terms in a `BytesRefHash` over a `ByteBlockPool`; this
-/// port stores them in a `HashMap`, so the per-entry overhead is estimated as
-/// the map entry plus the `docIDUpto`.
-const BYTES_PER_DEL_TERM: i64 = 48;
+/// Equivalent to `BufferedUpdates.DeletedTerms` (`BufferedUpdates.java:180-310`):
+/// the term bytes live in one `ByteBlockPool` whose blocks a
+/// `DirectTrackingAllocator` charges to the buffer's counter, and each field
+/// has its own [`BytesRefIntMap`] over that pool. The counter is what
+/// [`ram_bytes_used`](Accountable::ram_bytes_used) reports, so the first
+/// deleted term costs a whole 32 KB block, as in Lucene.
+#[derive(Debug)]
+pub struct DeletedTerms {
+    /// Equivalent to `DeletedTerms.bytesUsed`.
+    bytes_used: Arc<AtomicI64>,
+    /// Equivalent to `DeletedTerms.pool`.
+    pool: ByteBlockPool,
+    /// Equivalent to `DeletedTerms.deleteTerms`, a `HashMap<String,
+    /// BytesRefIntMap>`.
+    delete_terms: HashMap<String, BytesRefIntMap>,
+    /// Equivalent to `DeletedTerms.termsSize`.
+    terms_size: usize,
+}
+
+impl Default for DeletedTerms {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DeletedTerms {
+    /// Creates an empty set, charging nothing yet.
+    pub fn new() -> Self {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        Self {
+            pool: ByteBlockPool::new(Arc::clone(&bytes_used)),
+            bytes_used,
+            delete_terms: HashMap::new(),
+            terms_size: 0,
+        }
+    }
+
+    /// Returns the newest `docIDUpto` of `term`, or `-1` when it is not here.
+    ///
+    /// Equivalent to `DeletedTerms.get(Term)`.
+    pub fn get(&self, term: &Term) -> i32 {
+        match self.delete_terms.get(term.field()) {
+            None => -1,
+            Some(hash) => hash.get(&self.pool, term.bytes().slice()),
+        }
+    }
+
+    /// Records `value` as the newest `docIDUpto` of `term`.
+    ///
+    /// Equivalent to `DeletedTerms.put(Term, int)`: the first term of a field
+    /// charges `RamUsageEstimator.sizeOf(term.field)` and a fresh
+    /// [`BytesRefIntMap`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] when the term is longer than a
+    /// pool block can hold, which is Java's
+    /// `BytesRefHash.MaxBytesLengthExceededException`.
+    pub fn put(&mut self, term: &Term, value: i32) -> Result<()> {
+        if !self.delete_terms.contains_key(term.field()) {
+            self.bytes_used.fetch_add(
+                RamUsageEstimator::size_of_string(term.field()),
+                Ordering::AcqRel,
+            );
+            self.delete_terms.insert(
+                term.field().to_string(),
+                BytesRefIntMap::new(Arc::clone(&self.bytes_used)),
+            );
+        }
+        let hash = self
+            .delete_terms
+            .get_mut(term.field())
+            .expect("INVARIANT: the field's map was just inserted");
+        if hash.put(&mut self.pool, term.bytes().slice(), value)? {
+            self.terms_size += 1;
+        }
+        Ok(())
+    }
+
+    /// Drops every term and zeroes the counter.
+    ///
+    /// Equivalent to `DeletedTerms.clear()`.
+    pub fn clear(&mut self) {
+        self.pool.reset();
+        self.delete_terms.clear();
+        self.bytes_used.store(0, Ordering::Release);
+        self.terms_size = 0;
+    }
+
+    /// Returns the number of distinct terms.
+    ///
+    /// Equivalent to `DeletedTerms.size()`.
+    pub fn size(&self) -> usize {
+        self.terms_size
+    }
+
+    /// Returns `true` when no term is held.
+    ///
+    /// Equivalent to `DeletedTerms.isEmpty()`.
+    pub fn is_empty(&self) -> bool {
+        self.terms_size == 0
+    }
+
+    /// Visits every term with its `docIDUpto`, fields by name and terms by
+    /// their bytes.
+    ///
+    /// Equivalent to `DeletedTerms.forEachOrdered`. Java's
+    /// `BytesRefHash.sort()` is destructive; this port's is not, which changes
+    /// nothing a caller can observe because Java never reads the map again
+    /// before clearing it.
+    pub fn for_each_ordered(&self, mut consumer: impl FnMut(Term, i32)) {
+        let mut fields: Vec<&String> = self.delete_terms.keys().collect();
+        fields.sort();
+        for field in fields {
+            let terms = &self.delete_terms[field];
+            for index in terms.bytes_ref_hash.sort(&self.pool) {
+                let bytes = terms.bytes_ref_hash.get(&self.pool, index);
+                consumer(
+                    Term::new(field.clone(), crate::util::BytesRef::new(bytes.to_vec())),
+                    terms.values[index as usize],
+                );
+            }
+        }
+    }
+}
+
+impl Accountable for DeletedTerms {
+    /// Equivalent to `DeletedTerms.ramBytesUsed()`.
+    fn ram_bytes_used(&self) -> i64 {
+        self.bytes_used.load(Ordering::Acquire)
+    }
+}
+
+/// One field's deleted terms, each mapped to its `docIDUpto`.
+///
+/// Equivalent to the private `BufferedUpdates.BytesRefIntMap`
+/// (`BufferedUpdates.java:296-352`): a `BytesRefHash` over the shared pool,
+/// whose start offsets sit in a `DirectBytesStartArray` the counter never
+/// sees, and a parallel `int[]` of values grown by `ArrayUtil.grow`.
+#[derive(Debug)]
+struct BytesRefIntMap {
+    counter: Arc<AtomicI64>,
+    bytes_ref_hash: BytesRefHash,
+    values: Vec<i32>,
+}
+
+impl BytesRefIntMap {
+    /// `RamUsageEstimator.shallowSizeOfInstance(BytesRefIntMap.class) +
+    /// RamUsageEstimator.shallowSizeOfInstance(BytesRefHash.class) +
+    /// RamUsageEstimator.sizeOf(new int[BytesRefHash.DEFAULT_CAPACITY])`.
+    ///
+    /// Equivalent to `BytesRefIntMap.INIT_RAM_BYTES`
+    /// (`BufferedUpdates.java:298-301`). Java derives it by reflection;
+    /// measured against `lucene-core-10.5.0.jar` on a 64-bit JVM with
+    /// compressed object pointers it is `24 + 56 + 80 = 160`: a 12-byte
+    /// header and three references; a 12-byte header, five references and six
+    /// `int`s; a 16-byte array header and sixteen `int`s.
+    const INIT_RAM_BYTES: i64 = 24 + 56 + 80;
+
+    /// Equivalent to the private `BytesRefIntMap(ByteBlockPool, Counter)`.
+    fn new(counter: Arc<AtomicI64>) -> Self {
+        let bytes_ref_hash = BytesRefHash::with_direct_bytes_start(
+            crate::util::bytes_ref_hash::DEFAULT_CAPACITY,
+            Arc::clone(&counter),
+        );
+        counter.fetch_add(Self::INIT_RAM_BYTES, Ordering::AcqRel);
+        Self {
+            counter,
+            bytes_ref_hash,
+            values: vec![0; crate::util::bytes_ref_hash::DEFAULT_CAPACITY],
+        }
+    }
+
+    /// Equivalent to `BytesRefIntMap.put(BytesRef, int)`: `true` when `key`
+    /// is new.
+    fn put(&mut self, pool: &mut ByteBlockPool, key: &[u8], value: i32) -> Result<bool> {
+        debug_assert!(value >= 0);
+        let e = self.bytes_ref_hash.add(pool, key)?;
+        if e < 0 {
+            self.values[(-e - 1) as usize] = value;
+            return Ok(false);
+        }
+        let e = e as usize;
+        if e >= self.values.len() {
+            // `values = ArrayUtil.grow(values, e + 1)`.
+            let origin_length = self.values.len();
+            self.values
+                .resize(ArrayUtil::oversize(e + 1, std::mem::size_of::<i32>()), 0);
+            self.counter.fetch_add(
+                ((self.values.len() - origin_length) * std::mem::size_of::<i32>()) as i64,
+                Ordering::AcqRel,
+            );
+        }
+        self.values[e] = value;
+        Ok(true)
+    }
+
+    /// Equivalent to `BytesRefIntMap.get(BytesRef)`.
+    fn get(&self, pool: &ByteBlockPool, key: &[u8]) -> i32 {
+        match self.bytes_ref_hash.find(pool, key) {
+            -1 => -1,
+            e => self.values[e as usize],
+        }
+    }
+}
 
 /// A buffered delete-by-term together with the document it applies up to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,10 +464,13 @@ pub struct TermDelete {
 pub struct BufferedUpdates {
     /// Name of the segment (or `"global"`) this buffer belongs to.
     segment_name: String,
-    /// Delete terms, grouped by field then by term bytes, mapped to docIDUpto.
-    delete_terms: HashMap<String, HashMap<Vec<u8>, i32>>,
-    /// Number of distinct delete terms across all fields.
-    terms_size: usize,
+    /// Delete terms, mapped to their newest `docIDUpto`.
+    ///
+    /// Equivalent to `BufferedUpdates.deleteTerms`, whose own counter carries
+    /// the terms' RAM apart from `bytesUsed` (`BufferedUpdates.java:182`);
+    /// `toString()` renders `bytesUsed` alone, so a buffer holding nothing but
+    /// deleted terms reports no `bytesUsed=` clause.
+    delete_terms: DeletedTerms,
     /// Delete queries mapped to their `docIDUpto`.
     ///
     /// Equivalent to `BufferedUpdates.deleteQueries`, a `Map<Query, Integer>`.
@@ -280,16 +487,6 @@ pub struct BufferedUpdates {
     /// RAM charged to `field_updates`, kept apart exactly as Java keeps
     /// `fieldUpdatesBytesUsed` apart from `bytesUsed`.
     field_updates_bytes_used: i64,
-    /// RAM charged to `delete_terms`.
-    ///
-    /// Equivalent to `BufferedUpdates.DeletedTerms.bytesUsed`
-    /// (`BufferedUpdates.java:182`), the counter the nested `DeletedTerms`
-    /// carries for its own pool and maps. Lucene keeps it apart from
-    /// `bytesUsed` and sums the three only in `ramBytesUsed()`
-    /// (`BufferedUpdates.java:176-178`) — and, crucially, `toString()` renders
-    /// `bytesUsed` alone, so a buffer holding nothing but deleted terms reports
-    /// no `bytesUsed=` clause at all.
-    delete_terms_bytes_used: i64,
     /// Running RAM estimate for buffered delete queries.
     ///
     /// Equivalent to `BufferedUpdates.bytesUsed` (`BufferedUpdates.java:70`),
@@ -330,28 +527,21 @@ impl BufferedUpdates {
 
     /// Records a delete-by-term applying to documents below `doc_id_upto`.
     ///
-    /// Repeating a term keeps the *highest* `doc_id_upto`, matching
-    /// `BufferedUpdates.addTerm`.
-    pub fn add_term(&mut self, term: Term, doc_id_upto: i32) {
-        let key = term.bytes().slice().to_vec();
-        let entry = self.delete_terms.entry(term.field().to_string());
-        let field_bytes = match &entry {
-            std::collections::hash_map::Entry::Vacant(_) => term.field().len() as i64 + 32,
-            std::collections::hash_map::Entry::Occupied(_) => 0,
-        };
-        let per_field = entry.or_default();
-        match per_field.get_mut(&key) {
-            Some(current) => {
-                if doc_id_upto > *current {
-                    *current = doc_id_upto;
-                }
-            }
-            None => {
-                self.delete_terms_bytes_used += field_bytes + BYTES_PER_DEL_TERM + key.len() as i64;
-                per_field.insert(key, doc_id_upto);
-                self.terms_size += 1;
-            }
+    /// Equivalent to `BufferedUpdates.addTerm(Term, int)`: an older
+    /// `doc_id_upto` than the one recorded is ignored, because if several
+    /// threads replace the same document at nearly the same time, the one that
+    /// got the higher docID may be scheduled first.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`DeletedTerms::put`]'s error for a term too long for a
+    /// pool block.
+    pub fn add_term(&mut self, term: Term, doc_id_upto: i32) -> Result<()> {
+        let current = self.delete_terms.get(&term);
+        if current != -1 && doc_id_upto < current {
+            return Ok(());
         }
+        self.delete_terms.put(&term, doc_id_upto)
     }
 
     /// Records a delete-by-query applying to documents below `doc_id_upto`.
@@ -457,7 +647,7 @@ impl BufferedUpdates {
 
     /// Returns the number of distinct buffered delete terms.
     pub fn terms_size(&self) -> usize {
-        self.terms_size
+        self.delete_terms.size()
     }
 
     /// Returns the number of distinct buffered delete queries.
@@ -465,26 +655,23 @@ impl BufferedUpdates {
         self.delete_queries.len()
     }
 
-    /// Returns every buffered delete term with its `docIDUpto`.
+    /// Returns every buffered delete term with its `docIDUpto`, fields by name
+    /// and terms by their bytes.
+    ///
+    /// Equivalent to collecting `BufferedUpdates.deleteTerms.forEachOrdered`.
     pub fn delete_terms(&self) -> Vec<TermDelete> {
-        let mut out = Vec::with_capacity(self.terms_size);
-        for (field, terms) in &self.delete_terms {
-            for (bytes, upto) in terms {
-                out.push(TermDelete {
-                    term: Term::new(field.clone(), crate::util::BytesRef::new(bytes.clone())),
-                    doc_id_upto: *upto,
-                });
-            }
-        }
+        let mut out = Vec::with_capacity(self.delete_terms.size());
+        self.delete_terms
+            .for_each_ordered(|term, doc_id_upto| out.push(TermDelete { term, doc_id_upto }));
         out
     }
 
     /// Returns the `docIDUpto` recorded for `term`, or `None`.
     pub fn delete_term_doc_id_upto(&self, term: &Term) -> Option<i32> {
-        self.delete_terms
-            .get(term.field())
-            .and_then(|m| m.get(term.bytes().slice()))
-            .copied()
+        match self.delete_terms.get(term) {
+            -1 => None,
+            upto => Some(upto),
+        }
     }
 
     /// Returns the canonical strings of every buffered delete query.
@@ -518,24 +705,23 @@ impl BufferedUpdates {
     /// Equivalent to `BufferedUpdates.clearDeleteTerms`.
     pub fn clear_delete_terms(&mut self) {
         self.delete_terms.clear();
-        self.terms_size = 0;
     }
 
     /// Drops every buffered delete and update.
     pub fn clear(&mut self) {
         self.delete_terms.clear();
-        self.terms_size = 0;
         self.delete_queries.clear();
         self.num_field_updates = 0;
         self.field_updates.clear();
         self.bytes_used = 0;
-        self.delete_terms_bytes_used = 0;
         self.field_updates_bytes_used = 0;
     }
 
     /// Returns `true` when anything is buffered.
     pub fn any(&self) -> bool {
-        self.terms_size > 0 || !self.delete_queries.is_empty() || self.num_field_updates > 0
+        !self.delete_terms.is_empty()
+            || !self.delete_queries.is_empty()
+            || self.num_field_updates > 0
     }
 
     /// Moves every buffered delete out of this buffer, leaving it empty.
@@ -543,19 +729,15 @@ impl BufferedUpdates {
         let taken = BufferedUpdates {
             segment_name: self.segment_name.clone(),
             delete_terms: std::mem::take(&mut self.delete_terms),
-            terms_size: self.terms_size,
             delete_queries: std::mem::take(&mut self.delete_queries),
             num_field_updates: self.num_field_updates,
             field_updates: std::mem::take(&mut self.field_updates),
             field_updates_bytes_used: self.field_updates_bytes_used,
-            delete_terms_bytes_used: self.delete_terms_bytes_used,
             bytes_used: self.bytes_used,
             gen: self.gen,
         };
-        self.terms_size = 0;
         self.num_field_updates = 0;
         self.field_updates_bytes_used = 0;
-        self.delete_terms_bytes_used = 0;
         self.bytes_used = 0;
         taken
     }
@@ -567,7 +749,7 @@ impl Accountable for BufferedUpdates {
     /// Lucene keeps apart: the query bytes, the field-update bytes, and the
     /// `DeletedTerms` bytes.
     fn ram_bytes_used(&self) -> i64 {
-        self.bytes_used + self.field_updates_bytes_used + self.delete_terms_bytes_used
+        self.bytes_used + self.field_updates_bytes_used + self.delete_terms.ram_bytes_used()
     }
 }
 
@@ -606,8 +788,8 @@ impl std::fmt::Display for BufferedUpdates {
             );
         }
         write!(f, "gen={}", self.gen)?;
-        if self.terms_size != 0 {
-            write!(f, " {} unique deleted terms ", self.terms_size)?;
+        if !self.delete_terms.is_empty() {
+            write!(f, " {} unique deleted terms ", self.delete_terms.size())?;
         }
         if !self.delete_queries.is_empty() {
             write!(f, " {} deleted queries", self.delete_queries.len())?;
@@ -1794,10 +1976,10 @@ impl DeleteNode {
             DeleteItem::Sentinel => {
                 debug_assert!(false, "sentinel item must never be applied");
             }
-            DeleteItem::Term(term) => updates.add_term(term.clone(), doc_id_upto),
+            DeleteItem::Term(term) => updates.add_term(term.clone(), doc_id_upto)?,
             DeleteItem::Terms(terms) => {
                 for term in terms {
-                    updates.add_term(term.clone(), doc_id_upto);
+                    updates.add_term(term.clone(), doc_id_upto)?;
                 }
             }
             DeleteItem::Query(query) => {
@@ -3050,10 +3232,22 @@ impl FlushPolicy for FlushByRamOrCountsPolicy {
 /// module be used and tested on its own.
 pub trait FlushNotifications: Send + Sync + Debug {
     /// Files written by a flush that will never be referenced by a commit.
-    fn delete_unused_files(&self, files: &HashSet<String>);
+    ///
+    /// # Errors
+    ///
+    /// Propagates what queueing the event raised: `IndexWriter`'s
+    /// implementation is `eventQueue.add(w -> w.deleteNewFiles(files))`, which
+    /// throws `AlreadyClosedException` once the writer's event queue is closed
+    /// (`IndexWriter.java:307-324, 430-433`).
+    fn delete_unused_files(&self, files: &HashSet<String>) -> Result<()>;
 
     /// A flush of `info` failed and its partial files must be discarded.
-    fn flush_failed(&self, info: &SegmentInfo);
+    ///
+    /// # Errors
+    ///
+    /// As [`delete_unused_files`](Self::delete_unused_files)
+    /// (`IndexWriter.java:435-438`).
+    fn flush_failed(&self, info: &SegmentInfo) -> Result<()>;
 
     /// Every DWPT selected by the current flush has been flushed.
     ///
@@ -3066,10 +3260,20 @@ pub trait FlushNotifications: Send + Sync + Debug {
     fn on_tragic_event(&self, error: &LuceneError, message: &str);
 
     /// Buffered deletes were frozen into a ticket and must be published.
-    fn on_deletes_applied(&self);
+    ///
+    /// # Errors
+    ///
+    /// Propagates what queueing the event raised: Java's
+    /// `eventQueue.add` throws `AlreadyClosedException` once the writer's
+    /// event queue is closed (`IndexWriter.java:307-324`).
+    fn on_deletes_applied(&self) -> Result<()>;
 
     /// The ticket queue has grown past the number of DWPTs.
-    fn on_ticket_backlog(&self);
+    ///
+    /// # Errors
+    ///
+    /// As [`on_deletes_applied`](Self::on_deletes_applied).
+    fn on_ticket_backlog(&self) -> Result<()>;
 }
 
 /// [`FlushNotifications`] implementation that ignores every event.
@@ -3077,14 +3281,22 @@ pub trait FlushNotifications: Send + Sync + Debug {
 pub struct NoOpFlushNotifications;
 
 impl FlushNotifications for NoOpFlushNotifications {
-    fn delete_unused_files(&self, _files: &HashSet<String>) {}
-    fn flush_failed(&self, _info: &SegmentInfo) {}
+    fn delete_unused_files(&self, _files: &HashSet<String>) -> Result<()> {
+        Ok(())
+    }
+    fn flush_failed(&self, _info: &SegmentInfo) -> Result<()> {
+        Ok(())
+    }
     fn after_segments_flushed(&self) -> Result<()> {
         Ok(())
     }
     fn on_tragic_event(&self, _error: &LuceneError, _message: &str) {}
-    fn on_deletes_applied(&self) {}
-    fn on_ticket_backlog(&self) {}
+    fn on_deletes_applied(&self) -> Result<()> {
+        Ok(())
+    }
+    fn on_ticket_backlog(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4291,8 +4503,7 @@ impl DwptGuard {
             )
                 as Arc<dyn Directory>)));
             let mut delete_files = |files: HashSet<String>| -> Result<()> {
-                notifications.delete_unused_files(&files);
-                Ok(())
+                notifications.delete_unused_files(&files)
             };
             crate::index::index_writer::IndexWriter::create_compound_file(
                 self.dwpt.info_stream.as_ref(),
@@ -5840,7 +6051,8 @@ impl DocumentsWriter {
                 .ticket_queue
                 .add_ticket(|| Ok(Self::maybe_freeze_global_buffer(delete_queue)))?;
             if ticket.is_some() {
-                self.flush_notifications.on_deletes_applied();
+                // Apply deletes event forces a purge.
+                self.flush_notifications.on_deletes_applied()?;
                 return Ok(true);
             }
         }
@@ -6043,12 +6255,19 @@ impl DocumentsWriter {
         let mut next = Some(first);
         while let Some(flushing_dwpt) = next {
             debug_assert!(!flushing_dwpt.has_flushed());
-            let outcome = self.flush_one(&flushing_dwpt);
+            // `DocumentsWriter.java:566-578`: the backlog check runs inside
+            // the `try` whose `finally` is `doAfterFlush`.
+            let outcome = self.flush_one(&flushing_dwpt).and_then(|()| {
+                if self.ticket_queue.ticket_count() >= self.per_thread_pool.size() {
+                    // This means there is a backlog: the one thread purging
+                    // the queue can't keep up with all other threads flushing
+                    // segments, so it is forced to publish.
+                    self.flush_notifications.on_ticket_backlog()?;
+                }
+                Ok(())
+            });
             self.flush_control.do_after_flush(&flushing_dwpt);
             outcome?;
-            if self.ticket_queue.ticket_count() >= self.per_thread_pool.size() {
-                self.flush_notifications.on_ticket_backlog();
-            }
             next = self.flush_control.next_pending_flush();
         }
         self.flush_notifications.after_segments_flushed()
@@ -6067,38 +6286,47 @@ impl DocumentsWriter {
 
         let flushing_docs_in_ram = guard.num_docs_in_ram();
         let flushed = guard.flush(self.flush_notifications.as_ref());
-        self.shared.subtract_flushed_num_docs(flushing_docs_in_ram);
-        if !guard.pending_files_to_delete().is_empty() {
-            self.flush_notifications
-                .delete_unused_files(guard.pending_files_to_delete());
-        }
-
-        match flushed {
+        // The DWPT aborted mid-flush when it returns no segment. Lucene
+        // attaches a null segment, which leaves the ticket unpublishable for
+        // ever; treating it as a failed flush instead lets the queue keep
+        // draining while the writer reacts to the tragic event.
+        let dwpt_success = matches!(flushed, Ok(Some(_)));
+        let mut outcome = match flushed {
             Ok(Some(segment)) => {
                 if let Some(ticket) = &ticket {
                     self.ticket_queue.add_segment(ticket, segment);
                 }
                 Ok(())
             }
-            Ok(None) => {
-                // The DWPT aborted mid-flush. Lucene attaches a null segment,
-                // which leaves the ticket unpublishable for ever; marking it
-                // failed instead lets the queue keep draining while the writer
-                // reacts to the tragic event.
-                if let Some(ticket) = &ticket {
-                    self.ticket_queue.mark_ticket_failed(ticket);
-                }
-                self.flush_notifications.flush_failed(&guard.segment_info());
-                Ok(())
+            Ok(None) => Ok(()),
+            Err(error) => Err(error),
+        };
+        // The inner `finally` (`DocumentsWriter.java:543-552`). Either
+        // notification may throw `AlreadyClosedException`; a Java `finally`
+        // that throws skips the rest of its body and replaces the exception
+        // in flight.
+        self.shared.subtract_flushed_num_docs(flushing_docs_in_ram);
+        let notified = (|| -> Result<()> {
+            if !guard.pending_files_to_delete().is_empty() {
+                self.flush_notifications
+                    .delete_unused_files(guard.pending_files_to_delete())?;
             }
-            Err(error) => {
-                if let Some(ticket) = &ticket {
-                    self.ticket_queue.mark_ticket_failed(ticket);
-                }
-                self.flush_notifications.flush_failed(&guard.segment_info());
-                Err(error)
+            if !dwpt_success {
+                self.flush_notifications
+                    .flush_failed(&guard.segment_info())?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = notified {
+            outcome = Err(error);
+        }
+        // The outer `finally` (`DocumentsWriter.java:556-563`).
+        if !(dwpt_success && outcome.is_ok()) {
+            if let Some(ticket) = &ticket {
+                self.ticket_queue.mark_ticket_failed(ticket);
             }
         }
+        outcome
     }
 
     /// Selects and flushes every DWPT of the current delete queue.
@@ -6120,7 +6348,10 @@ impl DocumentsWriter {
                 .store(self.any_changes(), Ordering::Release);
             let flushing_delete_queue = self.shared.delete_queue();
             let seq_no = self.flush_control.mark_for_full_flush()?;
-            debug_assert!(self.set_flushing_delete_queue(Some(Arc::clone(&flushing_delete_queue))));
+            debug_assert!(
+                self.set_flushing_delete_queue(Some(Arc::clone(&flushing_delete_queue))),
+                "Can not replace a full flush queue if the queue is not closed"
+            );
             (flushing_delete_queue, seq_no)
         };
 
@@ -6163,7 +6394,10 @@ impl DocumentsWriter {
             self.info_stream
                 .message("DW", &format!("finishFullFlush success={success}"));
         }
-        debug_assert!(self.set_flushing_delete_queue(None));
+        debug_assert!(
+            self.set_flushing_delete_queue(None),
+            "Can not replace a full flush queue if the queue is not closed"
+        );
         if success {
             self.flush_control.finish_full_flush();
         } else {
@@ -6333,14 +6567,28 @@ impl DocumentsWriter {
     /// `assert setFlushingDeleteQueue(...)`, so the field it writes — and the
     /// [`assert_ticket_queue_modification`](Self::assert_ticket_queue_modification)
     /// check that reads it — exist only when assertions are enabled; this port
-    /// calls it from `debug_assert!` for the same reason. Like Java it returns
-    /// `true` so that it can sit inside the assertion.
+    /// calls it from `debug_assert!` for the same reason.
+    ///
+    /// Java's body holds its own `assert` that the queue being replaced is
+    /// closed (`DocumentsWriter.java:645-651`); with assertions enabled a
+    /// violation throws `AssertionError` before the field is written. Here the
+    /// check is the return value instead of an inner `assert!`: a violation
+    /// returns `false` without writing the field, so the caller's
+    /// `debug_assert!` fails in a debug build exactly where Java's `assert`
+    /// does under `-ea`, and a release build — which never calls this — runs as
+    /// Java does without `-ea`. A full flush that failed, for example on a
+    /// delete term longer than 32766 bytes, leaves the queue open and reaches
+    /// this case: Java 10.5.0 under `-ea` reports `AssertionError` from
+    /// `commit()` and without `-ea` an `IllegalStateException`. The one
+    /// remaining difference is that Java's `AssertionError` is a `Throwable`
+    /// the writer records as its tragic exception, while a failed
+    /// `debug_assert!` panics; Rust has no recoverable assertion failure.
     fn set_flushing_delete_queue(&self, session: Option<Arc<DocumentsWriterDeleteQueue>>) -> bool {
         let mut current = self.lock_full_flush_queue();
-        assert!(
-            current.as_ref().is_none_or(|queue| !queue.is_open()),
-            "Can not replace a full flush queue if the queue is not closed"
-        );
+        if current.as_ref().is_some_and(|queue| queue.is_open()) {
+            // "Can not replace a full flush queue if the queue is not closed"
+            return false;
+        }
         *current = session;
         true
     }
@@ -6621,15 +6869,15 @@ mod tests {
     #[test]
     fn buffered_updates_keeps_the_highest_doc_id_upto_per_term() {
         let mut updates = BufferedUpdates::new("_0");
-        updates.add_term(term("id", "a"), 5);
-        updates.add_term(term("id", "a"), 2);
+        updates.add_term(term("id", "a"), 5).unwrap();
+        updates.add_term(term("id", "a"), 2).unwrap();
         assert_eq!(updates.terms_size(), 1, "the term must be de-duplicated");
         assert_eq!(updates.delete_term_doc_id_upto(&term("id", "a")), Some(5));
 
-        updates.add_term(term("id", "a"), 9);
+        updates.add_term(term("id", "a"), 9).unwrap();
         assert_eq!(updates.delete_term_doc_id_upto(&term("id", "a")), Some(9));
 
-        updates.add_term(term("other", "a"), 1);
+        updates.add_term(term("other", "a"), 1).unwrap();
         assert_eq!(updates.terms_size(), 2, "field is part of the term key");
         assert!(updates.ram_bytes_used() > 0);
     }
@@ -6644,7 +6892,7 @@ mod tests {
         assert_eq!(updates.queries_size(), 1, "queries are de-duplicated");
         assert!(updates.any());
 
-        updates.add_term(term("id", "a"), 1);
+        updates.add_term(term("id", "a"), 1).unwrap();
         updates.clear_delete_terms();
         assert_eq!(updates.terms_size(), 0);
         assert!(updates.any(), "the query is still buffered");
@@ -6710,8 +6958,8 @@ mod tests {
     #[test]
     fn frozen_packet_charges_its_frozen_terms_and_the_finished_field_updates() {
         let mut updates = BufferedUpdates::new("_0");
-        updates.add_term(term("id", "b"), 3);
-        updates.add_term(term("id", "a"), 3);
+        updates.add_term(term("id", "b"), 3).unwrap();
+        updates.add_term(term("id", "a"), 3).unwrap();
         updates.add_query(label_query("q1"), 3);
         // One field and one value, so `finish()` sorts the terms.
         for (id, value) in [("c", 7), ("a", 7), ("b", 7)] {
@@ -6842,7 +7090,9 @@ mod tests {
                     Some(FrozenBufferedUpdates::new(
                         {
                             let mut updates = BufferedUpdates::new("global");
-                            updates.add_term(term("id", "a"), BufferedUpdates::MAX_INT);
+                            updates
+                                .add_term(term("id", "a"), BufferedUpdates::MAX_INT)
+                                .unwrap();
                             updates
                         },
                         None,
@@ -7184,8 +7434,12 @@ mod tests {
         }
 
         impl FlushNotifications for RecordingNotifications {
-            fn delete_unused_files(&self, _files: &HashSet<String>) {}
-            fn flush_failed(&self, _info: &SegmentInfo) {}
+            fn delete_unused_files(&self, _files: &HashSet<String>) -> Result<()> {
+                Ok(())
+            }
+            fn flush_failed(&self, _info: &SegmentInfo) -> Result<()> {
+                Ok(())
+            }
             fn after_segments_flushed(&self) -> Result<()> {
                 Ok(())
             }
@@ -7195,8 +7449,12 @@ mod tests {
                     .unwrap()
                     .push(format!("{message}: {error}"));
             }
-            fn on_deletes_applied(&self) {}
-            fn on_ticket_backlog(&self) {}
+            fn on_deletes_applied(&self) -> Result<()> {
+                Ok(())
+            }
+            fn on_ticket_backlog(&self) -> Result<()> {
+                Ok(())
+            }
         }
 
         let mut chain = ScriptedChain::new(64);

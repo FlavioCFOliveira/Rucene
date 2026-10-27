@@ -1559,8 +1559,12 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
     );
 
     let mut terms = BufferedUpdates::new("_0");
-    terms.add_term(Term::new("id", BytesRef::new(b"0-0".to_vec())), 5);
-    terms.add_term(Term::new("id", BytesRef::new(b"0-1".to_vec())), 7);
+    terms
+        .add_term(Term::new("id", BytesRef::new(b"0-0".to_vec())), 5)
+        .unwrap();
+    terms
+        .add_term(Term::new("id", BytesRef::new(b"0-1".to_vec())), 7)
+        .unwrap();
     assert_eq!(
         terms.to_string(),
         m.get("BufferedUpdates.toString/two-terms"),
@@ -1618,7 +1622,9 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
     );
 
     let mut everything = BufferedUpdates::new("_0");
-    everything.add_term(Term::new("id", BytesRef::new(b"0-0".to_vec())), 5);
+    everything
+        .add_term(Term::new("id", BytesRef::new(b"0-0".to_vec())), 5)
+        .unwrap();
     everything.add_query(
         Arc::new(rucene::search::TermQuery::new(Term::new(
             "id",
@@ -1658,8 +1664,12 @@ fn buffered_updates(m: &Measured, index_dir: &std::path::Path) {
     );
 
     let mut source = BufferedUpdates::new("_0");
-    source.add_term(Term::new("id", BytesRef::new(b"0-0".to_vec())), 5);
-    source.add_term(Term::new("id", BytesRef::new(b"0-1".to_vec())), 7);
+    source
+        .add_term(Term::new("id", BytesRef::new(b"0-0".to_vec())), 5)
+        .unwrap();
+    source
+        .add_term(Term::new("id", BytesRef::new(b"0-1".to_vec())), 7)
+        .unwrap();
     source
         .add_numeric_update(
             &DocValuesUpdate::new(

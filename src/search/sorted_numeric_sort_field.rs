@@ -172,6 +172,10 @@ impl SortedNumericSortField {
         )))
     }
 
+    /// Returns the [`SortField`] this sort field extends.
+    ///
+    /// Java's `SortedNumericSortField` *is* a `SortField`; this port composes
+    /// one, and this accessor exposes it.
     pub fn sort_field(&self) -> &SortField {
         &self.sort_field
     }
@@ -265,15 +269,6 @@ impl SortedNumericSortField {
         Ok(())
     }
 
-    /// Reads a sort field written by [`serialize`](Self::serialize).
-    ///
-    /// Equivalent to `SortedNumericSortField.Provider.readSortField(DataInput)`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LuceneError::IllegalArgument`] for an unknown selector or a
-    /// numeric type that cannot carry a missing value, and propagates any I/O
-    /// error.
     /// Reads the selector type of a serialised sort field.
     ///
     /// Equivalent to the private
@@ -292,6 +287,15 @@ impl SortedNumericSortField {
         })
     }
 
+    /// Reads a sort field written by [`serialize`](Self::serialize).
+    ///
+    /// Equivalent to `SortedNumericSortField.Provider.readSortField(DataInput)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneError::IllegalArgument`] for an unknown selector or a
+    /// numeric type that cannot carry a missing value, and propagates any I/O
+    /// error.
     pub fn read_sort_field(input: &mut dyn DataInput) -> Result<Self> {
         let field = input.read_string()?;
         let numeric_type = SortFieldType::parse(&input.read_string()?)?;
